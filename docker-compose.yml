@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: mindblown
+      POSTGRES_USER: mindblown
+      POSTGRES_PASSWORD: mindblown
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mindblown -d mindblown"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/server/Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      DATABASE_URL: postgresql://mindblown:mindblown@db:5432/mindblown
+      PORT: "3001"
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

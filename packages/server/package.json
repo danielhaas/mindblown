@@ -12,13 +12,26 @@
     }
   },
   "scripts": {
+    "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate"
   },
   "dependencies": {
-    "@mindblown/core": "workspace:*"
+    "@fastify/cors": "^10.0.2",
+    "@fastify/websocket": "^11.0.2",
+    "@mindblown/core": "workspace:*",
+    "drizzle-orm": "^0.39.3",
+    "fastify": "^5.2.2",
+    "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.11",
+    "drizzle-kit": "^0.30.5",
+    "tsx": "^4.19.2",
     "typescript": "^5.7.0"
   }
 }
