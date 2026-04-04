@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "paths": {
+      "@mindblown/core": ["./packages/core/src"],
+      "@mindblown/mindmap": ["./packages/mindmap/src"],
+      "@mindblown/views": ["./packages/views/src"],
+      "@mindblown/server": ["./packages/server/src"],
+      "@mindblown/integrations": ["./packages/integrations/src"]
+    }
+  },
+  "exclude": ["node_modules", "dist"]
+}
