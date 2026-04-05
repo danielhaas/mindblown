@@ -116,6 +116,8 @@ interface MindmapNodeProps {
   isDragTarget?: boolean;
   isDragInvalid?: boolean;
   isDragging?: boolean;
+  hasHiddenChildren?: boolean;
+  hiddenDescendantCount?: number;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -132,6 +134,8 @@ export function MindmapNode({
   isDragTarget = false,
   isDragInvalid = false,
   isDragging = false,
+  hasHiddenChildren = false,
+  hiddenDescendantCount = 0,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -306,7 +310,7 @@ export function MindmapNode({
       )}
 
       {/* Collapse indicator */}
-      {collapsed && (
+      {collapsed && !hasHiddenChildren && (
         <g transform={`translate(${x + width - 8}, ${y + height / 2})`}>
           <circle r="8" fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="1" />
           <text
@@ -318,6 +322,40 @@ export function MindmapNode({
           >
             +
           </text>
+        </g>
+      )}
+
+      {/* Hidden children badge (depth limit reached) */}
+      {hasHiddenChildren && hiddenDescendantCount > 0 && (
+        <g transform={`translate(${x + width + 6}, ${y + height / 2 - 10})`}>
+          <rect
+            x={0}
+            y={0}
+            width={hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40}
+            height={20}
+            rx={10}
+            fill="#eef2ff"
+            stroke="#c7d2fe"
+            strokeWidth={1}
+          />
+          <text
+            x={(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) / 2}
+            y={10}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={10}
+            fontWeight={600}
+            fill="#4f46e5"
+            style={{ pointerEvents: 'none', userSelect: 'none' }}
+          >
+            +{hiddenDescendantCount}
+          </text>
+          {/* Small expand arrow hint */}
+          <polygon
+            points={`${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 2},7 ${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 7},10 ${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 2},13`}
+            fill="#4f46e5"
+            opacity={0.5}
+          />
         </g>
       )}
 

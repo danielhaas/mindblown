@@ -130,6 +130,9 @@ export function ListView() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const deleteNode = useMindmapStore((s) => s.deleteNode);
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
 
   // ── Local UI state ────────────────────────────────────────────
 
@@ -154,34 +157,29 @@ export function ListView() {
     }
   }, [selectedIds, selectedNodeId, selectNode]);
 
-  // ── Flatten tree ──────────────────────────────────────────────
+  // ── Flatten tree (respects drill-down) ──────────────────────────
 
   const flatRows = useMemo(() => {
-    if (!rootNodeId || !nodes[rootNodeId]) return [];
+    const visibleNodes = getVisibleNodes();
+    if (visibleNodes.length === 0) return [];
+
     const rows: FlatRow[] = [];
     let treeIdx = 0;
 
-    function walk(nodeId: string, depth: number) {
-      const node = nodes[nodeId];
-      if (!node) return;
-      const isLeaf = node.childrenIds.length === 0;
+    for (const vn of visibleNodes) {
+      if (vn.isDimmed) continue; // skip dimmed siblings in list view
+      const isLeaf = vn.node.childrenIds.length === 0 || vn.hasHiddenChildren;
       rows.push({
-        node,
-        depth,
-        cv: computed.get(nodeId),
+        node: vn.node,
+        depth: vn.depth,
+        cv: computed.get(vn.node.id),
         isLeaf,
         treeIndex: treeIdx++,
       });
-      if (!node.collapsed) {
-        for (const childId of node.childrenIds) {
-          walk(childId, depth + 1);
-        }
-      }
     }
 
-    walk(rootNodeId, 0);
     return rows;
-  }, [nodes, rootNodeId, computed]);
+  }, [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, maxDepth]);
 
   // ── Filter ────────────────────────────────────────────────────
 

@@ -440,6 +440,10 @@ export function KanbanView() {
   const getLeafNodes = useMindmapStore((s) => s.getLeafNodes);
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
+  const rootNodeId = useMindmapStore((s) => s.rootNodeId);
 
   const [swimlanes, setSwimlanes] = useState(false);
   const [dragNodeId, setDragNodeId] = useState<string | null>(null);
@@ -460,7 +464,23 @@ export function KanbanView() {
 
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
-    let leafNodes = getLeafNodes();
+    // Get visible node IDs for drill-down filtering
+    const visibleNodes = getVisibleNodes();
+    const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
+
+    // Get leaf nodes within the visible set
+    let leafNodes = getLeafNodes().filter((n) => visibleIds.has(n.id));
+
+    // Also include nodes at the depth limit that have hidden children
+    // (they act as leaf-like nodes in the kanban)
+    for (const vn of visibleNodes) {
+      if (vn.hasHiddenChildren && !vn.isDimmed && vn.node.childrenIds.length > 0) {
+        if (!leafNodes.some((l) => l.id === vn.node.id)) {
+          leafNodes.push(vn.node);
+        }
+      }
+    }
+
     // Apply sprint filter
     if (activeCycleFilter) {
       leafNodes = leafNodes.filter((n) => n.cycleId === activeCycleFilter);
@@ -521,7 +541,7 @@ export function KanbanView() {
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, getVisibleNodes, focusNodeId, maxDepth, nodes, rootNodeId]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {

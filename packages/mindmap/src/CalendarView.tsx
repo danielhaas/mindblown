@@ -327,6 +327,10 @@ export function CalendarView() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const currentMap = useMindmapStore((s) => s.currentMap);
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
+  const rootNodeId = useMindmapStore((s) => s.rootNodeId);
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
@@ -342,8 +346,12 @@ export function CalendarView() {
 
   const tasks = useMemo<CalendarTask[]>(() => {
     const todayKey = toDateKey(today);
+    // Filter to only visible nodes
+    const visibleNodes = getVisibleNodes();
+    const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
+
     return Object.values(nodes)
-      .filter((n) => n.dueDate)
+      .filter((n) => n.dueDate && visibleIds.has(n.id))
       .map((n) => {
         const cv = computed.get(n.id);
         const dueDate = parseDate(n.dueDate!);
@@ -362,7 +370,7 @@ export function CalendarView() {
           breadcrumb: getNodeBreadcrumb(n.id),
         };
       });
-  }, [nodes, computed, today, currentMap, getNodeBreadcrumb]);
+  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, focusNodeId, maxDepth, rootNodeId]);
 
   // ── Group tasks by date key ─────────────────────────────────
 

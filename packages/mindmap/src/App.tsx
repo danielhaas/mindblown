@@ -16,6 +16,7 @@ import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
+import { Breadcrumb } from './Breadcrumb.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -1029,6 +1030,9 @@ export function App() {
           </button>
         </div>
       )}
+
+      {/* Breadcrumb navigation for drill-down */}
+      <Breadcrumb />
 
       {/* Main content + Property/Sprint panel */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>

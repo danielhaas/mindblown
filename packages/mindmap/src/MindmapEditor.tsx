@@ -7,6 +7,7 @@ import { Connector } from './Connector.js';
 import { DependencyLines } from './DependencyLines.js';
 import { CursorPresence } from './CursorPresence.js';
 import type { LayoutNode } from './layout.js';
+import type { Node } from '@mindblown/core';
 
 // ── Pan & Zoom state ───────────────────────────────────────────
 
@@ -221,6 +222,13 @@ function BulkActionBar({
 
 // ── Main Editor Component ───────────────────────────────────
 
+const DEPTH_OPTIONS = [
+  { value: 1, label: '1' },
+  { value: 2, label: '2' },
+  { value: 3, label: '3' },
+  { value: 0, label: 'All' },
+];
+
 export function MindmapEditor() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<ViewState>({ panX: 0, panY: 0, zoom: 1 });
@@ -234,6 +242,8 @@ export function MindmapEditor() {
   const editingNodeId = useMindmapStore((s) => s.editingNodeId);
   const computed = useMindmapStore((s) => s.computed);
   const layoutType = useMindmapStore((s) => s.layoutType);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const toggleSelectNode = useMindmapStore((s) => s.toggleSelectNode);
   const selectAllNodes = useMindmapStore((s) => s.selectAllNodes);
@@ -245,6 +255,9 @@ export function MindmapEditor() {
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
   const moveNode = useMindmapStore((s) => s.moveNode);
   const setLayoutType = useMindmapStore((s) => s.setLayoutType);
+  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
+  const setMaxDepth = useMindmapStore((s) => s.setMaxDepth);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const user = useMindmapStore((s) => s.user);
 
   // ── Cursor presence: throttled send ──────────────────────────
@@ -258,20 +271,90 @@ export function MindmapEditor() {
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
 
+  // ── Visible nodes computation ───────────────────────────────
+
+  const visibleNodes = useMemo(() => getVisibleNodes(), [nodes, focusNodeId, maxDepth, rootNodeId, getVisibleNodes]);
+
+  // Build a filtered nodes record containing only visible (non-dimmed) nodes
+  // with adjusted parentId for the layout algorithm
+  const visibleNodesRecord = useMemo(() => {
+    const record: Record<string, Node> = {};
+    const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
+
+    for (const vn of visibleNodes) {
+      if (vn.isDimmed) continue;
+      const node = vn.node;
+      // Filter childrenIds to only include visible children
+      const filteredChildren = node.childrenIds.filter((cid) => visibleIds.has(cid));
+      record[node.id] = { ...node, childrenIds: filteredChildren };
+    }
+    return record;
+  }, [visibleNodes]);
+
+  // Build a lookup for visible node metadata (hasHiddenChildren, hiddenDescendantCount, isDimmed)
+  const visibleMeta = useMemo(() => {
+    const meta = new Map<string, { hasHiddenChildren: boolean; hiddenDescendantCount: number; isDimmed: boolean }>();
+    for (const vn of visibleNodes) {
+      meta.set(vn.node.id, {
+        hasHiddenChildren: vn.hasHiddenChildren,
+        hiddenDescendantCount: vn.hiddenDescendantCount,
+        isDimmed: vn.isDimmed,
+      });
+    }
+    return meta;
+  }, [visibleNodes]);
+
   // ── Layout computation ─────────────────────────────────────
 
+  const effectiveRootId = focusNodeId ?? rootNodeId;
+
   const layoutNodes = useMemo(
-    () => rootNodeId ? computeLayout(rootNodeId, nodes, layoutType) : [],
-    [rootNodeId, nodes, layoutType],
+    () => effectiveRootId ? computeLayout(effectiveRootId, visibleNodesRecord, layoutType) : [],
+    [effectiveRootId, visibleNodesRecord, layoutType],
+  );
+
+  // Also layout dimmed sibling nodes (simple positioning beside the main tree)
+  const dimmedLayoutNodes = useMemo(() => {
+    const dimmedNodes = visibleNodes.filter((v) => v.isDimmed);
+    if (dimmedNodes.length === 0 || !effectiveRootId) return [];
+
+    // Position dimmed nodes to the left of the focus tree
+    const mainBounds = computeBounds(layoutNodes);
+    const result: LayoutNode[] = [];
+    let yOffset = mainBounds.minY;
+
+    for (const dn of dimmedNodes) {
+      const textWidth = dn.node.text.length * 7.5 + 32;
+      const width = Math.min(260, Math.max(100, Math.max(160, textWidth)));
+      const height = 40;
+      result.push({
+        id: dn.node.id,
+        x: mainBounds.minX - width - 80,
+        y: yOffset,
+        width,
+        height,
+        parentId: dn.node.parentId,
+        depth: 0,
+        hasChildren: dn.node.childrenIds.length > 0,
+        collapsed: dn.node.collapsed,
+      });
+      yOffset += height + 14;
+    }
+    return result;
+  }, [visibleNodes, layoutNodes, effectiveRootId]);
+
+  const allLayoutNodes = useMemo(
+    () => [...layoutNodes, ...dimmedLayoutNodes],
+    [layoutNodes, dimmedLayoutNodes],
   );
 
   const layoutMap = useMemo(() => {
     const map = new Map<string, LayoutNode>();
-    for (const ln of layoutNodes) {
+    for (const ln of allLayoutNodes) {
       map.set(ln.id, ln);
     }
     return map;
-  }, [layoutNodes]);
+  }, [allLayoutNodes]);
 
   // ── Selected node IDs as a Set for fast lookup ────────────
 
@@ -280,11 +363,11 @@ export function MindmapEditor() {
   // ── Fit to screen function ─────────────────────────────────
 
   const fitToScreen = useCallback(() => {
-    if (layoutNodes.length === 0) return;
+    if (allLayoutNodes.length === 0) return;
     const svg = svgRef.current;
     if (!svg) return;
 
-    const bounds = computeBounds(layoutNodes);
+    const bounds = computeBounds(allLayoutNodes);
     const svgRect = svg.getBoundingClientRect();
     const padding = 80;
 
@@ -300,7 +383,7 @@ export function MindmapEditor() {
       panX: svgRect.width / 2 - centerX * zoom,
       panY: svgRect.height / 2 - centerY * zoom,
     });
-  }, [layoutNodes]);
+  }, [allLayoutNodes]);
 
   // Expose fitToScreen, zoomIn, zoomOut on the window for the command palette / App
   useEffect(() => {
@@ -326,6 +409,17 @@ export function MindmapEditor() {
     hasInitialized.current = rootNodeId;
     fitToScreen();
   }, [layoutNodes, rootNodeId, fitToScreen]);
+
+  // Re-fit when focus node changes (drill-down animation)
+  const prevFocusRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (prevFocusRef.current !== focusNodeId) {
+      prevFocusRef.current = focusNodeId;
+      // Short delay so layout has time to recompute
+      const timer = setTimeout(() => fitToScreen(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [focusNodeId, fitToScreen]);
 
   // ── Convert client coords to SVG coords ───────────────────
 
@@ -627,7 +721,17 @@ export function MindmapEditor() {
           break;
         }
         case 'Escape': {
-          clearSelection();
+          // If drilled into a node, go back up one level first
+          if (focusNodeId) {
+            const focusNode = nodes[focusNodeId];
+            if (focusNode?.parentId && focusNode.parentId !== rootNodeId) {
+              setFocusNode(focusNode.parentId);
+            } else {
+              setFocusNode(null);
+            }
+          } else {
+            clearSelection();
+          }
           break;
         }
         case 'ArrowLeft': {
@@ -676,7 +780,7 @@ export function MindmapEditor() {
   }, [
     selectedNodeId, selectedNodeIds, editingNodeId, nodes, rootNodeId,
     addNode, deleteNode, toggleCollapse, selectNode, startEditing,
-    selectAllNodes, clearSelection, fitToScreen,
+    selectAllNodes, clearSelection, fitToScreen, focusNodeId, setFocusNode,
   ]);
 
   // ── Bulk actions ──────────────────────────────────────────
@@ -715,19 +819,23 @@ export function MindmapEditor() {
     const edges: Array<{
       parentLayout: LayoutNode;
       childLayout: LayoutNode;
+      isDimmed: boolean;
     }> = [];
 
-    for (const ln of layoutNodes) {
+    for (const ln of allLayoutNodes) {
       if (ln.parentId) {
         const parentLayout = layoutMap.get(ln.parentId);
         if (parentLayout) {
-          edges.push({ parentLayout, childLayout: ln });
+          const meta = visibleMeta.get(ln.id);
+          const parentMeta = visibleMeta.get(ln.parentId);
+          const isDimmed = (meta?.isDimmed ?? false) || (parentMeta?.isDimmed ?? false);
+          edges.push({ parentLayout, childLayout: ln, isDimmed });
         }
       }
     }
 
     return edges;
-  }, [layoutNodes, layoutMap]);
+  }, [allLayoutNodes, layoutMap, visibleMeta]);
 
   // ── Compute drag ghost position ────────────────────────────
 
@@ -795,7 +903,7 @@ export function MindmapEditor() {
 
   return (
     <div style={{ width: '100%', height: '100%', position: 'relative' }}>
-      {/* Layout selector + Fit button in top-right */}
+      {/* Layout selector + Depth selector + Fit button in top-right */}
       <div
         style={{
           position: 'absolute',
@@ -832,6 +940,45 @@ export function MindmapEditor() {
             <option key={opt.id} value={opt.id}>{opt.label}</option>
           ))}
         </select>
+
+        {/* Depth selector */}
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 2,
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            padding: '2px 4px',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+          }}
+        >
+          <span style={{ fontSize: 10, fontWeight: 600, color: '#94a3b8', padding: '0 4px' }}>
+            Depth:
+          </span>
+          {DEPTH_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => setMaxDepth(opt.value)}
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                border: 'none',
+                borderRadius: 4,
+                padding: '2px 8px',
+                cursor: 'pointer',
+                background: maxDepth === opt.value ? '#4f46e5' : 'transparent',
+                color: maxDepth === opt.value ? '#fff' : '#64748b',
+                transition: 'background 0.15s, color 0.15s',
+              }}
+              title={opt.value === 0 ? 'Show all levels (may be slow for large maps)' : `Show ${opt.value} level${opt.value > 1 ? 's' : ''} deep`}
+            >
+              {opt.label}
+            </button>
+          ))}
+        </div>
 
         <button
           onClick={fitToScreen}
@@ -883,12 +1030,16 @@ export function MindmapEditor() {
 
         <g transform={`translate(${view.panX}, ${view.panY}) scale(${view.zoom})`}>
           {/* Connectors (render behind nodes) */}
-          {connectors.map(({ parentLayout, childLayout }) => (
-            <Connector
+          {connectors.map(({ parentLayout, childLayout, isDimmed }) => (
+            <g
               key={`${parentLayout.id}-${childLayout.id}`}
-              parent={parentLayout}
-              child={childLayout}
-            />
+              style={{ opacity: isDimmed ? 0.15 : 1, transition: 'opacity 0.3s ease' }}
+            >
+              <Connector
+                parent={parentLayout}
+                child={childLayout}
+              />
+            </g>
           ))}
 
           {/* Dependency lines (above connectors, below nodes) */}
@@ -917,31 +1068,60 @@ export function MindmapEditor() {
           )}
 
           {/* Nodes */}
-          {layoutNodes.map((ln) => {
+          {allLayoutNodes.map((ln) => {
+            const meta = visibleMeta.get(ln.id);
+            const isDimmed = meta?.isDimmed ?? false;
             const isBeingDragged = drag?.isDragging && drag.nodeId === ln.id;
             const isTargetNode = dropTarget && !invalidDrop && dropTarget.type === 'parent' && dropTarget.parentId === ln.id;
             const isInvalidTarget = dropTarget && invalidDrop && dropTarget.parentId === ln.id;
+            const nodeData = nodes[ln.id];
+            if (!nodeData) return null;
 
             return (
-              <MindmapNode
+              <g
                 key={ln.id}
-                layout={ln}
-                node={nodes[ln.id]}
-                computedValues={computed.get(ln.id)}
-                isSelected={selectedSet.has(ln.id)}
-                isEditing={ln.id === editingNodeId}
-                isDragging={isBeingDragged ?? false}
-                isDragTarget={isTargetNode ?? false}
-                isDragInvalid={isInvalidTarget ?? false}
-                onSelect={(shiftKey) => handleNodeSelect(ln.id, shiftKey)}
-                onDoubleClick={() => startEditing(ln.id)}
-                onTextChange={(text) => {
-                  updateNode(ln.id, { text });
-                  startEditing(null);
+                style={{
+                  opacity: isDimmed ? 0.3 : 1,
+                  transition: 'opacity 0.3s ease',
                 }}
-                onEditCancel={() => startEditing(null)}
-                onDragStart={handleNodeDragStart}
-              />
+              >
+                <MindmapNode
+                  layout={ln}
+                  node={nodeData}
+                  computedValues={computed.get(ln.id)}
+                  isSelected={selectedSet.has(ln.id)}
+                  isEditing={ln.id === editingNodeId}
+                  isDragging={isBeingDragged ?? false}
+                  isDragTarget={isTargetNode ?? false}
+                  isDragInvalid={isInvalidTarget ?? false}
+                  hasHiddenChildren={meta?.hasHiddenChildren ?? false}
+                  hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
+                  onSelect={(shiftKey) => {
+                    if (isDimmed) {
+                      // Clicking a dimmed node drills into it
+                      setFocusNode(ln.id);
+                    } else {
+                      handleNodeSelect(ln.id, shiftKey);
+                    }
+                  }}
+                  onDoubleClick={() => {
+                    if (isDimmed) {
+                      setFocusNode(ln.id);
+                    } else if (nodeData.childrenIds.length > 0) {
+                      // Double-click a node with children = drill into it
+                      setFocusNode(ln.id);
+                    } else {
+                      startEditing(ln.id);
+                    }
+                  }}
+                  onTextChange={(text) => {
+                    updateNode(ln.id, { text });
+                    startEditing(null);
+                  }}
+                  onEditCancel={() => startEditing(null)}
+                  onDragStart={isDimmed ? undefined : handleNodeDragStart}
+                />
+              </g>
             );
           })}
 

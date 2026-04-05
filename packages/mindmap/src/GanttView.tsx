@@ -237,6 +237,9 @@ export function GanttView() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
 
   // Local UI state
   const [scale, setScale] = useState<TimeScale>('week');
@@ -273,12 +276,27 @@ export function GanttView() {
       });
   }, [currentMapId, nodes]);
 
-  // ── Flatten nodes into rows ─────────────────────────────────────
+  // ── Flatten nodes into rows (respects drill-down) ──────────────
 
-  const allRows = useMemo(
-    () => flattenTree(nodes, rootNodeId, collapsedSet),
-    [nodes, rootNodeId, collapsedSet],
-  );
+  const allRows = useMemo(() => {
+    const visibleNodes = getVisibleNodes();
+    if (visibleNodes.length === 0) return [];
+
+    const result: FlatRow[] = [];
+    for (const vn of visibleNodes) {
+      if (vn.isDimmed) continue;
+      const hasChildren = vn.node.childrenIds.length > 0 && !vn.hasHiddenChildren;
+      const isExpanded = !collapsedSet.has(vn.node.id);
+      result.push({
+        node: vn.node,
+        depth: vn.depth,
+        isExpanded: hasChildren ? isExpanded : false,
+        hasChildren,
+      });
+    }
+
+    return result;
+  }, [nodes, rootNodeId, collapsedSet, getVisibleNodes, focusNodeId, maxDepth]);
 
   // Apply sprint filter
   const rows = useMemo(() => {

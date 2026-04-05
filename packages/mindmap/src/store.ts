@@ -18,6 +18,14 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload';
 
+export interface VisibleNode {
+  node: Node;
+  depth: number; // depth relative to focusNode (0 = focusNode itself)
+  hasHiddenChildren: boolean;
+  hiddenDescendantCount: number;
+  isDimmed: boolean; // true for sibling branches shown for context
+}
+
 export interface MindmapState {
   // Auth state
   user: AuthUser | null;
@@ -38,6 +46,10 @@ export interface MindmapState {
 
   // Layout
   layoutType: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart';
+
+  // Drill-down navigation
+  focusNodeId: string | null;
+  maxDepth: number;
 
   // Cycle / sprint state
   cycles: Cycle[];
@@ -92,6 +104,12 @@ export interface MindmapState {
   collapseAll: () => void;
   recompute: () => void;
 
+  // Drill-down actions
+  setFocusNode: (nodeId: string | null) => void;
+  setMaxDepth: (depth: number) => void;
+  getVisibleNodes: () => VisibleNode[];
+  getFocusBreadcrumb: () => Array<{ id: string; text: string }>;
+
   // Helpers
   getLeafNodes: () => Node[];
   getNodeBreadcrumb: (nodeId: NodeId) => string;
@@ -120,6 +138,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   editingNodeId: null,
   computed: new Map(),
   layoutType: 'tree-lr' as const,
+  focusNodeId: null,
+  maxDepth: 2,
   cycles: [],
   activeCycleFilter: null,
   activeView: 'mindmap',
@@ -228,6 +248,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         selectedNodeId: null,
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
+        focusNodeId: null,
+        maxDepth: 2,
         loading: false,
         error: null,
       });
@@ -271,6 +293,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       selectedNodeId: null,
       editingNodeId: null,
       computed: new Map(),
+      focusNodeId: null,
+      maxDepth: 2,
       wsConnected: false,
     });
   },
@@ -397,6 +421,118 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   // ── View actions ─────────────────────────────────────────────
 
   setActiveView: (view) => set({ activeView: view }),
+
+  // ── Drill-down actions ──────────────────────────────────────
+
+  setFocusNode: (nodeId) => {
+    const state = get();
+    // Validate node exists (or null for root)
+    if (nodeId !== null && !state.nodes[nodeId]) return;
+    set({ focusNodeId: nodeId });
+  },
+
+  setMaxDepth: (depth) => set({ maxDepth: depth }),
+
+  getVisibleNodes: () => {
+    const { nodes, rootNodeId, focusNodeId, maxDepth } = get();
+    if (!rootNodeId) return [];
+
+    const effectiveRootId = focusNodeId ?? rootNodeId;
+    const effectiveRoot = nodes[effectiveRootId];
+    if (!effectiveRoot) return [];
+
+    const result: VisibleNode[] = [];
+
+    // Count all descendants of a node
+    function countDescendants(nodeId: string): number {
+      const node = nodes[nodeId];
+      if (!node) return 0;
+      let count = 0;
+      for (const childId of node.childrenIds) {
+        count += 1 + countDescendants(childId);
+      }
+      return count;
+    }
+
+    // BFS/DFS from the focus node with depth tracking
+    function walk(nodeId: string, depth: number) {
+      const node = nodes[nodeId];
+      if (!node) return;
+
+      const atMaxDepth = maxDepth > 0 && depth >= maxDepth;
+      const hasChildren = node.childrenIds.length > 0;
+      const hasHiddenChildren = atMaxDepth && hasChildren;
+      const hiddenDescendantCount = hasHiddenChildren ? countDescendants(nodeId) : 0;
+
+      result.push({
+        node,
+        depth,
+        hasHiddenChildren,
+        hiddenDescendantCount,
+        isDimmed: false,
+      });
+
+      // Don't recurse past maxDepth (0 = unlimited)
+      if (!atMaxDepth && !node.collapsed) {
+        for (const childId of node.childrenIds) {
+          walk(childId, depth + 1);
+        }
+      }
+    }
+
+    walk(effectiveRootId, 0);
+
+    // If we have a focus node (not the actual root), add dimmed siblings for context
+    if (focusNodeId && focusNodeId !== rootNodeId) {
+      const focusNode = nodes[focusNodeId];
+      if (focusNode?.parentId) {
+        const parent = nodes[focusNode.parentId];
+        if (parent) {
+          for (const siblingId of parent.childrenIds) {
+            if (siblingId === focusNodeId) continue;
+            const sibling = nodes[siblingId];
+            if (!sibling) continue;
+            result.push({
+              node: sibling,
+              depth: 0, // same level as focus node
+              hasHiddenChildren: sibling.childrenIds.length > 0,
+              hiddenDescendantCount: countDescendants(siblingId),
+              isDimmed: true,
+            });
+          }
+        }
+      }
+    }
+
+    return result;
+  },
+
+  getFocusBreadcrumb: () => {
+    const { nodes, rootNodeId, focusNodeId } = get();
+    if (!rootNodeId) return [];
+
+    const crumbs: Array<{ id: string; text: string }> = [];
+    let currentId = focusNodeId;
+
+    // Walk up from focusNode to root
+    while (currentId) {
+      const node = nodes[currentId];
+      if (!node) break;
+      crumbs.unshift({ id: node.id, text: node.text });
+      if (node.id === rootNodeId) break;
+      currentId = node.parentId;
+    }
+
+    // If we didn't reach the root, prepend it
+    if (crumbs.length === 0 || crumbs[0].id !== rootNodeId) {
+      const root = nodes[rootNodeId];
+      if (root) {
+        crumbs.unshift({ id: root.id, text: root.text });
+      }
+    }
+
+    return crumbs;
+  },
 
   // ── Helpers ─────────────────────────────────────────────────
 
