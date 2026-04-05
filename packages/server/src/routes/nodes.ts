@@ -5,10 +5,11 @@ import { broadcast } from '../ws.js';
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps/:id/nodes — Create a node ─────────────────
   app.post<{ Params: { id: string } }>('/api/maps/:id/nodes', async (req, reply) => {
+    const userId = req.userId!;
     const body = req.body as {
       parentId: string;
       text: string;
-      createdBy: string;
+      createdBy?: string;
       position?: number;
       effortEstimate?: number;
       percentComplete?: number;
@@ -19,15 +20,16 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       isMilestone?: boolean;
     };
 
-    if (!body.parentId || !body.text || !body.createdBy) {
+    if (!body.parentId || !body.text) {
       return reply.status(400).send({
-        error: { code: 'VALIDATION_ERROR', message: 'parentId, text, and createdBy are required' },
+        error: { code: 'VALIDATION_ERROR', message: 'parentId and text are required' },
       });
     }
 
     const node = await nodeDb.createNode({
       ...body,
       mapId: req.params.id,
+      createdBy: userId,
     });
 
     // Broadcast to connected clients

@@ -3,9 +3,14 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
+import { authRoutes } from './auth.js';
+import { registerAuthMiddleware } from './middleware/auth.js';
 import { mapRoutes } from './routes/maps.js';
 import { nodeRoutes } from './routes/nodes.js';
 import { cycleRoutes } from './routes/cycles.js';
+import { commentRoutes } from './routes/comments.js';
+import { permissionRoutes } from './routes/permissions.js';
+import { integrationRoutes } from './routes/integrations.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -28,16 +33,25 @@ async function main(): Promise<void> {
 
   await app.register(websocket);
 
-  // ── Routes ─────────────────────────────────────────────────────
-  await app.register(mapRoutes);
-  await app.register(nodeRoutes);
-  await app.register(cycleRoutes);
-  await registerWebSocket(app);
-
-  // ── Health check ───────────────────────────────────────────────
+  // ── Health check (before auth middleware) ───────────────────────
   app.get('/api/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
   });
+
+  // ── Auth routes (register/login are public) ────────────────────
+  await app.register(authRoutes);
+
+  // ── Auth middleware (protects all subsequent /api/ routes) ──────
+  await registerAuthMiddleware(app);
+
+  // ── Protected Routes ───────────────────────────────────────────
+  await app.register(mapRoutes);
+  await app.register(nodeRoutes);
+  await app.register(cycleRoutes);
+  await app.register(commentRoutes);
+  await app.register(permissionRoutes);
+  await app.register(integrationRoutes);
+  await registerWebSocket(app);
 
   // ── Database setup ─────────────────────────────────────────────
   try {

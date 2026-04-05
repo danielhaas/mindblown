@@ -96,9 +96,57 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
+  // ── Add password_hash and public_token columns (idempotent) ────
+  await db.execute(sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS public_token TEXT
+  `);
+
+  // ── Map Permissions ───────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS map_permissions (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      permission TEXT NOT NULL,
+      PRIMARY KEY (map_id, user_id)
+    )
+  `);
+
+  // ── Comments ──────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS comments (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      node_id UUID NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id),
+      text TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Integrations ──────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS integrations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id UUID NOT NULL REFERENCES workspaces(id),
+      provider TEXT NOT NULL,
+      config JSONB NOT NULL DEFAULT '{}',
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // Create indexes (idempotent)
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_map_id ON nodes(map_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_integrations_workspace_id ON integrations(workspace_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_comments_node_id ON comments(node_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_map_permissions_map_id ON map_permissions(map_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_map_permissions_user_id ON map_permissions(user_id)`);
 
   console.log('[db] Migrations complete.');
 }

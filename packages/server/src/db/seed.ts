@@ -1,6 +1,7 @@
 import { db } from './connection.js';
-import { users, workspaces, maps, nodes, cycles } from './schema.js';
+import { users, workspaces, maps, nodes, cycles, mapPermissions } from './schema.js';
 import { sql } from 'drizzle-orm';
+import { hashPassword } from '../auth.js';
 
 /**
  * Seed the "Website Redesign" example map on first run (empty database).
@@ -17,10 +18,21 @@ export async function seedIfEmpty(): Promise<void> {
 
   const now = new Date();
 
-  // Create default user
+  // Create default user with password
+  const demoPasswordHash = await hashPassword('demo123');
   const [user] = await db.insert(users).values({
     email: 'demo@mindblown.dev',
     name: 'Demo User',
+    passwordHash: demoPasswordHash,
+    createdAt: now,
+  }).returning();
+
+  // Create collaborator user
+  const collabPasswordHash = await hashPassword('demo123');
+  const [collaborator] = await db.insert(users).values({
+    email: 'collaborator@mindblown.dev',
+    name: 'Collaborator',
+    passwordHash: collabPasswordHash,
     createdAt: now,
   }).returning();
 
@@ -248,10 +260,19 @@ export async function seedIfEmpty(): Promise<void> {
       .where(sql`${nodes.id} = ${nodeId}`);
   }
 
+  // Give collaborator edit permission on the map
+  await db.insert(mapPermissions).values({
+    mapId: map.id,
+    userId: collaborator.id,
+    permission: 'edit',
+  });
+
   console.log('[seed] "Website Redesign" example created successfully.');
   console.log(`[seed]   Map ID: ${map.id}`);
   console.log(`[seed]   Root Node ID: ${root.id}`);
   console.log(`[seed]   Total nodes: 13`);
   console.log(`[seed]   Sprint 1 ID: ${sprint1.id} (${sprint1NodeIds.length} nodes)`);
   console.log(`[seed]   Sprint 2 ID: ${sprint2.id} (${sprint2NodeIds.length} nodes)`);
+  console.log(`[seed]   Demo user: demo@mindblown.dev / demo123`);
+  console.log(`[seed]   Collaborator: collaborator@mindblown.dev / demo123`);
 }

@@ -24,11 +24,14 @@
     "@fastify/cors": "^10.0.2",
     "@fastify/websocket": "^11.0.2",
     "@mindblown/core": "workspace:*",
+    "@mindblown/integrations": "workspace:*",
     "drizzle-orm": "^0.39.3",
     "fastify": "^5.2.2",
+    "jsonwebtoken": "^9.0.2",
     "pg": "^8.13.1"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
     "@types/pg": "^8.11.11",
     "drizzle-kit": "^0.30.5",
     "tsx": "^4.19.2",

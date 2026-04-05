@@ -7,6 +7,7 @@ import {
   jsonb,
   timestamp,
   date,
+  primaryKey,
 } from 'drizzle-orm/pg-core';
 
 // ── Users ──────────────────────────────────────────────────────────
@@ -15,6 +16,7 @@ export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: text('email').notNull().unique(),
   name: text('name').notNull(),
+  passwordHash: text('password_hash'),
   avatarUrl: text('avatar_url'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
@@ -51,6 +53,7 @@ export const maps = pgTable('maps', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
+  publicToken: text('public_token'),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -81,6 +84,39 @@ export const nodes = pgTable('nodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
+});
+
+// ── Map Permissions ───────────────────────────────────────────────
+
+export const mapPermissions = pgTable('map_permissions', {
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  permission: text('permission').notNull(), // 'view' | 'edit' | 'admin'
+}, (table) => [
+  primaryKey({ columns: [table.mapId, table.userId] }),
+]);
+
+// ── Comments ──────────────────────────────────────────────────────
+
+export const comments = pgTable('comments', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  nodeId: uuid('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  text: text('text').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Integrations ──────────────────────────────────────────────────
+
+export const integrations = pgTable('integrations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  provider: text('provider').notNull(), // 'github' | 'jira' | 'linear' | 'gitlab'
+  config: jsonb('config').notNull().default({}), // provider-specific: { owner, repo, token, webhookSecret }
+  enabled: boolean('enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Cycles ─────────────────────────────────────────────────────────

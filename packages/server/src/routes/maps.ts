@@ -1,30 +1,34 @@
 import type { FastifyInstance } from 'fastify';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
+import * as permDb from '../db/permissions.js';
 
 export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps — Create a map ─────────────────────────────
   app.post('/api/maps', async (req, reply) => {
+    const userId = req.userId!;
     const body = req.body as {
       name: string;
       description?: string;
       workspaceId: string;
-      createdBy: string;
       effortUnit?: 'hours' | 'days' | 'points';
     };
 
-    if (!body.name || !body.workspaceId || !body.createdBy) {
+    if (!body.name || !body.workspaceId) {
       return reply.status(400).send({
-        error: { code: 'VALIDATION_ERROR', message: 'name, workspaceId, and createdBy are required' },
+        error: { code: 'VALIDATION_ERROR', message: 'name and workspaceId are required' },
       });
     }
 
-    const result = await mapDb.createMap(body);
+    const result = await mapDb.createMap({
+      ...body,
+      createdBy: userId,
+    });
     return reply.status(201).send(result);
   });
 
   // ── GET /api/maps — List all maps ─────────────────────────────
-  app.get('/api/maps', async (_req, reply) => {
+  app.get('/api/maps', async (req, reply) => {
     const allMaps = await mapDb.listMaps();
 
     // For each map, compute aggregate progress and health
@@ -49,6 +53,18 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/maps/:id — Get map with all nodes + computed fields
   app.get<{ Params: { id: string } }>('/api/maps/:id', async (req, reply) => {
+    const userId = req.userId;
+
+    // Check permissions if authenticated
+    if (userId) {
+      const perm = await permDb.getPermission(req.params.id, userId);
+      if (!permDb.hasPermission(perm, 'view')) {
+        return reply.status(403).send({
+          error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
+        });
+      }
+    }
+
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
       return reply.status(404).send({
@@ -78,6 +94,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── PUT /api/maps/:id — Update map settings ──────────────────
   app.put<{ Params: { id: string } }>('/api/maps/:id', async (req, reply) => {
+    const userId = req.userId!;
+
+    const perm = await permDb.getPermission(req.params.id, userId);
+    if (!permDb.hasPermission(perm, 'edit')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'You need edit permission to update this map' },
+      });
+    }
+
     const body = req.body as mapDb.UpdateMapInput;
     const updated = await mapDb.updateMap(req.params.id, body);
     if (!updated) {
@@ -90,6 +115,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── DELETE /api/maps/:id — Delete map ─────────────────────────
   app.delete<{ Params: { id: string } }>('/api/maps/:id', async (req, reply) => {
+    const userId = req.userId!;
+
+    const perm = await permDb.getPermission(req.params.id, userId);
+    if (!permDb.hasPermission(perm, 'admin')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Only admins can delete maps' },
+      });
+    }
+
     const deleted = await mapDb.deleteMap(req.params.id);
     if (!deleted) {
       return reply.status(404).send({
@@ -101,6 +135,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /api/maps/:id/baseline — Create a baseline snapshot ──
   app.post<{ Params: { id: string } }>('/api/maps/:id/baseline', async (req, reply) => {
+    const userId = req.userId!;
+
+    const perm = await permDb.getPermission(req.params.id, userId);
+    if (!permDb.hasPermission(perm, 'edit')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'You need edit permission to create baselines' },
+      });
+    }
+
     const body = req.body as { name: string };
     if (!body.name) {
       return reply.status(400).send({
