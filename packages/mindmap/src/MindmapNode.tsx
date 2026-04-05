@@ -113,10 +113,14 @@ interface MindmapNodeProps {
   computedValues?: ComputedNodeValues;
   isSelected: boolean;
   isEditing: boolean;
+  isDragTarget?: boolean;
+  isDragInvalid?: boolean;
+  isDragging?: boolean;
   onSelect: () => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
   onEditCancel: () => void;
+  onDragStart?: (nodeId: string, startX: number, startY: number) => void;
 }
 
 export function MindmapNode({
@@ -125,10 +129,14 @@ export function MindmapNode({
   computedValues,
   isSelected,
   isEditing,
+  isDragTarget = false,
+  isDragInvalid = false,
+  isDragging = false,
   onSelect,
   onDoubleClick,
   onTextChange,
   onEditCancel,
+  onDragStart,
 }: MindmapNodeProps) {
   const { x, y, width, height, depth, collapsed, hasChildren } = layout;
   const isMilestone = node.isMilestone;
@@ -143,12 +151,18 @@ export function MindmapNode({
     healthBorderColor = HEALTH_COLORS[computedValues.healthSignal];
   }
 
-  const strokeColor = isSelected
-    ? '#4f46e5'
-    : isMilestone
-      ? '#8b5cf6'
-      : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
-  const strokeWidth = isSelected ? 2.5 : isMilestone ? 2 : depth === 0 ? 0 : 1.5;
+  const strokeColor = isDragInvalid
+    ? '#dc2626'
+    : isDragTarget
+      ? '#3b82f6'
+      : isSelected
+        ? '#4f46e5'
+        : isMilestone
+          ? '#8b5cf6'
+          : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
+  const strokeWidth = isDragTarget || isDragInvalid
+    ? 2.5
+    : isSelected ? 2.5 : isMilestone ? 2 : depth === 0 ? 0 : 1.5;
 
   // Computed values
   const progress = computedValues?.computedProgress ?? 0;
@@ -200,13 +214,46 @@ export function MindmapNode({
 
   const annotationY = y + height + 4;
 
+  const handleMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+
+      if (e.button === 0) {
+        // Alt+click: enter dependency mode (first click sets source)
+        // Any click dispatches dependency-target event so that if we're
+        // already in dependency mode, the target selection completes
+        if (e.altKey) {
+          const event = new CustomEvent('dependency-mode-start', {
+            detail: { nodeId: node.id },
+          });
+          window.dispatchEvent(event);
+          return;
+        }
+
+        // Dispatch target selection event (DependencyLines ignores if not in dep mode)
+        const targetEvent = new CustomEvent('dependency-mode-target', {
+          detail: { nodeId: node.id },
+        });
+        window.dispatchEvent(targetEvent);
+
+        onSelect();
+        if (onDragStart) {
+          onDragStart(node.id, e.clientX, e.clientY);
+        }
+      }
+    },
+    [node.id, onSelect, onDragStart],
+  );
+
+  const nodeOpacity = isDragging ? 0.4 : 1;
+
   return (
     <g
-      style={{ cursor: 'pointer' }}
-      onMouseDown={(e) => {
-        e.stopPropagation();
-        onSelect();
+      style={{
+        cursor: isDragging ? 'grabbing' : 'pointer',
+        opacity: nodeOpacity,
       }}
+      onMouseDown={handleMouseDown}
       onDoubleClick={(e) => {
         e.stopPropagation();
         onDoubleClick();

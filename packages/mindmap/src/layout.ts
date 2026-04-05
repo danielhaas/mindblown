@@ -150,10 +150,12 @@ function flatten(tree: TreeNode): LayoutNode[] {
 
   while (queue.length > 0) {
     const t = queue.shift()!;
+    // Nodes with manual x/y positions keep those positions (freeform placement)
+    const useManualPosition = t.node.x != null && t.node.y != null;
     result.push({
       id: t.id,
-      x: t.x,
-      y: t.y,
+      x: useManualPosition ? t.node.x! : t.x,
+      y: useManualPosition ? t.node.y! : t.y,
       width: t.width,
       height: t.height,
       parentId: t.node.parentId,

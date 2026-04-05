@@ -10,6 +10,7 @@ export { App } from './App.js';
 export { MindmapEditor } from './MindmapEditor.js';
 export { MindmapNode } from './MindmapNode.js';
 export { Connector } from './Connector.js';
+export { DependencyLines } from './DependencyLines.js';
 export { PropertyPanel } from './PropertyPanel.js';
 export { useMindmapStore } from './store.js';
 export { computeLayout, computeBounds } from './layout.js';
