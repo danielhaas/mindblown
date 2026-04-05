@@ -236,6 +236,7 @@ export function GanttView() {
   const selectNode = useMindmapStore((s) => s.selectNode);
   const updateNode = useMindmapStore((s) => s.updateNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
   // Local UI state
   const [scale, setScale] = useState<TimeScale>('week');
@@ -274,10 +275,16 @@ export function GanttView() {
 
   // ── Flatten nodes into rows ─────────────────────────────────────
 
-  const rows = useMemo(
+  const allRows = useMemo(
     () => flattenTree(nodes, rootNodeId, collapsedSet),
     [nodes, rootNodeId, collapsedSet],
   );
+
+  // Apply sprint filter
+  const rows = useMemo(() => {
+    if (!activeCycleFilter) return allRows;
+    return allRows.filter((row) => row.node.cycleId === activeCycleFilter);
+  }, [allRows, activeCycleFilter]);
 
   // ── Build baseline lookup ───────────────────────────────────────
 

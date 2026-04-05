@@ -6,6 +6,7 @@ import { PropertyPanel } from './PropertyPanel.js';
 import { KanbanView } from './KanbanView.js';
 import { GanttView } from './GanttView.js';
 import { ListView } from './ListView.js';
+import { SprintPanel } from './SprintPanel.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -419,6 +420,137 @@ function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: 
   );
 }
 
+// ── Sprint Indicator ──────────────────────────────────────────
+
+function SprintIndicator({
+  cycles,
+  activeCycleFilter,
+  onFilterChange,
+  onOpenPanel,
+  panelOpen,
+}: {
+  cycles: { id: string; name: string; status: string; startDate: string; endDate: string }[];
+  activeCycleFilter: string | null;
+  onFilterChange: (id: string | null) => void;
+  onOpenPanel: () => void;
+  panelOpen: boolean;
+}) {
+  const activeSprint = cycles.find((c) => c.status === 'active');
+  const filterSprint = activeCycleFilter
+    ? cycles.find((c) => c.id === activeCycleFilter)
+    : null;
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function fmtShort(iso: string): string {
+    const d = new Date(iso);
+    return `${months[d.getMonth()]} ${d.getDate()}`;
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Active sprint info */}
+      {activeSprint && !filterSprint && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+            <rect x="1" y="3" width="14" height="11" rx="2" stroke="#4f46e5" strokeWidth="1.5" />
+            <line x1="4" y1="1" x2="4" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
+            <line x1="12" y1="1" x2="12" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
+          </svg>
+          <span style={{ fontSize: 11, fontWeight: 600, color: '#4f46e5' }}>
+            {activeSprint.name}
+          </span>
+          <span style={{ fontSize: 10, color: '#94a3b8' }}>
+            {fmtShort(activeSprint.startDate)}-{fmtShort(activeSprint.endDate)}
+          </span>
+        </div>
+      )}
+
+      {/* Filter indicator */}
+      {filterSprint && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: '#eef2ff',
+              color: '#4f46e5',
+            }}
+          >
+            Showing: {filterSprint.name}
+          </span>
+          <button
+            onClick={() => onFilterChange(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '0 2px',
+              color: '#94a3b8',
+              fontSize: 12,
+              fontFamily: 'inherit',
+            }}
+            title="Clear sprint filter"
+          >
+            x
+          </button>
+        </div>
+      )}
+
+      {/* Sprint filter dropdown */}
+      {cycles.length > 0 && (
+        <select
+          value={activeCycleFilter ?? ''}
+          onChange={(e) => onFilterChange(e.target.value || null)}
+          onKeyDown={(e) => e.stopPropagation()}
+          style={{
+            fontSize: 10,
+            fontFamily: 'inherit',
+            border: '1px solid #e2e8f0',
+            borderRadius: 4,
+            padding: '2px 18px 2px 6px',
+            color: '#475569',
+            background: '#fff',
+            appearance: 'none' as const,
+            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2394a3b8' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E")`,
+            backgroundRepeat: 'no-repeat',
+            backgroundPosition: 'right 4px center',
+            cursor: 'pointer',
+          }}
+          title="Filter by sprint"
+        >
+          <option value="">All sprints</option>
+          {cycles.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.name} ({c.status})
+            </option>
+          ))}
+        </select>
+      )}
+
+      {/* Sprints panel button */}
+      <button
+        onClick={onOpenPanel}
+        style={{
+          padding: '3px 10px',
+          borderRadius: 4,
+          border: panelOpen ? '1px solid #4f46e5' : '1px solid #e2e8f0',
+          fontSize: 11,
+          fontWeight: 600,
+          fontFamily: 'inherit',
+          cursor: 'pointer',
+          background: panelOpen ? '#eef2ff' : '#fff',
+          color: panelOpen ? '#4f46e5' : '#64748b',
+          transition: 'all 0.15s',
+        }}
+      >
+        Sprints
+      </button>
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────
 
 export function App() {
@@ -433,6 +565,10 @@ export function App() {
   const error = useMindmapStore((s) => s.error);
   const wsConnected = useMindmapStore((s) => s.wsConnected);
   const activeView = useMindmapStore((s) => s.activeView);
+  const cycles = useMindmapStore((s) => s.cycles);
+  const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const setActiveCycleFilter = useMindmapStore((s) => s.setActiveCycleFilter);
+  const loadCycles = useMindmapStore((s) => s.loadCycles);
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
@@ -441,10 +577,19 @@ export function App() {
   const updateMapName = useMindmapStore((s) => s.updateMapName);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
 
+  const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
+
   // Load maps on mount
   useEffect(() => {
     loadMaps();
   }, [loadMaps]);
+
+  // Load cycles when map is opened
+  useEffect(() => {
+    if (currentMapId) {
+      loadCycles();
+    }
+  }, [currentMapId, loadCycles]);
 
   // Auto-open if there's only one map
   const autoOpened = useRef(false);
@@ -565,8 +710,19 @@ export function App() {
           <ViewSwitcher active={activeView} onChange={setActiveView} />
         </div>
 
-        {/* Right: stats */}
+        {/* Right: sprint indicator + stats */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {/* Sprint indicator and filter */}
+          <SprintIndicator
+            cycles={cycles}
+            activeCycleFilter={activeCycleFilter}
+            onFilterChange={setActiveCycleFilter}
+            onOpenPanel={() => setSprintPanelOpen(!sprintPanelOpen)}
+            panelOpen={sprintPanelOpen}
+          />
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
           {/* Node count */}
           <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
             {nodeCount} nodes
@@ -663,7 +819,7 @@ export function App() {
         </div>
       )}
 
-      {/* Main content + Property panel */}
+      {/* Main content + Property/Sprint panel */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           {activeView === 'mindmap' && <MindmapEditor />}
@@ -671,7 +827,11 @@ export function App() {
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'list' && <ListView />}
         </div>
-        <PropertyPanel />
+        {sprintPanelOpen ? (
+          <SprintPanel onClose={() => setSprintPanelOpen(false)} />
+        ) : (
+          <PropertyPanel />
+        )}
       </div>
     </div>
   );

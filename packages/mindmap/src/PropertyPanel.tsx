@@ -429,7 +429,87 @@ function PropertyPanelInner({
             placeholder="tag1, tag2, ..."
           />
         </Field>
+
+        {/* Sprint / Cycle */}
+        <CycleField nodeId={nodeId} currentCycleId={node.cycleId} />
+
+        {/* Milestone toggle */}
+        <Field label="Milestone">
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              fontSize: 12,
+              color: '#1e293b',
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={node.isMilestone}
+              onChange={(e) => directUpdate(nodeId, { isMilestone: e.target.checked })}
+              style={{ accentColor: '#8b5cf6' }}
+            />
+            Mark as milestone (zero-effort checkpoint)
+          </label>
+        </Field>
       </div>
     </div>
+  );
+}
+
+// ── Cycle Field ──────────────────────────────────────────────────
+
+function CycleField({
+  nodeId,
+  currentCycleId,
+}: {
+  nodeId: string;
+  currentCycleId: string | null;
+}) {
+  const cycles = useMindmapStore((s) => s.cycles);
+  const assignNodeToCycle = useMindmapStore((s) => s.assignNodeToCycle);
+  const unassignNodeFromCycle = useMindmapStore((s) => s.unassignNodeFromCycle);
+  const loadCycles = useMindmapStore((s) => s.loadCycles);
+
+  // Load cycles if not loaded yet
+  useEffect(() => {
+    if (cycles.length === 0) {
+      loadCycles();
+    }
+  }, [cycles.length, loadCycles]);
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const newCycleId = e.target.value || null;
+      if (newCycleId === currentCycleId) return;
+
+      if (currentCycleId && !newCycleId) {
+        unassignNodeFromCycle(nodeId, currentCycleId);
+      } else if (newCycleId) {
+        // If previously assigned, unassign first (the backend may handle this automatically)
+        assignNodeToCycle(nodeId, newCycleId);
+      }
+    },
+    [nodeId, currentCycleId, assignNodeToCycle, unassignNodeFromCycle],
+  );
+
+  return (
+    <Field label="Sprint / Cycle">
+      <select
+        value={currentCycleId ?? ''}
+        onChange={handleChange}
+        onKeyDown={(e) => e.stopPropagation()}
+        style={selectStyle}
+      >
+        <option value="">None</option>
+        {cycles.map((c) => (
+          <option key={c.id} value={c.id}>
+            {c.name} ({c.status})
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }

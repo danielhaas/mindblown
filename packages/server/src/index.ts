@@ -5,6 +5,7 @@ import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { mapRoutes } from './routes/maps.js';
 import { nodeRoutes } from './routes/nodes.js';
+import { cycleRoutes } from './routes/cycles.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -30,6 +31,7 @@ async function main(): Promise<void> {
   // ── Routes ─────────────────────────────────────────────────────
   await app.register(mapRoutes);
   await app.register(nodeRoutes);
+  await app.register(cycleRoutes);
   await registerWebSocket(app);
 
   // ── Health check ───────────────────────────────────────────────

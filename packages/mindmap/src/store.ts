@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Node, NodeId, ComputedNodeValues, MindMap } from '@mindblown/core';
+import type { Node, NodeId, ComputedNodeValues, MindMap, Cycle } from '@mindblown/core';
 import { computeTree } from '@mindblown/core';
 import * as api from './api.js';
 import type { MapSummary } from './api.js';
@@ -31,6 +31,10 @@ export interface MindmapState {
   editingNodeId: string | null;
   computed: Map<NodeId, ComputedNodeValues>;
 
+  // Cycle / sprint state
+  cycles: Cycle[];
+  activeCycleFilter: string | null;
+
   // UI state
   activeView: ActiveView;
   loading: boolean;
@@ -46,6 +50,15 @@ export interface MindmapState {
 
   // Actions — view
   setActiveView: (view: ActiveView) => void;
+
+  // Actions — cycle / sprint
+  loadCycles: () => Promise<void>;
+  createCycle: (name: string, startDate: string, endDate: string) => Promise<void>;
+  updateCycle: (id: string, fields: Partial<Cycle>) => Promise<void>;
+  deleteCycle: (id: string) => Promise<void>;
+  assignNodeToCycle: (nodeId: string, cycleId: string) => Promise<void>;
+  unassignNodeFromCycle: (nodeId: string, cycleId: string) => Promise<void>;
+  setActiveCycleFilter: (cycleId: string | null) => void;
 
   // Actions — node level
   selectNode: (id: string | null) => void;
@@ -77,6 +90,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   selectedNodeId: null,
   editingNodeId: null,
   computed: new Map(),
+  cycles: [],
+  activeCycleFilter: null,
   activeView: 'mindmap',
   loading: false,
   error: null,
@@ -176,6 +191,112 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       set({ currentMap: state.currentMap });
     });
   },
+
+  // ── Cycle / sprint actions ────────────────────────────────────
+
+  loadCycles: async () => {
+    const state = get();
+    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    try {
+      const cycles = await api.fetchCycles(workspaceId);
+      set({ cycles });
+    } catch (e: any) {
+      set({ error: e.message ?? 'Failed to load cycles' });
+    }
+  },
+
+  createCycle: async (name, startDate, endDate) => {
+    const state = get();
+    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    try {
+      const cycle = await api.createCycle(workspaceId, name, startDate, endDate);
+      set({ cycles: [...state.cycles, cycle] });
+    } catch (e: any) {
+      set({ error: e.message ?? 'Failed to create cycle' });
+    }
+  },
+
+  updateCycle: async (id, fields) => {
+    const state = get();
+    const prev = state.cycles;
+    // Optimistic update
+    set({
+      cycles: state.cycles.map((c) => (c.id === id ? { ...c, ...fields } : c)),
+    });
+    try {
+      const updated = await api.updateCycle(id, fields);
+      set({
+        cycles: get().cycles.map((c) => (c.id === id ? updated : c)),
+      });
+    } catch (e: any) {
+      set({ cycles: prev, error: e.message ?? 'Failed to update cycle' });
+    }
+  },
+
+  deleteCycle: async (id) => {
+    const state = get();
+    const prev = state.cycles;
+    set({ cycles: state.cycles.filter((c) => c.id !== id) });
+    if (state.activeCycleFilter === id) {
+      set({ activeCycleFilter: null });
+    }
+    try {
+      await api.deleteCycle(id);
+    } catch (e: any) {
+      set({ cycles: prev, error: e.message ?? 'Failed to delete cycle' });
+    }
+  },
+
+  assignNodeToCycle: async (nodeId, cycleId) => {
+    const state = get();
+    const node = state.nodes[nodeId];
+    if (!node) return;
+    const prevCycleId = node.cycleId;
+
+    // Optimistic update
+    const updatedNodes = {
+      ...state.nodes,
+      [nodeId]: { ...node, cycleId, updatedAt: new Date().toISOString() },
+    };
+    set({ nodes: updatedNodes });
+
+    try {
+      await api.assignNodeToCycle(cycleId, nodeId);
+    } catch (e: any) {
+      // Revert
+      const revertNodes = {
+        ...get().nodes,
+        [nodeId]: { ...get().nodes[nodeId], cycleId: prevCycleId },
+      };
+      set({ nodes: revertNodes, error: e.message ?? 'Failed to assign node to cycle' });
+    }
+  },
+
+  unassignNodeFromCycle: async (nodeId, cycleId) => {
+    const state = get();
+    const node = state.nodes[nodeId];
+    if (!node) return;
+
+    // Optimistic update
+    const updatedNodes = {
+      ...state.nodes,
+      [nodeId]: { ...node, cycleId: null, updatedAt: new Date().toISOString() },
+    };
+    set({ nodes: updatedNodes });
+
+    try {
+      await api.unassignNodeFromCycle(cycleId, nodeId);
+    } catch (e: any) {
+      // Revert
+      const revertNodes = {
+        ...get().nodes,
+        [nodeId]: { ...get().nodes[nodeId], cycleId },
+      };
+      set({ nodes: revertNodes, error: e.message ?? 'Failed to unassign node from cycle' });
+    }
+  },
+
+  setActiveCycleFilter: (cycleId) => set({ activeCycleFilter: cycleId }),
 
   // ── View actions ─────────────────────────────────────────────
 

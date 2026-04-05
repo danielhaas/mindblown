@@ -1,5 +1,5 @@
 import { db } from './connection.js';
-import { users, workspaces, maps, nodes } from './schema.js';
+import { users, workspaces, maps, nodes, cycles } from './schema.js';
 import { sql } from 'drizzle-orm';
 
 /**
@@ -213,8 +213,45 @@ export async function seedIfEmpty(): Promise<void> {
     .set({ rootNodeId: root.id })
     .where(sql`${maps.id} = ${map.id}`);
 
+  // ── Cycles ──────────────────────────────────────────────────────
+  const [sprint1] = await db.insert(cycles).values({
+    workspaceId: workspace.id,
+    name: 'Sprint 1',
+    startDate: '2026-04-01',
+    endDate: '2026-04-14',
+    status: 'active',
+    createdAt: now,
+  }).returning();
+
+  const [sprint2] = await db.insert(cycles).values({
+    workspaceId: workspace.id,
+    name: 'Sprint 2',
+    startDate: '2026-04-15',
+    endDate: '2026-04-28',
+    status: 'planned',
+    createdAt: now,
+  }).returning();
+
+  // Assign Design and Content leaf nodes to Sprint 1
+  const sprint1NodeIds = [wireframes.id, visualDesign.id, designSystem.id, copywriting.id, assetCreation.id];
+  for (const nodeId of sprint1NodeIds) {
+    await db.update(nodes)
+      .set({ cycleId: sprint1.id, updatedAt: now })
+      .where(sql`${nodes.id} = ${nodeId}`);
+  }
+
+  // Assign Backend, Frontend, and Integration Testing leaf nodes to Sprint 2
+  const sprint2NodeIds = [apiEndpoints.id, dbMigration.id, componentLib.id, pageTemplates.id, responsiveTesting.id, integrationTesting.id];
+  for (const nodeId of sprint2NodeIds) {
+    await db.update(nodes)
+      .set({ cycleId: sprint2.id, updatedAt: now })
+      .where(sql`${nodes.id} = ${nodeId}`);
+  }
+
   console.log('[seed] "Website Redesign" example created successfully.');
   console.log(`[seed]   Map ID: ${map.id}`);
   console.log(`[seed]   Root Node ID: ${root.id}`);
   console.log(`[seed]   Total nodes: 13`);
+  console.log(`[seed]   Sprint 1 ID: ${sprint1.id} (${sprint1NodeIds.length} nodes)`);
+  console.log(`[seed]   Sprint 2 ID: ${sprint2.id} (${sprint2NodeIds.length} nodes)`);
 }

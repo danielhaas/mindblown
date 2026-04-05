@@ -1,4 +1,4 @@
-import type { Node, MindMap } from '@mindblown/core';
+import type { Node, MindMap, Cycle } from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -121,4 +121,57 @@ export function moveNode(
 
 export function fetchSchedule(mapId: string): Promise<unknown> {
   return request(`/api/maps/${mapId}/schedule`);
+}
+
+// ── Cycles / Sprints ────────────────────────────────────────────
+
+export function fetchCycles(workspaceId: string): Promise<Cycle[]> {
+  return request<Cycle[]>(`/api/cycles?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function createCycle(
+  workspaceId: string,
+  name: string,
+  startDate: string,
+  endDate: string,
+): Promise<Cycle> {
+  return request<Cycle>('/api/cycles', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, name, startDate, endDate }),
+  });
+}
+
+export function getCycle(id: string): Promise<Cycle> {
+  return request<Cycle>(`/api/cycles/${id}`);
+}
+
+export function updateCycle(id: string, fields: Partial<Cycle>): Promise<Cycle> {
+  return request<Cycle>(`/api/cycles/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
+export function deleteCycle(id: string): Promise<void> {
+  return request<void>(`/api/cycles/${id}`, { method: 'DELETE' });
+}
+
+export function assignNodeToCycle(cycleId: string, nodeId: string): Promise<void> {
+  return request<void>(`/api/cycles/${cycleId}/assign`, {
+    method: 'POST',
+    body: JSON.stringify({ nodeId }),
+  });
+}
+
+export function unassignNodeFromCycle(cycleId: string, nodeId: string): Promise<void> {
+  return request<void>(`/api/cycles/${cycleId}/assign/${nodeId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function rolloverCycle(fromId: string, toId: string): Promise<void> {
+  return request<void>(`/api/cycles/${fromId}/rollover`, {
+    method: 'POST',
+    body: JSON.stringify({ toId }),
+  });
 }
