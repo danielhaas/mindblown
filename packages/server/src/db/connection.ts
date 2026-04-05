@@ -6,7 +6,7 @@ const { Pool } = pg;
 
 const DATABASE_URL =
   process.env.DATABASE_URL ??
-  'postgresql://mindblown:mindblown@localhost:5432/mindblown';
+  'postgresql://mindblown:mindblown@localhost:5433/mindblown';
 
 const pool = new Pool({
   connectionString: DATABASE_URL,
