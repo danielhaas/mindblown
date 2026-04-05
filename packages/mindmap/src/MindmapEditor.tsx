@@ -36,7 +36,7 @@ export function MindmapEditor() {
 
   // ── Layout computation ─────────────────────────────────────
 
-  const layoutNodes = useMemo(() => computeLayout(rootNodeId, nodes), [rootNodeId, nodes]);
+  const layoutNodes = useMemo(() => rootNodeId ? computeLayout(rootNodeId, nodes) : [], [rootNodeId, nodes]);
 
   const layoutMap = useMemo(() => {
     const map = new Map<string, LayoutNode>();
@@ -48,10 +48,10 @@ export function MindmapEditor() {
 
   // ── Fit to view on first render ────────────────────────────
 
-  const hasInitialized = useRef(false);
+  const hasInitialized = useRef<string | null>(null);
   useEffect(() => {
-    if (hasInitialized.current || layoutNodes.length === 0) return;
-    hasInitialized.current = true;
+    if (hasInitialized.current === rootNodeId || layoutNodes.length === 0) return;
+    hasInitialized.current = rootNodeId;
 
     const svg = svgRef.current;
     if (!svg) return;

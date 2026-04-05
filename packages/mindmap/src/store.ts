@@ -1,158 +1,172 @@
 import { create } from 'zustand';
-import type { Node, NodeId, ComputedNodeValues } from '@mindblown/core';
+import type { Node, NodeId, ComputedNodeValues, MindMap } from '@mindblown/core';
 import { computeTree } from '@mindblown/core';
+import * as api from './api.js';
+import type { MapSummary } from './api.js';
+import { connectWs } from './ws.js';
+import type { WsClient } from './ws.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
-let idCounter = 0;
-function generateId(): string {
-  idCounter += 1;
-  return `node-${idCounter.toString().padStart(4, '0')}`;
-}
-
-function makeNode(
-  overrides: Partial<Node> & { id: string; mapId: string; text: string },
-): Node {
-  const now = new Date().toISOString();
-  return {
-    parentId: null,
-    childrenIds: [],
-    description: null,
-    x: null,
-    y: null,
-    collapsed: false,
-    effortEstimate: null,
-    percentComplete: null,
-    status: null,
-    assigneeIds: [],
-    priority: null,
-    dueDate: null,
-    startDate: null,
-    tags: [],
-    customFields: {},
-    dependencies: [],
-    isMilestone: false,
-    cycleId: null,
-    externalLinks: [],
-    createdAt: now,
-    updatedAt: now,
-    createdBy: 'user-001',
-    ...overrides,
-  };
-}
-
-// ── Demo data ──────────────────────────────────────────────────
-
-function createDemoNodes(): { nodes: Record<string, Node>; rootId: string } {
-  const MAP_ID = 'map-001';
-
-  const root = makeNode({ id: 'n-root', mapId: MAP_ID, text: 'Website Redesign' });
-
-  // Design branch
-  const design = makeNode({ id: 'n-design', mapId: MAP_ID, text: 'Design', parentId: 'n-root' });
-  const wireframes = makeNode({
-    id: 'n-wireframes', mapId: MAP_ID, text: 'Wireframes',
-    parentId: 'n-design', effortEstimate: 3, percentComplete: 100, priority: 'P2',
-  });
-  const visualDesign = makeNode({
-    id: 'n-visual', mapId: MAP_ID, text: 'Visual Design',
-    parentId: 'n-design', effortEstimate: 5, percentComplete: 80, priority: 'P1',
-    assigneeIds: ['user-002'],
-  });
-  const designSystem = makeNode({
-    id: 'n-designsys', mapId: MAP_ID, text: 'Design System',
-    parentId: 'n-design', effortEstimate: 4, percentComplete: 25, priority: 'P1',
-    assigneeIds: ['user-003'],
-  });
-  design.childrenIds = ['n-wireframes', 'n-visual', 'n-designsys'];
-
-  // Frontend branch
-  const frontend = makeNode({ id: 'n-frontend', mapId: MAP_ID, text: 'Frontend', parentId: 'n-root' });
-  const componentLib = makeNode({
-    id: 'n-complib', mapId: MAP_ID, text: 'Component Library',
-    parentId: 'n-frontend', effortEstimate: 8, percentComplete: 15, priority: 'P0',
-    assigneeIds: ['user-004'],
-  });
-  const pageTemplates = makeNode({
-    id: 'n-pages', mapId: MAP_ID, text: 'Page Templates',
-    parentId: 'n-frontend', effortEstimate: 7, percentComplete: 5, priority: 'P1',
-  });
-  frontend.childrenIds = ['n-complib', 'n-pages'];
-
-  // Backend branch
-  const backend = makeNode({ id: 'n-backend', mapId: MAP_ID, text: 'Backend', parentId: 'n-root' });
-  const apiEndpoints = makeNode({
-    id: 'n-api', mapId: MAP_ID, text: 'API Endpoints',
-    parentId: 'n-backend', effortEstimate: 7, percentComplete: 0, priority: 'P0',
-  });
-  const dbMigration = makeNode({
-    id: 'n-db', mapId: MAP_ID, text: 'Database Migration',
-    parentId: 'n-backend', effortEstimate: 5, percentComplete: 0, priority: 'P1',
-  });
-  backend.childrenIds = ['n-api', 'n-db'];
-
-  // Content branch
-  const content = makeNode({ id: 'n-content', mapId: MAP_ID, text: 'Content', parentId: 'n-root' });
-  const copywriting = makeNode({
-    id: 'n-copy', mapId: MAP_ID, text: 'Copywriting',
-    parentId: 'n-content', effortEstimate: 5, percentComplete: 40, priority: 'P2',
-    assigneeIds: ['user-005'],
-  });
-  const photography = makeNode({
-    id: 'n-photo', mapId: MAP_ID, text: 'Photography',
-    parentId: 'n-content', effortEstimate: 3, percentComplete: 10, priority: 'P3',
-  });
-  content.childrenIds = ['n-copy', 'n-photo'];
-
-  root.childrenIds = ['n-design', 'n-frontend', 'n-backend', 'n-content'];
-
-  const nodes: Record<string, Node> = {};
-  const allNodes = [
-    root, design, wireframes, visualDesign, designSystem,
-    frontend, componentLib, pageTemplates,
-    backend, apiEndpoints, dbMigration,
-    content, copywriting, photography,
-  ];
-  for (const n of allNodes) {
-    nodes[n.id] = n;
-  }
-
-  return { nodes, rootId: 'n-root' };
+function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeValues> {
+  const arr = Object.values(nodes);
+  if (arr.length === 0) return new Map();
+  return computeTree(arr);
 }
 
 // ── Store types ────────────────────────────────────────────────
 
 export interface MindmapState {
+  // Map list
+  maps: MapSummary[];
+  currentMapId: string | null;
+  currentMap: MindMap | null;
+
+  // Node state
   nodes: Record<string, Node>;
-  rootNodeId: string;
+  rootNodeId: string | null;
   selectedNodeId: string | null;
   editingNodeId: string | null;
   computed: Map<NodeId, ComputedNodeValues>;
 
-  // Actions
+  // UI state
+  loading: boolean;
+  error: string | null;
+  wsConnected: boolean;
+
+  // Actions — map level
+  loadMaps: () => Promise<void>;
+  loadMap: (id: string) => Promise<void>;
+  createMap: (name: string) => Promise<void>;
+  closeMap: () => void;
+  updateMapName: (name: string) => void;
+
+  // Actions — node level
   selectNode: (id: string | null) => void;
   startEditing: (id: string | null) => void;
   addNode: (parentId: string, text?: string, asSibling?: boolean) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   deleteNode: (id: string) => void;
+  moveNode: (nodeId: string, newParentId: string, index: number) => void;
   toggleCollapse: (id: string) => void;
   recompute: () => void;
 }
 
+// ── WebSocket connection ───────────────────────────────────────
+
+let wsClient: WsClient | null = null;
+
 // ── Store implementation ───────────────────────────────────────
 
-const { nodes: initialNodes, rootId } = createDemoNodes();
-
-function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeValues> {
-  return computeTree(Object.values(nodes));
-}
-
 export const useMindmapStore = create<MindmapState>((set, get) => ({
-  nodes: initialNodes,
-  rootNodeId: rootId,
+  maps: [],
+  currentMapId: null,
+  currentMap: null,
+  nodes: {},
+  rootNodeId: null,
   selectedNodeId: null,
   editingNodeId: null,
-  computed: recomputeValues(initialNodes),
+  computed: new Map(),
+  loading: false,
+  error: null,
+  wsConnected: false,
+
+  // ── Map actions ──────────────────────────────────────────────
+
+  loadMaps: async () => {
+    set({ loading: true, error: null });
+    try {
+      const maps = await api.fetchMaps();
+      set({ maps, loading: false });
+    } catch (e: any) {
+      set({ loading: false, error: e.message ?? 'Failed to load maps' });
+    }
+  },
+
+  loadMap: async (id: string) => {
+    set({ loading: true, error: null });
+
+    // Disconnect previous WebSocket
+    if (wsClient) {
+      wsClient.close();
+      wsClient = null;
+    }
+
+    try {
+      const data = await api.fetchMap(id);
+      const nodesMap: Record<string, Node> = {};
+      for (const n of data.nodes) {
+        nodesMap[n.id] = n;
+      }
+
+      set({
+        currentMapId: id,
+        currentMap: data.map,
+        nodes: nodesMap,
+        rootNodeId: data.map.rootNodeId,
+        selectedNodeId: null,
+        editingNodeId: null,
+        computed: recomputeValues(nodesMap),
+        loading: false,
+        error: null,
+      });
+
+      // Connect WebSocket
+      wsClient = connectWs(
+        id,
+        (msg: any) => handleWsMessage(msg, set, get),
+        (connected) => set({ wsConnected: connected }),
+      );
+    } catch (e: any) {
+      set({ loading: false, error: e.message ?? 'Failed to load map' });
+    }
+  },
+
+  createMap: async (name: string) => {
+    set({ loading: true, error: null });
+    try {
+      const map = await api.createMap(name);
+      // Reload maps list
+      const maps = await api.fetchMaps();
+      set({ maps, loading: false });
+      // Open the new map
+      get().loadMap(map.id);
+    } catch (e: any) {
+      set({ loading: false, error: e.message ?? 'Failed to create map' });
+    }
+  },
+
+  closeMap: () => {
+    if (wsClient) {
+      wsClient.close();
+      wsClient = null;
+    }
+    set({
+      currentMapId: null,
+      currentMap: null,
+      nodes: {},
+      rootNodeId: null,
+      selectedNodeId: null,
+      editingNodeId: null,
+      computed: new Map(),
+      wsConnected: false,
+    });
+  },
+
+  updateMapName: (name: string) => {
+    const state = get();
+    if (!state.currentMapId || !state.currentMap) return;
+
+    // Optimistic update
+    set({ currentMap: { ...state.currentMap, name } });
+
+    api.updateMap(state.currentMapId, { name }).catch(() => {
+      // Revert on error
+      set({ currentMap: state.currentMap });
+    });
+  },
+
+  // ── Node actions ─────────────────────────────────────────────
 
   selectNode: (id) => set({ selectedNodeId: id, editingNodeId: null }),
 
@@ -160,6 +174,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   addNode: (parentId, text = 'New node', asSibling = false) => {
     const state = get();
+    const mapId = state.currentMapId;
     let targetParentId = parentId;
     let insertIndex = -1;
 
@@ -172,40 +187,121 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
           insertIndex = grandparent.childrenIds.indexOf(parentId) + 1;
         }
       } else {
-        // Root node can't have siblings — add as child instead
         targetParentId = parentId;
       }
     }
 
-    const newId = generateId();
-    const newNode = makeNode({
-      id: newId,
-      mapId: 'map-001',
-      text,
+    // Generate a temporary ID for optimistic update
+    const tempId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const now = new Date().toISOString();
+    const newNode: Node = {
+      id: tempId,
+      mapId: mapId ?? '',
       parentId: targetParentId,
-    });
+      childrenIds: [],
+      text,
+      description: null,
+      x: null,
+      y: null,
+      collapsed: false,
+      effortEstimate: null,
+      percentComplete: null,
+      status: null,
+      assigneeIds: [],
+      priority: null,
+      dueDate: null,
+      startDate: null,
+      tags: [],
+      customFields: {},
+      dependencies: [],
+      isMilestone: false,
+      cycleId: null,
+      externalLinks: [],
+      createdAt: now,
+      updatedAt: now,
+      createdBy: 'user-001',
+    };
 
+    // Optimistic local update
     const updatedNodes = { ...state.nodes };
     const parent = { ...updatedNodes[targetParentId] };
     const newChildren = [...parent.childrenIds];
-
     if (insertIndex >= 0 && insertIndex < newChildren.length) {
-      newChildren.splice(insertIndex, 0, newId);
+      newChildren.splice(insertIndex, 0, tempId);
     } else {
-      newChildren.push(newId);
+      newChildren.push(tempId);
+      insertIndex = newChildren.length - 1;
     }
     parent.childrenIds = newChildren;
     updatedNodes[targetParentId] = parent;
-    updatedNodes[newId] = newNode;
+    updatedNodes[tempId] = newNode;
 
     set({
       nodes: updatedNodes,
-      selectedNodeId: newId,
-      editingNodeId: newId,
+      selectedNodeId: tempId,
+      editingNodeId: tempId,
       computed: recomputeValues(updatedNodes),
     });
 
-    return newId;
+    // Sync to API
+    if (mapId) {
+      api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined)
+        .then((serverNode) => {
+          // Replace temp node with server node
+          const current = get();
+          const nodes = { ...current.nodes };
+
+          // Remove temp node
+          delete nodes[tempId];
+          nodes[serverNode.id] = serverNode;
+
+          // Update parent's childrenIds to swap temp -> real id
+          const p = nodes[targetParentId];
+          if (p) {
+            nodes[targetParentId] = {
+              ...p,
+              childrenIds: p.childrenIds.map((cid) => (cid === tempId ? serverNode.id : cid)),
+            };
+          }
+
+          const newState: Partial<MindmapState> = {
+            nodes,
+            computed: recomputeValues(nodes),
+          };
+
+          // Update selection if still pointing to temp
+          if (current.selectedNodeId === tempId) {
+            newState.selectedNodeId = serverNode.id;
+          }
+          if (current.editingNodeId === tempId) {
+            newState.editingNodeId = serverNode.id;
+          }
+
+          set(newState);
+        })
+        .catch(() => {
+          // Revert optimistic update
+          const current = get();
+          const nodes = { ...current.nodes };
+          delete nodes[tempId];
+          const p = nodes[targetParentId];
+          if (p) {
+            nodes[targetParentId] = {
+              ...p,
+              childrenIds: p.childrenIds.filter((cid) => cid !== tempId),
+            };
+          }
+          set({
+            nodes,
+            selectedNodeId: targetParentId,
+            editingNodeId: null,
+            computed: recomputeValues(nodes),
+            error: 'Failed to create node',
+          });
+        });
+    }
+
+    return tempId;
   },
 
   updateNode: (id, updates) => {
@@ -213,23 +309,38 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     const node = state.nodes[id];
     if (!node) return;
 
+    const prevNode = node;
     const updatedNode = { ...node, ...updates, updatedAt: new Date().toISOString() };
     const updatedNodes = { ...state.nodes, [id]: updatedNode };
 
+    // Optimistic update
     set({
       nodes: updatedNodes,
       computed: recomputeValues(updatedNodes),
     });
+
+    // Sync to API (skip for temp nodes)
+    if (state.currentMapId && !id.startsWith('temp-')) {
+      api.updateNode(state.currentMapId, id, updates).catch(() => {
+        // Revert
+        const current = get();
+        const nodes = { ...current.nodes, [id]: prevNode };
+        set({ nodes, computed: recomputeValues(nodes), error: 'Failed to update node' });
+      });
+    }
   },
 
   deleteNode: (id) => {
     const state = get();
-    if (id === state.rootNodeId) return; // Can't delete root
+    if (id === state.rootNodeId) return;
 
     const node = state.nodes[id];
     if (!node || !node.parentId) return;
 
-    // Collect all descendants
+    // Collect all descendants for snapshot (revert)
+    const snapshot = { ...state.nodes };
+
+    // Collect descendants
     const toDelete = new Set<string>();
     const queue = [id];
     while (queue.length > 0) {
@@ -240,18 +351,15 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
 
     const updatedNodes = { ...state.nodes };
-
-    // Remove from parent
     const parent = { ...updatedNodes[node.parentId] };
     parent.childrenIds = parent.childrenIds.filter((cid) => cid !== id);
     updatedNodes[node.parentId] = parent;
 
-    // Delete all descendants
     for (const did of toDelete) {
       delete updatedNodes[did];
     }
 
-    // Find a sensible next selection: next sibling, previous sibling, or parent
+    // Find next selection
     let nextSelection: string | null = node.parentId;
     const siblingIdx = state.nodes[node.parentId]?.childrenIds.indexOf(id) ?? -1;
     const siblings = parent.childrenIds;
@@ -259,12 +367,65 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       nextSelection = siblings[Math.min(siblingIdx, siblings.length - 1)];
     }
 
+    // Optimistic update
     set({
       nodes: updatedNodes,
       selectedNodeId: nextSelection,
       editingNodeId: null,
       computed: recomputeValues(updatedNodes),
     });
+
+    // Sync to API (skip for temp nodes)
+    if (state.currentMapId && !id.startsWith('temp-')) {
+      api.deleteNode(state.currentMapId, id).catch(() => {
+        set({
+          nodes: snapshot,
+          computed: recomputeValues(snapshot),
+          error: 'Failed to delete node',
+        });
+      });
+    }
+  },
+
+  moveNode: (nodeId, newParentId, index) => {
+    const state = get();
+    const node = state.nodes[nodeId];
+    if (!node || !node.parentId) return;
+
+    const snapshot = { ...state.nodes };
+
+    // Optimistic update
+    const updatedNodes = { ...state.nodes };
+
+    // Remove from old parent
+    const oldParent = { ...updatedNodes[node.parentId] };
+    oldParent.childrenIds = oldParent.childrenIds.filter((cid) => cid !== nodeId);
+    updatedNodes[node.parentId] = oldParent;
+
+    // Add to new parent
+    const newParent = { ...updatedNodes[newParentId] };
+    const newChildren = [...newParent.childrenIds];
+    newChildren.splice(index, 0, nodeId);
+    newParent.childrenIds = newChildren;
+    updatedNodes[newParentId] = newParent;
+
+    // Update node's parentId
+    updatedNodes[nodeId] = { ...node, parentId: newParentId };
+
+    set({
+      nodes: updatedNodes,
+      computed: recomputeValues(updatedNodes),
+    });
+
+    if (state.currentMapId && !nodeId.startsWith('temp-')) {
+      api.moveNode(state.currentMapId, nodeId, newParentId, index).catch(() => {
+        set({
+          nodes: snapshot,
+          computed: recomputeValues(snapshot),
+          error: 'Failed to move node',
+        });
+      });
+    }
   },
 
   toggleCollapse: (id) => {
@@ -283,3 +444,89 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     set({ computed: recomputeValues(state.nodes) });
   },
 }));
+
+// ── WebSocket message handler ──────────────────────────────────
+
+function handleWsMessage(
+  msg: any,
+  set: (partial: Partial<MindmapState> | ((state: MindmapState) => Partial<MindmapState>)) => void,
+  get: () => MindmapState,
+) {
+  const state = get();
+
+  switch (msg.type) {
+    case 'node:created': {
+      const serverNode = msg.node as Node;
+      // Don't duplicate if we already have it (from our own optimistic update)
+      if (state.nodes[serverNode.id]) return;
+
+      const nodes = { ...state.nodes };
+      nodes[serverNode.id] = serverNode;
+
+      // Add to parent's children if not already there
+      if (serverNode.parentId && nodes[serverNode.parentId]) {
+        const parent = { ...nodes[serverNode.parentId] };
+        if (!parent.childrenIds.includes(serverNode.id)) {
+          parent.childrenIds = [...parent.childrenIds, serverNode.id];
+          nodes[serverNode.parentId] = parent;
+        }
+      }
+
+      set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+
+    case 'node:updated': {
+      const serverNode = msg.node as Node;
+      if (!state.nodes[serverNode.id]) return;
+
+      const nodes = { ...state.nodes, [serverNode.id]: serverNode };
+      set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+
+    case 'node:deleted': {
+      const deletedIds = msg.deletedIds as string[];
+      const nodes = { ...state.nodes };
+
+      // Remove from parent
+      const nodeToDelete = state.nodes[msg.nodeId];
+      if (nodeToDelete?.parentId && nodes[nodeToDelete.parentId]) {
+        const parent = { ...nodes[nodeToDelete.parentId] };
+        parent.childrenIds = parent.childrenIds.filter((cid) => !deletedIds.includes(cid));
+        nodes[nodeToDelete.parentId] = parent;
+      }
+
+      for (const did of deletedIds) {
+        delete nodes[did];
+      }
+
+      const newState: Partial<MindmapState> = { nodes, computed: recomputeValues(nodes) };
+
+      // Clear selection if it was deleted
+      if (state.selectedNodeId && deletedIds.includes(state.selectedNodeId)) {
+        newState.selectedNodeId = null;
+        newState.editingNodeId = null;
+      }
+
+      set(newState);
+      break;
+    }
+
+    case 'node:moved': {
+      // Reload map to get fresh state (moves are complex)
+      get().loadMap(state.currentMapId!);
+      break;
+    }
+
+    case 'node:reordered': {
+      const { parentId, childrenIds } = msg as { parentId: string; childrenIds: string[] };
+      if (!state.nodes[parentId]) return;
+
+      const nodes = { ...state.nodes };
+      nodes[parentId] = { ...nodes[parentId], childrenIds };
+      set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+  }
+}
