@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import type { Node, NodeId, ComputedNodeValues, MindMap, Cycle } from '@mindblown/core';
 import { computeTree } from '@mindblown/core';
 import * as api from './api.js';
-import type { MapSummary } from './api.js';
+import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
 
@@ -16,9 +16,13 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar';
+export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload';
 
 export interface MindmapState {
+  // Auth state
+  user: AuthUser | null;
+  token: string | null;
+
   // Map list
   maps: MapSummary[];
   currentMapId: string | null;
@@ -44,6 +48,12 @@ export interface MindmapState {
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
+
+  // Actions — auth
+  login: (email: string, password: string) => Promise<void>;
+  register: (email: string, password: string, name: string) => Promise<void>;
+  logout: () => void;
+  checkAuth: () => Promise<void>;
 
   // Actions — map level
   loadMaps: () => Promise<void>;
@@ -91,9 +101,15 @@ export interface MindmapState {
 
 let wsClient: WsClient | null = null;
 
+export function getWsClient(): WsClient | null {
+  return wsClient;
+}
+
 // ── Store implementation ───────────────────────────────────────
 
 export const useMindmapStore = create<MindmapState>((set, get) => ({
+  user: null,
+  token: api.getToken(),
   maps: [],
   currentMapId: null,
   currentMap: null,
@@ -110,6 +126,70 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   loading: false,
   error: null,
   wsConnected: false,
+
+  // ── Auth actions ──────────────────────────────────────────────
+
+  login: async (email: string, password: string) => {
+    set({ loading: true, error: null });
+    try {
+      const res = await api.login(email, password);
+      api.setToken(res.token);
+      set({ user: res.user, token: res.token, loading: false });
+    } catch (e: any) {
+      set({ loading: false, error: e.message ?? 'Login failed' });
+      throw e;
+    }
+  },
+
+  register: async (email: string, password: string, name: string) => {
+    set({ loading: true, error: null });
+    try {
+      const res = await api.register(email, password, name);
+      api.setToken(res.token);
+      set({ user: res.user, token: res.token, loading: false });
+    } catch (e: any) {
+      set({ loading: false, error: e.message ?? 'Registration failed' });
+      throw e;
+    }
+  },
+
+  logout: () => {
+    api.clearToken();
+    if (wsClient) {
+      wsClient.close();
+      wsClient = null;
+    }
+    set({
+      user: null,
+      token: null,
+      maps: [],
+      currentMapId: null,
+      currentMap: null,
+      nodes: {},
+      rootNodeId: null,
+      selectedNodeIds: [],
+      selectedNodeId: null,
+      editingNodeId: null,
+      computed: new Map(),
+      wsConnected: false,
+      error: null,
+    });
+  },
+
+  checkAuth: async () => {
+    const token = api.getToken();
+    if (!token) {
+      set({ user: null, token: null });
+      return;
+    }
+    try {
+      const user = await api.getMe();
+      set({ user, token });
+    } catch {
+      api.clearToken();
+      set({ user: null, token: null });
+    }
+  },
 
   // ── Map actions ──────────────────────────────────────────────
 
@@ -421,7 +501,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       externalLinks: [],
       createdAt: now,
       updatedAt: now,
-      createdBy: 'user-001',
+      createdBy: state.user?.id ?? 'user-001',
     };
 
     // Optimistic local update
@@ -680,6 +760,18 @@ function handleWsMessage(
   set: (partial: Partial<MindmapState> | ((state: MindmapState) => Partial<MindmapState>)) => void,
   get: () => MindmapState,
 ) {
+  // Dispatch cursor events to window for CursorPresence component
+  if (msg.type === 'cursor') {
+    window.dispatchEvent(new CustomEvent('ws:cursor', { detail: msg }));
+    return;
+  }
+
+  // Dispatch comment events to window for CommentsPanel component
+  if (msg.type?.startsWith('comment:')) {
+    window.dispatchEvent(new CustomEvent('ws:comment', { detail: msg }));
+    return;
+  }
+
   const state = get();
 
   switch (msg.type) {

@@ -1,3 +1,5 @@
+import { getToken } from './api.js';
+
 type MessageHandler = (data: unknown) => void;
 
 const WS_BASE: string = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001').replace(/^http/, 'ws');
@@ -7,6 +9,7 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 export interface WsClient {
   close(): void;
   isConnected(): boolean;
+  send(data: unknown): void;
 }
 
 /**
@@ -23,7 +26,11 @@ export function connectWs(mapId: string, onMessage: MessageHandler, onStatusChan
     if (closed) return;
 
     try {
-      ws = new WebSocket(`${WS_BASE}/ws/maps/${mapId}`);
+      const token = getToken();
+      const url = token
+        ? `${WS_BASE}/ws/maps/${mapId}?token=${encodeURIComponent(token)}`
+        : `${WS_BASE}/ws/maps/${mapId}`;
+      ws = new WebSocket(url);
     } catch {
       scheduleReconnect();
       return;
@@ -74,6 +81,11 @@ export function connectWs(mapId: string, onMessage: MessageHandler, onStatusChan
     },
     isConnected() {
       return ws?.readyState === WebSocket.OPEN;
+    },
+    send(data: unknown) {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(data));
+      }
     },
   };
 }

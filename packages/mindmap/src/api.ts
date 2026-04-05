@@ -2,7 +2,73 @@ import type { Node, MindMap, Cycle } from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
+// ── Token helpers ────────────────────────────────────────────────
+
+const TOKEN_KEY = 'mindblown_token';
+
+export function getToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function setToken(token: string): void {
+  localStorage.setItem(TOKEN_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(TOKEN_KEY);
+}
+
 // ── Types ────────────────────────────────────────────────────────
+
+export interface AuthUser {
+  id: string;
+  email: string;
+  name: string;
+  avatarUrl?: string | null;
+  createdAt?: string;
+}
+
+export interface AuthResponse {
+  user: AuthUser;
+  token: string;
+}
+
+export interface Comment {
+  id: string;
+  nodeId: string;
+  userId: string;
+  userName?: string;
+  text: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface Permission {
+  id: string;
+  mapId: string;
+  userId: string;
+  userName?: string;
+  userEmail?: string;
+  permission: 'view' | 'edit' | 'admin';
+  isOwner?: boolean;
+}
+
+export interface GitHubIssueStatus {
+  externalId: string;
+  url?: string;
+  state?: string;
+  title?: string;
+  labels?: string[];
+  assignees?: string[];
+  updatedAt?: string;
+  error?: string;
+}
+
+export interface GitHubStatusResponse {
+  linked: boolean;
+  issues: GitHubIssueStatus[];
+  status?: string;
+}
 
 export interface MapSummary extends MindMap {
   computedProgress: number;
@@ -23,9 +89,18 @@ export interface MapDetail {
 // ── Helpers ──────────────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...(init?.headers as Record<string, string> ?? {}),
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers,
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
@@ -46,6 +121,129 @@ export class ApiError extends Error {
   }
 }
 
+// ── Auth ─────────────────────────────────────────────────────────
+
+export function login(email: string, password: string): Promise<AuthResponse> {
+  return request<AuthResponse>('/api/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ email, password }),
+  });
+}
+
+export function register(email: string, password: string, name: string): Promise<AuthResponse> {
+  return request<AuthResponse>('/api/auth/register', {
+    method: 'POST',
+    body: JSON.stringify({ email, password, name }),
+  });
+}
+
+export function getMe(): Promise<AuthUser> {
+  return request<AuthUser>('/api/auth/me');
+}
+
+// ── Comments ────────────────────────────────────────────────────
+
+export function fetchComments(mapId: string, nodeId: string): Promise<Comment[]> {
+  return request<Comment[]>(`/api/maps/${mapId}/nodes/${nodeId}/comments`);
+}
+
+export function createComment(mapId: string, nodeId: string, text: string): Promise<Comment> {
+  return request<Comment>(`/api/maps/${mapId}/nodes/${nodeId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function updateComment(commentId: string, text: string): Promise<Comment> {
+  return request<Comment>(`/api/comments/${commentId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ text }),
+  });
+}
+
+export function deleteComment(commentId: string): Promise<void> {
+  return request<void>(`/api/comments/${commentId}`, {
+    method: 'DELETE',
+  });
+}
+
+// ── Permissions / Sharing ───────────────────────────────────────
+
+export function fetchPermissions(mapId: string): Promise<Permission[]> {
+  return request<Permission[]>(`/api/maps/${mapId}/permissions`);
+}
+
+export function shareMap(mapId: string, email: string, permission: string): Promise<Permission> {
+  return request<Permission>(`/api/maps/${mapId}/share`, {
+    method: 'POST',
+    body: JSON.stringify({ email, permission }),
+  });
+}
+
+export function revokePermission(mapId: string, userId: string): Promise<void> {
+  return request<void>(`/api/maps/${mapId}/permissions/${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function generatePublicLink(mapId: string): Promise<{ publicToken: string }> {
+  return request<{ publicToken: string }>(`/api/maps/${mapId}/public-link`, {
+    method: 'POST',
+  });
+}
+
+// ── GitHub Integration ──────────────────────────────────────────
+
+export function connectGitHub(
+  workspaceId: string,
+  token: string,
+  owner: string,
+  repo: string,
+  webhookSecret?: string,
+): Promise<{ id: string; provider: string; enabled: boolean }> {
+  return request(`/api/integrations/github/connect`, {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, token, owner, repo, webhookSecret }),
+  });
+}
+
+export function linkGitHubIssue(
+  mapId: string,
+  nodeId: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<{ node: Node; issue: any }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/github/link`, {
+    method: 'POST',
+    body: JSON.stringify({ owner, repo, issueNumber }),
+  });
+}
+
+export function createGitHubIssue(
+  mapId: string,
+  nodeId: string,
+): Promise<{ node: Node; issue: any }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/github/create`, {
+    method: 'POST',
+  });
+}
+
+export function importGitHubIssues(
+  mapId: string,
+  createdBy: string,
+  parentNodeId?: string,
+): Promise<{ imported: number; nodes: Array<{ nodeId: string; issueNumber: number }> }> {
+  return request(`/api/maps/${mapId}/github/import`, {
+    method: 'POST',
+    body: JSON.stringify({ createdBy, parentNodeId }),
+  });
+}
+
+export function getGitHubStatus(mapId: string, nodeId: string): Promise<GitHubStatusResponse> {
+  return request<GitHubStatusResponse>(`/api/maps/${mapId}/nodes/${nodeId}/github/status`);
+}
+
 // ── Maps ─────────────────────────────────────────────────────────
 
 export function fetchMaps(): Promise<MapSummary[]> {
@@ -57,12 +255,14 @@ export function fetchMap(id: string): Promise<MapDetail> {
 }
 
 export function createMap(name: string): Promise<MindMap> {
+  // createdBy will be inferred from the auth token on the server,
+  // but we send it as fallback for compatibility
   return request<MindMap>('/api/maps', {
     method: 'POST',
     body: JSON.stringify({
       name,
       workspaceId: 'default',
-      createdBy: 'user-001',
+      createdBy: 'current-user',
     }),
   });
 }
@@ -84,7 +284,7 @@ export function createNode(
 ): Promise<Node> {
   return request<Node>(`/api/maps/${mapId}/nodes`, {
     method: 'POST',
-    body: JSON.stringify({ parentId, text, createdBy: 'user-001', position }),
+    body: JSON.stringify({ parentId, text, createdBy: 'current-user', position }),
   });
 }
 

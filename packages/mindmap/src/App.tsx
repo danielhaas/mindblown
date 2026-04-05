@@ -10,6 +10,12 @@ import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
 import { CommandPalette } from './CommandPalette.js';
 import { QuickAdd } from './QuickAdd.js';
+import { HillChart } from './HillChart.js';
+import { WorkloadView } from './WorkloadView.js';
+import { ImportExport } from './ImportExport.js';
+import { AuthScreen } from './AuthScreen.js';
+import { ShareDialog } from './ShareDialog.js';
+import { GitHubSettingsDialog } from './GitHubPanel.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -381,6 +387,8 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'gantt', label: 'Gantt', enabled: true },
   { id: 'list', label: 'List', enabled: false },
   { id: 'calendar', label: 'Calendar', enabled: true },
+  { id: 'hill', label: 'Hill Chart', enabled: true },
+  { id: 'workload', label: 'Workload', enabled: true },
 ];
 
 function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: ActiveView) => void }) {
@@ -558,6 +566,11 @@ function SprintIndicator({
 // ── Main App ───────────────────────────────────────────────────
 
 export function App() {
+  const user = useMindmapStore((s) => s.user);
+  const token = useMindmapStore((s) => s.token);
+  const checkAuth = useMindmapStore((s) => s.checkAuth);
+  const logout = useMindmapStore((s) => s.logout);
+
   const maps = useMindmapStore((s) => s.maps);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const currentMap = useMindmapStore((s) => s.currentMap);
@@ -584,6 +597,15 @@ export function App() {
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
+  const [importExportOpen, setImportExportOpen] = useState(false);
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Auto-login on page load if token exists
+  useEffect(() => {
+    checkAuth().finally(() => setAuthChecked(true));
+  }, [checkAuth]);
 
   // Global keyboard shortcuts for command palette and quick add
   useEffect(() => {
@@ -631,10 +653,10 @@ export function App() {
     (window as any).__mindmapZoomOut?.();
   }, []);
 
-  // Load maps on mount
+  // Load maps when authenticated
   useEffect(() => {
-    loadMaps();
-  }, [loadMaps]);
+    if (user) loadMaps();
+  }, [user, loadMaps]);
 
   // Load cycles when map is opened
   useEffect(() => {
@@ -658,6 +680,22 @@ export function App() {
       createMap(name.trim());
     }
   }, [createMap]);
+
+  // ── Auth check loading ───────────────────────────────────────
+
+  if (!authChecked) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+        <Spinner size={32} />
+      </div>
+    );
+  }
+
+  // ── Auth screen ─────────────────────────────────────────────
+
+  if (!user) {
+    return <AuthScreen />;
+  }
 
   // ── Map list view ────────────────────────────────────────────
 
@@ -764,6 +802,45 @@ export function App() {
 
         {/* Right: sprint indicator + stats */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {/* Import/Export button */}
+          <button
+            onClick={() => setImportExportOpen(true)}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#64748b',
+              transition: 'all 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = '#eef2ff';
+              e.currentTarget.style.borderColor = '#c7d2fe';
+              e.currentTarget.style.color = '#4f46e5';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = '#fff';
+              e.currentTarget.style.borderColor = '#e2e8f0';
+              e.currentTarget.style.color = '#64748b';
+            }}
+            title="Import / Export"
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              <path d="M8 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            Import/Export
+          </button>
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
           {/* Sprint indicator and filter */}
           <SprintIndicator
             cycles={cycles}
@@ -830,12 +907,94 @@ export function App() {
           {/* Connection status */}
           <ConnectionDot connected={wsConnected} />
 
-          {/* Keyboard hint */}
-          <span style={{ fontSize: 11, color: '#cbd5e1' }}>
-            {selectedNodeId
-              ? '\u2318K: commands | Q: quick add | Tab: child | Enter: sibling'
-              : '\u2318K: commands | Q: quick add | Click a node to start'}
-          </span>
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* Share button */}
+          <button
+            onClick={() => setShareDialogOpen(true)}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#4f46e5',
+              transition: 'all 0.15s',
+            }}
+          >
+            Share
+          </button>
+
+          {/* GitHub settings */}
+          <button
+            onClick={() => setGithubSettingsOpen(true)}
+            title="GitHub Integration"
+            style={{
+              padding: '3px 8px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'all 0.15s',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+            </svg>
+          </button>
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* User avatar + name + logout */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div
+              style={{
+                width: 24,
+                height: 24,
+                borderRadius: '50%',
+                background: '#eef2ff',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 11,
+                fontWeight: 700,
+                color: '#4f46e5',
+                flexShrink: 0,
+              }}
+            >
+              {(user?.name ?? user?.email ?? '?')[0].toUpperCase()}
+            </div>
+            <span style={{ fontSize: 11, fontWeight: 500, color: '#475569', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {user?.name ?? user?.email}
+            </span>
+            <button
+              onClick={logout}
+              title="Sign out"
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: '2px 4px',
+                fontSize: 11,
+                color: '#94a3b8',
+                fontFamily: 'inherit',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -879,6 +1038,8 @@ export function App() {
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'list' && <ListView />}
           {activeView === 'calendar' && <CalendarView />}
+          {activeView === 'hill' && <HillChart />}
+          {activeView === 'workload' && <WorkloadView />}
         </div>
         {sprintPanelOpen ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
@@ -901,6 +1062,28 @@ export function App() {
         open={quickAddOpen}
         onClose={() => setQuickAddOpen(false)}
       />
+
+      {/* Import/Export Modal */}
+      <ImportExport
+        open={importExportOpen}
+        onClose={() => setImportExportOpen(false)}
+      />
+
+      {/* Share Dialog */}
+      {shareDialogOpen && currentMapId && (
+        <ShareDialog
+          mapId={currentMapId}
+          onClose={() => setShareDialogOpen(false)}
+        />
+      )}
+
+      {/* GitHub Settings Dialog */}
+      {githubSettingsOpen && currentMapId && (
+        <GitHubSettingsDialog
+          mapId={currentMapId}
+          onClose={() => setGithubSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 }

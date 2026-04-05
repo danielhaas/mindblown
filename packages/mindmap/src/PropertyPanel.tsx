@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Node, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { CommentsPanel } from './CommentsPanel.js';
+import { GitHubNodeSection } from './GitHubPanel.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -454,6 +456,18 @@ function PropertyPanelInner({
             Mark as milestone (zero-effort checkpoint)
           </label>
         </Field>
+
+        {/* Divider */}
+        <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+
+        {/* GitHub section */}
+        <GitHubNodeSection mapId={node.mapId} node={node} />
+
+        {/* Divider */}
+        <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+
+        {/* Comments section */}
+        <CommentsPanel mapId={node.mapId} nodeId={nodeId} />
       </div>
     </div>
   );

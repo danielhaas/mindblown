@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMindmapStore } from './store.js';
+import { useMindmapStore, getWsClient } from './store.js';
 import { computeLayout, computeBounds } from './layout.js';
 import type { LayoutType } from './layout.js';
 import { MindmapNode } from './MindmapNode.js';
 import { Connector } from './Connector.js';
 import { DependencyLines } from './DependencyLines.js';
+import { CursorPresence } from './CursorPresence.js';
 import type { LayoutNode } from './layout.js';
 
 // ── Pan & Zoom state ───────────────────────────────────────────
@@ -244,6 +245,10 @@ export function MindmapEditor() {
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
   const moveNode = useMindmapStore((s) => s.moveNode);
   const setLayoutType = useMindmapStore((s) => s.setLayoutType);
+  const user = useMindmapStore((s) => s.user);
+
+  // ── Cursor presence: throttled send ──────────────────────────
+  const lastCursorSend = useRef(0);
 
   // ── Drag-and-drop state ───────────────────────────────────────
 
@@ -421,6 +426,23 @@ export function MindmapEditor() {
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      // Send cursor position via WebSocket (throttled to 50ms)
+      const now = Date.now();
+      if (now - lastCursorSend.current >= 50) {
+        lastCursorSend.current = now;
+        const ws = getWsClient();
+        if (ws && user) {
+          const svgCursor = clientToSvg(e.clientX, e.clientY);
+          ws.send({
+            type: 'cursor',
+            userId: user.id,
+            name: user.name ?? user.email,
+            x: svgCursor.x,
+            y: svgCursor.y,
+          });
+        }
+      }
+
       if (drag) {
         const dx = e.clientX - drag.startClientX;
         const dy = e.clientY - drag.startClientY;
@@ -450,7 +472,7 @@ export function MindmapEditor() {
         panY: panStart.current!.panY + dy,
       }));
     },
-    [isPanning, drag, clientToSvg, findDropTarget],
+    [isPanning, drag, clientToSvg, findDropTarget, user],
   );
 
   const handleMouseUp = useCallback(
@@ -954,6 +976,9 @@ export function MindmapEditor() {
               </text>
             </g>
           )}
+
+          {/* Cursor presence overlay */}
+          <CursorPresence currentUserId={user?.id ?? null} />
         </g>
       </svg>
 
