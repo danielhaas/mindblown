@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   // ── Plugins ────────────────────────────────────────────────────
   await app.register(cors, {
     origin: [
-      'http://localhost:5173', // Vite dev server
+      'http://localhost:5180', // Vite dev server
       'http://localhost:3000', // Production frontend
     ],
     credentials: true,
