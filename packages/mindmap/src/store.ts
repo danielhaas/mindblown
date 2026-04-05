@@ -16,6 +16,8 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
+export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list';
+
 export interface MindmapState {
   // Map list
   maps: MapSummary[];
@@ -30,6 +32,7 @@ export interface MindmapState {
   computed: Map<NodeId, ComputedNodeValues>;
 
   // UI state
+  activeView: ActiveView;
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
@@ -41,6 +44,9 @@ export interface MindmapState {
   closeMap: () => void;
   updateMapName: (name: string) => void;
 
+  // Actions — view
+  setActiveView: (view: ActiveView) => void;
+
   // Actions — node level
   selectNode: (id: string | null) => void;
   startEditing: (id: string | null) => void;
@@ -50,6 +56,10 @@ export interface MindmapState {
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
   toggleCollapse: (id: string) => void;
   recompute: () => void;
+
+  // Helpers
+  getLeafNodes: () => Node[];
+  getNodeBreadcrumb: (nodeId: NodeId) => string;
 }
 
 // ── WebSocket connection ───────────────────────────────────────
@@ -67,6 +77,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   selectedNodeId: null,
   editingNodeId: null,
   computed: new Map(),
+  activeView: 'mindmap',
   loading: false,
   error: null,
   wsConnected: false,
@@ -164,6 +175,34 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       // Revert on error
       set({ currentMap: state.currentMap });
     });
+  },
+
+  // ── View actions ─────────────────────────────────────────────
+
+  setActiveView: (view) => set({ activeView: view }),
+
+  // ── Helpers ─────────────────────────────────────────────────
+
+  getLeafNodes: () => {
+    const { nodes } = get();
+    return Object.values(nodes).filter((n) => n.childrenIds.length === 0);
+  },
+
+  getNodeBreadcrumb: (nodeId: NodeId) => {
+    const { nodes } = get();
+    const parts: string[] = [];
+    let current = nodes[nodeId];
+    // Walk up parents (skip the node itself and the root)
+    while (current?.parentId) {
+      const parent = nodes[current.parentId];
+      if (!parent) break;
+      if (parent.parentId !== null) {
+        // Skip root node from breadcrumb
+        parts.unshift(parent.text);
+      }
+      current = parent;
+    }
+    return parts.join(' > ');
   },
 
   // ── Node actions ─────────────────────────────────────────────

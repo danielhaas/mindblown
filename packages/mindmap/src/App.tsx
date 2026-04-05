@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
+import type { ActiveView } from './store.js';
 import { MindmapEditor } from './MindmapEditor.js';
 import { PropertyPanel } from './PropertyPanel.js';
+import { KanbanView } from './KanbanView.js';
+import { GanttView } from './GanttView.js';
+import { ListView } from './ListView.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -365,6 +369,56 @@ function EditableMapName({ name, onChange }: { name: string; onChange: (v: strin
   );
 }
 
+// ── View Switcher ─────────────────────────────────────────────
+
+const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
+  { id: 'mindmap', label: 'Mindmap', enabled: true },
+  { id: 'kanban', label: 'Kanban', enabled: true },
+  { id: 'gantt', label: 'Gantt', enabled: true },
+  { id: 'list', label: 'List', enabled: false },
+];
+
+function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: ActiveView) => void }) {
+  return (
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        background: '#f1f5f9',
+        borderRadius: 6,
+        padding: 2,
+        gap: 1,
+      }}
+    >
+      {VIEW_TABS.map((tab) => {
+        const isActive = tab.id === active;
+        return (
+          <button
+            key={tab.id}
+            onClick={() => tab.enabled && onChange(tab.id)}
+            disabled={!tab.enabled}
+            style={{
+              fontSize: 11,
+              fontWeight: isActive ? 600 : 500,
+              color: !tab.enabled ? '#cbd5e1' : isActive ? '#1e293b' : '#64748b',
+              background: isActive ? '#ffffff' : 'transparent',
+              border: 'none',
+              borderRadius: 4,
+              padding: '3px 10px',
+              cursor: tab.enabled ? 'pointer' : 'default',
+              fontFamily: 'inherit',
+              transition: 'all 0.15s',
+              boxShadow: isActive ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+            }}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────
 
 export function App() {
@@ -378,12 +432,14 @@ export function App() {
   const loading = useMindmapStore((s) => s.loading);
   const error = useMindmapStore((s) => s.error);
   const wsConnected = useMindmapStore((s) => s.wsConnected);
+  const activeView = useMindmapStore((s) => s.activeView);
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
   const createMap = useMindmapStore((s) => s.createMap);
   const closeMap = useMindmapStore((s) => s.closeMap);
   const updateMapName = useMindmapStore((s) => s.updateMapName);
+  const setActiveView = useMindmapStore((s) => s.setActiveView);
 
   // Load maps on mount
   useEffect(() => {
@@ -503,6 +559,10 @@ export function App() {
             name={currentMap?.name ?? 'Untitled'}
             onChange={updateMapName}
           />
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          <ViewSwitcher active={activeView} onChange={setActiveView} />
         </div>
 
         {/* Right: stats */}
@@ -603,10 +663,13 @@ export function App() {
         </div>
       )}
 
-      {/* Editor + Property panel */}
+      {/* Main content + Property panel */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
-          <MindmapEditor />
+          {activeView === 'mindmap' && <MindmapEditor />}
+          {activeView === 'kanban' && <KanbanView />}
+          {activeView === 'gantt' && <GanttView />}
+          {activeView === 'list' && <ListView />}
         </div>
         <PropertyPanel />
       </div>
