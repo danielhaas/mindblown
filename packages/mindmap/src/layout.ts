@@ -15,6 +15,8 @@ export interface LayoutNode {
   collapsed: boolean;
 }
 
+export type LayoutType = 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart';
+
 // ── Configuration ──────────────────────────────────────────────
 
 const NODE_BASE_WIDTH = 160;
@@ -35,7 +37,7 @@ function measureNodeWidth(text: string, hasChildren: boolean): number {
   return Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, Math.max(baseWidth, textWidth)));
 }
 
-// ── Reingold-Tilford-style tree layout (left-to-right) ─────────
+// ── Internal tree node ────────────────────────────────────────
 
 interface TreeNode {
   id: string;
@@ -43,10 +45,10 @@ interface TreeNode {
   children: TreeNode[];
   width: number;
   height: number;
-  // Computed during layout
   x: number;
   y: number;
   subtreeHeight: number;
+  subtreeWidth: number;
   depth: number;
 }
 
@@ -79,78 +81,19 @@ function buildTree(
     x: 0,
     y: 0,
     subtreeHeight: 0,
+    subtreeWidth: 0,
     depth,
   };
 }
 
-/**
- * Compute subtree heights bottom-up.
- * A leaf's subtreeHeight = its own height.
- * A parent's subtreeHeight = sum of children's subtreeHeights + gaps between them.
- */
-function computeSubtreeHeight(tree: TreeNode): number {
-  if (tree.children.length === 0) {
-    tree.subtreeHeight = tree.height;
-    return tree.subtreeHeight;
-  }
+// ── Flatten tree into LayoutNode[] ────────────────────────────
 
-  let totalChildrenHeight = 0;
-  for (let i = 0; i < tree.children.length; i++) {
-    totalChildrenHeight += computeSubtreeHeight(tree.children[i]);
-    if (i < tree.children.length - 1) {
-      totalChildrenHeight += VERTICAL_GAP;
-    }
-  }
-
-  tree.subtreeHeight = Math.max(tree.height, totalChildrenHeight);
-  return tree.subtreeHeight;
-}
-
-/**
- * Assign positions top-down.
- * x is determined by depth (left-to-right).
- * y is determined by centering within the allocated vertical space.
- */
-function assignPositions(
-  tree: TreeNode,
-  x: number,
-  yStart: number,
-): void {
-  // Center this node vertically in its subtree band
-  tree.x = x;
-  tree.y = yStart + tree.subtreeHeight / 2 - tree.height / 2;
-
-  if (tree.children.length === 0) return;
-
-  // Compute total children height
-  let totalChildrenHeight = 0;
-  for (let i = 0; i < tree.children.length; i++) {
-    totalChildrenHeight += tree.children[i].subtreeHeight;
-    if (i < tree.children.length - 1) {
-      totalChildrenHeight += VERTICAL_GAP;
-    }
-  }
-
-  // Center the block of children vertically relative to this node
-  let childY = yStart + (tree.subtreeHeight - totalChildrenHeight) / 2;
-  const childX = x + tree.width + HORIZONTAL_GAP;
-
-  for (const child of tree.children) {
-    assignPositions(child, childX, childY);
-    childY += child.subtreeHeight + VERTICAL_GAP;
-  }
-}
-
-/**
- * Flatten the tree into an array of LayoutNodes.
- */
 function flatten(tree: TreeNode): LayoutNode[] {
   const result: LayoutNode[] = [];
   const queue: TreeNode[] = [tree];
 
   while (queue.length > 0) {
     const t = queue.shift()!;
-    // Nodes with manual x/y positions keep those positions (freeform placement)
     const useManualPosition = t.node.x != null && t.node.y != null;
     result.push({
       id: t.id,
@@ -169,6 +112,223 @@ function flatten(tree: TreeNode): LayoutNode[] {
   return result;
 }
 
+// ══════════════════════════════════════════════════════════════
+// Tree Left-to-Right layout
+// ══════════════════════════════════════════════════════════════
+
+function computeSubtreeHeightLR(tree: TreeNode): number {
+  if (tree.children.length === 0) {
+    tree.subtreeHeight = tree.height;
+    return tree.subtreeHeight;
+  }
+
+  let totalChildrenHeight = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenHeight += computeSubtreeHeightLR(tree.children[i]);
+    if (i < tree.children.length - 1) {
+      totalChildrenHeight += VERTICAL_GAP;
+    }
+  }
+
+  tree.subtreeHeight = Math.max(tree.height, totalChildrenHeight);
+  return tree.subtreeHeight;
+}
+
+function assignPositionsLR(tree: TreeNode, x: number, yStart: number): void {
+  tree.x = x;
+  tree.y = yStart + tree.subtreeHeight / 2 - tree.height / 2;
+
+  if (tree.children.length === 0) return;
+
+  let totalChildrenHeight = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenHeight += tree.children[i].subtreeHeight;
+    if (i < tree.children.length - 1) {
+      totalChildrenHeight += VERTICAL_GAP;
+    }
+  }
+
+  let childY = yStart + (tree.subtreeHeight - totalChildrenHeight) / 2;
+  const childX = x + tree.width + HORIZONTAL_GAP;
+
+  for (const child of tree.children) {
+    assignPositionsLR(child, childX, childY);
+    childY += child.subtreeHeight + VERTICAL_GAP;
+  }
+}
+
+function layoutTreeLR(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
+  const tree = buildTree(rootId, nodes);
+  if (!tree) return [];
+  computeSubtreeHeightLR(tree);
+  assignPositionsLR(tree, 40, 40);
+  return flatten(tree);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Tree Top-to-Bottom layout
+// ══════════════════════════════════════════════════════════════
+
+function computeSubtreeWidthTB(tree: TreeNode): number {
+  if (tree.children.length === 0) {
+    tree.subtreeWidth = tree.width;
+    return tree.subtreeWidth;
+  }
+
+  let totalChildrenWidth = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenWidth += computeSubtreeWidthTB(tree.children[i]);
+    if (i < tree.children.length - 1) {
+      totalChildrenWidth += HORIZONTAL_GAP / 2;
+    }
+  }
+
+  tree.subtreeWidth = Math.max(tree.width, totalChildrenWidth);
+  return tree.subtreeWidth;
+}
+
+function assignPositionsTB(tree: TreeNode, xStart: number, y: number): void {
+  tree.x = xStart + tree.subtreeWidth / 2 - tree.width / 2;
+  tree.y = y;
+
+  if (tree.children.length === 0) return;
+
+  let totalChildrenWidth = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenWidth += tree.children[i].subtreeWidth;
+    if (i < tree.children.length - 1) {
+      totalChildrenWidth += HORIZONTAL_GAP / 2;
+    }
+  }
+
+  let childX = xStart + (tree.subtreeWidth - totalChildrenWidth) / 2;
+  const childY = y + tree.height + VERTICAL_GAP * 3;
+
+  for (const child of tree.children) {
+    assignPositionsTB(child, childX, childY);
+    childX += child.subtreeWidth + HORIZONTAL_GAP / 2;
+  }
+}
+
+function layoutTreeTB(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
+  const tree = buildTree(rootId, nodes);
+  if (!tree) return [];
+  computeSubtreeWidthTB(tree);
+  assignPositionsTB(tree, 40, 40);
+  return flatten(tree);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Org Chart layout (top-to-bottom, wider spacing)
+// ══════════════════════════════════════════════════════════════
+
+function layoutOrgChart(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
+  const tree = buildTree(rootId, nodes);
+  if (!tree) return [];
+  computeSubtreeWidthOC(tree);
+  assignPositionsOC(tree, 40, 40);
+  return flatten(tree);
+}
+
+function computeSubtreeWidthOC(tree: TreeNode): number {
+  if (tree.children.length === 0) {
+    tree.subtreeWidth = tree.width;
+    return tree.subtreeWidth;
+  }
+
+  let totalChildrenWidth = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenWidth += computeSubtreeWidthOC(tree.children[i]);
+    if (i < tree.children.length - 1) {
+      totalChildrenWidth += HORIZONTAL_GAP;
+    }
+  }
+
+  tree.subtreeWidth = Math.max(tree.width, totalChildrenWidth);
+  return tree.subtreeWidth;
+}
+
+function assignPositionsOC(tree: TreeNode, xStart: number, y: number): void {
+  tree.x = xStart + tree.subtreeWidth / 2 - tree.width / 2;
+  tree.y = y;
+
+  if (tree.children.length === 0) return;
+
+  let totalChildrenWidth = 0;
+  for (let i = 0; i < tree.children.length; i++) {
+    totalChildrenWidth += tree.children[i].subtreeWidth;
+    if (i < tree.children.length - 1) {
+      totalChildrenWidth += HORIZONTAL_GAP;
+    }
+  }
+
+  let childX = xStart + (tree.subtreeWidth - totalChildrenWidth) / 2;
+  const childY = y + tree.height + VERTICAL_GAP * 5;
+
+  for (const child of tree.children) {
+    assignPositionsOC(child, childX, childY);
+    childX += child.subtreeWidth + HORIZONTAL_GAP;
+  }
+}
+
+// ══════════════════════════════════════════════════════════════
+// Radial layout
+// ══════════════════════════════════════════════════════════════
+
+function countLeaves(tree: TreeNode): number {
+  if (tree.children.length === 0) return 1;
+  let sum = 0;
+  for (const child of tree.children) sum += countLeaves(child);
+  return sum;
+}
+
+function assignPositionsRadial(
+  tree: TreeNode,
+  cx: number,
+  cy: number,
+  startAngle: number,
+  endAngle: number,
+  radius: number,
+): void {
+  if (tree.depth === 0) {
+    tree.x = cx - tree.width / 2;
+    tree.y = cy - tree.height / 2;
+  }
+
+  if (tree.children.length === 0) return;
+
+  const totalLeaves = tree.children.reduce((s, c) => s + countLeaves(c), 0);
+  const childRadius = radius + Math.max(tree.width, 180) + 40;
+
+  let currentAngle = startAngle;
+
+  for (const child of tree.children) {
+    const childLeaves = countLeaves(child);
+    const sweep = ((endAngle - startAngle) * childLeaves) / totalLeaves;
+    const midAngle = currentAngle + sweep / 2;
+
+    child.x = cx + childRadius * Math.cos(midAngle) - child.width / 2;
+    child.y = cy + childRadius * Math.sin(midAngle) - child.height / 2;
+
+    assignPositionsRadial(child, cx, cy, currentAngle, currentAngle + sweep, childRadius);
+    currentAngle += sweep;
+  }
+}
+
+function layoutRadial(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
+  const tree = buildTree(rootId, nodes);
+  if (!tree) return [];
+
+  const cx = 400;
+  const cy = 400;
+  assignPositionsRadial(tree, cx, cy, -Math.PI, Math.PI, 0);
+  return flatten(tree);
+}
+
+// ══════════════════════════════════════════════════════════════
+// Public API
+// ══════════════════════════════════════════════════════════════
+
 /**
  * Compute the full layout for a tree of nodes.
  * Returns an array of LayoutNodes with x,y positions.
@@ -176,14 +336,20 @@ function flatten(tree: TreeNode): LayoutNode[] {
 export function computeLayout(
   rootId: string,
   nodes: Record<string, Node>,
+  layoutType: LayoutType = 'tree-lr',
 ): LayoutNode[] {
-  const tree = buildTree(rootId, nodes);
-  if (!tree) return [];
-
-  computeSubtreeHeight(tree);
-  assignPositions(tree, 40, 40);
-
-  return flatten(tree);
+  switch (layoutType) {
+    case 'tree-lr':
+      return layoutTreeLR(rootId, nodes);
+    case 'tree-tb':
+      return layoutTreeTB(rootId, nodes);
+    case 'radial':
+      return layoutRadial(rootId, nodes);
+    case 'org-chart':
+      return layoutOrgChart(rootId, nodes);
+    default:
+      return layoutTreeLR(rootId, nodes);
+  }
 }
 
 /**

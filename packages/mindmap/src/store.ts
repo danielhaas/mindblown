@@ -16,7 +16,7 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list';
+export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar';
 
 export interface MindmapState {
   // Map list
@@ -27,9 +27,13 @@ export interface MindmapState {
   // Node state
   nodes: Record<string, Node>;
   rootNodeId: string | null;
-  selectedNodeId: string | null;
+  selectedNodeIds: string[];
+  selectedNodeId: string | null; // getter — first of selectedNodeIds
   editingNodeId: string | null;
   computed: Map<NodeId, ComputedNodeValues>;
+
+  // Layout
+  layoutType: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart';
 
   // Cycle / sprint state
   cycles: Cycle[];
@@ -60,14 +64,22 @@ export interface MindmapState {
   unassignNodeFromCycle: (nodeId: string, cycleId: string) => Promise<void>;
   setActiveCycleFilter: (cycleId: string | null) => void;
 
+  // Actions — layout
+  setLayoutType: (layout: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart') => void;
+
   // Actions — node level
   selectNode: (id: string | null) => void;
+  toggleSelectNode: (id: string) => void;
+  selectAllNodes: () => void;
+  clearSelection: () => void;
   startEditing: (id: string | null) => void;
   addNode: (parentId: string, text?: string, asSibling?: boolean) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   deleteNode: (id: string) => void;
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
   toggleCollapse: (id: string) => void;
+  expandAll: () => void;
+  collapseAll: () => void;
   recompute: () => void;
 
   // Helpers
@@ -87,9 +99,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   currentMap: null,
   nodes: {},
   rootNodeId: null,
+  selectedNodeIds: [],
   selectedNodeId: null,
   editingNodeId: null,
   computed: new Map(),
+  layoutType: 'tree-lr' as const,
   cycles: [],
   activeCycleFilter: null,
   activeView: 'mindmap',
@@ -130,6 +144,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         currentMap: data.map,
         nodes: nodesMap,
         rootNodeId: data.map.rootNodeId,
+        selectedNodeIds: [],
         selectedNodeId: null,
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
@@ -172,6 +187,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       currentMap: null,
       nodes: {},
       rootNodeId: null,
+      selectedNodeIds: [],
       selectedNodeId: null,
       editingNodeId: null,
       computed: new Map(),
@@ -328,7 +344,33 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   // ── Node actions ─────────────────────────────────────────────
 
-  selectNode: (id) => set({ selectedNodeId: id, editingNodeId: null }),
+  // ── Layout actions ────────────────────────────────────────────
+
+  setLayoutType: (layout) => set({ layoutType: layout }),
+
+  // ── Selection actions ───────────────────────────────────────
+
+  selectNode: (id) => set({
+    selectedNodeIds: id ? [id] : [],
+    selectedNodeId: id,
+    editingNodeId: null,
+  }),
+
+  toggleSelectNode: (id) => {
+    const state = get();
+    const ids = state.selectedNodeIds.includes(id)
+      ? state.selectedNodeIds.filter((i) => i !== id)
+      : [...state.selectedNodeIds, id];
+    set({ selectedNodeIds: ids, selectedNodeId: ids[0] ?? null, editingNodeId: null });
+  },
+
+  selectAllNodes: () => {
+    const state = get();
+    const allIds = Object.keys(state.nodes);
+    set({ selectedNodeIds: allIds, selectedNodeId: allIds[0] ?? null });
+  },
+
+  clearSelection: () => set({ selectedNodeIds: [], selectedNodeId: null, editingNodeId: null }),
 
   startEditing: (id) => set({ editingNodeId: id }),
 
@@ -398,6 +440,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
     set({
       nodes: updatedNodes,
+      selectedNodeIds: [tempId],
       selectedNodeId: tempId,
       editingNodeId: tempId,
       computed: recomputeValues(updatedNodes),
@@ -431,6 +474,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
           // Update selection if still pointing to temp
           if (current.selectedNodeId === tempId) {
+            newState.selectedNodeIds = current.selectedNodeIds.map((i) => i === tempId ? serverNode.id : i);
             newState.selectedNodeId = serverNode.id;
           }
           if (current.editingNodeId === tempId) {
@@ -453,6 +497,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
           }
           set({
             nodes,
+            selectedNodeIds: [targetParentId],
             selectedNodeId: targetParentId,
             editingNodeId: null,
             computed: recomputeValues(nodes),
@@ -530,6 +575,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     // Optimistic update
     set({
       nodes: updatedNodes,
+      selectedNodeIds: nextSelection ? [nextSelection] : [],
       selectedNodeId: nextSelection,
       editingNodeId: null,
       computed: recomputeValues(updatedNodes),
@@ -599,6 +645,28 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     });
   },
 
+  expandAll: () => {
+    const state = get();
+    const updatedNodes = { ...state.nodes };
+    for (const [id, node] of Object.entries(updatedNodes)) {
+      if (node.collapsed && node.childrenIds.length > 0) {
+        updatedNodes[id] = { ...node, collapsed: false };
+      }
+    }
+    set({ nodes: updatedNodes });
+  },
+
+  collapseAll: () => {
+    const state = get();
+    const updatedNodes = { ...state.nodes };
+    for (const [id, node] of Object.entries(updatedNodes)) {
+      if (!node.collapsed && node.childrenIds.length > 0 && id !== state.rootNodeId) {
+        updatedNodes[id] = { ...node, collapsed: true };
+      }
+    }
+    set({ nodes: updatedNodes });
+  },
+
   recompute: () => {
     const state = get();
     set({ computed: recomputeValues(state.nodes) });
@@ -664,8 +732,10 @@ function handleWsMessage(
       const newState: Partial<MindmapState> = { nodes, computed: recomputeValues(nodes) };
 
       // Clear selection if it was deleted
-      if (state.selectedNodeId && deletedIds.includes(state.selectedNodeId)) {
-        newState.selectedNodeId = null;
+      const remainingSelected = state.selectedNodeIds.filter((id) => !deletedIds.includes(id));
+      if (remainingSelected.length !== state.selectedNodeIds.length) {
+        newState.selectedNodeIds = remainingSelected;
+        newState.selectedNodeId = remainingSelected[0] ?? null;
         newState.editingNodeId = null;
       }
 

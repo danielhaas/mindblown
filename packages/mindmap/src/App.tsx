@@ -6,7 +6,10 @@ import { PropertyPanel } from './PropertyPanel.js';
 import { KanbanView } from './KanbanView.js';
 import { GanttView } from './GanttView.js';
 import { ListView } from './ListView.js';
+import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
+import { CommandPalette } from './CommandPalette.js';
+import { QuickAdd } from './QuickAdd.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -377,6 +380,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'kanban', label: 'Kanban', enabled: true },
   { id: 'gantt', label: 'Gantt', enabled: true },
   { id: 'list', label: 'List', enabled: false },
+  { id: 'calendar', label: 'Calendar', enabled: true },
 ];
 
 function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: ActiveView) => void }) {
@@ -578,6 +582,54 @@ export function App() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [quickAddOpen, setQuickAddOpen] = useState(false);
+
+  // Global keyboard shortcuts for command palette and quick add
+  useEffect(() => {
+    if (!currentMapId) return;
+
+    const handler = (e: KeyboardEvent) => {
+      // Don't intercept when typing in inputs
+      const target = e.target as HTMLElement;
+      const isInput = target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
+
+      // Cmd+K / Ctrl+K -> command palette (always, even in inputs)
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCommandPaletteOpen((v) => !v);
+        setQuickAddOpen(false);
+        return;
+      }
+
+      if (isInput) return;
+
+      // Q -> quick add (only when not in an input)
+      if (e.key === 'q' || e.key === 'Q') {
+        // Don't open if editing a node
+        const editingNodeId = useMindmapStore.getState().editingNodeId;
+        if (editingNodeId) return;
+        e.preventDefault();
+        setQuickAddOpen((v) => !v);
+        setCommandPaletteOpen(false);
+        return;
+      }
+    };
+
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [currentMapId]);
+
+  // Helper callbacks for command palette
+  const handleFitToScreen = useCallback(() => {
+    (window as any).__mindmapFitToScreen?.();
+  }, []);
+  const handleZoomIn = useCallback(() => {
+    (window as any).__mindmapZoomIn?.();
+  }, []);
+  const handleZoomOut = useCallback(() => {
+    (window as any).__mindmapZoomOut?.();
+  }, []);
 
   // Load maps on mount
   useEffect(() => {
@@ -781,8 +833,8 @@ export function App() {
           {/* Keyboard hint */}
           <span style={{ fontSize: 11, color: '#cbd5e1' }}>
             {selectedNodeId
-              ? 'Tab: child | Enter: sibling | Space: collapse | Del: delete'
-              : 'Click a node to start'}
+              ? '\u2318K: commands | Q: quick add | Tab: child | Enter: sibling'
+              : '\u2318K: commands | Q: quick add | Click a node to start'}
           </span>
         </div>
       </div>
@@ -826,6 +878,7 @@ export function App() {
           {activeView === 'kanban' && <KanbanView />}
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'list' && <ListView />}
+          {activeView === 'calendar' && <CalendarView />}
         </div>
         {sprintPanelOpen ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
@@ -833,6 +886,21 @@ export function App() {
           <PropertyPanel />
         )}
       </div>
+
+      {/* Command Palette */}
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onFitToScreen={handleFitToScreen}
+        onZoomIn={handleZoomIn}
+        onZoomOut={handleZoomOut}
+      />
+
+      {/* Quick Add */}
+      <QuickAdd
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+      />
     </div>
   );
 }

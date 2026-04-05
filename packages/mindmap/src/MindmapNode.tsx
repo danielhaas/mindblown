@@ -116,7 +116,7 @@ interface MindmapNodeProps {
   isDragTarget?: boolean;
   isDragInvalid?: boolean;
   isDragging?: boolean;
-  onSelect: () => void;
+  onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
   onEditCancel: () => void;
@@ -236,8 +236,8 @@ export function MindmapNode({
         });
         window.dispatchEvent(targetEvent);
 
-        onSelect();
-        if (onDragStart) {
+        onSelect(e.shiftKey);
+        if (onDragStart && !e.shiftKey) {
           onDragStart(node.id, e.clientX, e.clientY);
         }
       }
