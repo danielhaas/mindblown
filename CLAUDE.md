@@ -40,6 +40,7 @@ This project uses specialized agents. See `.claude/agents/` for definitions:
 - **Lens** — Frontend views. Kanban, Gantt, List/Table, Calendar — all from the same data.
 - **Engine** — Backend. API, persistence, sync, computation (rollups, scheduling, critical path).
 - **Bridge** — Integrations. GitHub Issues sync, import/export, external APIs.
+- **Oracle** — MCP server. Exposes MindBlown to AI agents via Model Context Protocol.
 
 ## Development Principles
 
