@@ -14,10 +14,54 @@ import { formatMapTree, formatHealthReport, formatScheduleReport, formatSprintOv
 
 // ── Server setup ────────────────────────────────────────────────
 
-const server = new McpServer({
-  name: 'mindblown',
-  version: '0.0.1',
-});
+const server = new McpServer(
+  {
+    name: 'mindblown',
+    version: '0.0.1',
+  },
+  {
+    instructions: `MindBlown is a mindmap-based project management tool. The core idea: you brainstorm in a mindmap, and the mindmap IS your project plan. There is no separate "task list" — every node in the mindmap is a task.
+
+## Key concepts
+
+- **Maps** are projects. Each map has a root node and a tree of child nodes.
+- **Nodes** are everything: ideas, tasks, epics, milestones. A node starts as a simple text label and can be gradually enriched with estimates, status, priority, dates, assignees, etc.
+- **Leaf nodes** are where you set effort estimates and percent complete. Parent nodes auto-compute these values from their children using weighted rollup.
+- **Health signals** propagate upward: if any leaf is "behind", its entire ancestor chain is marked "behind" (worst-child-wins).
+- **Dependencies** link nodes with 4 types: Finish-to-Start (FS), Start-to-Start (SS), Finish-to-Finish (FF), Start-to-Finish (SF). These feed the critical path scheduler.
+- **Sprints/Cycles** group nodes into time-boxed iterations. Nodes can be assigned to a sprint.
+- **Milestones** are special nodes marking key deliverables.
+
+## The planning loop
+
+1. Map out work as a mindmap (create nodes under parents)
+2. Set effort estimates on leaf nodes (set_estimate)
+3. Set percent complete on leaves as work progresses (set_progress)
+4. Parent nodes auto-compute progress (weighted: sum(child.estimate × child.progress) / sum(child.estimate))
+5. Health signals propagate upward automatically
+6. Schedule projections update via critical path analysis (get_schedule)
+
+## Typical workflows
+
+**Starting a new project:** create_map → create nodes for major areas → add child nodes for tasks → set estimates on leaves.
+
+**Checking status:** list_maps → get_map (shows full tree with computed progress/health) → use get_schedule for timeline.
+
+**Updating progress:** set_progress on leaf nodes you've worked on. Parents update automatically.
+
+**Sprint planning:** list_cycles to see sprints → assign_to_sprint to add tasks → track progress per sprint.
+
+**Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
+
+## Important notes
+
+- Always call list_maps first to discover available maps and their IDs.
+- When creating nodes, you need a mapId and parentId. Get these from get_map.
+- Progress and effort only make sense on leaf nodes (nodes with no children). Parents compute automatically.
+- The get_map tool returns the full tree with all computed fields — it's the most informative single call.
+- Node IDs are UUIDs. You'll get them from list_maps, get_map, or create responses.`,
+  },
+);
 
 // ── Helper: wrap tool handlers with error handling ──────────────
 
