@@ -236,9 +236,14 @@ server.tool(
   },
 );
 
+const VALID_NODE_FIELDS = new Set([
+  'text', 'description', 'effortEstimate', 'percentComplete', 'status',
+  'priority', 'dueDate', 'startDate', 'tags', 'assigneeIds', 'isMilestone',
+]);
+
 server.tool(
   'bulk_update_nodes',
-  'Update multiple nodes at once',
+  'Update multiple nodes at once. Valid fields: text, description, effortEstimate, percentComplete, status, priority, dueDate, startDate, tags, assigneeIds, isMilestone',
   {
     mapId: z.string().describe('The map ID'),
     updates: z.array(z.object({
@@ -250,6 +255,11 @@ server.tool(
     try {
       const results: string[] = [];
       for (const { nodeId, fields } of updates) {
+        const unknownFields = Object.keys(fields).filter((k) => !VALID_NODE_FIELDS.has(k));
+        if (unknownFields.length > 0) {
+          results.push(`  ${nodeId}: FAILED — unknown field(s): ${unknownFields.join(', ')}`);
+          continue;
+        }
         try {
           await api.updateNode(mapId, nodeId, fields as Record<string, unknown>);
           results.push(`  ${nodeId}: updated ${Object.keys(fields).join(', ')}`);
@@ -259,6 +269,64 @@ server.tool(
         }
       }
       return toolResult(`Bulk update results:\n${results.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'bulk_set_estimate',
+  'Set effort estimates on multiple leaf nodes at once',
+  {
+    mapId: z.string().describe('The map ID'),
+    estimates: z.array(z.object({
+      nodeId: z.string().describe('Node ID'),
+      estimate: z.number().min(0).describe('Effort estimate (must be >= 0)'),
+    })).describe('Array of {nodeId, estimate} pairs'),
+  },
+  async ({ mapId, estimates }) => {
+    try {
+      const results: string[] = [];
+      for (const { nodeId, estimate } of estimates) {
+        try {
+          await api.updateNode(mapId, nodeId, { effortEstimate: estimate });
+          results.push(`  ${nodeId}: estimate = ${estimate}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          results.push(`  ${nodeId}: FAILED — ${msg}`);
+        }
+      }
+      return toolResult(`Bulk set_estimate results (${estimates.length} nodes):\n${results.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'bulk_set_progress',
+  'Set percent complete on multiple leaf nodes at once',
+  {
+    mapId: z.string().describe('The map ID'),
+    updates: z.array(z.object({
+      nodeId: z.string().describe('Node ID'),
+      percent: z.number().min(0).max(100).describe('Percent complete (0-100)'),
+    })).describe('Array of {nodeId, percent} pairs'),
+  },
+  async ({ mapId, updates }) => {
+    try {
+      const results: string[] = [];
+      for (const { nodeId, percent } of updates) {
+        try {
+          await api.updateNode(mapId, nodeId, { percentComplete: percent });
+          results.push(`  ${nodeId}: progress = ${percent}%`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          results.push(`  ${nodeId}: FAILED — ${msg}`);
+        }
+      }
+      return toolResult(`Bulk set_progress results (${updates.length} nodes):\n${results.join('\n')}`);
     } catch (err) {
       return toolError(err);
     }
