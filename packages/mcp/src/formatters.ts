@@ -18,9 +18,10 @@ function healthIcon(signal: string): string {
 }
 
 function progressBar(pct: number): string {
-  const filled = Math.round(pct * 10);
+  const clamped = Math.max(0, Math.min(100, pct));
+  const filled = Math.round(clamped / 10);
   const empty = 10 - filled;
-  return `[${'#'.repeat(filled)}${'.'.repeat(empty)}] ${Math.round(pct * 100)}%`;
+  return `[${'#'.repeat(filled)}${'.'.repeat(empty)}] ${Math.round(clamped)}%`;
 }
 
 // ── Tree rendering ──────────────────────────────────────────────
@@ -115,7 +116,7 @@ export function formatHealthReport(data: MapDetail): string {
     lines.push('## Behind');
     for (const n of behind) {
       lines.push(`- **${n.text}** (id: ${n.id})`);
-      lines.push(`  Progress: ${Math.round(n.computedProgress * 100)}% | Effort: ${n.computedEffort}`);
+      lines.push(`  Progress: ${Math.round(n.computedProgress)}% | Effort: ${n.computedEffort}`);
       const reasons: string[] = [];
       if (n.dueDate) {
         const now = new Date().toISOString().split('T')[0];
@@ -138,7 +139,7 @@ export function formatHealthReport(data: MapDetail): string {
     lines.push('## At Risk');
     for (const n of atRisk) {
       lines.push(`- **${n.text}** (id: ${n.id})`);
-      lines.push(`  Progress: ${Math.round(n.computedProgress * 100)}% | Effort: ${n.computedEffort}`);
+      lines.push(`  Progress: ${Math.round(n.computedProgress)}% | Effort: ${n.computedEffort}`);
       if (n.dueDate) {
         lines.push(`  Due: ${n.dueDate}`);
       }
@@ -168,7 +169,7 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
     for (const nodeId of scheduleData.criticalPath.path) {
       const node = lookup.get(nodeId);
       const name = node?.text ?? nodeId;
-      const progress = node ? Math.round(node.computedProgress * 100) : 0;
+      const progress = node ? Math.round(node.computedProgress) : 0;
       lines.push(`  -> ${name} (${progress}% complete)`);
     }
   }
@@ -223,7 +224,7 @@ export async function formatSprintOverview(mapData: MapDetail): Promise<string> 
       }
 
       for (const n of nodes) {
-        const pct = Math.round(n.computedProgress * 100);
+        const pct = Math.round(n.computedProgress);
         lines.push(`  - ${n.text} — ${pct}%${n.status ? ` [${n.status}]` : ''}`);
       }
       lines.push('');
@@ -271,7 +272,7 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
   lines.push('');
   lines.push('## Computed Values');
   lines.push(`- **Computed effort:** ${node.computedEffort}`);
-  lines.push(`- **Computed progress:** ${Math.round(node.computedProgress * 100)}%`);
+  lines.push(`- **Computed progress:** ${Math.round(node.computedProgress)}%`);
   lines.push(`- **Health:** ${node.healthSignal}`);
 
   if (node.dependencies.length > 0) {

@@ -209,8 +209,9 @@ export async function moveNode(
   const [newParent] = await db.select().from(nodes).where(eq(nodes.id, newParentId));
   if (!newParent) return null;
 
-  const newOrder = (newParent.childrenOrder as string[]) ?? [];
-  if (position != null && position >= 0 && position < newOrder.length) {
+  // Remove any existing reference first to prevent duplicates
+  const newOrder = ((newParent.childrenOrder as string[]) ?? []).filter((id: string) => id !== nodeId);
+  if (position != null && position >= 0 && position <= newOrder.length) {
     newOrder.splice(position, 0, nodeId);
   } else {
     newOrder.push(nodeId);

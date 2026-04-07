@@ -1,6 +1,14 @@
 import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
 import { computeTree } from '@mindblown/core';
 import * as cycleDb from '../db/cycles.js';
+import { db } from '../db/connection.js';
+import { workspaces } from '../db/schema.js';
+
+/** Extract YYYY-MM-DD from an ISO 8601 string or date-only string. */
+function toDateOnly(input: string): string {
+  return input.slice(0, 10);
+}
 
 export async function cycleRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/cycles — Create a cycle ───────────────────────────
@@ -18,7 +26,18 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const cycle = await cycleDb.createCycle(body.workspaceId, body.name, body.startDate, body.endDate);
+    // Validate workspace exists
+    const [ws] = await db.select().from(workspaces).where(eq(workspaces.id, body.workspaceId));
+    if (!ws) {
+      return reply.status(404).send({
+        error: { code: 'WORKSPACE_NOT_FOUND', message: `Workspace ${body.workspaceId} not found` },
+      });
+    }
+
+    const startDate = toDateOnly(body.startDate);
+    const endDate = toDateOnly(body.endDate);
+
+    const cycle = await cycleDb.createCycle(body.workspaceId, body.name, startDate, endDate);
     return reply.status(201).send(cycle);
   });
 

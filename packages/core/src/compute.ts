@@ -52,7 +52,7 @@ export function computeProgress(node: Node, nodeMap: NodeMap): number {
   }
 
   if (totalEffort === 0) return 0;
-  return weightedProgress / totalEffort;
+  return Math.max(0, Math.min(100, weightedProgress / totalEffort));
 }
 
 /**

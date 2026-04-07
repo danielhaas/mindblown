@@ -96,7 +96,7 @@ server.tool(
       const maps = await api.listMaps();
       const lines = maps.map((m) => {
         const health = m.healthSignal === 'on_track' ? '[OK]' : m.healthSignal === 'at_risk' ? '[AT RISK]' : '[BEHIND]';
-        return `- ${m.name} (id: ${m.id}) — ${Math.round(m.computedProgress * 100)}% complete ${health}`;
+        return `- ${m.name} (id: ${m.id}, workspaceId: ${m.workspaceId}) — ${Math.round(m.computedProgress)}% complete ${health}`;
       });
       return toolResult(lines.length > 0 ? lines.join('\n') : 'No maps found.');
     } catch (err) {
@@ -504,7 +504,7 @@ server.tool(
 
       const lines = matches.map((n) => {
         const health = n.healthSignal === 'on_track' ? '[OK]' : n.healthSignal === 'at_risk' ? '[AT RISK]' : '[BEHIND]';
-        const progress = Math.round(n.computedProgress * 100);
+        const progress = Math.round(n.computedProgress);
         return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}`;
       });
 
@@ -552,7 +552,7 @@ server.resource(
           const health = m.healthSignal === 'on_track' ? 'On Track' : m.healthSignal === 'at_risk' ? 'At Risk' : 'Behind';
           lines.push(`## ${m.name}`);
           lines.push(`- **ID:** ${m.id}`);
-          lines.push(`- **Progress:** ${Math.round(m.computedProgress * 100)}%`);
+          lines.push(`- **Progress:** ${Math.round(m.computedProgress)}%`);
           lines.push(`- **Health:** ${health}`);
           lines.push(`- **Effort unit:** ${m.effortUnit ?? 'hours'}`);
           lines.push(`- **Updated:** ${m.updatedAt}`);
@@ -834,7 +834,7 @@ server.prompt(
         text += `These nodes block multiple other tasks:\n`;
         for (const [nodeId, count] of bottlenecks) {
           const node = data.nodes.find((n) => n.id === nodeId);
-          text += `- **${node?.text ?? nodeId}** — blocks ${count} other task(s), ${Math.round((node?.computedProgress ?? 0) * 100)}% complete\n`;
+          text += `- **${node?.text ?? nodeId}** — blocks ${count} other task(s), ${Math.round(node?.computedProgress ?? 0)}% complete\n`;
         }
         text += '\n';
       }
@@ -842,7 +842,7 @@ server.prompt(
       if (overdue.length > 0) {
         text += `## Overdue Items\n`;
         for (const n of overdue) {
-          text += `- **${n.text}** — due ${n.dueDate}, ${Math.round((n.computedProgress ?? 0) * 100)}% complete\n`;
+          text += `- **${n.text}** — due ${n.dueDate}, ${Math.round(n.computedProgress ?? 0)}% complete\n`;
         }
         text += '\n';
       }
@@ -884,7 +884,7 @@ server.prompt(
         text += 'No changes in the last 24 hours.\n';
       } else {
         for (const n of recentlyUpdated) {
-          text += `- ${n.text} — ${Math.round(n.computedProgress * 100)}%${n.status ? ` [${n.status}]` : ''}\n`;
+          text += `- ${n.text} — ${Math.round(n.computedProgress)}%${n.status ? ` [${n.status}]` : ''}\n`;
         }
       }
 
