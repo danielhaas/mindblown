@@ -270,6 +270,16 @@ export function processWebhook(
           },
         };
 
+      case 'edited':
+        return {
+          action: 'issues.edited',
+          externalId,
+          nodeUpdates: {
+            text: payload.issue!.title,
+            description: payload.issue!.body,
+          },
+        };
+
       case 'assigned':
         if (payload.assignee) {
           return {

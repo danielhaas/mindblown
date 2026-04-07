@@ -1,6 +1,58 @@
 import type { FastifyInstance } from 'fastify';
+import { eq, and } from 'drizzle-orm';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import { db } from '../db/connection.js';
+import { integrations, maps } from '../db/schema.js';
+import { updateGitHubIssue } from '@mindblown/integrations';
+import type { ExternalLink, Node as CoreNode } from '@mindblown/core';
+
+// Fields that should trigger outbound GitHub sync
+const SYNC_FIELDS = new Set([
+  'text', 'description', 'percentComplete', 'status', 'tags', 'priority',
+]);
+
+/**
+ * Fire-and-forget outbound sync to GitHub for linked nodes.
+ * Runs async — does not block the API response.
+ */
+async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promise<void> {
+  // Only sync if relevant fields changed
+  if (!changedFields.some((f) => SYNC_FIELDS.has(f))) return;
+
+  // Find GitHub links with sync enabled
+  const githubLinks = node.externalLinks.filter(
+    (l) => l.provider === 'github' && l.syncEnabled,
+  );
+  if (githubLinks.length === 0) return;
+
+  // Look up the workspace integration for the token
+  const [map] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, node.mapId));
+  if (!map) return;
+
+  const [integration] = await db.select().from(integrations).where(
+    and(eq(integrations.workspaceId, map.workspaceId), eq(integrations.provider, 'github')),
+  );
+  if (!integration?.enabled) return;
+
+  const config = integration.config as unknown as { token: string };
+
+  for (const link of githubLinks) {
+    try {
+      await updateGitHubIssue(node, link, config.token);
+      // Update lastSyncedAt on the link
+      const updatedLinks = node.externalLinks.map((l) =>
+        l.provider === link.provider && l.externalId === link.externalId
+          ? { ...l, lastSyncedAt: new Date().toISOString() }
+          : l,
+      );
+      await nodeDb.updateNode(node.id, { externalLinks: updatedLinks });
+    } catch (err) {
+      // Log but don't fail — outbound sync is best-effort
+      console.error(`[github-sync] Failed to sync node ${node.id} → ${link.externalId}:`, err);
+    }
+  }
+}
 
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps/:id/nodes — Create a node ─────────────────
@@ -89,6 +141,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         fields: Object.keys(body),
         node: updated,
       });
+
+      // Fire outbound GitHub sync (non-blocking)
+      syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
 
       return reply.send(updated);
     },
