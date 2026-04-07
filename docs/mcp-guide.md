@@ -12,38 +12,89 @@ The MCP server runs as a local process using stdio transport. It communicates wi
 
 ---
 
-## Setup
+## Prerequisites
 
-### 1. Build the MCP server
+Before setting up the MCP server, make sure MindBlown is running:
 
 ```bash
+# 1. Start the database (PostgreSQL)
+docker run -d --name mindblown-db \
+  -e POSTGRES_USER=mindblown \
+  -e POSTGRES_PASSWORD=mindblown \
+  -e POSTGRES_DB=mindblown \
+  -p 5433:5432 postgres:16
+
+# 2. Start the backend API
+cd packages/server
+pnpm build && node dist/index.js
+# API will be running on http://localhost:3001
+
+# 3. Build the MCP server
 cd packages/mcp
 pnpm build
 ```
 
-### 2. Get a JWT token
+Verify the backend is running:
+
+```bash
+curl http://localhost:3001/api/health
+# Should return: {"status":"ok", ...}
+```
+
+---
+
+## Setup
+
+### Step 1: Get a JWT token
 
 Register or log in via the API to get a token:
 
 ```bash
 # Register a new user
-curl -X POST http://localhost:3001/api/auth/register \
+curl -s -X POST http://localhost:3001/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"email": "you@example.com", "password": "your-password", "name": "Your Name"}'
 
-# Or log in
-curl -X POST http://localhost:3001/api/auth/login \
+# Or log in with an existing account
+curl -s -X POST http://localhost:3001/api/auth/login \
   -H "Content-Type: application/json" \
   -d '{"email": "you@example.com", "password": "your-password"}'
 ```
 
-Copy the `token` from the response.
+Both return a JSON response with a `token` field. Copy that token -- you'll need it in the next step.
 
-### 3. Configure your AI client
+> **Note:** Tokens expire after 7 days by default. When your token expires, log in again and update the config.
 
-#### Claude Code
+### Step 2: Configure your AI client
 
-Add to your Claude Code MCP configuration (typically `~/.claude/mcp.json` or project-level `.mcp.json`):
+#### Claude Code (recommended)
+
+The easiest way is using the CLI command:
+
+```bash
+claude mcp add mindblown \
+  --transport stdio \
+  --scope user \
+  -e MINDBLOWN_API_URL=http://localhost:3001 \
+  -e MINDBLOWN_TOKEN=<your-jwt-token> \
+  -- node /absolute/path/to/mindblown/packages/mcp/dist/index.js
+```
+
+- `--scope user` makes it available in **all** your Claude Code sessions (any project directory)
+- `--scope project` would add it to `.mcp.json` in the current project only
+
+Verify it's connected:
+
+```bash
+claude mcp list
+# Should show: mindblown: node ... - ✓ Connected
+```
+
+**Important:** After adding the MCP server, **restart any running Claude Code sessions**. MCP servers are loaded at session startup.
+
+#### Claude Code (manual config)
+
+If you prefer to edit the config file directly, add to `~/.claude.json`:
 
 ```json
 {
@@ -59,6 +110,8 @@ Add to your Claude Code MCP configuration (typically `~/.claude/mcp.json` or pro
   }
 }
 ```
+
+> **Warning:** The config goes in `~/.claude.json` (the root-level dotfile), NOT `~/.claude/settings.json` or `~/.claude/mcp.json` -- those are different files.
 
 #### Cursor
 
@@ -79,9 +132,60 @@ Add to your Cursor MCP settings (Settings > MCP Servers):
 }
 ```
 
-### 4. Verify
+#### Windsurf
 
-Ask your AI assistant: "List my MindBlown maps." It should call the `list_maps` tool and return your projects.
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "mindblown": {
+      "command": "node",
+      "args": ["/absolute/path/to/mindblown/packages/mcp/dist/index.js"],
+      "env": {
+        "MINDBLOWN_API_URL": "http://localhost:3001",
+        "MINDBLOWN_TOKEN": "<your-jwt-token>"
+      }
+    }
+  }
+}
+```
+
+#### Any MCP-compatible client
+
+MindBlown uses **stdio transport**. Configure your client with:
+
+- **Command:** `node`
+- **Args:** `["/path/to/mindblown/packages/mcp/dist/index.js"]`
+- **Environment variables:**
+  - `MINDBLOWN_API_URL` -- URL of the MindBlown API (default: `http://localhost:3001`)
+  - `MINDBLOWN_TOKEN` -- JWT authentication token
+
+### Step 3: Verify
+
+Start a new session in your AI client and ask:
+
+> "List my MindBlown maps"
+
+The AI should call the `list_maps` tool and return your projects. If the AI doesn't recognize MindBlown, see the [Troubleshooting](#troubleshooting) section.
+
+---
+
+## What can the AI do?
+
+Once connected, the AI can fully manage your projects through natural conversation. The server provides detailed instructions to the AI about MindBlown's domain model, so it understands concepts like the planning loop, weighted rollup, and health signals.
+
+### Quick examples
+
+| You say | What happens |
+|---------|-------------|
+| "What's the status of my project?" | AI reads the map tree and health report, gives an executive summary |
+| "Create a task for API authentication under the Backend branch" | AI calls `create_node` with the right parent |
+| "Estimate all unestimated tasks" | AI uses the `estimate_tasks` prompt to suggest estimates with reasoning |
+| "Mark the Design System as 75% complete" | AI calls `set_progress` on the leaf node |
+| "What's blocking us?" | AI analyzes dependencies, bottlenecks, and overdue items |
+| "Create a sprint for next week with the top priority tasks" | AI creates a cycle and assigns appropriate nodes |
+| "Generate a standup update" | AI uses the `daily_standup` prompt to summarize recent changes |
 
 ---
 
@@ -261,6 +365,29 @@ Recommended priority: Start Backend API work immediately (risk 1), then unblock 
 
 ## Troubleshooting
 
+### Tools not appearing in AI client
+
+This is the most common issue. Check these in order:
+
+1. **Restart the AI session.** MCP servers are loaded at session startup. If you added the config while a session was running, it won't see the server until you restart.
+
+2. **Verify the config is in the right file:**
+   - Claude Code: `~/.claude.json` (for user scope) or `.mcp.json` (for project scope)
+   - NOT `~/.claude/settings.json` or `~/.claude/mcp.json` -- these are different files
+   - Run `claude mcp list` to verify: you should see `mindblown: ... - ✓ Connected`
+
+3. **Check the MCP server can start:**
+   ```bash
+   MINDBLOWN_API_URL=http://localhost:3001 MINDBLOWN_TOKEN=<token> \
+     node /path/to/mindblown/packages/mcp/dist/index.js
+   ```
+   If it hangs silently, that's correct (it's waiting for stdio input). Press Ctrl+C.
+
+4. **Verify the backend is running:**
+   ```bash
+   curl http://localhost:3001/api/health
+   ```
+
 ### "Error: connect ECONNREFUSED"
 
 The MCP server cannot reach the MindBlown API. Make sure:
@@ -274,7 +401,7 @@ Your JWT token has expired or is invalid.
 - Tokens expire after 7 days by default (configurable via `JWT_EXPIRES_IN`)
 - Generate a new token by logging in again:
   ```bash
-  curl -X POST http://localhost:3001/api/auth/login \
+  curl -s -X POST http://localhost:3001/api/auth/login \
     -H "Content-Type: application/json" \
     -d '{"email": "you@example.com", "password": "your-password"}'
   ```
@@ -289,9 +416,3 @@ Your JWT token has expired or is invalid.
 ### "No maps found" when maps exist
 
 The token might belong to a user without access. Check that the user associated with the token has permission to view the maps in question.
-
-### Tools not appearing in AI client
-
-- Restart your AI client after changing MCP configuration
-- Check the MCP server logs for startup errors
-- Verify the config JSON is valid (no trailing commas, correct paths)
