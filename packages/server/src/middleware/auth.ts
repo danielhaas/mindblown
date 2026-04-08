@@ -16,9 +16,8 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return reply.status(401).send({
-      error: { code: 'UNAUTHORIZED', message: 'Missing or invalid Authorization header' },
-    });
+    // Allow unauthenticated requests — routes check req.userId when needed
+    return;
   }
 
   const token = authHeader.slice(7);

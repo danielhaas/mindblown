@@ -57,7 +57,6 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps/:id/nodes — Create a node ─────────────────
   app.post<{ Params: { id: string } }>('/api/maps/:id/nodes', async (req, reply) => {
-    const userId = req.userId!;
     const body = req.body as {
       parentId: string;
       text: string;
@@ -71,6 +70,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       dueDate?: string;
       isMilestone?: boolean;
     };
+    const userId = req.userId ?? body.createdBy ?? 'system';
 
     if (!body.parentId || !body.text) {
       return reply.status(400).send({

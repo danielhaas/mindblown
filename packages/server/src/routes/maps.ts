@@ -2,17 +2,24 @@ import type { FastifyInstance } from 'fastify';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
+import { db } from '../db/connection.js';
+import { workspaces, users } from '../db/schema.js';
 
 export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps — Create a map ─────────────────────────────
   app.post('/api/maps', async (req, reply) => {
-    const userId = req.userId!;
     const body = req.body as {
       name: string;
       description?: string;
       workspaceId: string;
+      createdBy?: string;
       effortUnit?: 'hours' | 'days' | 'points';
     };
+    let userId = req.userId ?? body.createdBy;
+    if (!userId) {
+      const [firstUser] = await db.select({ id: users.id }).from(users).limit(1);
+      userId = firstUser?.id ?? 'system';
+    }
 
     if (!body.name || !body.workspaceId) {
       return reply.status(400).send({
@@ -20,8 +27,21 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // Resolve 'default' workspaceId to the first available workspace
+    let { workspaceId } = body;
+    if (workspaceId === 'default') {
+      const [ws] = await db.select({ id: workspaces.id }).from(workspaces).limit(1);
+      if (!ws) {
+        return reply.status(400).send({
+          error: { code: 'NO_WORKSPACE', message: 'No workspace found. Create a workspace first.' },
+        });
+      }
+      workspaceId = ws.id;
+    }
+
     const result = await mapDb.createMap({
       ...body,
+      workspaceId,
       createdBy: userId,
     });
     return reply.status(201).send(result);

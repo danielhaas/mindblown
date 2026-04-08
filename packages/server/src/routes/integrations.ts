@@ -254,9 +254,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const parentNodeId = body.parentNodeId ?? map.rootNodeId;
 
       // Fetch issues from GitHub (optionally include closed issues for full roadmap)
-      const importedIssues = await importGitHubIssues(owner, repo, token, {
-        includeAll: body.includeAll,
-      });
+      let importedIssues;
+      try {
+        importedIssues = await importGitHubIssues(owner, repo, token, {
+          includeAll: body.includeAll,
+        });
+      } catch (err) {
+        return reply.status(400).send({
+          error: {
+            code: 'GITHUB_API_ERROR',
+            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+          },
+        });
+      }
 
       // ── Create versions and milestones from GitHub milestones ────
       // Group by version prefix (e.g. "V1: 1a. Foo" → version "V1", milestone "Foo")
