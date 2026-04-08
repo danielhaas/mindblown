@@ -174,6 +174,22 @@ export function createMap(name: string, description?: string, workspaceId = 'def
   });
 }
 
+export function updateMap(
+  mapId: string,
+  fields: { name?: string; description?: string | null },
+): Promise<MapSummary> {
+  return request<MapSummary>(`/api/maps/${mapId}`, {
+    method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
+export function deleteMap(mapId: string): Promise<void> {
+  return request<void>(`/api/maps/${mapId}`, {
+    method: 'DELETE',
+  });
+}
+
 export function getSchedule(mapId: string): Promise<ScheduleResult> {
   return request<ScheduleResult>(`/api/maps/${mapId}/schedule`);
 }
@@ -244,10 +260,26 @@ export function createCycle(
   });
 }
 
+export function updateCycle(
+  cycleId: string,
+  fields: { name?: string; startDate?: string; endDate?: string; status?: 'planned' | 'active' | 'completed'; versionId?: string | null },
+): Promise<CycleInfo> {
+  return request<CycleInfo>(`/api/cycles/${cycleId}`, {
+    method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
 export function assignNodeToCycle(cycleId: string, nodeId: string): Promise<any> {
   return request(`/api/cycles/${cycleId}/assign`, {
     method: 'POST',
     body: JSON.stringify({ nodeId }),
+  });
+}
+
+export function unassignNodeFromCycle(cycleId: string, nodeId: string): Promise<any> {
+  return request(`/api/cycles/${cycleId}/assign/${nodeId}`, {
+    method: 'DELETE',
   });
 }
 
@@ -259,6 +291,19 @@ export function rolloverCycle(fromCycleId: string, targetCycleId: string): Promi
 }
 
 // ── GitHub Integration ─────────────────────────────────────────
+
+export function connectGitHubRepo(
+  workspaceId: string,
+  owner: string,
+  repo: string,
+  token: string,
+  webhookSecret?: string,
+): Promise<{ id: string; provider: string; enabled: boolean }> {
+  return request('/api/integrations/github/connect', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret }),
+  });
+}
 
 export function importGitHubIssues(
   mapId: string,

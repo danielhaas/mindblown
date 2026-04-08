@@ -10,7 +10,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import * as api from './api.js';
-import { formatMapTree, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
+import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -156,12 +156,21 @@ server.tool(
 
 server.tool(
   'get_map',
-  'Get a map\'s full tree structure with computed fields (effort, progress, health)',
-  { mapId: z.string().describe('The map ID') },
-  async ({ mapId }) => {
+  'Get a map\'s tree structure with computed fields (effort, progress, health). Optionally filter to only show nodes matching criteria (ancestors are kept to preserve tree structure).',
+  {
+    mapId: z.string().describe('The map ID'),
+    status: z.string().optional().describe('Filter by status (e.g. "in_progress", "done")'),
+    priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Filter by priority level'),
+    healthSignal: z.enum(['on_track', 'at_risk', 'behind']).optional().describe('Filter by health signal'),
+    tag: z.string().optional().describe('Filter by tag — show only nodes that have this tag'),
+  },
+  async ({ mapId, status, priority, healthSignal, tag }) => {
     try {
       const data = await api.getMap(mapId);
-      return toolResult(formatMapTree(data));
+      const hasFilters = status !== undefined || priority !== undefined || healthSignal !== undefined || tag !== undefined;
+      const filtered = hasFilters ? filterMapData(data, { status, priority, healthSignal, tag }) : data;
+      const header = hasFilters ? `[Filtered: ${[status && `status=${status}`, priority && `priority=${priority}`, healthSignal && `health=${healthSignal}`, tag && `tag=${tag}`].filter(Boolean).join(', ')}]\n\n` : '';
+      return toolResult(header + formatMapTree(filtered));
     } catch (err) {
       return toolError(err);
     }
@@ -179,6 +188,46 @@ server.tool(
     try {
       const result = await api.createMap(name, description);
       return toolResult(`Created map "${name}" with id: ${result.id}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'update_map',
+  'Update a map\'s name or description',
+  {
+    mapId: z.string().describe('The map ID'),
+    name: z.string().optional().describe('New map name'),
+    description: z.string().nullable().optional().describe('New map description'),
+  },
+  async ({ mapId, name, description }) => {
+    try {
+      const fields: { name?: string; description?: string | null } = {};
+      if (name !== undefined) fields.name = name;
+      if (description !== undefined) fields.description = description;
+      if (Object.keys(fields).length === 0) {
+        return toolResult('No fields to update.');
+      }
+      const updated = await api.updateMap(mapId, fields);
+      return toolResult(`Updated map "${updated.name}" (id: ${updated.id})`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'delete_map',
+  'Permanently delete a map and all its nodes',
+  {
+    mapId: z.string().describe('The map ID to delete'),
+  },
+  async ({ mapId }) => {
+    try {
+      await api.deleteMap(mapId);
+      return toolResult(`Deleted map ${mapId}`);
     } catch (err) {
       return toolError(err);
     }
@@ -318,6 +367,60 @@ server.tool(
         }
       }
       return toolResult(`Bulk update results:\n${results.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'bulk_create_nodes',
+  'Create multiple nodes in a single batch. Nodes are created sequentially so earlier nodes can be parents of later ones. Use tempId to reference a node created earlier in the same batch as a parentId.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodes: z.array(z.object({
+      tempId: z.string().optional().describe('Temporary ID for this node, so later nodes in the batch can reference it as parentId'),
+      parentId: z.string().describe('Parent node ID (can be a real ID or a tempId from an earlier node in this batch)'),
+      text: z.string().describe('Node title/label'),
+      effortEstimate: z.number().optional().describe('Effort estimate (leaf nodes only)'),
+      priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Priority level'),
+      status: z.string().optional().describe('Status (must match map\'s status workflow)'),
+      dueDate: z.string().optional().describe('Due date (ISO 8601)'),
+      startDate: z.string().optional().describe('Start date (ISO 8601)'),
+    })).describe('Array of node definitions to create, processed in order'),
+  },
+  async ({ mapId, nodes }) => {
+    try {
+      const tempIdMap = new Map<string, string>();
+      const results: string[] = [];
+      let created = 0;
+
+      for (let i = 0; i < nodes.length; i++) {
+        const { tempId, parentId, text, ...fields } = nodes[i];
+        try {
+          // Resolve parentId: check if it's a tempId reference
+          const resolvedParentId = tempIdMap.get(parentId) ?? parentId;
+
+          const cleanFields: Record<string, unknown> = {};
+          for (const [k, v] of Object.entries(fields)) {
+            if (v !== undefined) cleanFields[k] = v;
+          }
+
+          const node = await api.createNode(mapId, resolvedParentId, text, cleanFields);
+          created++;
+
+          // Register tempId mapping if provided
+          if (tempId) {
+            tempIdMap.set(tempId, node.id);
+          }
+
+          results.push(`  ${tempId ?? `[${i}]`}: "${text}" created (id: ${node.id}) under ${resolvedParentId}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          results.push(`  ${tempId ?? `[${i}]`}: "${text}" FAILED — ${msg}`);
+        }
+      }
+      return toolResult(`Bulk create results (${created}/${nodes.length} created):\n${results.join('\n')}`);
     } catch (err) {
       return toolError(err);
     }
@@ -738,6 +841,23 @@ server.tool(
 );
 
 server.tool(
+  'unassign_from_sprint',
+  'Remove a node from its sprint',
+  {
+    cycleId: z.string().describe('The sprint/cycle ID'),
+    nodeId: z.string().describe('The node ID to unassign'),
+  },
+  async ({ cycleId, nodeId }) => {
+    try {
+      await api.unassignNodeFromCycle(cycleId, nodeId);
+      return toolResult(`Unassigned node ${nodeId} from sprint ${cycleId}.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'rollover_sprint',
   'Move incomplete items from one sprint to another',
   {
@@ -754,18 +874,83 @@ server.tool(
   },
 );
 
+server.tool(
+  'update_cycle',
+  'Update a sprint/cycle — change its name, dates, status, or version. Use this to activate or complete a sprint.',
+  {
+    cycleId: z.string().describe('The sprint/cycle ID'),
+    name: z.string().optional().describe('New sprint name'),
+    startDate: z.string().optional().describe('New start date (ISO 8601)'),
+    endDate: z.string().optional().describe('New end date (ISO 8601)'),
+    status: z.enum(['planned', 'active', 'completed']).optional().describe('Sprint status'),
+    versionId: z.string().nullable().optional().describe('Version ID this sprint belongs to (null to unset)'),
+  },
+  async ({ cycleId, ...fields }) => {
+    try {
+      const cleanFields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(fields)) {
+        if (v !== undefined) cleanFields[k] = v;
+      }
+      if (Object.keys(cleanFields).length === 0) {
+        return toolResult('No fields to update.');
+      }
+      const updated = await api.updateCycle(cycleId, cleanFields as Parameters<typeof api.updateCycle>[1]);
+      const parts = Object.entries(cleanFields).map(([k, v]) => `${k}=${JSON.stringify(v)}`);
+      return toolResult(`Updated sprint "${updated.name}" (id: ${updated.id}): ${parts.join(', ')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 // ── GitHub integration tools ───────────────────────────────────
 
 server.tool(
+  'connect_github_repo',
+  'Connect a GitHub repository to a workspace. Required before importing issues. Stores the owner, repo, and token for API access.',
+  {
+    workspaceId: z.string().describe('The workspace ID'),
+    owner: z.string().describe('GitHub repo owner (e.g. "danielhaas")'),
+    repo: z.string().describe('GitHub repo name (e.g. "mindblown")'),
+    token: z.string().describe('GitHub personal access token with repo scope'),
+    webhookSecret: z.string().optional().describe('Webhook secret for verifying GitHub webhook payloads'),
+  },
+  async ({ workspaceId, owner, repo, token, webhookSecret }) => {
+    try {
+      const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret);
+      return toolResult(`Connected GitHub repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'import_github_issues',
-  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Do NOT use create_node for GitHub issues — those won\'t be linked.',
+  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Do NOT use create_node for GitHub issues — those won\'t be linked. If no repo is connected yet, use connect_github_repo first.',
   {
     mapId: z.string().describe('The map ID to import into'),
     parentNodeId: z.string().optional().describe('Parent node ID to import under (defaults to root node)'),
     includeAll: z.boolean().optional().describe('Import all issues including closed ones (default: open only). Use true for full roadmap import.'),
+    owner: z.string().optional().describe('GitHub repo owner — if provided with repo, will auto-connect the repo to the workspace before importing'),
+    repo: z.string().optional().describe('GitHub repo name — if provided with owner, will auto-connect the repo to the workspace before importing'),
   },
-  async ({ mapId, parentNodeId, includeAll }) => {
+  async ({ mapId, parentNodeId, includeAll, owner, repo }) => {
     try {
+      // If owner/repo provided, auto-connect (or update) the GitHub integration
+      if (owner && repo) {
+        const mapsForConnect = await api.listMaps();
+        const mapForConnect = mapsForConnect.find((m) => m.id === mapId);
+        if (!mapForConnect) {
+          return toolError(`Map ${mapId} not found.`);
+        }
+        const token = process.env.GITHUB_TOKEN ?? '';
+        if (!token) {
+          return toolError('owner/repo provided but GITHUB_TOKEN environment variable is not set. Either set GITHUB_TOKEN or use connect_github_repo to configure the integration first.');
+        }
+        await api.connectGitHubRepo(mapForConnect.workspaceId, owner, repo, token);
+      }
+
       const maps = await api.listMaps();
       const map = maps.find((m) => m.id === mapId);
       const createdBy = 'mcp-agent';
@@ -807,6 +992,20 @@ server.tool(
   },
   async ({ mapId, nodeId, owner, repo, issueNumber }) => {
     try {
+      // Check for duplicate: does this node already have this issue linked?
+      const mapData = await api.getMap(mapId);
+      const node = mapData.nodes.find((n) => n.id === nodeId);
+      if (!node) {
+        return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+      }
+      const externalId = `${owner}/${repo}#${issueNumber}`;
+      const existing = node.externalLinks?.find(
+        (l) => l.provider === 'github' && l.externalId === externalId,
+      );
+      if (existing) {
+        return toolError(`Node ${nodeId} is already linked to ${externalId}. No duplicate created.`);
+      }
+
       await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
       return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with GitHub.`);
     } catch (err) {
@@ -819,23 +1018,39 @@ server.tool(
 
 server.tool(
   'search_nodes',
-  'Search nodes by text across a map',
+  'Search nodes by text across a map, with optional structured filters',
   {
     mapId: z.string().describe('The map ID'),
     query: z.string().describe('Search text (case-insensitive substring match)'),
+    status: z.string().optional().describe('Filter by status (exact match)'),
+    priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Filter by priority'),
+    tag: z.string().optional().describe('Filter by tag (nodes must include this tag)'),
   },
-  async ({ mapId, query }) => {
+  async ({ mapId, query, status, priority, tag }) => {
     try {
       const data = await api.getMap(mapId);
       const lowerQ = query.toLowerCase();
-      const matches = data.nodes.filter(
+      let matches = data.nodes.filter(
         (n) =>
           n.text.toLowerCase().includes(lowerQ) ||
           (n.description?.toLowerCase().includes(lowerQ) ?? false),
       );
 
+      // Apply structured filters
+      if (status) {
+        matches = matches.filter((n) => n.status === status);
+      }
+      if (priority) {
+        matches = matches.filter((n) => n.priority === priority);
+      }
+      if (tag) {
+        matches = matches.filter((n) => n.tags.includes(tag));
+      }
+
       if (matches.length === 0) {
-        return toolResult(`No nodes matching "${query}" found in map ${mapId}.`);
+        const filters = [status && `status=${status}`, priority && `priority=${priority}`, tag && `tag=${tag}`].filter(Boolean);
+        const filterStr = filters.length > 0 ? ` (filters: ${filters.join(', ')})` : '';
+        return toolResult(`No nodes matching "${query}"${filterStr} found in map ${mapId}.`);
       }
 
       const lines = matches.map((n) => {

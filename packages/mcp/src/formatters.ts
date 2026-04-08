@@ -69,6 +69,14 @@ function renderTreeNode(
     const linkLabels = node.externalLinks.map((l) => `[${l.externalId}]`);
     parts.push(linkLabels.join(' '));
   }
+  if (node.dependencies.length > 0) {
+    const depLabels = node.dependencies.map((d) => {
+      const target = lookup.get(d.targetNodeId);
+      const name = target?.text ?? d.targetNodeId;
+      return `→ ${name} (${d.type})`;
+    });
+    parts.push(`deps: ${depLabels.join(', ')}`);
+  }
 
   line += `  ${parts.join(' | ')}`;
   line += `  (id: ${node.id})`;
@@ -81,6 +89,55 @@ function renderTreeNode(
   }
 
   return lines;
+}
+
+// ── Filtering ──────────────────────────────────────────────────
+
+export interface MapFilters {
+  status?: string;
+  priority?: string;
+  healthSignal?: string;
+  tag?: string;
+}
+
+/**
+ * Filter a MapDetail to only include nodes matching the given criteria,
+ * plus all ancestor nodes needed to maintain tree structure.
+ * Returns a new MapDetail with filtered nodes and pruned childrenIds.
+ */
+export function filterMapData(data: MapDetail, filters: MapFilters): MapDetail {
+  const lookup = buildNodeLookup(data.nodes);
+
+  // Step 1: Find all nodes that match the filter criteria
+  const matchingIds = new Set<string>();
+  for (const node of data.nodes) {
+    let matches = true;
+    if (filters.status !== undefined && node.status !== filters.status) matches = false;
+    if (filters.priority !== undefined && node.priority !== filters.priority) matches = false;
+    if (filters.healthSignal !== undefined && node.healthSignal !== filters.healthSignal) matches = false;
+    if (filters.tag !== undefined && !node.tags.includes(filters.tag)) matches = false;
+    if (matches) matchingIds.add(node.id);
+  }
+
+  // Step 2: Add all ancestors of matching nodes to preserve tree structure
+  const includedIds = new Set<string>(matchingIds);
+  for (const nodeId of matchingIds) {
+    let current = lookup.get(nodeId);
+    while (current?.parentId) {
+      includedIds.add(current.parentId);
+      current = lookup.get(current.parentId);
+    }
+  }
+
+  // Step 3: Build filtered nodes with pruned childrenIds
+  const filteredNodes = data.nodes
+    .filter((n) => includedIds.has(n.id))
+    .map((n) => ({
+      ...n,
+      childrenIds: n.childrenIds.filter((cid) => includedIds.has(cid)),
+    }));
+
+  return { map: data.map, nodes: filteredNodes };
 }
 
 // ── Public formatters ───────────────────────────────────────────
