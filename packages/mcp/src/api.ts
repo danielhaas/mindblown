@@ -42,6 +42,7 @@ export interface NodeWithComputed {
   versionId: string | null;
   milestoneId: string | null;
   cycleId: string | null;
+  externalLinks: Array<{ provider: string; externalId: string; url: string; syncEnabled: boolean; lastSyncedAt: string | null }>;
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;

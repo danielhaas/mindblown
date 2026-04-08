@@ -841,7 +841,8 @@ server.tool(
       const lines = matches.map((n) => {
         const health = n.healthSignal === 'on_track' ? '[OK]' : n.healthSignal === 'at_risk' ? '[AT RISK]' : '[BEHIND]';
         const progress = Math.round(n.computedProgress);
-        return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}`;
+        const links = n.externalLinks?.length > 0 ? ' ' + n.externalLinks.map((l) => `[${l.externalId}]`).join(' ') : '';
+        return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${links}`;
       });
 
       return toolResult(`Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`);

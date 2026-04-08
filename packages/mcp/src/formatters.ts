@@ -65,6 +65,10 @@ function renderTreeNode(
   if (node.dueDate) {
     parts.push(`due: ${node.dueDate}`);
   }
+  if (node.externalLinks?.length > 0) {
+    const linkLabels = node.externalLinks.map((l) => `[${l.externalId}]`);
+    parts.push(linkLabels.join(' '));
+  }
 
   line += `  ${parts.join(' | ')}`;
   line += `  (id: ${node.id})`;
@@ -293,6 +297,15 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
     lines.push('## Dependents (blocked by this node)');
     for (const d of dependents) {
       lines.push(`- ${d.text} (${d.id})`);
+    }
+  }
+
+  if (node.externalLinks?.length > 0) {
+    lines.push('');
+    lines.push('## External Links');
+    for (const link of node.externalLinks) {
+      const sync = link.syncEnabled ? 'sync on' : 'sync off';
+      lines.push(`- **${link.externalId}** (${link.provider}, ${sync}) — ${link.url}`);
     }
   }
 
