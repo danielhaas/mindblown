@@ -2,7 +2,8 @@ import { eq, inArray } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import type { Node as CoreNode, Dependency, ExternalLink, Priority, CustomFieldValue } from '@mindblown/core';
+import { hasCycle } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -100,6 +101,11 @@ export interface UpdateNodeInput {
 }
 
 export async function updateNode(nodeId: string, input: UpdateNodeInput): Promise<CoreNode | null> {
+  // Validate dependencies if provided
+  if (input.dependencies !== undefined) {
+    await validateDependencies(nodeId, input.dependencies);
+  }
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
 
   if (input.text !== undefined) updates.text = input.text;
@@ -257,4 +263,129 @@ export async function reorderChildren(
     .where(eq(nodes.id, parentId));
 
   return true;
+}
+
+// ── Dependency helpers ────────────────────────────────────────────
+
+/**
+ * Build a NodeMap from all nodes sharing the same mapId as `nodeId`.
+ * Used for cycle detection via the core `hasCycle` function.
+ */
+async function buildNodeMapForNode(nodeId: string): Promise<{ mapId: string; nodeMap: NodeMap }> {
+  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+  if (!node) throw new DependencyValidationError(`Node ${nodeId} not found`);
+
+  const mapId = node.mapId as string;
+  const allNodes = await db.select().from(nodes).where(eq(nodes.mapId, mapId));
+  const nodeMap: NodeMap = new Map();
+  for (const n of allNodes) {
+    const coreNode = dbNodeToCore(n as unknown as Record<string, unknown>);
+    nodeMap.set(coreNode.id, coreNode);
+  }
+  return { mapId, nodeMap };
+}
+
+/**
+ * Validate a full dependency array for a node.
+ * Rejects self-references and circular dependencies.
+ */
+async function validateDependencies(nodeId: string, deps: Dependency[]): Promise<void> {
+  // Check for self-references
+  for (const dep of deps) {
+    if (dep.targetNodeId === nodeId) {
+      throw new DependencyValidationError(
+        `A node cannot depend on itself (node ${nodeId})`,
+      );
+    }
+  }
+
+  // Check for circular dependencies by simulating the new dependency set
+  if (deps.length > 0) {
+    const { nodeMap } = await buildNodeMapForNode(nodeId);
+
+    // Temporarily update the node's dependencies in the map for cycle detection
+    const currentNode = nodeMap.get(nodeId);
+    if (currentNode) {
+      const tempNode = { ...currentNode, dependencies: deps };
+      nodeMap.set(nodeId, tempNode);
+
+      // Check each new dependency target for cycles
+      for (const dep of deps) {
+        // hasCycle checks: would "nodeId depends on dep.targetNodeId" create a cycle?
+        // Since we already set the deps on the node, we need to check if
+        // dep.targetNodeId can reach nodeId via the existing graph (excluding this edge).
+        // We use a simpler approach: temporarily set deps, then check for cycles.
+        if (hasCycle(nodeId, dep.targetNodeId, nodeMap)) {
+          throw new DependencyValidationError(
+            `Adding dependency ${nodeId} -> ${dep.targetNodeId} would create a circular dependency`,
+          );
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Add a single dependency to a node with full validation.
+ * Rejects self-references and circular dependencies.
+ */
+export async function addDependency(
+  nodeId: string,
+  targetNodeId: string,
+  type: DependencyType,
+  lag: number = 0,
+): Promise<CoreNode> {
+  // Self-reference check
+  if (nodeId === targetNodeId) {
+    throw new DependencyValidationError(
+      `A node cannot depend on itself (node ${nodeId})`,
+    );
+  }
+
+  const { nodeMap } = await buildNodeMapForNode(nodeId);
+
+  const node = nodeMap.get(nodeId);
+  if (!node) {
+    throw new DependencyValidationError(`Node ${nodeId} not found`);
+  }
+
+  // Check for duplicate
+  const alreadyExists = node.dependencies.some(
+    (d) => d.targetNodeId === targetNodeId && d.type === type,
+  );
+  if (alreadyExists) {
+    throw new DependencyValidationError(
+      `Dependency already exists: ${nodeId} -> ${targetNodeId} (${type})`,
+    );
+  }
+
+  // Circular dependency check using core hasCycle
+  if (hasCycle(nodeId, targetNodeId, nodeMap)) {
+    throw new DependencyValidationError(
+      `Adding dependency ${nodeId} -> ${targetNodeId} would create a circular dependency`,
+    );
+  }
+
+  const newDeps: Dependency[] = [...node.dependencies, { targetNodeId, type, lag }];
+
+  const [row] = await db.update(nodes)
+    .set({ dependencies: newDeps, updatedAt: new Date() })
+    .where(eq(nodes.id, nodeId))
+    .returning();
+
+  if (!row) {
+    throw new DependencyValidationError(`Failed to update node ${nodeId}`);
+  }
+
+  return dbNodeToCore(row as unknown as Record<string, unknown>);
+}
+
+/**
+ * Custom error class for dependency validation failures.
+ */
+export class DependencyValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DependencyValidationError';
+  }
 }

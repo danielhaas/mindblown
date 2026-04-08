@@ -1,11 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import * as nodeDb from '../db/nodes.js';
+import { DependencyValidationError } from '../db/nodes.js';
+import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
 import { updateGitHubIssue } from '@mindblown/integrations';
-import type { ExternalLink, Node as CoreNode } from '@mindblown/core';
+import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
 
 // Fields that should trigger outbound GitHub sync
 const SYNC_FIELDS = new Set([
@@ -127,11 +129,26 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const body = req.body as nodeDb.UpdateNodeInput;
 
-      const updated = await nodeDb.updateNode(req.params.nodeId, body);
+      let updated: CoreNode | null;
+      try {
+        updated = await nodeDb.updateNode(req.params.nodeId, body);
+      } catch (err) {
+        if (err instanceof DependencyValidationError) {
+          return reply.status(400).send({
+            error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        throw err;
+      }
       if (!updated) {
         return reply.status(404).send({
           error: { code: 'NODE_NOT_FOUND', message: `Node ${req.params.nodeId} not found` },
         });
+      }
+
+      // If the root node's text changed, keep the map name in sync
+      if (body.text !== undefined && updated.parentId === null) {
+        await mapDb.updateMap(req.params.id, { name: body.text });
       }
 
       // Broadcast the change
@@ -146,6 +163,49 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
 
       return reply.send(updated);
+    },
+  );
+
+  // ── POST /api/maps/:id/nodes/:nodeId/dependencies — Add a dependency ──
+  app.post<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/dependencies',
+    async (req, reply) => {
+      const body = req.body as {
+        targetNodeId: string;
+        type: DependencyType;
+        lag?: number;
+      };
+
+      if (!body.targetNodeId || !body.type) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'targetNodeId and type are required' },
+        });
+      }
+
+      try {
+        const updated = await nodeDb.addDependency(
+          req.params.nodeId,
+          body.targetNodeId,
+          body.type,
+          body.lag ?? 0,
+        );
+
+        broadcast(req.params.id, {
+          type: 'node:updated',
+          nodeId: req.params.nodeId,
+          fields: ['dependencies'],
+          node: updated,
+        });
+
+        return reply.status(201).send(updated);
+      } catch (err) {
+        if (err instanceof DependencyValidationError) {
+          return reply.status(400).send({
+            error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        throw err;
+      }
     },
   );
 

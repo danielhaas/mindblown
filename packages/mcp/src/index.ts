@@ -12,6 +12,28 @@ import { z } from 'zod';
 import * as api from './api.js';
 import { formatMapTree, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
 
+// ── Helpers ─────────────────────────────────────────────────────
+
+/**
+ * Check if a node is a leaf (has no children). Returns an error message string
+ * if the node is a parent or not found, or null if validation passes.
+ */
+async function assertLeafNode(
+  mapId: string,
+  nodeId: string,
+  operation: string,
+): Promise<string | null> {
+  const mapData = await api.getMap(mapId);
+  const node = mapData.nodes.find((n) => n.id === nodeId);
+  if (!node) {
+    return `Error: Node ${nodeId} not found in map ${mapId}.`;
+  }
+  if (node.childrenIds.length > 0) {
+    return `Cannot ${operation} on a parent node. ${operation === 'set estimate' ? 'Estimates are' : 'Progress is'} auto-computed from child nodes. Set ${operation === 'set estimate' ? 'estimates' : 'progress'} on leaf nodes instead.`;
+  }
+  return null;
+}
+
 // ── Server setup ────────────────────────────────────────────────
 
 const server = new McpServer(
@@ -314,9 +336,20 @@ server.tool(
   },
   async ({ mapId, estimates }) => {
     try {
+      const mapData = await api.getMap(mapId);
+      const nodeMap = new Map(mapData.nodes.map((n) => [n.id, n]));
       const results: string[] = [];
       for (const { nodeId, estimate } of estimates) {
         try {
+          const node = nodeMap.get(nodeId);
+          if (!node) {
+            results.push(`  ${nodeId}: FAILED — Node not found in map ${mapId}`);
+            continue;
+          }
+          if (node.childrenIds.length > 0) {
+            results.push(`  ${nodeId}: SKIPPED — Cannot set estimate on a parent node. Estimates are auto-computed from child nodes.`);
+            continue;
+          }
           await api.updateNode(mapId, nodeId, { effortEstimate: estimate });
           results.push(`  ${nodeId}: estimate = ${estimate}`);
         } catch (err) {
@@ -343,9 +376,20 @@ server.tool(
   },
   async ({ mapId, updates }) => {
     try {
+      const mapData = await api.getMap(mapId);
+      const nodeMap = new Map(mapData.nodes.map((n) => [n.id, n]));
       const results: string[] = [];
       for (const { nodeId, percent } of updates) {
         try {
+          const node = nodeMap.get(nodeId);
+          if (!node) {
+            results.push(`  ${nodeId}: FAILED — Node not found in map ${mapId}`);
+            continue;
+          }
+          if (node.childrenIds.length > 0) {
+            results.push(`  ${nodeId}: SKIPPED — Cannot set progress on a parent node. Progress is auto-computed from child nodes.`);
+            continue;
+          }
           await api.updateNode(mapId, nodeId, { percentComplete: percent });
           results.push(`  ${nodeId}: progress = ${percent}%`);
         } catch (err) {
@@ -372,6 +416,8 @@ server.tool(
   },
   async ({ mapId, nodeId, estimate }) => {
     try {
+      const err = await assertLeafNode(mapId, nodeId, 'set estimate');
+      if (err) return toolResult(err);
       await api.updateNode(mapId, nodeId, { effortEstimate: estimate });
       return toolResult(`Set estimate on ${nodeId} to ${estimate}.`);
     } catch (err) {
@@ -390,6 +436,8 @@ server.tool(
   },
   async ({ mapId, nodeId, percent }) => {
     try {
+      const err = await assertLeafNode(mapId, nodeId, 'set progress');
+      if (err) return toolResult(err);
       await api.updateNode(mapId, nodeId, { percentComplete: percent });
       return toolResult(`Set progress on ${nodeId} to ${percent}%.`);
     } catch (err) {
@@ -408,8 +456,19 @@ server.tool(
   },
   async ({ mapId, nodeId, status }) => {
     try {
-      await api.updateNode(mapId, nodeId, { status });
-      return toolResult(`Set status on ${nodeId} to "${status}".`);
+      const mapData = await api.getMap(mapId);
+      const workflow = mapData.map.statusWorkflow ?? [];
+      const match = workflow.find(
+        (s) => s.id === status || s.name.toLowerCase() === status.toLowerCase(),
+      );
+      if (!match) {
+        const valid = workflow.map((s) => `${s.id} (${s.name})`).join(', ');
+        return toolError(
+          `Invalid status "${status}". Valid statuses: ${valid || 'none defined'}`,
+        );
+      }
+      await api.updateNode(mapId, nodeId, { status: match.id });
+      return toolResult(`Set status on ${nodeId} to "${match.name}" (${match.id}).`);
     } catch (err) {
       return toolError(err);
     }
@@ -445,10 +504,20 @@ server.tool(
   },
   async ({ mapId, fromNodeId, toNodeId, type }) => {
     try {
+      // Self-reference check
+      if (fromNodeId === toNodeId) {
+        return toolError('A node cannot depend on itself.');
+      }
+
       const mapData = await api.getMap(mapId);
       const node = mapData.nodes.find((n) => n.id === fromNodeId);
       if (!node) {
         return toolResult(`Error: Node ${fromNodeId} not found in map ${mapId}.`);
+      }
+
+      const targetNode = mapData.nodes.find((n) => n.id === toNodeId);
+      if (!targetNode) {
+        return toolResult(`Error: Target node ${toNodeId} not found in map ${mapId}.`);
       }
 
       const existingDeps = node.dependencies ?? [];
@@ -457,6 +526,32 @@ server.tool(
       );
       if (alreadyExists) {
         return toolResult(`Dependency already exists: ${fromNodeId} -> ${toNodeId} (${type}).`);
+      }
+
+      // Circular dependency check: can toNodeId reach fromNodeId via existing deps?
+      const visited = new Set<string>();
+      const stack: string[] = [toNodeId];
+      const nodeIndex = new Map(mapData.nodes.map((n) => [n.id, n]));
+      let circular = false;
+      while (stack.length > 0) {
+        const current = stack.pop()!;
+        if (current === fromNodeId) {
+          circular = true;
+          break;
+        }
+        if (visited.has(current)) continue;
+        visited.add(current);
+        const currentNode = nodeIndex.get(current);
+        if (currentNode) {
+          for (const dep of currentNode.dependencies) {
+            stack.push(dep.targetNodeId);
+          }
+        }
+      }
+      if (circular) {
+        return toolError(
+          `Adding dependency ${fromNodeId} -> ${toNodeId} would create a circular dependency.`,
+        );
       }
 
       const newDeps = [...existingDeps, { targetNodeId: toNodeId, type, lag: 0 }];
