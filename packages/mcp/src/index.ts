@@ -51,7 +51,7 @@ const server = new McpServer(
 - **Leaf nodes** are where you set effort estimates and percent complete. Parent nodes auto-compute these values from their children using weighted rollup.
 - **Health signals** propagate upward: if any leaf is "behind", its entire ancestor chain is marked "behind" (worst-child-wins).
 - **Dependencies** link nodes with 4 types: Finish-to-Start (FS), Start-to-Start (SS), Finish-to-Finish (FF), Start-to-Finish (SF). These feed the critical path scheduler.
-- **Versions** are release containers (e.g. "V1", "V2"). Multiple sprints and milestones belong to a version.
+- **Versions** are release containers (e.g. "V1", "V2"). They are NOT tree nodes — they are separate entities created with create_version. Nodes are linked to a version via update_node (set versionId), independent of their position in the tree. Multiple sprints and milestones belong to a version.
 - **Milestones** are key deliverables within a version (first-class entities, not node flags). Nodes can be linked to a milestone.
 - **Sprints/Cycles** are time-boxed iterations within a version. Nodes can be assigned to a sprint.
 
@@ -75,10 +75,17 @@ const server = new McpServer(
 **Release planning (versions + milestones):**
 1. create_version to define a release (e.g. "V1", "V2")
 2. create_milestone to define key deliverables within that version (e.g. "Kernsystem MVP", "Billing Module")
-3. Tag nodes with a version and/or milestone using update_node (set versionId, milestoneId)
+3. Tag nodes with a version using assign_to_version, or set versionId/milestoneId via update_node
 4. list_versions / list_milestones to review what's planned for each release
 
 Example: A node "Data Retention Policy" lives under Compliance in the tree (functional), and is tagged with version "V1" and milestone "Kernsystem MVP" (release planning). These are independent dimensions.
+
+**Multi-release project:**
+1. create_version for each release (e.g. "V1", "V2")
+2. Build the tree by functional area (Auth, Billing, etc.) — the tree structure stays the same across releases
+3. Tag leaf nodes with the version they ship in: update_node with versionId
+4. Some nodes under "Auth" might be V1, others V2 — that's expected. The tree groups by WHAT, versions group by WHEN.
+5. Use list_versions to see progress per release, get_map to see progress per functional area
 
 **Sprint planning:**
 1. create_cycle to define a time-boxed sprint, optionally within a version (set versionId)
@@ -99,6 +106,8 @@ Versions, milestones, and sprints are orthogonal metadata on nodes — this is t
 - **cycleId** on a node = "this is being worked on in Sprint 3"
 
 A node can have all three set independently. Never reorganize the tree by version — use these fields instead.
+
+**Do NOT create tree nodes for versions.** "V1" and "V2" are created with create_version, not create_node. If you create a "V1" node in the tree, it won't function as a version — it's just a regular node with no release-tracking capabilities.
 
 ## Important notes
 
@@ -248,6 +257,7 @@ server.tool(
     status: z.string().optional().describe('Status (must match map\'s status workflow)'),
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
+    versionId: z.string().optional().describe('Version ID to assign this node to'),
   },
   async ({ mapId, parentId, text, ...fields }) => {
     try {
@@ -279,6 +289,7 @@ server.tool(
     startDate: z.string().nullable().optional().describe('Start date (ISO 8601)'),
     tags: z.array(z.string()).optional().describe('Tags'),
     assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
+    versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
     isMilestone: z.boolean().optional().describe('Whether this is a milestone'),
   },
   async ({ mapId, nodeId, ...fields }) => {
@@ -851,6 +862,29 @@ server.tool(
     try {
       await api.unassignNodeFromCycle(cycleId, nodeId);
       return toolResult(`Unassigned node ${nodeId} from sprint ${cycleId}.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'assign_to_version',
+  'Assign a node to a version, or unassign by passing an empty string',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to assign'),
+    versionId: z.string().describe('The version ID to assign to (empty string to unassign)'),
+  },
+  async ({ mapId, nodeId, versionId }) => {
+    try {
+      const effectiveVersionId = versionId === '' ? null : versionId;
+      await api.updateNode(mapId, nodeId, { versionId: effectiveVersionId });
+      if (effectiveVersionId) {
+        return toolResult(`Assigned node ${nodeId} to version ${effectiveVersionId}.`);
+      } else {
+        return toolResult(`Unassigned node ${nodeId} from its version.`);
+      }
     } catch (err) {
       return toolError(err);
     }
