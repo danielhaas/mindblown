@@ -5,6 +5,7 @@ export type UserId = string;
 export type MapId = string;
 export type CycleId = string;
 export type MilestoneId = string;
+export type VersionId = string;
 
 // ── Enums / Unions ──────────────────────────────────────────────
 
@@ -102,8 +103,10 @@ export interface Node {
   // ── Milestone ─────────────────────────────────────────────
   isMilestone: boolean; // zero-effort checkpoint
 
-  // ── Sprint / Cycle ────────────────────────────────────────
-  cycleId: CycleId | null;
+  // ── Version / Milestone / Sprint ──────────────────────────
+  versionId: VersionId | null; // which version this node targets
+  milestoneId: MilestoneId | null; // which milestone this node contributes to
+  cycleId: CycleId | null; // which sprint this node is worked in
 
   // ── Integrations ──────────────────────────────────────────
   externalLinks: ExternalLink[];
@@ -228,11 +231,39 @@ export interface MapPermission {
   permission: 'view' | 'edit' | 'admin';
 }
 
+// ── Version ─────────────────────────────────────────────────────
+
+export interface Version {
+  id: VersionId;
+  workspaceId: string;
+  name: string; // e.g. 'V1', 'V2', '1.0'
+  description: string | null;
+  status: 'planning' | 'active' | 'released' | 'archived';
+  targetDate: string | null; // ISO 8601 date
+  sortOrder: number; // display ordering
+  createdAt: string;
+}
+
+// ── Milestone ───────────────────────────────────────────────────
+
+export interface Milestone {
+  id: MilestoneId;
+  versionId: VersionId | null; // which version this milestone belongs to
+  workspaceId: string;
+  name: string; // e.g. 'Kernsystem MVP', 'Billing Module'
+  description: string | null;
+  status: 'open' | 'closed';
+  targetDate: string | null; // ISO 8601 date
+  sortOrder: number;
+  createdAt: string;
+}
+
 // ── Cycle / Sprint ──────────────────────────────────────────────
 
 export interface Cycle {
   id: CycleId;
   workspaceId: string;
+  versionId: VersionId | null; // which version this sprint belongs to
   name: string; // e.g. 'Sprint 14', 'April cycle'
   startDate: string; // ISO 8601
   endDate: string;

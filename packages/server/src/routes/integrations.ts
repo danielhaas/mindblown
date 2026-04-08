@@ -1,13 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { integrations } from '../db/schema.js';
+import { integrations, versions, milestones } from '../db/schema.js';
 import { nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import {
   createGitHubIssue,
   getGitHubIssue,
   importGitHubIssues,
+  extractVersionFromMilestone,
   processWebhook,
   verifyWebhookSignature,
 } from '@mindblown/integrations';
@@ -243,7 +244,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const body = req.body as { createdBy: string; parentNodeId?: string };
+      const body = req.body as { createdBy: string; parentNodeId?: string; includeAll?: boolean };
       if (!body.createdBy) {
         return reply.status(400).send({
           error: { code: 'VALIDATION_ERROR', message: 'createdBy is required' },
@@ -252,10 +253,78 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       const parentNodeId = body.parentNodeId ?? map.rootNodeId;
 
-      // Fetch issues from GitHub
-      const importedIssues = await importGitHubIssues(owner, repo, token);
+      // Fetch issues from GitHub (optionally include closed issues for full roadmap)
+      const importedIssues = await importGitHubIssues(owner, repo, token, {
+        includeAll: body.includeAll,
+      });
 
-      // Group by label to create branch nodes
+      // ── Create versions and milestones from GitHub milestones ────
+      // Group by version prefix (e.g. "V1: 1a. Foo" → version "V1", milestone "Foo")
+      // Collect unique milestones titles and their version prefix
+      const milestoneInfoMap = new Map<string, { version: string; functionalName: string }>();
+      for (const item of importedIssues) {
+        if (!item.milestoneTitle || milestoneInfoMap.has(item.milestoneTitle)) continue;
+        const version = extractVersionFromMilestone(item.milestoneTitle) ?? 'Unversioned';
+        // The functional name is already stripped via groupLabel, but we need the milestone's own name
+        const functionalName = item.milestoneTitle.replace(/^V\d+:\s*\d+[a-z]?\.\s*/i, '') || item.milestoneTitle;
+        milestoneInfoMap.set(item.milestoneTitle, { version, functionalName });
+      }
+
+      // Create versions (deduplicated)
+      const versionToId = new Map<string, string>();
+      const uniqueVersions = new Set([...milestoneInfoMap.values()].map((m) => m.version));
+      let sortOrder = 0;
+      for (const versionName of uniqueVersions) {
+        // Check if version already exists
+        const existing = await db.select()
+          .from(versions)
+          .where(and(eq(versions.workspaceId, workspaceId!), eq(versions.name, versionName)));
+        if (existing.length > 0) {
+          versionToId.set(versionName, existing[0].id);
+        } else {
+          const [newVersion] = await db.insert(versions).values({
+            workspaceId: workspaceId!,
+            name: versionName,
+            status: 'planning',
+            sortOrder: sortOrder++,
+          }).returning();
+          versionToId.set(versionName, newVersion.id);
+        }
+      }
+
+      // Create milestones (deduplicated)
+      const milestoneToId = new Map<string, string>();
+      let msSortOrder = 0;
+      for (const [msTitle, info] of milestoneInfoMap) {
+        // Check if milestone already exists
+        const versionId = versionToId.get(info.version) ?? null;
+        const existing = await db.select()
+          .from(milestones)
+          .where(and(eq(milestones.workspaceId, workspaceId!), eq(milestones.name, info.functionalName)));
+        if (existing.length > 0) {
+          milestoneToId.set(msTitle, existing[0].id);
+        } else {
+          const [newMs] = await db.insert(milestones).values({
+            workspaceId: workspaceId!,
+            versionId,
+            name: info.functionalName,
+            status: 'open',
+            sortOrder: msSortOrder++,
+          }).returning();
+          milestoneToId.set(msTitle, newMs.id);
+        }
+      }
+
+      // Build lookup: milestone title → { versionId, milestoneId }
+      const milestoneToIds = new Map<string, { versionId: string | null; milestoneId: string }>();
+      for (const [msTitle, info] of milestoneInfoMap) {
+        milestoneToIds.set(msTitle, {
+          versionId: versionToId.get(info.version) ?? null,
+          milestoneId: milestoneToId.get(msTitle)!,
+        });
+      }
+
+      // ── Group by functional label for tree structure ──────────────
       const groups = new Map<string, typeof importedIssues>();
       const ungrouped: typeof importedIssues = [];
 
@@ -271,9 +340,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       const createdNodes: Array<{ nodeId: string; issueNumber: number }> = [];
 
-      // Create group branch nodes and their children
+      // Helper to get version/milestone IDs for an issue
+      const getIdsForIssue = (item: typeof importedIssues[0]) => {
+        if (!item.milestoneTitle) return {};
+        const ids = milestoneToIds.get(item.milestoneTitle);
+        if (!ids) return {};
+        return {
+          ...(ids.versionId ? { versionId: ids.versionId } : {}),
+          milestoneId: ids.milestoneId,
+        };
+      };
+
+      // Create functional group branch nodes and their children
       for (const [label, items] of groups) {
-        // Create the branch node
         const branchNode = await nodeDb.createNode({
           mapId: req.params.mapId,
           parentId: parentNodeId,
@@ -281,7 +360,6 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           createdBy: body.createdBy,
         });
 
-        // Create child nodes for each issue in this group
         for (const item of items) {
           const childNode = await nodeDb.createNode({
             mapId: req.params.mapId,
@@ -290,30 +368,56 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             createdBy: body.createdBy,
           });
 
-          // Attach external link and tags
+          const priority = item.issue.labels
+            .map((l) => l.name)
+            .find((n) => n.startsWith('priority:'))
+            ?.slice('priority:'.length) ?? null;
+
           await nodeDb.updateNode(childNode.id, {
             externalLinks: [item.externalLink],
-            tags: item.issue.labels.map((l) => l.name),
+            tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
             description: item.issue.body,
+            ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
+            ...getIdsForIssue(item),
+            ...(item.issue.state === 'closed' ? { percentComplete: 100 } : {}),
           });
 
           createdNodes.push({ nodeId: childNode.id, issueNumber: item.issue.number });
         }
       }
 
-      // Create ungrouped issues directly under parent
+      // Create ungrouped issues under a "Backlog" branch
+      let ungroupedParent = parentNodeId;
+      if (ungrouped.length > 0) {
+        const backlogNode = await nodeDb.createNode({
+          mapId: req.params.mapId,
+          parentId: parentNodeId,
+          text: 'Backlog',
+          createdBy: body.createdBy,
+        });
+        ungroupedParent = backlogNode.id;
+      }
+
       for (const item of ungrouped) {
         const childNode = await nodeDb.createNode({
           mapId: req.params.mapId,
-          parentId: parentNodeId,
+          parentId: ungroupedParent,
           text: item.issue.title,
           createdBy: body.createdBy,
         });
 
+        const priority = item.issue.labels
+          .map((l) => l.name)
+          .find((n) => n.startsWith('priority:'))
+          ?.slice('priority:'.length) ?? null;
+
         await nodeDb.updateNode(childNode.id, {
           externalLinks: [item.externalLink],
-          tags: item.issue.labels.map((l) => l.name),
+          tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
           description: item.issue.body,
+          ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
+          ...getIdsForIssue(item),
+          ...(item.issue.state === 'closed' ? { percentComplete: 100 } : {}),
         });
 
         createdNodes.push({ nodeId: childNode.id, issueNumber: item.issue.number });
@@ -324,6 +428,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(201).send({
         imported: createdNodes.length,
         nodes: createdNodes,
+        versions: Object.fromEntries(versionToId),
+        milestones: Object.fromEntries(milestoneToId),
       });
     },
   );

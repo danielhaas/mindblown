@@ -96,6 +96,48 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
+  // ── Versions ──────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS versions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id UUID NOT NULL REFERENCES workspaces(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'planning',
+      target_date DATE,
+      sort_order REAL NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Milestones ────────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS milestones (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      version_id UUID REFERENCES versions(id),
+      workspace_id UUID NOT NULL REFERENCES workspaces(id),
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      target_date DATE,
+      sort_order REAL NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Add version_id to cycles (sprints belong to a version) ────
+  await db.execute(sql`
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS version_id UUID REFERENCES versions(id)
+  `);
+
+  // ── Add version_id and milestone_id to nodes ──────────────────
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS version_id UUID REFERENCES versions(id)
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS milestone_id UUID REFERENCES milestones(id)
+  `);
+
   // ── Add password_hash and public_token columns (idempotent) ────
   await db.execute(sql`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT
@@ -147,6 +189,12 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_comments_node_id ON comments(node_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_map_permissions_map_id ON map_permissions(map_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_map_permissions_user_id ON map_permissions(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_versions_workspace_id ON versions(workspace_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_milestones_workspace_id ON milestones(workspace_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_milestones_version_id ON milestones(version_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cycles_version_id ON cycles(version_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_version_id ON nodes(version_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_milestone_id ON nodes(milestone_id)`);
 
   console.log('[db] Migrations complete.');
 }

@@ -8,6 +8,8 @@ import { registerAuthMiddleware } from './middleware/auth.js';
 import { mapRoutes } from './routes/maps.js';
 import { nodeRoutes } from './routes/nodes.js';
 import { cycleRoutes } from './routes/cycles.js';
+import { versionRoutes } from './routes/versions.js';
+import { milestoneRoutes } from './routes/milestones.js';
 import { commentRoutes } from './routes/comments.js';
 import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
@@ -48,6 +50,8 @@ async function main(): Promise<void> {
   await app.register(mapRoutes);
   await app.register(nodeRoutes);
   await app.register(cycleRoutes);
+  await app.register(versionRoutes);
+  await app.register(milestoneRoutes);
   await app.register(commentRoutes);
   await app.register(permissionRoutes);
   await app.register(integrationRoutes);

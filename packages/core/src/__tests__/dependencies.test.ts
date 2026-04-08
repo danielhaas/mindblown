@@ -30,6 +30,8 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     customFields: {},
     dependencies: [],
     isMilestone: false,
+    versionId: null,
+    milestoneId: null,
     cycleId: null,
     externalLinks: [],
     createdAt: '2026-01-01T00:00:00Z',

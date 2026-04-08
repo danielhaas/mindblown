@@ -189,7 +189,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 
 ---
 
-## Available Tools (22)
+## Available Tools (26)
 
 ### Map Tools
 
@@ -226,12 +226,26 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `add_dependency` | Add dependency between nodes | `mapId`, `fromNodeId`, `toNodeId`, `type` (FS/SS/FF/SF) |
 | `remove_dependency` | Remove a dependency | `mapId`, `nodeId`, `targetNodeId` |
 
+### Version Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `list_versions` | List all versions for a workspace | `workspaceId` |
+| `create_version` | Create a new version/release | `workspaceId`, `name`, `description?`, `targetDate?` |
+
+### Milestone Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `list_milestones` | List milestones, optionally filtered by version | `workspaceId`, `versionId?` |
+| `create_milestone` | Create a milestone within a version | `workspaceId`, `name`, `versionId?`, `description?`, `targetDate?` |
+
 ### Sprint Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `list_cycles` | List sprints for a workspace | `workspaceId` |
-| `create_cycle` | Create a new sprint | `workspaceId`, `name`, `startDate`, `endDate` |
+| `create_cycle` | Create a new sprint, optionally within a version | `workspaceId`, `name`, `startDate`, `endDate`, `versionId?` |
 | `assign_to_sprint` | Assign a node to a sprint | `cycleId`, `nodeId` |
 | `rollover_sprint` | Move incomplete items between sprints | `fromCycleId`, `toCycleId` |
 
@@ -321,17 +335,42 @@ Want me to apply these estimates? I can use `bulk_update_nodes` to set them all 
 
 ---
 
+### "Set up version planning"
+
+**You:** We're planning two releases -- V1 is the MVP due in June, V2 adds advanced features for Q4. Set that up.
+
+**AI:** Let me create the version structure.
+
+*AI calls `create_version` twice, then `create_milestone` for key deliverables.*
+
+**AI:** Done. I created:
+
+- **V1** (target: June 30) with milestones:
+  - "Core System MVP" -- the minimum viable product
+  - "Billing Module" -- payment processing
+- **V2** (target: December 15) with milestones:
+  - "Advanced Reporting" -- analytics dashboard
+  - "API Platform" -- public API for integrations
+
+Now I'll tag the relevant tasks. Looking at your map, the Backend and Design branches seem like V1 work, and the API Platform branch is V2.
+
+*AI calls `update_node` on each relevant node to set `versionId` and `milestoneId`.*
+
+**AI:** Tagged 18 nodes with version and milestone. The tree structure stays the same (organized by functional area), but now you can track what ships in each release. Use `list_versions` or `list_milestones` anytime to check release scope.
+
+---
+
 ### "Create a sprint for next week"
 
-**You:** Create a sprint for next week and assign the highest-priority unfinished tasks.
+**You:** Create a sprint for next week within V1 and assign the highest-priority unfinished tasks.
 
 **AI:** Let me check your current tasks and set that up.
 
-*AI calls `get_map` to see all nodes, then `create_cycle` with next week's dates.*
+*AI calls `list_versions` to get the V1 ID, then `get_map` to see all nodes, then `create_cycle` with next week's dates and the V1 versionId.*
 
-**AI:** I created **Sprint 5** (April 7 - April 11).
+**AI:** I created **Sprint 5** (April 7 - April 11) within V1.
 
-Now let me find the best tasks to include. Looking at unfinished P0 and P1 tasks:
+Now let me find the best V1 tasks to include. Looking at unfinished P0 and P1 tasks tagged for V1:
 
 - "API Endpoints" (P0, 7 days, 0% complete) -- too large for a 1-week sprint alone
 - "Component Library" (P1, 8 days, 15% complete) -- in progress, 6.8 days remaining

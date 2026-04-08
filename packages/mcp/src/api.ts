@@ -39,6 +39,8 @@ export interface NodeWithComputed {
   tags: string[];
   dependencies: Array<{ targetNodeId: string; type: string; lag: number }>;
   isMilestone: boolean;
+  versionId: string | null;
+  milestoneId: string | null;
   cycleId: string | null;
   collapsed: boolean;
   createdAt: string;
@@ -70,9 +72,33 @@ export interface ScheduleResult {
   };
 }
 
+export interface VersionInfo {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  status: string;
+  targetDate: string | null;
+  sortOrder: number;
+  createdAt: string;
+}
+
+export interface MilestoneInfo {
+  id: string;
+  versionId: string | null;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  status: string;
+  targetDate: string | null;
+  sortOrder: number;
+  createdAt: string;
+}
+
 export interface CycleInfo {
   id: string;
   workspaceId: string;
+  versionId: string | null;
   name: string;
   startDate: string;
   endDate: string;
@@ -209,10 +235,11 @@ export function createCycle(
   name: string,
   startDate: string,
   endDate: string,
+  versionId?: string,
 ): Promise<CycleInfo> {
   return request<CycleInfo>('/api/cycles', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, name, startDate, endDate }),
+    body: JSON.stringify({ workspaceId, name, startDate, endDate, versionId }),
   });
 }
 
@@ -236,10 +263,11 @@ export function importGitHubIssues(
   mapId: string,
   createdBy: string,
   parentNodeId?: string,
-): Promise<{ imported: number; nodes: Array<{ nodeId: string; issueNumber: number }> }> {
+  includeAll?: boolean,
+): Promise<{ imported: number; nodes: Array<{ nodeId: string; issueNumber: number }>; versions: Record<string, string>; milestones: Record<string, string> }> {
   return request(`/api/maps/${mapId}/github/import`, {
     method: 'POST',
-    body: JSON.stringify({ createdBy, parentNodeId }),
+    body: JSON.stringify({ createdBy, parentNodeId, includeAll }),
   });
 }
 
@@ -253,5 +281,44 @@ export function linkGitHubIssue(
   return request(`/api/maps/${mapId}/nodes/${nodeId}/github/link`, {
     method: 'POST',
     body: JSON.stringify({ owner, repo, issueNumber }),
+  });
+}
+
+// ── Versions ──────────────────────────────────────────────────
+
+export function listVersions(workspaceId: string): Promise<VersionInfo[]> {
+  return request<VersionInfo[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function createVersion(
+  workspaceId: string,
+  name: string,
+  description?: string,
+  targetDate?: string,
+): Promise<VersionInfo> {
+  return request<VersionInfo>('/api/versions', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, name, description, targetDate }),
+  });
+}
+
+// ── Milestones ────────────────────────────────────────────────
+
+export function listMilestones(workspaceId: string, versionId?: string): Promise<MilestoneInfo[]> {
+  let url = `/api/milestones?workspaceId=${encodeURIComponent(workspaceId)}`;
+  if (versionId) url += `&versionId=${encodeURIComponent(versionId)}`;
+  return request<MilestoneInfo[]>(url);
+}
+
+export function createMilestone(
+  workspaceId: string,
+  name: string,
+  versionId?: string,
+  description?: string,
+  targetDate?: string,
+): Promise<MilestoneInfo> {
+  return request<MilestoneInfo>('/api/milestones', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, name, versionId, description, targetDate }),
   });
 }

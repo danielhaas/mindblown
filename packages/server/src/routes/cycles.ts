@@ -18,6 +18,7 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
       name: string;
       startDate: string;
       endDate: string;
+      versionId?: string;
     };
 
     if (!body.workspaceId || !body.name || !body.startDate || !body.endDate) {
@@ -37,7 +38,7 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
     const startDate = toDateOnly(body.startDate);
     const endDate = toDateOnly(body.endDate);
 
-    const cycle = await cycleDb.createCycle(body.workspaceId, body.name, startDate, endDate);
+    const cycle = await cycleDb.createCycle(body.workspaceId, body.name, startDate, endDate, body.versionId);
     return reply.status(201).send(cycle);
   });
 

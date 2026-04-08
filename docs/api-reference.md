@@ -227,6 +227,8 @@ Returns the full map with all nodes and their computed fields (effort, progress,
       "customFields": {},
       "dependencies": [],
       "isMilestone": false,
+      "versionId": null,
+      "milestoneId": null,
       "cycleId": null,
       "externalLinks": [],
       "createdAt": "2025-08-01T12:00:00.000Z",
@@ -409,7 +411,7 @@ Partial update. Send only the fields you want to change.
 }
 ```
 
-Updatable fields: `text`, `description`, `x`, `y`, `collapsed`, `effortEstimate`, `percentComplete`, `status`, `assigneeIds`, `priority`, `dueDate`, `startDate`, `tags`, `customFields`, `dependencies`, `isMilestone`, `cycleId`, `externalLinks`.
+Updatable fields: `text`, `description`, `x`, `y`, `collapsed`, `effortEstimate`, `percentComplete`, `status`, `assigneeIds`, `priority`, `dueDate`, `startDate`, `tags`, `customFields`, `dependencies`, `isMilestone`, `versionId`, `milestoneId`, `cycleId`, `externalLinks`.
 
 **Response (200):** The updated node.
 
@@ -486,6 +488,140 @@ Broadcasts `node:reordered` via WebSocket.
 
 ---
 
+## Versions
+
+### Create a Version
+
+```
+POST /api/versions
+```
+
+**Request body:**
+
+```json
+{
+  "workspaceId": "ws-001",
+  "name": "V1",
+  "description": "First release",
+  "targetDate": "2025-12-31"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `workspaceId` | string | Yes | Workspace ID |
+| `name` | string | Yes | Version name (e.g. "V1", "2.0") |
+| `description` | string | No | Version description |
+| `status` | string | No | `planning` (default), `active`, `released`, `archived` |
+| `targetDate` | string | No | Target release date (ISO 8601) |
+| `sortOrder` | number | No | Display ordering |
+
+**Response (201):** The created version.
+
+### List Versions
+
+```
+GET /api/versions?workspaceId=ws-001
+```
+
+**Response (200):** Array of versions, ordered by `sortOrder`.
+
+### Get Version with Milestones and Cycles
+
+```
+GET /api/versions/:id
+```
+
+**Response (200):** The version, its milestones, and its sprints.
+
+### Update Version
+
+```
+PUT /api/versions/:id
+```
+
+### Delete Version
+
+```
+DELETE /api/versions/:id
+```
+
+Unsets `versionId` on all cycles and nodes referencing this version.
+
+---
+
+## Milestones
+
+### Create a Milestone
+
+```
+POST /api/milestones
+```
+
+**Request body:**
+
+```json
+{
+  "workspaceId": "ws-001",
+  "name": "Kernsystem MVP",
+  "versionId": "version-001"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `workspaceId` | string | Yes | Workspace ID |
+| `name` | string | Yes | Milestone name |
+| `versionId` | string | No | Version this milestone belongs to |
+| `description` | string | No | Milestone description |
+| `status` | string | No | `open` (default) or `closed` |
+| `targetDate` | string | No | Target date (ISO 8601) |
+
+**Response (201):** The created milestone.
+
+### List Milestones
+
+```
+GET /api/milestones?workspaceId=ws-001&versionId=version-001
+```
+
+| Query Param | Type | Required | Description |
+|-------------|------|----------|-------------|
+| `workspaceId` | string | Yes | Workspace ID |
+| `versionId` | string | No | Filter by version |
+
+**Response (200):** Array of milestones.
+
+### Get Milestone with Nodes
+
+```
+GET /api/milestones/:id
+```
+
+Returns the milestone, all linked nodes with computed fields, and aggregate progress.
+
+### Update Milestone
+
+```
+PUT /api/milestones/:id
+```
+
+### Delete Milestone
+
+```
+DELETE /api/milestones/:id
+```
+
+### Assign Node to Milestone
+
+```
+POST /api/milestones/:id/assign
+```
+
+**Request body:** `{ "nodeId": "node-001" }`
+
+---
+
 ## Cycles / Sprints
 
 ### Create a Cycle
@@ -501,7 +637,8 @@ POST /api/cycles
   "workspaceId": "ws-001",
   "name": "Sprint 14",
   "startDate": "2025-09-01",
-  "endDate": "2025-09-14"
+  "endDate": "2025-09-14",
+  "versionId": "version-001"
 }
 ```
 
@@ -511,6 +648,7 @@ POST /api/cycles
 | `name` | string | Yes | Sprint name |
 | `startDate` | string | Yes | ISO 8601 date |
 | `endDate` | string | Yes | ISO 8601 date |
+| `versionId` | string | No | Version this sprint belongs to |
 
 **Response (201):** The created cycle.
 
@@ -531,6 +669,7 @@ GET /api/cycles?workspaceId=ws-001
   {
     "id": "cycle-001",
     "workspaceId": "ws-001",
+    "versionId": "version-001",
     "name": "Sprint 14",
     "startDate": "2025-09-01",
     "endDate": "2025-09-14",
@@ -1003,4 +1142,4 @@ All errors follow a consistent shape:
 }
 ```
 
-Common error codes: `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `MAP_NOT_FOUND`, `NODE_NOT_FOUND`, `CYCLE_NOT_FOUND`, `COMMENT_NOT_FOUND`, `USER_NOT_FOUND`, `USER_EXISTS`, `NO_INTEGRATION`.
+Common error codes: `VALIDATION_ERROR`, `UNAUTHORIZED`, `FORBIDDEN`, `MAP_NOT_FOUND`, `NODE_NOT_FOUND`, `VERSION_NOT_FOUND`, `MILESTONE_NOT_FOUND`, `CYCLE_NOT_FOUND`, `COMMENT_NOT_FOUND`, `USER_NOT_FOUND`, `USER_EXISTS`, `NO_INTEGRATION`.

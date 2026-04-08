@@ -11,6 +11,7 @@ function dbCycleToCore(row: Record<string, unknown>): Cycle {
   return {
     id: get('id', 'id') as string,
     workspaceId: get('workspaceId', 'workspace_id') as string,
+    versionId: (get('versionId', 'version_id') as string) ?? null,
     name: get('name', 'name') as string,
     startDate: get('startDate', 'start_date') as string,
     endDate: get('endDate', 'end_date') as string,
@@ -28,12 +29,14 @@ export async function createCycle(
   name: string,
   startDate: string,
   endDate: string,
+  versionId?: string | null,
 ): Promise<Cycle> {
   const [row] = await db.insert(cycles).values({
     workspaceId,
     name,
     startDate,
     endDate,
+    versionId: versionId ?? null,
     createdAt: new Date(),
   }).returning();
 
@@ -66,6 +69,7 @@ export interface UpdateCycleInput {
   startDate?: string;
   endDate?: string;
   status?: 'planned' | 'active' | 'completed';
+  versionId?: string | null;
 }
 
 export async function updateCycle(id: string, input: UpdateCycleInput): Promise<Cycle | null> {
@@ -75,6 +79,7 @@ export async function updateCycle(id: string, input: UpdateCycleInput): Promise<
   if (input.startDate !== undefined) updates.startDate = input.startDate;
   if (input.endDate !== undefined) updates.endDate = input.endDate;
   if (input.status !== undefined) updates.status = input.status;
+  if (input.versionId !== undefined) updates.versionId = input.versionId;
 
   const [row] = await db.update(cycles).set(updates).where(eq(cycles.id, id)).returning();
   if (!row) return null;

@@ -79,6 +79,8 @@ export const nodes = pgTable('nodes', {
   customFields: jsonb('custom_fields').notNull().default({}),
   dependencies: jsonb('dependencies').notNull().default([]), // Dependency[]
   isMilestone: boolean('is_milestone').notNull().default(false),
+  versionId: uuid('version_id'),
+  milestoneId: uuid('milestone_id'),
   cycleId: uuid('cycle_id'),
   externalLinks: jsonb('external_links').notNull().default([]), // ExternalLink[]
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -119,11 +121,39 @@ export const integrations = pgTable('integrations', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Versions ──────────────────────────────────────────────────────
+
+export const versions = pgTable('versions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  name: text('name').notNull(),
+  description: text('description'),
+  status: text('status').notNull().default('planning'),
+  targetDate: date('target_date'),
+  sortOrder: real('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Milestones ────────────────────────────────────────────────────
+
+export const milestones = pgTable('milestones', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  versionId: uuid('version_id').references(() => versions.id),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  name: text('name').notNull(),
+  description: text('description'),
+  status: text('status').notNull().default('open'),
+  targetDate: date('target_date'),
+  sortOrder: real('sort_order').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Cycles ─────────────────────────────────────────────────────────
 
 export const cycles = pgTable('cycles', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  versionId: uuid('version_id').references(() => versions.id),
   name: text('name').notNull(),
   startDate: date('start_date').notNull(),
   endDate: date('end_date').notNull(),

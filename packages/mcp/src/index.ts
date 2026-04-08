@@ -29,8 +29,9 @@ const server = new McpServer(
 - **Leaf nodes** are where you set effort estimates and percent complete. Parent nodes auto-compute these values from their children using weighted rollup.
 - **Health signals** propagate upward: if any leaf is "behind", its entire ancestor chain is marked "behind" (worst-child-wins).
 - **Dependencies** link nodes with 4 types: Finish-to-Start (FS), Start-to-Start (SS), Finish-to-Finish (FF), Start-to-Finish (SF). These feed the critical path scheduler.
-- **Sprints/Cycles** group nodes into time-boxed iterations. Nodes can be assigned to a sprint.
-- **Milestones** are special nodes marking key deliverables.
+- **Versions** are release containers (e.g. "V1", "V2"). Multiple sprints and milestones belong to a version.
+- **Milestones** are key deliverables within a version (first-class entities, not node flags). Nodes can be linked to a milestone.
+- **Sprints/Cycles** are time-boxed iterations within a version. Nodes can be assigned to a sprint.
 
 ## The planning loop
 
@@ -49,11 +50,33 @@ const server = new McpServer(
 
 **Updating progress:** set_progress on leaf nodes you've worked on. Parents update automatically.
 
-**Sprint planning:** list_cycles to see sprints → assign_to_sprint to add tasks → track progress per sprint.
+**Release planning (versions + milestones):**
+1. create_version to define a release (e.g. "V1", "V2")
+2. create_milestone to define key deliverables within that version (e.g. "Kernsystem MVP", "Billing Module")
+3. Tag nodes with a version and/or milestone using update_node (set versionId, milestoneId)
+4. list_versions / list_milestones to review what's planned for each release
+
+Example: A node "Data Retention Policy" lives under Compliance in the tree (functional), and is tagged with version "V1" and milestone "Kernsystem MVP" (release planning). These are independent dimensions.
+
+**Sprint planning:**
+1. create_cycle to define a time-boxed sprint, optionally within a version (set versionId)
+2. assign_to_sprint to add tasks to the sprint
+3. list_cycles to review sprints and their progress
 
 **Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
 
-**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates linked nodes that auto-sync). Use link_github_issue to link an existing node to a specific GitHub issue. NEVER use create_node for GitHub issues — those won't be linked and won't sync.
+**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo. It creates a FUNCTIONAL mindmap (grouped by feature area, not by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Use link_github_issue to link an existing node to a specific GitHub issue. NEVER use create_node for GitHub issues — those won't be linked and won't sync.
+
+## Important: Mindmap = functional structure, Versions = release planning
+
+The mindmap tree is organized by **functional area** (e.g. "Compliance", "Billing", "Workflows") — this is the WHAT.
+Versions, milestones, and sprints are orthogonal metadata on nodes — this is the WHEN and WHY.
+
+- **versionId** on a node = "this ships in V1"
+- **milestoneId** on a node = "this contributes to the Kernsystem MVP milestone"
+- **cycleId** on a node = "this is being worked on in Sprint 3"
+
+A node can have all three set independently. Never reorganize the tree by version — use these fields instead.
 
 ## Important notes
 
@@ -62,7 +85,8 @@ const server = new McpServer(
 - Progress and effort only make sense on leaf nodes (nodes with no children). Parents compute automatically.
 - The get_map tool returns the full tree with all computed fields — it's the most informative single call.
 - Node IDs are UUIDs. You'll get them from list_maps, get_map, or create responses.
-- For GitHub issues, always use import_github_issues or link_github_issue instead of create_node.`,
+- For GitHub issues, always use import_github_issues or link_github_issue instead of create_node.
+- When organizing a project, group nodes by functional area (what it does), not by version (when it ships).`,
   },
 );
 
@@ -475,6 +499,90 @@ server.tool(
   },
 );
 
+// ── Version tools ──────────────────────────────────────────────
+
+server.tool(
+  'list_versions',
+  'List all versions for a workspace',
+  {
+    workspaceId: z.string().describe('The workspace ID'),
+  },
+  async ({ workspaceId }) => {
+    try {
+      const res = await api.listVersions(workspaceId);
+      if (res.length === 0) return toolResult('No versions found.');
+      const lines = res.map((v) =>
+        `- ${v.name} (id: ${v.id}) [${v.status}]${v.targetDate ? ` target: ${v.targetDate}` : ''}`,
+      );
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'create_version',
+  'Create a new version/release',
+  {
+    workspaceId: z.string().describe('The workspace ID'),
+    name: z.string().describe('Version name (e.g. "V1", "2.0")'),
+    description: z.string().optional().describe('Version description'),
+    targetDate: z.string().optional().describe('Target release date (ISO 8601)'),
+  },
+  async ({ workspaceId, name, description, targetDate }) => {
+    try {
+      const version = await api.createVersion(workspaceId, name, description, targetDate);
+      return toolResult(`Created version "${name}" (id: ${version.id}).`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+// ── Milestone tools ────────────────────────────────────────────
+
+server.tool(
+  'list_milestones',
+  'List all milestones for a workspace, optionally filtered by version',
+  {
+    workspaceId: z.string().describe('The workspace ID'),
+    versionId: z.string().optional().describe('Filter by version ID'),
+  },
+  async ({ workspaceId, versionId }) => {
+    try {
+      const res = await api.listMilestones(workspaceId, versionId);
+      if (res.length === 0) return toolResult('No milestones found.');
+      const lines = res.map((m) =>
+        `- ${m.name} (id: ${m.id}) [${m.status}]${m.versionId ? ` version: ${m.versionId}` : ''}${m.targetDate ? ` target: ${m.targetDate}` : ''}`,
+      );
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'create_milestone',
+  'Create a new milestone within a version',
+  {
+    workspaceId: z.string().describe('The workspace ID'),
+    name: z.string().describe('Milestone name'),
+    versionId: z.string().optional().describe('Version ID this milestone belongs to'),
+    description: z.string().optional().describe('Milestone description'),
+    targetDate: z.string().optional().describe('Target date (ISO 8601)'),
+  },
+  async ({ workspaceId, name, versionId, description, targetDate }) => {
+    try {
+      const milestone = await api.createMilestone(workspaceId, name, versionId, description, targetDate);
+      return toolResult(`Created milestone "${name}" (id: ${milestone.id}).`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 // ── Sprint tools ────────────────────────────────────────────────
 
 server.tool(
@@ -488,7 +596,7 @@ server.tool(
       const cycles = await api.listCycles(workspaceId);
       if (cycles.length === 0) return toolResult('No sprints found.');
       const lines = cycles.map((c) =>
-        `- ${c.name} (id: ${c.id}) [${c.status}] ${c.startDate} to ${c.endDate}`,
+        `- ${c.name} (id: ${c.id}) [${c.status}] ${c.startDate} to ${c.endDate}${c.versionId ? ` version: ${c.versionId}` : ''}`,
       );
       return toolResult(lines.join('\n'));
     } catch (err) {
@@ -499,16 +607,17 @@ server.tool(
 
 server.tool(
   'create_cycle',
-  'Create a new sprint/cycle',
+  'Create a new sprint/cycle, optionally within a version',
   {
     workspaceId: z.string().describe('The workspace ID'),
     name: z.string().describe('Sprint name'),
     startDate: z.string().describe('Start date (ISO 8601)'),
     endDate: z.string().describe('End date (ISO 8601)'),
+    versionId: z.string().optional().describe('Version ID this sprint belongs to'),
   },
-  async ({ workspaceId, name, startDate, endDate }) => {
+  async ({ workspaceId, name, startDate, endDate, versionId }) => {
     try {
-      const cycle = await api.createCycle(workspaceId, name, startDate, endDate);
+      const cycle = await api.createCycle(workspaceId, name, startDate, endDate, versionId);
       return toolResult(`Created sprint "${name}" (id: ${cycle.id}) from ${startDate} to ${endDate}.`);
     } catch (err) {
       return toolError(err);
@@ -554,26 +663,36 @@ server.tool(
 
 server.tool(
   'import_github_issues',
-  'Import issues from the connected GitHub repo into a map. Creates linked nodes that auto-sync with GitHub via webhooks. This is the RIGHT way to bring GitHub issues into MindBlown — do NOT use create_node for GitHub issues, as those won\'t be linked.',
+  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Do NOT use create_node for GitHub issues — those won\'t be linked.',
   {
     mapId: z.string().describe('The map ID to import into'),
     parentNodeId: z.string().optional().describe('Parent node ID to import under (defaults to root node)'),
+    includeAll: z.boolean().optional().describe('Import all issues including closed ones (default: open only). Use true for full roadmap import.'),
   },
-  async ({ mapId, parentNodeId }) => {
+  async ({ mapId, parentNodeId, includeAll }) => {
     try {
       const maps = await api.listMaps();
       const map = maps.find((m) => m.id === mapId);
       const createdBy = 'mcp-agent';
 
-      const result = await api.importGitHubIssues(mapId, createdBy, parentNodeId);
+      const result = await api.importGitHubIssues(mapId, createdBy, parentNodeId, includeAll);
       const lines = [`Imported ${result.imported} GitHub issues into "${map?.name ?? mapId}".`];
-      if (result.nodes.length > 0) {
-        lines.push('Imported issues:');
-        for (const n of result.nodes) {
-          lines.push(`  - Issue #${n.issueNumber} → node ${n.nodeId}`);
+      if (result.versions && Object.keys(result.versions).length > 0) {
+        lines.push('\nVersions created:');
+        for (const [name, versionId] of Object.entries(result.versions)) {
+          lines.push(`  - "${name}" → version ${versionId}`);
         }
       }
-      lines.push('\nAll imported nodes are linked to GitHub and will receive webhook updates (close, reopen, label, assign, etc.).');
+      if (result.milestones && Object.keys(result.milestones).length > 0) {
+        lines.push('\nMilestones created:');
+        for (const [name, milestoneId] of Object.entries(result.milestones)) {
+          lines.push(`  - "${name}" → milestone ${milestoneId}`);
+        }
+      }
+      if (result.nodes.length > 0) {
+        lines.push(`\n${result.nodes.length} nodes created (grouped by functional area).`);
+      }
+      lines.push('\nAll imported nodes are linked to GitHub and will receive webhook updates.');
       return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);

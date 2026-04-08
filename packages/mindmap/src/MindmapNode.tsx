@@ -438,17 +438,23 @@ export function MindmapNode({
         </g>
       )}
 
-      {/* Effort label (right of progress ring area, below node) */}
-      {effort > 0 && hasChildren && (
+      {/* Progress % and remaining effort (below node, right-aligned) */}
+      {effort > 0 && (
         <text
           x={x + width - 8}
           y={annotationY + 8}
           textAnchor="end"
           fontSize={10}
-          fill="#94a3b8"
+          fill={progress >= 100 ? '#059669' : '#64748b'}
           fontWeight={500}
+          style={{ pointerEvents: 'none' }}
         >
-          {effort}d
+          {Math.round(progress)}%
+          {progress < 100 && (
+            <tspan fill="#94a3b8">
+              {' · '}{Math.ceil(effort * (1 - progress / 100))}d left
+            </tspan>
+          )}
         </text>
       )}
     </g>

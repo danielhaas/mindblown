@@ -259,6 +259,7 @@ export function MindmapEditor() {
   const setMaxDepth = useMindmapStore((s) => s.setMaxDepth);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const user = useMindmapStore((s) => s.user);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
 
   // ── Context menu state ──────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -423,6 +424,26 @@ export function MindmapEditor() {
       return () => clearTimeout(timer);
     }
   }, [focusNodeId, fitToScreen]);
+
+  // Re-fit when depth limit changes
+  const prevMaxDepthRef = useRef(maxDepth);
+  useEffect(() => {
+    if (prevMaxDepthRef.current !== maxDepth) {
+      prevMaxDepthRef.current = maxDepth;
+      const timer = setTimeout(() => fitToScreen(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [maxDepth, fitToScreen]);
+
+  // Re-fit when version filter changes
+  const prevVersionFilterRef = useRef(activeVersionFilter);
+  useEffect(() => {
+    if (prevVersionFilterRef.current !== activeVersionFilter) {
+      prevVersionFilterRef.current = activeVersionFilter;
+      const timer = setTimeout(() => fitToScreen(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [activeVersionFilter, fitToScreen]);
 
   // ── Convert client coords to SVG coords ───────────────────
 

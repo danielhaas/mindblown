@@ -93,6 +93,8 @@ export interface UpdateNodeInput {
   customFields?: Record<string, CustomFieldValue>;
   dependencies?: Dependency[];
   isMilestone?: boolean;
+  versionId?: string | null;
+  milestoneId?: string | null;
   cycleId?: string | null;
   externalLinks?: ExternalLink[];
 }
@@ -116,6 +118,8 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
   if (input.customFields !== undefined) updates.customFields = input.customFields;
   if (input.dependencies !== undefined) updates.dependencies = input.dependencies;
   if (input.isMilestone !== undefined) updates.isMilestone = input.isMilestone;
+  if (input.versionId !== undefined) updates.versionId = input.versionId;
+  if (input.milestoneId !== undefined) updates.milestoneId = input.milestoneId;
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
 

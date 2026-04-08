@@ -9,6 +9,16 @@ import type { Node, ExternalLink, Priority } from '@mindblown/core';
 
 // ── Types ─────────────────────────────────────────────────────────
 
+export interface GitHubMilestone {
+  id: number;
+  number: number;
+  title: string;
+  description: string | null;
+  state: 'open' | 'closed';
+  due_on: string | null;
+  created_at: string;
+}
+
 export interface GitHubIssue {
   id: number;
   number: number;
@@ -17,6 +27,7 @@ export interface GitHubIssue {
   state: 'open' | 'closed';
   labels: Array<{ name: string }>;
   assignees: Array<{ login: string; id: number }>;
+  milestone: GitHubMilestone | null;
   html_url: string;
   created_at: string;
   updated_at: string;
@@ -372,32 +383,61 @@ function extractIssueReferences(text: string): number[] {
   return refs;
 }
 
+// ── Label helpers ────────────────────────────────────────────────
+
+/**
+ * Strip version prefixes from labels like "V1: 1a. Kernsystem MVP" → "Kernsystem MVP".
+ * Handles patterns: "V1: 3. Foo", "V2: 10. Bar", "V1: 1b. Baz"
+ */
+function stripVersionPrefix(label: string): string {
+  return label.replace(/^V\d+:\s*\d+[a-z]?\.\s*/i, '');
+}
+
+/**
+ * Extract the version prefix from a milestone title.
+ * "V1: 1a. Kernsystem MVP" → "V1"
+ * "V2: 10. Externe Integrationen" → "V2"
+ * "Something else" → null
+ */
+export function extractVersionFromMilestone(title: string): string | null {
+  const match = title.match(/^(V\d+)/i);
+  return match ? match[1] : null;
+}
+
 // ── Import ────────────────────────────────────────────────────────
 
 export interface ImportedIssue {
   issue: GitHubIssue;
   externalLink: ExternalLink;
-  /** Suggested parent group key (label name), or null for ungrouped. */
+  /** Functional group: derived from milestone (version prefix stripped), falling back to first label. */
   groupLabel: string | null;
+  /** GitHub milestone title, if the issue belongs to one. */
+  milestoneTitle: string | null;
 }
 
 /**
- * Fetch all open issues from a GitHub repo and prepare them for import
- * as MindBlown nodes. Issues are grouped by their first label.
+ * Fetch issues from a GitHub repo and prepare them for import as MindBlown nodes.
+ *
+ * Issues are grouped by **functional label** (version prefixes like "V1: 2." are stripped).
+ * GitHub milestones are returned separately so the caller can create cycles from them.
+ *
+ * @param options.includeAll - If true, fetch all issues (open + closed). Default: open only.
  */
 export async function importGitHubIssues(
   repoOwner: string,
   repoName: string,
   token: string,
+  options?: { includeAll?: boolean },
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
   let page = 1;
   const perPage = 100;
+  const state = options?.includeAll ? 'all' : 'open';
 
-  // Paginate through all open issues
+  // Paginate through issues
   while (true) {
     const batch = await githubFetch<GitHubIssue[]>(
-      `/repos/${repoOwner}/${repoName}/issues?state=open&per_page=${perPage}&page=${page}&sort=created&direction=asc`,
+      `/repos/${repoOwner}/${repoName}/issues?state=${state}&per_page=${perPage}&page=${page}&sort=created&direction=asc`,
       token,
     );
 
@@ -413,15 +453,25 @@ export async function importGitHubIssues(
   }
 
   return issues.map((issue) => {
-    // Use first non-priority label as group key
-    const groupLabel = issue.labels
-      .map((l) => l.name)
-      .find((name) => !name.startsWith(PRIORITY_PREFIX)) ?? null;
+    // Prefer milestone's functional part for grouping (e.g. "V1: 3. Erweiterte Funktionen" → "Erweiterte Funktionen")
+    // Fall back to first non-priority label if no milestone
+    let groupLabel: string | null = null;
+    if (issue.milestone) {
+      groupLabel = stripVersionPrefix(issue.milestone.title);
+      // If stripping didn't change anything (no version prefix), use as-is
+    }
+    if (!groupLabel) {
+      const rawLabel = issue.labels
+        .map((l) => l.name)
+        .find((name) => !name.startsWith(PRIORITY_PREFIX) && !['bug', 'enhancement', 'documentation', 'question', 'help wanted', 'good first issue', 'wontfix', 'duplicate', 'invalid'].includes(name.toLowerCase()));
+      groupLabel = rawLabel ?? null;
+    }
 
     return {
       issue,
       externalLink: buildExternalLink(repoOwner, repoName, issue),
       groupLabel,
+      milestoneTitle: issue.milestone?.title ?? null,
     };
   });
 }

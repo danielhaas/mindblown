@@ -367,23 +367,33 @@ Jira's "Blocks / Is blocked by" links are purely informational — nothing preve
 - Pre-built map structures for common project types (sprint planning, product launch, event planning, OKR tracking)
 - Database templates per node type (like Notion): a "Bug" template pre-fills priority, severity, and steps-to-reproduce fields
 
-**Milestones and Sprints:**
+**Versions, Milestones, and Sprints:**
 
-Milestones and sprints are first-class but lightweight — they fit the mindmap model rather than replacing it.
+Release planning uses three layered concepts — versions, milestones, and sprints — that are first-class entities separate from the mindmap tree structure.
+
+*Versions:*
+- A version is a release container (e.g. "V1", "V2", "1.0"). It groups milestones and sprints into a coherent release.
+- Versions have a status lifecycle: planning → active → released → archived.
+- Nodes can be tagged with a target version — "this feature ships in V2."
+- The mindmap tree is organized by **functional area** (what it does), while versions track **when it ships**. These are orthogonal dimensions.
 
 *Milestones:*
-- Any node can be marked as a milestone — a zero-effort checkpoint that represents a significant moment (phase complete, deliverable ready, go/no-go decision)
-- Milestones appear as diamonds on the Gantt, markers on the calendar, and highlighted nodes on the map
-- Milestone dates are auto-computed from their children: a milestone is "reached" when all child nodes are done
-- Useful for stakeholder communication: "We'll hit the Design milestone by April 15"
+- A milestone is a key deliverable within a version (e.g. "Kernsystem MVP", "Billing Module Complete").
+- Milestones are first-class entities — not just a boolean flag on a node. They have their own name, status, target date, and linked nodes.
+- Nodes can be linked to a milestone — "this task contributes to the Billing milestone."
+- Milestone progress is computed from linked nodes: weighted average of effort × progress.
+- Milestones appear as diamonds on the Gantt, markers on the calendar.
+- Useful for stakeholder communication: "We'll hit the Billing milestone by April 15."
 
 *Sprints / Cycles (optional, not required):*
-- Define time-boxed cycles (1–4 weeks) on a map or across maps
-- Assign leaf nodes to a cycle — "this work happens in Sprint 3"
+- Define time-boxed cycles (1–4 weeks) within a version
+- Assign leaf nodes to a cycle — "this work happens in Sprint 3 of V1"
 - Sprint view: filter the map/kanban/list to show only the current cycle's work
 - Auto-rollover: unfinished items move to the next cycle automatically (learned from Linear)
 - Sprint progress: computed from the leaf estimates and % complete within the cycle
 - **Not mandatory.** Teams that don't do sprints simply don't use this. The planning loop works without it — cycles are an overlay, not the foundation.
+
+*The key insight:* The mindmap tree represents **what** (functional structure), while versions represent **when** (release planning). A node lives in a functional branch (e.g. "Compliance > Data Retention") AND can be tagged with a version (V1), milestone (Kernsystem MVP), and sprint (Sprint 3). These are independent, orthogonal dimensions — not competing organizational schemes.
 
 This is the balance: we're not Jira (no burndown charts, no velocity per sprint, no sprint ceremonies). But teams that work in iterations can use MindBlown for sprint planning by selecting which branches/leaves go into each cycle.
 

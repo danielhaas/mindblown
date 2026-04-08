@@ -31,6 +31,13 @@ The **planning loop** is the heart of the product:
 
 A node IS a task. No conversion step. Gradual enrichment.
 
+**Mindmap = functional structure, Versions = release planning.**
+The tree is organized by *what* (functional area), not *when* (release). Release planning uses three orthogonal entities:
+- **Versions** — release containers (V1, V2). Has milestones and sprints.
+- **Milestones** — key deliverables within a version. First-class entities, not node flags.
+- **Sprints/Cycles** — time-boxed iterations within a version. Optional.
+Nodes can be tagged with a version, milestone, and sprint independently of their tree position.
+
 ## Team
 
 This project uses specialized agents. See `.claude/agents/` for definitions:

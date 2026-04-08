@@ -433,6 +433,88 @@ function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: 
   );
 }
 
+// ── Version Indicator ─────────────────────────────────────────
+
+function VersionIndicator({
+  versions,
+  activeVersionFilter,
+  onFilterChange,
+}: {
+  versions: { id: string; name: string; status: string }[];
+  activeVersionFilter: string | null;
+  onFilterChange: (id: string | null) => void;
+}) {
+  const filterVersion = activeVersionFilter
+    ? versions.find((v) => v.id === activeVersionFilter)
+    : null;
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      {/* Filter indicator */}
+      {filterVersion && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          <span
+            style={{
+              fontSize: 10,
+              fontWeight: 600,
+              padding: '2px 8px',
+              borderRadius: 4,
+              background: '#f0fdf4',
+              color: '#059669',
+            }}
+          >
+            {filterVersion.name}
+          </span>
+          <button
+            onClick={() => onFilterChange(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              padding: '0 2px',
+              color: '#94a3b8',
+              fontSize: 12,
+              fontFamily: 'inherit',
+            }}
+            title="Clear version filter"
+          >
+            x
+          </button>
+        </div>
+      )}
+
+      {/* Version filter dropdown */}
+      <select
+        value={activeVersionFilter ?? ''}
+        onChange={(e) => onFilterChange(e.target.value || null)}
+        onKeyDown={(e) => e.stopPropagation()}
+        style={{
+          fontSize: 10,
+          fontFamily: 'inherit',
+          border: '1px solid #e2e8f0',
+          borderRadius: 4,
+          padding: '2px 18px 2px 6px',
+          color: '#475569',
+          background: '#fff',
+          appearance: 'none' as const,
+          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2394a3b8' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E")`,
+          backgroundRepeat: 'no-repeat',
+          backgroundPosition: 'right 4px center',
+          cursor: 'pointer',
+        }}
+        title="Filter by version"
+      >
+        <option value="">All versions</option>
+        {versions.map((v) => (
+          <option key={v.id} value={v.id}>
+            {v.name} ({v.status})
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 // ── Sprint Indicator ──────────────────────────────────────────
 
 function SprintIndicator({
@@ -587,6 +669,10 @@ export function App() {
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const setActiveCycleFilter = useMindmapStore((s) => s.setActiveCycleFilter);
   const loadCycles = useMindmapStore((s) => s.loadCycles);
+  const versions = useMindmapStore((s) => s.versions);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const setActiveVersionFilter = useMindmapStore((s) => s.setActiveVersionFilter);
+  const loadVersions = useMindmapStore((s) => s.loadVersions);
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
@@ -659,12 +745,13 @@ export function App() {
     if (user) loadMaps();
   }, [user, loadMaps]);
 
-  // Load cycles when map is opened
+  // Load cycles and versions when map is opened
   useEffect(() => {
     if (currentMapId) {
       loadCycles();
+      loadVersions();
     }
-  }, [currentMapId, loadCycles]);
+  }, [currentMapId, loadCycles, loadVersions]);
 
   // Auto-open if there's only one map
   const autoOpened = useRef(false);
@@ -839,6 +926,15 @@ export function App() {
             </svg>
             Import/Export
           </button>
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* Version filter */}
+          <VersionIndicator
+            versions={versions}
+            activeVersionFilter={activeVersionFilter}
+            onFilterChange={setActiveVersionFilter}
+          />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 

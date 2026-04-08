@@ -1,4 +1,4 @@
-import type { Node, MindMap, Cycle } from '@mindblown/core';
+import type { Node, MindMap, Cycle, Version } from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -374,4 +374,10 @@ export function rolloverCycle(fromId: string, toId: string): Promise<void> {
     method: 'POST',
     body: JSON.stringify({ toId }),
   });
+}
+
+// ── Versions ────────────────────────────────────────────────────
+
+export function fetchVersions(workspaceId: string): Promise<Version[]> {
+  return request<Version[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
 }

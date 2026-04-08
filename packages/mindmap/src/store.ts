@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { Node, NodeId, ComputedNodeValues, MindMap, Cycle } from '@mindblown/core';
+import type { Node, NodeId, ComputedNodeValues, MindMap, Cycle, Version } from '@mindblown/core';
 import { computeTree } from '@mindblown/core';
 import * as api from './api.js';
 import type { MapSummary, AuthUser } from './api.js';
@@ -55,6 +55,10 @@ export interface MindmapState {
   cycles: Cycle[];
   activeCycleFilter: string | null;
 
+  // Version state
+  versions: Version[];
+  activeVersionFilter: string | null;
+
   // UI state
   activeView: ActiveView;
   loading: boolean;
@@ -85,6 +89,10 @@ export interface MindmapState {
   assignNodeToCycle: (nodeId: string, cycleId: string) => Promise<void>;
   unassignNodeFromCycle: (nodeId: string, cycleId: string) => Promise<void>;
   setActiveCycleFilter: (cycleId: string | null) => void;
+
+  // Actions — version
+  loadVersions: () => Promise<void>;
+  setActiveVersionFilter: (versionId: string | null) => void;
 
   // Actions — layout
   setLayoutType: (layout: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart') => void;
@@ -139,9 +147,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   computed: new Map(),
   layoutType: 'tree-lr' as const,
   focusNodeId: null,
-  maxDepth: 2,
+  maxDepth: 1,
   cycles: [],
   activeCycleFilter: null,
+  versions: [],
+  activeVersionFilter: null,
   activeView: 'mindmap',
   loading: false,
   error: null,
@@ -249,7 +259,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
         focusNodeId: null,
-        maxDepth: 2,
+        maxDepth: 1,
         loading: false,
         error: null,
       });
@@ -294,7 +304,9 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       editingNodeId: null,
       computed: new Map(),
       focusNodeId: null,
-      maxDepth: 2,
+      maxDepth: 1,
+      versions: [],
+      activeVersionFilter: null,
       wsConnected: false,
     });
   },
@@ -418,6 +430,21 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   setActiveCycleFilter: (cycleId) => set({ activeCycleFilter: cycleId }),
 
+  // ── Version actions ──────────────────────────────────────────
+
+  loadVersions: async () => {
+    const state = get();
+    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    try {
+      const versions = await api.fetchVersions(workspaceId);
+      set({ versions });
+    } catch (e: any) {
+      set({ error: e.message ?? 'Failed to load versions' });
+    }
+  },
+
+  setActiveVersionFilter: (versionId) => set({ activeVersionFilter: versionId }),
+
   // ── View actions ─────────────────────────────────────────────
 
   setActiveView: (view) => set({ activeView: view }),
@@ -434,12 +461,29 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   setMaxDepth: (depth) => set({ maxDepth: depth }),
 
   getVisibleNodes: () => {
-    const { nodes, rootNodeId, focusNodeId, maxDepth } = get();
+    const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter } = get();
     if (!rootNodeId) return [];
 
     const effectiveRootId = focusNodeId ?? rootNodeId;
     const effectiveRoot = nodes[effectiveRootId];
     if (!effectiveRoot) return [];
+
+    // Build set of node IDs that match the version filter (+ their ancestors)
+    let versionMatchIds: Set<string> | null = null;
+    if (activeVersionFilter) {
+      versionMatchIds = new Set<string>();
+      // Find all nodes with this versionId
+      for (const n of Object.values(nodes)) {
+        if (n.versionId === activeVersionFilter) {
+          // Add this node and all ancestors up to root
+          let cur: Node | undefined = n;
+          while (cur && !versionMatchIds.has(cur.id)) {
+            versionMatchIds.add(cur.id);
+            cur = cur.parentId ? nodes[cur.parentId] : undefined;
+          }
+        }
+      }
+    }
 
     const result: VisibleNode[] = [];
 
@@ -449,6 +493,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       if (!node) return 0;
       let count = 0;
       for (const childId of node.childrenIds) {
+        if (versionMatchIds && !versionMatchIds.has(childId)) continue;
         count += 1 + countDescendants(childId);
       }
       return count;
@@ -459,8 +504,14 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       const node = nodes[nodeId];
       if (!node) return;
 
+      // Skip nodes not in the version filter
+      if (versionMatchIds && !versionMatchIds.has(nodeId)) return;
+
+      const visibleChildren = versionMatchIds
+        ? node.childrenIds.filter((id) => versionMatchIds!.has(id))
+        : node.childrenIds;
       const atMaxDepth = maxDepth > 0 && depth >= maxDepth;
-      const hasChildren = node.childrenIds.length > 0;
+      const hasChildren = visibleChildren.length > 0;
       const hasHiddenChildren = atMaxDepth && hasChildren;
       const hiddenDescendantCount = hasHiddenChildren ? countDescendants(nodeId) : 0;
 
@@ -474,7 +525,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
       // Don't recurse past maxDepth (0 = unlimited)
       if (!atMaxDepth && !node.collapsed) {
-        for (const childId of node.childrenIds) {
+        for (const childId of visibleChildren) {
           walk(childId, depth + 1);
         }
       }
