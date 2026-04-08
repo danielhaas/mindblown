@@ -674,12 +674,13 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
           delete nodes[tempId];
           nodes[serverNode.id] = serverNode;
 
-          // Update parent's childrenIds to swap temp -> real id
+          // Update parent's childrenIds to swap temp -> real id, deduplicating
           const p = nodes[targetParentId];
           if (p) {
+            const swapped = p.childrenIds.map((cid) => (cid === tempId ? serverNode.id : cid));
             nodes[targetParentId] = {
               ...p,
-              childrenIds: p.childrenIds.map((cid) => (cid === tempId ? serverNode.id : cid)),
+              childrenIds: [...new Set(swapped)],
             };
           }
 
@@ -915,6 +916,12 @@ function handleWsMessage(
       const serverNode = msg.node as Node;
       // Don't duplicate if we already have it (from our own optimistic update)
       if (state.nodes[serverNode.id]) return;
+
+      // Skip if we have a pending temp node for this parent (our API callback will handle it)
+      if (serverNode.parentId) {
+        const parent = state.nodes[serverNode.parentId];
+        if (parent?.childrenIds.some((cid) => cid.startsWith('temp-'))) return;
+      }
 
       const nodes = { ...state.nodes };
       nodes[serverNode.id] = serverNode;

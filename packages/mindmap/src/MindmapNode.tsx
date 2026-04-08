@@ -122,6 +122,7 @@ interface MindmapNodeProps {
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
   onEditCancel: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
   onDragStart?: (nodeId: string, startX: number, startY: number) => void;
 }
 
@@ -140,6 +141,7 @@ export function MindmapNode({
   onDoubleClick,
   onTextChange,
   onEditCancel,
+  onContextMenu,
   onDragStart,
 }: MindmapNodeProps) {
   const { x, y, width, height, depth, collapsed, hasChildren } = layout;
@@ -258,6 +260,7 @@ export function MindmapNode({
         opacity: nodeOpacity,
       }}
       onMouseDown={handleMouseDown}
+      onContextMenu={onContextMenu}
       onDoubleClick={(e) => {
         e.stopPropagation();
         onDoubleClick();
@@ -359,16 +362,17 @@ export function MindmapNode({
         </g>
       )}
 
-      {/* Progress ring (left side of node) */}
-      {showProgress && (
-        <foreignObject
-          x={x + 8}
-          y={y + (height - 16) / 2}
-          width={16}
-          height={16}
-        >
-          <ProgressRing progress={progress} />
-        </foreignObject>
+      {/* Strikethrough for done nodes */}
+      {progress >= 100 && (
+        <line
+          x1={x + 12}
+          y1={y + height / 2}
+          x2={x + width - 12}
+          y2={y + height / 2}
+          stroke="#94a3b8"
+          strokeWidth={1.5}
+          style={{ pointerEvents: 'none' }}
+        />
       )}
 
       {/* Priority dot */}
@@ -418,7 +422,7 @@ export function MindmapNode({
           dominantBaseline="central"
           fontSize={depth === 0 ? 14 : 13}
           fontWeight={depth === 0 ? 700 : hasChildren ? 600 : 400}
-          fill={textColor}
+          fill={progress >= 100 ? '#94a3b8' : textColor}
           style={{ pointerEvents: 'none', userSelect: 'none' }}
         >
           {node.text.length > 28 ? node.text.slice(0, 26) + '...' : node.text}

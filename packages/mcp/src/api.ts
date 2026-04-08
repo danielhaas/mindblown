@@ -229,3 +229,29 @@ export function rolloverCycle(fromCycleId: string, targetCycleId: string): Promi
     body: JSON.stringify({ targetCycleId }),
   });
 }
+
+// ── GitHub Integration ─────────────────────────────────────────
+
+export function importGitHubIssues(
+  mapId: string,
+  createdBy: string,
+  parentNodeId?: string,
+): Promise<{ imported: number; nodes: Array<{ nodeId: string; issueNumber: number }> }> {
+  return request(`/api/maps/${mapId}/github/import`, {
+    method: 'POST',
+    body: JSON.stringify({ createdBy, parentNodeId }),
+  });
+}
+
+export function linkGitHubIssue(
+  mapId: string,
+  nodeId: string,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<any> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/github/link`, {
+    method: 'POST',
+    body: JSON.stringify({ owner, repo, issueNumber }),
+  });
+}

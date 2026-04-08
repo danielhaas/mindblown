@@ -53,13 +53,16 @@ const server = new McpServer(
 
 **Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
 
+**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates linked nodes that auto-sync). Use link_github_issue to link an existing node to a specific GitHub issue. NEVER use create_node for GitHub issues — those won't be linked and won't sync.
+
 ## Important notes
 
 - Always call list_maps first to discover available maps and their IDs.
 - When creating nodes, you need a mapId and parentId. Get these from get_map.
 - Progress and effort only make sense on leaf nodes (nodes with no children). Parents compute automatically.
 - The get_map tool returns the full tree with all computed fields — it's the most informative single call.
-- Node IDs are UUIDs. You'll get them from list_maps, get_map, or create responses.`,
+- Node IDs are UUIDs. You'll get them from list_maps, get_map, or create responses.
+- For GitHub issues, always use import_github_issues or link_github_issue instead of create_node.`,
   },
 );
 
@@ -541,6 +544,57 @@ server.tool(
     try {
       const result = await api.rolloverCycle(fromCycleId, toCycleId);
       return toolResult(`Rolled over incomplete items from sprint ${fromCycleId} to ${toCycleId}. Result: ${JSON.stringify(result)}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+// ── GitHub integration tools ───────────────────────────────────
+
+server.tool(
+  'import_github_issues',
+  'Import issues from the connected GitHub repo into a map. Creates linked nodes that auto-sync with GitHub via webhooks. This is the RIGHT way to bring GitHub issues into MindBlown — do NOT use create_node for GitHub issues, as those won\'t be linked.',
+  {
+    mapId: z.string().describe('The map ID to import into'),
+    parentNodeId: z.string().optional().describe('Parent node ID to import under (defaults to root node)'),
+  },
+  async ({ mapId, parentNodeId }) => {
+    try {
+      const maps = await api.listMaps();
+      const map = maps.find((m) => m.id === mapId);
+      const createdBy = 'mcp-agent';
+
+      const result = await api.importGitHubIssues(mapId, createdBy, parentNodeId);
+      const lines = [`Imported ${result.imported} GitHub issues into "${map?.name ?? mapId}".`];
+      if (result.nodes.length > 0) {
+        lines.push('Imported issues:');
+        for (const n of result.nodes) {
+          lines.push(`  - Issue #${n.issueNumber} → node ${n.nodeId}`);
+        }
+      }
+      lines.push('\nAll imported nodes are linked to GitHub and will receive webhook updates (close, reopen, label, assign, etc.).');
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'link_github_issue',
+  'Link an existing MindBlown node to a GitHub issue. After linking, the node will auto-sync with GitHub via webhooks.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to link'),
+    owner: z.string().describe('GitHub repo owner (e.g. "danielhaas")'),
+    repo: z.string().describe('GitHub repo name (e.g. "mindblown")'),
+    issueNumber: z.number().describe('GitHub issue number'),
+  },
+  async ({ mapId, nodeId, owner, repo, issueNumber }) => {
+    try {
+      await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
+      return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with GitHub.`);
     } catch (err) {
       return toolError(err);
     }

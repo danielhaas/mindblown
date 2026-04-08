@@ -91,7 +91,7 @@ export interface MapDetail {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
+    ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
     ...(init?.headers as Record<string, string> ?? {}),
   };
   if (token) {

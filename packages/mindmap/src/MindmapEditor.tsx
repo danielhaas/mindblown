@@ -260,6 +260,9 @@ export function MindmapEditor() {
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const user = useMindmapStore((s) => s.user);
 
+  // ── Context menu state ──────────────────────────────────────
+  const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
   // ── Cursor presence: throttled send ──────────────────────────
   const lastCursorSend = useRef(0);
 
@@ -1013,6 +1016,7 @@ export function MindmapEditor() {
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
         onClick={handleBackgroundClick}
+        onContextMenu={(e) => { if (!contextMenu) e.preventDefault(); }}
         tabIndex={0}
       >
         {/* Definitions for drop shadows and filters */}
@@ -1096,6 +1100,12 @@ export function MindmapEditor() {
                   isDragInvalid={isInvalidTarget ?? false}
                   hasHiddenChildren={meta?.hasHiddenChildren ?? false}
                   hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    selectNode(ln.id);
+                    setContextMenu({ x: e.clientX, y: e.clientY, nodeId: ln.id });
+                  }}
                   onSelect={(shiftKey) => {
                     if (isDimmed) {
                       // Clicking a dimmed node drills into it
@@ -1173,6 +1183,92 @@ export function MindmapEditor() {
           onExpand={handleBulkExpand}
         />
       )}
+
+      {/* Context menu */}
+      {contextMenu && (
+        <>
+          <div
+            style={{ position: 'fixed', inset: 0, zIndex: 999 }}
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(e) => { e.preventDefault(); setContextMenu(null); }}
+          />
+          <div
+            style={{
+              position: 'fixed',
+              left: contextMenu.x,
+              top: contextMenu.y,
+              zIndex: 1000,
+              background: '#fff',
+              borderRadius: 8,
+              boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+              border: '1px solid #e2e8f0',
+              padding: '4px 0',
+              minWidth: 180,
+              fontSize: 13,
+            }}
+          >
+            <button
+              style={ctxMenuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                addNode(contextMenu.nodeId);
+                setContextMenu(null);
+              }}
+            >
+              Add child node
+            </button>
+            <button
+              style={ctxMenuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                addNode(contextMenu.nodeId, 'New node', true);
+                setContextMenu(null);
+              }}
+            >
+              Add sibling node
+            </button>
+            <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
+            <button
+              style={ctxMenuItemStyle}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                startEditing(contextMenu.nodeId);
+                setContextMenu(null);
+              }}
+            >
+              Edit
+            </button>
+            {contextMenu.nodeId !== rootNodeId && (
+              <button
+                style={{ ...ctxMenuItemStyle, color: '#dc2626' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#fef2f2')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  deleteNode(contextMenu.nodeId);
+                  setContextMenu(null);
+                }}
+              >
+                Delete
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
+
+const ctxMenuItemStyle: React.CSSProperties = {
+  display: 'block',
+  width: '100%',
+  padding: '6px 12px',
+  border: 'none',
+  background: 'transparent',
+  textAlign: 'left' as const,
+  cursor: 'pointer',
+  fontSize: 13,
+  color: '#1e293b',
+};
