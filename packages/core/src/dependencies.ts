@@ -105,6 +105,97 @@ export function topologicalSort(nodes: Node[]): Node[] {
 }
 
 /**
+ * Collect all leaf descendant IDs for a node (recursive).
+ */
+function getLeafDescendants(nodeId: NodeId, nodeMap: Map<NodeId, Node>): NodeId[] {
+  const node = nodeMap.get(nodeId);
+  if (!node) return [];
+  if (node.childrenIds.length === 0) return [nodeId];
+
+  const leaves: NodeId[] = [];
+  for (const childId of node.childrenIds) {
+    leaves.push(...getLeafDescendants(childId, nodeMap));
+  }
+  return leaves;
+}
+
+/**
+ * Propagate parent-node dependencies down to leaf nodes.
+ *
+ * When a dependency involves a parent node, we expand it so that:
+ * - FS (A→B): All leaves in B depend on all leaves in A finishing
+ * - SS (A→B): All leaves in B depend on the earliest leaf in A starting
+ * - FF (A→B): All leaves in B's finish constrained by A's leaves finishing
+ * - SF (A→B): All leaves in B's finish constrained by A's leaves starting
+ *
+ * Returns a new node array with synthetic dependencies added to leaf nodes.
+ * The original nodes are not mutated.
+ */
+function expandParentDependencies(nodes: Node[]): Node[] {
+  const nodeMap = new Map<NodeId, Node>();
+  for (const n of nodes) nodeMap.set(n.id, n);
+
+  // Cache leaf descendants per node
+  const leafCache = new Map<NodeId, NodeId[]>();
+  function leafsOf(id: NodeId): NodeId[] {
+    if (!leafCache.has(id)) {
+      leafCache.set(id, getLeafDescendants(id, nodeMap));
+    }
+    return leafCache.get(id)!;
+  }
+
+  // Collect synthetic deps to add: Map<leafNodeId, extra deps[]>
+  const extraDeps = new Map<NodeId, Node['dependencies']>();
+
+  for (const node of nodes) {
+    for (const dep of node.dependencies) {
+      const sourceIsParent = node.childrenIds.length > 0;
+      const targetNode = nodeMap.get(dep.targetNodeId);
+      const targetIsParent = targetNode ? targetNode.childrenIds.length > 0 : false;
+
+      if (!sourceIsParent && !targetIsParent) continue; // both leaves, nothing to expand
+
+      const sourceLeaves = leafsOf(node.id);
+      const targetLeaves = leafsOf(dep.targetNodeId);
+
+      if (sourceLeaves.length === 0 || targetLeaves.length === 0) continue;
+
+      // For FS: each source leaf depends on every target leaf
+      // (source can't start until target finishes)
+      for (const srcLeaf of sourceLeaves) {
+        if (!extraDeps.has(srcLeaf)) extraDeps.set(srcLeaf, []);
+        for (const tgtLeaf of targetLeaves) {
+          if (srcLeaf === tgtLeaf) continue;
+          extraDeps.get(srcLeaf)!.push({
+            targetNodeId: tgtLeaf,
+            type: dep.type,
+            lag: dep.lag,
+          });
+        }
+      }
+    }
+  }
+
+  if (extraDeps.size === 0) return nodes; // no parent deps, skip cloning
+
+  // Clone nodes that need extra deps
+  return nodes.map((n) => {
+    const extra = extraDeps.get(n.id);
+    if (!extra) return n;
+
+    // Deduplicate: avoid adding deps that already exist
+    const existingKeys = new Set(n.dependencies.map(d => `${d.targetNodeId}:${d.type}`));
+    const newDeps = extra.filter(d => !existingKeys.has(`${d.targetNodeId}:${d.type}`));
+    if (newDeps.length === 0) return n;
+
+    return {
+      ...n,
+      dependencies: [...n.dependencies, ...newDeps],
+    };
+  });
+}
+
+/**
  * Forward-pass scheduling.
  *
  * Given nodes with effort estimates and dependencies, compute the earliest
@@ -117,10 +208,13 @@ export function schedule(
   nodes: Node[],
   projectStartDay: number = 0,
 ): ScheduledNode[] {
-  const sorted = topologicalSort(nodes);
+  // Expand parent-node dependencies to leaf-node dependencies
+  const expanded = expandParentDependencies(nodes);
+
+  const sorted = topologicalSort(expanded);
 
   const nodeMap = new Map<NodeId, Node>();
-  for (const node of nodes) {
+  for (const node of expanded) {
     nodeMap.set(node.id, node);
   }
 
@@ -130,7 +224,7 @@ export function schedule(
     const duration =
       node.childrenIds.length === 0
         ? (node.effortEstimate ?? 0)
-        : 0; // parent nodes don't have their own duration for scheduling
+        : 0;
 
     let earliestStart = projectStartDay;
 
@@ -165,7 +259,26 @@ export function schedule(
     });
   }
 
-  // Return in original node order
+  // For parent nodes, compute start/end from children
+  for (const node of expanded) {
+    if (node.childrenIds.length === 0) continue;
+    const s = scheduled.get(node.id)!;
+    let minStart = Infinity;
+    let maxEnd = 0;
+    for (const childId of node.childrenIds) {
+      const child = scheduled.get(childId);
+      if (!child) continue;
+      minStart = Math.min(minStart, child.computedStart);
+      maxEnd = Math.max(maxEnd, child.computedEnd);
+    }
+    if (minStart !== Infinity) {
+      s.computedStart = minStart;
+      s.computedEnd = maxEnd;
+      s.duration = maxEnd - minStart;
+    }
+  }
+
+  // Return in original node order (using original IDs)
   return nodes.map((n) => scheduled.get(n.id)!);
 }
 
@@ -182,9 +295,12 @@ export function criticalPath(nodes: Node[]): CriticalPathResult {
     return { path: [], totalDuration: 0, float: {} };
   }
 
-  const sorted = topologicalSort(nodes);
+  // Expand parent-node dependencies to leaf-node dependencies
+  const expanded = expandParentDependencies(nodes);
+
+  const sorted = topologicalSort(expanded);
   const nodeMap = new Map<NodeId, Node>();
-  for (const node of nodes) {
+  for (const node of expanded) {
     nodeMap.set(node.id, node);
   }
 
@@ -237,7 +353,7 @@ export function criticalPath(nodes: Node[]): CriticalPathResult {
   // ── Backward pass ─────────────────────────────────────────
   // Build reverse dependency map: for each node, which nodes depend on it?
   const dependents = new Map<NodeId, { nodeId: NodeId; dep: Node['dependencies'][0] }[]>();
-  for (const node of nodes) {
+  for (const node of expanded) {
     for (const dep of node.dependencies) {
       if (!dependents.has(dep.targetNodeId)) {
         dependents.set(dep.targetNodeId, []);
