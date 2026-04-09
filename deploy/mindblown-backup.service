@@ -1,0 +1,11 @@
+[Unit]
+Description=MindBlown nightly Postgres backup
+After=postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=oneshot
+User=postgres
+Group=postgres
+ExecStart=/bin/bash -c '/usr/bin/pg_dump --clean --if-exists --no-owner --no-privileges mindblown | /bin/gzip -9 > /var/backups/mindblown/mindblown-$(date -u +%%Y%%m%%d-%%H%%M%%SZ).sql.gz'
+ExecStartPost=/usr/bin/find /var/backups/mindblown -name 'mindblown-*.sql.gz' -mtime +30 -delete

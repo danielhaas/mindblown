@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly MindBlown Postgres backup
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=15min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,39 @@
+[Unit]
+Description=MindBlown API
+Documentation=https://github.com/danielhaas/mindblown
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+User=mindblown
+Group=mindblown
+WorkingDirectory=/opt/mindblown/packages/server
+EnvironmentFile=/etc/mindblown/api.env
+
+# tsx runs the TypeScript entry point directly. This mirrors the dev setup
+# (`tsx watch`) and avoids needing a separate JS build for the workspace
+# packages, which currently export `.ts` sources via their package.json.
+# pnpm must be on PATH — see deploy/README.md.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
+ExecStart=/usr/bin/env pnpm exec tsx src/index.ts
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Sandboxing
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/opt/mindblown
+
+[Install]
+WantedBy=multi-user.target

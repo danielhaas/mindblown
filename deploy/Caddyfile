@@ -1,0 +1,35 @@
+# MindBlown — Caddy reverse proxy + static frontend
+#
+# Replace `mindblown.example.com` with your real hostname.
+# - Public hostname (e.g. mindblown.example.com): Caddy auto-provisions a
+#   Let's Encrypt certificate. Make sure DNS resolves and ports 80/443 are open.
+# - LAN-only / no DNS: replace the site address with `:80` for plain HTTP,
+#   or use `https://mindblown.local` with `tls internal` to use Caddy's
+#   internal CA.
+
+mindblown.example.com {
+    encode gzip zstd
+
+    # API requests
+    handle /api/* {
+        reverse_proxy localhost:3001
+    }
+
+    # WebSocket (Caddy auto-detects upgrade headers)
+    handle /ws/* {
+        reverse_proxy localhost:3001
+    }
+
+    # Static frontend (Vite SPA — fall back to index.html for client routes)
+    handle {
+        root * /opt/mindblown/packages/mindmap/dist
+        try_files {path} /index.html
+        file_server
+    }
+
+    # Optional: send Caddy logs to journal
+    log {
+        output stdout
+        format console
+    }
+}
