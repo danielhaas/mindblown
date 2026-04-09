@@ -869,6 +869,27 @@ server.tool(
 );
 
 server.tool(
+  'bulk_assign_to_sprint',
+  'Assign multiple nodes to a sprint in a single call',
+  {
+    cycleId: z.string().describe('The sprint/cycle ID'),
+    nodeIds: z.array(z.string()).describe('Array of node IDs to assign'),
+  },
+  async ({ cycleId, nodeIds }) => {
+    const results: string[] = [];
+    for (const nodeId of nodeIds) {
+      try {
+        await api.assignNodeToCycle(cycleId, nodeId);
+        results.push(`${nodeId}: OK`);
+      } catch (err) {
+        results.push(`${nodeId}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return toolResult(`Assigned ${results.filter(r => r.includes('OK')).length}/${nodeIds.length} nodes to sprint ${cycleId}.\n${results.join('\n')}`);
+  },
+);
+
+server.tool(
   'assign_to_version',
   'Assign a node to a version, or unassign by passing an empty string',
   {
@@ -888,6 +909,30 @@ server.tool(
     } catch (err) {
       return toolError(err);
     }
+  },
+);
+
+server.tool(
+  'bulk_assign_to_version',
+  'Assign multiple nodes to a version in a single call',
+  {
+    mapId: z.string().describe('The map ID'),
+    versionId: z.string().describe('The version ID to assign to (empty string to unassign)'),
+    nodeIds: z.array(z.string()).describe('Array of node IDs to assign'),
+  },
+  async ({ mapId, versionId, nodeIds }) => {
+    const effectiveVersionId = versionId === '' ? null : versionId;
+    const results: string[] = [];
+    for (const nodeId of nodeIds) {
+      try {
+        await api.updateNode(mapId, nodeId, { versionId: effectiveVersionId });
+        results.push(`${nodeId}: OK`);
+      } catch (err) {
+        results.push(`${nodeId}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const action = effectiveVersionId ? `assigned to version ${effectiveVersionId}` : 'unassigned from version';
+    return toolResult(`${results.filter(r => r.includes('OK')).length}/${nodeIds.length} nodes ${action}.\n${results.join('\n')}`);
   },
 );
 
@@ -1045,6 +1090,40 @@ server.tool(
     } catch (err) {
       return toolError(err);
     }
+  },
+);
+
+server.tool(
+  'bulk_link_github_issue',
+  'Link multiple nodes to GitHub issues in a single call. Supports a default owner/repo to avoid repetition.',
+  {
+    mapId: z.string().describe('The map ID'),
+    owner: z.string().optional().describe('Default GitHub repo owner (used when link omits owner)'),
+    repo: z.string().optional().describe('Default GitHub repo name (used when link omits repo)'),
+    links: z.array(z.object({
+      nodeId: z.string().describe('The node ID to link'),
+      owner: z.string().optional().describe('GitHub repo owner (overrides default)'),
+      repo: z.string().optional().describe('GitHub repo name (overrides default)'),
+      issueNumber: z.number().describe('GitHub issue number'),
+    })).describe('Array of node-to-issue links'),
+  },
+  async ({ mapId, owner: defaultOwner, repo: defaultRepo, links }) => {
+    const results: string[] = [];
+    for (const link of links) {
+      const owner = link.owner ?? defaultOwner;
+      const repo = link.repo ?? defaultRepo;
+      if (!owner || !repo) {
+        results.push(`${link.nodeId} → #${link.issueNumber}: FAILED — owner and repo are required`);
+        continue;
+      }
+      try {
+        await api.linkGitHubIssue(mapId, link.nodeId, owner, repo, link.issueNumber);
+        results.push(`${link.nodeId} → ${owner}/${repo}#${link.issueNumber}: OK`);
+      } catch (err) {
+        results.push(`${link.nodeId} → #${link.issueNumber}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    return toolResult(`Linked ${results.filter(r => r.includes('OK')).length}/${links.length} issues.\n${results.join('\n')}`);
   },
 );
 
