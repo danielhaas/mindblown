@@ -90,6 +90,9 @@ export interface UpdateMapInput {
   defaultLayout?: LayoutMode;
   healthThreshold?: number;
   baselines?: Baseline[];
+  wipLimit?: number | null;
+  projectStartDate?: string | null;
+  hoursPerDay?: number;
 }
 
 export async function updateMap(mapId: string, input: UpdateMapInput): Promise<MindMap | null> {
@@ -102,6 +105,9 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.defaultLayout !== undefined) updates.defaultLayout = input.defaultLayout;
   if (input.healthThreshold !== undefined) updates.healthThreshold = input.healthThreshold;
   if (input.baselines !== undefined) updates.baselines = input.baselines;
+  if (input.wipLimit !== undefined) updates.wipLimit = input.wipLimit;
+  if (input.projectStartDate !== undefined) updates.projectStartDate = input.projectStartDate;
+  if (input.hoursPerDay !== undefined) updates.hoursPerDay = input.hoursPerDay;
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

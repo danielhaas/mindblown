@@ -1,7 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Node, NodeId, CriticalPathResult } from '@mindblown/core';
+import type { Node, NodeId, CriticalPathResult, ScheduledNode } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { fetchSchedule } from './api.js';
+
+// ── Schedule response shape (from GET /api/maps/:id/schedule) ────
+
+interface ScheduleResponse {
+  schedule: ScheduledNode[];
+  criticalPath: CriticalPathResult;
+  projectStartDate: string; // ISO YYYY-MM-DD
+  effortUnit: 'hours' | 'days' | 'points';
+  unitsPerDay: number;
+}
 
 // ── Constants ─────────────────────────────────────────────────────
 
@@ -161,6 +171,7 @@ function flattenTree(
 function computeTimeRange(
   rows: FlatRow[],
   scale: TimeScale,
+  scheduleDates: Map<string, { start: Date; end: Date }>,
   baselines: Map<string, { startDate: string | null; dueDate: string | null }>,
 ): { rangeStart: Date; rangeEnd: Date; columns: Date[] } {
   const today = new Date();
@@ -170,10 +181,11 @@ function computeTimeRange(
   let maxDate = today;
 
   for (const row of rows) {
-    const s = parseDate(row.node.startDate);
-    const d = parseDate(row.node.dueDate);
-    if (s && s < minDate) minDate = s;
-    if (d && d > maxDate) maxDate = d;
+    const dates = scheduleDates.get(row.node.id);
+    if (dates) {
+      if (dates.start < minDate) minDate = dates.start;
+      if (dates.end > maxDate) maxDate = dates.end;
+    }
 
     // Check baselines too
     const bl = baselines.get(row.node.id);
@@ -237,6 +249,7 @@ export function GanttView() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
   const maxDepth = useMindmapStore((s) => s.maxDepth);
@@ -244,8 +257,9 @@ export function GanttView() {
   // Local UI state
   const [scale, setScale] = useState<TimeScale>('week');
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(() => new Set());
-  const [criticalPath, setCriticalPath] = useState<CriticalPathResult | null>(null);
+  const [scheduleData, setScheduleData] = useState<ScheduleResponse | null>(null);
   const [selectedBaseline, setSelectedBaseline] = useState<string | null>(null);
+  const criticalPath = scheduleData?.criticalPath ?? null;
 
   // Drag state
   const [dragInfo, setDragInfo] = useState<{
@@ -266,19 +280,49 @@ export function GanttView() {
   useEffect(() => {
     if (!currentMapId) return;
     fetchSchedule(currentMapId)
-      .then((data: any) => {
-        if (data && data.criticalPath) {
-          setCriticalPath(data.criticalPath);
+      .then((data: unknown) => {
+        const d = data as ScheduleResponse | null;
+        if (d && Array.isArray(d.schedule)) {
+          setScheduleData(d);
         }
       })
       .catch(() => {
-        // Graceful fallback: no critical path highlighting
+        // Graceful fallback: no computed schedule, Gantt shows empty bars.
       });
   }, [currentMapId, nodes]);
 
+  // ── Map computed offsets → calendar dates ──────────────────────
+  //
+  // The backend returns schedule entries in effort-unit space relative to
+  // a projectStartDate. Convert each to a real { start, end } Date pair so
+  // the rest of the Gantt (bar rendering, time range, dependency arrows)
+  // can work in familiar calendar units.
+  const scheduleDates = useMemo(() => {
+    const map = new Map<string, { start: Date; end: Date }>();
+    if (!scheduleData) return map;
+
+    const anchor = new Date(scheduleData.projectStartDate);
+    anchor.setHours(0, 0, 0, 0);
+    const unitsPerDay = scheduleData.unitsPerDay || 1;
+
+    for (const s of scheduleData.schedule) {
+      const startDays = s.computedStart / unitsPerDay;
+      const endDays = s.computedEnd / unitsPerDay;
+      const start = new Date(anchor);
+      start.setDate(start.getDate() + Math.round(startDays));
+      const end = new Date(anchor);
+      // Ensure at least a 1-day visual footprint for zero-duration
+      // milestones and unestimated leaves so they don't vanish.
+      const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
+      end.setDate(end.getDate() + Math.round(visibleEndDays));
+      map.set(s.nodeId, { start, end });
+    }
+    return map;
+  }, [scheduleData]);
+
   // ── Flatten nodes into rows (respects drill-down) ──────────────
 
-  const allRows = useMemo(() => {
+  const rows = useMemo(() => {
     const visibleNodes = getVisibleNodes();
     if (visibleNodes.length === 0) return [];
 
@@ -296,13 +340,7 @@ export function GanttView() {
     }
 
     return result;
-  }, [nodes, rootNodeId, collapsedSet, getVisibleNodes, focusNodeId, maxDepth]);
-
-  // Apply sprint filter
-  const rows = useMemo(() => {
-    if (!activeCycleFilter) return allRows;
-    return allRows.filter((row) => row.node.cycleId === activeCycleFilter);
-  }, [allRows, activeCycleFilter]);
+  }, [nodes, rootNodeId, collapsedSet, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter]);
 
   // ── Build baseline lookup ───────────────────────────────────────
 
@@ -321,8 +359,8 @@ export function GanttView() {
 
   const colWidth = getColumnWidth(scale);
   const { rangeStart, columns } = useMemo(
-    () => computeTimeRange(rows, scale, baselineData),
-    [rows, scale, baselineData],
+    () => computeTimeRange(rows, scale, scheduleDates, baselineData),
+    [rows, scale, scheduleDates, baselineData],
   );
 
   const totalTimelineWidth = columns.length * colWidth;
@@ -401,15 +439,23 @@ export function GanttView() {
       e.preventDefault();
       e.stopPropagation();
       const node = nodes[nodeId];
-      if (!node || !node.startDate || !node.dueDate) return;
+      if (!node) return;
+      // Prefer the manual pins, but fall back to the computed schedule so
+      // the user can drag an auto-scheduled bar to pin it in place for the
+      // first time.
+      const toIso = (d: Date) => d.toISOString().slice(0, 10);
+      const computed = scheduleDates.get(nodeId);
+      const originalStart = node.startDate ?? (computed ? toIso(computed.start) : null);
+      const originalDue = node.dueDate ?? (computed ? toIso(computed.end) : null);
+      if (!originalStart || !originalDue) return;
       setDragInfo({
         nodeId,
         startX: e.clientX,
-        originalStart: node.startDate,
-        originalDue: node.dueDate,
+        originalStart,
+        originalDue,
       });
     },
-    [nodes],
+    [nodes, scheduleDates],
   );
 
   useEffect(() => {
@@ -1020,9 +1066,15 @@ export function GanttView() {
 
                 {/* ── Task bars / Milestone diamonds ──────────────── */}
                 {rows.map((row, idx) => {
-                  const startDate = parseDate(row.node.startDate);
-                  const dueDate = parseDate(row.node.dueDate);
-                  if (!startDate && !dueDate) return null;
+                  // Bar positions come from the computed schedule (effort +
+                  // dependencies + manual pins), NOT directly from
+                  // node.startDate/dueDate. Manual dates are still honored,
+                  // but only as pinning constraints that the scheduler
+                  // incorporates server-side.
+                  const dates = scheduleDates.get(row.node.id);
+                  if (!dates) return null;
+                  const startDate = dates.start;
+                  const dueDate = dates.end;
 
                   const cv = computed.get(row.node.id);
                   const health = cv?.healthSignal ?? 'on_track';
@@ -1035,7 +1087,7 @@ export function GanttView() {
 
                   // Milestone diamond
                   if (row.node.isMilestone) {
-                    const date = dueDate ?? startDate!;
+                    const date = dueDate;
                     const cx = getBarX(date);
                     const size = 7;
                     return (
@@ -1055,7 +1107,6 @@ export function GanttView() {
                   }
 
                   // Regular bar
-                  if (!startDate || !dueDate) return null;
                   const x = getBarX(startDate);
                   const w = getBarWidth(startDate, dueDate);
                   const barH = 16;
@@ -1114,19 +1165,19 @@ export function GanttView() {
                 {/* ── Dependency arrows ───────────────────────────── */}
                 {rows.map((row, depIdx) => {
                   if (row.node.dependencies.length === 0) return null;
-                  const depDueDate = parseDate(row.node.startDate);
-                  if (!depDueDate) return null;
-                  const toX = getBarX(depDueDate);
+                  const successorDates = scheduleDates.get(row.node.id);
+                  if (!successorDates) return null;
+                  const toX = getBarX(successorDates.start);
                   const toY = depIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
 
                   return row.node.dependencies.map((dep) => {
                     const predIdx = rowIndexMap.get(dep.targetNodeId);
                     if (predIdx === undefined) return null;
                     const pred = rows[predIdx];
-                    const predEnd = parseDate(pred.node.dueDate);
-                    if (!predEnd) return null;
+                    const predDates = scheduleDates.get(pred.node.id);
+                    if (!predDates) return null;
 
-                    const fromX = getBarX(predEnd);
+                    const fromX = getBarX(predDates.end);
                     const fromY = predIdx * ROW_HEIGHT + ROW_HEIGHT / 2;
 
                     return (

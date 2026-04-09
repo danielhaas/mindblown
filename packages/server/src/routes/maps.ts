@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
+import type { ScheduleConstraint, NodeId } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import { db } from '../db/connection.js';
@@ -189,12 +190,53 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const scheduled = schedule(data.nodes);
+    // Anchor day 0 of the schedule to the map's projectStartDate (or today).
+    const projectStartDate = data.map.projectStartDate
+      ? new Date(data.map.projectStartDate)
+      : new Date(new Date().toISOString().slice(0, 10));
+    // Normalize to UTC midnight so day arithmetic is stable.
+    projectStartDate.setUTCHours(0, 0, 0, 0);
+
+    // Conversion factor: effort-unit → calendar days.
+    // - days: 1 unit = 1 day
+    // - hours: 1 unit = 1 / hoursPerDay days
+    // - points: undefined (clients should warn); default to 1 day/point so a
+    //   roadmap still renders something.
+    const unitsPerDay =
+      data.map.effortUnit === 'hours'
+        ? (data.map.hoursPerDay ?? 8)
+        : 1;
+
+    // Build per-node constraints from manual start/due dates. Any node with
+    // a user-set date gets pinned; everything else flows from effort + deps.
+    const MS_PER_DAY = 86_400_000;
+    const toDayOffset = (isoDate: string): number => {
+      const d = new Date(isoDate);
+      d.setUTCHours(0, 0, 0, 0);
+      const calendarDays = Math.round((d.getTime() - projectStartDate.getTime()) / MS_PER_DAY);
+      // Convert calendar-day offset back to the scheduler's effort-unit space.
+      return calendarDays * unitsPerDay;
+    };
+
+    const constraints = new Map<NodeId, ScheduleConstraint>();
+    for (const n of data.nodes) {
+      const pin: ScheduleConstraint = {};
+      if (n.startDate) pin.minStart = toDayOffset(n.startDate);
+      if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
+      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+        constraints.set(n.id, pin);
+      }
+    }
+
+    const scheduled = schedule(data.nodes, 0, constraints);
     const cp = criticalPath(data.nodes);
 
     return reply.send({
       schedule: scheduled,
       criticalPath: cp,
+      projectStartDate: projectStartDate.toISOString().slice(0, 10),
+      effortUnit: data.map.effortUnit,
+      unitsPerDay,
     });
   });
 }

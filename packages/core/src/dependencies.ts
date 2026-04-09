@@ -196,17 +196,34 @@ function expandParentDependencies(nodes: Node[]): Node[] {
 }
 
 /**
+ * Per-node constraints that pin a node's schedule in place.
+ *
+ * - `minStart`: forces computedStart >= this value (e.g. user-set startDate)
+ * - `maxEnd`: forces computedEnd >= this value (e.g. user-set dueDate acts as a
+ *   target end; we bump duration or push start as needed in a minimal way)
+ *
+ * Values are in the same unit as the rest of the scheduler (days/hours/points
+ * relative to projectStartDay). The caller converts calendar dates.
+ */
+export interface ScheduleConstraint {
+  minStart?: number;
+  maxEnd?: number;
+}
+
+/**
  * Forward-pass scheduling.
  *
  * Given nodes with effort estimates and dependencies, compute the earliest
  * possible start and end for each node.
  *
  * `projectStartDay` is day 0. All dates are in the map's effort unit (days/hours/points).
+ * Optional `constraints` pin individual nodes in place (manually-set dates).
  * Returns a ScheduledNode for every input node.
  */
 export function schedule(
   nodes: Node[],
   projectStartDay: number = 0,
+  constraints?: Map<NodeId, ScheduleConstraint>,
 ): ScheduledNode[] {
   // Expand parent-node dependencies to leaf-node dependencies
   const expanded = expandParentDependencies(nodes);
@@ -221,7 +238,7 @@ export function schedule(
   const scheduled = new Map<NodeId, ScheduledNode>();
 
   for (const node of sorted) {
-    const duration =
+    let duration =
       node.childrenIds.length === 0
         ? (node.effortEstimate ?? 0)
         : 0;
@@ -249,6 +266,20 @@ export function schedule(
       }
 
       earliestStart = Math.max(earliestStart, constraint);
+    }
+
+    // Apply per-node pinning constraints. minStart pushes the start forward;
+    // maxEnd stretches duration to force end alignment (a manual due date
+    // acts as a hard deadline the bar must reach).
+    const pin = constraints?.get(node.id);
+    if (pin) {
+      if (pin.minStart !== undefined) {
+        earliestStart = Math.max(earliestStart, pin.minStart);
+      }
+      if (pin.maxEnd !== undefined && node.childrenIds.length === 0) {
+        const requiredDuration = pin.maxEnd - earliestStart;
+        if (requiredDuration > duration) duration = requiredDuration;
+      }
     }
 
     scheduled.set(node.id, {

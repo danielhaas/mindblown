@@ -205,17 +205,29 @@ server.tool(
 
 server.tool(
   'update_map',
-  'Update a map\'s name or description',
+  'Update a map\'s name, description, WIP limit, or Gantt scheduling anchors. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is "hours" (default 8). Pass nullable fields as null to clear.',
   {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
     description: z.string().nullable().optional().describe('New map description'),
+    wipLimit: z.number().nullable().optional().describe('Soft WIP limit on in-progress nodes (null to disable)'),
+    projectStartDate: z.string().nullable().optional().describe('Gantt anchor date (ISO YYYY-MM-DD); null = use today'),
+    hoursPerDay: z.number().min(0.1).optional().describe('Working hours per day for Gantt conversion when effortUnit is "hours" (default 8)'),
   },
-  async ({ mapId, name, description }) => {
+  async ({ mapId, name, description, wipLimit, projectStartDate, hoursPerDay }) => {
     try {
-      const fields: { name?: string; description?: string | null } = {};
+      const fields: {
+        name?: string;
+        description?: string | null;
+        wipLimit?: number | null;
+        projectStartDate?: string | null;
+        hoursPerDay?: number;
+      } = {};
       if (name !== undefined) fields.name = name;
       if (description !== undefined) fields.description = description;
+      if (wipLimit !== undefined) fields.wipLimit = wipLimit;
+      if (projectStartDate !== undefined) fields.projectStartDate = projectStartDate;
+      if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
       if (Object.keys(fields).length === 0) {
         return toolResult('No fields to update.');
       }
@@ -541,6 +553,151 @@ server.tool(
 );
 
 server.tool(
+  'set_actual_effort',
+  'Record the actual effort spent on a leaf node, in the same unit as the estimate. Enables the estimation feedback loop — compare planned vs actual with get_estimation_accuracy. Usually set when marking a task complete.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID'),
+    actualEffort: z.number().min(0).describe('Actual effort (must be >= 0), in the map\'s effort unit'),
+  },
+  async ({ mapId, nodeId, actualEffort }) => {
+    try {
+      const err = await assertLeafNode(mapId, nodeId, 'set actual effort');
+      if (err) return toolResult(err);
+      await api.updateNode(mapId, nodeId, { actualEffort });
+      return toolResult(`Set actual effort on ${nodeId} to ${actualEffort}.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'bulk_set_actual_effort',
+  'Record actual effort on multiple leaf nodes at once',
+  {
+    mapId: z.string().describe('The map ID'),
+    updates: z.array(z.object({
+      nodeId: z.string().describe('Node ID'),
+      actualEffort: z.number().min(0).describe('Actual effort (must be >= 0)'),
+    })).describe('Array of {nodeId, actualEffort} pairs'),
+  },
+  async ({ mapId, updates }) => {
+    try {
+      const mapData = await api.getMap(mapId);
+      const nodeMap = new Map(mapData.nodes.map((n) => [n.id, n]));
+      const results: string[] = [];
+      for (const { nodeId, actualEffort } of updates) {
+        try {
+          const node = nodeMap.get(nodeId);
+          if (!node) {
+            results.push(`  ${nodeId}: FAILED — Node not found in map ${mapId}`);
+            continue;
+          }
+          if (node.childrenIds.length > 0) {
+            results.push(`  ${nodeId}: SKIPPED — Cannot set actual effort on a parent node.`);
+            continue;
+          }
+          await api.updateNode(mapId, nodeId, { actualEffort });
+          results.push(`  ${nodeId}: actual = ${actualEffort}`);
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          results.push(`  ${nodeId}: FAILED — ${msg}`);
+        }
+      }
+      return toolResult(`Bulk set_actual_effort results (${updates.length} nodes):\n${results.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'get_estimation_accuracy',
+  'Report estimation accuracy (actual vs estimated effort) across completed leaf nodes. Returns overall fudge factor (sum(actual)/sum(estimate)), distribution buckets, and per-node detail. Optionally scope by sprint, version, or assignee.',
+  {
+    mapId: z.string().describe('The map ID'),
+    cycleId: z.string().optional().describe('Scope to a specific sprint/cycle'),
+    versionId: z.string().optional().describe('Scope to a specific version'),
+    assigneeId: z.string().optional().describe('Scope to a specific assignee'),
+  },
+  async ({ mapId, cycleId, versionId, assigneeId }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const candidates = data.nodes.filter((n) => {
+        if ((n.childrenIds?.length ?? 0) > 0) return false;
+        if (n.effortEstimate == null || n.actualEffort == null) return false;
+        if (cycleId && n.cycleId !== cycleId) return false;
+        if (versionId && n.versionId !== versionId) return false;
+        if (assigneeId && !(n.assigneeIds ?? []).includes(assigneeId)) return false;
+        return true;
+      });
+
+      if (candidates.length === 0) {
+        return toolResult(
+          'No nodes with both effortEstimate and actualEffort recorded. Set actualEffort on completed leaf nodes to build up estimation history.',
+        );
+      }
+
+      const totalEstimate = candidates.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
+      const totalActual = candidates.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
+      const fudgeFactor = totalEstimate > 0 ? totalActual / totalEstimate : 0;
+
+      // Distribution buckets by ratio per node
+      const buckets = { under: 0, onTarget: 0, over: 0, wayOver: 0 };
+      for (const n of candidates) {
+        const est = n.effortEstimate ?? 0;
+        const act = n.actualEffort ?? 0;
+        if (est === 0) continue;
+        const ratio = act / est;
+        if (ratio < 0.8) buckets.under++;
+        else if (ratio <= 1.2) buckets.onTarget++;
+        else if (ratio <= 2.0) buckets.over++;
+        else buckets.wayOver++;
+      }
+
+      const unit = data.map.effortUnit ?? 'units';
+      const scope: string[] = [];
+      if (cycleId) scope.push(`cycle=${cycleId}`);
+      if (versionId) scope.push(`version=${versionId}`);
+      if (assigneeId) scope.push(`assignee=${assigneeId}`);
+
+      const lines: string[] = [];
+      lines.push(`Estimation accuracy${scope.length ? ` [${scope.join(', ')}]` : ''}`);
+      lines.push(`Nodes with both estimate + actual: ${candidates.length}`);
+      lines.push(`Total estimated: ${totalEstimate.toFixed(2)} ${unit}`);
+      lines.push(`Total actual:    ${totalActual.toFixed(2)} ${unit}`);
+      lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x (multiply future estimates by this)`);
+      lines.push('');
+      lines.push('Distribution (per node ratio = actual / estimate):');
+      lines.push(`  Underestimated by user (<0.8x):   ${buckets.under}`);
+      lines.push(`  On target (0.8x – 1.2x):          ${buckets.onTarget}`);
+      lines.push(`  Over (1.2x – 2.0x):               ${buckets.over}`);
+      lines.push(`  Way over (>2.0x):                 ${buckets.wayOver}`);
+      lines.push('');
+      lines.push('Worst 5 offenders (largest overrun):');
+      const sorted = [...candidates]
+        .filter((n) => (n.effortEstimate ?? 0) > 0)
+        .sort((a, b) => {
+          const ra = (a.actualEffort ?? 0) / (a.effortEstimate ?? 1);
+          const rb = (b.actualEffort ?? 0) / (b.effortEstimate ?? 1);
+          return rb - ra;
+        })
+        .slice(0, 5);
+      for (const n of sorted) {
+        const est = n.effortEstimate ?? 0;
+        const act = n.actualEffort ?? 0;
+        const ratio = est > 0 ? (act / est).toFixed(2) : '∞';
+        lines.push(`  - ${n.id} ${n.text}: ${est} → ${act} (${ratio}x)`);
+      }
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'set_progress',
   'Set percent complete on a leaf node',
   {
@@ -562,7 +719,7 @@ server.tool(
 
 server.tool(
   'set_status',
-  'Set status on a node',
+  'Set status on a node. Returns a WIP limit warning if moving the node into an in_progress status pushes the map over its configured wipLimit (see update_map).',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID'),
@@ -582,7 +739,87 @@ server.tool(
         );
       }
       await api.updateNode(mapId, nodeId, { status: match.id });
-      return toolResult(`Set status on ${nodeId} to "${match.name}" (${match.id}).`);
+
+      // ── Soft WIP limit check ──
+      // Only relevant when moving a leaf node into an in_progress status.
+      const lines: string[] = [`Set status on ${nodeId} to "${match.name}" (${match.id}).`];
+      const wipLimit = mapData.map.wipLimit ?? null;
+      if (wipLimit != null && match.category === 'in_progress') {
+        // Re-fetch to include the just-applied status change.
+        const fresh = await api.getMap(mapId);
+        const inProgressIds = new Set(
+          (fresh.map.statusWorkflow ?? [])
+            .filter((s) => s.category === 'in_progress')
+            .map((s) => s.id),
+        );
+        const inProgressNodes = fresh.nodes.filter(
+          (n) =>
+            n.status != null &&
+            inProgressIds.has(n.status) &&
+            (n.childrenIds?.length ?? 0) === 0,
+        );
+        if (inProgressNodes.length > wipLimit) {
+          lines.push('');
+          lines.push(
+            `⚠ WIP LIMIT WARNING: ${inProgressNodes.length} tasks are now in progress (limit: ${wipLimit}).`,
+          );
+          lines.push('Currently in progress:');
+          for (const n of inProgressNodes.slice(0, 10)) {
+            const marker = n.id === nodeId ? ' (just added)' : '';
+            lines.push(`  - ${n.id} ${n.text}${marker}`);
+          }
+          if (inProgressNodes.length > 10) {
+            lines.push(`  … and ${inProgressNodes.length - 10} more`);
+          }
+          lines.push('Consider finishing one before starting another.');
+        }
+      }
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'get_wip_status',
+  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map).',
+  {
+    mapId: z.string().describe('The map ID'),
+  },
+  async ({ mapId }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const wipLimit = data.map.wipLimit ?? null;
+      const inProgressIds = new Set(
+        (data.map.statusWorkflow ?? [])
+          .filter((s) => s.category === 'in_progress')
+          .map((s) => s.id),
+      );
+      const inProgressNodes = data.nodes.filter(
+        (n) =>
+          n.status != null &&
+          inProgressIds.has(n.status) &&
+          (n.childrenIds?.length ?? 0) === 0,
+      );
+      const lines: string[] = [];
+      if (wipLimit == null) {
+        lines.push(`WIP limit: not set (unlimited).`);
+      } else {
+        const over = inProgressNodes.length > wipLimit;
+        lines.push(
+          `WIP: ${inProgressNodes.length} / ${wipLimit}${over ? ' ⚠ OVER LIMIT' : ''}`,
+        );
+      }
+      if (inProgressNodes.length === 0) {
+        lines.push('No tasks currently in progress.');
+      } else {
+        lines.push('In progress:');
+        for (const n of inProgressNodes) {
+          lines.push(`  - ${n.id} ${n.text}`);
+        }
+      }
+      return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);
     }

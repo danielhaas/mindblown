@@ -440,6 +440,7 @@ export function KanbanView() {
   const getLeafNodes = useMindmapStore((s) => s.getLeafNodes);
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
   const maxDepth = useMindmapStore((s) => s.maxDepth);
@@ -468,8 +469,9 @@ export function KanbanView() {
     const visibleNodes = getVisibleNodes();
     const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
 
-    // Get leaf nodes within the visible set
-    let leafNodes = getLeafNodes().filter((n) => visibleIds.has(n.id));
+    // Get leaf nodes within the visible set (getVisibleNodes already applies
+    // version + sprint filters, so no further filtering is needed here).
+    const leafNodes = getLeafNodes().filter((n) => visibleIds.has(n.id));
 
     // Also include nodes at the depth limit that have hidden children
     // (they act as leaf-like nodes in the kanban)
@@ -479,11 +481,6 @@ export function KanbanView() {
           leafNodes.push(vn.node);
         }
       }
-    }
-
-    // Apply sprint filter
-    if (activeCycleFilter) {
-      leafNodes = leafNodes.filter((n) => n.cycleId === activeCycleFilter);
     }
 
     // Bucket leaves by status
@@ -541,7 +538,7 @@ export function KanbanView() {
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, getVisibleNodes, focusNodeId, maxDepth, nodes, rootNodeId]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, getVisibleNodes, focusNodeId, maxDepth, nodes, rootNodeId]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {

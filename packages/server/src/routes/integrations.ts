@@ -476,6 +476,88 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Special handling for issues.closed / issues.reopened: preserve and restore
+    // the pre-close progress + status so reopening a partially-completed issue
+    // doesn't discard the user's prior progress.
+    const issuePayload = payload.issue as { number?: number } | undefined;
+    const payloadAction = payload.action as string | undefined;
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      (payloadAction === 'closed' || payloadAction === 'reopened')
+    ) {
+      const externalId = `${repoFullName}#${issuePayload.number}`;
+      const nodeId = await findNodeByExternalId(externalId);
+      const actionLabel = `issues.${payloadAction}`;
+      if (!nodeId) {
+        return reply.send({ received: true, action: actionLabel, matched: false });
+      }
+
+      const node = await nodeDb.getNode(nodeId);
+      if (!node) {
+        return reply.send({ received: true, action: actionLabel, matched: false });
+      }
+
+      const links = node.externalLinks.map((l) => ({ ...l }));
+      const linkIdx = links.findIndex(
+        (l) => l.provider === 'github' && l.externalId === externalId,
+      );
+      if (linkIdx < 0) {
+        return reply.send({ received: true, action: actionLabel, matched: false });
+      }
+
+      let updates: nodeDb.UpdateNodeInput;
+      if (payloadAction === 'closed') {
+        // Capture current progress/status into the link so we can revert later.
+        links[linkIdx] = {
+          ...links[linkIdx],
+          previousPercentComplete: node.percentComplete,
+          previousStatus: node.status,
+          lastSyncedAt: new Date().toISOString(),
+        };
+        updates = {
+          percentComplete: 100,
+          status: 'done',
+          externalLinks: links,
+        };
+      } else {
+        // reopened — revert to whatever was captured on the most recent close.
+        // If we never saw a close (null), fall back to an in-progress state.
+        const savedPct = links[linkIdx].previousPercentComplete;
+        const savedStatus = links[linkIdx].previousStatus;
+        links[linkIdx] = {
+          ...links[linkIdx],
+          previousPercentComplete: null,
+          previousStatus: null,
+          lastSyncedAt: new Date().toISOString(),
+        };
+        updates = {
+          percentComplete: savedPct !== undefined ? savedPct : null,
+          status: savedStatus !== undefined ? savedStatus : 'in_progress',
+          externalLinks: links,
+        };
+      }
+
+      const updated = await nodeDb.updateNode(nodeId, updates);
+      if (updated) {
+        broadcast(updated.mapId, {
+          type: 'node:updated',
+          nodeId,
+          fields: Object.keys(updates),
+          node: updated,
+          source: 'github_webhook',
+        });
+      }
+
+      return reply.send({
+        received: true,
+        action: actionLabel,
+        matched: true,
+        nodeId,
+      });
+    }
+
     // Process the webhook
     const result = processWebhook(payload as any, event);
 

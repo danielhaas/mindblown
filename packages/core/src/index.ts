@@ -61,3 +61,4 @@ export {
   schedule,
   criticalPath,
 } from './dependencies.js';
+export type { ScheduleConstraint } from './dependencies.js';

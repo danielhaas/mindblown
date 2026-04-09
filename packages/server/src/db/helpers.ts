@@ -19,6 +19,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     y: (get('y', 'y') as number) ?? null,
     collapsed: (get('collapsed', 'collapsed') as boolean) ?? false,
     effortEstimate: (get('effortEstimate', 'effort_estimate') as number) ?? null,
+    actualEffort: (get('actualEffort', 'actual_effort') as number) ?? null,
     percentComplete: (get('percentComplete', 'percent_complete') as number) ?? null,
     status: (get('status', 'status') as string) ?? null,
     assigneeIds: (get('assigneeIds', 'assignee_ids') as string[]) ?? [],
@@ -61,6 +62,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     defaultLayout: (get('defaultLayout', 'default_layout') as MindMap['defaultLayout']) ?? 'tree_lr',
     healthThreshold: (get('healthThreshold', 'health_threshold') as number) ?? 0.2,
     baselines: (get('baselines', 'baselines') as MindMap['baselines']) ?? [],
+    wipLimit: (get('wipLimit', 'wip_limit') as number) ?? null,
+    projectStartDate: (get('projectStartDate', 'project_start_date') as string) ?? null,
+    hoursPerDay: (get('hoursPerDay', 'hours_per_day') as number) ?? 8,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

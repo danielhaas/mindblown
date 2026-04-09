@@ -20,6 +20,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     y: null,
     collapsed: false,
     effortEstimate: null,
+    actualEffort: null,
     percentComplete: null,
     status: null,
     assigneeIds: [],
@@ -277,6 +278,52 @@ describe('schedule', () => {
     // SF: B.end >= A.start + lag → B.start >= A.start + lag - B.duration = 0 + 0 - 3 = -3 → clamped to 0
     expect(byId.get('b')!.computedStart).toBe(0);
     expect(byId.get('b')!.computedEnd).toBe(3);
+  });
+
+  it('honours a minStart pin that pushes the node forward', () => {
+    const a = makeNode({ id: 'a', effortEstimate: 3 });
+    const constraints = new Map([['a', { minStart: 5 }]]);
+    const result = schedule([a], 0, constraints);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(5);
+    expect(byId.get('a')!.computedEnd).toBe(8);
+  });
+
+  it('propagates a pinned start through FS successors', () => {
+    const a = makeNode({ id: 'a', effortEstimate: 3 });
+    const b = makeNode({
+      id: 'b',
+      effortEstimate: 2,
+      dependencies: [{ targetNodeId: 'a', type: 'FS', lag: 0 }],
+    });
+    const constraints = new Map([['a', { minStart: 5 }]]);
+    const result = schedule([a, b], 0, constraints);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(5);
+    expect(byId.get('a')!.computedEnd).toBe(8);
+    expect(byId.get('b')!.computedStart).toBe(8);
+    expect(byId.get('b')!.computedEnd).toBe(10);
+  });
+
+  it('stretches a leaf to meet a maxEnd pin (manual due date)', () => {
+    const a = makeNode({ id: 'a', effortEstimate: 3 });
+    const constraints = new Map([['a', { maxEnd: 10 }]]);
+    const result = schedule([a], 0, constraints);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // start=0, required duration = 10-0 = 10 > estimate 3 → stretched
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(10);
+    expect(byId.get('a')!.duration).toBe(10);
+  });
+
+  it('leaves duration alone when maxEnd is earlier than the estimate would finish', () => {
+    const a = makeNode({ id: 'a', effortEstimate: 5 });
+    const constraints = new Map([['a', { maxEnd: 3 }]]);
+    const result = schedule([a], 0, constraints);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // Required duration 3 < estimate 5 → keep the larger estimate
+    expect(byId.get('a')!.duration).toBe(5);
+    expect(byId.get('a')!.computedEnd).toBe(5);
   });
 });
 

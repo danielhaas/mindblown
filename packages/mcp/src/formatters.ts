@@ -322,6 +322,7 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
   lines.push(`- **Status:** ${node.status ?? 'unset'}`);
   lines.push(`- **Priority:** ${node.priority ?? 'unset'}`);
   lines.push(`- **Effort estimate:** ${node.effortEstimate ?? 'unestimated'}`);
+  lines.push(`- **Actual effort:** ${node.actualEffort ?? 'unrecorded'}`);
   lines.push(`- **Percent complete:** ${node.percentComplete ?? 'unset'}`);
   lines.push(`- **Start date:** ${node.startDate ?? 'unset'}`);
   lines.push(`- **Due date:** ${node.dueDate ?? 'unset'}`);

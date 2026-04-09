@@ -49,6 +49,9 @@ export const maps = pgTable('maps', {
   defaultLayout: text('default_layout').notNull().default('tree_lr'),
   healthThreshold: real('health_threshold').notNull().default(0.2),
   baselines: jsonb('baselines').notNull().default([]),
+  wipLimit: real('wip_limit'),
+  projectStartDate: date('project_start_date'),
+  hoursPerDay: real('hours_per_day').notNull().default(8),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
@@ -69,6 +72,7 @@ export const nodes = pgTable('nodes', {
   y: real('y'),
   collapsed: boolean('collapsed').notNull().default(false),
   effortEstimate: real('effort_estimate'),
+  actualEffort: real('actual_effort'),
   percentComplete: real('percent_complete'),
   status: text('status'),
   assigneeIds: jsonb('assignee_ids').notNull().default([]), // uuid[]

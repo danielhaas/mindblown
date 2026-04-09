@@ -147,6 +147,21 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS public_token TEXT
   `);
 
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS wip_limit REAL
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS actual_effort REAL
+  `);
+
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS project_start_date DATE
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS hours_per_day REAL NOT NULL DEFAULT 8
+  `);
+
   // ── Map Permissions ───────────────────────────────────────────
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS map_permissions (

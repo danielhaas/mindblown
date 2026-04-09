@@ -30,6 +30,7 @@ export interface NodeWithComputed {
   text: string;
   description: string | null;
   effortEstimate: number | null;
+  actualEffort: number | null;
   percentComplete: number | null;
   status: string | null;
   assigneeIds: string[];
@@ -55,6 +56,7 @@ export interface MapDetail {
   map: MapSummary & {
     statusWorkflow: Array<{ id: string; name: string; category: string; color: string; position: number }>;
     baselines: unknown[];
+    wipLimit: number | null;
   };
   nodes: NodeWithComputed[];
 }
@@ -176,7 +178,13 @@ export function createMap(name: string, description?: string, workspaceId = 'def
 
 export function updateMap(
   mapId: string,
-  fields: { name?: string; description?: string | null },
+  fields: {
+    name?: string;
+    description?: string | null;
+    wipLimit?: number | null;
+    projectStartDate?: string | null;
+    hoursPerDay?: number;
+  },
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {
     method: 'PUT',

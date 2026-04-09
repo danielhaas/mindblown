@@ -21,6 +21,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     y: null,
     collapsed: false,
     effortEstimate: null,
+    actualEffort: null,
     percentComplete: null,
     status: null,
     assigneeIds: [],

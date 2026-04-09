@@ -133,6 +133,8 @@ export function ListView() {
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const focusNodeId = useMindmapStore((s) => s.focusNodeId);
   const maxDepth = useMindmapStore((s) => s.maxDepth);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
   // ── Local UI state ────────────────────────────────────────────
 
@@ -179,7 +181,7 @@ export function ListView() {
     }
 
     return rows;
-  }, [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, maxDepth]);
+  }, [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter]);
 
   // ── Filter ────────────────────────────────────────────────────
 

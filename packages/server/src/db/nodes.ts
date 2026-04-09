@@ -84,6 +84,7 @@ export interface UpdateNodeInput {
   y?: number | null;
   collapsed?: boolean;
   effortEstimate?: number | null;
+  actualEffort?: number | null;
   percentComplete?: number | null;
   status?: string | null;
   assigneeIds?: string[];
@@ -114,6 +115,7 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
   if (input.y !== undefined) updates.y = input.y;
   if (input.collapsed !== undefined) updates.collapsed = input.collapsed;
   if (input.effortEstimate !== undefined) updates.effortEstimate = input.effortEstimate;
+  if (input.actualEffort !== undefined) updates.actualEffort = input.actualEffort;
   if (input.percentComplete !== undefined) updates.percentComplete = input.percentComplete;
   if (input.status !== undefined) updates.status = input.status;
   if (input.assigneeIds !== undefined) updates.assigneeIds = input.assigneeIds;

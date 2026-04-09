@@ -461,26 +461,58 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   setMaxDepth: (depth) => set({ maxDepth: depth }),
 
   getVisibleNodes: () => {
-    const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter } = get();
+    const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter } = get();
     if (!rootNodeId) return [];
 
     const effectiveRootId = focusNodeId ?? rootNodeId;
     const effectiveRoot = nodes[effectiveRootId];
     if (!effectiveRoot) return [];
 
-    // Build set of node IDs that match the version filter (+ their ancestors)
-    let versionMatchIds: Set<string> | null = null;
-    if (activeVersionFilter) {
-      versionMatchIds = new Set<string>();
-      // Find all nodes with this versionId
-      for (const n of Object.values(nodes)) {
-        if (n.versionId === activeVersionFilter) {
-          // Add this node and all ancestors up to root
-          let cur: Node | undefined = n;
-          while (cur && !versionMatchIds.has(cur.id)) {
-            versionMatchIds.add(cur.id);
-            cur = cur.parentId ? nodes[cur.parentId] : undefined;
-          }
+    // Build the visible set for the active version + sprint filters.
+    //
+    // Semantic: a node is "in scope" if its effective version/cycle matches
+    // every active filter, where "effective" means the node's own tag OR
+    // the nearest tagged ancestor. This lets users tag an epic/branch with
+    // a sprint and see the entire subtree under it, while still supporting
+    // leaf-level tags for fine-grained work items.
+    //
+    // We also include ancestors of in-scope nodes so the mindmap stays a
+    // connected tree even when scope nodes are deep.
+    let filterMatchIds: Set<string> | null = null;
+    if (activeVersionFilter || activeCycleFilter) {
+      const directMatches = new Set<string>();
+
+      // DFS from the real root, propagating inherited tags downward.
+      // We walk from rootNodeId (not effectiveRootId) so inheritance picks
+      // up tags on nodes above the current drill-down focus.
+      function inheritDfs(
+        nodeId: string,
+        inheritedVersion: string | null,
+        inheritedCycle: string | null,
+      ) {
+        const node = nodes[nodeId];
+        if (!node) return;
+        const effVersion = node.versionId ?? inheritedVersion;
+        const effCycle = node.cycleId ?? inheritedCycle;
+        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
+        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
+        if (matchesVersion && matchesCycle) {
+          directMatches.add(nodeId);
+        }
+        for (const childId of node.childrenIds) {
+          inheritDfs(childId, effVersion, effCycle);
+        }
+      }
+      inheritDfs(rootNodeId, null, null);
+
+      // Expand with ancestors of every in-scope node so the tree stays
+      // connected back to the root.
+      filterMatchIds = new Set<string>();
+      for (const id of directMatches) {
+        let cur: Node | undefined = nodes[id];
+        while (cur && !filterMatchIds.has(cur.id)) {
+          filterMatchIds.add(cur.id);
+          cur = cur.parentId ? nodes[cur.parentId] : undefined;
         }
       }
     }
@@ -493,7 +525,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       if (!node) return 0;
       let count = 0;
       for (const childId of node.childrenIds) {
-        if (versionMatchIds && !versionMatchIds.has(childId)) continue;
+        if (filterMatchIds && !filterMatchIds.has(childId)) continue;
         count += 1 + countDescendants(childId);
       }
       return count;
@@ -504,11 +536,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       const node = nodes[nodeId];
       if (!node) return;
 
-      // Skip nodes not in the version filter
-      if (versionMatchIds && !versionMatchIds.has(nodeId)) return;
+      // Skip nodes not in the active filter set
+      if (filterMatchIds && !filterMatchIds.has(nodeId)) return;
 
-      const visibleChildren = versionMatchIds
-        ? node.childrenIds.filter((id) => versionMatchIds!.has(id))
+      const visibleChildren = filterMatchIds
+        ? node.childrenIds.filter((id) => filterMatchIds!.has(id))
         : node.childrenIds;
       const atMaxDepth = maxDepth > 0 && depth >= maxDepth;
       const hasChildren = visibleChildren.length > 0;
@@ -674,6 +706,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       y: null,
       collapsed: false,
       effortEstimate: null,
+      actualEffort: null,
       percentComplete: null,
       status: null,
       assigneeIds: [],
@@ -684,6 +717,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       customFields: {},
       dependencies: [],
       isMilestone: false,
+      versionId: null,
+      milestoneId: null,
       cycleId: null,
       externalLinks: [],
       createdAt: now,

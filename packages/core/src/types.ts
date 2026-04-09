@@ -59,6 +59,14 @@ export interface ExternalLink {
   url: string; // direct link
   syncEnabled: boolean; // whether bidirectional sync is active
   lastSyncedAt: string | null; // ISO 8601
+
+  /**
+   * Node state captured the moment the external system drove the node
+   * to "complete". Used to revert progress/status when the external
+   * system reopens the item (e.g. GitHub issue reopened).
+   */
+  previousPercentComplete?: number | null;
+  previousStatus?: string | null;
 }
 
 // ── Node ────────────────────────────────────────────────────────
@@ -88,6 +96,7 @@ export interface Node {
 
   // ── Task properties (all optional — gradual enrichment) ───
   effortEstimate: number | null; // leaf-only input; null = unestimated
+  actualEffort: number | null; // leaf-only input; null = unrecorded. Same unit as effortEstimate. Used to compute estimation accuracy.
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
   assigneeIds: UserId[]; // zero or more assignees
@@ -192,6 +201,28 @@ export interface MindMap {
 
   // ── Baselines ─────────────────────────────────────────────
   baselines: Baseline[];
+
+  // ── WIP limits (kanban) ───────────────────────────────────
+  /**
+   * Soft cap on the number of nodes that may sit in an "in_progress"
+   * category status at once. Enforced as a warning by set_status.
+   * null = no limit.
+   */
+  wipLimit: number | null;
+
+  // ── Gantt / scheduling ────────────────────────────────────
+  /**
+   * Calendar anchor for the Gantt view. Day 0 of the computed
+   * schedule maps to this date. null = fall back to today.
+   * ISO 8601 date (YYYY-MM-DD).
+   */
+  projectStartDate: string | null;
+  /**
+   * Conversion factor when effortUnit is 'hours': number of working
+   * hours per calendar day. Used to map effort-unit offsets to
+   * calendar days in the Gantt. Ignored for 'days'. Default 8.
+   */
+  hoursPerDay: number;
 
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;
