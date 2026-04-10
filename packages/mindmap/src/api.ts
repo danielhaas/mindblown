@@ -381,3 +381,37 @@ export function rolloverCycle(fromId: string, toId: string): Promise<void> {
 export function fetchVersions(workspaceId: string): Promise<Version[]> {
   return request<Version[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
 }
+
+// ── AI ─────────────────────────────────────────────────────────
+
+export interface BreakdownSuggestion {
+  text: string;
+  estimate: number | null;
+}
+
+export function aiBreakdown(
+  mapId: string,
+  nodeId: string,
+  count?: number,
+  hint?: string,
+): Promise<{ suggestions: BreakdownSuggestion[] }> {
+  return request('/api/ai/breakdown', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, nodeId, count, hint }),
+  });
+}
+
+export function aiBreakdownAccept(
+  mapId: string,
+  parentId: string,
+  tasks: BreakdownSuggestion[],
+): Promise<{ created: Node[] }> {
+  return request('/api/ai/breakdown/accept', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, tasks }),
+  });
+}
+
+export function aiConfig(): Promise<{ enabled: boolean; model: string }> {
+  return request('/api/ai/config');
+}

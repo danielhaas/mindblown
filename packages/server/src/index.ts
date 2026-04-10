@@ -13,6 +13,7 @@ import { milestoneRoutes } from './routes/milestones.js';
 import { commentRoutes } from './routes/comments.js';
 import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { aiRoutes } from './routes/ai.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
   await app.register(commentRoutes);
   await app.register(permissionRoutes);
   await app.register(integrationRoutes);
+  await app.register(aiRoutes);
   await registerWebSocket(app);
 
   // ── Database setup ─────────────────────────────────────────────

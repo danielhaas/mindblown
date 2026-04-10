@@ -6,6 +6,7 @@ import { MindmapNode } from './MindmapNode.js';
 import { Connector } from './Connector.js';
 import { DependencyLines } from './DependencyLines.js';
 import { CursorPresence } from './CursorPresence.js';
+import { AIBreakdownModal } from './AIBreakdownModal.js';
 import type { LayoutNode } from './layout.js';
 import type { Node } from '@mindblown/core';
 
@@ -261,9 +262,13 @@ export function MindmapEditor() {
   const user = useMindmapStore((s) => s.user);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
 
   // ── Context menu state ──────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
+
+  // ── AI breakdown modal state ──────────────────────────────────
+  const [aiBreakdown, setAiBreakdown] = useState<{ nodeId: string; nodeText: string } | null>(null);
 
   // ── Cursor presence: throttled send ──────────────────────────
   const lastCursorSend = useRef(0);
@@ -1251,6 +1256,18 @@ export function MindmapEditor() {
             >
               Add sibling node
             </button>
+            <button
+              style={{ ...ctxMenuItemStyle, color: '#3b82f6' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                const node = nodes[contextMenu.nodeId];
+                setAiBreakdown({ nodeId: contextMenu.nodeId, nodeText: node?.text ?? '' });
+                setContextMenu(null);
+              }}
+            >
+              AI Breakdown
+            </button>
             <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
             <button
               style={ctxMenuItemStyle}
@@ -1278,6 +1295,16 @@ export function MindmapEditor() {
             )}
           </div>
         </>
+      )}
+
+      {/* AI Breakdown modal */}
+      {aiBreakdown && currentMapId && (
+        <AIBreakdownModal
+          mapId={currentMapId}
+          nodeId={aiBreakdown.nodeId}
+          nodeText={aiBreakdown.nodeText}
+          onClose={() => setAiBreakdown(null)}
+        />
       )}
     </div>
   );
