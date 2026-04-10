@@ -23,7 +23,7 @@ export const aiEnabled = AI_BASE_URL.length > 0;
 
 let _client: OpenAI | null = null;
 
-function getClient(): OpenAI {
+export function getClient(): OpenAI {
   if (!_client) {
     if (!aiEnabled) {
       throw new Error('AI features are disabled — set AI_BASE_URL env var');

@@ -16,6 +16,7 @@ import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
+import { AIChatPanel } from './AIChatPanel.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import type { MapSummary } from './api.js';
 
@@ -687,6 +688,7 @@ export function App() {
   const [importExportOpen, setImportExportOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
+  const [aiChatOpen, setAiChatOpen] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
 
   // Auto-login on page load if token exists
@@ -1025,6 +1027,25 @@ export function App() {
             Share
           </button>
 
+          {/* AI Chat toggle */}
+          <button
+            onClick={() => setAiChatOpen((v) => !v)}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: aiChatOpen ? '#3b82f6' : '#fff',
+              color: aiChatOpen ? '#fff' : '#3b82f6',
+              transition: 'all 0.15s',
+            }}
+          >
+            AI Chat
+          </button>
+
           {/* GitHub settings */}
           <button
             onClick={() => setGithubSettingsOpen(true)}
@@ -1182,6 +1203,14 @@ export function App() {
         <GitHubSettingsDialog
           mapId={currentMapId}
           onClose={() => setGithubSettingsOpen(false)}
+        />
+      )}
+
+      {/* AI Chat Panel */}
+      {aiChatOpen && currentMapId && (
+        <AIChatPanel
+          mapId={currentMapId}
+          onClose={() => setAiChatOpen(false)}
         />
       )}
     </div>

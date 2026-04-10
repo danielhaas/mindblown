@@ -4,7 +4,9 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { aiEnabled, aiConfig, chatCompletion } from '../ai/client.js';
+import OpenAI from 'openai';
+import { aiEnabled, aiConfig, chatCompletion, getClient as getAIClient } from '../ai/client.js';
+import { CHAT_TOOLS, executeTool } from '../ai/tools.js';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
@@ -237,5 +239,137 @@ Node to break down: "${targetNode.text}"`;
     }
 
     return reply.status(201).send({ created });
+  });
+
+  // ── POST /api/ai/chat — conversational chat with tool use ──────
+  //
+  // Request:  { mapId, messages: ChatMessage[] }
+  // Response: SSE stream of { type: 'delta'|'tool_call'|'tool_result'|'done'|'error', ... }
+  //
+  // The endpoint runs a tool-use loop: the model can call tools, we execute
+  // them, feed results back, and let the model continue — up to MAX_STEPS
+  // iterations to prevent runaway loops on the 14B model.
+
+  const MAX_STEPS = 6;
+  const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
+
+  app.post('/api/ai/chat', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      messages: Array<{ role: string; content: string }>;
+    };
+
+    if (!body.mapId || !Array.isArray(body.messages) || body.messages.length === 0) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and non-empty messages array required' },
+      });
+    }
+
+    const userId = (req as any).userId ?? 'system';
+
+    // Set up SSE
+    reply.raw.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const send = (event: string, data: unknown) => {
+      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      // Build the messages array with system prompt
+      const systemPrompt = `You are an AI assistant embedded in MindBlown, a mindmap-based project management tool. You help users manage their project by creating, moving, updating, and deleting nodes in their mindmap.
+
+Current map ID: ${body.mapId}
+
+Rules:
+- When the user asks you to do something to the map (add, move, delete, update nodes), use the available tools.
+- Before making changes, call get_map first to see the current tree structure and find the correct node IDs.
+- When referring to nodes, use their exact IDs from get_map — never guess IDs.
+- After making changes, briefly confirm what you did.
+- For questions about the project, use get_map to read the tree and answer based on the data.
+- Keep responses concise and helpful.`;
+
+      const messages: OpenAI.ChatCompletionMessageParam[] = [
+        { role: 'system', content: systemPrompt },
+        ...body.messages.map((m) => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+      ];
+
+      const client = getAIClient();
+
+      // Tool-use loop
+      for (let step = 0; step < MAX_STEPS; step++) {
+        const response = await client.chat.completions.create({
+          model: AI_MODEL,
+          messages,
+          tools: CHAT_TOOLS,
+          temperature: 0.3,
+          max_tokens: 2048,
+        });
+
+        const choice = response.choices[0];
+        if (!choice) break;
+
+        const msg = choice.message;
+
+        // If the model produced text content, stream it
+        if (msg.content) {
+          send('delta', { content: msg.content });
+        }
+
+        // If no tool calls, we're done
+        if (!msg.tool_calls || msg.tool_calls.length === 0) {
+          break;
+        }
+
+        // Add the assistant message (with tool_calls) to history
+        messages.push(msg);
+
+        // Execute each tool call
+        for (const tc of msg.tool_calls) {
+          const fn = (tc as any).function as { name: string; arguments: string };
+          const fnName = fn.name;
+          let fnArgs: Record<string, unknown>;
+          try {
+            fnArgs = JSON.parse(fn.arguments);
+          } catch {
+            fnArgs = {};
+          }
+
+          send('tool_call', { id: tc.id, name: fnName, args: fnArgs });
+
+          let result: string;
+          try {
+            result = await executeTool(fnName, fnArgs, { userId });
+          } catch (err: any) {
+            result = JSON.stringify({ error: err.message });
+          }
+
+          send('tool_result', { id: tc.id, name: fnName, result: JSON.parse(result) });
+
+          // Feed the tool result back to the model
+          messages.push({
+            role: 'tool',
+            tool_call_id: tc.id,
+            content: result,
+          });
+        }
+
+        // If the model said stop (not a tool call), break
+        if (choice.finish_reason === 'stop') break;
+      }
+
+      send('done', {});
+    } catch (err: any) {
+      send('error', { message: err.message });
+    } finally {
+      reply.raw.end();
+    }
   });
 }

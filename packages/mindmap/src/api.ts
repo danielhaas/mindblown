@@ -415,3 +415,65 @@ export function aiBreakdownAccept(
 export function aiConfig(): Promise<{ enabled: boolean; model: string }> {
   return request('/api/ai/config');
 }
+
+export interface ChatSSEEvent {
+  type: 'delta' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  content?: string;
+  id?: string;
+  name?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+  message?: string;
+}
+
+/**
+ * Stream a chat conversation with the AI. Returns an async iterator of SSE events.
+ * The AI can call tools (create/move/delete nodes) and we get notified of each step.
+ */
+export async function* aiChat(
+  mapId: string,
+  messages: Array<{ role: string; content: string }>,
+): AsyncGenerator<ChatSSEEvent> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/api/ai/chat`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({ mapId, messages }),
+  });
+
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new ApiError(res.status, body?.error?.message ?? res.statusText, body?.error?.code);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) return;
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() ?? '';
+
+    let currentEvent = '';
+    for (const line of lines) {
+      if (line.startsWith('event: ')) {
+        currentEvent = line.slice(7).trim();
+      } else if (line.startsWith('data: ') && currentEvent) {
+        try {
+          const data = JSON.parse(line.slice(6));
+          yield { type: currentEvent as ChatSSEEvent['type'], ...data };
+        } catch { /* skip malformed */ }
+        currentEvent = '';
+      }
+    }
+  }
+}
