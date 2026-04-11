@@ -18,6 +18,7 @@ import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { Breadcrumb } from './Breadcrumb.js';
+import { WorkspaceSettings } from './WorkspaceSettings.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -96,6 +97,7 @@ function MapList({
   onSelect,
   onCreate,
   onRetry,
+  onSettings,
 }: {
   maps: MapSummary[];
   loading: boolean;
@@ -103,6 +105,7 @@ function MapList({
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRetry: () => void;
+  onSettings: () => void;
 }) {
   return (
     <div
@@ -143,25 +146,49 @@ function MapList({
               Select a map or create a new one
             </p>
           </div>
-          <button
-            onClick={onCreate}
-            style={{
-              background: '#4f46e5',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 8,
-              padding: '8px 16px',
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              transition: 'background 0.15s',
-            }}
-            onMouseOver={(e) => (e.currentTarget.style.background = '#4338ca')}
-            onMouseOut={(e) => (e.currentTarget.style.background = '#4f46e5')}
-          >
-            + New Map
-          </button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={onSettings}
+              title="Workspace Settings"
+              style={{
+                background: '#f1f5f9',
+                border: 'none',
+                borderRadius: 8,
+                padding: '8px 10px',
+                cursor: 'pointer',
+                color: '#64748b',
+                display: 'flex',
+                alignItems: 'center',
+                transition: 'background 0.15s',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.background = '#e2e8f0')}
+              onMouseOut={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="8" cy="8" r="2.5" />
+                <path d="M13.5 8a5.5 5.5 0 01-.3 1.6l1.3.8-.8 1.4-1.4-.5a5.5 5.5 0 01-1.4.8l-.2 1.5H9l-.2-1.5a5.5 5.5 0 01-1.4-.8l-1.4.5-.8-1.4 1.3-.8A5.5 5.5 0 016.2 8a5.5 5.5 0 01.3-1.6l-1.3-.8.8-1.4 1.4.5a5.5 5.5 0 011.4-.8L9 2.4h1.6l.2 1.5a5.5 5.5 0 011.4.8l1.4-.5.8 1.4-1.3.8a5.5 5.5 0 01.3 1.6z" />
+              </svg>
+            </button>
+            <button
+              onClick={onCreate}
+              style={{
+                background: '#4f46e5',
+                color: '#fff',
+                border: 'none',
+                borderRadius: 8,
+                padding: '8px 16px',
+                fontSize: 13,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                transition: 'background 0.15s',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.background = '#4338ca')}
+              onMouseOut={(e) => (e.currentTarget.style.background = '#4f46e5')}
+            >
+              + New Map
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -689,12 +716,36 @@ export function App() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
+  const [ghBanner, setGhBanner] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
   // Auto-login on page load if token exists
   useEffect(() => {
     checkAuth().finally(() => setAuthChecked(true));
   }, [checkAuth]);
+
+  // Handle GitHub OAuth callback redirect (?gh=connected or ?gh=error)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const gh = params.get('gh');
+    if (gh) {
+      // Clean the URL
+      const url = new URL(window.location.href);
+      url.searchParams.delete('gh');
+      url.searchParams.delete('reason');
+      window.history.replaceState({}, '', url.pathname + url.search);
+
+      if (gh === 'connected') {
+        setGhBanner('GitHub connected successfully!');
+        setTimeout(() => setGhBanner(null), 5000);
+      } else if (gh === 'error') {
+        const reason = params.get('reason') ?? 'unknown';
+        setGhBanner(`GitHub connection failed: ${reason}`);
+        setTimeout(() => setGhBanner(null), 8000);
+      }
+    }
+  }, []);
 
   // Global keyboard shortcuts for command palette and quick add
   useEffect(() => {
@@ -791,7 +842,33 @@ export function App() {
 
   if (!currentMapId) {
     return (
-      <div style={{ width: '100%', height: '100%' }}>
+      <div style={{ width: '100%', height: '100%', position: 'relative' }}>
+        {ghBanner && (
+          <div
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              padding: '8px 16px',
+              background: ghBanner.includes('failed') ? '#fef2f2' : '#f0fdf4',
+              color: ghBanner.includes('failed') ? '#991b1b' : '#166534',
+              fontSize: 12,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              zIndex: 10,
+            }}
+          >
+            <span>{ghBanner}</span>
+            <button
+              onClick={() => setGhBanner(null)}
+              style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: 14, padding: '0 4px', fontFamily: 'inherit' }}
+            >
+              x
+            </button>
+          </div>
+        )}
         <MapList
           maps={maps}
           loading={loading}
@@ -799,7 +876,11 @@ export function App() {
           onSelect={loadMap}
           onCreate={handleCreateMap}
           onRetry={loadMaps}
+          onSettings={() => setWorkspaceSettingsOpen(true)}
         />
+        {workspaceSettingsOpen && (
+          <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
+        )}
       </div>
     );
   }
@@ -1071,6 +1152,32 @@ export function App() {
             </svg>
           </button>
 
+          {/* Settings */}
+          <button
+            onClick={() => setWorkspaceSettingsOpen(true)}
+            title="Workspace Settings"
+            style={{
+              padding: '3px 8px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#64748b',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              transition: 'all 0.15s',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="8" cy="8" r="2.5" />
+              <path d="M13.5 8a5.5 5.5 0 01-.3 1.6l1.3.8-.8 1.4-1.4-.5a5.5 5.5 0 01-1.4.8l-.2 1.5H9l-.2-1.5a5.5 5.5 0 01-1.4-.8l-1.4.5-.8-1.4 1.3-.8A5.5 5.5 0 016.2 8a5.5 5.5 0 01.3-1.6l-1.3-.8.8-1.4 1.4.5a5.5 5.5 0 011.4-.8L9 2.4h1.6l.2 1.5a5.5 5.5 0 011.4.8l1.4-.5.8 1.4-1.3.8a5.5 5.5 0 01.3 1.6z" />
+            </svg>
+          </button>
+
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
           {/* User avatar + name + logout */}
@@ -1115,6 +1222,38 @@ export function App() {
           </div>
         </div>
       </div>
+
+      {/* GitHub connection banner */}
+      {ghBanner && (
+        <div
+          style={{
+            padding: '6px 16px',
+            background: ghBanner.includes('failed') ? '#fef2f2' : '#f0fdf4',
+            borderBottom: `1px solid ${ghBanner.includes('failed') ? '#fecaca' : '#bbf7d0'}`,
+            color: ghBanner.includes('failed') ? '#991b1b' : '#166534',
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>{ghBanner}</span>
+          <button
+            onClick={() => setGhBanner(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              color: 'inherit',
+              cursor: 'pointer',
+              fontSize: 14,
+              padding: '0 4px',
+              fontFamily: 'inherit',
+            }}
+          >
+            x
+          </button>
+        </div>
+      )}
 
       {/* Error banner */}
       {error && (
@@ -1198,12 +1337,17 @@ export function App() {
         />
       )}
 
-      {/* GitHub Settings Dialog */}
+      {/* GitHub Settings Dialog (legacy per-map) */}
       {githubSettingsOpen && currentMapId && (
         <GitHubSettingsDialog
           mapId={currentMapId}
           onClose={() => setGithubSettingsOpen(false)}
         />
+      )}
+
+      {/* Workspace Settings */}
+      {workspaceSettingsOpen && (
+        <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
       )}
 
       {/* AI Chat Panel */}

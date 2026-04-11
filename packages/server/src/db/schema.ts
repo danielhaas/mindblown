@@ -57,6 +57,9 @@ export const maps = pgTable('maps', {
   createdBy: uuid('created_by').notNull().references(() => users.id),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
   publicToken: text('public_token'),
+  githubInstallationId: text('github_installation_id'),
+  githubRepoOwner: text('github_repo_owner'),
+  githubRepoName: text('github_repo_name'),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -109,6 +112,35 @@ export const comments = pgTable('comments', {
   nodeId: uuid('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
   userId: uuid('user_id').notNull().references(() => users.id),
   text: text('text').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── GitHub App Installations ─────────────────────────────────────
+
+export const githubInstallations = pgTable('github_installations', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  installationId: text('installation_id').notNull(), // GitHub's numeric ID (stored as text)
+  accountLogin: text('account_login').notNull(), // GitHub user or org login
+  accountType: text('account_type').notNull(), // 'User' | 'Organization'
+  accountId: text('account_id').notNull(), // GitHub account numeric ID
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── User GitHub Identities (OAuth) ──────────────────────────────
+
+export const userGithubIdentities = pgTable('user_github_identities', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  githubUserId: text('github_user_id').notNull(),
+  githubLogin: text('github_login').notNull(),
+  avatarUrl: text('avatar_url'),
+  encryptedAccessToken: text('encrypted_access_token').notNull(),
+  encryptedRefreshToken: text('encrypted_refresh_token'),
+  tokenExpiresAt: timestamp('token_expires_at', { withTimezone: true }),
+  scopes: text('scopes'), // comma-separated
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

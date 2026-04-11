@@ -1,0 +1,310 @@
+/**
+ * Workspace Settings modal — GitHub App connection + repo management.
+ */
+
+import { useCallback, useEffect, useState } from 'react';
+import {
+  getGitHubInstallStatus,
+  getGitHubInstallUrl,
+  getGitHubRepositories,
+  disconnectGitHub,
+} from './api.js';
+import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
+
+export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
+  const [status, setStatus] = useState<GitHubInstallStatus | null>(null);
+  const [repos, setRepos] = useState<GitHubRepoInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const loadStatus = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const s = await getGitHubInstallStatus();
+      setStatus(s);
+
+      if (s.connected && s.installations.length > 0) {
+        try {
+          const r = await getGitHubRepositories(s.installations[0].installationId);
+          setRepos(r.repositories);
+        } catch {
+          // Repos may fail but connection status is still valid
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load status');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadStatus();
+  }, [loadStatus]);
+
+  const handleConnect = useCallback(async () => {
+    try {
+      const { installUrl } = await getGitHubInstallUrl();
+      // Open in same window — the callback redirects back with ?gh=connected
+      window.location.href = installUrl;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start GitHub connection');
+    }
+  }, []);
+
+  const handleDisconnect = useCallback(async () => {
+    if (!confirm('Disconnect GitHub? Existing issue links will stop syncing.')) return;
+    setDisconnecting(true);
+    try {
+      await disconnectGitHub();
+      setStatus(null);
+      setRepos([]);
+      await loadStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to disconnect');
+    } finally {
+      setDisconnecting(false);
+    }
+  }, [loadStatus]);
+
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.4)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+      }}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div
+        style={{
+          background: '#fff',
+          borderRadius: 16,
+          width: 520,
+          maxWidth: '90vw',
+          maxHeight: '80vh',
+          overflow: 'auto',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
+        }}
+      >
+        {/* Header */}
+        <div
+          style={{
+            padding: '20px 24px 16px',
+            borderBottom: '1px solid #f1f5f9',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1e293b' }}>
+            Workspace Settings
+          </h2>
+          <button
+            onClick={onClose}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              fontSize: 18,
+              color: '#94a3b8',
+              padding: '4px 8px',
+            }}
+          >
+            x
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{ padding: '20px 24px' }}>
+          {/* GitHub section */}
+          <div style={{ marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <svg width="18" height="18" viewBox="0 0 16 16" fill="#1e293b">
+                <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600, color: '#1e293b' }}>
+                GitHub
+              </h3>
+            </div>
+
+            {loading && (
+              <div style={{ fontSize: 13, color: '#94a3b8', padding: '12px 0' }}>
+                Loading...
+              </div>
+            )}
+
+            {error && (
+              <div
+                style={{
+                  fontSize: 12,
+                  color: '#dc2626',
+                  background: '#fef2f2',
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  marginBottom: 12,
+                }}
+              >
+                {error}
+              </div>
+            )}
+
+            {!loading && status && !status.appConfigured && (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: '#64748b',
+                  background: '#f8fafc',
+                  padding: '12px 16px',
+                  borderRadius: 8,
+                }}
+              >
+                GitHub App is not configured on this server. Ask your admin to set
+                the <code>GITHUB_APP_*</code> environment variables.
+              </div>
+            )}
+
+            {!loading && status && status.appConfigured && !status.connected && (
+              <div>
+                <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 12px' }}>
+                  Connect your GitHub account to sync issues, get webhook updates,
+                  and link repos to your maps.
+                </p>
+                <button
+                  onClick={handleConnect}
+                  style={{
+                    background: '#1e293b',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 8,
+                    padding: '8px 16px',
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="#fff">
+                    <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+                  </svg>
+                  Connect GitHub
+                </button>
+              </div>
+            )}
+
+            {!loading && status && status.connected && status.identity && (
+              <div>
+                {/* Connected user info */}
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 12,
+                    padding: '12px 16px',
+                    background: '#f0fdf4',
+                    borderRadius: 8,
+                    marginBottom: 16,
+                  }}
+                >
+                  {status.identity.avatarUrl && (
+                    <img
+                      src={status.identity.avatarUrl}
+                      alt=""
+                      style={{ width: 32, height: 32, borderRadius: '50%' }}
+                    />
+                  )}
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#166534' }}>
+                      Connected as @{status.identity.githubLogin}
+                    </div>
+                    {status.installations.length > 0 && (
+                      <div style={{ fontSize: 11, color: '#15803d', marginTop: 2 }}>
+                        {status.installations.map((i) => i.accountLogin).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={handleDisconnect}
+                    disabled={disconnecting}
+                    style={{
+                      background: 'none',
+                      border: '1px solid #fca5a5',
+                      borderRadius: 6,
+                      padding: '4px 12px',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: '#dc2626',
+                      cursor: 'pointer',
+                      fontFamily: 'inherit',
+                      opacity: disconnecting ? 0.5 : 1,
+                    }}
+                  >
+                    {disconnecting ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </div>
+
+                {/* Accessible repos */}
+                {repos.length > 0 && (
+                  <div>
+                    <h4 style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Accessible Repositories ({repos.length})
+                    </h4>
+                    <div
+                      style={{
+                        maxHeight: 200,
+                        overflow: 'auto',
+                        border: '1px solid #e2e8f0',
+                        borderRadius: 8,
+                      }}
+                    >
+                      {repos.map((repo) => (
+                        <div
+                          key={repo.id}
+                          style={{
+                            padding: '8px 12px',
+                            borderBottom: '1px solid #f1f5f9',
+                            fontSize: 13,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                          }}
+                        >
+                          <span style={{ fontWeight: 500, color: '#1e293b' }}>
+                            {repo.fullName}
+                          </span>
+                          {repo.private && (
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 600,
+                                padding: '1px 6px',
+                                borderRadius: 4,
+                                background: '#fef3c7',
+                                color: '#92400e',
+                              }}
+                            >
+                              Private
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

@@ -44,6 +44,7 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
     if (
       url.startsWith('/api/auth/register') ||
       url.startsWith('/api/auth/login') ||
+      url.startsWith('/api/auth/github/install/callback') ||
       url.startsWith('/api/health') ||
       url.startsWith('/api/webhooks/') ||
       url.startsWith('/ws/')

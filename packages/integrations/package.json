@@ -16,9 +16,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@mindblown/core": "workspace:*"
+    "@mindblown/core": "workspace:*",
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
     "typescript": "^5.7.0"
   }
 }

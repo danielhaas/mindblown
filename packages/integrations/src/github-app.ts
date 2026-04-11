@@ -1,0 +1,369 @@
+/**
+ * GitHub App helpers for MindBlown.
+ *
+ * Handles App JWT minting, installation token exchange, user OAuth,
+ * and repo listing — all via native fetch + jsonwebtoken. No @octokit deps.
+ */
+
+// ── Types ─────────────────────────────────────────────────────────
+
+export interface GitHubAppConfig {
+  appId: string;
+  privateKey: string; // PEM-encoded RSA private key
+  clientId: string;
+  clientSecret: string;
+  webhookSecret: string;
+  appName: string; // URL slug, e.g. "mindblown-by-project-li"
+}
+
+export interface InstallationToken {
+  token: string;
+  expiresAt: Date;
+}
+
+export interface UserOAuthTokens {
+  accessToken: string;
+  refreshToken: string | null;
+  expiresIn: number | null;
+  refreshTokenExpiresIn: number | null;
+  tokenType: string;
+  scope: string;
+}
+
+export interface GitHubUser {
+  id: number;
+  login: string;
+  avatar_url: string;
+  name: string | null;
+}
+
+export interface GitHubRepo {
+  id: number;
+  full_name: string;
+  name: string;
+  owner: { login: string };
+  private: boolean;
+  html_url: string;
+  description: string | null;
+}
+
+export interface GitHubInstallationAccount {
+  id: number;
+  login: string;
+  type: string; // 'User' | 'Organization'
+  avatar_url: string;
+}
+
+// ── Config ────────────────────────────────────────────────────────
+
+let _config: GitHubAppConfig | null = null;
+
+export function getGitHubAppConfig(): GitHubAppConfig {
+  if (_config) return _config;
+
+  const appId = process.env.GITHUB_APP_ID;
+  const privateKeyRaw = process.env.GITHUB_APP_PRIVATE_KEY;
+  const clientId = process.env.GITHUB_APP_CLIENT_ID;
+  const clientSecret = process.env.GITHUB_APP_CLIENT_SECRET;
+  const webhookSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
+  const appName = process.env.GITHUB_APP_NAME;
+
+  if (!appId || !privateKeyRaw || !clientId || !clientSecret || !webhookSecret || !appName) {
+    throw new Error(
+      'Missing GitHub App env vars. Required: GITHUB_APP_ID, GITHUB_APP_PRIVATE_KEY, ' +
+      'GITHUB_APP_CLIENT_ID, GITHUB_APP_CLIENT_SECRET, GITHUB_APP_WEBHOOK_SECRET, GITHUB_APP_NAME'
+    );
+  }
+
+  // Private key may be base64-encoded (single line) or raw PEM
+  let privateKey: string;
+  if (privateKeyRaw.startsWith('-----BEGIN')) {
+    privateKey = privateKeyRaw;
+  } else {
+    privateKey = Buffer.from(privateKeyRaw, 'base64').toString('utf8');
+  }
+
+  _config = { appId, privateKey, clientId, clientSecret, webhookSecret, appName };
+  return _config;
+}
+
+/**
+ * Check if GitHub App is configured (all env vars present).
+ * Returns false instead of throwing.
+ */
+export function isGitHubAppConfigured(): boolean {
+  try {
+    getGitHubAppConfig();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ── App JWT ───────────────────────────────────────────────────────
+
+/**
+ * Mint a short-lived JWT signed with the App's private key (RS256).
+ * Valid for 10 minutes per GitHub's requirements.
+ */
+export async function mintAppJwt(): Promise<string> {
+  const config = getGitHubAppConfig();
+
+  // Dynamic import to keep this file usable in non-Node contexts
+  const { default: jwt } = await import('jsonwebtoken');
+
+  const now = Math.floor(Date.now() / 1000);
+  return jwt.sign(
+    {
+      iat: now - 60, // clock skew tolerance
+      exp: now + 600, // 10 minutes
+      iss: config.appId,
+    },
+    config.privateKey,
+    { algorithm: 'RS256' },
+  );
+}
+
+// ── Installation Tokens ──────────────────────────────────────────
+
+const _tokenCache = new Map<string, InstallationToken>();
+
+/**
+ * Get an installation access token (cached, ~50 min TTL).
+ * These are short-lived tokens that let us act as the installed App
+ * on specific repos.
+ */
+export async function mintInstallationToken(installationId: string): Promise<string> {
+  const cached = _tokenCache.get(installationId);
+  if (cached && cached.expiresAt.getTime() > Date.now() + 5 * 60 * 1000) {
+    return cached.token;
+  }
+
+  const appJwt = await mintAppJwt();
+
+  const res = await fetch(
+    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${appJwt}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to mint installation token: ${res.status} ${body}`);
+  }
+
+  const data = (await res.json()) as { token: string; expires_at: string };
+
+  const installationToken: InstallationToken = {
+    token: data.token,
+    expiresAt: new Date(data.expires_at),
+  };
+
+  _tokenCache.set(installationId, installationToken);
+  return installationToken.token;
+}
+
+// ── Repository Listing ───────────────────────────────────────────
+
+/**
+ * List repositories accessible to a given installation.
+ */
+export async function listInstallationRepositories(installationId: string): Promise<GitHubRepo[]> {
+  const token = await mintInstallationToken(installationId);
+  const repos: GitHubRepo[] = [];
+  let page = 1;
+
+  while (true) {
+    const res = await fetch(
+      `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
+      {
+        headers: {
+          Accept: 'application/vnd.github+json',
+          Authorization: `Bearer ${token}`,
+          'X-GitHub-Api-Version': '2022-11-28',
+        },
+      },
+    );
+
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Failed to list repos: ${res.status} ${body}`);
+    }
+
+    const data = (await res.json()) as { total_count: number; repositories: GitHubRepo[] };
+    repos.push(...data.repositories);
+
+    if (repos.length >= data.total_count || data.repositories.length < 100) break;
+    page++;
+  }
+
+  return repos;
+}
+
+// ── User OAuth ───────────────────────────────────────────────────
+
+/**
+ * Exchange an OAuth authorization code for user tokens.
+ * Called during the install callback flow.
+ */
+export async function exchangeUserAuthorizationCode(code: string): Promise<UserOAuthTokens> {
+  const config = getGitHubAppConfig();
+
+  const res = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      code,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OAuth token exchange failed: ${res.status} ${body}`);
+  }
+
+  const data = (await res.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
+    token_type: string;
+    scope: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (data.error) {
+    throw new Error(`OAuth error: ${data.error} — ${data.error_description}`);
+  }
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token ?? null,
+    expiresIn: data.expires_in ?? null,
+    refreshTokenExpiresIn: data.refresh_token_expires_in ?? null,
+    tokenType: data.token_type,
+    scope: data.scope,
+  };
+}
+
+/**
+ * Refresh an expired user OAuth access token.
+ */
+export async function refreshUserAccessToken(refreshToken: string): Promise<UserOAuthTokens> {
+  const config = getGitHubAppConfig();
+
+  const res = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      client_id: config.clientId,
+      client_secret: config.clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`OAuth token refresh failed: ${res.status} ${body}`);
+  }
+
+  const data = (await res.json()) as {
+    access_token: string;
+    refresh_token?: string;
+    expires_in?: number;
+    refresh_token_expires_in?: number;
+    token_type: string;
+    scope: string;
+    error?: string;
+    error_description?: string;
+  };
+
+  if (data.error) {
+    throw new Error(`OAuth refresh error: ${data.error} — ${data.error_description}`);
+  }
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token ?? null,
+    expiresIn: data.expires_in ?? null,
+    refreshTokenExpiresIn: data.refresh_token_expires_in ?? null,
+    tokenType: data.token_type,
+    scope: data.scope,
+  };
+}
+
+// ── GitHub User Info ─────────────────────────────────────────────
+
+/**
+ * Fetch the authenticated user's GitHub profile.
+ */
+export async function getGitHubUser(accessToken: string): Promise<GitHubUser> {
+  const res = await fetch('https://api.github.com/user', {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${accessToken}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to fetch GitHub user: ${res.status} ${body}`);
+  }
+
+  return (await res.json()) as GitHubUser;
+}
+
+/**
+ * Fetch installation details (account login, type, etc.)
+ */
+export async function getInstallationDetails(installationId: string): Promise<{
+  id: number;
+  account: GitHubInstallationAccount;
+}> {
+  const appJwt = await mintAppJwt();
+
+  const res = await fetch(
+    `https://api.github.com/app/installations/${installationId}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${appJwt}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to fetch installation: ${res.status} ${body}`);
+  }
+
+  return (await res.json()) as { id: number; account: GitHubInstallationAccount };
+}
+
+// ── Install URL ──────────────────────────────────────────────────
+
+/**
+ * Build the GitHub App installation URL with a state parameter.
+ */
+export function buildInstallUrl(state: string): string {
+  const config = getGitHubAppConfig();
+  return `https://github.com/apps/${config.appName}/installations/new?state=${encodeURIComponent(state)}`;
+}

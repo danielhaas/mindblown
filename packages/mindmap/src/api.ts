@@ -192,7 +192,54 @@ export function generatePublicLink(mapId: string): Promise<{ publicToken: string
   });
 }
 
-// ── GitHub Integration ──────────────────────────────────────────
+// ── GitHub App Integration ──────────────────────────────────────
+
+export interface GitHubInstallStatus {
+  connected: boolean;
+  identity: {
+    githubLogin: string;
+    avatarUrl: string | null;
+    githubUserId: string;
+  } | null;
+  installations: Array<{
+    installationId: string;
+    accountLogin: string;
+    accountType: string;
+  }>;
+  appConfigured: boolean;
+}
+
+export interface GitHubRepoInfo {
+  id: number;
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  htmlUrl: string;
+  description: string | null;
+}
+
+export function getGitHubInstallUrl(): Promise<{ installUrl: string }> {
+  return request('/api/auth/github/install');
+}
+
+export function getGitHubInstallStatus(): Promise<GitHubInstallStatus> {
+  return request('/api/auth/github/status');
+}
+
+export function getGitHubRepositories(installationId?: string): Promise<{
+  installationId: string;
+  repositories: GitHubRepoInfo[];
+}> {
+  const qs = installationId ? `?installationId=${encodeURIComponent(installationId)}` : '';
+  return request(`/api/integrations/github/repositories${qs}`);
+}
+
+export function disconnectGitHub(): Promise<{ disconnected: boolean }> {
+  return request('/api/auth/github/disconnect', { method: 'POST' });
+}
+
+// ── GitHub Integration (legacy PAT) ────────────────────────────
 
 export function connectGitHub(
   workspaceId: string,

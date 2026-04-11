@@ -3,3 +3,6 @@ dist/
 .turbo/
 *.tsbuildinfo
 backups/
+.env
+.env.local
+*.pem

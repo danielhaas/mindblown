@@ -23,3 +23,25 @@ export type {
   WebhookResult,
   ImportedIssue,
 } from './github.js';
+
+export {
+  getGitHubAppConfig,
+  isGitHubAppConfigured,
+  mintAppJwt,
+  mintInstallationToken,
+  listInstallationRepositories,
+  exchangeUserAuthorizationCode,
+  refreshUserAccessToken,
+  getGitHubUser,
+  getInstallationDetails,
+  buildInstallUrl,
+} from './github-app.js';
+
+export type {
+  GitHubAppConfig,
+  InstallationToken,
+  UserOAuthTokens,
+  GitHubUser,
+  GitHubRepo,
+  GitHubInstallationAccount,
+} from './github-app.js';

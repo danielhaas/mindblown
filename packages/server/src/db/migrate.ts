@@ -197,6 +197,48 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
+  // ── GitHub App Installations ────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS github_installations (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      installation_id TEXT NOT NULL,
+      account_login TEXT NOT NULL,
+      account_type TEXT NOT NULL,
+      account_id TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── User GitHub Identities (OAuth) ────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS user_github_identities (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE UNIQUE,
+      github_user_id TEXT NOT NULL,
+      github_login TEXT NOT NULL,
+      avatar_url TEXT,
+      encrypted_access_token TEXT NOT NULL,
+      encrypted_refresh_token TEXT,
+      token_expires_at TIMESTAMPTZ,
+      scopes TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Add GitHub repo binding columns to maps ───────────────────
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_installation_id TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_repo_owner TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_repo_name TEXT
+  `);
+
   // Create indexes (idempotent)
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_map_id ON nodes(map_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`);
@@ -210,6 +252,10 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cycles_version_id ON cycles(version_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_version_id ON nodes(version_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_milestone_id ON nodes(milestone_id)`);
+
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_user_id ON github_installations(user_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
 
   console.log('[db] Migrations complete.');
 }
