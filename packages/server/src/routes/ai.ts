@@ -291,20 +291,22 @@ Node to break down: "${targetNode.text}"`;
       const rootNode = mapDetail.nodes.find((n) => n.parentId === null);
       const treeText = renderTreeForPrompt(mapDetail.nodes);
 
-      const systemPrompt = `You are a helpful assistant that manages a project mindmap. You MUST reply in English only.
+      const rootId = rootNode?.id ?? '';
+      const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
-MAP_ID: ${body.mapId}
-ROOT_ID: ${rootNode?.id}
+mapId = "${body.mapId}"
 
-TREE:
+The root node is "${rootNode?.text ?? 'Root'}" with id "${rootId}".
+When the user says "add X" without a parent, use parentId "${rootId}".
+
+Current nodes:
 ${treeText}
 
-RULES:
-1. Use node IDs from [id:...] above. Never invent IDs.
-2. When adding a node without a specified parent, use ROOT_ID.
-3. Call only ONE tool per response. Do not call multiple tools.
-4. After the tool call, say what you did in one English sentence.
-5. You cannot delete nodes.`;
+Rules:
+1. Only use IDs shown in [id:...] above. Never invent an ID.
+2. For move_node: "source" is the node being moved, "destination" is where it goes.
+3. One tool call per message. Confirm what you did in one short English sentence.
+4. You cannot delete nodes.`;
 
       const messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
@@ -335,8 +337,14 @@ RULES:
 
         // If the model produced text content, stream it
         if (msg.content) {
-          // Strip any non-English preamble (common with qwen2.5 multilingual)
-          const cleaned = msg.content.replace(/^[^\x00-\x7F]+[\s\S]*?\n\n/gm, '').trim();
+          // Strip non-English text (qwen2.5 outputs Thai/Chinese despite instructions)
+          // Remove any segment that contains non-Latin unicode characters
+          const cleaned = msg.content
+            .split('\n')
+            .filter((line) => !/[\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u30FF]/.test(line))
+            .join('\n')
+            .replace(/\n{3,}/g, '\n\n')
+            .trim();
           if (cleaned) {
             send('delta', { content: cleaned });
           }

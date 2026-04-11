@@ -68,13 +68,13 @@ export const CHAT_TOOLS: OpenAI.ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'move_node',
-      description: 'Move a node to a different parent.',
+      description: 'Move a SOURCE node under a DESTINATION parent node. The source is the node being moved. The destination is where it goes.',
       parameters: {
         type: 'object',
         properties: {
           mapId: { type: 'string', description: 'The map ID' },
-          nodeId: { type: 'string', description: 'The node to move' },
-          newParentId: { type: 'string', description: 'The new parent node ID' },
+          nodeId: { type: 'string', description: 'SOURCE: the ID of the node being moved' },
+          newParentId: { type: 'string', description: 'DESTINATION: the ID of the parent node where it should go' },
         },
         required: ['mapId', 'nodeId', 'newParentId'],
       },
