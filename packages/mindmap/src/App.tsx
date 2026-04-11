@@ -1347,7 +1347,7 @@ export function App() {
 
       {/* Workspace Settings */}
       {workspaceSettingsOpen && (
-        <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
+        <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} mapId={currentMapId} />
       )}
 
       {/* AI Chat Panel */}

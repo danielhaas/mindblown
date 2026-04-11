@@ -1,5 +1,5 @@
 /**
- * Workspace Settings modal — GitHub App connection + repo management.
+ * Workspace Settings modal — GitHub App connection + per-map repo picker.
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -8,15 +8,37 @@ import {
   getGitHubInstallUrl,
   getGitHubRepositories,
   disconnectGitHub,
+  updateMap,
 } from './api.js';
 import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
+import { useMindmapStore } from './store.js';
 
-export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
+export function WorkspaceSettings({
+  onClose,
+  mapId,
+}: {
+  onClose: () => void;
+  mapId?: string | null;
+}) {
   const [status, setStatus] = useState<GitHubInstallStatus | null>(null);
   const [repos, setRepos] = useState<GitHubRepoInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  // Current map's GitHub repo from the store
+  const map = useMindmapStore((s) => s.currentMap);
+  const currentRepo = map
+    ? (map.githubRepoOwner && map.githubRepoName
+        ? `${map.githubRepoOwner}/${map.githubRepoName}`
+        : '')
+    : '';
+  const [selectedRepo, setSelectedRepo] = useState(currentRepo);
+
+  useEffect(() => {
+    setSelectedRepo(currentRepo);
+  }, [currentRepo]);
 
   const loadStatus = useCallback(async () => {
     setLoading(true);
@@ -47,7 +69,6 @@ export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
   const handleConnect = useCallback(async () => {
     try {
       const { installUrl } = await getGitHubInstallUrl();
-      // Open in same window — the callback redirects back with ?gh=connected
       window.location.href = installUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start GitHub connection');
@@ -68,6 +89,36 @@ export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
       setDisconnecting(false);
     }
   }, [loadStatus]);
+
+  const handleSaveRepo = useCallback(async () => {
+    if (!mapId) return;
+    setSaving(true);
+    setError(null);
+    try {
+      const installationId = status?.installations[0]?.installationId ?? null;
+      if (selectedRepo) {
+        const [owner, name] = selectedRepo.split('/');
+        await updateMap(mapId, {
+          githubInstallationId: installationId,
+          githubRepoOwner: owner,
+          githubRepoName: name,
+        });
+      } else {
+        await updateMap(mapId, {
+          githubInstallationId: null,
+          githubRepoOwner: null,
+          githubRepoName: null,
+        });
+      }
+      // Refresh map in the store
+      useMindmapStore.getState().loadMap(mapId);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to save repo');
+    } finally {
+      setSaving(false);
+    }
+  }, [mapId, selectedRepo, status, onClose]);
 
   return (
     <div
@@ -104,7 +155,7 @@ export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
           }}
         >
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1e293b' }}>
-            Workspace Settings
+            {mapId ? 'GitHub Settings' : 'Workspace Settings'}
           </h2>
           <button
             onClick={onClose}
@@ -123,8 +174,8 @@ export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
 
         {/* Content */}
         <div style={{ padding: '20px 24px' }}>
-          {/* GitHub section */}
-          <div style={{ marginBottom: 24 }}>
+          {/* GitHub connection section */}
+          <div style={{ marginBottom: mapId && status?.connected ? 0 : 24 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <svg width="18" height="18" viewBox="0 0 16 16" fill="#1e293b">
                 <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
@@ -252,8 +303,63 @@ export function WorkspaceSettings({ onClose }: { onClose: () => void }) {
                   </button>
                 </div>
 
-                {/* Accessible repos */}
-                {repos.length > 0 && (
+                {/* Per-map repo picker */}
+                {mapId && repos.length > 0 && (
+                  <div style={{ marginBottom: 16 }}>
+                    <h4 style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                      Repository for this map
+                    </h4>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <select
+                        value={selectedRepo}
+                        onChange={(e) => setSelectedRepo(e.target.value)}
+                        style={{
+                          flex: 1,
+                          padding: '8px 12px',
+                          borderRadius: 8,
+                          border: '1px solid #e2e8f0',
+                          fontSize: 13,
+                          fontFamily: 'inherit',
+                          color: '#1e293b',
+                          background: '#fff',
+                        }}
+                      >
+                        <option value="">No repo linked</option>
+                        {repos.map((repo) => (
+                          <option key={repo.id} value={repo.fullName}>
+                            {repo.fullName}{repo.private ? ' (private)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        onClick={handleSaveRepo}
+                        disabled={saving || selectedRepo === currentRepo}
+                        style={{
+                          background: selectedRepo === currentRepo ? '#e2e8f0' : '#4f46e5',
+                          color: selectedRepo === currentRepo ? '#94a3b8' : '#fff',
+                          border: 'none',
+                          borderRadius: 8,
+                          padding: '8px 16px',
+                          fontSize: 13,
+                          fontWeight: 600,
+                          cursor: selectedRepo === currentRepo ? 'default' : 'pointer',
+                          fontFamily: 'inherit',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {saving ? 'Saving...' : 'Save'}
+                      </button>
+                    </div>
+                    {currentRepo && (
+                      <div style={{ fontSize: 11, color: '#64748b', marginTop: 6 }}>
+                        Currently linked to <strong>{currentRepo}</strong>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Accessible repos list (only in workspace view, not per-map) */}
+                {!mapId && repos.length > 0 && (
                   <div>
                     <h4 style={{ margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                       Accessible Repositories ({repos.length})

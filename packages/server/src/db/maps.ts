@@ -93,6 +93,9 @@ export interface UpdateMapInput {
   wipLimit?: number | null;
   projectStartDate?: string | null;
   hoursPerDay?: number;
+  githubInstallationId?: string | null;
+  githubRepoOwner?: string | null;
+  githubRepoName?: string | null;
 }
 
 export async function updateMap(mapId: string, input: UpdateMapInput): Promise<MindMap | null> {
@@ -108,6 +111,9 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.wipLimit !== undefined) updates.wipLimit = input.wipLimit;
   if (input.projectStartDate !== undefined) updates.projectStartDate = input.projectStartDate;
   if (input.hoursPerDay !== undefined) updates.hoursPerDay = input.hoursPerDay;
+  if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
+  if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
+  if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

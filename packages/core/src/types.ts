@@ -229,6 +229,11 @@ export interface MindMap {
   updatedAt: string;
   createdBy: UserId;
   archivedAt: string | null;
+
+  // ── GitHub integration ──────────────────────────────────
+  githubInstallationId?: string | null;
+  githubRepoOwner?: string | null;
+  githubRepoName?: string | null;
 }
 
 // ── User / Workspace / Team ─────────────────────────────────────
