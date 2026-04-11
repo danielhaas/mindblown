@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as api from './api.js';
-import type { Permission } from './api.js';
+import type { Permission, PendingInvite } from './api.js';
 import { useMindmapStore } from './store.js';
 
 const BASE_URL: string = (import.meta as any).env?.VITE_APP_URL ?? window.location.origin;
@@ -16,6 +16,7 @@ export function ShareDialog({
   const currentMap = useMindmapStore((s) => s.currentMap);
 
   const [permissions, setPermissions] = useState<Permission[]>([]);
+  const [pendingInvites, setPendingInvites] = useState<PendingInvite[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,7 +33,8 @@ export function ShareDialog({
   const loadPermissions = useCallback(async () => {
     try {
       const data = await api.fetchPermissions(mapId);
-      setPermissions(data);
+      setPermissions(data.permissions);
+      setPendingInvites(data.pendingInvites);
     } catch (e: any) {
       setError(e.message ?? 'Failed to load permissions');
     } finally {
@@ -50,11 +52,19 @@ export function ShareDialog({
     setInviting(true);
     setError(null);
     try {
-      const perm = await api.shareMap(mapId, email, invitePermission);
-      setPermissions((prev) => {
-        const filtered = prev.filter((p) => p.userId !== perm.userId);
-        return [...filtered, perm];
-      });
+      const result = await api.shareMap(mapId, email, invitePermission);
+      if ('pending' in result && result.pending) {
+        setPendingInvites((prev) => {
+          const filtered = prev.filter((i) => i.email !== result.email);
+          return [...filtered, result];
+        });
+      } else {
+        const perm = result as Permission;
+        setPermissions((prev) => {
+          const filtered = prev.filter((p) => p.userId !== perm.userId);
+          return [...filtered, perm];
+        });
+      }
       setInviteEmail('');
     } catch (e: any) {
       setError(e.message ?? 'Failed to invite user');
@@ -70,6 +80,16 @@ export function ShareDialog({
       setPermissions((prev) => prev.filter((p) => p.userId !== userId));
     } catch (e: any) {
       setError(e.message ?? 'Failed to revoke permission');
+    }
+  };
+
+  const handleRevokeInvite = async (email: string) => {
+    if (!confirm('Cancel this pending invite?')) return;
+    try {
+      await api.revokePendingInvite(mapId, email);
+      setPendingInvites((prev) => prev.filter((i) => i.email !== email));
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to cancel invite');
     }
   };
 
@@ -378,6 +398,103 @@ export function ShareDialog({
               </div>
             )}
           </div>
+
+          {/* Pending invites */}
+          {pendingInvites.length > 0 && (
+            <div style={{ marginBottom: 20 }}>
+              <label
+                style={{
+                  display: 'block',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  color: '#64748b',
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.04em',
+                  marginBottom: 8,
+                }}
+              >
+                Pending Invites
+              </label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {pendingInvites.map((invite) => (
+                  <div
+                    key={invite.id}
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 10,
+                      padding: '8px 10px',
+                      background: '#fffbeb',
+                      borderRadius: 6,
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: 28,
+                        height: 28,
+                        borderRadius: '50%',
+                        background: '#fde68a',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: '#92400e',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {invite.email[0].toUpperCase()}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        {invite.email}
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 600,
+                            padding: '1px 6px',
+                            borderRadius: 4,
+                            background: '#fef3c7',
+                            color: '#92400e',
+                          }}
+                        >
+                          Pending
+                        </span>
+                      </div>
+                      <div style={{ fontSize: 11, color: '#94a3b8' }}>
+                        Will get access when they sign up
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 500,
+                        color: '#64748b',
+                        textTransform: 'capitalize',
+                      }}
+                    >
+                      {invite.permission}
+                    </span>
+                    <button
+                      onClick={() => handleRevokeInvite(invite.email)}
+                      title="Cancel invite"
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: '2px 6px',
+                        fontSize: 14,
+                        color: '#dc2626',
+                        fontFamily: 'inherit',
+                      }}
+                    >
+                      x
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Public link */}
           <div>

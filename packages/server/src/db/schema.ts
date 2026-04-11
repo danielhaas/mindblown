@@ -105,6 +105,17 @@ export const mapPermissions = pgTable('map_permissions', {
   primaryKey({ columns: [table.mapId, table.userId] }),
 ]);
 
+// ── Pending Invites ──────────────────────────────────────────────
+
+export const pendingInvites = pgTable('pending_invites', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  email: text('email').notNull(),
+  permission: text('permission').notNull(), // 'view' | 'edit' | 'admin'
+  invitedBy: uuid('invited_by').notNull().references(() => users.id),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Comments ──────────────────────────────────────────────────────
 
 export const comments = pgTable('comments', {

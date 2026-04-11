@@ -41,13 +41,18 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
       const [targetUser] = await db
         .select({ id: users.id })
         .from(users)
-        .where(eq(users.email, body.email))
+        .where(eq(users.email, body.email.toLowerCase()))
         .limit(1);
 
       if (!targetUser) {
-        return reply.status(404).send({
-          error: { code: 'USER_NOT_FOUND', message: `No user found with email ${body.email}` },
-        });
+        // User doesn't exist yet — create a pending invite
+        const invite = await permDb.createPendingInvite(
+          req.params.mapId,
+          body.email,
+          body.permission as permDb.PermissionLevel,
+          userId,
+        );
+        return reply.status(201).send({ ...invite, pending: true });
       }
 
       const result = await permDb.setPermission(
@@ -79,7 +84,8 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const permissions = await permDb.listPermissions(req.params.mapId);
-      return reply.send(permissions);
+      const pendingInvites = await permDb.listPendingInvites(req.params.mapId);
+      return reply.send({ permissions, pendingInvites });
     },
   );
 
@@ -105,6 +111,38 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
       if (!deleted) {
         return reply.status(404).send({
           error: { code: 'PERMISSION_NOT_FOUND', message: 'Permission not found' },
+        });
+      }
+
+      return reply.status(204).send();
+    },
+  );
+
+  // ── DELETE /api/maps/:mapId/invites/:email — Cancel pending invite ──
+  app.delete<{ Params: { mapId: string; email: string } }>(
+    '/api/maps/:mapId/invites/:email',
+    async (req, reply) => {
+      const userId = req.userId;
+      if (!userId) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+        });
+      }
+
+      const callerPerm = await permDb.getPermission(req.params.mapId, userId);
+      if (!permDb.hasPermission(callerPerm, 'admin')) {
+        return reply.status(403).send({
+          error: { code: 'FORBIDDEN', message: 'Only admins can cancel invites' },
+        });
+      }
+
+      const deleted = await permDb.revokePendingInvite(
+        req.params.mapId,
+        decodeURIComponent(req.params.email),
+      );
+      if (!deleted) {
+        return reply.status(404).send({
+          error: { code: 'INVITE_NOT_FOUND', message: 'Pending invite not found' },
         });
       }
 

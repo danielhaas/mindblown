@@ -5,6 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { db } from './db/connection.js';
 import { users } from './db/schema.js';
 import { eq } from 'drizzle-orm';
+import { resolvePendingInvites } from './db/permissions.js';
 
 const scryptAsync = promisify(scrypt);
 
@@ -78,6 +79,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       createdAt: users.createdAt,
     });
 
+    // Resolve any pending map invites for this email
+    const resolved = await resolvePendingInvites(user.email, user.id);
+    if (resolved > 0) {
+      console.log(`[auth] Resolved ${resolved} pending invite(s) for ${user.email}`);
+    }
+
     const token = signToken({ userId: user.id, email: user.email });
 
     return reply.status(201).send({ user, token });
@@ -106,6 +113,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(401).send({
         error: { code: 'INVALID_CREDENTIALS', message: 'Invalid email or password' },
       });
+    }
+
+    // Resolve any pending map invites for this email
+    const resolved = await resolvePendingInvites(user.email, user.id);
+    if (resolved > 0) {
+      console.log(`[auth] Resolved ${resolved} pending invite(s) for ${user.email}`);
     }
 
     const token = signToken({ userId: user.id, email: user.email });

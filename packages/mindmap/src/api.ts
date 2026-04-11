@@ -53,6 +53,21 @@ export interface Permission {
   isOwner?: boolean;
 }
 
+export interface PendingInvite {
+  id: string;
+  mapId: string;
+  email: string;
+  permission: string;
+  invitedBy: string;
+  createdAt: string;
+  pending: true;
+}
+
+export interface PermissionsResponse {
+  permissions: Permission[];
+  pendingInvites: PendingInvite[];
+}
+
 export interface GitHubIssueStatus {
   externalId: string;
   url?: string;
@@ -169,12 +184,12 @@ export function deleteComment(commentId: string): Promise<void> {
 
 // ── Permissions / Sharing ───────────────────────────────────────
 
-export function fetchPermissions(mapId: string): Promise<Permission[]> {
-  return request<Permission[]>(`/api/maps/${mapId}/permissions`);
+export function fetchPermissions(mapId: string): Promise<PermissionsResponse> {
+  return request<PermissionsResponse>(`/api/maps/${mapId}/permissions`);
 }
 
-export function shareMap(mapId: string, email: string, permission: string): Promise<Permission> {
-  return request<Permission>(`/api/maps/${mapId}/share`, {
+export function shareMap(mapId: string, email: string, permission: string): Promise<Permission | PendingInvite> {
+  return request<Permission | PendingInvite>(`/api/maps/${mapId}/share`, {
     method: 'POST',
     body: JSON.stringify({ email, permission }),
   });
@@ -182,6 +197,12 @@ export function shareMap(mapId: string, email: string, permission: string): Prom
 
 export function revokePermission(mapId: string, userId: string): Promise<void> {
   return request<void>(`/api/maps/${mapId}/permissions/${userId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function revokePendingInvite(mapId: string, email: string): Promise<void> {
+  return request<void>(`/api/maps/${mapId}/invites/${encodeURIComponent(email)}`, {
     method: 'DELETE',
   });
 }

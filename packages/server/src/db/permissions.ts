@@ -1,5 +1,5 @@
 import { db } from './connection.js';
-import { mapPermissions, maps, users } from './schema.js';
+import { mapPermissions, maps, pendingInvites, users } from './schema.js';
 import { eq, and } from 'drizzle-orm';
 import { randomBytes } from 'node:crypto';
 
@@ -92,4 +92,75 @@ export function hasPermission(actual: PermissionLevel | null, required: Permissi
   if (!actual) return false;
   const levels: Record<PermissionLevel, number> = { view: 1, edit: 2, admin: 3 };
   return levels[actual] >= levels[required];
+}
+
+// ── Pending Invites ──────────────────────────────────────────────
+
+export async function createPendingInvite(
+  mapId: string,
+  email: string,
+  permission: PermissionLevel,
+  invitedBy: string,
+) {
+  const normalizedEmail = email.toLowerCase();
+  // Upsert: update permission if invite already exists for this map+email
+  const [existing] = await db
+    .select()
+    .from(pendingInvites)
+    .where(and(eq(pendingInvites.mapId, mapId), eq(pendingInvites.email, normalizedEmail)))
+    .limit(1);
+
+  if (existing) {
+    const [updated] = await db
+      .update(pendingInvites)
+      .set({ permission })
+      .where(eq(pendingInvites.id, existing.id))
+      .returning();
+    return updated;
+  }
+
+  const [invite] = await db
+    .insert(pendingInvites)
+    .values({ mapId, email: normalizedEmail, permission, invitedBy })
+    .returning();
+  return invite;
+}
+
+export async function listPendingInvites(mapId: string) {
+  return db
+    .select({
+      id: pendingInvites.id,
+      mapId: pendingInvites.mapId,
+      email: pendingInvites.email,
+      permission: pendingInvites.permission,
+      invitedBy: pendingInvites.invitedBy,
+      createdAt: pendingInvites.createdAt,
+    })
+    .from(pendingInvites)
+    .where(eq(pendingInvites.mapId, mapId));
+}
+
+export async function revokePendingInvite(mapId: string, email: string) {
+  const [deleted] = await db
+    .delete(pendingInvites)
+    .where(and(eq(pendingInvites.mapId, mapId), eq(pendingInvites.email, email.toLowerCase())))
+    .returning();
+  return deleted ?? null;
+}
+
+export async function resolvePendingInvites(email: string, userId: string): Promise<number> {
+  const normalizedEmail = email.toLowerCase();
+  const invites = await db
+    .select()
+    .from(pendingInvites)
+    .where(eq(pendingInvites.email, normalizedEmail));
+
+  if (invites.length === 0) return 0;
+
+  for (const invite of invites) {
+    await setPermission(invite.mapId, userId, invite.permission as PermissionLevel);
+    await db.delete(pendingInvites).where(eq(pendingInvites.id, invite.id));
+  }
+
+  return invites.length;
 }

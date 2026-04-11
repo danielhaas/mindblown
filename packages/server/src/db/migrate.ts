@@ -239,6 +239,19 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_repo_name TEXT
   `);
 
+  // ── Pending Invites ────────────────────────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS pending_invites (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      email TEXT NOT NULL,
+      permission TEXT NOT NULL,
+      invited_by UUID NOT NULL REFERENCES users(id),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(map_id, email)
+    )
+  `);
+
   // Create indexes (idempotent)
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_map_id ON nodes(map_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_parent_id ON nodes(parent_id)`);
@@ -252,6 +265,9 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_cycles_version_id ON cycles(version_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_version_id ON nodes(version_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_nodes_milestone_id ON nodes(milestone_id)`);
+
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pending_invites_email ON pending_invites(email)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_pending_invites_map_id ON pending_invites(map_id)`);
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_user_id ON github_installations(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
