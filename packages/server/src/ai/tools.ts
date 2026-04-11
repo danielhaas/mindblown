@@ -207,24 +207,27 @@ function buildTreeSummary(nodes: CoreNode[]): TreeNode[] {
 
 /**
  * Render a plain-text tree suitable for injecting into the system prompt.
- * Format: "- NodeText [id:abc123] (status, est:5d)"
+ * Format: "- NodeText [id:abc123]"
+ * Limits to MAX_NODES to keep the prompt under ~4K chars for 14B models.
  */
-export function renderTreeForPrompt(nodes: CoreNode[]): string {
+export function renderTreeForPrompt(nodes: CoreNode[], maxNodes = 80): string {
   const tree = buildTreeSummary(nodes);
   const lines: string[] = [];
+  let count = 0;
 
   function walk(items: TreeNode[], indent: number) {
     for (const n of items) {
-      const meta: string[] = [];
-      if (n.status) meta.push(n.status);
-      if (n.estimate != null) meta.push(`est:${n.estimate}`);
-      if (n.progress != null) meta.push(`${n.progress}%`);
-      const suffix = meta.length > 0 ? ` (${meta.join(', ')})` : '';
-      lines.push(`${'  '.repeat(indent)}- ${n.text} [id:${n.id}]${suffix}`);
+      if (count >= maxNodes) return;
+      count++;
+      const prefix = '  '.repeat(indent) + '- ';
+      lines.push(`${prefix}${n.text} [id:${n.id}]`);
       walk(n.children, indent + 1);
     }
   }
 
   walk(tree, 0);
+  if (count >= maxNodes) {
+    lines.push(`  ... (${nodes.length - count} more nodes, use search_nodes to find them)`);
+  }
   return lines.join('\n');
 }
