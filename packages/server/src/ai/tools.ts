@@ -83,21 +83,6 @@ export const CHAT_TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'delete_node',
-      description: 'Delete a node and all its descendants. Cannot delete the root node.',
-      parameters: {
-        type: 'object',
-        properties: {
-          mapId: { type: 'string', description: 'The map ID' },
-          nodeId: { type: 'string', description: 'The node to delete' },
-        },
-        required: ['mapId', 'nodeId'],
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
       name: 'search_nodes',
       description: 'Search for nodes by text (case-insensitive substring match). Use this to find nodes when the user refers to them by name.',
       parameters: {
@@ -218,4 +203,28 @@ function buildTreeSummary(nodes: CoreNode[]): TreeNode[] {
   }
 
   return build(null);
+}
+
+/**
+ * Render a plain-text tree suitable for injecting into the system prompt.
+ * Format: "- NodeText [id:abc123] (status, est:5d)"
+ */
+export function renderTreeForPrompt(nodes: CoreNode[]): string {
+  const tree = buildTreeSummary(nodes);
+  const lines: string[] = [];
+
+  function walk(items: TreeNode[], indent: number) {
+    for (const n of items) {
+      const meta: string[] = [];
+      if (n.status) meta.push(n.status);
+      if (n.estimate != null) meta.push(`est:${n.estimate}`);
+      if (n.progress != null) meta.push(`${n.progress}%`);
+      const suffix = meta.length > 0 ? ` (${meta.join(', ')})` : '';
+      lines.push(`${'  '.repeat(indent)}- ${n.text} [id:${n.id}]${suffix}`);
+      walk(n.children, indent + 1);
+    }
+  }
+
+  walk(tree, 0);
+  return lines.join('\n');
 }

@@ -6,7 +6,7 @@
 import type { FastifyInstance } from 'fastify';
 import OpenAI from 'openai';
 import { aiEnabled, aiConfig, chatCompletion, getClient as getAIClient } from '../ai/client.js';
-import { CHAT_TOOLS, executeTool } from '../ai/tools.js';
+import { CHAT_TOOLS, executeTool, renderTreeForPrompt } from '../ai/tools.js';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
@@ -280,22 +280,31 @@ Node to break down: "${targetNode.text}"`;
     };
 
     try {
-      // Build the messages array with system prompt
-      const systemPrompt = `You are an AI assistant embedded in MindBlown, a mindmap-based project management tool. You help users manage their project by creating, moving, updating, and deleting nodes in their mindmap.
+      // Pre-load the map tree so the model already has all node IDs
+      const mapDetail = await mapDb.getMap(body.mapId);
+      if (!mapDetail) {
+        send('error', { message: 'Map not found' });
+        reply.raw.end();
+        return;
+      }
 
-IMPORTANT: Always respond in English, regardless of what language the user writes in.
+      const rootNode = mapDetail.nodes.find((n) => n.parentId === null);
+      const treeText = renderTreeForPrompt(mapDetail.nodes);
 
-Current map ID: ${body.mapId}
+      const systemPrompt = `You are a helpful assistant that manages a project mindmap. You MUST reply in English only.
 
-Rules:
-- Be action-oriented. When the user asks you to do something, DO IT immediately — don't ask clarifying questions unless truly ambiguous (e.g. there are two nodes with the same name).
-- Always call get_map FIRST to see the current tree structure and find correct node IDs.
-- When referring to nodes, use their exact IDs from get_map — never guess IDs.
-- If the user says "add X" without specifying a parent, add it under the root node.
-- If the user refers to a node by name, use search_nodes or get_map to find its ID, then act.
-- After making changes, briefly confirm what you did in one sentence.
-- For questions about the project, use get_map to read the tree and answer based on the data.
-- Keep responses concise. No unnecessary questions.`;
+MAP_ID: ${body.mapId}
+ROOT_ID: ${rootNode?.id}
+
+TREE:
+${treeText}
+
+RULES:
+1. Use node IDs from [id:...] above. Never invent IDs.
+2. When adding a node without a specified parent, use ROOT_ID.
+3. Call only ONE tool per response. Do not call multiple tools.
+4. After the tool call, say what you did in one English sentence.
+5. You cannot delete nodes.`;
 
       const messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
@@ -306,6 +315,8 @@ Rules:
       ];
 
       const client = getAIClient();
+      const MUTATING_TOOLS = new Set(['create_node', 'update_node', 'move_node', 'delete_node']);
+      let mutationDone = false;
 
       // Tool-use loop
       for (let step = 0; step < MAX_STEPS; step++) {
@@ -324,7 +335,11 @@ Rules:
 
         // If the model produced text content, stream it
         if (msg.content) {
-          send('delta', { content: msg.content });
+          // Strip any non-English preamble (common with qwen2.5 multilingual)
+          const cleaned = msg.content.replace(/^[^\x00-\x7F]+[\s\S]*?\n\n/gm, '').trim();
+          if (cleaned) {
+            send('delta', { content: cleaned });
+          }
         }
 
         // If no tool calls, we're done
@@ -332,11 +347,20 @@ Rules:
           break;
         }
 
-        // Add the assistant message (with tool_calls) to history
-        messages.push(msg);
+        // If we already did a mutation and the model is trying to call more tools,
+        // stop the loop to prevent duplicates
+        if (mutationDone) break;
 
-        // Execute each tool call
-        for (const tc of msg.tool_calls) {
+        // Execute only the FIRST tool call to prevent chaotic multi-tool responses
+        const tc = msg.tool_calls[0];
+
+        // Add a sanitized assistant message with only the one tool call we'll execute
+        messages.push({
+          role: 'assistant',
+          content: msg.content ?? null,
+          tool_calls: [tc],
+        } as OpenAI.ChatCompletionMessageParam);
+        {
           const fn = (tc as any).function as { name: string; arguments: string };
           const fnName = fn.name;
           let fnArgs: Record<string, unknown>;
@@ -354,6 +378,8 @@ Rules:
           } catch (err: any) {
             result = JSON.stringify({ error: err.message });
           }
+
+          if (MUTATING_TOOLS.has(fnName)) mutationDone = true;
 
           send('tool_result', { id: tc.id, name: fnName, result: JSON.parse(result) });
 
