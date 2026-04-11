@@ -101,6 +101,7 @@ export const CHAT_TOOLS: OpenAI.ChatCompletionTool[] = [
 
 interface ToolContext {
   userId: string;
+  mapId: string; // Always injected server-side so the model doesn't need to pass it
 }
 
 /**
@@ -112,9 +113,11 @@ export async function executeTool(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<string> {
+  const mapId = (args.mapId as string) || ctx.mapId;
+
   switch (name) {
     case 'get_map': {
-      const data = await mapDb.getMap(args.mapId as string);
+      const data = await mapDb.getMap(mapId);
       if (!data) return JSON.stringify({ error: 'Map not found' });
       // Return a compact tree representation to save tokens
       const tree = buildTreeSummary(data.nodes);
@@ -123,40 +126,40 @@ export async function executeTool(
 
     case 'create_node': {
       const node = await nodeDb.createNode({
-        mapId: args.mapId as string,
+        mapId,
         parentId: args.parentId as string,
         text: args.text as string,
         createdBy: ctx.userId,
         effortEstimate: args.effortEstimate as number | undefined,
       });
-      broadcast(args.mapId as string, { type: 'node:created', node });
+      broadcast(mapId, { type: 'node:created', node });
       return JSON.stringify({ created: { id: node.id, text: node.text, parentId: node.parentId } });
     }
 
     case 'update_node': {
-      const { mapId, nodeId, ...fields } = args as Record<string, unknown>;
+      const { mapId: _m, nodeId, ...fields } = args as Record<string, unknown>;
       const updated = await nodeDb.updateNode(nodeId as string, fields);
       if (!updated) return JSON.stringify({ error: 'Node not found' });
-      broadcast(mapId as string, { type: 'node:updated', nodeId, fields: Object.keys(fields), node: updated });
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: Object.keys(fields), node: updated });
       return JSON.stringify({ updated: { id: updated.id, text: updated.text, status: updated.status } });
     }
 
     case 'move_node': {
       const moved = await nodeDb.moveNode(args.nodeId as string, args.newParentId as string);
       if (!moved) return JSON.stringify({ error: 'Node not found' });
-      broadcast(args.mapId as string, { type: 'node:moved', nodeId: args.nodeId, newParentId: args.newParentId });
+      broadcast(mapId, { type: 'node:moved', nodeId: args.nodeId, newParentId: args.newParentId });
       return JSON.stringify({ moved: { id: moved.id, text: moved.text, newParentId: moved.parentId } });
     }
 
     case 'delete_node': {
       const deletedIds = await nodeDb.deleteNode(args.nodeId as string);
       if (deletedIds.length === 0) return JSON.stringify({ error: 'Node not found' });
-      broadcast(args.mapId as string, { type: 'node:deleted', nodeId: args.nodeId, deletedIds });
+      broadcast(mapId, { type: 'node:deleted', nodeId: args.nodeId, deletedIds });
       return JSON.stringify({ deleted: deletedIds.length, ids: deletedIds });
     }
 
     case 'search_nodes': {
-      const data = await mapDb.getMap(args.mapId as string);
+      const data = await mapDb.getMap(mapId);
       if (!data) return JSON.stringify({ error: 'Map not found' });
       const q = (args.query as string).toLowerCase();
       const matches = data.nodes

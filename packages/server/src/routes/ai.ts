@@ -382,7 +382,7 @@ Rules:
 
           let result: string;
           try {
-            result = await executeTool(fnName, fnArgs, { userId });
+            result = await executeTool(fnName, fnArgs, { userId, mapId: body.mapId });
           } catch (err: any) {
             result = JSON.stringify({ error: err.message });
           }
