@@ -367,3 +367,38 @@ export function buildInstallUrl(state: string): string {
   const config = getGitHubAppConfig();
   return `https://github.com/apps/${config.appName}/installations/new?state=${encodeURIComponent(state)}`;
 }
+
+/**
+ * Build the OAuth authorize URL for when the App is already installed
+ * but the user needs to re-authorize (e.g. after a failed callback).
+ */
+export function buildOAuthAuthorizeUrl(state: string): string {
+  const config = getGitHubAppConfig();
+  return `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(config.clientId)}&state=${encodeURIComponent(state)}`;
+}
+
+/**
+ * List all installations of the GitHub App that a user has access to.
+ * Uses the App JWT (not a user token).
+ */
+export async function listAppInstallations(): Promise<Array<{
+  id: number;
+  account: GitHubInstallationAccount;
+}>> {
+  const appJwt = await mintAppJwt();
+
+  const res = await fetch('https://api.github.com/app/installations', {
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${appJwt}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+    },
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to list installations: ${res.status} ${body}`);
+  }
+
+  return (await res.json()) as Array<{ id: number; account: GitHubInstallationAccount }>;
+}

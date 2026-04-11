@@ -18,10 +18,12 @@ import { encrypt } from '../crypto.js';
 import { eq, and } from 'drizzle-orm';
 import {
   buildInstallUrl,
+  buildOAuthAuthorizeUrl,
   exchangeUserAuthorizationCode,
   getGitHubUser,
   getInstallationDetails,
   listInstallationRepositories,
+  listAppInstallations,
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
 
@@ -61,8 +63,33 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const state = signState(userId);
-    const installUrl = buildInstallUrl(state);
 
+    // Check if user already has an installation but no identity (failed callback recovery)
+    const [existingIdentity] = await db.select({ id: userGithubIdentities.id })
+      .from(userGithubIdentities)
+      .where(eq(userGithubIdentities.userId, userId))
+      .limit(1);
+
+    if (existingIdentity) {
+      // Already fully connected — shouldn't be here, but return install URL anyway
+      const installUrl = buildInstallUrl(state);
+      return reply.send({ installUrl });
+    }
+
+    // Check if app is installed but identity is missing (failed callback scenario)
+    const [existingInstall] = await db.select({ id: githubInstallations.id })
+      .from(githubInstallations)
+      .where(eq(githubInstallations.userId, userId))
+      .limit(1);
+
+    if (existingInstall) {
+      // App installed but OAuth failed — use OAuth-only flow
+      const installUrl = buildOAuthAuthorizeUrl(state);
+      return reply.send({ installUrl });
+    }
+
+    // Fresh install
+    const installUrl = buildInstallUrl(state);
     return reply.send({ installUrl });
   });
 
@@ -91,40 +118,41 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
 
     const { userId } = statePayload;
 
-    if (!query.installation_id) {
-      return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=missing_installation`);
+    if (!query.installation_id && !query.code) {
+      return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=missing_params`);
     }
 
     try {
-      // Fetch installation details from GitHub
-      const installation = await getInstallationDetails(query.installation_id);
+      // If we have an installation_id, persist the installation record
+      if (query.installation_id) {
+        const installation = await getInstallationDetails(query.installation_id);
 
-      // Upsert the installation record
-      const existing = await db.select({ id: githubInstallations.id })
-        .from(githubInstallations)
-        .where(and(
-          eq(githubInstallations.userId, userId),
-          eq(githubInstallations.installationId, query.installation_id),
-        ))
-        .limit(1);
+        const existing = await db.select({ id: githubInstallations.id })
+          .from(githubInstallations)
+          .where(and(
+            eq(githubInstallations.userId, userId),
+            eq(githubInstallations.installationId, query.installation_id),
+          ))
+          .limit(1);
 
-      if (existing.length > 0) {
-        await db.update(githubInstallations)
-          .set({
+        if (existing.length > 0) {
+          await db.update(githubInstallations)
+            .set({
+              accountLogin: installation.account.login,
+              accountType: installation.account.type,
+              accountId: String(installation.account.id),
+              updatedAt: new Date(),
+            })
+            .where(eq(githubInstallations.id, existing[0].id));
+        } else {
+          await db.insert(githubInstallations).values({
+            userId,
+            installationId: query.installation_id,
             accountLogin: installation.account.login,
             accountType: installation.account.type,
             accountId: String(installation.account.id),
-            updatedAt: new Date(),
-          })
-          .where(eq(githubInstallations.id, existing[0].id));
-      } else {
-        await db.insert(githubInstallations).values({
-          userId,
-          installationId: query.installation_id,
-          accountLogin: installation.account.login,
-          accountType: installation.account.type,
-          accountId: String(installation.account.id),
-        });
+          });
+        }
       }
 
       // If we got an OAuth code, exchange it for user tokens
@@ -160,6 +188,36 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
             userId,
             ...identityValues,
           });
+        }
+      }
+
+      // If this was an OAuth-only flow (no installation_id), sync installations
+      // from the App API so we have the records
+      if (!query.installation_id) {
+        try {
+          const allInstalls = await listAppInstallations();
+          for (const inst of allInstalls) {
+            const existInst = await db.select({ id: githubInstallations.id })
+              .from(githubInstallations)
+              .where(and(
+                eq(githubInstallations.userId, userId),
+                eq(githubInstallations.installationId, String(inst.id)),
+              ))
+              .limit(1);
+
+            if (existInst.length === 0) {
+              await db.insert(githubInstallations).values({
+                userId,
+                installationId: String(inst.id),
+                accountLogin: inst.account.login,
+                accountType: inst.account.type,
+                accountId: String(inst.account.id),
+              });
+            }
+          }
+        } catch (syncErr) {
+          console.warn('[github] Failed to sync installations:', syncErr);
+          // Non-fatal — identity was saved, installations can be synced later
         }
       }
 
