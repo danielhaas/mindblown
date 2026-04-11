@@ -283,15 +283,19 @@ Node to break down: "${targetNode.text}"`;
       // Build the messages array with system prompt
       const systemPrompt = `You are an AI assistant embedded in MindBlown, a mindmap-based project management tool. You help users manage their project by creating, moving, updating, and deleting nodes in their mindmap.
 
+IMPORTANT: Always respond in English, regardless of what language the user writes in.
+
 Current map ID: ${body.mapId}
 
 Rules:
-- When the user asks you to do something to the map (add, move, delete, update nodes), use the available tools.
-- Before making changes, call get_map first to see the current tree structure and find the correct node IDs.
+- Be action-oriented. When the user asks you to do something, DO IT immediately — don't ask clarifying questions unless truly ambiguous (e.g. there are two nodes with the same name).
+- Always call get_map FIRST to see the current tree structure and find correct node IDs.
 - When referring to nodes, use their exact IDs from get_map — never guess IDs.
-- After making changes, briefly confirm what you did.
+- If the user says "add X" without specifying a parent, add it under the root node.
+- If the user refers to a node by name, use search_nodes or get_map to find its ID, then act.
+- After making changes, briefly confirm what you did in one sentence.
 - For questions about the project, use get_map to read the tree and answer based on the data.
-- Keep responses concise and helpful.`;
+- Keep responses concise. No unnecessary questions.`;
 
       const messages: OpenAI.ChatCompletionMessageParam[] = [
         { role: 'system', content: systemPrompt },
