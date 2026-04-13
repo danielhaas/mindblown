@@ -318,7 +318,16 @@ export function importGitHubIssues(
   createdBy: string,
   parentNodeId?: string,
   includeAll?: boolean,
-): Promise<{ imported: number; nodes: Array<{ nodeId: string; issueNumber: number }>; versions: Record<string, string>; milestones: Record<string, string> }> {
+): Promise<{
+  imported: number;
+  linked: number;
+  skipped: number;
+  nodes: Array<{ nodeId: string; issueNumber: number }>;
+  linkedNodes: Array<{ nodeId: string; issueNumber: number }>;
+  skippedNodes: Array<{ nodeId: string; issueNumber: number }>;
+  versions: Record<string, string>;
+  milestones: Record<string, string>;
+}> {
   return request(`/api/maps/${mapId}/github/import`, {
     method: 'POST',
     body: JSON.stringify({ createdBy, parentNodeId, includeAll }),

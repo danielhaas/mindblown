@@ -1272,7 +1272,9 @@ server.tool(
       const createdBy = 'mcp-agent';
 
       const result = await api.importGitHubIssues(mapId, createdBy, parentNodeId, includeAll);
-      const lines = [`Imported ${result.imported} GitHub issues into "${map?.name ?? mapId}".`];
+      const lines = [
+        `GitHub import into "${map?.name ?? mapId}": ${result.imported} created, ${result.linked} linked to existing nodes by title match, ${result.skipped} skipped (already linked).`,
+      ];
       if (result.versions && Object.keys(result.versions).length > 0) {
         lines.push('\nVersions created:');
         for (const [name, versionId] of Object.entries(result.versions)) {
@@ -1288,7 +1290,7 @@ server.tool(
       if (result.nodes.length > 0) {
         lines.push(`\n${result.nodes.length} nodes created (grouped by functional area).`);
       }
-      lines.push('\nAll imported nodes are linked to GitHub and will receive webhook updates.');
+      lines.push('\nAll newly created and newly linked nodes will receive webhook updates.');
       return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);

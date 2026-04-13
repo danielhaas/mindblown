@@ -368,6 +368,34 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const createdNodes: Array<{ nodeId: string; issueNumber: number }> = [];
+      const linkedNodes: Array<{ nodeId: string; issueNumber: number }> = [];
+      const skippedNodes: Array<{ nodeId: string; issueNumber: number }> = [];
+
+      // ── Build lookups of existing nodes in this map for dedup ──────
+      // Dedup rules:
+      //   1. If an existing node already has this issue's externalId linked → skip.
+      //   2. Else if an existing node's text matches the issue title (trimmed,
+      //      case-insensitive), attach the externalLink to that node instead
+      //      of creating a duplicate.
+      const existingNodes = await db
+        .select({ id: nodes.id, text: nodes.text, externalLinks: nodes.externalLinks })
+        .from(nodes)
+        .where(eq(nodes.mapId, req.params.mapId));
+
+      const normalizeText = (s: string) => s.trim().toLowerCase();
+      const existingByExternalId = new Map<string, string>();
+      const existingByText = new Map<string, string>();
+      for (const n of existingNodes) {
+        const links = (n.externalLinks as ExternalLink[]) ?? [];
+        for (const l of links) {
+          if (l.provider === 'github' && l.externalId) {
+            existingByExternalId.set(l.externalId, n.id);
+          }
+        }
+        const key = normalizeText(n.text);
+        // First-match wins; don't overwrite if multiple existing nodes share text.
+        if (!existingByText.has(key)) existingByText.set(key, n.id);
+      }
 
       // Helper to get version/milestone IDs for an issue
       const getIdsForIssue = (item: typeof importedIssues[0]) => {
@@ -380,57 +408,44 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         };
       };
 
-      // Create functional group branch nodes and their children
-      for (const [label, items] of groups) {
-        const branchNode = await nodeDb.createNode({
-          mapId: req.params.mapId,
-          parentId: parentNodeId,
-          text: label,
-          createdBy: body.createdBy,
-        });
-
-        for (const item of items) {
-          const childNode = await nodeDb.createNode({
-            mapId: req.params.mapId,
-            parentId: branchNode.id,
-            text: item.issue.title,
-            createdBy: body.createdBy,
-          });
-
-          const priority = item.issue.labels
-            .map((l) => l.name)
-            .find((n) => n.startsWith('priority:'))
-            ?.slice('priority:'.length) ?? null;
-
-          await nodeDb.updateNode(childNode.id, {
-            externalLinks: [item.externalLink],
-            tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
-            description: item.issue.body,
-            ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
-            ...getIdsForIssue(item),
-            ...(item.issue.state === 'closed' ? { percentComplete: 100 } : {}),
-          });
-
-          createdNodes.push({ nodeId: childNode.id, issueNumber: item.issue.number });
+      // Process one issue: skip / link-to-existing / create-new.
+      // Returns 'created' if a fresh node was made under newParentFn (lazy),
+      // 'linked' if attached to an existing node, or 'skipped' if already linked.
+      const processItem = async (
+        item: typeof importedIssues[0],
+        newParentFn: () => Promise<string>,
+      ): Promise<'created' | 'linked' | 'skipped'> => {
+        // (1) Already linked?
+        const existingId = existingByExternalId.get(item.externalLink.externalId);
+        if (existingId) {
+          skippedNodes.push({ nodeId: existingId, issueNumber: item.issue.number });
+          return 'skipped';
         }
-      }
 
-      // Create ungrouped issues under a "Backlog" branch
-      let ungroupedParent = parentNodeId;
-      if (ungrouped.length > 0) {
-        const backlogNode = await nodeDb.createNode({
-          mapId: req.params.mapId,
-          parentId: parentNodeId,
-          text: 'Backlog',
-          createdBy: body.createdBy,
-        });
-        ungroupedParent = backlogNode.id;
-      }
+        // (2) Text match on an unlinked existing node?
+        const textMatchId = existingByText.get(normalizeText(item.issue.title));
+        if (textMatchId) {
+          // Append externalLink to the existing node's links (preserve any existing links).
+          const [row] = await db
+            .select({ externalLinks: nodes.externalLinks })
+            .from(nodes)
+            .where(eq(nodes.id, textMatchId));
+          const existingLinks = (row?.externalLinks as ExternalLink[]) ?? [];
+          await nodeDb.updateNode(textMatchId, {
+            externalLinks: [...existingLinks, item.externalLink],
+          });
+          // Remember that this externalId is now linked so later items in the
+          // same batch can't re-link it.
+          existingByExternalId.set(item.externalLink.externalId, textMatchId);
+          linkedNodes.push({ nodeId: textMatchId, issueNumber: item.issue.number });
+          return 'linked';
+        }
 
-      for (const item of ungrouped) {
+        // (3) Create new child under the branch (lazy — only create branch if needed).
+        const parentId = await newParentFn();
         const childNode = await nodeDb.createNode({
           mapId: req.params.mapId,
-          parentId: ungroupedParent,
+          parentId,
           text: item.issue.title,
           createdBy: body.createdBy,
         });
@@ -449,14 +464,57 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           ...(item.issue.state === 'closed' ? { percentComplete: 100 } : {}),
         });
 
+        existingByExternalId.set(item.externalLink.externalId, childNode.id);
+        existingByText.set(normalizeText(item.issue.title), childNode.id);
         createdNodes.push({ nodeId: childNode.id, issueNumber: item.issue.number });
+        return 'created';
+      };
+
+      // Create functional group branch nodes and their children (lazily)
+      for (const [label, items] of groups) {
+        let branchId: string | null = null;
+        const ensureBranch = async (): Promise<string> => {
+          if (branchId) return branchId;
+          const branchNode = await nodeDb.createNode({
+            mapId: req.params.mapId,
+            parentId: parentNodeId,
+            text: label,
+            createdBy: body.createdBy,
+          });
+          branchId = branchNode.id;
+          return branchId;
+        };
+        for (const item of items) {
+          await processItem(item, ensureBranch);
+        }
+      }
+
+      // Create ungrouped issues under a "Backlog" branch (lazily)
+      let backlogId: string | null = null;
+      const ensureBacklog = async (): Promise<string> => {
+        if (backlogId) return backlogId;
+        const backlogNode = await nodeDb.createNode({
+          mapId: req.params.mapId,
+          parentId: parentNodeId,
+          text: 'Backlog',
+          createdBy: body.createdBy,
+        });
+        backlogId = backlogNode.id;
+        return backlogId;
+      };
+      for (const item of ungrouped) {
+        await processItem(item, ensureBacklog);
       }
 
       broadcast(req.params.mapId, { type: 'github:imported', count: createdNodes.length });
 
       return reply.status(201).send({
         imported: createdNodes.length,
+        linked: linkedNodes.length,
+        skipped: skippedNodes.length,
         nodes: createdNodes,
+        linkedNodes,
+        skippedNodes,
         versions: Object.fromEntries(versionToId),
         milestones: Object.fromEntries(milestoneToId),
       });
