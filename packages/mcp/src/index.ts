@@ -94,7 +94,7 @@ Example: A node "Data Retention Policy" lives under Compliance in the tree (func
 
 **Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
 
-**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo. It creates a FUNCTIONAL mindmap (grouped by feature area, not by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Use link_github_issue to link an existing node to a specific GitHub issue. NEVER use create_node for GitHub issues — those won't be linked and won't sync.
+**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates a FUNCTIONAL mindmap grouped by feature area, not by version; GitHub milestones become MindBlown versions + milestones; re-runs are safe — existing links are skipped, text matches are linked in place). link_github_issue attaches an existing node to a specific GitHub issue. create_github_issue_from_node does the reverse: promotes an existing MindBlown node to a new GitHub issue and links it back. NEVER use create_node when the task already exists as a GitHub issue — use import/link instead so it syncs.
 
 ## Important: Mindmap = functional structure, Versions = release planning
 
@@ -1326,6 +1326,39 @@ server.tool(
 
       await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
       return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with GitHub.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'create_github_issue_from_node',
+  'Promote an existing MindBlown node to a new GitHub issue. Creates a fresh GitHub issue using the node\'s text (title), description (body), tags and priority (labels), then attaches the resulting externalLink to the node so future edits sync bidirectionally. Use this when you brainstormed a node in the mindmap and want to publish it as a real GitHub issue. Requires the map to have a GitHub repo connected (via connect_github_repo or the settings UI). Refuses if the node is already linked to any GitHub issue — unlink first if you really want a second one.',
+  {
+    mapId: z.string().describe('The map ID the node belongs to'),
+    nodeId: z.string().describe('The node ID to promote to a GitHub issue'),
+  },
+  async ({ mapId, nodeId }) => {
+    try {
+      // Guard against creating a duplicate issue for an already-linked node.
+      const mapData = await api.getMap(mapId);
+      const node = mapData.nodes.find((n) => n.id === nodeId);
+      if (!node) {
+        return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+      }
+      const existing = node.externalLinks?.find((l) => l.provider === 'github');
+      if (existing) {
+        return toolError(
+          `Node ${nodeId} is already linked to GitHub issue ${existing.externalId} (${existing.url}). Refusing to create a second issue for the same node. Unlink first if that's really what you want.`,
+        );
+      }
+
+      const result = await api.createGitHubIssueFromNode(mapId, nodeId);
+      const link = result.node.externalLinks.find((l) => l.provider === 'github');
+      return toolResult(
+        `Created GitHub issue #${result.issue.number} ("${result.issue.title}") and linked it to node ${nodeId}. URL: ${result.issue.html_url}${link ? ` — externalId: ${link.externalId}` : ''}. The node will now sync with GitHub on future edits.`,
+      );
     } catch (err) {
       return toolError(err);
     }

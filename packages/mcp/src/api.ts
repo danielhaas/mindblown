@@ -347,6 +347,18 @@ export function linkGitHubIssue(
   });
 }
 
+export function createGitHubIssueFromNode(
+  mapId: string,
+  nodeId: string,
+): Promise<{
+  node: { id: string; externalLinks: Array<{ provider: string; externalId: string; url: string }> };
+  issue: { number: number; html_url: string; title: string };
+}> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/github/create`, {
+    method: 'POST',
+  });
+}
+
 // ── Versions ──────────────────────────────────────────────────
 
 export function listVersions(workspaceId: string): Promise<VersionInfo[]> {
