@@ -1,8 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { integrations, versions, milestones } from '../db/schema.js';
-import { nodes } from '../db/schema.js';
+import { integrations, versions, milestones, nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import {
   createGitHubIssue,
@@ -11,11 +10,14 @@ import {
   extractVersionFromMilestone,
   processWebhook,
   verifyWebhookSignature,
+  mintInstallationToken,
+  isGitHubAppConfigured,
 } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
+import { maps } from '../db/schema.js';
 
-// ── Helper: find integration config for a workspace ───────────────
+// ── Helper: find integration config for a workspace (legacy PAT) ──
 
 interface GitHubConfig {
   owner: string;
@@ -32,6 +34,45 @@ async function getGitHubIntegration(workspaceId: string): Promise<{ id: string; 
 
   if (!row || !row.enabled) return null;
   return { id: row.id, config: row.config as unknown as GitHubConfig };
+}
+
+// ── Helper: resolve GitHub token + repo for a map ─────────────────
+// Tries the map's own GitHub App binding first, falls back to the
+// workspace PAT integration.
+
+interface GitHubMapContext {
+  owner: string;
+  repo: string;
+  token: string;
+}
+
+async function getGitHubContextForMap(mapId: string): Promise<GitHubMapContext | null> {
+  const [map] = await db.select({
+    githubInstallationId: maps.githubInstallationId,
+    githubRepoOwner: maps.githubRepoOwner,
+    githubRepoName: maps.githubRepoName,
+    workspaceId: maps.workspaceId,
+  }).from(maps).where(eq(maps.id, mapId));
+
+  if (!map) return null;
+
+  // Try App installation binding first
+  if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
+    try {
+      const token = await mintInstallationToken(map.githubInstallationId);
+      return { owner: map.githubRepoOwner, repo: map.githubRepoName, token };
+    } catch (err) {
+      console.warn('[github] Failed to mint installation token, falling back to PAT:', err);
+    }
+  }
+
+  // Fallback: workspace PAT integration
+  const integration = await getGitHubIntegration(map.workspaceId);
+  if (integration) {
+    return { owner: integration.config.owner, repo: integration.config.repo, token: integration.config.token };
+  }
+
+  return null;
 }
 
 // ── Helper: find node by external ID ──────────────────────────────
@@ -51,7 +92,6 @@ async function findNodeByExternalId(externalId: string): Promise<string | null> 
 // ── Helper: get workspace ID for a map ────────────────────────────
 
 async function getWorkspaceIdForMap(mapId: string): Promise<string | null> {
-  const { maps } = await import('../db/schema.js');
   const [row] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, mapId));
   return row?.workspaceId ?? null;
 }
@@ -131,23 +171,16 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Get the workspace integration config for the token
-      const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
-      if (!workspaceId) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.mapId} not found` },
-        });
-      }
-
-      const integration = await getGitHubIntegration(workspaceId);
-      if (!integration) {
+      // Get GitHub token for this map
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub integration not configured for this workspace' },
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
         });
       }
 
       // Fetch the issue from GitHub to get its URL
-      const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, integration.config.token);
+      const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, ghCtx.token);
 
       const externalLink: ExternalLink = {
         provider: 'github',
@@ -183,24 +216,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
-      if (!workspaceId) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.mapId} not found` },
-        });
-      }
-
-      const integration = await getGitHubIntegration(workspaceId);
-      if (!integration) {
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub integration not configured for this workspace' },
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
         });
       }
-
-      const { owner, repo, token } = integration.config;
 
       // Create the issue on GitHub
-      const { issue, externalLink } = await createGitHubIssue(node, owner, repo, token);
+      const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.token);
 
       // Store the link on the node
       const existingLinks = [...node.externalLinks];
@@ -219,24 +243,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { mapId: string } }>(
     '/api/maps/:mapId/github/import',
     async (req, reply) => {
-      const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
-      if (!workspaceId) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.mapId} not found` },
-        });
-      }
-
-      const integration = await getGitHubIntegration(workspaceId);
-      if (!integration) {
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub integration not configured for this workspace' },
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
         });
       }
 
-      const { owner, repo, token } = integration.config;
+      const { owner, repo, token } = ghCtx;
+
+      // Get workspace ID for version/milestone creation
+      const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
 
       // Determine root node for the map (we'll attach imported nodes under a group node)
-      const { maps } = await import('../db/schema.js');
       const [map] = await db.select().from(maps).where(eq(maps.id, req.params.mapId));
       if (!map || !map.rootNodeId) {
         return reply.status(400).send({
@@ -457,21 +476,31 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // Parse payload
     const payload = req.body as Record<string, unknown>;
 
-    // Try to verify signature if we have a webhook secret
-    // We need to find the integration by repo
+    // Verify webhook signature — try App webhook secret first, then PAT secrets
+    const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
     const repoFullName = (payload.repository as { full_name?: string })?.full_name;
-    if (repoFullName) {
-      // Find matching integration by repo name
+    let signatureVerified = false;
+
+    // Try GitHub App webhook secret
+    if (isGitHubAppConfigured()) {
+      const appWebhookSecret = process.env.GITHUB_APP_WEBHOOK_SECRET;
+      if (appWebhookSecret && signature) {
+        const valid = await verifyWebhookSignature(rawBody, signature, appWebhookSecret);
+        if (valid) signatureVerified = true;
+      }
+    }
+
+    // Try legacy PAT webhook secrets
+    if (!signatureVerified && repoFullName) {
       const allIntegrations = await db.select().from(integrations).where(eq(integrations.provider, 'github'));
       for (const integ of allIntegrations) {
         const config = integ.config as unknown as GitHubConfig;
         if (`${config.owner}/${config.repo}` === repoFullName && config.webhookSecret) {
-          const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
           const valid = await verifyWebhookSignature(rawBody, signature, config.webhookSecret);
-          if (!valid) {
-            return reply.status(401).send({ error: 'Invalid webhook signature' });
+          if (valid) {
+            signatureVerified = true;
+            break;
           }
-          break;
         }
       }
     }
@@ -610,16 +639,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.send({ linked: false, issues: [] });
       }
 
-      // Get workspace integration for token
-      const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
-      if (!workspaceId) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.mapId} not found` },
-        });
-      }
-
-      const integration = await getGitHubIntegration(workspaceId);
-      if (!integration) {
+      // Get GitHub token for this map
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
         return reply.send({ linked: true, issues: githubLinks, status: 'no_integration' });
       }
 
@@ -630,7 +652,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           if (!match) return { externalId: link.externalId, error: 'invalid_id' };
 
           try {
-            const issue = await getGitHubIssue(match[1], match[2], parseInt(match[3], 10), integration.config.token);
+            const issue = await getGitHubIssue(match[1], match[2], parseInt(match[3], 10), ghCtx.token);
             return {
               externalId: link.externalId,
               url: link.url,
