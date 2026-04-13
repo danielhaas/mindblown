@@ -420,12 +420,17 @@ export function GitHubSettingsDialog({
   const loadMap = useMindmapStore((s) => s.loadMap);
 
   const workspaceId = currentMap?.workspaceId ?? 'default';
+  const hasAppRepo = !!(currentMap?.githubRepoOwner && currentMap?.githubRepoName);
+  const appRepoLabel = hasAppRepo ? `${currentMap!.githubRepoOwner}/${currentMap!.githubRepoName}` : null;
 
+  // Legacy PAT state
   const [ghToken, setGhToken] = useState('');
   const [owner, setOwner] = useState('');
   const [repo, setRepo] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [showLegacy, setShowLegacy] = useState(false);
+
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ imported: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -451,7 +456,6 @@ export function GitHubSettingsDialog({
     try {
       const result = await api.importGitHubIssues(mapId, user.id);
       setImportResult(result);
-      // Reload map to get imported nodes
       loadMap(mapId);
     } catch (e: any) {
       setError(e.message ?? 'Failed to import');
@@ -511,22 +515,6 @@ export function GitHubSettingsDialog({
           </div>
         )}
 
-        {connected && (
-          <div
-            style={{
-              marginBottom: 16,
-              padding: '8px 12px',
-              borderRadius: 6,
-              background: '#dcfce7',
-              color: '#166534',
-              fontSize: 12,
-              fontWeight: 600,
-            }}
-          >
-            Connected to {owner}/{repo}
-          </div>
-        )}
-
         {importResult && (
           <div
             style={{
@@ -543,134 +531,232 @@ export function GitHubSettingsDialog({
           </div>
         )}
 
-        {/* Connection form */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+        {/* App-connected repo */}
+        {hasAppRepo && (
           <div>
-            <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
-              GitHub Personal Access Token
-            </label>
-            <input
-              type="password"
-              value={ghToken}
-              onChange={(e) => setGhToken(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              placeholder="ghp_..."
+            <div
               style={{
-                width: '100%',
-                padding: '7px 10px',
-                border: '1px solid #e2e8f0',
-                borderRadius: 6,
-                fontSize: 13,
-                fontFamily: 'inherit',
-                outline: 'none',
-                boxSizing: 'border-box',
-              }}
-            />
-          </div>
-          <div style={{ display: 'flex', gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
-                Owner
-              </label>
-              <input
-                value={owner}
-                onChange={(e) => setOwner(e.target.value)}
-                onKeyDown={(e) => e.stopPropagation()}
-                placeholder="org or user"
-                style={{
-                  width: '100%',
-                  padding: '7px 10px',
-                  border: '1px solid #e2e8f0',
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontFamily: 'inherit',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-            <div style={{ flex: 1 }}>
-              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
-                Repo
-              </label>
-              <input
-                value={repo}
-                onChange={(e) => setRepo(e.target.value)}
-                onKeyDown={(e) => e.stopPropagation()}
-                placeholder="repository"
-                style={{
-                  width: '100%',
-                  padding: '7px 10px',
-                  border: '1px solid #e2e8f0',
-                  borderRadius: 6,
-                  fontSize: 13,
-                  fontFamily: 'inherit',
-                  outline: 'none',
-                  boxSizing: 'border-box',
-                }}
-              />
-            </div>
-          </div>
-        </div>
-
-        {/* Buttons */}
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={handleConnect}
-            disabled={connecting || !ghToken || !owner || !repo}
-            style={{
-              background: '#4f46e5',
-              color: '#fff',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 16px',
-              fontSize: 12,
-              fontWeight: 600,
-              cursor: connecting ? 'default' : 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            {connecting ? 'Connecting...' : connected ? 'Reconnect' : 'Connect GitHub'}
-          </button>
-
-          {connected && (
-            <button
-              onClick={handleImport}
-              disabled={importing}
-              style={{
-                background: '#f1f5f9',
-                border: '1px solid #e2e8f0',
-                borderRadius: 6,
-                padding: '8px 16px',
-                fontSize: 12,
-                fontWeight: 600,
-                color: '#475569',
-                cursor: importing ? 'default' : 'pointer',
-                fontFamily: 'inherit',
+                marginBottom: 16,
+                padding: '12px 16px',
+                borderRadius: 8,
+                background: '#f0fdf4',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
               }}
             >
-              {importing ? 'Importing...' : 'Import Issues'}
-            </button>
-          )}
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="#166534">
+                <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#166534' }}>
+                Linked to {appRepoLabel}
+              </span>
+            </div>
 
-          <button
-            onClick={onClose}
-            style={{
-              background: '#f1f5f9',
-              border: 'none',
-              borderRadius: 6,
-              padding: '8px 16px',
-              fontSize: 12,
-              fontWeight: 600,
-              color: '#475569',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              marginLeft: 'auto',
-            }}
-          >
-            Close
-          </button>
-        </div>
+            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+              <button
+                onClick={handleImport}
+                disabled={importing}
+                style={{
+                  background: '#4f46e5',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: importing ? 'default' : 'pointer',
+                  fontFamily: 'inherit',
+                  opacity: importing ? 0.7 : 1,
+                }}
+              >
+                {importing ? 'Importing...' : 'Import Issues'}
+              </button>
+              <button
+                onClick={onClose}
+                style={{
+                  background: '#f1f5f9',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: '#475569',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                  marginLeft: 'auto',
+                }}
+              >
+                Close
+              </button>
+            </div>
+
+            <button
+              onClick={() => setShowLegacy(!showLegacy)}
+              style={{
+                background: 'none',
+                border: 'none',
+                fontSize: 11,
+                color: '#94a3b8',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                padding: 0,
+              }}
+            >
+              {showLegacy ? 'Hide legacy token' : 'Use legacy token instead...'}
+            </button>
+          </div>
+        )}
+
+        {/* Legacy PAT form (shown when no App repo, or user clicks "legacy") */}
+        {(!hasAppRepo || showLegacy) && (
+          <div style={{ marginTop: hasAppRepo ? 12 : 0 }}>
+            {connected && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: '#dcfce7',
+                  color: '#166534',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                Connected to {owner}/{repo}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                  GitHub Personal Access Token
+                </label>
+                <input
+                  type="password"
+                  value={ghToken}
+                  onChange={(e) => setGhToken(e.target.value)}
+                  onKeyDown={(e) => e.stopPropagation()}
+                  placeholder="ghp_..."
+                  style={{
+                    width: '100%',
+                    padding: '7px 10px',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontFamily: 'inherit',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+              <div style={{ display: 'flex', gap: 10 }}>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                    Owner
+                  </label>
+                  <input
+                    value={owner}
+                    onChange={(e) => setOwner(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    placeholder="org or user"
+                    style={{
+                      width: '100%',
+                      padding: '7px 10px',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontFamily: 'inherit',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                    Repo
+                  </label>
+                  <input
+                    value={repo}
+                    onChange={(e) => setRepo(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    placeholder="repository"
+                    style={{
+                      width: '100%',
+                      padding: '7px 10px',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontFamily: 'inherit',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button
+                onClick={handleConnect}
+                disabled={connecting || !ghToken || !owner || !repo}
+                style={{
+                  background: '#4f46e5',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 6,
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  cursor: connecting ? 'default' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {connecting ? 'Connecting...' : connected ? 'Reconnect' : 'Connect GitHub'}
+              </button>
+
+              {connected && (
+                <button
+                  onClick={handleImport}
+                  disabled={importing}
+                  style={{
+                    background: '#f1f5f9',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 6,
+                    padding: '8px 16px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: '#475569',
+                    cursor: importing ? 'default' : 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {importing ? 'Importing...' : 'Import Issues'}
+                </button>
+              )}
+
+              {!hasAppRepo && (
+                <button
+                  onClick={onClose}
+                  style={{
+                    background: '#f1f5f9',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '8px 16px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: '#475569',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                    marginLeft: 'auto',
+                  }}
+                >
+                  Close
+                </button>
+              )}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
