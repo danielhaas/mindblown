@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
 import type { LayoutNode } from './layout.js';
+import { OctocatIcon } from './icons/Octocat.js';
 
 // ── Color palette ──────────────────────────────────────────────
 
@@ -176,6 +177,7 @@ export function MindmapNode({
   const showProgress = node.percentComplete != null || (hasChildren && effort > 0);
   const showPriority = node.priority != null;
   const showAssignees = node.assigneeIds.length > 0;
+  const githubLink = node.externalLinks.find((l) => l.provider === 'github');
 
   // ── Inline editing ─────────────────────────────────────────
 
@@ -383,6 +385,25 @@ export function MindmapNode({
           r={4}
           fill={PRIORITY_COLORS[node.priority] || '#6b7280'}
         />
+      )}
+
+      {/* GitHub link indicator (top-right corner) */}
+      {githubLink && !isMilestone && (
+        <g
+          style={{ cursor: 'pointer' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            window.open(githubLink.url, '_blank', 'noopener,noreferrer');
+          }}
+        >
+          <title>{githubLink.externalId}</title>
+          <OctocatIcon
+            x={x + width - 14}
+            y={y + 3}
+            size={11}
+            color={githubLink.syncEnabled ? '#1f2937' : '#9ca3af'}
+          />
+        </g>
       )}
 
       {/* Node text or edit input */}

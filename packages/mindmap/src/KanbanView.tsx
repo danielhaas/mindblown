@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
+import { OctocatIcon } from './icons/Octocat.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -79,6 +80,7 @@ function Card({
   const overdue = isOverdue(node.dueDate);
   const borderColor = HEALTH_BORDER[healthSignal];
   const progress = node.percentComplete ?? computedProgress;
+  const githubLink = node.externalLinks.find((l) => l.provider === 'github');
 
   return (
     <div
@@ -161,6 +163,25 @@ function Card({
         >
           {node.text}
         </span>
+        {githubLink && (
+          <a
+            href={githubLink.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
+            title={githubLink.externalId}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              flexShrink: 0,
+              marginTop: 2,
+              color: githubLink.syncEnabled ? '#1f2937' : '#9ca3af',
+              textDecoration: 'none',
+            }}
+          >
+            <OctocatIcon size={12} color="currentColor" />
+          </a>
+        )}
       </div>
 
       {/* Progress bar */}

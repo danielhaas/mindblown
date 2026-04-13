@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { OctocatIcon } from './icons/Octocat.js';
 
 // ── Constants ──────────────────────────────────────────────────
 
@@ -565,6 +566,34 @@ export function ListView() {
               {node.text}
             </span>
           )}
+          {(() => {
+            const githubLink = node.externalLinks.find((l) => l.provider === 'github');
+            if (!githubLink) return null;
+            const issueNum = githubLink.externalId.split('#')[1];
+            return (
+              <a
+                href={githubLink.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={(e) => e.stopPropagation()}
+                title={githubLink.externalId}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 3,
+                  marginLeft: 6,
+                  marginRight: 6,
+                  flexShrink: 0,
+                  fontSize: 11,
+                  color: githubLink.syncEnabled ? '#475569' : '#94a3b8',
+                  textDecoration: 'none',
+                }}
+              >
+                <OctocatIcon size={11} color="currentColor" />
+                {issueNum && <span>#{issueNum}</span>}
+              </a>
+            );
+          })()}
         </div>
 
         {/* Status */}
