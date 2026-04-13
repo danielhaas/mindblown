@@ -263,10 +263,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const body = req.body as { createdBy: string; parentNodeId?: string; includeAll?: boolean };
-      if (!body.createdBy) {
+      const body = req.body as { createdBy?: string; parentNodeId?: string; includeAll?: boolean };
+      // Prefer the authenticated user (req.userId from the JWT middleware) over
+      // any body.createdBy the caller sent — the nodes table requires a real
+      // user UUID and we don't want callers (e.g. the MCP tool) passing sentinel
+      // strings that fail the UUID column constraint.
+      const createdBy = req.userId ?? body.createdBy;
+      if (!createdBy) {
         return reply.status(400).send({
-          error: { code: 'VALIDATION_ERROR', message: 'createdBy is required' },
+          error: { code: 'VALIDATION_ERROR', message: 'createdBy is required (authenticate or pass a user UUID)' },
         });
       }
 
@@ -447,7 +452,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           mapId: req.params.mapId,
           parentId,
           text: item.issue.title,
-          createdBy: body.createdBy,
+          createdBy,
         });
 
         const priority = item.issue.labels
@@ -479,7 +484,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             mapId: req.params.mapId,
             parentId: parentNodeId,
             text: label,
-            createdBy: body.createdBy,
+            createdBy,
           });
           branchId = branchNode.id;
           return branchId;
@@ -497,7 +502,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           mapId: req.params.mapId,
           parentId: parentNodeId,
           text: 'Backlog',
-          createdBy: body.createdBy,
+          createdBy,
         });
         backlogId = backlogNode.id;
         return backlogId;
