@@ -40,13 +40,13 @@ async function getGitHubIntegration(workspaceId: string): Promise<{ id: string; 
 // Tries the map's own GitHub App binding first, falls back to the
 // workspace PAT integration.
 
-interface GitHubMapContext {
+export interface GitHubMapContext {
   owner: string;
   repo: string;
   token: string;
 }
 
-async function getGitHubContextForMap(mapId: string): Promise<GitHubMapContext | null> {
+export async function getGitHubContextForMap(mapId: string): Promise<GitHubMapContext | null> {
   const [map] = await db.select({
     githubInstallationId: maps.githubInstallationId,
     githubRepoOwner: maps.githubRepoOwner,

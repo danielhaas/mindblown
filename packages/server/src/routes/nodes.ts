@@ -6,7 +6,8 @@ import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
-import { updateGitHubIssue } from '@mindblown/integrations';
+import { updateGitHubIssue, closeGitHubIssue } from '@mindblown/integrations';
+import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
 
 // Fields that should trigger outbound GitHub sync
@@ -213,6 +214,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId',
     async (req, reply) => {
+      // Pre-collect GitHub links in the subtree BEFORE deleting, so we can
+      // close them on GitHub after the DB delete succeeds. Deletion is the
+      // "dropped, won't do" signal → close as not_planned, not completed.
+      const linksToClose = await nodeDb.collectGitHubLinksInSubtree(req.params.nodeId);
+
       const deletedIds = await nodeDb.deleteNode(req.params.nodeId);
       if (deletedIds.length === 0) {
         return reply.status(404).send({
@@ -225,6 +231,26 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         nodeId: req.params.nodeId,
         deletedIds,
       });
+
+      // Fire-and-forget close of linked GitHub issues. Best-effort — if
+      // GitHub is down or the integration isn't configured, the delete in
+      // MindBlown still stands.
+      if (linksToClose.length > 0) {
+        (async () => {
+          const ghCtx = await getGitHubContextForMap(req.params.id);
+          if (!ghCtx) return;
+          for (const link of linksToClose) {
+            try {
+              await closeGitHubIssue(link, ghCtx.token, 'not_planned');
+            } catch (err) {
+              console.error(
+                `[github-sync] Failed to close ${link.externalId} after node delete:`,
+                err,
+              );
+            }
+          }
+        })().catch(() => {});
+      }
 
       return reply.status(204).send();
     },

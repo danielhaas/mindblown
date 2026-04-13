@@ -219,11 +219,18 @@ export async function updateGitHubIssue(
 }
 
 /**
- * Close the linked GitHub Issue (e.g., when node reaches 100%).
+ * Close the linked GitHub Issue.
+ *
+ * reason = 'completed' (default) — "done", triggered by the node reaching
+ *   100% or status=done. GitHub displays these with a purple check.
+ * reason = 'not_planned' — the node was deleted / abandoned in MindBlown.
+ *   GitHub displays these with a grey circle. Use this when the work is
+ *   dropped rather than finished.
  */
 export async function closeGitHubIssue(
   externalLink: ExternalLink,
   token: string,
+  reason: 'completed' | 'not_planned' = 'completed',
 ): Promise<GitHubIssue> {
   const parsed = parseExternalId(externalLink.externalId);
   if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
@@ -237,7 +244,7 @@ export async function closeGitHubIssue(
       method: 'PATCH',
       body: JSON.stringify({
         state: 'closed',
-        state_reason: 'completed',
+        state_reason: reason,
       }),
     },
   );

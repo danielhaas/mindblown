@@ -138,6 +138,36 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
 
 // ── Delete (with descendants) ──────────────────────────────────────
 
+/**
+ * Walk a node subtree (inclusive) and return all GitHub externalLinks with
+ * syncEnabled=true. Used to fire outbound closes before destructive deletes.
+ */
+export async function collectGitHubLinksInSubtree(
+  rootNodeId: string,
+): Promise<ExternalLink[]> {
+  const collected: ExternalLink[] = [];
+  const queue: string[] = [rootNodeId];
+  while (queue.length > 0) {
+    const currentId = queue.shift()!;
+    const [row] = await db
+      .select({ externalLinks: nodes.externalLinks })
+      .from(nodes)
+      .where(eq(nodes.id, currentId));
+    if (row) {
+      const links = (row.externalLinks as ExternalLink[]) ?? [];
+      for (const l of links) {
+        if (l.provider === 'github' && l.syncEnabled) collected.push(l);
+      }
+    }
+    const children = await db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(eq(nodes.parentId, currentId));
+    for (const c of children) queue.push(c.id);
+  }
+  return collected;
+}
+
 export async function deleteNode(nodeId: string): Promise<string[]> {
   // Get the node to find its parent
   const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
