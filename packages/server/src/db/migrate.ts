@@ -228,6 +228,13 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
+  // ── Add github_milestone_number to milestones ─────────────────
+  // Populated on import from GitHub so outbound milestone changes on a
+  // linked node can find the GitHub milestone number to PATCH.
+  await db.execute(sql`
+    ALTER TABLE milestones ADD COLUMN IF NOT EXISTS github_milestone_number INTEGER
+  `);
+
   // ── Add GitHub repo binding columns to maps ───────────────────
   await db.execute(sql`
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_installation_id TEXT

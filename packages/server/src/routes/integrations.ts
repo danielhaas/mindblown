@@ -295,13 +295,17 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // ── Create versions and milestones from GitHub milestones ────
       // Group by version prefix (e.g. "V1: 1a. Foo" → version "V1", milestone "Foo")
       // Collect unique milestones titles and their version prefix
-      const milestoneInfoMap = new Map<string, { version: string; functionalName: string }>();
+      const milestoneInfoMap = new Map<string, { version: string; functionalName: string; githubNumber: number | null }>();
       for (const item of importedIssues) {
         if (!item.milestoneTitle || milestoneInfoMap.has(item.milestoneTitle)) continue;
         const version = extractVersionFromMilestone(item.milestoneTitle) ?? 'Unversioned';
         // The functional name is already stripped via groupLabel, but we need the milestone's own name
         const functionalName = item.milestoneTitle.replace(/^V\d+:\s*\d+[a-z]?\.\s*/i, '') || item.milestoneTitle;
-        milestoneInfoMap.set(item.milestoneTitle, { version, functionalName });
+        milestoneInfoMap.set(item.milestoneTitle, {
+          version,
+          functionalName,
+          githubNumber: item.issue.milestone?.number ?? null,
+        });
       }
 
       // Create versions (deduplicated)
@@ -337,6 +341,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           .where(and(eq(milestones.workspaceId, workspaceId!), eq(milestones.name, info.functionalName)));
         if (existing.length > 0) {
           milestoneToId.set(msTitle, existing[0].id);
+          // Backfill githubMilestoneNumber if it wasn't set before — enables
+          // outbound milestone sync on milestones that were imported prior
+          // to this column existing.
+          if (info.githubNumber != null && existing[0].githubMilestoneNumber == null) {
+            await db.update(milestones)
+              .set({ githubMilestoneNumber: info.githubNumber })
+              .where(eq(milestones.id, existing[0].id));
+          }
         } else {
           const [newMs] = await db.insert(milestones).values({
             workspaceId: workspaceId!,
@@ -344,6 +356,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             name: info.functionalName,
             status: 'open',
             sortOrder: msSortOrder++,
+            githubMilestoneNumber: info.githubNumber,
           }).returning();
           milestoneToId.set(msTitle, newMs.id);
         }

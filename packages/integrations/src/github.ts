@@ -175,12 +175,18 @@ export async function createGitHubIssue(
 
 /**
  * Sync node changes to the linked GitHub Issue.
- * Updates title, body, state (open/closed), labels, and assignees.
+ * Updates title, body, state (open/closed), labels, and (optionally) milestone.
+ *
+ * milestoneNumber:
+ *   - number     → set the issue's milestone to that number
+ *   - null       → clear the issue's milestone
+ *   - undefined  → leave the issue's milestone untouched
  */
 export async function updateGitHubIssue(
   node: Node,
   externalLink: ExternalLink,
   token: string,
+  milestoneNumber?: number | null,
 ): Promise<GitHubIssue> {
   const parsed = parseExternalId(externalLink.externalId);
   if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
@@ -201,17 +207,22 @@ export async function updateGitHubIssue(
       ? JSON.stringify(node.description)
       : undefined;
 
+  const patchBody: Record<string, unknown> = {
+    title: node.text,
+    body,
+    state: isClosed ? 'closed' : 'open',
+    labels,
+  };
+  if (milestoneNumber !== undefined) {
+    patchBody.milestone = milestoneNumber;
+  }
+
   const updatedIssue = await githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
     token,
     {
       method: 'PATCH',
-      body: JSON.stringify({
-        title: node.text,
-        body,
-        state: isClosed ? 'closed' : 'open',
-        labels,
-      }),
+      body: JSON.stringify(patchBody),
     },
   );
 

@@ -3,6 +3,7 @@ import {
   uuid,
   text,
   real,
+  integer,
   boolean,
   jsonb,
   timestamp,
@@ -192,6 +193,7 @@ export const milestones = pgTable('milestones', {
   status: text('status').notNull().default('open'),
   targetDate: date('target_date'),
   sortOrder: real('sort_order').notNull().default(0),
+  githubMilestoneNumber: integer('github_milestone_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
