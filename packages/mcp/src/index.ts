@@ -698,6 +698,143 @@ server.tool(
 );
 
 server.tool(
+  'remaining_work',
+  'Report how much work is left for a node/subtree/version/milestone. Returns remaining effort, incomplete leaf count, weighted % done, and count of leaves with no estimate. Answers "how much is left?" — the basic MI question. Scope with one of nodeId (subtree), versionId, or milestoneId; omit all to report on the whole map.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().optional().describe('Scope to this node and its descendants'),
+    versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
+    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone (directly or via an ancestor)'),
+  },
+  async ({ mapId, nodeId, versionId, milestoneId }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+
+      // Walk ancestor chain for a given leaf, collecting version/milestone ids
+      // encountered along the way. Used for inherited-scope matching.
+      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+        const versions = new Set<string>();
+        const milestones = new Set<string>();
+        let cur = nodeById.get(leafId);
+        while (cur) {
+          if (cur.versionId) versions.add(cur.versionId);
+          if (cur.milestoneId) milestones.add(cur.milestoneId);
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return { versions, milestones };
+      };
+
+      // Collect the set of leaf ids in scope. Subtree scoping walks down from
+      // nodeId; version/milestone scoping filters across the whole map using
+      // inherited tags.
+      let leaves: typeof data.nodes;
+      let scopeLabel = 'whole map';
+
+      if (nodeId) {
+        const root = nodeById.get(nodeId);
+        if (!root) return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+        scopeLabel = `subtree of "${root.text}" (${nodeId})`;
+        const subtreeLeaves: typeof data.nodes = [];
+        const stack = [root];
+        while (stack.length) {
+          const n = stack.pop()!;
+          if ((n.childrenIds?.length ?? 0) === 0) {
+            subtreeLeaves.push(n);
+          } else {
+            for (const cid of n.childrenIds) {
+              const c = nodeById.get(cid);
+              if (c) stack.push(c);
+            }
+          }
+        }
+        leaves = subtreeLeaves;
+      } else {
+        leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      }
+
+      if (versionId) {
+        scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
+      }
+      if (milestoneId) {
+        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
+      }
+
+      if (leaves.length === 0) {
+        return toolResult(`No leaf nodes in scope (${scopeLabel}).`);
+      }
+
+      let totalEffort = 0;
+      let doneEffort = 0;
+      let remainingEffort = 0;
+      let completeLeaves = 0;
+      let incompleteLeaves = 0;
+      let noEstimateLeaves = 0;
+      const remainingDetails: Array<{ id: string; text: string; remaining: number; progress: number }> = [];
+
+      for (const leaf of leaves) {
+        const estimate = leaf.effortEstimate ?? 0;
+        const progress = leaf.percentComplete ?? 0;
+        if (leaf.effortEstimate == null) noEstimateLeaves++;
+        totalEffort += estimate;
+        doneEffort += estimate * (progress / 100);
+        const leafRemaining = estimate * (1 - progress / 100);
+        remainingEffort += leafRemaining;
+        if (progress >= 100) {
+          completeLeaves++;
+        } else {
+          incompleteLeaves++;
+          if (estimate > 0) {
+            remainingDetails.push({
+              id: leaf.id,
+              text: leaf.text,
+              remaining: leafRemaining,
+              progress,
+            });
+          }
+        }
+      }
+
+      const weightedPercent = totalEffort > 0 ? (doneEffort / totalEffort) * 100 : 0;
+      const unit = data.map.effortUnit ?? 'units';
+
+      const lines: string[] = [];
+      lines.push(`Remaining work — ${scopeLabel}`);
+      lines.push('');
+      lines.push(`Leaves in scope:     ${leaves.length}`);
+      lines.push(`  Complete:          ${completeLeaves}`);
+      lines.push(`  Incomplete:        ${incompleteLeaves}`);
+      lines.push(`  Without estimate:  ${noEstimateLeaves}${noEstimateLeaves > 0 ? ' ⚠' : ''}`);
+      lines.push('');
+      lines.push(`Total estimated:     ${totalEffort.toFixed(2)} ${unit}`);
+      lines.push(`Done:                ${doneEffort.toFixed(2)} ${unit}`);
+      lines.push(`Remaining:           ${remainingEffort.toFixed(2)} ${unit}`);
+      lines.push(`Weighted % done:     ${weightedPercent.toFixed(1)}%`);
+
+      if (remainingDetails.length > 0) {
+        lines.push('');
+        lines.push('Top 10 largest remaining items:');
+        const sorted = [...remainingDetails].sort((a, b) => b.remaining - a.remaining).slice(0, 10);
+        for (const item of sorted) {
+          lines.push(`  - ${item.remaining.toFixed(2)} ${unit} (${item.progress}% done) ${item.id} ${item.text}`);
+        }
+      }
+
+      if (noEstimateLeaves > 0) {
+        lines.push('');
+        lines.push(`⚠ ${noEstimateLeaves} leaf(s) in scope have no estimate — remaining total excludes them.`);
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'set_progress',
   'Set percent complete on a leaf node',
   {
