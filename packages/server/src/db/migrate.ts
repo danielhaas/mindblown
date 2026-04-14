@@ -228,6 +228,24 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
+  // ── Change Events (append-only mutation log) ───────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS change_events (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      node_id UUID,
+      user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+      event_type TEXT NOT NULL,
+      field_name TEXT,
+      old_value JSONB,
+      new_value JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_change_events_map_created ON change_events(map_id, created_at DESC)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_change_events_node ON change_events(node_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_change_events_event_type ON change_events(event_type)`);
+
   // ── Add github_milestone_number to milestones ─────────────────
   // Populated on import from GitHub so outbound milestone changes on a
   // linked node can find the GitHub milestone number to PATCH.

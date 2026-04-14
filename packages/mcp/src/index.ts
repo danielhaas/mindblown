@@ -1259,6 +1259,87 @@ server.tool(
 );
 
 server.tool(
+  'change_history',
+  'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, and field changes (estimate, progress, status, priority, dates, assignees, version/milestone/cycle). Filter by node, event type, field name, or a time window. Use this for "what changed since last review?" digests, audit trails, or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().optional().describe('Scope to a single node'),
+    eventType: z
+      .enum(['node.created', 'node.deleted', 'node.moved', 'node.field_changed'])
+      .optional()
+      .describe('Filter by event type'),
+    fieldName: z
+      .string()
+      .optional()
+      .describe('Filter by field name (only meaningful with eventType=node.field_changed)'),
+    sinceDays: z.number().int().min(1).optional().describe('Only events from the last N days'),
+    limit: z.number().int().min(1).max(1000).default(100).describe('Max events to return'),
+  },
+  async ({ mapId, nodeId, eventType, fieldName, sinceDays, limit }) => {
+    try {
+      const result = await api.getChangeHistory(mapId, {
+        nodeId,
+        eventType,
+        fieldName,
+        sinceDays,
+        limit,
+      });
+
+      if (result.events.length === 0) {
+        return toolResult(
+          `No change events found${nodeId ? ` for node ${nodeId}` : ''}${sinceDays ? ` in the last ${sinceDays} days` : ''}.`,
+        );
+      }
+
+      // Resolve node text from the current map for nicer output. Best-effort
+      // — deleted nodes won't be in the current map, so fall back to the id.
+      const data = await api.getMap(mapId).catch(() => null);
+      const nodeTextById = new Map<string, string>();
+      if (data) {
+        for (const n of data.nodes) nodeTextById.set(n.id, n.text);
+      }
+
+      const fmtValue = (v: unknown): string => {
+        if (v == null) return '∅';
+        if (typeof v === 'string') return JSON.stringify(v);
+        if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+        return JSON.stringify(v);
+      };
+
+      const lines: string[] = [];
+      lines.push(`Change history — ${result.events.length} event(s)`);
+      lines.push('');
+      for (const e of result.events) {
+        const when = e.createdAt.slice(0, 19).replace('T', ' ');
+        const nodeLabel = e.nodeId
+          ? `${nodeTextById.get(e.nodeId) ?? '(deleted)'} [${e.nodeId.slice(0, 8)}]`
+          : '(no node)';
+        if (e.eventType === 'node.field_changed') {
+          lines.push(
+            `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}`,
+          );
+        } else if (e.eventType === 'node.created') {
+          const newVal = e.newValue as { text?: string } | null;
+          lines.push(`${when}  created: "${newVal?.text ?? ''}"  — ${nodeLabel}`);
+        } else if (e.eventType === 'node.deleted') {
+          const oldVal = e.oldValue as { text?: string } | null;
+          lines.push(`${when}  deleted: "${oldVal?.text ?? ''}"  — ${e.nodeId?.slice(0, 8) ?? ''}`);
+        } else if (e.eventType === 'node.moved') {
+          const oldVal = e.oldValue as { parentId?: string } | null;
+          const newVal = e.newValue as { parentId?: string } | null;
+          lines.push(
+            `${when}  moved: parent ${oldVal?.parentId?.slice(0, 8) ?? '∅'} → ${newVal?.parentId?.slice(0, 8) ?? '∅'}  — ${nodeLabel}`,
+          );
+        }
+      }
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'set_progress',
   'Set percent complete on a leaf node',
   {

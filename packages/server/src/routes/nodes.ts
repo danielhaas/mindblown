@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import * as nodeDb from '../db/nodes.js';
 import { DependencyValidationError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
+import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { db } from '../db/connection.js';
 import { milestones } from '../db/schema.js';
@@ -107,6 +108,22 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // Broadcast to connected clients
     broadcast(req.params.id, { type: 'node:created', node });
 
+    // Change history (fire-and-forget)
+    events
+      .recordEvent({
+        mapId: req.params.id,
+        nodeId: node.id,
+        userId: req.userId ?? null,
+        eventType: 'node.created',
+        newValue: {
+          parentId: node.parentId,
+          text: node.text,
+          effortEstimate: node.effortEstimate ?? null,
+          priority: node.priority ?? null,
+        },
+      })
+      .catch(() => {});
+
     return reply.status(201).send(node);
   });
 
@@ -147,6 +164,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const body = req.body as nodeDb.UpdateNodeInput;
 
+      // Snapshot current values of tracked fields before mutating so we can
+      // diff them into the change log.
+      const before = await nodeDb.getNode(req.params.nodeId);
+
       let updated: CoreNode | null;
       try {
         updated = await nodeDb.updateNode(req.params.nodeId, body);
@@ -179,6 +200,14 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
       // Fire outbound GitHub sync (non-blocking)
       syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
+
+      // Change history (fire-and-forget): one event per tracked field that
+      // actually changed.
+      if (before) {
+        events
+          .recordFieldChanges(req.params.id, req.params.nodeId, req.userId ?? null, before, updated)
+          .catch(() => {});
+      }
 
       return reply.send(updated);
     },
@@ -236,6 +265,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       // "dropped, won't do" signal → close as not_planned, not completed.
       const linksToClose = await nodeDb.collectGitHubLinksInSubtree(req.params.nodeId);
 
+      // Snapshot the node text for the change log before it's gone.
+      const deletedBefore = await nodeDb.getNode(req.params.nodeId);
+
       const deletedIds = await nodeDb.deleteNode(req.params.nodeId);
       if (deletedIds.length === 0) {
         return reply.status(404).send({
@@ -248,6 +280,22 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         nodeId: req.params.nodeId,
         deletedIds,
       });
+
+      // Change history (fire-and-forget): one event per deleted node id.
+      for (const id of deletedIds) {
+        events
+          .recordEvent({
+            mapId: req.params.id,
+            nodeId: id,
+            userId: req.userId ?? null,
+            eventType: 'node.deleted',
+            oldValue:
+              id === req.params.nodeId && deletedBefore
+                ? { text: deletedBefore.text, parentId: deletedBefore.parentId }
+                : null,
+          })
+          .catch(() => {});
+      }
 
       // Fire-and-forget close of linked GitHub issues. Best-effort — if
       // GitHub is down or the integration isn't configured, the delete in
@@ -285,6 +333,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      const beforeMove = await nodeDb.getNode(req.params.nodeId);
       const moved = await nodeDb.moveNode(
         req.params.nodeId,
         body.newParentId,
@@ -304,7 +353,41 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         position: body.position,
       });
 
+      if (beforeMove && beforeMove.parentId !== body.newParentId) {
+        events
+          .recordEvent({
+            mapId: req.params.id,
+            nodeId: req.params.nodeId,
+            userId: req.userId ?? null,
+            eventType: 'node.moved',
+            oldValue: { parentId: beforeMove.parentId },
+            newValue: { parentId: body.newParentId },
+          })
+          .catch(() => {});
+      }
+
       return reply.send(moved);
     },
   );
+
+  // ── GET /api/maps/:mapId/changes — Query the change log ─────
+  app.get<{
+    Params: { id: string };
+    Querystring: { nodeId?: string; eventType?: string; fieldName?: string; sinceDays?: string; limit?: string };
+  }>('/api/maps/:id/changes', async (req, reply) => {
+    const { nodeId, eventType, fieldName, sinceDays, limit } = req.query;
+    const since =
+      sinceDays && !Number.isNaN(Number(sinceDays))
+        ? new Date(Date.now() - Number(sinceDays) * 86_400_000)
+        : undefined;
+    const rows = await events.listEvents({
+      mapId: req.params.id,
+      nodeId,
+      eventType: eventType as events.EventType | undefined,
+      fieldName,
+      since,
+      limit: limit ? Math.min(1000, Math.max(1, Number(limit))) : 200,
+    });
+    return reply.send({ events: rows });
+  });
 }

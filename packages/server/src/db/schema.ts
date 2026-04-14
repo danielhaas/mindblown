@@ -197,6 +197,24 @@ export const milestones = pgTable('milestones', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Change Events ─────────────────────────────────────────────────
+// Append-only log of node mutations — the substrate for burnup, status
+// digest, and any other "what changed since X" feature. Writes happen
+// fire-and-forget from the write routes so a logging failure never takes
+// down a mutation.
+
+export const changeEvents = pgTable('change_events', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  nodeId: uuid('node_id'), // null for 'map.*' events, kept for deleted nodes
+  userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
+  eventType: text('event_type').notNull(), // 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed'
+  fieldName: text('field_name'), // set when eventType = 'node.field_changed'
+  oldValue: jsonb('old_value'),
+  newValue: jsonb('new_value'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Cycles ─────────────────────────────────────────────────────────
 
 export const cycles = pgTable('cycles', {

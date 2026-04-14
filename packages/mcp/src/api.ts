@@ -396,6 +396,34 @@ export function getGitHubSyncOverview(
   return request(`/api/maps/${mapId}/github/sync-overview${qs}`);
 }
 
+// ── Change history ────────────────────────────────────────────
+
+export interface ChangeEvent {
+  id: string;
+  mapId: string;
+  nodeId: string | null;
+  userId: string | null;
+  eventType: 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed';
+  fieldName: string | null;
+  oldValue: unknown;
+  newValue: unknown;
+  createdAt: string;
+}
+
+export function getChangeHistory(
+  mapId: string,
+  opts: { nodeId?: string; eventType?: string; fieldName?: string; sinceDays?: number; limit?: number } = {},
+): Promise<{ events: ChangeEvent[] }> {
+  const params = new URLSearchParams();
+  if (opts.nodeId) params.set('nodeId', opts.nodeId);
+  if (opts.eventType) params.set('eventType', opts.eventType);
+  if (opts.fieldName) params.set('fieldName', opts.fieldName);
+  if (opts.sinceDays != null) params.set('sinceDays', String(opts.sinceDays));
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<{ events: ChangeEvent[] }>(`/api/maps/${mapId}/changes${qs ? `?${qs}` : ''}`);
+}
+
 // ── Versions ──────────────────────────────────────────────────
 
 export function listVersions(workspaceId: string): Promise<VersionInfo[]> {
