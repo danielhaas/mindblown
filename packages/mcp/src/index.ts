@@ -1259,6 +1259,153 @@ server.tool(
 );
 
 server.tool(
+  'burnup',
+  'Burnup / scope-creep detector over a time window. Reports current scope and completed effort, plus the flow through the window: scope added, scope removed, effort completed — per day and in total. Flags when scope is growing faster than completion. Uses change_events, so only shows flow since the change-history feature was deployed.',
+  {
+    mapId: z.string().describe('The map ID'),
+    sinceDays: z.number().int().min(1).max(365).default(14).describe('Look-back window in days'),
+    showDaily: z.boolean().default(true).describe('Include the daily breakdown table'),
+  },
+  async ({ mapId, sinceDays, showDaily }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+
+      // Current cumulative totals
+      let currentScope = 0;
+      let currentCompleted = 0;
+      const estimateById = new Map<string, number>();
+      for (const l of leaves) {
+        const est = l.effortEstimate ?? 0;
+        const prog = l.percentComplete ?? 0;
+        currentScope += est;
+        currentCompleted += est * (prog / 100);
+        estimateById.set(l.id, est);
+      }
+
+      const { events: rawEvents } = await api.getChangeHistory(mapId, {
+        sinceDays,
+        limit: 1000,
+      });
+      // getChangeHistory returns desc — walk ascending for intuitive daily flow.
+      const eventsAsc = [...rawEvents].reverse();
+
+      type Bucket = { scopeAdded: number; scopeRemoved: number; completed: number; eventCount: number };
+      const buckets = new Map<string, Bucket>();
+      const bump = (day: string, key: keyof Bucket, val: number) => {
+        let b = buckets.get(day);
+        if (!b) {
+          b = { scopeAdded: 0, scopeRemoved: 0, completed: 0, eventCount: 0 };
+          buckets.set(day, b);
+        }
+        b[key] += val;
+      };
+
+      for (const e of eventsAsc) {
+        const day = e.createdAt.slice(0, 10);
+        bump(day, 'eventCount', 1);
+
+        if (e.eventType === 'node.created') {
+          const nv = e.newValue as { effortEstimate?: number | null } | null;
+          const est = nv?.effortEstimate ?? 0;
+          if (est > 0) bump(day, 'scopeAdded', est);
+        } else if (e.eventType === 'node.deleted') {
+          const ov = e.oldValue as {
+            effortEstimate?: number | null;
+            percentComplete?: number | null;
+            isLeaf?: boolean;
+          } | null;
+          if (ov?.isLeaf && ov.effortEstimate != null) {
+            bump(day, 'scopeRemoved', ov.effortEstimate);
+          }
+        } else if (e.eventType === 'node.field_changed') {
+          if (e.fieldName === 'effortEstimate') {
+            const oldEst = Number(e.oldValue ?? 0);
+            const newEst = Number(e.newValue ?? 0);
+            const delta = newEst - oldEst;
+            if (delta > 0) bump(day, 'scopeAdded', delta);
+            else if (delta < 0) bump(day, 'scopeRemoved', -delta);
+          } else if (e.fieldName === 'percentComplete') {
+            const oldProg = Number(e.oldValue ?? 0);
+            const newProg = Number(e.newValue ?? 0);
+            const deltaProg = newProg - oldProg;
+            // Use current estimate as a proxy — for v1, cross-time estimate
+            // drift is rare enough to ignore.
+            const est = e.nodeId ? (estimateById.get(e.nodeId) ?? 0) : 0;
+            if (est > 0) bump(day, 'completed', est * (deltaProg / 100));
+          }
+        }
+      }
+
+      let totalScopeAdded = 0;
+      let totalScopeRemoved = 0;
+      let totalCompleted = 0;
+      for (const b of buckets.values()) {
+        totalScopeAdded += b.scopeAdded;
+        totalScopeRemoved += b.scopeRemoved;
+        totalCompleted += b.completed;
+      }
+      const netScope = totalScopeAdded - totalScopeRemoved;
+
+      const unit = data.map.effortUnit ?? 'units';
+      const pct = currentScope > 0 ? (currentCompleted / currentScope) * 100 : 0;
+
+      const lines: string[] = [];
+      lines.push(`Burnup — ${sinceDays} day window`);
+      lines.push('');
+      lines.push(`Current scope:     ${currentScope.toFixed(2)} ${unit}`);
+      lines.push(`Current completed: ${currentCompleted.toFixed(2)} ${unit} (${pct.toFixed(1)}%)`);
+      lines.push('');
+      lines.push(`## Flow through window`);
+      lines.push(`Scope added:       +${totalScopeAdded.toFixed(2)} ${unit}`);
+      lines.push(`Scope removed:     -${totalScopeRemoved.toFixed(2)} ${unit}`);
+      lines.push(`Net scope change:  ${netScope >= 0 ? '+' : ''}${netScope.toFixed(2)} ${unit}`);
+      lines.push(`Effort completed:  ${totalCompleted.toFixed(2)} ${unit}`);
+      lines.push('');
+
+      const addRate = totalScopeAdded / sinceDays;
+      const completionRate = totalCompleted / sinceDays;
+      lines.push(`Scope-add rate:    ${addRate.toFixed(2)} ${unit}/day`);
+      lines.push(`Completion rate:   ${completionRate.toFixed(2)} ${unit}/day`);
+
+      if (totalScopeAdded > 0 || totalCompleted > 0) {
+        if (totalScopeAdded === 0 && totalCompleted > 0) {
+          lines.push(`✓ All flow was completion — no new scope added`);
+        } else if (totalScopeAdded > 0 && totalCompleted >= totalScopeAdded) {
+          lines.push(`✓ Completion keeping pace with scope growth (${(totalCompleted / totalScopeAdded).toFixed(2)}x)`);
+        } else if (totalScopeAdded > 0 && totalCompleted < totalScopeAdded) {
+          lines.push(
+            `⚠ Scope growing faster than completion (${(totalCompleted / totalScopeAdded).toFixed(2)}x) — possible scope creep`,
+          );
+        }
+      }
+
+      if (showDaily) {
+        lines.push('');
+        lines.push(`## Daily detail`);
+        const sortedDays = [...buckets.keys()].sort();
+        if (sortedDays.length === 0) {
+          lines.push(`(no change events in the last ${sinceDays} days)`);
+        } else {
+          lines.push('day         |  +scope  -scope | completed | events');
+          lines.push('------------|----------------:|----------:|-------:');
+          for (const d of sortedDays) {
+            const b = buckets.get(d)!;
+            lines.push(
+              `${d}  | ${('+' + b.scopeAdded.toFixed(2)).padStart(7)} ${('-' + b.scopeRemoved.toFixed(2)).padStart(7)} | ${b.completed.toFixed(2).padStart(9)} | ${String(b.eventCount).padStart(6)}`,
+            );
+          }
+        }
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'change_history',
   'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, and field changes (estimate, progress, status, priority, dates, assignees, version/milestone/cycle). Filter by node, event type, field name, or a time window. Use this for "what changed since last review?" digests, audit trails, or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
   {

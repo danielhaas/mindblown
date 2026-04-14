@@ -282,6 +282,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       });
 
       // Change history (fire-and-forget): one event per deleted node id.
+      // Snapshot enough state on the primary (root of deleted subtree) so
+      // burnup can reconstruct scope/completed: text, parentId, estimate,
+      // progress. Secondary deletions are logged without state — they're
+      // only used for audit, not scope math.
       for (const id of deletedIds) {
         events
           .recordEvent({
@@ -291,7 +295,13 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
             eventType: 'node.deleted',
             oldValue:
               id === req.params.nodeId && deletedBefore
-                ? { text: deletedBefore.text, parentId: deletedBefore.parentId }
+                ? {
+                    text: deletedBefore.text,
+                    parentId: deletedBefore.parentId,
+                    effortEstimate: deletedBefore.effortEstimate ?? null,
+                    percentComplete: deletedBefore.percentComplete ?? null,
+                    isLeaf: (deletedBefore.childrenIds?.length ?? 0) === 0,
+                  }
                 : null,
           })
           .catch(() => {});
