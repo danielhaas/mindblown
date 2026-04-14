@@ -1045,6 +1045,220 @@ server.tool(
 );
 
 server.tool(
+  'risk_scan',
+  'Surface project risks across a map/subtree/version/milestone: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().optional().describe('Scope to this node and its descendants'),
+    versionId: z.string().optional().describe('Scope to leaves tagged with this version'),
+    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone'),
+    stalledDays: z.number().int().min(1).default(7).describe('Days since last update before in-progress work is flagged as stalled (default 7)'),
+  },
+  async ({ mapId, nodeId, versionId, milestoneId, stalledDays }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+
+      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+        const versions = new Set<string>();
+        const milestones = new Set<string>();
+        let cur = nodeById.get(leafId);
+        while (cur) {
+          if (cur.versionId) versions.add(cur.versionId);
+          if (cur.milestoneId) milestones.add(cur.milestoneId);
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return { versions, milestones };
+      };
+
+      let leaves: typeof data.nodes;
+      let scopeLabel = 'whole map';
+      if (nodeId) {
+        const root = nodeById.get(nodeId);
+        if (!root) return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+        scopeLabel = `subtree of "${root.text}" (${nodeId})`;
+        const subtreeLeaves: typeof data.nodes = [];
+        const stack = [root];
+        while (stack.length) {
+          const n = stack.pop()!;
+          if ((n.childrenIds?.length ?? 0) === 0) {
+            subtreeLeaves.push(n);
+          } else {
+            for (const cid of n.childrenIds) {
+              const c = nodeById.get(cid);
+              if (c) stack.push(c);
+            }
+          }
+        }
+        leaves = subtreeLeaves;
+      } else {
+        leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      }
+      if (versionId) {
+        scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
+      }
+      if (milestoneId) {
+        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
+      }
+
+      if (leaves.length === 0) {
+        return toolResult(`No leaf nodes in scope (${scopeLabel}).`);
+      }
+
+      // Which status ids mean "in progress"?
+      const inProgressStatusIds = new Set(
+        (data.map.statusWorkflow ?? [])
+          .filter((s) => s.category === 'in_progress')
+          .map((s) => s.id),
+      );
+      const isInProgress = (n: typeof leaves[number]) =>
+        n.status != null && inProgressStatusIds.has(n.status);
+
+      const staleCutoff = Date.now() - stalledDays * 86_400_000;
+
+      // ── Risk buckets ──
+      const stalled: typeof leaves = [];
+      const noEstimate: typeof leaves = [];
+      const overruns: Array<{ node: typeof leaves[number]; ratio: number }> = [];
+      const unassignedHighPrio: typeof leaves = [];
+
+      for (const leaf of leaves) {
+        if ((leaf.percentComplete ?? 0) >= 100) continue; // only risks on incomplete work
+
+        if (isInProgress(leaf) && new Date(leaf.updatedAt).getTime() < staleCutoff) {
+          stalled.push(leaf);
+        }
+        if (leaf.effortEstimate == null) {
+          noEstimate.push(leaf);
+        }
+        if (
+          leaf.effortEstimate != null &&
+          leaf.effortEstimate > 0 &&
+          leaf.actualEffort != null &&
+          leaf.actualEffort > leaf.effortEstimate * 1.2
+        ) {
+          overruns.push({ node: leaf, ratio: leaf.actualEffort / leaf.effortEstimate });
+        }
+        if (
+          (leaf.priority === 'P0' || leaf.priority === 'P1') &&
+          (leaf.assigneeIds?.length ?? 0) === 0
+        ) {
+          unassignedHighPrio.push(leaf);
+        }
+      }
+
+      // ── Fragile critical path: CP leaves that also appear in any risk bucket ──
+      let cpIds = new Set<string>();
+      try {
+        const sched = await api.getSchedule(mapId);
+        cpIds = new Set(sched.criticalPath?.path ?? []);
+      } catch {
+        /* best-effort — no CP if scheduler fails */
+      }
+      const cpScopedLeaves = leaves.filter((l) => cpIds.has(l.id));
+      const riskIds = new Set<string>([
+        ...stalled.map((n) => n.id),
+        ...noEstimate.map((n) => n.id),
+        ...overruns.map((o) => o.node.id),
+        ...unassignedHighPrio.map((n) => n.id),
+      ]);
+      const fragileCP = cpScopedLeaves.filter(
+        (l) => riskIds.has(l.id) || l.healthSignal === 'behind' || l.healthSignal === 'at_risk',
+      );
+
+      // ── Format ──
+      const unit = data.map.effortUnit ?? 'units';
+      const fmtNode = (n: typeof leaves[number]) => {
+        const bits: string[] = [`${n.id} ${n.text}`];
+        if (n.priority) bits.push(`[${n.priority}]`);
+        if (n.status) {
+          const s = data.map.statusWorkflow?.find((s) => s.id === n.status);
+          bits.push(`(${s?.name ?? n.status})`);
+        }
+        return bits.join(' ');
+      };
+
+      const totalRisks =
+        stalled.length + noEstimate.length + overruns.length + unassignedHighPrio.length + fragileCP.length;
+
+      const lines: string[] = [];
+      lines.push(`Risk scan — ${scopeLabel}`);
+      lines.push(`Incomplete leaves: ${leaves.filter((l) => (l.percentComplete ?? 0) < 100).length} / ${leaves.length}`);
+      lines.push(`Total risk flags:  ${totalRisks}`);
+      lines.push('');
+
+      lines.push(`## Stalled WIP (in-progress, no update in ${stalledDays}+ days): ${stalled.length}`);
+      if (stalled.length === 0) {
+        lines.push('  ✓ None');
+      } else {
+        for (const n of stalled.slice(0, 20)) {
+          const daysSince = Math.floor((Date.now() - new Date(n.updatedAt).getTime()) / 86_400_000);
+          lines.push(`  - ${fmtNode(n)} — ${daysSince}d since update`);
+        }
+        if (stalled.length > 20) lines.push(`  … and ${stalled.length - 20} more`);
+      }
+      lines.push('');
+
+      lines.push(`## No-estimate leaves: ${noEstimate.length}`);
+      if (noEstimate.length === 0) {
+        lines.push('  ✓ None');
+      } else {
+        for (const n of noEstimate.slice(0, 20)) {
+          lines.push(`  - ${fmtNode(n)}`);
+        }
+        if (noEstimate.length > 20) lines.push(`  … and ${noEstimate.length - 20} more`);
+      }
+      lines.push('');
+
+      lines.push(`## Overruns (actual > 1.2× estimate, still incomplete): ${overruns.length}`);
+      if (overruns.length === 0) {
+        lines.push('  ✓ None');
+      } else {
+        const sorted = [...overruns].sort((a, b) => b.ratio - a.ratio);
+        for (const { node, ratio } of sorted.slice(0, 20)) {
+          lines.push(
+            `  - ${fmtNode(node)} — est ${node.effortEstimate} ${unit}, actual ${node.actualEffort} ${unit} (${ratio.toFixed(2)}x)`,
+          );
+        }
+        if (sorted.length > 20) lines.push(`  … and ${sorted.length - 20} more`);
+      }
+      lines.push('');
+
+      lines.push(`## Unassigned P0/P1 leaves: ${unassignedHighPrio.length}`);
+      if (unassignedHighPrio.length === 0) {
+        lines.push('  ✓ None');
+      } else {
+        for (const n of unassignedHighPrio.slice(0, 20)) {
+          lines.push(`  - ${fmtNode(n)}`);
+        }
+        if (unassignedHighPrio.length > 20) lines.push(`  … and ${unassignedHighPrio.length - 20} more`);
+      }
+      lines.push('');
+
+      lines.push(`## Fragile critical path (CP leaves with risks or poor health): ${fragileCP.length}`);
+      if (fragileCP.length === 0) {
+        lines.push(
+          cpIds.size === 0
+            ? '  (scheduler returned no critical path)'
+            : '  ✓ None',
+        );
+      } else {
+        for (const n of fragileCP.slice(0, 20)) {
+          lines.push(`  - ${fmtNode(n)} — health ${n.healthSignal}`);
+        }
+        if (fragileCP.length > 20) lines.push(`  … and ${fragileCP.length - 20} more`);
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'set_progress',
   'Set percent complete on a leaf node',
   {
