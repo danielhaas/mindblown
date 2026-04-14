@@ -51,6 +51,9 @@ importers:
       '@mindblown/core':
         specifier: workspace:*
         version: link:../core
+      '@mindblown/tool-kit':
+        specifier: workspace:*
+        version: link:../tool-kit
       '@modelcontextprotocol/sdk':
         specifier: ^1.12.1
         version: 1.29.0(zod@3.25.76)
@@ -113,6 +116,9 @@ importers:
       '@mindblown/integrations':
         specifier: workspace:*
         version: link:../integrations
+      '@mindblown/tool-kit':
+        specifier: workspace:*
+        version: link:../tool-kit
       drizzle-orm:
         specifier: ^0.39.3
         version: 0.39.3(@types/pg@8.20.0)(pg@8.20.0)
@@ -141,6 +147,22 @@ importers:
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
+      typescript:
+        specifier: ^5.7.0
+        version: 5.9.3
+
+  packages/tool-kit:
+    dependencies:
+      '@mindblown/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.25.0
+        version: 3.25.76
+      zod-to-json-schema:
+        specifier: ^3.25.0
+        version: 3.25.2(zod@3.25.76)
+    devDependencies:
       typescript:
         specifier: ^5.7.0
         version: 5.9.3

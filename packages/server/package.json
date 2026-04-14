@@ -25,6 +25,7 @@
     "@fastify/websocket": "^11.0.2",
     "@mindblown/core": "workspace:*",
     "@mindblown/integrations": "workspace:*",
+    "@mindblown/tool-kit": "workspace:*",
     "drizzle-orm": "^0.39.3",
     "fastify": "^5.2.2",
     "jsonwebtoken": "^9.0.2",

@@ -227,15 +227,17 @@ function formatToolArgs(tc: { name: string; args: Record<string, unknown> }): st
 }
 
 function formatToolResult(name: string, result: unknown): string {
+  // Shared tool layer returns plain-text strings. Truncate long payloads
+  // (e.g. get_map) so the chat card stays compact; full text still flows
+  // back to the model in the tool_call message history.
+  if (typeof result === 'string') {
+    if (name === 'get_map') return 'Loaded map structure';
+    const firstLine = result.split('\n')[0] ?? result;
+    return firstLine.length > 120 ? `${firstLine.slice(0, 117)}...` : firstLine;
+  }
   if (!result || typeof result !== 'object') return String(result);
   const r = result as Record<string, unknown>;
   if (r.error) return `Error: ${r.error}`;
-  if (r.created) return `Created: ${(r.created as any).text}`;
-  if (r.updated) return `Updated: ${(r.updated as any).text}`;
-  if (r.moved) return `Moved: ${(r.moved as any).text}`;
-  if (r.deleted) return `Deleted ${r.deleted} node(s)`;
-  if (r.matches) return `Found ${(r.matches as any[]).length} node(s)`;
-  if (name === 'get_map') return 'Loaded map structure';
   return JSON.stringify(result).slice(0, 100);
 }
 

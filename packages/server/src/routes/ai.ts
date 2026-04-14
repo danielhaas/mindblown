@@ -384,12 +384,12 @@ Rules:
           try {
             result = await executeTool(fnName, fnArgs, { userId, mapId: body.mapId });
           } catch (err: any) {
-            result = JSON.stringify({ error: err.message });
+            result = `Error: ${err.message}`;
           }
 
           if (MUTATING_TOOLS.has(fnName)) mutationDone = true;
 
-          send('tool_result', { id: tc.id, name: fnName, result: JSON.parse(result) });
+          send('tool_result', { id: tc.id, name: fnName, result });
 
           // Feed the tool result back to the model
           messages.push({
