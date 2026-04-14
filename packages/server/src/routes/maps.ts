@@ -1,10 +1,88 @@
 import type { FastifyInstance } from 'fastify';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
-import type { ScheduleConstraint, NodeId } from '@mindblown/core';
+import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import { db } from '../db/connection.js';
 import { workspaces, users } from '../db/schema.js';
+
+interface MapProjection {
+  totalScope: number;
+  totalDone: number;
+  totalRemaining: number;
+  weightedProgress: number;
+  leafCount: number;
+  noEstimateCount: number;
+  plannedFinishDate: string | null;
+  plannedFinishOffsetDays: number | null;
+}
+
+/**
+ * Pure-function projection of a map's totals + planned finish. Used by the
+ * scope_simulate endpoint to compute before/after snapshots without
+ * persisting anything.
+ */
+function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
+  const leaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+  let totalScope = 0;
+  let totalDone = 0;
+  let noEstimateCount = 0;
+  for (const l of leaves) {
+    if (l.effortEstimate == null) noEstimateCount++;
+    const est = l.effortEstimate ?? 0;
+    const prog = l.percentComplete ?? 0;
+    totalScope += est;
+    totalDone += est * (prog / 100);
+  }
+  const totalRemaining = totalScope - totalDone;
+  const weightedProgress = totalScope > 0 ? (totalDone / totalScope) * 100 : 0;
+
+  // Planned finish via the scheduler (mirrors the schedule endpoint).
+  let plannedFinishOffsetDays: number | null = null;
+  let plannedFinishDate: string | null = null;
+  try {
+    const projectStartDate = map.projectStartDate
+      ? new Date(map.projectStartDate)
+      : new Date(new Date().toISOString().slice(0, 10));
+    projectStartDate.setUTCHours(0, 0, 0, 0);
+    const unitsPerDay = map.effortUnit === 'hours' ? (map.hoursPerDay ?? 8) : 1;
+    const MS_PER_DAY = 86_400_000;
+    const toDayOffset = (isoDate: string): number => {
+      const d = new Date(isoDate);
+      d.setUTCHours(0, 0, 0, 0);
+      const calendarDays = Math.round((d.getTime() - projectStartDate.getTime()) / MS_PER_DAY);
+      return calendarDays * unitsPerDay;
+    };
+    const constraints = new Map<NodeId, ScheduleConstraint>();
+    for (const n of nodes) {
+      const pin: ScheduleConstraint = {};
+      if (n.startDate) pin.minStart = toDayOffset(n.startDate);
+      if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
+      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+        constraints.set(n.id, pin);
+      }
+    }
+    const scheduled = schedule(nodes, 0, constraints);
+    const maxEnd = scheduled.reduce((m, s) => Math.max(m, s.computedEnd), 0);
+    plannedFinishOffsetDays = maxEnd / unitsPerDay;
+    const finish = new Date(projectStartDate.getTime());
+    finish.setUTCDate(finish.getUTCDate() + Math.ceil(plannedFinishOffsetDays));
+    plannedFinishDate = finish.toISOString().slice(0, 10);
+  } catch {
+    /* scheduler errors out on circular deps etc — leave null */
+  }
+
+  return {
+    totalScope,
+    totalDone,
+    totalRemaining,
+    weightedProgress,
+    leafCount: leaves.length,
+    noEstimateCount,
+    plannedFinishDate,
+    plannedFinishOffsetDays,
+  };
+}
 
 export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps — Create a map ─────────────────────────────
@@ -179,6 +257,131 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
     return reply.status(201).send(updated);
+  });
+
+  // ── POST /api/maps/:id/simulate — Scope-simulation what-if ────
+  // Apply a list of patches to an in-memory copy of the map's nodes and
+  // return before/after totals + planned finish dates. No persistence.
+  app.post<{ Params: { id: string } }>('/api/maps/:id/simulate', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+    const body = req.body as {
+      patches: Array<
+        | { action: 'remove'; nodeId: string }
+        | { action: 'add'; parentId: string; text: string; effortEstimate: number; dueDate?: string | null }
+        | {
+            action: 'update';
+            nodeId: string;
+            effortEstimate?: number | null;
+            startDate?: string | null;
+            dueDate?: string | null;
+            percentComplete?: number | null;
+          }
+      >;
+    };
+    if (!Array.isArray(body?.patches)) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'patches array is required' },
+      });
+    }
+
+    // Compute "before" projection from the live state
+    const before = projectMap(data.nodes, data.map);
+
+    // Apply patches to a deep-cloned node list
+    const cloned: typeof data.nodes = data.nodes.map((n) => ({
+      ...n,
+      childrenIds: [...(n.childrenIds ?? [])],
+      dependencies: [...(n.dependencies ?? [])],
+      assigneeIds: [...(n.assigneeIds ?? [])],
+      tags: [...(n.tags ?? [])],
+      externalLinks: [...(n.externalLinks ?? [])],
+    }));
+    const byId = new Map(cloned.map((n) => [n.id, n]));
+
+    const removeSubtree = (rootId: string) => {
+      const removed = new Set<string>();
+      const stack = [rootId];
+      while (stack.length) {
+        const id = stack.pop()!;
+        if (removed.has(id)) continue;
+        removed.add(id);
+        const n = byId.get(id);
+        if (n) for (const cid of n.childrenIds ?? []) stack.push(cid);
+      }
+      // Remove from parent's childrenIds
+      const root = byId.get(rootId);
+      if (root?.parentId) {
+        const parent = byId.get(root.parentId);
+        if (parent) parent.childrenIds = parent.childrenIds.filter((c) => !removed.has(c));
+      }
+      // Remove from the array
+      for (let i = cloned.length - 1; i >= 0; i--) {
+        if (removed.has(cloned[i].id)) cloned.splice(i, 1);
+      }
+      for (const id of removed) byId.delete(id);
+    };
+
+    let nextSimId = 0;
+    const newSimId = () => `sim-${++nextSimId}`;
+
+    for (const p of body.patches) {
+      if (p.action === 'remove') {
+        if (byId.has(p.nodeId)) removeSubtree(p.nodeId);
+      } else if (p.action === 'add') {
+        const parent = byId.get(p.parentId);
+        if (!parent) continue;
+        const id = newSimId();
+        const now = new Date().toISOString();
+        const stub: CoreNode = {
+          id,
+          mapId: data.map.id,
+          parentId: parent.id,
+          childrenIds: [],
+          text: p.text,
+          description: null,
+          x: null,
+          y: null,
+          collapsed: false,
+          effortEstimate: p.effortEstimate,
+          actualEffort: null,
+          percentComplete: null,
+          status: null,
+          assigneeIds: [],
+          priority: null,
+          dueDate: p.dueDate ?? null,
+          startDate: null,
+          tags: [],
+          customFields: {},
+          dependencies: [],
+          isMilestone: false,
+          versionId: null,
+          milestoneId: null,
+          cycleId: null,
+          externalLinks: [],
+          createdAt: now,
+          updatedAt: now,
+          createdBy: parent.createdBy,
+        };
+        cloned.push(stub);
+        byId.set(id, stub);
+        parent.childrenIds.push(id);
+      } else if (p.action === 'update') {
+        const n = byId.get(p.nodeId);
+        if (!n) continue;
+        if (p.effortEstimate !== undefined) n.effortEstimate = p.effortEstimate;
+        if (p.startDate !== undefined) n.startDate = p.startDate;
+        if (p.dueDate !== undefined) n.dueDate = p.dueDate;
+        if (p.percentComplete !== undefined) n.percentComplete = p.percentComplete;
+      }
+    }
+
+    const after = projectMap(cloned, data.map);
+    return reply.send({ before, after });
   });
 
   // ── GET /api/maps/:id/schedule — Computed schedule + critical path

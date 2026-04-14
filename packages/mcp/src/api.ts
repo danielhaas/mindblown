@@ -396,6 +396,41 @@ export function getGitHubSyncOverview(
   return request(`/api/maps/${mapId}/github/sync-overview${qs}`);
 }
 
+// ── Scope simulation ──────────────────────────────────────────
+
+export type SimulationPatch =
+  | { action: 'remove'; nodeId: string }
+  | { action: 'add'; parentId: string; text: string; effortEstimate: number; dueDate?: string | null }
+  | {
+      action: 'update';
+      nodeId: string;
+      effortEstimate?: number | null;
+      startDate?: string | null;
+      dueDate?: string | null;
+      percentComplete?: number | null;
+    };
+
+export interface MapProjection {
+  totalScope: number;
+  totalDone: number;
+  totalRemaining: number;
+  weightedProgress: number;
+  leafCount: number;
+  noEstimateCount: number;
+  plannedFinishDate: string | null;
+  plannedFinishOffsetDays: number | null;
+}
+
+export function simulateMap(
+  mapId: string,
+  patches: SimulationPatch[],
+): Promise<{ before: MapProjection; after: MapProjection }> {
+  return request(`/api/maps/${mapId}/simulate`, {
+    method: 'POST',
+    body: JSON.stringify({ patches }),
+  });
+}
+
 // ── Change history ────────────────────────────────────────────
 
 export interface ChangeEvent {

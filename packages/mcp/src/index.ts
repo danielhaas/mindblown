@@ -1259,6 +1259,349 @@ server.tool(
 );
 
 server.tool(
+  'alert_digest',
+  'Generate a markdown alert digest for push delivery (email/slack/webhook). Reports threshold-triggered alerts only: milestones past target, scoped finish dates slipping past target, P0 nodes that are behind, and unassigned P0/P1 leaves. Returns nothing if no alerts. Pipe the output to your delivery channel of choice — MindBlown does not send the message itself.',
+  {
+    mapId: z.string().describe('The map ID'),
+  },
+  async ({ mapId }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      const today = new Date().toISOString().slice(0, 10);
+
+      // Slipped milestones: targetDate < today AND any contributing leaf incomplete
+      const milestones = await api.listMilestones(data.map.workspaceId).catch(() => []);
+      const slippedMilestones: Array<{ name: string; targetDate: string; incomplete: number }> = [];
+      for (const m of milestones) {
+        if (!m.targetDate) continue;
+        if (m.targetDate.slice(0, 10) >= today) continue;
+        const contributing = leaves.filter((l) => l.milestoneId === m.id && (l.percentComplete ?? 0) < 100);
+        if (contributing.length > 0) {
+          slippedMilestones.push({
+            name: m.name,
+            targetDate: m.targetDate.slice(0, 10),
+            incomplete: contributing.length,
+          });
+        }
+      }
+
+      // Slipped versions: same logic
+      const versions = await api.listVersions(data.map.workspaceId).catch(() => []);
+      const slippedVersions: Array<{ name: string; targetDate: string; incomplete: number }> = [];
+      for (const v of versions) {
+        if (!v.targetDate) continue;
+        if (v.targetDate.slice(0, 10) >= today) continue;
+        const contributing = leaves.filter((l) => l.versionId === v.id && (l.percentComplete ?? 0) < 100);
+        if (contributing.length > 0) {
+          slippedVersions.push({
+            name: v.name,
+            targetDate: v.targetDate.slice(0, 10),
+            incomplete: contributing.length,
+          });
+        }
+      }
+
+      // P0 nodes that are behind
+      const p0Behind = leaves.filter(
+        (n) => n.priority === 'P0' && n.healthSignal === 'behind' && (n.percentComplete ?? 0) < 100,
+      );
+
+      // Unassigned P0/P1
+      const unassignedHigh = leaves.filter(
+        (n) =>
+          (n.priority === 'P0' || n.priority === 'P1') &&
+          (n.assigneeIds?.length ?? 0) === 0 &&
+          (n.percentComplete ?? 0) < 100,
+      );
+
+      // Overdue leaves (dueDate passed, not complete)
+      const overdue = leaves.filter(
+        (n) => n.dueDate != null && n.dueDate < today && (n.percentComplete ?? 0) < 100,
+      );
+
+      const totalAlerts =
+        slippedMilestones.length +
+        slippedVersions.length +
+        p0Behind.length +
+        unassignedHigh.length +
+        overdue.length;
+
+      if (totalAlerts === 0) {
+        return toolResult(`No alerts for "${data.map.name}" — all clear.`);
+      }
+
+      const lines: string[] = [];
+      lines.push(`# 🚨 ${data.map.name} — ${totalAlerts} alert(s)`);
+      lines.push('');
+
+      if (slippedMilestones.length > 0) {
+        lines.push(`## Milestones past target (${slippedMilestones.length})`);
+        for (const m of slippedMilestones) {
+          lines.push(`- **${m.name}** — was due ${m.targetDate}, ${m.incomplete} incomplete leaf(s)`);
+        }
+        lines.push('');
+      }
+      if (slippedVersions.length > 0) {
+        lines.push(`## Versions past target (${slippedVersions.length})`);
+        for (const v of slippedVersions) {
+          lines.push(`- **${v.name}** — was due ${v.targetDate}, ${v.incomplete} incomplete leaf(s)`);
+        }
+        lines.push('');
+      }
+      if (p0Behind.length > 0) {
+        lines.push(`## P0 behind (${p0Behind.length})`);
+        for (const n of p0Behind.slice(0, 20)) {
+          lines.push(`- 🔴 **${n.text}**${n.dueDate ? ` (due ${n.dueDate})` : ''}`);
+        }
+        lines.push('');
+      }
+      if (overdue.length > 0) {
+        lines.push(`## Overdue (${overdue.length})`);
+        for (const n of overdue.slice(0, 20)) {
+          lines.push(`- **${n.text}** — due ${n.dueDate}, ${n.percentComplete ?? 0}% done`);
+        }
+        if (overdue.length > 20) lines.push(`- _… and ${overdue.length - 20} more_`);
+        lines.push('');
+      }
+      if (unassignedHigh.length > 0) {
+        lines.push(`## Unassigned high-priority (${unassignedHigh.length})`);
+        for (const n of unassignedHigh.slice(0, 20)) {
+          lines.push(`- [${n.priority}] **${n.text}**`);
+        }
+        if (unassignedHigh.length > 20) lines.push(`- _… and ${unassignedHigh.length - 20} more_`);
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'scope_simulate',
+  'What-if simulation: apply a list of patches (remove/add/update nodes) to the map in-memory and return before/after totals + planned finish dates. Use to evaluate "what if we cut this feature?" or "what if we add 5 more days?". No persistence.',
+  {
+    mapId: z.string().describe('The map ID'),
+    patches: z
+      .array(
+        z.union([
+          z.object({
+            action: z.literal('remove'),
+            nodeId: z.string(),
+          }),
+          z.object({
+            action: z.literal('add'),
+            parentId: z.string(),
+            text: z.string(),
+            effortEstimate: z.number(),
+            dueDate: z.string().nullable().optional(),
+          }),
+          z.object({
+            action: z.literal('update'),
+            nodeId: z.string(),
+            effortEstimate: z.number().nullable().optional(),
+            startDate: z.string().nullable().optional(),
+            dueDate: z.string().nullable().optional(),
+            percentComplete: z.number().nullable().optional(),
+          }),
+        ]),
+      )
+      .min(1)
+      .describe('List of patches to apply in-memory'),
+  },
+  async ({ mapId, patches }) => {
+    try {
+      const { before, after } = await api.simulateMap(mapId, patches);
+      const data = await api.getMap(mapId);
+      const unit = data.map.effortUnit ?? 'units';
+
+      const fmtDelta = (b: number, a: number) => {
+        const d = a - b;
+        const sign = d > 0 ? '+' : d < 0 ? '' : '±';
+        return `${sign}${d.toFixed(2)}`;
+      };
+      const fmtDateDelta = (b: string | null, a: string | null) => {
+        if (!b || !a) return 'n/a';
+        const ms = new Date(a).getTime() - new Date(b).getTime();
+        const days = Math.round(ms / 86_400_000);
+        if (days === 0) return 'no change';
+        return `${days > 0 ? '+' : ''}${days} days`;
+      };
+
+      const lines: string[] = [];
+      lines.push(`Scope simulation — ${patches.length} patch(es)`);
+      lines.push('');
+      for (const p of patches) {
+        if (p.action === 'remove') lines.push(`  - remove ${p.nodeId}`);
+        else if (p.action === 'add') lines.push(`  + add "${p.text}" (${p.effortEstimate} ${unit}) under ${p.parentId}`);
+        else lines.push(`  ~ update ${p.nodeId}: ${JSON.stringify({ effortEstimate: p.effortEstimate, percentComplete: p.percentComplete, startDate: p.startDate, dueDate: p.dueDate })}`);
+      }
+      lines.push('');
+      lines.push('                    | before     after      Δ');
+      lines.push('--------------------|-----------|----------|--------');
+      lines.push(`Leaves              | ${String(before.leafCount).padStart(9)} ${String(after.leafCount).padStart(9)}  ${fmtDelta(before.leafCount, after.leafCount)}`);
+      lines.push(`Total scope (${unit})    | ${before.totalScope.toFixed(2).padStart(9)} ${after.totalScope.toFixed(2).padStart(9)}  ${fmtDelta(before.totalScope, after.totalScope)} ${unit}`);
+      lines.push(`Remaining (${unit})       | ${before.totalRemaining.toFixed(2).padStart(9)} ${after.totalRemaining.toFixed(2).padStart(9)}  ${fmtDelta(before.totalRemaining, after.totalRemaining)} ${unit}`);
+      lines.push(`Done (${unit})            | ${before.totalDone.toFixed(2).padStart(9)} ${after.totalDone.toFixed(2).padStart(9)}  ${fmtDelta(before.totalDone, after.totalDone)} ${unit}`);
+      lines.push(`Progress (%)        | ${before.weightedProgress.toFixed(1).padStart(9)} ${after.weightedProgress.toFixed(1).padStart(9)}  ${fmtDelta(before.weightedProgress, after.weightedProgress)} pts`);
+      lines.push(`No-estimate leaves  | ${String(before.noEstimateCount).padStart(9)} ${String(after.noEstimateCount).padStart(9)}  ${fmtDelta(before.noEstimateCount, after.noEstimateCount)}`);
+      lines.push('');
+      lines.push(`Planned finish:`);
+      lines.push(`  before:  ${before.plannedFinishDate ?? '(none)'}`);
+      lines.push(`  after:   ${after.plannedFinishDate ?? '(none)'}`);
+      lines.push(`  shift:   ${fmtDateDelta(before.plannedFinishDate, after.plannedFinishDate)}`);
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'status_digest',
+  'Generate a markdown status digest for a map: what was done, what is in progress, what is behind/at-risk, what changed recently, and scope flow over the window. Combines current map state with the change_events log. Useful for standups, weekly reviews, or feeding into a narrative AI summary.',
+  {
+    mapId: z.string().describe('The map ID'),
+    sinceDays: z.number().int().min(1).max(90).default(7).describe('Look-back window in days'),
+  },
+  async ({ mapId, sinceDays }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      const inProgressIds = new Set(
+        (data.map.statusWorkflow ?? [])
+          .filter((s) => s.category === 'in_progress')
+          .map((s) => s.id),
+      );
+
+      // Current state buckets
+      const inProgress = leaves.filter(
+        (n) => n.status != null && inProgressIds.has(n.status) && (n.percentComplete ?? 0) < 100,
+      );
+      const behind = leaves.filter(
+        (n) => n.healthSignal === 'behind' && (n.percentComplete ?? 0) < 100,
+      );
+      const atRisk = leaves.filter(
+        (n) => n.healthSignal === 'at_risk' && (n.percentComplete ?? 0) < 100,
+      );
+
+      // Change-log driven sections
+      const { events } = await api.getChangeHistory(mapId, { sinceDays, limit: 1000 });
+
+      // Just-completed: percentComplete crossed to 100 in window
+      const completedNodeIds = new Set<string>();
+      for (const e of events) {
+        if (
+          e.eventType === 'node.field_changed' &&
+          e.fieldName === 'percentComplete' &&
+          Number(e.newValue ?? 0) >= 100 &&
+          e.nodeId
+        ) {
+          completedNodeIds.add(e.nodeId);
+        }
+      }
+      const justCompleted = leaves.filter((n) => completedNodeIds.has(n.id));
+
+      // Recently changed nodes (any field_changed in window, excluding completion which we show separately)
+      const changedNodeIds = new Set<string>();
+      for (const e of events) {
+        if (e.eventType === 'node.field_changed' && e.nodeId && !completedNodeIds.has(e.nodeId)) {
+          changedNodeIds.add(e.nodeId);
+        }
+      }
+      const recentlyChanged = data.nodes.filter((n) => changedNodeIds.has(n.id)).slice(0, 15);
+
+      // Scope flow (lightweight, like burnup totals only)
+      let scopeAdded = 0;
+      let scopeRemoved = 0;
+      let completedEffort = 0;
+      const estimateById = new Map<string, number>();
+      for (const l of leaves) estimateById.set(l.id, l.effortEstimate ?? 0);
+      for (const e of events) {
+        if (e.eventType === 'node.created') {
+          const nv = e.newValue as { effortEstimate?: number | null } | null;
+          scopeAdded += nv?.effortEstimate ?? 0;
+        } else if (e.eventType === 'node.deleted') {
+          const ov = e.oldValue as { effortEstimate?: number | null; isLeaf?: boolean } | null;
+          if (ov?.isLeaf) scopeRemoved += ov.effortEstimate ?? 0;
+        } else if (e.eventType === 'node.field_changed' && e.fieldName === 'effortEstimate') {
+          const delta = Number(e.newValue ?? 0) - Number(e.oldValue ?? 0);
+          if (delta > 0) scopeAdded += delta;
+          else scopeRemoved += -delta;
+        } else if (e.eventType === 'node.field_changed' && e.fieldName === 'percentComplete') {
+          const delta = Number(e.newValue ?? 0) - Number(e.oldValue ?? 0);
+          const est = e.nodeId ? (estimateById.get(e.nodeId) ?? 0) : 0;
+          if (est > 0) completedEffort += est * (delta / 100);
+        }
+      }
+
+      const unit = data.map.effortUnit ?? 'units';
+      const fmtNode = (n: typeof leaves[number]) => {
+        const bits: string[] = [`**${n.text}**`];
+        if (n.priority) bits.push(`[${n.priority}]`);
+        if (n.dueDate) bits.push(`(due ${n.dueDate})`);
+        return bits.join(' ');
+      };
+
+      const lines: string[] = [];
+      lines.push(`# Status digest — ${data.map.name}`);
+      lines.push(`*Window: last ${sinceDays} days*`);
+      lines.push('');
+
+      lines.push(`## Done in window (${justCompleted.length})`);
+      if (justCompleted.length === 0) {
+        lines.push('_Nothing completed in the window._');
+      } else {
+        for (const n of justCompleted) lines.push(`- ${fmtNode(n)}`);
+      }
+      lines.push('');
+
+      lines.push(`## In progress now (${inProgress.length})`);
+      if (inProgress.length === 0) {
+        lines.push('_Nothing in progress._');
+      } else {
+        for (const n of inProgress.slice(0, 15)) {
+          lines.push(`- ${fmtNode(n)} — ${n.percentComplete ?? 0}%`);
+        }
+        if (inProgress.length > 15) lines.push(`- _… and ${inProgress.length - 15} more_`);
+      }
+      lines.push('');
+
+      lines.push(`## Behind (${behind.length}) / At risk (${atRisk.length})`);
+      if (behind.length === 0 && atRisk.length === 0) {
+        lines.push('_All work on track._');
+      } else {
+        for (const n of behind.slice(0, 10)) lines.push(`- 🔴 ${fmtNode(n)}`);
+        for (const n of atRisk.slice(0, 10)) lines.push(`- 🟡 ${fmtNode(n)}`);
+      }
+      lines.push('');
+
+      lines.push(`## Recently changed (${recentlyChanged.length})`);
+      if (recentlyChanged.length === 0) {
+        lines.push('_No field changes in the window._');
+      } else {
+        for (const n of recentlyChanged) lines.push(`- ${fmtNode(n)}`);
+      }
+      lines.push('');
+
+      lines.push(`## Scope flow`);
+      const netScope = scopeAdded - scopeRemoved;
+      lines.push(`- Scope added: +${scopeAdded.toFixed(2)} ${unit}`);
+      lines.push(`- Scope removed: -${scopeRemoved.toFixed(2)} ${unit}`);
+      lines.push(`- Net change: ${netScope >= 0 ? '+' : ''}${netScope.toFixed(2)} ${unit}`);
+      lines.push(`- Effort completed: ${completedEffort.toFixed(2)} ${unit}`);
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'burnup',
   'Burnup / scope-creep detector over a time window. Reports current scope and completed effort, plus the flow through the window: scope added, scope removed, effort completed — per day and in total. Flags when scope is growing faster than completion. Uses change_events, so only shows flow since the change-history feature was deployed.',
   {
