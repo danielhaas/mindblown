@@ -312,6 +312,40 @@ export function getGitHubStatus(mapId: string, nodeId: string): Promise<GitHubSt
   return request<GitHubStatusResponse>(`/api/maps/${mapId}/nodes/${nodeId}/github/status`);
 }
 
+export interface GitHubSyncOverview {
+  repo: string;
+  includeClosed: boolean;
+  counts: {
+    synced: number;
+    onlyInMindBlown: number;
+    onlyInGitHub: number;
+  };
+  synced: Array<{
+    nodeId: string;
+    text: string;
+    externalId: string;
+    issueNumber: number;
+    issueUrl: string;
+    issueState: 'open' | 'closed';
+    issueTitle: string;
+  }>;
+  onlyInMindBlown: Array<{ nodeId: string; text: string }>;
+  onlyInGitHub: Array<{
+    issueNumber: number;
+    title: string;
+    state: 'open' | 'closed';
+    url: string;
+  }>;
+}
+
+export function getGitHubSyncOverview(
+  mapId: string,
+  includeClosed = false,
+): Promise<GitHubSyncOverview> {
+  const qs = includeClosed ? '?includeClosed=true' : '';
+  return request<GitHubSyncOverview>(`/api/maps/${mapId}/github/sync-overview${qs}`);
+}
+
 // ── Maps ─────────────────────────────────────────────────────────
 
 export function fetchMaps(): Promise<MapSummary[]> {

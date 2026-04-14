@@ -1333,6 +1333,55 @@ server.tool(
 );
 
 server.tool(
+  'github_sync_overview',
+  'Three-way diff between a MindBlown map and its connected GitHub repo: which nodes are linked to issues (synced), which leaf nodes have no GitHub link yet (onlyInMindBlown), and which repo issues are not yet linked to any node in the map (onlyInGitHub). Use this to audit the sync state before bulk operations or to find gaps worth promoting/linking. Requires the map to have a GitHub repo connected.',
+  {
+    mapId: z.string().describe('The map ID'),
+    includeClosed: z.boolean().optional().describe('Include closed GitHub issues in the overview. Default: open only.'),
+    format: z.enum(['summary', 'full']).optional().describe('summary (default): return just the counts. full: return counts plus every item in each bucket.'),
+  },
+  async ({ mapId, includeClosed, format }) => {
+    try {
+      const overview = await api.getGitHubSyncOverview(mapId, includeClosed ?? false);
+      const lines: string[] = [];
+      lines.push(
+        `GitHub sync status for ${overview.repo} (${overview.includeClosed ? 'open + closed' : 'open only'}):`,
+      );
+      lines.push(
+        `  synced: ${overview.counts.synced}, only in MindBlown: ${overview.counts.onlyInMindBlown}, only in GitHub: ${overview.counts.onlyInGitHub}`,
+      );
+      if (format === 'full') {
+        if (overview.synced.length > 0) {
+          lines.push(`\nSynced (${overview.synced.length}):`);
+          for (const s of overview.synced) {
+            lines.push(`  - ${s.externalId} [${s.issueState}] → node ${s.nodeId} "${s.text}"`);
+          }
+        }
+        if (overview.onlyInMindBlown.length > 0) {
+          lines.push(`\nOnly in MindBlown — leaf nodes with no GitHub link (${overview.onlyInMindBlown.length}):`);
+          for (const n of overview.onlyInMindBlown) {
+            lines.push(`  - ${n.nodeId} "${n.text}"`);
+          }
+        }
+        if (overview.onlyInGitHub.length > 0) {
+          lines.push(`\nOnly in GitHub — issues not linked to any node (${overview.onlyInGitHub.length}):`);
+          for (const i of overview.onlyInGitHub) {
+            lines.push(`  - #${i.issueNumber} [${i.state}] ${i.title}`);
+          }
+        }
+      } else {
+        lines.push(
+          '\nCall again with format="full" to see every item in each bucket.',
+        );
+      }
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'create_github_issue_from_node',
   'Promote an existing MindBlown node to a new GitHub issue. Creates a fresh GitHub issue using the node\'s text (title), description (body), tags and priority (labels), then attaches the resulting externalLink to the node so future edits sync bidirectionally. Use this when you brainstormed a node in the mindmap and want to publish it as a real GitHub issue. Requires the map to have a GitHub repo connected (via connect_github_repo or the settings UI). Refuses if the node is already linked to any GitHub issue — unlink first if you really want a second one.',
   {

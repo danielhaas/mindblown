@@ -238,6 +238,132 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/maps/:mapId/github/sync-overview ─────────────────
+  // Three-way diff: nodes linked to issues (synced), leaf nodes with no
+  // GitHub link (onlyInMindBlown), and repo issues not linked to any node
+  // in this map (onlyInGitHub). Makes the cross-system state auditable.
+  app.get<{ Params: { mapId: string }; Querystring: { includeClosed?: string } }>(
+    '/api/maps/:mapId/github/sync-overview',
+    async (req, reply) => {
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
+        return reply.status(400).send({
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+        });
+      }
+
+      const includeClosed = req.query.includeClosed === 'true';
+      const { owner, repo, token } = ghCtx;
+
+      // Fetch all nodes in this map
+      const mapNodes = await db
+        .select({
+          id: nodes.id,
+          text: nodes.text,
+          parentId: nodes.parentId,
+          externalLinks: nodes.externalLinks,
+        })
+        .from(nodes)
+        .where(eq(nodes.mapId, req.params.mapId));
+
+      // Identify parents so we can separate leaves from structural branches.
+      const parentIdSet = new Set<string>();
+      for (const n of mapNodes) {
+        if (n.parentId) parentIdSet.add(n.parentId);
+      }
+
+      // Build lookup: externalId → { nodeId, text } for anything already linked.
+      const linkedByExternalId = new Map<string, { nodeId: string; text: string }>();
+      for (const n of mapNodes) {
+        const links = (n.externalLinks as ExternalLink[]) ?? [];
+        for (const l of links) {
+          if (l.provider === 'github' && l.externalId) {
+            linkedByExternalId.set(l.externalId, { nodeId: n.id, text: n.text });
+          }
+        }
+      }
+
+      // Fetch issues from GitHub via the existing importer (we discard the
+      // group/milestone metadata and just use the raw issue objects).
+      let importedIssues;
+      try {
+        importedIssues = await importGitHubIssues(owner, repo, token, { includeAll: includeClosed });
+      } catch (err) {
+        return reply.status(400).send({
+          error: {
+            code: 'GITHUB_API_ERROR',
+            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+          },
+        });
+      }
+
+      // Bucket 1: synced — fuse node + issue for each link we recognize.
+      // Bucket 3: onlyInGitHub — issues whose externalId isn't linked in this map.
+      const synced: Array<{
+        nodeId: string;
+        text: string;
+        externalId: string;
+        issueNumber: number;
+        issueUrl: string;
+        issueState: 'open' | 'closed';
+        issueTitle: string;
+      }> = [];
+      const onlyInGitHub: Array<{
+        issueNumber: number;
+        title: string;
+        state: 'open' | 'closed';
+        url: string;
+      }> = [];
+      for (const item of importedIssues) {
+        const match = linkedByExternalId.get(item.externalLink.externalId);
+        if (match) {
+          synced.push({
+            nodeId: match.nodeId,
+            text: match.text,
+            externalId: item.externalLink.externalId,
+            issueNumber: item.issue.number,
+            issueUrl: item.issue.html_url,
+            issueState: item.issue.state,
+            issueTitle: item.issue.title,
+          });
+        } else {
+          onlyInGitHub.push({
+            issueNumber: item.issue.number,
+            title: item.issue.title,
+            state: item.issue.state,
+            url: item.issue.html_url,
+          });
+        }
+      }
+
+      // Bucket 2: onlyInMindBlown — leaf nodes with no GitHub link.
+      // Leaves (no children) are the actionable unit; branches are structural
+      // and would pollute the list.
+      const onlyInMindBlown: Array<{ nodeId: string; text: string }> = [];
+      for (const n of mapNodes) {
+        if (parentIdSet.has(n.id)) continue; // has children → structural
+        if (n.parentId === null) continue; // root → never a GitHub issue
+        const links = (n.externalLinks as ExternalLink[]) ?? [];
+        const hasGithub = links.some((l) => l.provider === 'github');
+        if (hasGithub) continue;
+        onlyInMindBlown.push({ nodeId: n.id, text: n.text });
+      }
+
+      return reply.send({
+        repo: `${owner}/${repo}`,
+        includeClosed,
+        counts: {
+          synced: synced.length,
+          onlyInMindBlown: onlyInMindBlown.length,
+          onlyInGitHub: onlyInGitHub.length,
+        },
+        synced,
+        onlyInMindBlown,
+        onlyInGitHub,
+      });
+    },
+  );
+
   // ── POST /api/maps/:mapId/github/import ───────────────────────
   // Import issues from a GitHub repo into the map.
   app.post<{ Params: { mapId: string } }>(
