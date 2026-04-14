@@ -835,6 +835,216 @@ server.tool(
 );
 
 server.tool(
+  'completion_forecast',
+  'Forecast "when will it be done?" for a node/subtree/version/milestone. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version/milestone or node dueDates), and slip vs target. Scope with one of nodeId, versionId, or milestoneId; omit all to forecast the whole map.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().optional().describe('Scope to this node and its descendants'),
+    versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
+    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone (directly or via an ancestor)'),
+  },
+  async ({ mapId, nodeId, versionId, milestoneId }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+
+      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+        const versions = new Set<string>();
+        const milestones = new Set<string>();
+        let cur = nodeById.get(leafId);
+        while (cur) {
+          if (cur.versionId) versions.add(cur.versionId);
+          if (cur.milestoneId) milestones.add(cur.milestoneId);
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return { versions, milestones };
+      };
+
+      // ── Determine scope (same logic as remaining_work) ──
+      let leaves: typeof data.nodes;
+      let scopeLabel = 'whole map';
+      if (nodeId) {
+        const root = nodeById.get(nodeId);
+        if (!root) return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+        scopeLabel = `subtree of "${root.text}" (${nodeId})`;
+        const subtreeLeaves: typeof data.nodes = [];
+        const stack = [root];
+        while (stack.length) {
+          const n = stack.pop()!;
+          if ((n.childrenIds?.length ?? 0) === 0) {
+            subtreeLeaves.push(n);
+          } else {
+            for (const cid of n.childrenIds) {
+              const c = nodeById.get(cid);
+              if (c) stack.push(c);
+            }
+          }
+        }
+        leaves = subtreeLeaves;
+      } else {
+        leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      }
+      if (versionId) {
+        scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
+      }
+      if (milestoneId) {
+        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
+        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
+      }
+
+      if (leaves.length === 0) {
+        return toolResult(`No leaf nodes in scope (${scopeLabel}).`);
+      }
+
+      // ── Remaining effort (same math as remaining_work) ──
+      let remainingEffort = 0;
+      let totalEffort = 0;
+      let noEstimateLeaves = 0;
+      const targetDates: string[] = [];
+      for (const leaf of leaves) {
+        if (leaf.effortEstimate == null) noEstimateLeaves++;
+        const estimate = leaf.effortEstimate ?? 0;
+        const progress = leaf.percentComplete ?? 0;
+        totalEffort += estimate;
+        remainingEffort += estimate * (1 - progress / 100);
+        if (leaf.dueDate) targetDates.push(leaf.dueDate);
+      }
+
+      // ── Fudge factor from estimation accuracy ──
+      const calibrationLeaves = data.nodes.filter(
+        (n) =>
+          (n.childrenIds?.length ?? 0) === 0 &&
+          n.effortEstimate != null &&
+          n.actualEffort != null,
+      );
+      const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
+      const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
+      const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
+      const effectiveFudge = fudgeFactor ?? 1.0;
+
+      // ── Scheduler-based planned finish ──
+      const sched = await api.getSchedule(mapId);
+      const scopedIds = new Set(leaves.map((l) => l.id));
+      const scopedSched = sched.schedule.filter((s) => scopedIds.has(s.nodeId));
+      const maxComputedEnd = scopedSched.reduce((m, s) => Math.max(m, s.computedEnd), 0);
+
+      const MS_PER_DAY = 86_400_000;
+      const projectStart = new Date(sched.projectStartDate);
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+
+      const effortUnitsToCalendarDays = (units: number): number => units / sched.unitsPerDay;
+      const addCalendarDays = (base: Date, days: number): Date => {
+        const d = new Date(base.getTime());
+        d.setUTCDate(d.getUTCDate() + Math.ceil(days));
+        return d;
+      };
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const daysBetween = (a: Date, b: Date) =>
+        Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
+
+      const plannedFinishCalendarDays = effortUnitsToCalendarDays(maxComputedEnd);
+      const plannedFinishDate = addCalendarDays(projectStart, plannedFinishCalendarDays);
+
+      // Velocity-adjusted finish: take the scheduler's remaining calendar days
+      // (which already accounts for parallelism and dependencies) and scale by
+      // the fudge factor. If the scheduler says 5 days and fudge is 1.5x, we
+      // expect 7.5 days. Anchor at max(today, projectStart) so a future-start
+      // project doesn't report a past finish.
+      const anchor = today > projectStart ? today : projectStart;
+      const elapsedFromStart = Math.max(0, daysBetween(anchor, projectStart));
+      const remainingSchedulerDays = Math.max(0, plannedFinishCalendarDays - elapsedFromStart);
+      const velocityFinishCalendarDays = remainingSchedulerDays * effectiveFudge;
+      const velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+
+      // ── Target date resolution ──
+      let targetDate: string | null = null;
+      let targetSource = '';
+      if (versionId || milestoneId) {
+        try {
+          if (milestoneId) {
+            const milestones = await api.listMilestones(data.map.workspaceId);
+            const m = milestones.find((m) => m.id === milestoneId);
+            if (m?.targetDate) {
+              targetDate = m.targetDate.slice(0, 10);
+              targetSource = `milestone "${m.name}"`;
+            }
+          }
+          if (!targetDate && versionId) {
+            const versions = await api.listVersions(data.map.workspaceId);
+            const v = versions.find((v) => v.id === versionId);
+            if (v?.targetDate) {
+              targetDate = v.targetDate.slice(0, 10);
+              targetSource = `version "${v.name}"`;
+            }
+          }
+        } catch {
+          /* fall through to node dueDates */
+        }
+      }
+      if (!targetDate && targetDates.length > 0) {
+        targetDate = targetDates.sort().slice(-1)[0].slice(0, 10);
+        targetSource = 'max leaf dueDate';
+      }
+
+      // ── Format output ──
+      const unit = data.map.effortUnit ?? 'units';
+      const lines: string[] = [];
+      lines.push(`Completion forecast — ${scopeLabel}`);
+      lines.push('');
+      lines.push(`Leaves in scope:     ${leaves.length}`);
+      lines.push(`  Without estimate:  ${noEstimateLeaves}${noEstimateLeaves > 0 ? ' ⚠' : ''}`);
+      lines.push(`Total estimated:     ${totalEffort.toFixed(2)} ${unit}`);
+      lines.push(`Remaining:           ${remainingEffort.toFixed(2)} ${unit}`);
+      lines.push('');
+      if (fudgeFactor != null) {
+        lines.push(`Velocity calibration: ${calibrationLeaves.length} completed leaves, fudge = ${fudgeFactor.toFixed(2)}x`);
+      } else {
+        lines.push(`Velocity calibration: no data (need leaves with both estimate + actual); using 1.00x`);
+      }
+      lines.push('');
+
+      if (maxComputedEnd > 0) {
+        lines.push(`Planned finish:      ${iso(plannedFinishDate)} (scheduler, project start ${sched.projectStartDate})`);
+      } else {
+        lines.push(`Planned finish:      (no schedulable effort in scope)`);
+      }
+      if (remainingEffort > 0) {
+        lines.push(`Velocity-adjusted:   ${iso(velocityFinishDate)} (${velocityFinishCalendarDays.toFixed(1)} calendar days from ${iso(anchor)}, fudge ${effectiveFudge.toFixed(2)}x)`);
+      } else {
+        lines.push(`Velocity-adjusted:   already complete`);
+      }
+
+      if (targetDate) {
+        lines.push('');
+        lines.push(`Target:              ${targetDate} (${targetSource})`);
+        const targetDateObj = new Date(targetDate);
+        if (maxComputedEnd > 0) {
+          const slipPlanned = daysBetween(plannedFinishDate, targetDateObj);
+          lines.push(`Slip (planned):      ${slipPlanned >= 0 ? '+' : ''}${slipPlanned} days`);
+        }
+        if (remainingEffort > 0) {
+          const slipVel = daysBetween(velocityFinishDate, targetDateObj);
+          lines.push(`Slip (velocity):     ${slipVel >= 0 ? '+' : ''}${slipVel} days`);
+        }
+      } else {
+        lines.push('');
+        lines.push(`Target:              (no target date set)`);
+      }
+
+      if (noEstimateLeaves > 0) {
+        lines.push('');
+        lines.push(`⚠ ${noEstimateLeaves} leaf(s) in scope have no estimate — excluded from remaining-effort math.`);
+      }
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'set_progress',
   'Set percent complete on a leaf node',
   {

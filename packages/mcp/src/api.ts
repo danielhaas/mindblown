@@ -73,6 +73,9 @@ export interface ScheduleResult {
     totalDuration: number;
     float: Record<string, number>;
   };
+  projectStartDate: string;
+  effortUnit: 'hours' | 'days' | 'points';
+  unitsPerDay: number;
 }
 
 export interface VersionInfo {
