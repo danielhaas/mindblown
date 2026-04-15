@@ -19,6 +19,7 @@ import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
+import { HelpOverlay } from './HelpOverlay.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -98,6 +99,7 @@ function MapList({
   onCreate,
   onRetry,
   onSettings,
+  onHelp,
 }: {
   maps: MapSummary[];
   loading: boolean;
@@ -106,6 +108,7 @@ function MapList({
   onCreate: () => void;
   onRetry: () => void;
   onSettings: () => void;
+  onHelp: () => void;
 }) {
   return (
     <div
@@ -147,6 +150,30 @@ function MapList({
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              onClick={onHelp}
+              title="Help / User Guide"
+              style={{
+                background: '#f1f5f9',
+                border: 'none',
+                borderRadius: 8,
+                width: 32,
+                height: 32,
+                cursor: 'pointer',
+                color: '#64748b',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: 14,
+                fontWeight: 700,
+                fontFamily: 'inherit',
+                transition: 'background 0.15s',
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.background = '#e2e8f0')}
+              onMouseOut={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+            >
+              ?
+            </button>
             <button
               onClick={onSettings}
               title="Workspace Settings"
@@ -717,6 +744,7 @@ export function App() {
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
   const [ghBanner, setGhBanner] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -877,10 +905,12 @@ export function App() {
           onCreate={handleCreateMap}
           onRetry={loadMaps}
           onSettings={() => setWorkspaceSettingsOpen(true)}
+          onHelp={() => setHelpOpen(true)}
         />
         {workspaceSettingsOpen && (
           <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
         )}
+        {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
       </div>
     );
   }
@@ -1008,6 +1038,40 @@ export function App() {
               <path d="M8 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             </svg>
             Import/Export
+          </button>
+
+          <button
+            onClick={() => setHelpOpen(true)}
+            title="Help / User Guide"
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 12,
+              fontWeight: 700,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#64748b',
+              transition: 'all 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: 0,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = '#eef2ff';
+              e.currentTarget.style.borderColor = '#c7d2fe';
+              e.currentTarget.style.color = '#4f46e5';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = '#fff';
+              e.currentTarget.style.borderColor = '#e2e8f0';
+              e.currentTarget.style.color = '#64748b';
+            }}
+          >
+            ?
           </button>
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
@@ -1349,6 +1413,9 @@ export function App() {
       {workspaceSettingsOpen && (
         <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} mapId={currentMapId} />
       )}
+
+      {/* Help / User Guide */}
+      {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
 
       {/* AI Chat Panel */}
       {aiChatOpen && currentMapId && (

@@ -14,12 +14,15 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "sync-help": "cp ../../docs/user-guide.md public/user-guide.md && pandoc ../../docs/user-guide.md -o public/user-guide.pdf --pdf-engine=weasyprint --metadata title='MindBlown User Guide'"
   },
   "dependencies": {
     "@mindblown/core": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
