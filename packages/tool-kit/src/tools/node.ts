@@ -85,22 +85,29 @@ export const moveNodeTool = defineTool({
 
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
-  description: 'Search nodes by text across a map, with optional structured filters',
+  description:
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag only.',
   schema: {
     mapId: z.string().describe('The map ID'),
-    query: z.string().describe('Search text (case-insensitive substring match)'),
+    query: z
+      .string()
+      .describe('Search text (case-insensitive substring match). Empty string or "*" matches all nodes.'),
     status: z.string().optional().describe('Filter by status (exact match)'),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Filter by priority'),
     tag: z.string().optional().describe('Filter by tag (nodes must include this tag)'),
   },
   handler: async (backend, { mapId, query, status, priority, tag }) => {
     const data = await backend.getMap(mapId);
-    const lowerQ = query.toLowerCase();
-    let matches = data.nodes.filter(
-      (n) =>
-        n.text.toLowerCase().includes(lowerQ) ||
-        (n.description?.toLowerCase().includes(lowerQ) ?? false),
-    );
+    const trimmedQ = query.trim();
+    const matchAll = trimmedQ === '' || trimmedQ === '*';
+    const lowerQ = trimmedQ.toLowerCase();
+    let matches = matchAll
+      ? data.nodes.slice()
+      : data.nodes.filter(
+          (n) =>
+            n.text.toLowerCase().includes(lowerQ) ||
+            (n.description?.toLowerCase().includes(lowerQ) ?? false),
+        );
     if (status) matches = matches.filter((n) => n.status === status);
     if (priority) matches = matches.filter((n) => n.priority === priority);
     if (tag) matches = matches.filter((n) => n.tags.includes(tag));
@@ -112,7 +119,8 @@ export const searchNodesTool = defineTool({
         tag && `tag=${tag}`,
       ].filter(Boolean);
       const filterStr = filters.length > 0 ? ` (filters: ${filters.join(', ')})` : '';
-      return `No nodes matching "${query}"${filterStr} found in map ${mapId}.`;
+      const subject = matchAll ? 'nodes' : `nodes matching "${query}"`;
+      return `No ${subject}${filterStr} found in map ${mapId}.`;
     }
 
     const lines = matches.map((n) => {

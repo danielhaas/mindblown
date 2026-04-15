@@ -15,31 +15,64 @@ const VALID_NODE_FIELDS = new Set([
   'isMilestone',
 ]);
 
+/**
+ * Accept either the explicit {nodeId, fields: {...}} shape or the flat
+ * {nodeId, ...fields} shape — `bulk_set_*` siblings use the flat form, so
+ * this keeps `bulk_update_nodes` consistent with them without breaking
+ * callers that already use the explicit shape. See GitHub issue #41.
+ */
+function normalizeBulkUpdateItem(
+  raw: unknown,
+): { nodeId: string; fields: Record<string, unknown> } | { error: string } {
+  if (!raw || typeof raw !== 'object') {
+    return { error: 'update must be an object' };
+  }
+  const obj = raw as Record<string, unknown>;
+  const nodeId = obj.nodeId;
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { error: 'missing string nodeId' };
+  }
+  // Explicit shape
+  if (obj.fields && typeof obj.fields === 'object' && Object.keys(obj).length <= 2) {
+    return { nodeId, fields: obj.fields as Record<string, unknown> };
+  }
+  // Flat shape — pull out nodeId, treat the rest as fields
+  const { nodeId: _omit, ...flat } = obj;
+  return { nodeId, fields: flat };
+}
+
 export const bulkUpdateNodesTool = defineTool({
   name: 'bulk_update_nodes',
   description:
-    'Update multiple nodes at once. Valid fields: text, description, effortEstimate, percentComplete, status, priority, dueDate, startDate, tags, assigneeIds, isMilestone',
+    'Update multiple nodes at once. Each update is {nodeId, ...fields} OR {nodeId, fields: {...}} — both shapes are accepted. Valid fields: text, description, effortEstimate, percentComplete, status, priority, dueDate, startDate, tags, assigneeIds, isMilestone.',
   schema: {
     mapId: z.string().describe('The map ID'),
     updates: z
-      .array(
-        z.object({
-          nodeId: z.string().describe('Node ID'),
-          fields: z.record(z.unknown()).describe('Fields to update'),
-        }),
-      )
-      .describe('Array of {nodeId, fields} updates'),
+      .array(z.record(z.unknown()))
+      .describe(
+        'Array of updates. Each item is either {nodeId, ...fields} (flat) or {nodeId, fields: {...}} (nested).',
+      ),
   },
   handler: async (backend, { mapId, updates }) => {
     const results: string[] = [];
-    for (const { nodeId, fields } of updates) {
+    for (const raw of updates) {
+      const norm = normalizeBulkUpdateItem(raw);
+      if ('error' in norm) {
+        results.push(`  <malformed>: FAILED — ${norm.error}`);
+        continue;
+      }
+      const { nodeId, fields } = norm;
       const unknownFields = Object.keys(fields).filter((k) => !VALID_NODE_FIELDS.has(k));
       if (unknownFields.length > 0) {
         results.push(`  ${nodeId}: FAILED — unknown field(s): ${unknownFields.join(', ')}`);
         continue;
       }
+      if (Object.keys(fields).length === 0) {
+        results.push(`  ${nodeId}: FAILED — no fields to update`);
+        continue;
+      }
       try {
-        await backend.updateNode(mapId, nodeId, fields as Record<string, unknown>);
+        await backend.updateNode(mapId, nodeId, fields);
         results.push(`  ${nodeId}: updated ${Object.keys(fields).join(', ')}`);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);

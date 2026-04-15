@@ -76,6 +76,14 @@ export interface ScheduleResult {
   projectStartDate: string;
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
+  versionId?: string | null;
+  crossVersionDependencies?: Array<{
+    fromNodeId: string;
+    fromText: string;
+    toNodeId: string;
+    toText: string;
+    type: string;
+  }>;
 }
 
 export interface VersionInfo {
@@ -201,8 +209,9 @@ export function deleteMap(mapId: string): Promise<void> {
   });
 }
 
-export function getSchedule(mapId: string): Promise<ScheduleResult> {
-  return request<ScheduleResult>(`/api/maps/${mapId}/schedule`);
+export function getSchedule(mapId: string, versionId?: string): Promise<ScheduleResult> {
+  const qs = versionId ? `?versionId=${encodeURIComponent(versionId)}` : '';
+  return request<ScheduleResult>(`/api/maps/${mapId}/schedule${qs}`);
 }
 
 // ── Nodes ───────────────────────────────────────────────────────

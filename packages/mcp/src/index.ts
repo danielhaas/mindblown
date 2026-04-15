@@ -1570,14 +1570,13 @@ server.tool(
           (n.childrenIds?.length ?? 0) === 0,
       );
       const lines: string[] = [];
-      if (wipLimit == null) {
-        lines.push(`WIP limit: not set (unlimited).`);
-      } else {
+      lines.push(`Limit:   ${wipLimit == null ? 'unlimited' : wipLimit}`);
+      lines.push(`Current: ${inProgressNodes.length}`);
+      if (wipLimit != null) {
         const over = inProgressNodes.length > wipLimit;
-        lines.push(
-          `WIP: ${inProgressNodes.length} / ${wipLimit}${over ? ' ⚠ OVER LIMIT' : ''}`,
-        );
+        lines.push(`Over:    ${over ? 'yes ⚠' : 'no'}`);
       }
+      lines.push('');
       if (inProgressNodes.length === 0) {
         lines.push('No tasks currently in progress.');
       } else {
@@ -2219,15 +2218,27 @@ server.tool(
 
 server.tool(
   'get_schedule',
-  'Get computed schedule and critical path for a map',
+  'Get computed schedule and critical path for a map. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
   {
     mapId: z.string().describe('The map ID'),
+    versionId: z
+      .string()
+      .optional()
+      .describe('Scope the schedule to nodes tagged with this version (directly or via an ancestor).'),
   },
-  async ({ mapId }) => {
+  async ({ mapId, versionId }) => {
     try {
-      const scheduleData = await api.getSchedule(mapId);
+      const scheduleData = await api.getSchedule(mapId, versionId);
       const mapData = await api.getMap(mapId);
-      return toolResult(formatScheduleReport(mapData, scheduleData));
+      const report = formatScheduleReport(mapData, scheduleData);
+      if (versionId && scheduleData.crossVersionDependencies && scheduleData.crossVersionDependencies.length > 0) {
+        const lines = [report, '', '## Cross-version dependencies (dropped from scheduler)'];
+        for (const dep of scheduleData.crossVersionDependencies) {
+          lines.push(`  - "${dep.fromText}" → "${dep.toText}" (${dep.type})`);
+        }
+        return toolResult(lines.join('\n'));
+      }
+      return toolResult(report);
     } catch (err) {
       return toolError(err);
     }

@@ -385,7 +385,14 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/maps/:id/schedule — Computed schedule + critical path
-  app.get<{ Params: { id: string } }>('/api/maps/:id/schedule', async (req, reply) => {
+  //
+  // Optional ?versionId=... scopes the schedule to nodes in that version
+  // (via ancestor inheritance — same pattern as remaining_work and friends).
+  // Cross-version dependencies are dropped from the scheduler input and
+  // reported back as `crossVersionDependencies` so callers can spot them.
+  app.get<{ Params: { id: string }; Querystring: { versionId?: string } }>(
+    '/api/maps/:id/schedule',
+    async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
       return reply.status(404).send({
@@ -410,6 +417,55 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         ? (data.map.hoursPerDay ?? 8)
         : 1;
 
+    // ── Version scoping ──────────────────────────────────────
+    const versionId = req.query.versionId;
+    let scopedNodes = data.nodes;
+    const crossVersionDependencies: Array<{
+      fromNodeId: string;
+      fromText: string;
+      toNodeId: string;
+      toText: string;
+      type: string;
+    }> = [];
+    if (versionId) {
+      // A node is in scope if itself OR any ancestor has the matching versionId.
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      const inScope = new Set<string>();
+      for (const n of data.nodes) {
+        let cur: typeof n | undefined = n;
+        while (cur) {
+          if (cur.versionId === versionId) {
+            inScope.add(n.id);
+            break;
+          }
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+      }
+      // Prune dependencies that cross the version boundary; record them.
+      scopedNodes = data.nodes
+        .filter((n) => inScope.has(n.id))
+        .map((n) => {
+          const kept: typeof n.dependencies = [];
+          for (const dep of n.dependencies) {
+            if (inScope.has(dep.targetNodeId)) {
+              kept.push(dep);
+            } else {
+              const target = nodeById.get(dep.targetNodeId);
+              crossVersionDependencies.push({
+                fromNodeId: n.id,
+                fromText: n.text,
+                toNodeId: dep.targetNodeId,
+                toText: target?.text ?? dep.targetNodeId,
+                type: dep.type,
+              });
+            }
+          }
+          // childrenIds also need pruning so the scheduler's tree view stays valid
+          const keptChildren = n.childrenIds.filter((cid) => inScope.has(cid));
+          return { ...n, dependencies: kept, childrenIds: keptChildren };
+        });
+    }
+
     // Build per-node constraints from manual start/due dates. Any node with
     // a user-set date gets pinned; everything else flows from effort + deps.
     const MS_PER_DAY = 86_400_000;
@@ -422,7 +478,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     };
 
     const constraints = new Map<NodeId, ScheduleConstraint>();
-    for (const n of data.nodes) {
+    for (const n of scopedNodes) {
       const pin: ScheduleConstraint = {};
       if (n.startDate) pin.minStart = toDayOffset(n.startDate);
       if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
@@ -431,8 +487,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const scheduled = schedule(data.nodes, 0, constraints);
-    const cp = criticalPath(data.nodes);
+    const scheduled = schedule(scopedNodes, 0, constraints);
+    const cp = criticalPath(scopedNodes);
 
     return reply.send({
       schedule: scheduled,
@@ -440,6 +496,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       projectStartDate: projectStartDate.toISOString().slice(0, 10),
       effortUnit: data.map.effortUnit,
       unitsPerDay,
+      versionId: versionId ?? null,
+      crossVersionDependencies: versionId ? crossVersionDependencies : [],
     });
   });
 }
