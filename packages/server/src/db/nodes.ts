@@ -1,9 +1,59 @@
 import { eq, inArray } from 'drizzle-orm';
 import { db } from './connection.js';
-import { nodes } from './schema.js';
+import { nodes, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+
+// ── Auto-status from progress ─────────────────────────────────────
+//
+// When percentComplete moves but status is left untouched, we promote
+// the status through the workflow's todo / in_progress / done categories:
+//
+//   0  (or null) → first status with category="todo"
+//   1..99        → first status with category="in_progress"
+//   100          → first status with category="done"
+//
+// To avoid clobbering manual choices, we leave the status alone when:
+//   - the current status' category is already the target category
+//     (so custom workflows like "Coding → Review → QA" all under
+//     in_progress don't collapse to a single bucket), OR
+//   - the current status uses a custom category outside the trio
+//     above (e.g. "blocked"), so blocked/at_risk/etc. survive.
+
+const AUTO_CATEGORIES = new Set(['todo', 'in_progress', 'done']);
+
+async function deriveAutoStatus(
+  mapId: string,
+  currentStatus: string | null,
+  newProgress: number | null | undefined,
+): Promise<string | undefined> {
+  const targetCategory: 'todo' | 'in_progress' | 'done' =
+    newProgress == null || newProgress <= 0
+      ? 'todo'
+      : newProgress >= 100
+        ? 'done'
+        : 'in_progress';
+
+  const [map] = await db
+    .select({ statusWorkflow: maps.statusWorkflow })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  const workflow = ((map?.statusWorkflow as StatusDef[]) ?? []);
+  if (workflow.length === 0) return undefined;
+
+  if (currentStatus != null) {
+    const currentDef = workflow.find(
+      (s) => s.id === currentStatus || s.name.toLowerCase() === currentStatus.toLowerCase(),
+    );
+    if (currentDef && !AUTO_CATEGORIES.has(currentDef.category)) return undefined;
+    if (currentDef && currentDef.category === targetCategory) return undefined;
+  }
+
+  const sorted = [...workflow].sort((a, b) => a.position - b.position);
+  const target = sorted.find((s) => s.category === targetCategory);
+  return target?.id;
+}
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -105,6 +155,23 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
   // Validate dependencies if provided
   if (input.dependencies !== undefined) {
     await validateDependencies(nodeId, input.dependencies);
+  }
+
+  // Auto-derive status from percentComplete when status is not explicitly set
+  // in this update. See deriveAutoStatus for the exact rules.
+  if (input.percentComplete !== undefined && input.status === undefined) {
+    const [current] = await db
+      .select({ status: nodes.status, mapId: nodes.mapId })
+      .from(nodes)
+      .where(eq(nodes.id, nodeId));
+    if (current) {
+      const derived = await deriveAutoStatus(
+        current.mapId as string,
+        (current.status as string | null) ?? null,
+        input.percentComplete,
+      );
+      if (derived !== undefined) input.status = derived;
+    }
   }
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };

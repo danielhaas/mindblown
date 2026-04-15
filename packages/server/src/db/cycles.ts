@@ -1,4 +1,4 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, and, isNull } from 'drizzle-orm';
 import { db } from './connection.js';
 import { cycles, nodes } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
@@ -83,6 +83,16 @@ export async function updateCycle(id: string, input: UpdateCycleInput): Promise<
 
   const [row] = await db.update(cycles).set(updates).where(eq(cycles.id, id)).returning();
   if (!row) return null;
+
+  // When a cycle becomes active, default any unset assigned nodes to "todo"
+  // so they show up in the Kanban Todo column instead of "Unset". Idempotent
+  // — only touches nodes whose status is currently null.
+  if (input.status === 'active') {
+    await db.update(nodes)
+      .set({ status: 'todo', updatedAt: new Date() })
+      .where(and(eq(nodes.cycleId, id), isNull(nodes.status)));
+  }
+
   return dbCycleToCore(row as unknown as Record<string, unknown>);
 }
 
@@ -111,8 +121,18 @@ export async function getCycleNodes(cycleId: string): Promise<CoreNode[]> {
 // ── Assign / Unassign ─────────────────────────────────────────────────
 
 export async function assignNodeToCycle(nodeId: string, cycleId: string): Promise<CoreNode | null> {
+  // If the target cycle is active and the node has no status yet, default it
+  // to "todo" so adding tickets mid-sprint mirrors the activation sweep above.
+  const [cycle] = await db.select({ status: cycles.status }).from(cycles).where(eq(cycles.id, cycleId));
+  const [current] = await db.select({ status: nodes.status }).from(nodes).where(eq(nodes.id, nodeId));
+
+  const updates: Record<string, unknown> = { cycleId, updatedAt: new Date() };
+  if (cycle?.status === 'active' && current?.status == null) {
+    updates.status = 'todo';
+  }
+
   const [row] = await db.update(nodes)
-    .set({ cycleId, updatedAt: new Date() })
+    .set(updates)
     .where(eq(nodes.id, nodeId))
     .returning();
   if (!row) return null;
