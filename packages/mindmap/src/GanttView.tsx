@@ -2001,6 +2001,18 @@ export function GanttView() {
                   const fillW = w * (progress / 100);
 
                   const isLeafBar = row.node.childrenIds.length === 0;
+                  const fmt = (d: Date) =>
+                    d.toLocaleDateString(undefined, {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric',
+                    });
+                  const durDays = Math.max(1, Math.round(daysBetween(startDate, dueDate)));
+                  const statusLabel =
+                    row.node.status
+                      ? (STATUS_LABELS[row.node.status] ?? row.node.status)
+                      : 'no status';
+                  const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)\n${Math.round(progress)}% · ${statusLabel}`;
                   return (
                     <g
                       key={`bar-${row.node.id}`}
@@ -2014,6 +2026,7 @@ export function GanttView() {
                         selectNode(row.node.id);
                       }}
                     >
+                      <title>{tooltip}</title>
                       {/* Background (track) */}
                       <rect
                         x={x}
