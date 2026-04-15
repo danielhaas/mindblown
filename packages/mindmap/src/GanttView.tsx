@@ -327,10 +327,22 @@ export function GanttView() {
       }
     }
 
+    // Unestimated leaves have duration 0, which means an FS constraint
+    // (`earliestStart = pred.computedEnd`) doesn't actually push the
+    // follower forward — every leaf stays at day 0 and the cascade is
+    // invisible. In sequential mode we give any unestimated leaf a
+    // 1-day placeholder so the what-if view is actually readable.
+    const minLeafEffort = unitsPerDay;
     const patched: Node[] = nodeList.map((n) => {
       const extra = extraDeps.get(n.id);
-      if (!extra) return n;
-      return { ...n, dependencies: [...n.dependencies, ...extra] };
+      const isLeaf = n.childrenIds.length === 0;
+      const needsEffortFill = isLeaf && (n.effortEstimate == null || n.effortEstimate <= 0);
+      if (!extra && !needsEffortFill) return n;
+      return {
+        ...n,
+        dependencies: extra ? [...n.dependencies, ...extra] : n.dependencies,
+        effortEstimate: needsEffortFill ? minLeafEffort : n.effortEstimate,
+      };
     });
 
     // Mirror the backend's constraint-building: pinned startDate → minStart,
