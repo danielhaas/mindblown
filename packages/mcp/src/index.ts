@@ -2245,6 +2245,153 @@ server.tool(
   },
 );
 
+// ── AI tools ────────────────────────────────────────────────────
+
+server.tool(
+  'ai_breakdown',
+  'Break a node into suggested child tasks using the LLM. Returns the suggestions; if apply=true (default), also creates them as children of the target node and returns the created node IDs. The node need not be a leaf — but the LLM is instructed to avoid duplicating existing children.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node to break down'),
+    count: z.number().int().min(1).max(15).optional().describe('How many subtasks to suggest (1-15, default 5)'),
+    hint: z.string().optional().describe('Optional extra context to steer the breakdown'),
+    apply: z.boolean().optional().describe('If true (default), create the suggested nodes; if false, only return the preview'),
+  },
+  async ({ mapId, nodeId, count, hint, apply }) => {
+    try {
+      const { suggestions } = await api.aiBreakdown(mapId, nodeId, count, hint);
+      if (suggestions.length === 0) {
+        return toolResult('Model returned no suggestions.');
+      }
+      const previewLines = suggestions.map(
+        (s, i) => `  ${i + 1}. ${s.text}${s.estimate != null ? ` (est ${s.estimate})` : ''}`,
+      );
+
+      const shouldApply = apply !== false;
+      if (!shouldApply) {
+        return toolResult(`Suggested ${suggestions.length} subtasks (preview only — pass apply=true to create):\n${previewLines.join('\n')}`);
+      }
+
+      const { created } = await api.aiBreakdownAccept(mapId, nodeId, suggestions);
+      const createdLines = created.map((n, i) => `  ${i + 1}. [${n.id}] ${n.text}`);
+      return toolResult(`Created ${created.length} child node(s) under ${nodeId}:\n${createdLines.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'ai_braindump',
+  'Convert a freeform brain-dump of prose into a nested tree of tasks and (by default) attach it under an existing parent node. Useful for capturing meeting notes or stream-of-consciousness planning. The LLM groups related ideas, strips numbering, and writes imperative task labels.',
+  {
+    mapId: z.string().describe('The map ID'),
+    parentId: z.string().describe('Parent node to attach the new subtree under'),
+    prose: z.string().describe('Freeform prose to structure into tasks'),
+    maxDepth: z.number().int().min(1).max(3).optional().describe('Maximum nesting depth (1-3, default 3)'),
+    apply: z.boolean().optional().describe('If true (default), create the tree; if false, only return the preview'),
+  },
+  async ({ mapId, parentId, prose, maxDepth, apply }) => {
+    try {
+      const { tree } = await api.aiBraindump(mapId, parentId, prose, maxDepth);
+      if (tree.length === 0) {
+        return toolResult('Model returned no usable tasks.');
+      }
+
+      const renderTree = (nodes: api.BraindumpNode[], depth: number): string[] => {
+        const out: string[] = [];
+        for (const n of nodes) {
+          const indent = '  '.repeat(depth);
+          out.push(`${indent}- ${n.text}${n.estimate != null ? ` (est ${n.estimate})` : ''}`);
+          if (n.children.length > 0) out.push(...renderTree(n.children, depth + 1));
+        }
+        return out;
+      };
+      const previewLines = renderTree(tree, 0);
+
+      const shouldApply = apply !== false;
+      if (!shouldApply) {
+        return toolResult(`Proposed tree (preview only — pass apply=true to create):\n${previewLines.join('\n')}`);
+      }
+
+      const { createdCount } = await api.aiBraindumpAccept(mapId, parentId, tree);
+      return toolResult(`Created ${createdCount} node(s) under ${parentId}:\n${previewLines.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'ai_estimate',
+  'Generate a calibrated effort estimate for a task using the LLM. Uses up to 30 recently completed leaves (with both estimate and actual) as reference samples and applies a velocity fudge factor so the result is in the same calibrated space as the schedule projections. Pass either text (freeform) or nodeId (existing node — pulls its title, description, and ancestor path).',
+  {
+    mapId: z.string().describe('The map ID'),
+    text: z.string().optional().describe('Freeform text to estimate (alternative to nodeId)'),
+    nodeId: z.string().optional().describe('Existing node to estimate (alternative to text)'),
+    hint: z.string().optional().describe('Optional hint to steer the estimate'),
+  },
+  async ({ mapId, text, nodeId, hint }) => {
+    try {
+      if (!text && !nodeId) {
+        return toolResult('Error: must provide either text or nodeId.');
+      }
+      const result = await api.aiEstimate(mapId, { text, nodeId, hint });
+      const lines = [
+        `Estimate: ${result.estimate} ${result.effortUnit} (raw ${result.rawEstimate}, fudge ${result.fudgeFactor})`,
+        `Confidence: ${result.confidence}`,
+        `Calibration samples: ${result.samplesUsed}`,
+      ];
+      if (result.notes) lines.push(`Notes: ${result.notes}`);
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'semantic_search',
+  'Semantic search over node titles + descriptions in a map using pre-computed embeddings. Returns nodes ranked by cosine similarity to the query. Better than search_nodes when you want concept matches rather than substring matches. Nodes without an embedding are silently skipped — run ai_backfill_embeddings if coverage matters.',
+  {
+    mapId: z.string().describe('The map ID'),
+    q: z.string().describe('The semantic query'),
+    limit: z.number().int().min(1).max(50).optional().describe('Max matches to return (1-50, default 10)'),
+  },
+  async ({ mapId, q, limit }) => {
+    try {
+      const { matches } = await api.aiSemanticSearch(mapId, q, limit);
+      if (matches.length === 0) {
+        return toolResult('No matches found.');
+      }
+      const lines = matches.map(
+        (m, i) => `  ${i + 1}. [${m.nodeId}] ${m.text} (score ${m.score.toFixed(3)})`,
+      );
+      return toolResult(`Found ${matches.length} match(es):\n${lines.join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'ai_standup',
+  'Generate a narrated daily standup for a map. Aggregates recently changed leaves, in-progress leaves, and blocked/behind leaves over the look-back window, then asks the LLM to write a concise three-section narrative (Done / In progress / Blockers).',
+  {
+    mapId: z.string().describe('The map ID'),
+    sinceHours: z.number().int().min(1).max(168).optional().describe('Look-back window in hours (1-168, default 24)'),
+  },
+  async ({ mapId, sinceHours }) => {
+    try {
+      const result = await api.aiStandup(mapId, sinceHours);
+      const header = `Standup for the last ${result.sinceHours}h — ${result.recentlyChanged} changed, ${result.inProgress} in progress, ${result.blocked} blocked\n`;
+      return toolResult(header + result.narrative);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 // ════════════════════════════════════════════════════════════════
 //  RESOURCES
 // ════════════════════════════════════════════════════════════════

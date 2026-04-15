@@ -11,7 +11,7 @@ import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
-import type { Node as CoreNode } from '@mindblown/core';
+import { computeTree, type Node as CoreNode } from '@mindblown/core';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -793,6 +793,97 @@ Title: "${targetText}"`;
     } catch (err: any) {
       return reply.status(500).send({
         error: { code: 'CREATE_FAILED', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/standup — narrated daily standup ──────────────
+  //
+  // Request:  { mapId, sinceHours? }
+  // Response: { narrative, recentlyChanged, inProgress, blocked }
+  //
+  // Aggregates recently-changed leaves, in-progress leaves, and behind
+  // leaves, then asks the LLM to produce a short narrative standup.
+
+  app.post('/api/ai/standup', async (req, reply) => {
+    const body = req.body as { mapId: string; sinceHours?: number };
+    if (!body.mapId) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId is required' },
+      });
+    }
+
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` },
+      });
+    }
+
+    const sinceHours = Math.max(1, Math.min(body.sinceHours ?? 24, 168));
+    const cutoffMs = Date.now() - sinceHours * 60 * 60 * 1000;
+    const cutoffIso = new Date(cutoffMs).toISOString();
+
+    const computed = computeTree(mapDetail.nodes, mapDetail.map.healthThreshold);
+    const leaves = mapDetail.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+    const recentlyChanged = leaves.filter((n) => n.updatedAt > cutoffIso);
+    const inProgress = leaves.filter(
+      (n) => (n.percentComplete ?? 0) > 0 && (n.percentComplete ?? 0) < 100,
+    );
+    const blocked = leaves.filter((n) => computed.get(n.id)?.healthSignal === 'behind');
+
+    const fmtLine = (n: typeof leaves[number]) => {
+      const pct = Math.round(n.percentComplete ?? 0);
+      const status = n.status ? ` [${n.status}]` : '';
+      return `- ${n.text} — ${pct}%${status}`;
+    };
+
+    const sections: string[] = [];
+    sections.push(`Recently changed (last ${sinceHours}h):`);
+    sections.push(recentlyChanged.length === 0 ? '  (none)' : recentlyChanged.map(fmtLine).join('\n'));
+    sections.push('');
+    sections.push('In progress:');
+    sections.push(inProgress.length === 0 ? '  (none)' : inProgress.map(fmtLine).join('\n'));
+    sections.push('');
+    sections.push('Blocked / behind:');
+    sections.push(blocked.length === 0 ? '  (none)' : blocked.map(fmtLine).join('\n'));
+
+    const systemPrompt = `You are a project assistant generating a daily standup update. You receive a structured snapshot of work and produce a concise narrative for the team.
+
+Rules:
+- Output plain text, NOT JSON or markdown headers
+- Three short sections, each one paragraph: "Done:", "In progress:", "Blockers:"
+- Be specific — name the items, don't paraphrase generically
+- Keep the whole response under 150 words
+- If a section has no items, say so in one short sentence
+- No preamble, no closing remarks — just the three sections`;
+
+    const userPrompt = `Project: ${mapDetail.map.name}
+
+${sections.join('\n')}
+
+Generate the standup.`;
+
+    try {
+      const narrative = await chatCompletion({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.4,
+        maxTokens: 600,
+      });
+
+      return {
+        narrative: narrative.trim(),
+        recentlyChanged: recentlyChanged.length,
+        inProgress: inProgress.length,
+        blocked: blocked.length,
+        sinceHours,
+      };
+    } catch (err: any) {
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
       });
     }
   });

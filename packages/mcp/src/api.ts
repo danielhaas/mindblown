@@ -506,3 +506,113 @@ export function createMilestone(
     body: JSON.stringify({ workspaceId, name, versionId, description, targetDate }),
   });
 }
+
+// ── AI ────────────────────────────────────────────────────────
+
+export interface BreakdownSuggestion {
+  text: string;
+  estimate: number | null;
+}
+
+export interface BraindumpNode {
+  text: string;
+  estimate: number | null;
+  children: BraindumpNode[];
+}
+
+export interface AiEstimateResult {
+  estimate: number;
+  rawEstimate: number;
+  confidence: 'low' | 'medium' | 'high';
+  notes?: string;
+  samplesUsed: number;
+  fudgeFactor: number;
+  effortUnit: string;
+}
+
+export interface SemanticMatch {
+  nodeId: string;
+  text: string;
+  score: number;
+}
+
+export interface AiStandupResult {
+  narrative: string;
+  recentlyChanged: number;
+  inProgress: number;
+  blocked: number;
+  sinceHours: number;
+}
+
+export function aiBreakdown(
+  mapId: string,
+  nodeId: string,
+  count?: number,
+  hint?: string,
+): Promise<{ suggestions: BreakdownSuggestion[] }> {
+  return request<{ suggestions: BreakdownSuggestion[] }>('/api/ai/breakdown', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, nodeId, count, hint }),
+  });
+}
+
+export function aiBreakdownAccept(
+  mapId: string,
+  parentId: string,
+  tasks: BreakdownSuggestion[],
+): Promise<{ created: NodeWithComputed[] }> {
+  return request<{ created: NodeWithComputed[] }>('/api/ai/breakdown/accept', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, tasks }),
+  });
+}
+
+export function aiBraindump(
+  mapId: string,
+  parentId: string,
+  prose: string,
+  maxDepth?: number,
+): Promise<{ tree: BraindumpNode[] }> {
+  return request<{ tree: BraindumpNode[] }>('/api/ai/braindump', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+  });
+}
+
+export function aiBraindumpAccept(
+  mapId: string,
+  parentId: string,
+  tree: BraindumpNode[],
+): Promise<{ createdCount: number }> {
+  return request<{ createdCount: number }>('/api/ai/braindump/accept', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, tree }),
+  });
+}
+
+export function aiEstimate(
+  mapId: string,
+  opts: { text?: string; nodeId?: string; hint?: string },
+): Promise<AiEstimateResult> {
+  return request<AiEstimateResult>('/api/ai/estimate', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, ...opts }),
+  });
+}
+
+export function aiSemanticSearch(
+  mapId: string,
+  q: string,
+  limit?: number,
+): Promise<{ matches: SemanticMatch[] }> {
+  const params = new URLSearchParams({ mapId, q });
+  if (limit != null) params.set('limit', String(limit));
+  return request<{ matches: SemanticMatch[] }>(`/api/ai/search?${params.toString()}`);
+}
+
+export function aiStandup(mapId: string, sinceHours?: number): Promise<AiStandupResult> {
+  return request<AiStandupResult>('/api/ai/standup', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, sinceHours }),
+  });
+}
