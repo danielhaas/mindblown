@@ -4,6 +4,7 @@ import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { authRoutes } from './auth.js';
+import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
 import { mapRoutes } from './routes/maps.js';
 import { nodeRoutes } from './routes/nodes.js';
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   await app.register(integrationRoutes);
   await app.register(githubAuthRoutes);
   await app.register(aiRoutes);
+  await app.register(systemRoutes);
   await registerWebSocket(app);
 
   // ── Database setup ─────────────────────────────────────────────

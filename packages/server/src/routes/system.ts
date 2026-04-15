@@ -1,0 +1,63 @@
+/**
+ * System-wide routes — currently just the registration policy getter/setter.
+ * Reads are open to authenticated users (so the login screen can explain why
+ * signup is closed); writes are admin-only.
+ */
+
+import type { FastifyInstance } from 'fastify';
+import { eq } from 'drizzle-orm';
+import { db } from '../db/connection.js';
+import { users } from '../db/schema.js';
+import {
+  getRegistrationPolicy,
+  setRegistrationPolicy,
+  type RegistrationPolicy,
+} from '../db/settings.js';
+
+async function requireAdmin(userId: string | undefined): Promise<boolean> {
+  if (!userId) return false;
+  const [row] = await db
+    .select({ isAdmin: users.isAdmin })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return Boolean(row?.isAdmin);
+}
+
+export async function systemRoutes(app: FastifyInstance): Promise<void> {
+  // ── GET /api/system/registration-policy ────────────────────────
+  // Any authenticated user can read the policy so the login UI and admin
+  // panel share one source of truth.
+  app.get('/api/system/registration-policy', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    const policy = await getRegistrationPolicy();
+    return policy;
+  });
+
+  // ── PUT /api/system/registration-policy ────────────────────────
+  // Admin-only.
+  app.put('/api/system/registration-policy', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!(await requireAdmin(userId))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+    const body = req.body as Partial<RegistrationPolicy>;
+    if (!body || !body.mode) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mode is required' },
+      });
+    }
+    const saved = await setRegistrationPolicy({
+      mode: body.mode,
+      allowlist: Array.isArray(body.allowlist) ? body.allowlist : [],
+    });
+    return saved;
+  });
+}

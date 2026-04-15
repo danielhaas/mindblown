@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import jwt from 'jsonwebtoken';
 import type { FastifyInstance } from 'fastify';
 import { db } from './db/connection.js';
-import { users } from './db/schema.js';
+import { users, pendingInvites } from './db/schema.js';
 import { eq } from 'drizzle-orm';
 import { resolvePendingInvites } from './db/permissions.js';
 
@@ -42,6 +42,69 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, JWT_SECRET) as JwtPayload;
 }
 
+// ── Registration policy ──────────────────────────────────────────
+//
+// Policy lives in system_settings (see db/settings.ts) and is editable via
+// the admin UI. Supported modes:
+//
+//   'open'         — anyone can register
+//   'invite_only'  — only emails with a pending map invite can register
+//   'allowlist'    — allowlist entries (exact email or "@domain") OR an
+//                    existing pending invite can register
+//
+// Bootstrap escape hatch: if there are ZERO users in the database, the
+// first registration is always allowed so you can create the initial
+// account on a fresh deploy. That first user also gets is_admin=true.
+
+import { getRegistrationPolicy } from './db/settings.js';
+
+function isAllowlistedEmail(email: string, allowlist: string[]): boolean {
+  const lower = email.toLowerCase();
+  for (const raw of allowlist) {
+    const entry = raw.trim().toLowerCase();
+    if (!entry) continue;
+    if (entry.startsWith('@')) {
+      if (lower.endsWith(entry)) return true;
+    } else if (entry === lower) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function hasPendingInvite(email: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: pendingInvites.id })
+    .from(pendingInvites)
+    .where(eq(pendingInvites.email, email.toLowerCase()))
+    .limit(1);
+  return rows.length > 0;
+}
+
+async function canRegister(email: string): Promise<{ ok: boolean; reason?: string }> {
+  // Bootstrap: if the users table is empty, the first registration is always
+  // allowed (that user becomes the admin).
+  const [anyUser] = await db.select({ id: users.id }).from(users).limit(1);
+  if (!anyUser) return { ok: true };
+
+  const policy = await getRegistrationPolicy();
+  switch (policy.mode) {
+    case 'open':
+      return { ok: true };
+    case 'invite_only':
+      return (await hasPendingInvite(email))
+        ? { ok: true }
+        : { ok: false, reason: 'Registration is invite-only. Ask an admin to send you a map invite.' };
+    case 'allowlist':
+      if (isAllowlistedEmail(email, policy.allowlist)) return { ok: true };
+      if (await hasPendingInvite(email)) return { ok: true };
+      return {
+        ok: false,
+        reason: 'Registration is restricted. Ask an admin to add your email to the allowlist, or use an invite link.',
+      };
+  }
+}
+
 // ── Auth Routes ───────────────────────────────────────────────────
 
 export async function authRoutes(app: FastifyInstance): Promise<void> {
@@ -52,6 +115,17 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!body.email || !body.password) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'email and password are required' },
+      });
+    }
+
+    // Gate against the DB-backed registration policy.
+    const gate = await canRegister(body.email);
+    if (!gate.ok) {
+      return reply.status(403).send({
+        error: {
+          code: 'REGISTRATION_CLOSED',
+          message: gate.reason ?? 'Registration is closed.',
+        },
       });
     }
 
@@ -67,15 +141,25 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const passwordHash = await hashPassword(body.password);
 
+    // Bootstrap: if this is the first user, promote them to admin.
+    const [anyAdmin] = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(eq(users.isAdmin, true))
+      .limit(1);
+    const isFirstAdmin = !anyAdmin;
+
     const [user] = await db.insert(users).values({
       email: body.email,
       name,
       passwordHash,
+      isAdmin: isFirstAdmin,
     }).returning({
       id: users.id,
       email: users.email,
       name: users.name,
       avatarUrl: users.avatarUrl,
+      isAdmin: users.isAdmin,
       createdAt: users.createdAt,
     });
 
@@ -129,6 +213,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         email: user.email,
         name: user.name,
         avatarUrl: user.avatarUrl,
+        isAdmin: user.isAdmin,
         createdAt: user.createdAt,
       },
       token,
@@ -150,6 +235,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       email: users.email,
       name: users.name,
       avatarUrl: users.avatarUrl,
+      isAdmin: users.isAdmin,
       createdAt: users.createdAt,
     }).from(users).where(eq(users.id, userId)).limit(1);
 

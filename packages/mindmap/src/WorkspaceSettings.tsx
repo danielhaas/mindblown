@@ -12,6 +12,7 @@ import {
 } from './api.js';
 import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
+import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -409,6 +410,9 @@ export function WorkspaceSettings({
               </div>
             )}
           </div>
+
+          {/* Registration policy — shown only in workspace-wide view */}
+          {!mapId && <RegistrationPolicyPanel />}
         </div>
       </div>
     </div>

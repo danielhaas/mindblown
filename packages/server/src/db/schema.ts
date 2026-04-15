@@ -19,7 +19,16 @@ export const users = pgTable('users', {
   name: text('name').notNull(),
   passwordHash: text('password_hash'),
   avatarUrl: text('avatar_url'),
+  isAdmin: boolean('is_admin').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── System-wide key/value settings ────────────────────────────────
+
+export const systemSettings = pgTable('system_settings', {
+  key: text('key').primaryKey(),
+  value: jsonb('value').notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Workspaces ─────────────────────────────────────────────────────

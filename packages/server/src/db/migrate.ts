@@ -298,6 +298,29 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
 
+  // ── System settings (key/value store) ─────────────────────────
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // ── Admin flag on users ───────────────────────────────────────
+  await db.execute(sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false
+  `);
+
+  // First-run bootstrap: if no user is an admin yet, promote the
+  // oldest-registered user. Keeps fresh deploys secure (no admin until a
+  // user exists) while giving existing deployments an obvious upgrade path.
+  await db.execute(sql`
+    UPDATE users SET is_admin = true
+    WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
+      AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true)
+  `);
+
   // ── Node embeddings (semantic search) ─────────────────────────
   // Stored as jsonb float array — pgvector isn't available on the
   // prod Postgres image, so similarity is computed in JS. Fine for

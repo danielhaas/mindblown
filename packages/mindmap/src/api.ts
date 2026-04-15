@@ -25,7 +25,26 @@ export interface AuthUser {
   email: string;
   name: string;
   avatarUrl?: string | null;
+  isAdmin?: boolean;
   createdAt?: string;
+}
+
+export type RegistrationMode = 'open' | 'invite_only' | 'allowlist';
+
+export interface RegistrationPolicy {
+  mode: RegistrationMode;
+  allowlist: string[];
+}
+
+export function getRegistrationPolicy(): Promise<RegistrationPolicy> {
+  return request('/api/system/registration-policy');
+}
+
+export function setRegistrationPolicy(policy: RegistrationPolicy): Promise<RegistrationPolicy> {
+  return request('/api/system/registration-policy', {
+    method: 'PUT',
+    body: JSON.stringify(policy),
+  });
 }
 
 export interface AuthResponse {
