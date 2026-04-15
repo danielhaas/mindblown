@@ -74,6 +74,9 @@ const server = new McpServer(
 
 **Updating progress:** set_progress on leaf nodes you've worked on. Parents update automatically.
 
+**Working on a task — always update progress as you go:**
+When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started"). When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
+
 **Release planning (versions + milestones):**
 1. create_version to define a release (e.g. "V1", "V2")
 2. create_milestone to define key deliverables within that version (e.g. "Kernsystem MVP", "Billing Module")
