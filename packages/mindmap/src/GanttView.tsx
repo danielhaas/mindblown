@@ -300,22 +300,30 @@ export function GanttView() {
   //
   // Manual startDate/dueDate pins are still honored via constraints, using
   // the same ISO→unit math as the backend schedule route.
-  const scheduleData = useMemo<ScheduleResponse | null>(() => {
-    if (!serverScheduleData) return null;
-    if (!sequentialMode) return serverScheduleData;
+  const sequentialResult = useMemo<{
+    data: ScheduleResponse;
+    edges: number;
+    fills: number;
+    pinnedLeaves: number;
+    error: string | null;
+  } | null>(() => {
+    if (!serverScheduleData || !sequentialMode) return null;
 
     const unitsPerDay = serverScheduleData.unitsPerDay || 1;
     const anchor = new Date(serverScheduleData.projectStartDate);
     anchor.setUTCHours(0, 0, 0, 0);
 
     const nodeList = Object.values(nodes);
-    if (nodeList.length === 0) return serverScheduleData;
+    if (nodeList.length === 0) {
+      return { data: serverScheduleData, edges: 0, fills: 0, pinnedLeaves: 0, error: 'no nodes' };
+    }
 
     const p = Math.max(1, parallelism);
     // Synthetic FS edges attach to the follower child, not the parent, so
     // the existing expandParentDependencies/topoSort pipeline handles them
     // naturally.
     const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
+    let edges = 0;
     for (const n of nodeList) {
       if (n.childrenIds.length < 2) continue;
       for (let i = p; i < n.childrenIds.length; i++) {
@@ -324,6 +332,7 @@ export function GanttView() {
         const list = extraDeps.get(follower) ?? [];
         list.push({ targetNodeId: predecessor, type: 'FS', lag: 0 });
         extraDeps.set(follower, list);
+        edges++;
       }
     }
 
@@ -333,10 +342,12 @@ export function GanttView() {
     // invisible. In sequential mode we give any unestimated leaf a
     // 1-day placeholder so the what-if view is actually readable.
     const minLeafEffort = unitsPerDay;
+    let fills = 0;
     const patched: Node[] = nodeList.map((n) => {
       const extra = extraDeps.get(n.id);
       const isLeaf = n.childrenIds.length === 0;
       const needsEffortFill = isLeaf && (n.effortEstimate == null || n.effortEstimate <= 0);
+      if (needsEffortFill) fills++;
       if (!extra && !needsEffortFill) return n;
       return {
         ...n,
@@ -347,6 +358,11 @@ export function GanttView() {
 
     // Mirror the backend's constraint-building: pinned startDate → minStart,
     // pinned dueDate → maxEnd, converted from ISO to effort-unit space.
+    //
+    // Only pin LEAVES. Pinning parents is pointless (their start/end gets
+    // rolled up from children) and, worse, an inherited pin on a non-leaf
+    // is a common way users accidentally lock the whole subtree. In
+    // sequential mode we want to see the what-if cascade, not the pins.
     const MS_PER_DAY = 86400000;
     const isoToUnits = (isoDate: string): number => {
       const d = new Date(isoDate);
@@ -355,12 +371,15 @@ export function GanttView() {
       return calendarDays * unitsPerDay;
     };
     const constraints = new Map<NodeId, ScheduleConstraint>();
+    let pinnedLeaves = 0;
     for (const n of patched) {
+      if (n.childrenIds.length > 0) continue;
       const pin: ScheduleConstraint = {};
       if (n.startDate) pin.minStart = isoToUnits(n.startDate);
       if (n.dueDate) pin.maxEnd = isoToUnits(n.dueDate);
       if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
         constraints.set(n.id, pin);
+        pinnedLeaves++;
       }
     }
 
@@ -368,17 +387,32 @@ export function GanttView() {
       const scheduled = computeSchedule(patched, 0, constraints);
       const cp = computeCriticalPath(patched);
       return {
-        schedule: scheduled,
-        criticalPath: cp,
-        projectStartDate: serverScheduleData.projectStartDate,
-        effortUnit: serverScheduleData.effortUnit,
-        unitsPerDay,
+        data: {
+          schedule: scheduled,
+          criticalPath: cp,
+          projectStartDate: serverScheduleData.projectStartDate,
+          effortUnit: serverScheduleData.effortUnit,
+          unitsPerDay,
+        },
+        edges,
+        fills,
+        pinnedLeaves,
+        error: null,
       };
-    } catch {
-      // Fall back to server schedule on circular deps etc.
-      return serverScheduleData;
+    } catch (e) {
+      return {
+        data: serverScheduleData,
+        edges,
+        fills,
+        pinnedLeaves,
+        error: e instanceof Error ? e.message : String(e),
+      };
     }
   }, [serverScheduleData, sequentialMode, parallelism, nodes]);
+
+  const scheduleData: ScheduleResponse | null = sequentialMode
+    ? sequentialResult?.data ?? serverScheduleData
+    : serverScheduleData;
 
   const criticalPath = scheduleData?.criticalPath ?? null;
 
@@ -761,6 +795,20 @@ export function GanttView() {
                 background: '#fff',
               }}
             />
+            {sequentialResult && (
+              <span
+                style={{
+                  fontSize: 11,
+                  color: sequentialResult.error ? '#dc2626' : '#64748b',
+                  fontStyle: 'italic',
+                }}
+                title={sequentialResult.error ?? 'Synthetic FS edges added between siblings. Unestimated leaves get a 1-day placeholder.'}
+              >
+                {sequentialResult.error
+                  ? `error: ${sequentialResult.error}`
+                  : `${sequentialResult.edges} edges, ${sequentialResult.fills} filled, ${sequentialResult.pinnedLeaves} pinned`}
+              </span>
+            )}
           </>
         )}
 
