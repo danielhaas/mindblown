@@ -657,6 +657,79 @@ export function GanttView() {
     try {
       const scheduled = computeSchedule(patched, 0, constraints);
       const cp = computeCriticalPath(patched);
+
+      // ── Forcibly overwrite done/in-progress leaf positions ──
+      //
+      // The scheduler calls expandParentDependencies internally, which
+      // pushes any ancestor's real deps down to every leaf in that
+      // subtree. So even after we clear a leaf's own dependencies, it
+      // can still inherit a future-dated parent dep and end up ahead
+      // of its past-pin (which is just a lower bound). We post-process:
+      // walk the schedule, override done/in-progress leaves to their
+      // desired pinned positions, then re-roll-up parents bottom-up so
+      // their computedStart/End reflect the overridden leaves.
+      const scheduledIdx = new Map<string, number>();
+      scheduled.forEach((s, i) => scheduledIdx.set(s.nodeId, i));
+
+      const patchedById = new Map<string, Node>();
+      for (const n of patched) patchedById.set(n.id, n);
+
+      for (let i = 0; i < scheduled.length; i++) {
+        const s = scheduled[i];
+        const node = patchedById.get(s.nodeId);
+        if (!node || node.childrenIds.length > 0) continue;
+        const pct = node.percentComplete ?? 0;
+        if (pct >= 100) {
+          const effortUnits =
+            (node.effortEstimate ?? minLeafEffort) || minLeafEffort;
+          scheduled[i] = {
+            nodeId: s.nodeId,
+            computedStart: todayUnits - effortUnits,
+            computedEnd: todayUnits,
+            duration: effortUnits,
+          };
+        } else if (pct > 0) {
+          const effortUnits =
+            (node.effortEstimate ?? minLeafEffort) || minLeafEffort;
+          scheduled[i] = {
+            nodeId: s.nodeId,
+            computedStart: todayUnits,
+            computedEnd: todayUnits + effortUnits,
+            duration: effortUnits,
+          };
+        }
+      }
+
+      // Bottom-up parent rollup. Post-order DFS from root so every
+      // child has its final values before its parent is computed.
+      const rollup = (nodeId: string): { start: number; end: number } | null => {
+        const node = patchedById.get(nodeId);
+        if (!node) return null;
+        const idx = scheduledIdx.get(nodeId);
+        if (idx == null) return null;
+        if (node.childrenIds.length === 0) {
+          const s = scheduled[idx];
+          return { start: s.computedStart, end: s.computedEnd };
+        }
+        let minStart = Infinity;
+        let maxEnd = -Infinity;
+        for (const cid of node.childrenIds) {
+          const c = rollup(cid);
+          if (!c) continue;
+          if (c.start < minStart) minStart = c.start;
+          if (c.end > maxEnd) maxEnd = c.end;
+        }
+        if (minStart === Infinity) return null;
+        scheduled[idx] = {
+          nodeId,
+          computedStart: minStart,
+          computedEnd: maxEnd,
+          duration: maxEnd - minStart,
+        };
+        return { start: minStart, end: maxEnd };
+      };
+      if (rootNodeId) rollup(rootNodeId);
+
       return {
         data: {
           schedule: scheduled,
