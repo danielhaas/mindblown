@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { Node, NodeId, CriticalPathResult, ScheduledNode } from '@mindblown/core';
+import type { Node, NodeId, CriticalPathResult, ScheduledNode, ScheduleConstraint } from '@mindblown/core';
+import { schedule as computeSchedule, criticalPath as computeCriticalPath } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { fetchSchedule } from './api.js';
 
@@ -250,16 +251,14 @@ export function GanttView() {
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
-  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
-  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
 
   // Local UI state
   const [scale, setScale] = useState<TimeScale>('week');
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(() => new Set());
-  const [scheduleData, setScheduleData] = useState<ScheduleResponse | null>(null);
+  const [serverScheduleData, setServerScheduleData] = useState<ScheduleResponse | null>(null);
   const [selectedBaseline, setSelectedBaseline] = useState<string | null>(null);
-  const criticalPath = scheduleData?.criticalPath ?? null;
+  const [sequentialMode, setSequentialMode] = useState(false);
+  const [parallelism, setParallelism] = useState(1);
 
   // Drag state
   const [dragInfo, setDragInfo] = useState<{
@@ -283,13 +282,93 @@ export function GanttView() {
       .then((data: unknown) => {
         const d = data as ScheduleResponse | null;
         if (d && Array.isArray(d.schedule)) {
-          setScheduleData(d);
+          setServerScheduleData(d);
         }
       })
       .catch(() => {
         // Graceful fallback: no computed schedule, Gantt shows empty bars.
       });
   }, [currentMapId, nodes]);
+
+  // ── Sequential what-if schedule ────────────────────────────────
+  //
+  // When sequential mode is on, we re-run the scheduler client-side with
+  // synthetic FS dependencies between siblings so the Gantt can answer
+  // "what if I did these one after another?" without mutating the map.
+  // `parallelism = N` means N parallel tracks — sibling[i] gets an extra
+  // FS dep on sibling[i - N]. N=1 is fully sequential.
+  //
+  // Manual startDate/dueDate pins are still honored via constraints, using
+  // the same ISO→unit math as the backend schedule route.
+  const scheduleData = useMemo<ScheduleResponse | null>(() => {
+    if (!serverScheduleData) return null;
+    if (!sequentialMode) return serverScheduleData;
+
+    const unitsPerDay = serverScheduleData.unitsPerDay || 1;
+    const anchor = new Date(serverScheduleData.projectStartDate);
+    anchor.setUTCHours(0, 0, 0, 0);
+
+    const nodeList = Object.values(nodes);
+    if (nodeList.length === 0) return serverScheduleData;
+
+    const p = Math.max(1, parallelism);
+    // Synthetic FS edges attach to the follower child, not the parent, so
+    // the existing expandParentDependencies/topoSort pipeline handles them
+    // naturally.
+    const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
+    for (const n of nodeList) {
+      if (n.childrenIds.length < 2) continue;
+      for (let i = p; i < n.childrenIds.length; i++) {
+        const follower = n.childrenIds[i];
+        const predecessor = n.childrenIds[i - p];
+        const list = extraDeps.get(follower) ?? [];
+        list.push({ targetNodeId: predecessor, type: 'FS', lag: 0 });
+        extraDeps.set(follower, list);
+      }
+    }
+
+    const patched: Node[] = nodeList.map((n) => {
+      const extra = extraDeps.get(n.id);
+      if (!extra) return n;
+      return { ...n, dependencies: [...n.dependencies, ...extra] };
+    });
+
+    // Mirror the backend's constraint-building: pinned startDate → minStart,
+    // pinned dueDate → maxEnd, converted from ISO to effort-unit space.
+    const MS_PER_DAY = 86400000;
+    const isoToUnits = (isoDate: string): number => {
+      const d = new Date(isoDate);
+      d.setUTCHours(0, 0, 0, 0);
+      const calendarDays = Math.round((d.getTime() - anchor.getTime()) / MS_PER_DAY);
+      return calendarDays * unitsPerDay;
+    };
+    const constraints = new Map<NodeId, ScheduleConstraint>();
+    for (const n of patched) {
+      const pin: ScheduleConstraint = {};
+      if (n.startDate) pin.minStart = isoToUnits(n.startDate);
+      if (n.dueDate) pin.maxEnd = isoToUnits(n.dueDate);
+      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+        constraints.set(n.id, pin);
+      }
+    }
+
+    try {
+      const scheduled = computeSchedule(patched, 0, constraints);
+      const cp = computeCriticalPath(patched);
+      return {
+        schedule: scheduled,
+        criticalPath: cp,
+        projectStartDate: serverScheduleData.projectStartDate,
+        effortUnit: serverScheduleData.effortUnit,
+        unitsPerDay,
+      };
+    } catch {
+      // Fall back to server schedule on circular deps etc.
+      return serverScheduleData;
+    }
+  }, [serverScheduleData, sequentialMode, parallelism, nodes]);
+
+  const criticalPath = scheduleData?.criticalPath ?? null;
 
   // ── Map computed offsets → calendar dates ──────────────────────
   //
@@ -320,27 +399,60 @@ export function GanttView() {
     return map;
   }, [scheduleData]);
 
-  // ── Flatten nodes into rows (respects drill-down) ──────────────
-
+  // ── Flatten nodes into rows ────────────────────────────────────
+  //
+  // Walks the tree directly rather than routing through the mindmap's
+  // `getVisibleNodes()` — the Gantt has its own collapse state and must
+  // not inherit mindmap depth/focus, otherwise collapsed branches in the
+  // mindmap silently hide their children from the Gantt (the same bug
+  // KanbanView had before v0.7.1).
+  //
+  // Version/cycle filters still apply, with ancestor inheritance: if a
+  // parent is tagged V1, its untagged children inherit V1. A subtree is
+  // shown only if the current node matches the active filter.
   const rows = useMemo(() => {
-    const visibleNodes = getVisibleNodes();
-    if (visibleNodes.length === 0) return [];
+    if (!rootNodeId || !nodes[rootNodeId]) return [];
+
+    const inScope = new Set<string>();
+    if (activeVersionFilter || activeCycleFilter) {
+      const walkScope = (nodeId: string, inheritedVersion: string | null, inheritedCycle: string | null) => {
+        const node = nodes[nodeId];
+        if (!node) return;
+        const effVersion = node.versionId ?? inheritedVersion;
+        const effCycle = node.cycleId ?? inheritedCycle;
+        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
+        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
+        if (matchesVersion && matchesCycle) inScope.add(nodeId);
+        for (const cid of node.childrenIds) walkScope(cid, effVersion, effCycle);
+      };
+      walkScope(rootNodeId, null, null);
+    }
 
     const result: FlatRow[] = [];
-    for (const vn of visibleNodes) {
-      if (vn.isDimmed) continue;
-      const hasChildren = vn.node.childrenIds.length > 0 && !vn.hasHiddenChildren;
-      const isExpanded = !collapsedSet.has(vn.node.id);
+    const walk = (nodeId: string, depth: number) => {
+      const node = nodes[nodeId];
+      if (!node) return;
+      if ((activeVersionFilter || activeCycleFilter) && !inScope.has(nodeId)) {
+        // Skip this node but still descend — a tagged leaf can live under
+        // an untagged parent.
+        for (const cid of node.childrenIds) walk(cid, depth);
+        return;
+      }
+      const hasChildren = node.childrenIds.length > 0;
+      const isExpanded = !collapsedSet.has(nodeId);
       result.push({
-        node: vn.node,
-        depth: vn.depth,
+        node,
+        depth,
         isExpanded: hasChildren ? isExpanded : false,
         hasChildren,
       });
-    }
-
+      if (hasChildren && isExpanded) {
+        for (const cid of node.childrenIds) walk(cid, depth + 1);
+      }
+    };
+    walk(rootNodeId, 0);
     return result;
-  }, [nodes, rootNodeId, collapsedSet, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter]);
+  }, [nodes, rootNodeId, collapsedSet, activeVersionFilter, activeCycleFilter]);
 
   // ── Build baseline lookup ───────────────────────────────────────
 
@@ -394,10 +506,10 @@ export function GanttView() {
     hasAutoScrolled.current = true;
   }, [rangeStart, colWidth, scale]);
 
-  // Reset auto-scroll flag when scale changes
+  // Reset auto-scroll flag when scale or the active schedule changes
   useEffect(() => {
     hasAutoScrolled.current = false;
-  }, [scale]);
+  }, [scale, sequentialMode, parallelism]);
 
   // ── Synchronized scrolling ──────────────────────────────────────
 
@@ -594,6 +706,51 @@ export function GanttView() {
         >
           Today
         </button>
+
+        {/* Sequential what-if toggle */}
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+        <button
+          onClick={() => setSequentialMode((v) => !v)}
+          title="Preview what happens if siblings are done one after another. Doesn't mutate the map."
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #e2e8f0',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            background: sequentialMode ? '#4f46e5' : '#fff',
+            color: sequentialMode ? '#fff' : '#475569',
+          }}
+        >
+          Sequential
+        </button>
+        {sequentialMode && (
+          <>
+            <span style={{ fontWeight: 600, color: '#64748b' }}>People:</span>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={parallelism}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!isNaN(v) && v >= 1) setParallelism(Math.min(20, v));
+              }}
+              style={{
+                width: 48,
+                fontSize: 11,
+                fontFamily: 'inherit',
+                border: '1px solid #e2e8f0',
+                borderRadius: 4,
+                padding: '2px 6px',
+                color: '#475569',
+                background: '#fff',
+              }}
+            />
+          </>
+        )}
 
         {/* Baseline selector */}
         {baselines.length > 0 && (
