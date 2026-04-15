@@ -762,6 +762,21 @@ export function GanttView() {
 
   // ── Drag to reschedule ──────────────────────────────────────────
 
+  // Bar drag uses direct listener attachment rather than a
+  // useEffect-on-state-change chain, so the first mousemove isn't
+  // lost to React's render-then-effect timing and the whole gesture
+  // owns a single pair of handlers. Same pattern as the task-list
+  // row reorder above.
+  const barDragRef = useRef<{
+    nodeId: string;
+    startX: number;
+    origStart: Date;
+    origDue: Date;
+    pxPerDay: number;
+  } | null>(null);
+  const updateNodeRef = useRef(updateNode);
+  updateNodeRef.current = updateNode;
+
   const handleBarMouseDown = useCallback(
     (e: React.MouseEvent, nodeId: string) => {
       e.preventDefault();
@@ -772,58 +787,55 @@ export function GanttView() {
       // positions, so pinning their start/due dates is a no-op —
       // nothing visible happens and the drag feels broken. Skip.
       if (node.childrenIds.length > 0) return;
-      // Prefer the manual pins, but fall back to the computed schedule so
-      // the user can drag an auto-scheduled bar to pin it in place for the
-      // first time.
       const toIso = (d: Date) => d.toISOString().slice(0, 10);
       const computed = scheduleDates.get(nodeId);
       const originalStart = node.startDate ?? (computed ? toIso(computed.start) : null);
       const originalDue = node.dueDate ?? (computed ? toIso(computed.end) : null);
       if (!originalStart || !originalDue) return;
+      const origStart = parseDate(originalStart);
+      const origDue = parseDate(originalDue);
+      if (!origStart || !origDue) return;
+
+      barDragRef.current = {
+        nodeId,
+        startX: e.clientX,
+        origStart,
+        origDue,
+        pxPerDay: colWidth / getStepDays(scale),
+      };
       setDragInfo({
         nodeId,
         startX: e.clientX,
         originalStart,
         originalDue,
       });
+
+      const handleMouseMove = (me: MouseEvent) => {
+        const drag = barDragRef.current;
+        if (!drag) return;
+        const dx = me.clientX - drag.startX;
+        const daysDelta = Math.round(dx / drag.pxPerDay);
+        if (daysDelta === 0) return;
+        const newStart = addDays(drag.origStart, daysDelta);
+        const newDue = addDays(drag.origDue, daysDelta);
+        updateNodeRef.current(drag.nodeId, {
+          startDate: newStart.toISOString().slice(0, 10),
+          dueDate: newDue.toISOString().slice(0, 10),
+        });
+      };
+
+      const handleMouseUp = () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+        barDragRef.current = null;
+        setDragInfo(null);
+      };
+
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
     },
-    [nodes, scheduleDates],
+    [nodes, scheduleDates, colWidth, scale],
   );
-
-  useEffect(() => {
-    if (!dragInfo) return;
-
-    const pxPerDay = colWidth / getStepDays(scale);
-
-    const handleMouseMove = (e: MouseEvent) => {
-      const dx = e.clientX - dragInfo.startX;
-      const daysDelta = Math.round(dx / pxPerDay);
-      if (daysDelta === 0) return;
-
-      const origStart = parseDate(dragInfo.originalStart);
-      const origDue = parseDate(dragInfo.originalDue);
-      if (!origStart || !origDue) return;
-
-      const newStart = addDays(origStart, daysDelta);
-      const newDue = addDays(origDue, daysDelta);
-
-      updateNode(dragInfo.nodeId, {
-        startDate: newStart.toISOString().slice(0, 10),
-        dueDate: newDue.toISOString().slice(0, 10),
-      });
-    };
-
-    const handleMouseUp = () => {
-      setDragInfo(null);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [dragInfo, colWidth, scale, updateNode]);
 
   // ── Drag-reorder rows in the task list ─────────────────────────
   //
