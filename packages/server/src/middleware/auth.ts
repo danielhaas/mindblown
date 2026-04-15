@@ -47,7 +47,11 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
       url.startsWith('/api/auth/github/install/callback') ||
       url.startsWith('/api/health') ||
       url.startsWith('/api/webhooks/') ||
-      url.startsWith('/ws/')
+      url.startsWith('/ws/') ||
+      // Calendar feeds authenticate via a per-map HMAC token on the
+      // query string — external calendar clients (Google, Apple,
+      // Outlook) can't send Bearer headers.
+      /\/api\/maps\/[^/]+\/calendar\.ics(\?|$)/.test(url)
     ) {
       return;
     }

@@ -586,6 +586,17 @@ export function fetchReleaseForecast(
   return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast${suffix}`);
 }
 
+// ── Calendar subscribe URL ─────────────────────────────────────
+
+export interface CalendarSubscribeUrls {
+  httpsUrl: string;
+  webcalUrl: string;
+}
+
+export function fetchCalendarSubscribeUrl(mapId: string): Promise<CalendarSubscribeUrls> {
+  return request<CalendarSubscribeUrls>(`/api/maps/${mapId}/calendar-url`);
+}
+
 // ── AI ─────────────────────────────────────────────────────────
 
 export interface BreakdownSuggestion {

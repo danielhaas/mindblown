@@ -10,7 +10,7 @@ import type {
   CriticalPathResult,
 } from '@mindblown/core';
 import * as api from './api.js';
-import type { ReleaseForecastResponse } from './api.js';
+import type { ReleaseForecastResponse, CalendarSubscribeUrls } from './api.js';
 
 // Shape of GET /api/maps/:id/schedule — mirrors GanttView's local type.
 interface ScheduleResponse {
@@ -399,6 +399,44 @@ export function CalendarView() {
   const [scheduleData, setScheduleData] = useState<ScheduleResponse | null>(null);
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
 
+  // Subscribe modal — lazy-fetched so we don't hit the server just
+  // because the calendar was opened.
+  const [subscribeUrls, setSubscribeUrls] = useState<CalendarSubscribeUrls | null>(null);
+  const [subscribeOpen, setSubscribeOpen] = useState(false);
+  const [subscribeError, setSubscribeError] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  const openSubscribe = useCallback(async () => {
+    if (!currentMapId) return;
+    setSubscribeOpen(true);
+    setSubscribeError(null);
+    setCopied(false);
+    if (subscribeUrls) return;
+    try {
+      const urls = await api.fetchCalendarSubscribeUrl(currentMapId);
+      setSubscribeUrls(urls);
+    } catch (e) {
+      setSubscribeError(e instanceof Error ? e.message : 'Failed to load subscribe URL');
+    }
+  }, [currentMapId, subscribeUrls]);
+
+  const copyUrl = useCallback(async () => {
+    if (!subscribeUrls) return;
+    try {
+      await navigator.clipboard.writeText(subscribeUrls.webcalUrl);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setSubscribeError('Clipboard copy blocked — select the URL and copy manually.');
+    }
+  }, [subscribeUrls]);
+
+  useEffect(() => {
+    // Drop cached subscribe URL on map switch so the modal fetches a
+    // fresh one for the new map.
+    setSubscribeUrls(null);
+  }, [currentMapId]);
+
   useEffect(() => {
     let cancelled = false;
     if (!currentMapId) {
@@ -760,7 +798,31 @@ export function CalendarView() {
           </span>
         </div>
 
-        {/* Right: mode toggle */}
+        {/* Right: subscribe + mode toggle */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            onClick={openSubscribe}
+            title="Subscribe to this calendar from Google/Apple/Outlook"
+            style={{
+              background: '#fff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '5px 10px',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#4f46e5',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 6,
+            }}
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+              <path d="M3.5 3a.5.5 0 0 0-.5.5v9a.5.5 0 0 0 .5.5h9a.5.5 0 0 0 .5-.5v-6h-3A1.5 1.5 0 0 1 8 4.5v-1H3.5zm5.5.707V4.5a.5.5 0 0 0 .5.5h.793L9 3.707zM2 3.5A1.5 1.5 0 0 1 3.5 2H9l4 4v6.5A1.5 1.5 0 0 1 11.5 14h-8A1.5 1.5 0 0 1 2 12.5v-9z" />
+            </svg>
+            Subscribe
+          </button>
         <div
           style={{
             display: 'flex',
@@ -793,6 +855,7 @@ export function CalendarView() {
               {m}
             </button>
           ))}
+        </div>
         </div>
       </div>
 
@@ -1045,6 +1108,168 @@ export function CalendarView() {
             </div>
           );
         })}
+      </div>
+
+      {subscribeOpen && (
+        <SubscribeModal
+          urls={subscribeUrls}
+          error={subscribeError}
+          copied={copied}
+          onCopy={copyUrl}
+          onClose={() => setSubscribeOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Subscribe modal ─────────────────────────────────────────────
+
+function SubscribeModal({
+  urls,
+  error,
+  copied,
+  onCopy,
+  onClose,
+}: {
+  urls: CalendarSubscribeUrls | null;
+  error: string | null;
+  copied: boolean;
+  onCopy: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(15, 23, 42, 0.4)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 1000,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#fff',
+          borderRadius: 10,
+          padding: 24,
+          width: 520,
+          maxWidth: '90vw',
+          boxShadow: '0 20px 40px rgba(15, 23, 42, 0.25)',
+          fontFamily: 'inherit',
+        }}
+      >
+        <div style={{ fontSize: 15, fontWeight: 700, color: '#1e293b', marginBottom: 4 }}>
+          Subscribe to this calendar
+        </div>
+        <div style={{ fontSize: 12, color: '#64748b', marginBottom: 16 }}>
+          Add this URL to Google Calendar, Apple Calendar, or Outlook. The feed updates
+          automatically — your calendar client will re-fetch it every few hours.
+        </div>
+
+        {error ? (
+          <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 12 }}>{error}</div>
+        ) : null}
+
+        {urls ? (
+          <>
+            <label
+              style={{
+                fontSize: 10,
+                fontWeight: 700,
+                color: '#94a3b8',
+                textTransform: 'uppercase',
+                letterSpacing: 0.5,
+              }}
+            >
+              Webcal URL (click to copy)
+            </label>
+            <input
+              readOnly
+              value={urls.webcalUrl}
+              onFocus={(e) => e.currentTarget.select()}
+              style={{
+                width: '100%',
+                marginTop: 4,
+                marginBottom: 12,
+                padding: '8px 10px',
+                fontFamily: 'ui-monospace, monospace',
+                fontSize: 11,
+                color: '#1e293b',
+                border: '1px solid #e2e8f0',
+                borderRadius: 6,
+                background: '#f8fafc',
+              }}
+            />
+
+            <details style={{ fontSize: 11, color: '#64748b', marginBottom: 16 }}>
+              <summary style={{ cursor: 'pointer' }}>Prefer the https:// version?</summary>
+              <input
+                readOnly
+                value={urls.httpsUrl}
+                onFocus={(e) => e.currentTarget.select()}
+                style={{
+                  width: '100%',
+                  marginTop: 8,
+                  padding: '8px 10px',
+                  fontFamily: 'ui-monospace, monospace',
+                  fontSize: 11,
+                  color: '#1e293b',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 6,
+                  background: '#f8fafc',
+                }}
+              />
+            </details>
+
+            <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 16, lineHeight: 1.5 }}>
+              Anyone with this link can read the map's dates. The URL is stable per map —
+              if you need to revoke it, rotate the server's JWT secret.
+            </div>
+          </>
+        ) : (
+          <div style={{ fontSize: 12, color: '#64748b', marginBottom: 16 }}>Loading…</div>
+        )}
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button
+            onClick={onClose}
+            style={{
+              padding: '6px 14px',
+              fontSize: 12,
+              fontWeight: 500,
+              fontFamily: 'inherit',
+              color: '#475569',
+              background: '#fff',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              cursor: 'pointer',
+            }}
+          >
+            Close
+          </button>
+          <button
+            onClick={onCopy}
+            disabled={!urls}
+            style={{
+              padding: '6px 14px',
+              fontSize: 12,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              color: '#fff',
+              background: urls ? '#4f46e5' : '#cbd5e1',
+              border: 'none',
+              borderRadius: 6,
+              cursor: urls ? 'pointer' : 'default',
+            }}
+          >
+            {copied ? 'Copied!' : 'Copy URL'}
+          </button>
+        </div>
       </div>
     </div>
   );
