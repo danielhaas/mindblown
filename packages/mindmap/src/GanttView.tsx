@@ -477,6 +477,11 @@ export function GanttView() {
 
     for (const n of nodeList) {
       if (n.childrenIds.length < 2) continue;
+      // Top-level epics (direct children of the tree root) run in
+      // parallel — sequencing them would force "finish epic A before
+      // starting epic B" which isn't usually what users want. Within
+      // each epic we still chain siblings; that's the useful part.
+      if (n.id === rootNodeId) continue;
 
       // Chain in tree order — n.childrenIds IS the user-controlled
       // sequence now that drag-reorder writes to it.
@@ -763,6 +768,10 @@ export function GanttView() {
       e.stopPropagation();
       const node = nodes[nodeId];
       if (!node) return;
+      // Parent bars are rolled up from their children's computed
+      // positions, so pinning their start/due dates is a no-op —
+      // nothing visible happens and the drag feels broken. Skip.
+      if (node.childrenIds.length > 0) return;
       // Prefer the manual pins, but fall back to the computed schedule so
       // the user can drag an auto-scheduled bar to pin it in place for the
       // first time.
@@ -1667,10 +1676,14 @@ export function GanttView() {
                   const y = centerY - barH / 2;
                   const fillW = w * (progress / 100);
 
+                  const isLeafBar = row.node.childrenIds.length === 0;
                   return (
                     <g
                       key={`bar-${row.node.id}`}
-                      style={{ pointerEvents: 'auto', cursor: dragInfo ? 'grabbing' : 'grab' }}
+                      style={{
+                        pointerEvents: 'auto',
+                        cursor: isLeafBar ? (dragInfo ? 'grabbing' : 'grab') : 'pointer',
+                      }}
                       onMouseDown={(e) => handleBarMouseDown(e, row.node.id)}
                       onClick={(e) => {
                         e.stopPropagation();
