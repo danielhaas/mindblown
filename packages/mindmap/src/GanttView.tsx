@@ -16,7 +16,9 @@ interface ScheduleResponse {
 
 // ── Constants ─────────────────────────────────────────────────────
 
-const TASK_LIST_WIDTH = 300;
+const DEFAULT_TASK_LIST_WIDTH = 300;
+const MIN_TASK_LIST_WIDTH = 180;
+const MAX_TASK_LIST_WIDTH = 700;
 const ROW_HEIGHT = 36;
 const HEADER_HEIGHT = 48;
 const HEALTH_COLORS: Record<string, string> = {
@@ -260,6 +262,11 @@ export function GanttView() {
   const [selectedBaseline, setSelectedBaseline] = useState<string | null>(null);
   const [sequentialMode, setSequentialMode] = useState(false);
   const [parallelism, setParallelism] = useState(1);
+  const [taskListWidth, setTaskListWidth] = useState<number>(() => {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem('mindblown_gantt_task_width') : null;
+    const n = raw ? parseInt(raw, 10) : NaN;
+    return !isNaN(n) && n >= MIN_TASK_LIST_WIDTH && n <= MAX_TASK_LIST_WIDTH ? n : DEFAULT_TASK_LIST_WIDTH;
+  });
 
   // Drag state
   const [dragInfo, setDragInfo] = useState<{
@@ -269,15 +276,17 @@ export function GanttView() {
     originalDue: string;
   } | null>(null);
 
-  // Row-reorder drag state for the task-list panel. `dropIdx` is the
-  // index in the source parent's childrenIds where the node would land
-  // if released now (null = no valid drop target).
-  const [reorderDrag, setReorderDrag] = useState<{
+  // Row-reorder drag state for the task-list panel. The live gesture
+  // lives in a ref (so window listeners don't re-subscribe per pixel
+  // of movement) and we only mirror the drop slot into React state
+  // for the visual indicator + the "source is dimmed" effect.
+  const reorderDragRef = useRef<{
     sourceId: string;
     sourceParentId: string;
     dropIdx: number | null;
-    dropY: number | null;
   } | null>(null);
+  const [reorderSourceId, setReorderSourceId] = useState<string | null>(null);
+  const [dropIndicatorY, setDropIndicatorY] = useState<number | null>(null);
 
   // Refs for synchronized scrolling
   const taskListRef = useRef<HTMLDivElement>(null);
@@ -809,91 +818,145 @@ export function GanttView() {
 
   // ── Drag-reorder rows in the task list ─────────────────────────
   //
-  // Users drop a row above/below a sibling (same parent only) to rewrite
-  // the parent's childrenIds — which is exactly the sequencing key the
-  // sequential scheduler now reads. The mouse-move math is: find the row
-  // under the cursor by dividing the task-list-local Y by ROW_HEIGHT,
-  // then check "top half" vs "bottom half" of that row to decide whether
-  // the drop slot is before or after it. Reparenting is explicitly out
-  // of scope here — that gesture lives in the mindmap.
-  const handleRowMouseDown = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
-      // Ignore if clicking an interactive child (expand toggle, etc.)
-      const target = e.target as HTMLElement;
-      if (target.closest('button')) return;
-      const node = nodes[nodeId];
-      if (!node || !node.parentId) return;
-      e.preventDefault();
-      setReorderDrag({
-        sourceId: nodeId,
-        sourceParentId: node.parentId,
-        dropIdx: null,
-        dropY: null,
-      });
-    },
-    [nodes],
-  );
+  // Users drag a row up/down within its sibling group to rewrite the
+  // parent's childrenIds — the same sequencing key the sequential
+  // scheduler reads. Gesture mechanics:
+  //  - reorderDragRef holds the live gesture (updated per mousemove)
+  //  - reorderSourceId mirrors it to state so React can dim the row
+  //  - dropIndicatorY mirrors the drop slot for the horizontal line
+  //  - Window listeners attach ONCE when drag starts, detach on mouseup
+  // Only same-parent drops are accepted; reparenting stays a mindmap
+  // gesture.
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
+  const reorderChildrenRef = useRef(reorderChildren);
+  reorderChildrenRef.current = reorderChildren;
 
-  useEffect(() => {
-    if (!reorderDrag) return;
+  const handleRowMouseDown = useCallback((e: React.MouseEvent, nodeId: string) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('button')) return;
+    const node = nodesRef.current[nodeId];
+    if (!node || !node.parentId) return;
+    e.preventDefault();
+    e.stopPropagation();
 
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!taskListRef.current) return;
+    reorderDragRef.current = {
+      sourceId: nodeId,
+      sourceParentId: node.parentId,
+      dropIdx: null,
+    };
+    setReorderSourceId(nodeId);
+    setDropIndicatorY(null);
+
+    const handleMouseMove = (me: MouseEvent) => {
+      const drag = reorderDragRef.current;
+      if (!drag || !taskListRef.current) return;
       const rect = taskListRef.current.getBoundingClientRect();
       const scrollTop = taskListRef.current.scrollTop;
-      const localY = e.clientY - rect.top + scrollTop;
-      const rowIdx = Math.floor(localY / ROW_HEIGHT);
-      if (rowIdx < 0 || rowIdx >= rows.length) {
-        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+      const contentY = me.clientY - rect.top + scrollTop;
+      const rs = rowsRef.current;
+      const rowIdx = Math.floor(contentY / ROW_HEIGHT);
+      if (rowIdx < 0 || rowIdx >= rs.length) {
+        drag.dropIdx = null;
+        setDropIndicatorY(null);
         return;
       }
-      const hoverRow = rows[rowIdx];
-      // Only same-parent drops are valid.
-      if (hoverRow.node.parentId !== reorderDrag.sourceParentId) {
-        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+      const hoverRow = rs[rowIdx];
+      if (hoverRow.node.parentId !== drag.sourceParentId) {
+        drag.dropIdx = null;
+        setDropIndicatorY(null);
         return;
       }
       const rowTop = rowIdx * ROW_HEIGHT;
-      const above = localY - rowTop < ROW_HEIGHT / 2;
-      // Map hover row to index within parent.childrenIds, then add 1 if dropping below.
-      const parent = nodes[reorderDrag.sourceParentId];
+      const above = contentY - rowTop < ROW_HEIGHT / 2;
+      const parent = nodesRef.current[drag.sourceParentId];
       if (!parent) return;
       const hoverInsideParent = parent.childrenIds.indexOf(hoverRow.node.id);
       if (hoverInsideParent < 0) {
-        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+        drag.dropIdx = null;
+        setDropIndicatorY(null);
         return;
       }
-      const dropIdx = above ? hoverInsideParent : hoverInsideParent + 1;
-      const dropY = (above ? rowTop : rowTop + ROW_HEIGHT) - scrollTop;
-      setReorderDrag((d) => (d ? { ...d, dropIdx, dropY } : d));
+      drag.dropIdx = above ? hoverInsideParent : hoverInsideParent + 1;
+      // Indicator Y is in content space (lives inside the scrolled
+      // task-list inner div), so no scrollTop math needed.
+      setDropIndicatorY(above ? rowTop : rowTop + ROW_HEIGHT);
     };
 
     const handleMouseUp = () => {
-      setReorderDrag((current) => {
-        if (!current || current.dropIdx == null) return null;
-        const parent = nodes[current.sourceParentId];
-        if (!parent) return null;
-        const srcIdx = parent.childrenIds.indexOf(current.sourceId);
-        if (srcIdx < 0) return null;
-        // Adjust drop index to account for removing the source first.
-        let target = current.dropIdx;
-        if (target > srcIdx) target -= 1;
-        if (target === srcIdx) return null; // no-op
-        const next = [...parent.childrenIds];
-        next.splice(srcIdx, 1);
-        next.splice(target, 0, current.sourceId);
-        reorderChildren(current.sourceParentId, next);
-        return null;
-      });
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      const drag = reorderDragRef.current;
+      reorderDragRef.current = null;
+      setReorderSourceId(null);
+      setDropIndicatorY(null);
+      if (!drag || drag.dropIdx == null) return;
+
+      const parent = nodesRef.current[drag.sourceParentId];
+      if (!parent) return;
+      const srcIdx = parent.childrenIds.indexOf(drag.sourceId);
+      if (srcIdx < 0) return;
+      let target = drag.dropIdx;
+      if (target > srcIdx) target -= 1;
+      if (target === srcIdx) return; // no-op
+      const next = [...parent.childrenIds];
+      next.splice(srcIdx, 1);
+      next.splice(target, 0, drag.sourceId);
+      reorderChildrenRef.current(drag.sourceParentId, next);
     };
 
     window.addEventListener('mousemove', handleMouseMove);
     window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
+  }, []);
+
+  // ── Drag-resize the task-list / timeline split ────────────────
+  const splitRootRef = useRef<HTMLDivElement>(null);
+  const handleSplitMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const rootLeft = splitRootRef.current?.getBoundingClientRect().left ?? 0;
+    const startWidth = taskListWidth;
+
+    const handleMove = (me: MouseEvent) => {
+      const delta = me.clientX - startX;
+      const next = Math.max(
+        MIN_TASK_LIST_WIDTH,
+        Math.min(MAX_TASK_LIST_WIDTH, startWidth + delta),
+      );
+      // Also cap at "don't run off the right edge of the container".
+      const containerWidth = splitRootRef.current?.clientWidth ?? next;
+      setTaskListWidth(Math.min(next, containerWidth - 200));
+      // rootLeft is captured just in case we later want absolute math.
+      void rootLeft;
     };
-  }, [reorderDrag, rows, nodes, reorderChildren]);
+    const handleUp = () => {
+      window.removeEventListener('mousemove', handleMove);
+      window.removeEventListener('mouseup', handleUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try {
+        window.localStorage.setItem('mindblown_gantt_task_width', String(taskListWidth));
+      } catch {
+        /* ignore */
+      }
+    };
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMove);
+    window.addEventListener('mouseup', handleUp);
+  }, [taskListWidth]);
+
+  // Persist the new width after changes settle so the localStorage
+  // value is always the latest.
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('mindblown_gantt_task_width', String(taskListWidth));
+    } catch {
+      /* ignore */
+    }
+  }, [taskListWidth]);
 
   // ── Position helpers ────────────────────────────────────────────
 
@@ -1109,16 +1172,16 @@ export function GanttView() {
       </div>
 
       {/* ── Main split pane ──────────────────────────────────────── */}
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div ref={splitRootRef} style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
 
         {/* ── Left panel: Task list ──────────────────────────────── */}
         <div
           style={{
-            width: TASK_LIST_WIDTH,
-            minWidth: TASK_LIST_WIDTH,
+            width: taskListWidth,
+            minWidth: taskListWidth,
+            flexShrink: 0,
             display: 'flex',
             flexDirection: 'column',
-            borderRight: '2px solid #e2e8f0',
             background: '#ffffff',
           }}
         >
@@ -1154,24 +1217,24 @@ export function GanttView() {
               flex: 1,
               overflowY: 'auto',
               overflowX: 'hidden',
-              position: 'relative',
             }}
           >
-            {reorderDrag?.dropY != null && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: 4,
-                  right: 4,
-                  top: reorderDrag.dropY,
-                  height: 0,
-                  borderTop: '2px solid #4f46e5',
-                  pointerEvents: 'none',
-                  zIndex: 10,
-                }}
-              />
-            )}
-            <div style={{ height: totalHeight }}>
+            <div style={{ height: totalHeight, position: 'relative' }}>
+              {dropIndicatorY != null && (
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: 4,
+                    right: 4,
+                    top: dropIndicatorY - 1,
+                    height: 2,
+                    background: '#4f46e5',
+                    pointerEvents: 'none',
+                    zIndex: 10,
+                    borderRadius: 1,
+                  }}
+                />
+              )}
               {rows.map((row, idx) => {
                 const cv = computed.get(row.node.id);
                 const health = cv?.healthSignal ?? 'on_track';
@@ -1179,7 +1242,7 @@ export function GanttView() {
                 const effort = cv?.computedEffort ?? row.node.effortEstimate ?? 0;
                 const isSelected = row.node.id === selectedNodeId;
 
-                const isDragging = reorderDrag?.sourceId === row.node.id;
+                const isDragging = reorderSourceId === row.node.id;
                 return (
                   <div
                     key={row.node.id}
@@ -1192,17 +1255,17 @@ export function GanttView() {
                       padding: '0 8px',
                       borderBottom: '1px solid #f1f5f9',
                       background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafbfc',
-                      cursor: reorderDrag ? 'grabbing' : 'grab',
+                      cursor: reorderSourceId ? 'grabbing' : 'grab',
                       opacity: isDragging ? 0.4 : 1,
                       transition: 'background 0.1s, opacity 0.1s',
                       fontSize: 12,
                       userSelect: 'none',
                     }}
                     onMouseEnter={(e) => {
-                      if (!isSelected && !reorderDrag) e.currentTarget.style.background = '#f8fafc';
+                      if (!isSelected && !reorderSourceId) e.currentTarget.style.background = '#f8fafc';
                     }}
                     onMouseLeave={(e) => {
-                      if (!isSelected && !reorderDrag)
+                      if (!isSelected && !reorderSourceId)
                         e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafbfc';
                     }}
                   >
@@ -1344,6 +1407,22 @@ export function GanttView() {
             </div>
           </div>
         </div>
+
+        {/* ── Resizer divider ────────────────────────────────────── */}
+        <div
+          onMouseDown={handleSplitMouseDown}
+          title="Drag to resize"
+          style={{
+            width: 6,
+            minWidth: 6,
+            cursor: 'col-resize',
+            background: '#e2e8f0',
+            borderLeft: '1px solid #cbd5e1',
+            borderRight: '1px solid #cbd5e1',
+            flexShrink: 0,
+            userSelect: 'none',
+          }}
+        />
 
         {/* ── Right panel: Timeline ──────────────────────────────── */}
         <div
