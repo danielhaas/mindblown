@@ -313,12 +313,18 @@ export async function runMigrations(): Promise<void> {
   `);
 
   // First-run bootstrap: if no user is an admin yet, promote the
-  // oldest-registered user. Keeps fresh deploys secure (no admin until a
-  // user exists) while giving existing deployments an obvious upgrade path.
+  // oldest-registered REAL user. We explicitly skip users in the seed
+  // domain (@mindblown.dev) so the example workspace's demo account
+  // doesn't accidentally become the admin on a fresh deploy.
   await db.execute(sql`
     UPDATE users SET is_admin = true
-    WHERE id = (SELECT id FROM users ORDER BY created_at ASC LIMIT 1)
-      AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true)
+    WHERE id = (
+      SELECT id FROM users
+      WHERE email NOT LIKE '%@mindblown.dev'
+      ORDER BY created_at ASC
+      LIMIT 1
+    )
+    AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true)
   `);
 
   // ── Node embeddings (semantic search) ─────────────────────────
