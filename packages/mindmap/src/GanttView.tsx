@@ -16,12 +16,12 @@ interface ScheduleResponse {
 
 // ── Constants ─────────────────────────────────────────────────────
 
-const DEFAULT_TASK_LIST_WIDTH = 900;
+const DEFAULT_TASK_LIST_WIDTH = 600;
 const MIN_TASK_LIST_WIDTH = 180;
 const MAX_TASK_LIST_WIDTH = 1200;
-// Bumped from `mindblown_gantt_task_width` so users with cached
-// narrow widths get the new default on next load.
-const TASK_WIDTH_STORAGE_KEY = 'mindblown_gantt_task_width_v2';
+// Bumped whenever the default changes so users with cached widths
+// pick up the new default on next load.
+const TASK_WIDTH_STORAGE_KEY = 'mindblown_gantt_task_width_v3';
 const ROW_HEIGHT = 36;
 const HEADER_HEIGHT = 48;
 const HEALTH_COLORS: Record<string, string> = {
