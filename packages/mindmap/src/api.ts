@@ -545,6 +545,38 @@ export function fetchForecast(
   return request<ForecastResult>(`/api/maps/${mapId}/forecast${suffix}`);
 }
 
+// ── Release Forecast (capacity-constrained, sequential) ────────
+
+export interface ReleaseForecastRow {
+  versionId: string;
+  versionName: string;
+  versionStatus: 'planning' | 'active' | 'released' | 'archived';
+  sortOrder: number;
+  targetDate: string | null;
+  leaves: number;
+  noEstimateLeaves: number;
+  totalEffort: number;
+  remainingEffort: number;
+  effectiveStartDate: string | null;
+  plannedFinishDate: string | null;
+  velocityAdjustedFinishDate: string | null;
+  slipPlannedDays: number | null;
+  slipVelocityDays: number | null;
+}
+
+export interface ReleaseForecastResponse {
+  projectStartDate: string;
+  effortUnit: string;
+  dailyCapacity: number;
+  fudgeFactor: number | null;
+  calibrationLeafCount: number;
+  releases: ReleaseForecastRow[];
+}
+
+export function fetchReleaseForecast(mapId: string): Promise<ReleaseForecastResponse> {
+  return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast`);
+}
+
 // ── AI ─────────────────────────────────────────────────────────
 
 export interface BreakdownSuggestion {

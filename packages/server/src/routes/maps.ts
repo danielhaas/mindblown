@@ -696,4 +696,167 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       slipVelocityDays,
     });
   });
+
+  // ── GET /api/maps/:id/release-forecast — Sequential release timeline
+  //
+  // Computes cumulative ETAs for every version in the workspace under
+  // two assumptions that the standard /schedule and /forecast routes
+  // don't make:
+  //   (1) **Capacity-constrained**: work takes `remainingEffort /
+  //       dailyCapacity` calendar days, not the critical-path span.
+  //       The PERT/CPM scheduler assumes infinite parallelism — fine
+  //       for "what could overlap?" but wrong for "when does this team
+  //       finish this release?".
+  //   (2) **Sequential by sortOrder**: each non-shipped release's
+  //       effective start is clamped to the previous release's finish.
+  //       Matches how release trains actually run (V2 starts when V1
+  //       ships).
+  //
+  // Released/archived versions are included in the response for context
+  // but don't advance the cumulative cursor — they represent work that
+  // has already shipped.
+  app.get<{ Params: { id: string } }>(
+    '/api/maps/:id/release-forecast',
+    async (req, reply) => {
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+
+      const allVersions = await versionDb.listVersions(data.map.workspaceId);
+
+      const projectStart = data.map.projectStartDate
+        ? new Date(data.map.projectStartDate)
+        : new Date(new Date().toISOString().slice(0, 10));
+      projectStart.setUTCHours(0, 0, 0, 0);
+
+      // dailyCapacity = effort units consumed per calendar day assuming
+      // one full-time worker. Mirrors `unitsPerDay` from the schedule route.
+      const dailyCapacity =
+        data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
+
+      // All-time velocity calibration — same math as the /forecast route
+      // so the two surfaces agree on the fudge factor.
+      const calibrationLeaves = data.nodes.filter(
+        (n) =>
+          (n.childrenIds?.length ?? 0) === 0 &&
+          n.effortEstimate != null &&
+          n.actualEffort != null,
+      );
+      const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
+      const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
+      const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
+      const effectiveFudge = fudgeFactor ?? 1.0;
+
+      const MS_PER_DAY = 86_400_000;
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const addCalendarDays = (base: Date, days: number): Date => {
+        const d = new Date(base.getTime());
+        d.setUTCDate(d.getUTCDate() + Math.ceil(days));
+        return d;
+      };
+      const daysBetween = (a: Date, b: Date) =>
+        Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
+
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      const ancestorVersions = (leafId: string): Set<string> => {
+        const versions = new Set<string>();
+        let cur: CoreNode | undefined = nodeById.get(leafId);
+        while (cur) {
+          if (cur.versionId) versions.add(cur.versionId);
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return versions;
+      };
+      const allLeaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+
+      // Walk versions in sortOrder. Two independent cursors track the
+      // "planned" (raw-estimate) and "velocity-adjusted" (fudge-scaled)
+      // timelines so the two chains diverge cleanly — V2's planned start
+      // uses V1's planned finish; V2's velocity start uses V1's velocity
+      // finish.
+      const sorted = [...allVersions].sort((a, b) => a.sortOrder - b.sortOrder);
+      let plannedCursor = projectStart;
+      let velocityCursor = projectStart;
+
+      const releases = sorted.map((v) => {
+        const scopedLeaves = allLeaves.filter((l) =>
+          ancestorVersions(l.id).has(v.id),
+        );
+
+        let totalEffort = 0;
+        let remainingEffort = 0;
+        let noEstimateLeaves = 0;
+        for (const leaf of scopedLeaves) {
+          if (leaf.effortEstimate == null) noEstimateLeaves++;
+          const est = leaf.effortEstimate ?? 0;
+          const prog = leaf.percentComplete ?? 0;
+          totalEffort += est;
+          remainingEffort += est * (1 - prog / 100);
+        }
+
+        const isSequenced = v.status !== 'released' && v.status !== 'archived';
+        let effectiveStartDate: string | null = null;
+        let plannedFinishDate: string | null = null;
+        let velocityAdjustedFinishDate: string | null = null;
+
+        if (isSequenced && scopedLeaves.length > 0) {
+          effectiveStartDate = iso(plannedCursor);
+
+          const plannedCalDays = remainingEffort / dailyCapacity;
+          const plannedFinish = addCalendarDays(plannedCursor, plannedCalDays);
+          plannedFinishDate = iso(plannedFinish);
+          plannedCursor = plannedFinish;
+
+          const velCalDays = (remainingEffort * effectiveFudge) / dailyCapacity;
+          const velFinish = addCalendarDays(velocityCursor, velCalDays);
+          velocityAdjustedFinishDate = iso(velFinish);
+          velocityCursor = velFinish;
+        }
+
+        let slipPlannedDays: number | null = null;
+        let slipVelocityDays: number | null = null;
+        if (v.targetDate && plannedFinishDate) {
+          slipPlannedDays = daysBetween(
+            new Date(plannedFinishDate),
+            new Date(v.targetDate),
+          );
+        }
+        if (v.targetDate && velocityAdjustedFinishDate) {
+          slipVelocityDays = daysBetween(
+            new Date(velocityAdjustedFinishDate),
+            new Date(v.targetDate),
+          );
+        }
+
+        return {
+          versionId: v.id,
+          versionName: v.name,
+          versionStatus: v.status,
+          sortOrder: v.sortOrder,
+          targetDate: v.targetDate,
+          leaves: scopedLeaves.length,
+          noEstimateLeaves,
+          totalEffort,
+          remainingEffort,
+          effectiveStartDate,
+          plannedFinishDate,
+          velocityAdjustedFinishDate,
+          slipPlannedDays,
+          slipVelocityDays,
+        };
+      });
+
+      return reply.send({
+        projectStartDate: iso(projectStart),
+        effortUnit: data.map.effortUnit,
+        dailyCapacity,
+        fudgeFactor,
+        calibrationLeafCount: calibrationLeaves.length,
+        releases,
+      });
+    },
+  );
 }

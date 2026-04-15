@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import type { ForecastResult } from './api.js';
+import type { ReleaseForecastResponse, ReleaseForecastRow } from './api.js';
 
 // ── Colors ───────────────────────────────────────────────────────
 
@@ -20,20 +20,20 @@ const VERSION_STATUS_COLOR: Record<Version['status'], string> = {
   archived: '#94a3b8',
 };
 
-// ── Types ────────────────────────────────────────────────────────
-
-interface ReleaseRow {
-  version: Version;
-  forecast: ForecastResult | null;
-  error: string | null;
-}
-
 // ── Helpers ──────────────────────────────────────────────────────
 
 function formatDate(iso: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatDateRange(start: string | null, end: string | null): string {
+  if (!start || !end) return '—';
+  const s = new Date(start);
+  const e = new Date(end);
+  const days = Math.max(0, Math.round((e.getTime() - s.getTime()) / 86_400_000));
+  return `${days} calendar day${days === 1 ? '' : 's'}`;
 }
 
 function formatSlip(days: number | null): { text: string; color: string } {
@@ -50,7 +50,7 @@ export function ReleasesView() {
   const versions = useMindmapStore((s) => s.versions);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
 
-  const [rows, setRows] = useState<ReleaseRow[]>([]);
+  const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,50 +58,21 @@ export function ReleasesView() {
     let cancelled = false;
 
     async function load() {
-      if (!currentMapId || versions.length === 0) {
-        setRows([]);
+      if (!currentMapId) {
+        setForecast(null);
         return;
       }
       setLoading(true);
       setError(null);
-
-      // Apply the top-bar filter if set, otherwise show all
-      const scoped = activeVersionFilter
-        ? versions.filter((v) => v.id === activeVersionFilter)
-        : versions;
-
-      const sorted = [...scoped].sort((a, b) => {
-        // Active first, then planning, then released, then archived;
-        // within a status, by sortOrder then by target date then name.
-        const statusOrder = { active: 0, planning: 1, released: 2, archived: 3 };
-        if (a.status !== b.status) return statusOrder[a.status] - statusOrder[b.status];
-        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-        if (a.targetDate && b.targetDate) return a.targetDate.localeCompare(b.targetDate);
-        if (a.targetDate) return -1;
-        if (b.targetDate) return 1;
-        return a.name.localeCompare(b.name);
-      });
-
-      setRows(sorted.map((v) => ({ version: v, forecast: null, error: null })));
-
-      const loaded = await Promise.all(
-        sorted.map(async (v) => {
-          try {
-            const forecast = await api.fetchForecast(currentMapId, { versionId: v.id });
-            return { version: v, forecast, error: null } as ReleaseRow;
-          } catch (e) {
-            return {
-              version: v,
-              forecast: null,
-              error: e instanceof Error ? e.message : 'Failed to forecast',
-            } as ReleaseRow;
-          }
-        }),
-      );
-
-      if (!cancelled) {
-        setRows(loaded);
-        setLoading(false);
+      try {
+        const result = await api.fetchReleaseForecast(currentMapId);
+        if (!cancelled) setForecast(result);
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : 'Failed to load release forecast');
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
 
@@ -109,10 +80,19 @@ export function ReleasesView() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, versions, activeVersionFilter]);
+  }, [currentMapId, versions]);
+
+  // Apply the top-bar filter client-side so the cumulative server math
+  // remains correct across all versions — we just hide the non-matching
+  // rows in the UI.
+  const rows: ReleaseForecastRow[] = useMemo(() => {
+    const all = forecast?.releases ?? [];
+    if (!activeVersionFilter) return all;
+    return all.filter((r) => r.versionId === activeVersionFilter);
+  }, [forecast, activeVersionFilter]);
 
   const totalLeaves = useMemo(
-    () => rows.reduce((sum, r) => sum + (r.forecast?.leaves ?? 0), 0),
+    () => rows.reduce((sum, r) => sum + r.leaves, 0),
     [rows],
   );
 
@@ -124,18 +104,7 @@ export function ReleasesView() {
     );
   }
 
-  if (versions.length === 0) {
-    return (
-      <div style={containerStyle}>
-        <EmptyState
-          title="No releases yet"
-          message="Create a version to plan releases — use create_version via the MCP or the command palette."
-        />
-      </div>
-    );
-  }
-
-  if (loading && rows.length === 0) {
+  if (loading && !forecast) {
     return (
       <div style={containerStyle}>
         <div style={{ padding: 40, color: '#64748b', fontSize: 13 }}>Loading releases…</div>
@@ -151,6 +120,20 @@ export function ReleasesView() {
     );
   }
 
+  if (!forecast || forecast.releases.length === 0) {
+    return (
+      <div style={containerStyle}>
+        <EmptyState
+          title="No releases yet"
+          message="Create a version to plan releases — use create_version via the MCP or the command palette."
+        />
+      </div>
+    );
+  }
+
+  const unit = forecast.effortUnit;
+  const fudge = forecast.fudgeFactor;
+
   return (
     <div style={containerStyle}>
       <div style={headerStyle}>
@@ -158,6 +141,9 @@ export function ReleasesView() {
           <h2 style={{ margin: 0, fontSize: 16, color: '#1e293b' }}>Releases</h2>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
             {rows.length} version{rows.length === 1 ? '' : 's'} · {totalLeaves} linked leaves
+            {' · sequential by sortOrder, '}
+            {forecast.dailyCapacity} {unit}/day capacity
+            {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
             {activeVersionFilter && ' · filtered'}
           </div>
         </div>
@@ -169,60 +155,42 @@ export function ReleasesView() {
             <tr>
               <th style={thStyle}>Release</th>
               <th style={thStyle}>Status</th>
+              <th style={thStyle}>Start</th>
               <th style={thStyle}>Target</th>
               <th style={thStyle}>Projected</th>
               <th style={thStyle}>Slip</th>
-              <th style={{ ...thStyle, width: 200 }}>Scope</th>
+              <th style={{ ...thStyle, width: 220 }}>Scope</th>
               <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((row) => {
-              const { version, forecast } = row;
               const projected =
-                forecast?.velocityAdjustedFinishDate ?? forecast?.plannedFinishDate ?? null;
+                row.velocityAdjustedFinishDate ?? row.plannedFinishDate ?? null;
               // Prefer velocity slip (matches the Projected column);
               // fall back to planned slip.
-              const slipDays =
-                forecast?.slipVelocityDays ?? forecast?.slipPlannedDays ?? null;
+              const slipDays = row.slipVelocityDays ?? row.slipPlannedDays ?? null;
               const slip = formatSlip(slipDays);
-              const isArchived = version.status === 'archived';
-              const remaining = forecast?.remainingEffort ?? 0;
-              const total = forecast?.totalEffort ?? 0;
-              const unit = forecast?.effortUnit ?? 'units';
-              const pct = total > 0 ? Math.round(((total - remaining) / total) * 100) : 0;
+              const isArchived = row.versionStatus === 'archived';
+              const isReleased = row.versionStatus === 'released';
+              const pct =
+                row.totalEffort > 0
+                  ? Math.round(
+                      ((row.totalEffort - row.remainingEffort) / row.totalEffort) * 100,
+                    )
+                  : 0;
+              const duration = formatDateRange(row.effectiveStartDate, projected);
 
               return (
                 <tr
-                  key={version.id}
+                  key={row.versionId}
                   style={{
                     borderBottom: '1px solid #f1f5f9',
-                    opacity: isArchived ? 0.55 : 1,
+                    opacity: isArchived || isReleased ? 0.55 : 1,
                   }}
                 >
                   <td style={tdStyle}>
-                    <div style={{ fontWeight: 600, color: '#1e293b' }}>{version.name}</div>
-                    {version.description && (
-                      <div
-                        style={{
-                          fontSize: 11,
-                          color: '#64748b',
-                          marginTop: 2,
-                          maxWidth: 400,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                        }}
-                        title={version.description}
-                      >
-                        {version.description}
-                      </div>
-                    )}
-                    {row.error && (
-                      <div style={{ fontSize: 10, color: '#991b1b', marginTop: 2 }}>
-                        {row.error}
-                      </div>
-                    )}
+                    <div style={{ fontWeight: 600, color: '#1e293b' }}>{row.versionName}</div>
                   </td>
                   <td style={tdStyle}>
                     <span
@@ -231,32 +199,40 @@ export function ReleasesView() {
                         fontWeight: 600,
                         padding: '2px 8px',
                         borderRadius: 4,
-                        background: VERSION_STATUS_COLOR[version.status] + '20',
-                        color: VERSION_STATUS_COLOR[version.status],
+                        background: VERSION_STATUS_COLOR[row.versionStatus] + '20',
+                        color: VERSION_STATUS_COLOR[row.versionStatus],
                         textTransform: 'uppercase',
                         letterSpacing: 0.3,
                       }}
                     >
-                      {VERSION_STATUS_LABEL[version.status]}
+                      {VERSION_STATUS_LABEL[row.versionStatus]}
                     </span>
                   </td>
-                  <td style={tdStyle}>{formatDate(version.targetDate)}</td>
-                  <td style={tdStyle}>{formatDate(projected)}</td>
+                  <td style={tdStyle}>{formatDate(row.effectiveStartDate)}</td>
+                  <td style={tdStyle}>{formatDate(row.targetDate)}</td>
+                  <td style={tdStyle}>
+                    <div>{formatDate(projected)}</div>
+                    {duration !== '—' && (
+                      <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                        {duration}
+                      </div>
+                    )}
+                  </td>
                   <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
                   <td style={tdStyle}>
                     <ProgressBar pct={pct} />
                     <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                      {remaining.toFixed(0)}/{total.toFixed(0)} {unit} remaining
+                      {row.remainingEffort.toFixed(0)}/{row.totalEffort.toFixed(0)} {unit} remaining
                     </div>
                   </td>
                   <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
-                    {forecast?.leaves ?? '—'}
-                    {forecast && forecast.noEstimateLeaves > 0 && (
+                    {row.leaves}
+                    {row.noEstimateLeaves > 0 && (
                       <div
                         style={{ fontSize: 10, color: '#f59e0b' }}
-                        title={`${forecast.noEstimateLeaves} leaves without estimate`}
+                        title={`${row.noEstimateLeaves} leaves without estimate`}
                       >
-                        {forecast.noEstimateLeaves} unest.
+                        {row.noEstimateLeaves} unest.
                       </div>
                     )}
                   </td>
