@@ -1243,19 +1243,19 @@ export function GanttView() {
                 const isSelected = row.node.id === selectedNodeId;
 
                 const isDragging = reorderSourceId === row.node.id;
+                const canDrag = !!row.node.parentId;
                 return (
                   <div
                     key={row.node.id}
                     onClick={() => selectNode(row.node.id)}
-                    onMouseDown={(e) => handleRowMouseDown(e, row.node.id)}
                     style={{
                       height: ROW_HEIGHT,
                       display: 'flex',
                       alignItems: 'center',
-                      padding: '0 8px',
+                      padding: '0 8px 0 0',
                       borderBottom: '1px solid #f1f5f9',
                       background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafbfc',
-                      cursor: reorderSourceId ? 'grabbing' : 'grab',
+                      cursor: 'pointer',
                       opacity: isDragging ? 0.4 : 1,
                       transition: 'background 0.1s, opacity 0.1s',
                       fontSize: 12,
@@ -1269,6 +1269,33 @@ export function GanttView() {
                         e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafbfc';
                     }}
                   >
+                    {/* Drag grip */}
+                    <div
+                      onMouseDown={canDrag ? (e) => handleRowMouseDown(e, row.node.id) : undefined}
+                      onClick={(e) => e.stopPropagation()}
+                      title={canDrag ? 'Drag to reorder' : 'Root node'}
+                      style={{
+                        width: 14,
+                        height: ROW_HEIGHT,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        cursor: canDrag ? (reorderSourceId ? 'grabbing' : 'grab') : 'default',
+                        color: '#cbd5e1',
+                        flexShrink: 0,
+                      }}
+                    >
+                      {canDrag && (
+                        <svg width="8" height="14" viewBox="0 0 8 14" fill="currentColor">
+                          <circle cx="2" cy="3" r="1" />
+                          <circle cx="6" cy="3" r="1" />
+                          <circle cx="2" cy="7" r="1" />
+                          <circle cx="6" cy="7" r="1" />
+                          <circle cx="2" cy="11" r="1" />
+                          <circle cx="6" cy="11" r="1" />
+                        </svg>
+                      )}
+                    </div>
                     {/* Name with indent + expand toggle */}
                     <div
                       style={{
