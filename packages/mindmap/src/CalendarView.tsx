@@ -33,7 +33,7 @@ const CALENDAR_VIEW_META: Record<
   owned: {
     label: 'Owned tasks',
     description:
-      'Like Full, but drops leaves imported from GitHub/Jira/Linear/GitLab. Keeps human-authored roadmap items only.',
+      'Leaf tasks you authored by hand — no imported tickets, no parent milestones. Stays empty until you put a dueDate on a non-imported leaf.',
   },
 };
 

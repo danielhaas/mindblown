@@ -150,21 +150,24 @@ export function buildCalendarIcs(input: CalendarIcsInput): string {
 
   // 1) Nodes with a manually authored dueDate.
   //
-  // Both leaves and parents count — dated parents are the "section
-  // ships by X" commitments that users set on roadmap branches, and
-  // they're the most interesting events in the feed for this map's
-  // data pattern. Leaves are tagged as tasks, parents as milestones
-  // so calendar clients can filter.
+  // Leaves are the day-to-day tasks; parents are the coarse "section
+  // ships by X" commitments on roadmap branches. They're tagged with
+  // distinct CATEGORIES so calendar clients can filter.
   //
-  // `milestones` view skips leaves but keeps dated parents. `owned`
-  // additionally drops anything externalLinks flags as imported
-  // from a ticketing provider (GitHub/Jira/Linear/GitLab) so the
-  // feed reflects only human-authored planning.
+  // View rules:
+  //   full:       leaves + parents (every dated node).
+  //   milestones: parents only (drop leaves entirely).
+  //   owned:      leaves only, excluding anything externalLinks flags
+  //               as imported from a ticketing provider. Keeping
+  //               parents out here reflects the view's name — this
+  //               is meant for task-level commitments, not
+  //               roadmap-level ones, which belong in `milestones`.
   for (const n of nodes) {
     if (!n.dueDate) continue;
     if (n.status && doneStatusIds.has(n.status)) continue;
     const isLeaf = (n.childrenIds?.length ?? 0) === 0;
     if (view === 'milestones' && isLeaf) continue;
+    if (view === 'owned' && !isLeaf) continue;
     if (view === 'owned' && isExternallySourced(n)) continue;
     const start = n.startDate ?? n.dueDate;
     addEvent({
