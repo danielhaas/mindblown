@@ -306,6 +306,7 @@ export function GanttView() {
   const [parallelism, setParallelism] = useState(1);
   const [savingPlan, setSavingPlan] = useState(false);
   const [savedFlash, setSavedFlash] = useState<string | null>(null);
+  const [showBehindOnly, setShowBehindOnly] = useState(false);
   const [taskListWidth, setTaskListWidth] = useState<number>(() => {
     const raw = typeof window !== 'undefined' ? window.localStorage.getItem(TASK_WIDTH_STORAGE_KEY) : null;
     const n = raw ? parseInt(raw, 10) : NaN;
@@ -956,6 +957,27 @@ export function GanttView() {
       walkScope(rootNodeId, null, null);
     }
 
+    // "Behind only" filter keeps any leaf flagged behind (via computed
+    // health) plus every ancestor up to the root, so the tree shape
+    // still holds in the task list.
+    const behindKeep = new Set<string>();
+    if (showBehindOnly) {
+      const parentOf = new Map<string, string>();
+      for (const n of Object.values(nodes)) {
+        for (const cid of n.childrenIds) parentOf.set(cid, n.id);
+      }
+      for (const n of Object.values(nodes)) {
+        if (n.childrenIds.length > 0) continue;
+        const cv = computed.get(n.id);
+        if (cv?.healthSignal !== 'behind') continue;
+        let cur: string | undefined = n.id;
+        while (cur && !behindKeep.has(cur)) {
+          behindKeep.add(cur);
+          cur = parentOf.get(cur);
+        }
+      }
+    }
+
     const result: FlatRow[] = [];
     const walk = (nodeId: string, depth: number) => {
       const node = nodes[nodeId];
@@ -963,6 +985,10 @@ export function GanttView() {
       if ((activeVersionFilter || activeCycleFilter) && !inScope.has(nodeId)) {
         // Skip this node but still descend — a tagged leaf can live under
         // an untagged parent.
+        for (const cid of node.childrenIds) walk(cid, depth);
+        return;
+      }
+      if (showBehindOnly && !behindKeep.has(nodeId)) {
         for (const cid of node.childrenIds) walk(cid, depth);
         return;
       }
@@ -980,7 +1006,15 @@ export function GanttView() {
     };
     walk(rootNodeId, 0);
     return result;
-  }, [nodes, rootNodeId, collapsedSet, activeVersionFilter, activeCycleFilter]);
+  }, [
+    nodes,
+    rootNodeId,
+    collapsedSet,
+    activeVersionFilter,
+    activeCycleFilter,
+    showBehindOnly,
+    computed,
+  ]);
 
   // ── Build baseline lookup ───────────────────────────────────────
 
@@ -1254,6 +1288,58 @@ export function GanttView() {
   // The store's updateNode is optimistic + fires one API call per
   // node. For the typical sprint scope that's a few dozen writes;
   // we run them in parallel.
+  // Push every visible behind leaf forward so nothing is overdue.
+  // Preserves relative spacing by shifting all behind leaves by the
+  // SAME delta (the maximum overdue amount plus a 1-day buffer), so
+  // the plan keeps its shape; only the zero point moves to the future.
+  const handlePushBehind = useCallback(() => {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const todayMs = today.getTime();
+
+    const behind: Node[] = [];
+    for (const row of rows) {
+      const node = row.node;
+      if (node.childrenIds.length > 0) continue;
+      const cv = computed.get(node.id);
+      if (cv?.healthSignal !== 'behind') continue;
+      behind.push(node);
+    }
+    if (behind.length === 0) {
+      setSavedFlash('Nothing is behind');
+      window.setTimeout(() => setSavedFlash(null), 3000);
+      return;
+    }
+
+    let maxOverdueDays = 0;
+    for (const n of behind) {
+      if (!n.dueDate) continue;
+      const due = new Date(n.dueDate);
+      due.setUTCHours(0, 0, 0, 0);
+      const days = Math.ceil((todayMs - due.getTime()) / 86400000);
+      if (days > maxOverdueDays) maxOverdueDays = days;
+    }
+    const shiftDays = Math.max(1, maxOverdueDays + 1);
+
+    const addIso = (iso: string, days: number) => {
+      const d = new Date(iso);
+      d.setUTCDate(d.getUTCDate() + days);
+      return d.toISOString().slice(0, 10);
+    };
+
+    for (const n of behind) {
+      const updates: Partial<Node> = {};
+      if (n.dueDate) updates.dueDate = addIso(n.dueDate, shiftDays);
+      if (n.startDate) updates.startDate = addIso(n.startDate, shiftDays);
+      if (Object.keys(updates).length > 0) updateNode(n.id, updates);
+    }
+
+    setSavedFlash(
+      `Shifted ${behind.length} behind task${behind.length === 1 ? '' : 's'} +${shiftDays}d`,
+    );
+    window.setTimeout(() => setSavedFlash(null), 3000);
+  }, [rows, computed, updateNode]);
+
   const handleSavePlan = useCallback(async () => {
     if (savingPlan) return;
     setSavingPlan(true);
@@ -1430,6 +1516,43 @@ export function GanttView() {
           }}
         >
           Today
+        </button>
+
+        {/* Behind filter + push overdue */}
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+        <button
+          onClick={() => setShowBehindOnly((v) => !v)}
+          title="Show only leaves that are overdue (dueDate past, not 100%) and their ancestors"
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #fecaca',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            background: showBehindOnly ? '#ef4444' : '#fff',
+            color: showBehindOnly ? '#fff' : '#dc2626',
+          }}
+        >
+          Behind only
+        </button>
+        <button
+          onClick={handlePushBehind}
+          title="Shift every visible behind leaf's startDate and dueDate forward by the maximum overdue amount + 1 day, so nothing stays overdue but the relative spacing is preserved."
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #f59e0b',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            background: '#fff',
+            color: '#b45309',
+          }}
+        >
+          Push overdue
         </button>
 
         {/* Sequential what-if toggle */}
