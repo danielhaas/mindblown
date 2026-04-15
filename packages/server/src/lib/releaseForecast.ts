@@ -113,7 +113,25 @@ export function computeReleaseForecast(
   const allLeaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
 
   // ── Walk versions in sortOrder with two cursors ──
-  const sorted = [...versions].sort((a, b) => a.sortOrder - b.sortOrder);
+  // Primary sort: sortOrder (user-controlled override).
+  // Secondary: parsed semver from the name — "V1", "V1.5", "V2", "V3:
+  // Verticals" → (1,0), (1,5), (2,0), (3,0). Stops new versions from
+  // landing wrong-place when they inherit a default sortOrder that
+  // ties with existing rows.
+  // Tertiary: name for stability.
+  const parseSemver = (name: string): [number, number] => {
+    const m = name.match(/^V(\d+)(?:\.(\d+))?/i);
+    if (!m) return [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
+    return [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0];
+  };
+  const sorted = [...versions].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+    const [aMaj, aMin] = parseSemver(a.name);
+    const [bMaj, bMin] = parseSemver(b.name);
+    if (aMaj !== bMaj) return aMaj - bMaj;
+    if (aMin !== bMin) return aMin - bMin;
+    return a.name.localeCompare(b.name);
+  });
   let plannedCursor = anchor;
   let velocityCursor = anchor;
 
