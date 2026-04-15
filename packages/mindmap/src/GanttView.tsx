@@ -336,7 +336,56 @@ export function GanttView() {
     const anchor = new Date(serverScheduleData.projectStartDate);
     anchor.setUTCHours(0, 0, 0, 0);
 
-    const nodeList = Object.values(nodes);
+    // Scope nodeList to the active version/cycle filter — same rule
+    // the `rows` memo uses. Without this, sequential mode would chain
+    // in out-of-scope leaves whose pins/deps drag the visible bars
+    // around when the user expects the filter to be authoritative.
+    // Nodes inherit their parent's version/cycle unless they have
+    // their own, and a subtree is in scope iff the inherited value
+    // matches the filter; children's childrenIds are pruned to only
+    // in-scope children so parent rollup stays consistent.
+    const allNodes = Object.values(nodes);
+    let nodeList: Node[] = allNodes;
+    if ((activeVersionFilter || activeCycleFilter) && rootNodeId && nodes[rootNodeId]) {
+      const inScope = new Set<string>();
+      const walkScope = (
+        nodeId: string,
+        inheritedVersion: string | null,
+        inheritedCycle: string | null,
+      ) => {
+        const node = nodes[nodeId];
+        if (!node) return;
+        const effVersion = node.versionId ?? inheritedVersion;
+        const effCycle = node.cycleId ?? inheritedCycle;
+        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
+        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
+        if (matchesVersion && matchesCycle) inScope.add(nodeId);
+        for (const cid of node.childrenIds) walkScope(cid, effVersion, effCycle);
+      };
+      walkScope(rootNodeId, null, null);
+
+      // Ancestors of any in-scope node need to be kept so the rollup
+      // has a tree to roll up into (otherwise scheduled parents would
+      // vanish even though they have visible children).
+      const withAncestors = new Set(inScope);
+      for (const id of inScope) {
+        let cur: string | undefined = nodes[id]?.parentId ?? undefined;
+        while (cur) {
+          if (withAncestors.has(cur)) break;
+          withAncestors.add(cur);
+          cur = nodes[cur]?.parentId ?? undefined;
+        }
+      }
+
+      nodeList = allNodes
+        .filter((n) => withAncestors.has(n.id))
+        .map((n) => {
+          const keptChildren = n.childrenIds.filter((cid) => withAncestors.has(cid));
+          if (keptChildren.length === n.childrenIds.length) return n;
+          return { ...n, childrenIds: keptChildren };
+        });
+    }
+
     if (nodeList.length === 0) {
       return {
         data: serverScheduleData,
@@ -758,7 +807,15 @@ export function GanttView() {
         error: e instanceof Error ? e.message : String(e),
       };
     }
-  }, [serverScheduleData, sequentialMode, parallelism, nodes]);
+  }, [
+    serverScheduleData,
+    sequentialMode,
+    parallelism,
+    nodes,
+    rootNodeId,
+    activeVersionFilter,
+    activeCycleFilter,
+  ]);
 
   // Recompute tick — bumps every time the sequential schedule runs.
   // Lets us verify from the toolbar badge whether the memo actually
