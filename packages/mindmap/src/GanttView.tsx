@@ -521,6 +521,16 @@ export function GanttView() {
         const follower = orderedChildren[i];
         const predecessor = orderedChildren[i - p];
 
+        // In-progress leaf as follower: position is pinned at today,
+        // so don't make it wait on a tree-order predecessor.
+        // (Followers of the in-progress leaf still get the chain edge
+        // pointing at it, so the cascade anchors there correctly.)
+        const followerNode = nodeById.get(follower);
+        if (followerNode && followerNode.childrenIds.length === 0) {
+          const fpct = followerNode.percentComplete ?? 0;
+          if (fpct > 0 && fpct < 100) continue;
+        }
+
         if (wouldCycle(follower, predecessor)) {
           skipped++;
           continue;
@@ -534,12 +544,16 @@ export function GanttView() {
       }
     }
 
-    // Patch leaf durations for sequential mode. Unestimated leaves get
-    // a 1-day placeholder (otherwise zero-duration bars can't cascade).
-    // In-progress leaves use their REMAINING work as duration so they
-    // visibly end when the remaining work does. Done leaves keep their
-    // original effort so the bar still takes the same visual width in
-    // the past.
+    // Patch leaf durations and dependencies for sequential mode.
+    //  - Unestimated leaves get a 1-day placeholder.
+    //  - In-progress leaves use REMAINING work as duration AND clear
+    //    their own dependencies (both real and synthetic), so nothing
+    //    can push them past "today". They still act as predecessors
+    //    for followers (the FS edges live on the follower side).
+    //  - Done leaves: duration stays at original effort, dependencies
+    //    cleared so the past-pin can't be overridden by a real or
+    //    chain dep on a future task.
+    //  - Todo leaves: real deps + synthetic FS merged as usual.
     const minLeafEffort = unitsPerDay;
     let fills = 0;
     const patched: Node[] = nodeList.map((n) => {
@@ -547,23 +561,31 @@ export function GanttView() {
       const isLeaf = n.childrenIds.length === 0;
 
       let effortEstimate: number | null | undefined = n.effortEstimate;
+      let dependencies = n.dependencies;
+
       if (isLeaf) {
         const pct = n.percentComplete ?? 0;
         const baseEffort = (n.effortEstimate ?? 0) > 0 ? (n.effortEstimate as number) : minLeafEffort;
         if ((n.effortEstimate ?? 0) <= 0) fills++;
-        if (pct > 0 && pct < 100) {
+
+        if (pct >= 100) {
+          effortEstimate = baseEffort;
+          dependencies = [];
+        } else if (pct > 0) {
           effortEstimate = Math.max(baseEffort * (1 - pct / 100), minLeafEffort);
+          dependencies = [];
         } else {
           effortEstimate = baseEffort;
+          dependencies = extra ? [...n.dependencies, ...extra] : n.dependencies;
         }
+      } else if (extra) {
+        dependencies = [...n.dependencies, ...extra];
       }
 
-      if (!extra && effortEstimate === n.effortEstimate) return n;
-      return {
-        ...n,
-        dependencies: extra ? [...n.dependencies, ...extra] : n.dependencies,
-        effortEstimate,
-      };
+      if (dependencies === n.dependencies && effortEstimate === n.effortEstimate) {
+        return n;
+      }
+      return { ...n, dependencies, effortEstimate };
     });
 
     // Constraint building. Only pin LEAVES (parent start/end rolls up
