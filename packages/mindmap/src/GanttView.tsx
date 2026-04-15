@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, CriticalPathResult, ScheduledNode, ScheduleConstraint } from '@mindblown/core';
-import { schedule as computeSchedule, criticalPath as computeCriticalPath, hasCycle } from '@mindblown/core';
+import { schedule as computeSchedule, criticalPath as computeCriticalPath } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { fetchSchedule } from './api.js';
 
@@ -321,15 +321,9 @@ export function GanttView() {
 
     const p = Math.max(1, parallelism);
 
-    // Only synthesize edges between LEAF siblings. Parent-to-parent
-    // sequencing sounds nice but expands into cross-subtree leaf deps
-    // that can cycle with existing ones in non-obvious ways. Leaves
-    // are safe: hasCycle walks direct Node.dependencies and correctly
-    // detects a reverse dep between two specific leaves.
-    //
     // Sibling order uses the server's cycle-free schedule as a partial
     // order (start, end, tree index as tiebreakers) so the chain
-    // direction at least agrees with existing task ordering.
+    // direction always agrees with existing task ordering.
     const startByNode = new Map<string, number>();
     const endByNode = new Map<string, number>();
     for (const s of serverScheduleData.schedule) {
@@ -339,28 +333,138 @@ export function GanttView() {
 
     const nodeById = new Map<string, Node>();
     for (const n of nodeList) nodeById.set(n.id, n);
-    const isLeafId = (id: string): boolean => {
-      const n = nodeById.get(id);
-      return !!n && n.childrenIds.length === 0;
+
+    // ── Leaf-level reachability precompute ────────────────────────
+    // Cycle-safe sequencing of parent siblings requires knowing, for
+    // every leaf L, which leaves L transitively depends on via the
+    // expanded dep graph — own dependencies plus every ancestor's,
+    // with each dep target resolved to the target's leaf descendants.
+    // We precompute this once and use it as the oracle for candidate
+    // parent-to-parent synthetic edges: a candidate is dropped iff any
+    // leaf in the follower subtree already reaches any leaf in the
+    // predecessor subtree (that would close a loop after the scheduler
+    // expands parent deps internally).
+    const leavesOfCache = new Map<string, string[]>();
+    const computeLeavesOf = (id: string): string[] => {
+      const cached = leavesOfCache.get(id);
+      if (cached) return cached;
+      const nd = nodeById.get(id);
+      if (!nd) {
+        leavesOfCache.set(id, []);
+        return [];
+      }
+      let result: string[];
+      if (nd.childrenIds.length === 0) {
+        result = [id];
+      } else {
+        result = [];
+        for (const c of nd.childrenIds) result.push(...computeLeavesOf(c));
+      }
+      leavesOfCache.set(id, result);
+      return result;
+    };
+    for (const n of nodeList) computeLeavesOf(n.id);
+
+    const parentOfNode = new Map<string, string>();
+    for (const n of nodeList) {
+      for (const c of n.childrenIds) parentOfNode.set(c, n.id);
+    }
+
+    const allLeafIds = nodeList.filter((n) => n.childrenIds.length === 0).map((n) => n.id);
+
+    const leafDirectDeps = new Map<string, Set<string>>();
+    for (const leafId of allLeafIds) {
+      const set = new Set<string>();
+      let cur: string | undefined = leafId;
+      while (cur) {
+        const nd = nodeById.get(cur);
+        if (!nd) break;
+        for (const dep of nd.dependencies) {
+          for (const tl of computeLeavesOf(dep.targetNodeId)) {
+            if (tl !== leafId) set.add(tl);
+          }
+        }
+        cur = parentOfNode.get(cur);
+      }
+      leafDirectDeps.set(leafId, set);
+    }
+
+    const leafReach = new Map<string, Set<string>>();
+    for (const leafId of allLeafIds) {
+      const reach = new Set<string>();
+      const stack = [...(leafDirectDeps.get(leafId) ?? [])];
+      while (stack.length) {
+        const curId = stack.pop()!;
+        if (reach.has(curId)) continue;
+        reach.add(curId);
+        for (const next of leafDirectDeps.get(curId) ?? []) stack.push(next);
+      }
+      leafReach.set(leafId, reach);
+    }
+
+    const wouldCycle = (followerId: string, predId: string): boolean => {
+      const fLeaves = computeLeavesOf(followerId);
+      const pLeaves = computeLeavesOf(predId);
+      for (const pl of pLeaves) {
+        const reach = leafReach.get(pl);
+        if (!reach || reach.size === 0) continue;
+        for (const fl of fLeaves) {
+          if (reach.has(fl)) return true;
+        }
+      }
+      return false;
     };
 
-    // Build a mutable node map we can extend as we add synthetic edges,
-    // so hasCycle sees the accumulating state (not just the original).
-    const mutableNodeMap = new Map<string, Node>();
-    for (const n of nodeList) {
-      mutableNodeMap.set(n.id, { ...n, dependencies: [...n.dependencies] });
-    }
+    // Extend leafReach with the effect of adding "follower depends on
+    // pred" — i.e. every leaf in follower's subtree now transitively
+    // reaches every leaf in pred's subtree (and everything pred's
+    // leaves already reached). Also fold into any leaf that previously
+    // reached a follower leaf, so chains stay consistent.
+    const extendReach = (followerId: string, predId: string) => {
+      const fLeaves = computeLeavesOf(followerId);
+      const pLeaves = computeLeavesOf(predId);
+      const addedReach = new Set<string>();
+      for (const pl of pLeaves) {
+        addedReach.add(pl);
+        const plReach = leafReach.get(pl);
+        if (plReach) for (const x of plReach) addedReach.add(x);
+      }
+      for (const fl of fLeaves) {
+        let flReach = leafReach.get(fl);
+        if (!flReach) {
+          flReach = new Set();
+          leafReach.set(fl, flReach);
+        }
+        for (const x of addedReach) flReach.add(x);
+      }
+      // Propagate upstream: any leaf X whose reach included any fl now
+      // also reaches addedReach.
+      for (const [xId, xReach] of leafReach) {
+        if (xId === followerId) continue;
+        let touchesFollower = false;
+        for (const fl of fLeaves) {
+          if (xReach.has(fl)) {
+            touchesFollower = true;
+            break;
+          }
+        }
+        if (touchesFollower) {
+          for (const y of addedReach) xReach.add(y);
+        }
+      }
+    };
 
     const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
     let edges = 0;
     let skipped = 0;
+
     for (const n of nodeList) {
       if (n.childrenIds.length < 2) continue;
 
-      const leafChildren = n.childrenIds.filter(isLeafId);
-      if (leafChildren.length < 2) continue;
-
-      const sortedLeafChildren = [...leafChildren]
+      // Sort children by (start, end, tree index). Works for both leaf
+      // and parent siblings because the server rolls parent start/end
+      // up from descendant leaves.
+      const sortedChildren = [...n.childrenIds]
         .map((cid, idx) => ({
           cid,
           idx,
@@ -370,13 +474,11 @@ export function GanttView() {
         .sort((a, b) => a.start - b.start || a.end - b.end || a.idx - b.idx)
         .map((c) => c.cid);
 
-      for (let i = p; i < sortedLeafChildren.length; i++) {
-        const follower = sortedLeafChildren[i];
-        const predecessor = sortedLeafChildren[i - p];
+      for (let i = p; i < sortedChildren.length; i++) {
+        const follower = sortedChildren[i];
+        const predecessor = sortedChildren[i - p];
 
-        // Would "follower depends on predecessor" create a cycle with
-        // existing deps (or edges we've already added)?
-        if (hasCycle(follower, predecessor, mutableNodeMap)) {
+        if (wouldCycle(follower, predecessor)) {
           skipped++;
           continue;
         }
@@ -384,14 +486,7 @@ export function GanttView() {
         const list = extraDeps.get(follower) ?? [];
         list.push({ targetNodeId: predecessor, type: 'FS', lag: 0 });
         extraDeps.set(follower, list);
-
-        const followerNode = mutableNodeMap.get(follower);
-        if (followerNode) {
-          followerNode.dependencies = [
-            ...followerNode.dependencies,
-            { targetNodeId: predecessor, type: 'FS', lag: 0 },
-          ];
-        }
+        extendReach(follower, predecessor);
         edges++;
       }
     }
