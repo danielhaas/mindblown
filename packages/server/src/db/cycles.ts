@@ -72,7 +72,13 @@ export interface UpdateCycleInput {
   versionId?: string | null;
 }
 
-export async function updateCycle(id: string, input: UpdateCycleInput): Promise<Cycle | null> {
+export interface UpdateCycleResult {
+  cycle: Cycle;
+  /** Nodes whose status was set by the activation sweep. Empty unless input.status === 'active'. */
+  sweptNodes: CoreNode[];
+}
+
+export async function updateCycle(id: string, input: UpdateCycleInput): Promise<UpdateCycleResult | null> {
   const updates: Record<string, unknown> = {};
 
   if (input.name !== undefined) updates.name = input.name;
@@ -86,14 +92,18 @@ export async function updateCycle(id: string, input: UpdateCycleInput): Promise<
 
   // When a cycle becomes active, default any unset assigned nodes to "todo"
   // so they show up in the Kanban Todo column instead of "Unset". Idempotent
-  // — only touches nodes whose status is currently null.
+  // — only touches nodes whose status is currently null. Returned so the
+  // route layer can broadcast WS events to live clients.
+  let sweptNodes: CoreNode[] = [];
   if (input.status === 'active') {
-    await db.update(nodes)
+    const swept = await db.update(nodes)
       .set({ status: 'todo', updatedAt: new Date() })
-      .where(and(eq(nodes.cycleId, id), isNull(nodes.status)));
+      .where(and(eq(nodes.cycleId, id), isNull(nodes.status)))
+      .returning();
+    sweptNodes = swept.map((n) => dbNodeToCore(n as unknown as Record<string, unknown>));
   }
 
-  return dbCycleToCore(row as unknown as Record<string, unknown>);
+  return { cycle: dbCycleToCore(row as unknown as Record<string, unknown>), sweptNodes };
 }
 
 // ── Delete ────────────────────────────────────────────────────────────

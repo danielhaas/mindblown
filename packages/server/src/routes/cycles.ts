@@ -4,6 +4,7 @@ import { computeTree } from '@mindblown/core';
 import * as cycleDb from '../db/cycles.js';
 import { db } from '../db/connection.js';
 import { workspaces } from '../db/schema.js';
+import { broadcast } from '../ws.js';
 
 /** Extract YYYY-MM-DD from an ISO 8601 string or date-only string. */
 function toDateOnly(input: string): string {
@@ -102,13 +103,25 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
   // ── PUT /api/cycles/:id — Update cycle ──────────────────────────
   app.put<{ Params: { id: string } }>('/api/cycles/:id', async (req, reply) => {
     const body = req.body as cycleDb.UpdateCycleInput;
-    const updated = await cycleDb.updateCycle(req.params.id, body);
-    if (!updated) {
+    const result = await cycleDb.updateCycle(req.params.id, body);
+    if (!result) {
       return reply.status(404).send({
         error: { code: 'CYCLE_NOT_FOUND', message: `Cycle ${req.params.id} not found` },
       });
     }
-    return reply.send(updated);
+
+    // Broadcast a node:updated event for each node touched by the activation
+    // sweep so live clients refresh their Kanban without needing a reload.
+    for (const node of result.sweptNodes) {
+      broadcast(node.mapId, {
+        type: 'node:updated',
+        nodeId: node.id,
+        fields: ['status'],
+        node,
+      });
+    }
+
+    return reply.send(result.cycle);
   });
 
   // ── DELETE /api/cycles/:id — Delete cycle ───────────────────────
@@ -146,6 +159,15 @@ export async function cycleRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'NODE_NOT_FOUND', message: `Node ${body.nodeId} not found` },
       });
     }
+
+    // Broadcast so live clients see the cycleId change (and any auto-todo
+    // status promotion when assigning into an active sprint).
+    broadcast(node.mapId, {
+      type: 'node:updated',
+      nodeId: node.id,
+      fields: ['cycleId', 'status'],
+      node,
+    });
 
     return reply.send(node);
   });
