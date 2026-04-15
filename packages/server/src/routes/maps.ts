@@ -1,11 +1,14 @@
 import type { FastifyInstance } from 'fastify';
+import { and, eq, lte, desc } from 'drizzle-orm';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as versionDb from '../db/versions.js';
+import { computeReleaseForecast } from '../lib/releaseForecast.js';
+import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { db } from '../db/connection.js';
-import { workspaces, users } from '../db/schema.js';
+import { workspaces, users, releaseSnapshots } from '../db/schema.js';
 
 interface MapProjection {
   totalScope: number;
@@ -699,164 +702,115 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/maps/:id/release-forecast — Sequential release timeline
   //
-  // Computes cumulative ETAs for every version in the workspace under
-  // two assumptions that the standard /schedule and /forecast routes
-  // don't make:
-  //   (1) **Capacity-constrained**: work takes `remainingEffort /
-  //       dailyCapacity` calendar days, not the critical-path span.
-  //       The PERT/CPM scheduler assumes infinite parallelism — fine
-  //       for "what could overlap?" but wrong for "when does this team
-  //       finish this release?".
-  //   (2) **Sequential by sortOrder**: each non-shipped release's
-  //       effective start is clamped to the previous release's finish.
-  //       Matches how release trains actually run (V2 starts when V1
-  //       ships).
+  // The math lives in lib/releaseForecast.ts. This route computes the
+  // current forecast on demand and decorates each row with a 7-day
+  // trend delta pulled from release_snapshots (persisted by the
+  // hourly snapshot job).
   //
-  // Released/archived versions are included in the response for context
-  // but don't advance the cumulative cursor — they represent work that
-  // has already shipped.
-  app.get<{ Params: { id: string } }>(
-    '/api/maps/:id/release-forecast',
-    async (req, reply) => {
-      const data = await mapDb.getMap(req.params.id);
-      if (!data) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
-        });
-      }
+  // ?refresh=1 additionally writes today's snapshot before reading,
+  // so a manual refresh button produces a fresh history entry.
+  app.get<{
+    Params: { id: string };
+    Querystring: { refresh?: string };
+  }>('/api/maps/:id/release-forecast', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
 
-      const allVersions = await versionDb.listVersions(data.map.workspaceId);
+    const allVersions = await versionDb.listVersions(data.map.workspaceId);
 
-      const projectStart = data.map.projectStartDate
-        ? new Date(data.map.projectStartDate)
-        : new Date(new Date().toISOString().slice(0, 10));
-      projectStart.setUTCHours(0, 0, 0, 0);
+    // Compute current forecast via the shared helper — same code path
+    // as the hourly snapshot job, so the two surfaces never disagree.
+    const forecast = computeReleaseForecast(data.map, data.nodes, allVersions);
 
-      // dailyCapacity = effort units consumed per calendar day assuming
-      // one full-time worker. Mirrors `unitsPerDay` from the schedule route.
-      const dailyCapacity =
-        data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
+    // Optional manual refresh — writes today's snapshot before reading
+    // deltas, so a button click produces a fresh history row.
+    if (req.query.refresh === '1' || req.query.refresh === 'true') {
+      await snapshotReleaseForecastForMap(req.params.id, forecast).catch((err) => {
+        req.log.error({ err, mapId: req.params.id }, 'manual snapshot failed');
+      });
+    }
 
-      // All-time velocity calibration — same math as the /forecast route
-      // so the two surfaces agree on the fudge factor.
-      const calibrationLeaves = data.nodes.filter(
-        (n) =>
-          (n.childrenIds?.length ?? 0) === 0 &&
-          n.effortEstimate != null &&
-          n.actualEffort != null,
-      );
-      const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-      const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-      const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
-      const effectiveFudge = fudgeFactor ?? 1.0;
+    // ── 7-day trend deltas ──
+    // For each version, find the most recent snapshot ≤ 7 days ago.
+    // "Slipped +5d" means the projected finish moved 5 days later vs
+    // the 7-day-ago snapshot — positive is bad, negative is good.
+    const MS_PER_DAY = 86_400_000;
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const sevenDaysAgo = new Date(today.getTime() - 7 * MS_PER_DAY);
+    const sevenDaysAgoIso = sevenDaysAgo.toISOString().slice(0, 10);
 
-      const MS_PER_DAY = 86_400_000;
-      const iso = (d: Date) => d.toISOString().slice(0, 10);
-      const addCalendarDays = (base: Date, days: number): Date => {
-        const d = new Date(base.getTime());
-        d.setUTCDate(d.getUTCDate() + Math.ceil(days));
-        return d;
-      };
-      const daysBetween = (a: Date, b: Date) =>
-        Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
+    const historyRows = await db
+      .select()
+      .from(releaseSnapshots)
+      .where(
+        and(
+          eq(releaseSnapshots.mapId, req.params.id),
+          lte(releaseSnapshots.snapshotDate, sevenDaysAgoIso),
+        ),
+      )
+      .orderBy(desc(releaseSnapshots.snapshotDate));
 
-      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-      const ancestorVersions = (leafId: string): Set<string> => {
-        const versions = new Set<string>();
-        let cur: CoreNode | undefined = nodeById.get(leafId);
-        while (cur) {
-          if (cur.versionId) versions.add(cur.versionId);
-          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-        }
-        return versions;
-      };
-      const allLeaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+    // Pick the most recent snapshot per versionId (the ORDER BY above
+    // puts newest first, so the first row seen wins).
+    const historyByVersion = new Map<
+      string,
+      { plannedFinishDate: string | null; velocityAdjustedFinishDate: string | null }
+    >();
+    for (const row of historyRows) {
+      if (historyByVersion.has(row.versionId)) continue;
+      historyByVersion.set(row.versionId, {
+        plannedFinishDate: row.plannedFinishDate as string | null,
+        velocityAdjustedFinishDate: row.velocityAdjustedFinishDate as string | null,
+      });
+    }
 
-      // Walk versions in sortOrder. Two independent cursors track the
-      // "planned" (raw-estimate) and "velocity-adjusted" (fudge-scaled)
-      // timelines so the two chains diverge cleanly — V2's planned start
-      // uses V1's planned finish; V2's velocity start uses V1's velocity
-      // finish.
-      const sorted = [...allVersions].sort((a, b) => a.sortOrder - b.sortOrder);
-      let plannedCursor = projectStart;
-      let velocityCursor = projectStart;
+    // Fetch the most recent snapshot across all versions for this map
+    // so the UI can display "last updated 2h ago" accurately.
+    const [latestSnapshot] = await db
+      .select()
+      .from(releaseSnapshots)
+      .where(eq(releaseSnapshots.mapId, req.params.id))
+      .orderBy(desc(releaseSnapshots.createdAt))
+      .limit(1);
 
-      const releases = sorted.map((v) => {
-        const scopedLeaves = allLeaves.filter((l) =>
-          ancestorVersions(l.id).has(v.id),
+    const daysBetween = (a: string, b: string) =>
+      Math.round((new Date(a).getTime() - new Date(b).getTime()) / MS_PER_DAY);
+
+    const releasesWithTrend = forecast.releases.map((row) => {
+      const prior = historyByVersion.get(row.versionId);
+      let plannedFinishDeltaDays7d: number | null = null;
+      let velocityFinishDeltaDays7d: number | null = null;
+      if (prior?.plannedFinishDate && row.plannedFinishDate) {
+        plannedFinishDeltaDays7d = daysBetween(
+          row.plannedFinishDate,
+          prior.plannedFinishDate,
         );
+      }
+      if (prior?.velocityAdjustedFinishDate && row.velocityAdjustedFinishDate) {
+        velocityFinishDeltaDays7d = daysBetween(
+          row.velocityAdjustedFinishDate,
+          prior.velocityAdjustedFinishDate,
+        );
+      }
+      return {
+        ...row,
+        plannedFinishDeltaDays7d,
+        velocityFinishDeltaDays7d,
+      };
+    });
 
-        let totalEffort = 0;
-        let remainingEffort = 0;
-        let noEstimateLeaves = 0;
-        for (const leaf of scopedLeaves) {
-          if (leaf.effortEstimate == null) noEstimateLeaves++;
-          const est = leaf.effortEstimate ?? 0;
-          const prog = leaf.percentComplete ?? 0;
-          totalEffort += est;
-          remainingEffort += est * (1 - prog / 100);
-        }
-
-        const isSequenced = v.status !== 'released' && v.status !== 'archived';
-        let effectiveStartDate: string | null = null;
-        let plannedFinishDate: string | null = null;
-        let velocityAdjustedFinishDate: string | null = null;
-
-        if (isSequenced && scopedLeaves.length > 0) {
-          effectiveStartDate = iso(plannedCursor);
-
-          const plannedCalDays = remainingEffort / dailyCapacity;
-          const plannedFinish = addCalendarDays(plannedCursor, plannedCalDays);
-          plannedFinishDate = iso(plannedFinish);
-          plannedCursor = plannedFinish;
-
-          const velCalDays = (remainingEffort * effectiveFudge) / dailyCapacity;
-          const velFinish = addCalendarDays(velocityCursor, velCalDays);
-          velocityAdjustedFinishDate = iso(velFinish);
-          velocityCursor = velFinish;
-        }
-
-        let slipPlannedDays: number | null = null;
-        let slipVelocityDays: number | null = null;
-        if (v.targetDate && plannedFinishDate) {
-          slipPlannedDays = daysBetween(
-            new Date(plannedFinishDate),
-            new Date(v.targetDate),
-          );
-        }
-        if (v.targetDate && velocityAdjustedFinishDate) {
-          slipVelocityDays = daysBetween(
-            new Date(velocityAdjustedFinishDate),
-            new Date(v.targetDate),
-          );
-        }
-
-        return {
-          versionId: v.id,
-          versionName: v.name,
-          versionStatus: v.status,
-          sortOrder: v.sortOrder,
-          targetDate: v.targetDate,
-          leaves: scopedLeaves.length,
-          noEstimateLeaves,
-          totalEffort,
-          remainingEffort,
-          effectiveStartDate,
-          plannedFinishDate,
-          velocityAdjustedFinishDate,
-          slipPlannedDays,
-          slipVelocityDays,
-        };
-      });
-
-      return reply.send({
-        projectStartDate: iso(projectStart),
-        effortUnit: data.map.effortUnit,
-        dailyCapacity,
-        fudgeFactor,
-        calibrationLeafCount: calibrationLeaves.length,
-        releases,
-      });
-    },
-  );
+    return reply.send({
+      ...forecast,
+      releases: releasesWithTrend,
+      lastSnapshotAt:
+        latestSnapshot?.createdAt instanceof Date
+          ? latestSnapshot.createdAt.toISOString()
+          : ((latestSnapshot?.createdAt as string | undefined) ?? null),
+    });
+  });
 }

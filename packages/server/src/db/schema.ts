@@ -192,6 +192,32 @@ export const versions = pgTable('versions', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Release Snapshots ────────────────────────────────────────────
+// Daily history of each version's projected finish date so the
+// Releases view can show "slipped +5d this week" trend indicators
+// and alerts can diff two snapshots. Written by the hourly
+// snapshotReleaseForecasts job (upserts today's row) and on-demand
+// via ?refresh=1 on GET /api/maps/:id/release-forecast.
+//
+// versionId is intentionally not a FK — when a version is deleted
+// the history rows stay around as read-only audit trail. version_name
+// is denormalized for the same reason.
+
+export const releaseSnapshots = pgTable('release_snapshots', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  versionId: uuid('version_id').notNull(),
+  versionName: text('version_name').notNull(),
+  snapshotDate: date('snapshot_date').notNull(),
+  targetDate: date('target_date'),
+  plannedFinishDate: date('planned_finish_date'),
+  velocityAdjustedFinishDate: date('velocity_adjusted_finish_date'),
+  remainingEffort: real('remaining_effort').notNull(),
+  totalEffort: real('total_effort').notNull(),
+  leaves: real('leaves').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Change Events ─────────────────────────────────────────────────
 // Append-only log of node mutations — the substrate for burnup, status
 // digest, and any other "what changed since X" feature. Writes happen

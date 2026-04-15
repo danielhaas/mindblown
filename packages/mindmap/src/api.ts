@@ -562,6 +562,10 @@ export interface ReleaseForecastRow {
   velocityAdjustedFinishDate: string | null;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
+  // 7-day trend — positive = slipped later, negative = pulled in.
+  // null until the snapshot job has a row from 7 days ago.
+  plannedFinishDeltaDays7d: number | null;
+  velocityFinishDeltaDays7d: number | null;
 }
 
 export interface ReleaseForecastResponse {
@@ -571,10 +575,15 @@ export interface ReleaseForecastResponse {
   fudgeFactor: number | null;
   calibrationLeafCount: number;
   releases: ReleaseForecastRow[];
+  lastSnapshotAt: string | null;
 }
 
-export function fetchReleaseForecast(mapId: string): Promise<ReleaseForecastResponse> {
-  return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast`);
+export function fetchReleaseForecast(
+  mapId: string,
+  opts: { refresh?: boolean } = {},
+): Promise<ReleaseForecastResponse> {
+  const suffix = opts.refresh ? '?refresh=1' : '';
+  return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast${suffix}`);
 }
 
 // ── AI ─────────────────────────────────────────────────────────

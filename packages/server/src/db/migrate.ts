@@ -314,6 +314,34 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS embedding_updated_at TIMESTAMPTZ
   `);
 
+  // ── Release Snapshots (daily history for trend indicators) ────
+  // Written by the hourly snapshot job (upserts today's row per
+  // (map, version)) and on-demand via ?refresh=1 on the forecast
+  // endpoint. Used by the Releases view to show "+5d this week"
+  // trend deltas. version_id deliberately lacks a FK so deleted
+  // versions leave their history behind as read-only audit trail.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS release_snapshots (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      version_id UUID NOT NULL,
+      version_name TEXT NOT NULL,
+      snapshot_date DATE NOT NULL,
+      target_date DATE,
+      planned_finish_date DATE,
+      velocity_adjusted_finish_date DATE,
+      remaining_effort REAL NOT NULL,
+      total_effort REAL NOT NULL,
+      leaves REAL NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (map_id, version_id, snapshot_date)
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_release_snapshots_map_date
+    ON release_snapshots(map_id, snapshot_date DESC)
+  `);
+
   // ── Drop Milestone entity (collapsed into Version) ────────────
   // Historical: milestones were a first-class entity and nodes carried
   // both milestone_id and an is_milestone boolean checkpoint flag.

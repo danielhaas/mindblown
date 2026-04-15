@@ -43,6 +43,26 @@ function formatSlip(days: number | null): { text: string; color: string } {
   return { text: `${days}d late`, color: '#ef4444' };
 }
 
+function formatTrend(days: number | null): { text: string; color: string } | null {
+  if (days == null) return null;
+  if (days === 0) return { text: 'unchanged this week', color: '#94a3b8' };
+  if (days < 0) return { text: `${Math.abs(days)}d pulled in this week`, color: '#10b981' };
+  return { text: `+${days}d slipped this week`, color: '#ef4444' };
+}
+
+function formatAge(iso: string | null, now: Date = new Date()): string {
+  if (!iso) return 'no snapshot yet';
+  const ms = now.getTime() - new Date(iso).getTime();
+  if (ms < 0) return 'just now';
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return `${days}d ago`;
+}
+
 // ── Component ────────────────────────────────────────────────────
 
 export function ReleasesView() {
@@ -52,7 +72,10 @@ export function ReleasesView() {
 
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by the Refresh button to re-trigger the effect.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,17 +85,22 @@ export function ReleasesView() {
         setForecast(null);
         return;
       }
-      setLoading(true);
+      const manual = refreshNonce > 0;
+      if (manual) setRefreshing(true);
+      else setLoading(true);
       setError(null);
       try {
-        const result = await api.fetchReleaseForecast(currentMapId);
+        const result = await api.fetchReleaseForecast(currentMapId, { refresh: manual });
         if (!cancelled) setForecast(result);
       } catch (e) {
         if (!cancelled) {
           setError(e instanceof Error ? e.message : 'Failed to load release forecast');
         }
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     }
 
@@ -80,7 +108,9 @@ export function ReleasesView() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, versions]);
+  }, [currentMapId, versions, refreshNonce]);
+
+  const handleRefresh = () => setRefreshNonce((n) => n + 1);
 
   // Apply the top-bar filter client-side so the cumulative server math
   // remains correct across all versions — we just hide the non-matching
@@ -144,9 +174,29 @@ export function ReleasesView() {
             {' · sequential by sortOrder, '}
             {forecast.dailyCapacity} {unit}/day capacity
             {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
+            {' · snapshot '}
+            {formatAge(forecast.lastSnapshotAt)}
             {activeVersionFilter && ' · filtered'}
           </div>
         </div>
+        <button
+          onClick={handleRefresh}
+          disabled={refreshing}
+          title="Recompute and write a fresh snapshot"
+          style={{
+            padding: '6px 12px',
+            borderRadius: 6,
+            border: '1px solid #e2e8f0',
+            background: refreshing ? '#f1f5f9' : '#fff',
+            color: refreshing ? '#94a3b8' : '#1e293b',
+            fontSize: 12,
+            fontWeight: 500,
+            fontFamily: 'inherit',
+            cursor: refreshing ? 'default' : 'pointer',
+          }}
+        >
+          {refreshing ? 'Refreshing…' : 'Refresh'}
+        </button>
       </div>
 
       <div style={{ overflow: 'auto', flex: 1 }}>
@@ -212,11 +262,35 @@ export function ReleasesView() {
                   <td style={tdStyle}>{formatDate(row.targetDate)}</td>
                   <td style={tdStyle}>
                     <div>{formatDate(projected)}</div>
-                    {duration !== '—' && (
-                      <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                        {duration}
-                      </div>
-                    )}
+                    {(() => {
+                      // Prefer the velocity-adjusted trend so it matches
+                      // the Projected column above; fall back to planned.
+                      const trend = formatTrend(
+                        row.velocityFinishDeltaDays7d ?? row.plannedFinishDeltaDays7d,
+                      );
+                      if (trend) {
+                        return (
+                          <div
+                            style={{
+                              fontSize: 10,
+                              color: trend.color,
+                              marginTop: 2,
+                              fontWeight: 500,
+                            }}
+                          >
+                            {trend.text}
+                          </div>
+                        );
+                      }
+                      if (duration !== '—') {
+                        return (
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                            {duration}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </td>
                   <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
                   <td style={tdStyle}>

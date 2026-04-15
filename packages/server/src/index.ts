@@ -3,6 +3,7 @@ import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
+import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
@@ -79,6 +80,28 @@ async function main(): Promise<void> {
     app.log.error(err);
     process.exit(1);
   }
+
+  // ── Release snapshot cron (daily trend history) ──────────────
+  // Catch-up on startup (cheap, idempotent), then re-snapshot every
+  // hour. Each hourly call upserts today's row per (map, version),
+  // so the latest numbers always reflect current state while the
+  // calendar-day UNIQUE key keeps history bounded to one row/day.
+  // Runs in-process — matches the single-instance deployment shape;
+  // no systemd timer needed.
+  const SNAPSHOT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+  const runSnapshot = async () => {
+    try {
+      const { maps, rows } = await snapshotAllMaps();
+      if (maps > 0) {
+        console.log(`[release-snapshot] wrote ${rows} rows across ${maps} map(s)`);
+      }
+    } catch (err) {
+      console.error('[release-snapshot] job failed:', err);
+    }
+  };
+  // Startup run is fire-and-forget so a slow DB doesn't delay the listen.
+  runSnapshot();
+  setInterval(runSnapshot, SNAPSHOT_INTERVAL_MS);
 }
 
 main();
