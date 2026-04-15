@@ -61,6 +61,45 @@ function addDays(d: Date, n: number): Date {
   return r;
 }
 
+// ── Working-day helpers ──
+//
+// Sequential mode treats each scheduler "unit" as one working day
+// (Mon-Fri). Public holidays can be layered on top later via a set
+// passed to these helpers; for now we skip Saturdays and Sundays.
+
+function isWeekend(d: Date): boolean {
+  const dow = d.getUTCDay();
+  return dow === 0 || dow === 6;
+}
+
+/** The Nth working day ON or AFTER anchor. Anchor must be UTC-midnight. */
+function nthWorkingDayFrom(anchor: Date, n: number): Date {
+  const r = new Date(anchor);
+  // If anchor lands on a weekend, snap forward to the next working day
+  // before counting.
+  while (isWeekend(r)) {
+    r.setUTCDate(r.getUTCDate() + 1);
+  }
+  let count = 0;
+  while (count < n) {
+    r.setUTCDate(r.getUTCDate() + 1);
+    if (!isWeekend(r)) count++;
+  }
+  return r;
+}
+
+/** How many working days from `anchor` to `target` (both UTC-midnight). */
+function workingDaysBetween(anchor: Date, target: Date): number {
+  if (target <= anchor) return 0;
+  const cur = new Date(anchor);
+  let count = 0;
+  while (cur < target) {
+    cur.setUTCDate(cur.getUTCDate() + 1);
+    if (!isWeekend(cur)) count++;
+  }
+  return count;
+}
+
 function formatDate(d: Date, scale: TimeScale): string {
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   switch (scale) {
@@ -653,12 +692,15 @@ export function GanttView() {
     //    on now" at today so downstream cascade chains from here.
     //  - Todo (0 or null pct): respect manual startDate/dueDate pins
     //    if present, otherwise let the synthetic FS cascade decide.
-    const MS_PER_DAY = 86400000;
+    // In sequential mode, one scheduler unit = one working day (Mon-Fri).
+    // Converting dates to units counts only weekdays from the anchor, and
+    // converting unit positions back to dates uses the same working-day
+    // walk — so an FS chain of "predecessor.end + 0 = follower.start"
+    // naturally skips weekends.
     const isoToUnits = (isoDate: string): number => {
       const d = new Date(isoDate);
       d.setUTCHours(0, 0, 0, 0);
-      const calendarDays = Math.round((d.getTime() - anchor.getTime()) / MS_PER_DAY);
-      return calendarDays * unitsPerDay;
+      return workingDaysBetween(anchor, d) * unitsPerDay;
     };
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -846,24 +888,41 @@ export function GanttView() {
     const map = new Map<string, { start: Date; end: Date }>();
     if (!scheduleData) return map;
 
-    const anchor = new Date(scheduleData.projectStartDate);
-    anchor.setHours(0, 0, 0, 0);
+    const anchorUTC = new Date(scheduleData.projectStartDate);
+    anchorUTC.setUTCHours(0, 0, 0, 0);
+    const anchorLocal = new Date(scheduleData.projectStartDate);
+    anchorLocal.setHours(0, 0, 0, 0);
     const unitsPerDay = scheduleData.unitsPerDay || 1;
 
+    // In sequential mode the scheduler's units are working days; we
+    // need to walk Mon–Fri only to convert them back to calendar
+    // dates. Outside sequential mode we use the server's schedule
+    // which is in straight calendar days.
     for (const s of scheduleData.schedule) {
       const startDays = s.computedStart / unitsPerDay;
       const endDays = s.computedEnd / unitsPerDay;
-      const start = new Date(anchor);
-      start.setDate(start.getDate() + Math.round(startDays));
-      const end = new Date(anchor);
-      // Ensure at least a 1-day visual footprint for zero-duration
-      // milestones and unestimated leaves so they don't vanish.
-      const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
-      end.setDate(end.getDate() + Math.round(visibleEndDays));
+
+      let start: Date;
+      let end: Date;
+      if (sequentialMode) {
+        // Floor start, ceil end, and enforce at least a 1-working-day
+        // visible span so 0.5-day bars and zero-duration markers don't
+        // collapse to a point.
+        const startWD = Math.floor(startDays);
+        const endWD = Math.max(Math.ceil(endDays), startWD + 1);
+        start = nthWorkingDayFrom(anchorUTC, startWD);
+        end = nthWorkingDayFrom(anchorUTC, endWD);
+      } else {
+        const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
+        start = new Date(anchorLocal);
+        start.setDate(start.getDate() + Math.round(startDays));
+        end = new Date(anchorLocal);
+        end.setDate(end.getDate() + Math.round(visibleEndDays));
+      }
       map.set(s.nodeId, { start, end });
     }
     return map;
-  }, [scheduleData]);
+  }, [scheduleData, sequentialMode]);
 
   // ── Flatten nodes into rows ────────────────────────────────────
   //
