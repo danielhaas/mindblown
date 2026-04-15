@@ -1,6 +1,25 @@
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
-import type { Node, HealthSignal, Priority } from '@mindblown/core';
+import type {
+  Node,
+  HealthSignal,
+  Priority,
+  Version,
+  Cycle,
+  ScheduledNode,
+  CriticalPathResult,
+} from '@mindblown/core';
+import * as api from './api.js';
+import type { ReleaseForecastResponse } from './api.js';
+
+// Shape of GET /api/maps/:id/schedule — mirrors GanttView's local type.
+interface ScheduleResponse {
+  schedule: ScheduledNode[];
+  criticalPath: CriticalPathResult;
+  projectStartDate: string;
+  effortUnit: 'hours' | 'days' | 'points';
+  unitsPerDay: number;
+}
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -22,6 +41,13 @@ const PRIORITY_COLORS: Record<Priority, string> = {
   P1: '#f97316',
   P2: '#3b82f6',
   P3: '#9ca3af',
+};
+
+// Cycle band tint per status. Alpha is applied on the cell background.
+const CYCLE_TINT: Record<Cycle['status'], string> = {
+  planned: '#64748b',
+  active: '#3b82f6',
+  completed: '#10b981',
 };
 
 type CalendarMode = 'month' | 'week';
@@ -108,6 +134,19 @@ interface CalendarTask {
   startDate: Date | null;
   isOverdue: boolean;
   breadcrumb: string;
+  // Projected tasks come from the critical-path scheduler as a fallback
+  // when a node has no manually set dueDate. They render with a dashed
+  // outline so managers can tell computed dates from authored ones.
+  isProjected: boolean;
+}
+
+// Top-of-cell badges derived from version forecasts.
+interface VersionMarker {
+  versionId: string;
+  name: string;
+  kind: 'target' | 'projected';
+  dateKey: string;
+  color: string;
 }
 
 // ── Task Pill (Month View) ──────────────────────────────────────
@@ -124,33 +163,39 @@ function TaskPill({
   onDragStart: (e: React.DragEvent) => void;
 }) {
   const color = HEALTH_COLORS[task.healthSignal];
+  const dim = task.isProjected;
+  const baseOpacity = dim ? 0.55 : 0.85;
 
   return (
     <div
-      draggable
+      draggable={!dim}
       onDragStart={onDragStart}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      title={`${task.node.text}${task.breadcrumb ? `\n${task.breadcrumb}` : ''}`}
+      title={
+        `${task.node.text}${task.isProjected ? ' · projected (no manual due date)' : ''}` +
+        (task.breadcrumb ? `\n${task.breadcrumb}` : '')
+      }
       style={{
         fontSize: 11,
         fontWeight: 500,
-        color: '#fff',
-        background: color,
+        color: dim ? color : '#fff',
+        background: dim ? 'transparent' : color,
+        border: dim ? `1px dashed ${color}` : 'none',
         borderRadius: 4,
         padding: '1px 6px',
         marginBottom: 2,
-        cursor: 'grab',
+        cursor: dim ? 'pointer' : 'grab',
         whiteSpace: 'nowrap',
         overflow: 'hidden',
         textOverflow: 'ellipsis',
-        opacity: selected ? 1 : 0.85,
+        opacity: selected ? 1 : baseOpacity,
         outline: selected ? '2px solid #4f46e5' : 'none',
         outlineOffset: 1,
         transition: 'opacity 0.1s',
         lineHeight: '18px',
       }}
       onMouseOver={(e) => { e.currentTarget.style.opacity = '1'; }}
-      onMouseOut={(e) => { if (!selected) e.currentTarget.style.opacity = '0.85'; }}
+      onMouseOut={(e) => { if (!selected) e.currentTarget.style.opacity = String(baseOpacity); }}
     >
       {task.node.text}
     </div>
@@ -227,24 +272,29 @@ function TaskCard({
 }) {
   const color = HEALTH_COLORS[task.healthSignal];
   const abbrev = effortUnit === 'hours' ? 'h' : effortUnit === 'days' ? 'd' : 'pts';
+  const dim = task.isProjected;
 
   return (
     <div
-      draggable
+      draggable={!dim}
       onDragStart={onDragStart}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      title={task.breadcrumb || task.node.text}
+      title={
+        (task.breadcrumb || task.node.text) +
+        (dim ? '\n(projected — no manual due date)' : '')
+      }
       style={{
         fontSize: 12,
-        background: '#fff',
-        border: `1px solid #e2e8f0`,
+        background: dim ? '#f8fafc' : '#fff',
+        border: dim ? `1px dashed ${color}` : `1px solid #e2e8f0`,
         borderLeft: `3px solid ${color}`,
         borderRadius: 6,
         padding: '6px 8px',
         marginBottom: 4,
-        cursor: 'grab',
+        cursor: dim ? 'pointer' : 'grab',
         outline: selected ? '2px solid #4f46e5' : 'none',
         outlineOffset: 1,
+        opacity: dim ? 0.75 : 1,
         transition: 'box-shadow 0.1s',
       }}
       onMouseOver={(e) => { e.currentTarget.style.boxShadow = '0 2px 8px rgba(0,0,0,0.08)'; }}
@@ -320,6 +370,7 @@ function TaskCard({
 // ── Main Calendar View ──────────────────────────────────────────
 
 export function CalendarView() {
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
   const nodes = useMindmapStore((s) => s.nodes);
   const computed = useMindmapStore((s) => s.computed);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
@@ -333,16 +384,78 @@ export function CalendarView() {
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const versions = useMindmapStore((s) => s.versions);
+  const cycles = useMindmapStore((s) => s.cycles);
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
   const [mode, setMode] = useState<CalendarMode>('month');
   const [viewDate, setViewDate] = useState(() => new Date());
 
+  // Scheduler output (per-node start/end) and release forecast (per-version
+  // targetDate + velocity-adjusted finish). Both are fetched lazily and
+  // refetched when the map or node graph changes, so the calendar reflects
+  // the same numbers the Gantt and Releases views show.
+  const [scheduleData, setScheduleData] = useState<ScheduleResponse | null>(null);
+  const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentMapId) {
+      setScheduleData(null);
+      setForecast(null);
+      return;
+    }
+    (async () => {
+      try {
+        const [sched, fc] = await Promise.all([
+          api.fetchSchedule(currentMapId) as Promise<ScheduleResponse>,
+          api.fetchReleaseForecast(currentMapId).catch(() => null),
+        ]);
+        if (cancelled) return;
+        setScheduleData(sched);
+        setForecast(fc);
+      } catch {
+        if (!cancelled) {
+          setScheduleData(null);
+          setForecast(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // Depend on the node graph + versions so adding/moving/estimating a
+    // leaf reflows the projected dates, and editing a version's target
+    // date or status re-draws the release markers. Cycles are already
+    // reactive through the direct store subscription above — no
+    // separate fetch needed for sprint bands.
+  }, [currentMapId, nodes, versions]);
+
   const today = useMemo(() => {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }, []);
+
+  // ── Schedule offsets → calendar dates per node ───────────────
+  const scheduleDates = useMemo(() => {
+    const map = new Map<string, { start: Date; end: Date }>();
+    if (!scheduleData) return map;
+    const anchor = new Date(scheduleData.projectStartDate);
+    anchor.setHours(0, 0, 0, 0);
+    const unitsPerDay = scheduleData.unitsPerDay || 1;
+    for (const s of scheduleData.schedule) {
+      const startDays = s.computedStart / unitsPerDay;
+      const endDays = s.computedEnd / unitsPerDay;
+      const start = new Date(anchor);
+      start.setDate(start.getDate() + Math.round(startDays));
+      const end = new Date(anchor);
+      const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
+      end.setDate(end.getDate() + Math.round(visibleEndDays));
+      map.set(s.nodeId, { start, end });
+    }
+    return map;
+  }, [scheduleData]);
 
   // ── Build calendar tasks ────────────────────────────────────
 
@@ -351,28 +464,55 @@ export function CalendarView() {
     // Filter to only visible nodes
     const visibleNodes = getVisibleNodes();
     const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
+    const doneOf = (n: Node) =>
+      n.status != null &&
+      (currentMap?.statusWorkflow ?? []).some(
+        (s) => s.id === n.status && s.category === 'done',
+      );
 
-    return Object.values(nodes)
-      .filter((n) => n.dueDate && visibleIds.has(n.id))
-      .map((n) => {
-        const cv = computed.get(n.id);
-        const dueDate = parseDate(n.dueDate!);
+    const result: CalendarTask[] = [];
+    for (const n of Object.values(nodes)) {
+      if (!visibleIds.has(n.id)) continue;
+      const cv = computed.get(n.id);
+      const isDone = doneOf(n);
+
+      if (n.dueDate) {
+        // Authored — use as-is.
+        const dueDate = parseDate(n.dueDate);
         const startDate = n.startDate ? parseDate(n.startDate) : null;
-        const isDone = n.status != null &&
-          (currentMap?.statusWorkflow ?? []).some(
-            (s) => s.id === n.status && s.category === 'done',
-          );
-        const isOverdue = !isDone && toDateKey(dueDate) < todayKey;
-        return {
+        result.push({
           node: n,
           healthSignal: (cv?.healthSignal ?? 'on_track') as HealthSignal,
           dueDate,
           startDate,
-          isOverdue,
+          isOverdue: !isDone && toDateKey(dueDate) < todayKey,
           breadcrumb: getNodeBreadcrumb(n.id),
-        };
+          isProjected: false,
+        });
+        continue;
+      }
+
+      // Projected fallback: only leaves with some duration, so parents
+      // don't double-render over their own children and zero-effort
+      // placeholders don't litter the grid.
+      const isLeaf = (n.childrenIds?.length ?? 0) === 0;
+      if (!isLeaf) continue;
+      const proj = scheduleDates.get(n.id);
+      if (!proj) continue;
+      if (isDone) continue;
+
+      result.push({
+        node: n,
+        healthSignal: (cv?.healthSignal ?? 'on_track') as HealthSignal,
+        dueDate: proj.end,
+        startDate: proj.start,
+        isOverdue: toDateKey(proj.end) < todayKey,
+        breadcrumb: getNodeBreadcrumb(n.id),
+        isProjected: true,
       });
-  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter]);
+    }
+    return result;
+  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, scheduleDates, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter]);
 
   // ── Group tasks by date key ─────────────────────────────────
 
@@ -404,6 +544,77 @@ export function CalendarView() {
   const spanningTasks = useMemo(() => {
     return tasks.filter((t) => t.startDate && toDateKey(t.startDate) !== toDateKey(t.dueDate));
   }, [tasks]);
+
+  // ── Version markers indexed by date key ─────────────────────
+  // A version drops up to two badges: its authored targetDate and
+  // the velocity-adjusted finish from the release forecast. The
+  // badge color signals slip (green = ahead, red = late, amber =
+  // on target, gray = no target).
+  const versionMarkersByDate = useMemo(() => {
+    const map = new Map<string, VersionMarker[]>();
+    if (!forecast) return map;
+
+    const push = (dateKey: string, marker: VersionMarker) => {
+      const arr = map.get(dateKey) ?? [];
+      arr.push(marker);
+      map.set(dateKey, arr);
+    };
+
+    for (const row of forecast.releases) {
+      if (row.versionStatus === 'archived') continue;
+      const slipColor = (days: number | null): string => {
+        if (days == null) return '#64748b';
+        if (days === 0) return '#f59e0b';
+        if (days < 0) return '#10b981';
+        return '#ef4444';
+      };
+      if (row.targetDate) {
+        push(row.targetDate.slice(0, 10), {
+          versionId: row.versionId,
+          name: row.versionName,
+          kind: 'target',
+          dateKey: row.targetDate.slice(0, 10),
+          color: '#6366f1',
+        });
+      }
+      if (row.velocityAdjustedFinishDate) {
+        push(row.velocityAdjustedFinishDate.slice(0, 10), {
+          versionId: row.versionId,
+          name: row.versionName,
+          kind: 'projected',
+          dateKey: row.velocityAdjustedFinishDate.slice(0, 10),
+          color: slipColor(row.slipVelocityDays ?? row.slipPlannedDays),
+        });
+      }
+    }
+    return map;
+  }, [forecast]);
+
+  // ── Cycle info per date: active cycle for background tinting,
+  // plus a flag on the first covered day for the label pill ─────
+  const cyclesByDate = useMemo(() => {
+    // key → { cycle, isFirst }
+    const map = new Map<string, { cycle: Cycle; isFirst: boolean }>();
+    for (const c of cycles) {
+      if (!c.startDate || !c.endDate) continue;
+      const start = parseDate(c.startDate);
+      const end = parseDate(c.endDate);
+      if (end.getTime() < start.getTime()) continue;
+      const cursor = new Date(start);
+      let first = true;
+      while (cursor.getTime() <= end.getTime()) {
+        const key = toDateKey(cursor);
+        // First write wins — earlier/active cycle takes precedence
+        // so overlapping cycles don't paint over each other.
+        if (!map.has(key)) {
+          map.set(key, { cycle: c, isFirst: first });
+        }
+        first = false;
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+    return map;
+  }, [cycles]);
 
   // ── Navigation ──────────────────────────────────────────────
 
@@ -628,6 +839,8 @@ export function CalendarView() {
           const isCurrentMonth = date.getMonth() === month;
           const isToday = sameDay(date, today);
           const hasOverdue = overdueDates.has(key);
+          const versionMarkers = versionMarkersByDate.get(key) ?? [];
+          const cycleHit = cyclesByDate.get(key) ?? null;
 
           // For month view, determine spanning tasks starting on this day
           const spansStarting = mode === 'month'
@@ -640,6 +853,20 @@ export function CalendarView() {
             ? dayTasks.filter((t) => !spanIds.has(t.node.id))
             : dayTasks;
 
+          // Layer a cycle tint on top of the base cell color so the
+          // today/overdue cues still show through. Base first, then
+          // the cycle overlay via linear-gradient for consistency.
+          const baseBg = isToday
+            ? '#eff6ff'
+            : hasOverdue
+              ? '#fef2f2'
+              : !isCurrentMonth && mode === 'month'
+                ? '#fafafa'
+                : '#fff';
+          const background = cycleHit
+            ? `linear-gradient(${CYCLE_TINT[cycleHit.cycle.status]}14, ${CYCLE_TINT[cycleHit.cycle.status]}14), ${baseBg}`
+            : baseBg;
+
           return (
             <div
               key={key}
@@ -648,19 +875,75 @@ export function CalendarView() {
               style={{
                 borderRight: (idx + 1) % 7 !== 0 ? '1px solid #f1f5f9' : undefined,
                 borderBottom: '1px solid #f1f5f9',
+                borderTop: cycleHit ? `2px solid ${CYCLE_TINT[cycleHit.cycle.status]}` : undefined,
                 padding: mode === 'month' ? '4px 4px 2px' : '8px',
-                background: isToday
-                  ? '#eff6ff'
-                  : hasOverdue
-                    ? '#fef2f2'
-                    : !isCurrentMonth && mode === 'month'
-                      ? '#fafafa'
-                      : '#fff',
+                background,
                 minHeight: mode === 'week' ? 200 : undefined,
                 overflow: 'hidden',
                 position: 'relative',
               }}
             >
+              {/* Cycle label — only on the first covered day so the
+                  band reads as one continuous marker, not a flood. */}
+              {cycleHit?.isFirst && (
+                <div
+                  title={`Sprint: ${cycleHit.cycle.name} · ${cycleHit.cycle.status}`}
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 700,
+                    color: CYCLE_TINT[cycleHit.cycle.status],
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.3,
+                    marginBottom: 2,
+                    whiteSpace: 'nowrap',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                  }}
+                >
+                  ▸ {cycleHit.cycle.name}
+                </div>
+              )}
+
+              {/* Version markers — target and projected finish. */}
+              {versionMarkers.length > 0 && (
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 3,
+                    marginBottom: 3,
+                  }}
+                >
+                  {versionMarkers.map((vm) => {
+                    const isTarget = vm.kind === 'target';
+                    return (
+                      <span
+                        key={`${vm.versionId}-${vm.kind}`}
+                        title={
+                          isTarget
+                            ? `${vm.name} target date`
+                            : `${vm.name} projected finish (velocity-adjusted)`
+                        }
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          padding: '1px 5px',
+                          borderRadius: 3,
+                          color: isTarget ? '#fff' : vm.color,
+                          background: isTarget ? vm.color : `${vm.color}20`,
+                          border: isTarget ? 'none' : `1px dashed ${vm.color}`,
+                          whiteSpace: 'nowrap',
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.3,
+                        }}
+                      >
+                        {isTarget ? 'Tgt' : 'Proj'} · {vm.name}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+
               {/* Day number */}
               <div
                 style={{
