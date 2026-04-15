@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, CriticalPathResult, ScheduledNode, ScheduleConstraint } from '@mindblown/core';
-import { schedule as computeSchedule, criticalPath as computeCriticalPath } from '@mindblown/core';
+import { schedule as computeSchedule, criticalPath as computeCriticalPath, hasCycle } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { fetchSchedule } from './api.js';
 
@@ -303,6 +303,7 @@ export function GanttView() {
   const sequentialResult = useMemo<{
     data: ScheduleResponse;
     edges: number;
+    skipped: number;
     fills: number;
     pinnedLeaves: number;
     error: string | null;
@@ -315,23 +316,82 @@ export function GanttView() {
 
     const nodeList = Object.values(nodes);
     if (nodeList.length === 0) {
-      return { data: serverScheduleData, edges: 0, fills: 0, pinnedLeaves: 0, error: 'no nodes' };
+      return { data: serverScheduleData, edges: 0, skipped: 0, fills: 0, pinnedLeaves: 0, error: 'no nodes' };
     }
 
     const p = Math.max(1, parallelism);
-    // Synthetic FS edges attach to the follower child, not the parent, so
-    // the existing expandParentDependencies/topoSort pipeline handles them
-    // naturally.
+
+    // Only synthesize edges between LEAF siblings. Parent-to-parent
+    // sequencing sounds nice but expands into cross-subtree leaf deps
+    // that can cycle with existing ones in non-obvious ways. Leaves
+    // are safe: hasCycle walks direct Node.dependencies and correctly
+    // detects a reverse dep between two specific leaves.
+    //
+    // Sibling order uses the server's cycle-free schedule as a partial
+    // order (start, end, tree index as tiebreakers) so the chain
+    // direction at least agrees with existing task ordering.
+    const startByNode = new Map<string, number>();
+    const endByNode = new Map<string, number>();
+    for (const s of serverScheduleData.schedule) {
+      startByNode.set(s.nodeId, s.computedStart);
+      endByNode.set(s.nodeId, s.computedEnd);
+    }
+
+    const nodeById = new Map<string, Node>();
+    for (const n of nodeList) nodeById.set(n.id, n);
+    const isLeafId = (id: string): boolean => {
+      const n = nodeById.get(id);
+      return !!n && n.childrenIds.length === 0;
+    };
+
+    // Build a mutable node map we can extend as we add synthetic edges,
+    // so hasCycle sees the accumulating state (not just the original).
+    const mutableNodeMap = new Map<string, Node>();
+    for (const n of nodeList) {
+      mutableNodeMap.set(n.id, { ...n, dependencies: [...n.dependencies] });
+    }
+
     const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
     let edges = 0;
+    let skipped = 0;
     for (const n of nodeList) {
       if (n.childrenIds.length < 2) continue;
-      for (let i = p; i < n.childrenIds.length; i++) {
-        const follower = n.childrenIds[i];
-        const predecessor = n.childrenIds[i - p];
+
+      const leafChildren = n.childrenIds.filter(isLeafId);
+      if (leafChildren.length < 2) continue;
+
+      const sortedLeafChildren = [...leafChildren]
+        .map((cid, idx) => ({
+          cid,
+          idx,
+          start: startByNode.get(cid) ?? 0,
+          end: endByNode.get(cid) ?? 0,
+        }))
+        .sort((a, b) => a.start - b.start || a.end - b.end || a.idx - b.idx)
+        .map((c) => c.cid);
+
+      for (let i = p; i < sortedLeafChildren.length; i++) {
+        const follower = sortedLeafChildren[i];
+        const predecessor = sortedLeafChildren[i - p];
+
+        // Would "follower depends on predecessor" create a cycle with
+        // existing deps (or edges we've already added)?
+        if (hasCycle(follower, predecessor, mutableNodeMap)) {
+          skipped++;
+          continue;
+        }
+
         const list = extraDeps.get(follower) ?? [];
         list.push({ targetNodeId: predecessor, type: 'FS', lag: 0 });
         extraDeps.set(follower, list);
+
+        const followerNode = mutableNodeMap.get(follower);
+        if (followerNode) {
+          followerNode.dependencies = [
+            ...followerNode.dependencies,
+            { targetNodeId: predecessor, type: 'FS', lag: 0 },
+          ];
+        }
         edges++;
       }
     }
@@ -395,6 +455,7 @@ export function GanttView() {
           unitsPerDay,
         },
         edges,
+        skipped,
         fills,
         pinnedLeaves,
         error: null,
@@ -403,6 +464,7 @@ export function GanttView() {
       return {
         data: serverScheduleData,
         edges,
+        skipped,
         fills,
         pinnedLeaves,
         error: e instanceof Error ? e.message : String(e),
@@ -806,7 +868,7 @@ export function GanttView() {
               >
                 {sequentialResult.error
                   ? `error: ${sequentialResult.error}`
-                  : `${sequentialResult.edges} edges, ${sequentialResult.fills} filled, ${sequentialResult.pinnedLeaves} pinned`}
+                  : `${sequentialResult.edges} edges, ${sequentialResult.skipped} skipped, ${sequentialResult.fills} filled, ${sequentialResult.pinnedLeaves} pinned`}
               </span>
             )}
           </>
