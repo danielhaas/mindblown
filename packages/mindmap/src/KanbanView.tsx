@@ -462,9 +462,6 @@ export function KanbanView() {
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
-  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
-  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
 
   const [swimlanes, setSwimlanes] = useState(false);
@@ -486,22 +483,29 @@ export function KanbanView() {
 
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
-    // Get visible node IDs for drill-down filtering
-    const visibleNodes = getVisibleNodes();
-    const visibleIds = new Set(visibleNodes.filter((v) => !v.isDimmed).map((v) => v.node.id));
+    // Kanban shows ALL leaves regardless of the mindmap's collapse state or
+    // depth limit — those are mindmap-only concerns. We still respect the
+    // explicit version/sprint filters via ancestor inheritance.
+    let leafNodes = getLeafNodes();
 
-    // Get leaf nodes within the visible set (getVisibleNodes already applies
-    // version + sprint filters, so no further filtering is needed here).
-    const leafNodes = getLeafNodes().filter((n) => visibleIds.has(n.id));
-
-    // Also include nodes at the depth limit that have hidden children
-    // (they act as leaf-like nodes in the kanban)
-    for (const vn of visibleNodes) {
-      if (vn.hasHiddenChildren && !vn.isDimmed && vn.node.childrenIds.length > 0) {
-        if (!leafNodes.some((l) => l.id === vn.node.id)) {
-          leafNodes.push(vn.node);
-        }
-      }
+    if ((activeVersionFilter || activeCycleFilter) && rootNodeId) {
+      const inScope = new Set<string>();
+      const walk = (
+        nodeId: string,
+        inheritedVersion: string | null,
+        inheritedCycle: string | null,
+      ) => {
+        const node = nodes[nodeId];
+        if (!node) return;
+        const effVersion = node.versionId ?? inheritedVersion;
+        const effCycle = node.cycleId ?? inheritedCycle;
+        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
+        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
+        if (matchesVersion && matchesCycle) inScope.add(nodeId);
+        for (const cid of node.childrenIds) walk(cid, effVersion, effCycle);
+      };
+      walk(rootNodeId, null, null);
+      leafNodes = leafNodes.filter((n) => inScope.has(n.id));
     }
 
     // Bucket leaves by status
@@ -559,7 +563,7 @@ export function KanbanView() {
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, getVisibleNodes, focusNodeId, maxDepth, nodes, rootNodeId]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, nodes, rootNodeId]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {
