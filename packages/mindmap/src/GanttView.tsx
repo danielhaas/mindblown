@@ -248,6 +248,7 @@ export function GanttView() {
   const currentMap = useMindmapStore((s) => s.currentMap);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const updateNode = useMindmapStore((s) => s.updateNode);
+  const reorderChildren = useMindmapStore((s) => s.reorderChildren);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
@@ -266,6 +267,16 @@ export function GanttView() {
     startX: number;
     originalStart: string;
     originalDue: string;
+  } | null>(null);
+
+  // Row-reorder drag state for the task-list panel. `dropIdx` is the
+  // index in the source parent's childrenIds where the node would land
+  // if released now (null = no valid drop target).
+  const [reorderDrag, setReorderDrag] = useState<{
+    sourceId: string;
+    sourceParentId: string;
+    dropIdx: number | null;
+    dropY: number | null;
   } | null>(null);
 
   // Refs for synchronized scrolling
@@ -321,15 +332,12 @@ export function GanttView() {
 
     const p = Math.max(1, parallelism);
 
-    // Sibling order uses the server's cycle-free schedule as a partial
-    // order (start, end, tree index as tiebreakers) so the chain
-    // direction always agrees with existing task ordering.
-    const startByNode = new Map<string, number>();
-    const endByNode = new Map<string, number>();
-    for (const s of serverScheduleData.schedule) {
-      startByNode.set(s.nodeId, s.computedStart);
-      endByNode.set(s.nodeId, s.computedEnd);
-    }
+    // Sibling chain order = tree order (childrenIds). Users control
+    // sequencing by reordering nodes in the mindmap / Gantt task list,
+    // not by whatever the scheduler happened to produce. The cycle
+    // filter further down still drops any edge that would reverse an
+    // existing dependency, so "drag this one first" can't silently
+    // break explicit FS links.
 
     const nodeById = new Map<string, Node>();
     for (const n of nodeList) nodeById.set(n.id, n);
@@ -461,22 +469,13 @@ export function GanttView() {
     for (const n of nodeList) {
       if (n.childrenIds.length < 2) continue;
 
-      // Sort children by (start, end, tree index). Works for both leaf
-      // and parent siblings because the server rolls parent start/end
-      // up from descendant leaves.
-      const sortedChildren = [...n.childrenIds]
-        .map((cid, idx) => ({
-          cid,
-          idx,
-          start: startByNode.get(cid) ?? 0,
-          end: endByNode.get(cid) ?? 0,
-        }))
-        .sort((a, b) => a.start - b.start || a.end - b.end || a.idx - b.idx)
-        .map((c) => c.cid);
+      // Chain in tree order — n.childrenIds IS the user-controlled
+      // sequence now that drag-reorder writes to it.
+      const orderedChildren = n.childrenIds;
 
-      for (let i = p; i < sortedChildren.length; i++) {
-        const follower = sortedChildren[i];
-        const predecessor = sortedChildren[i - p];
+      for (let i = p; i < orderedChildren.length; i++) {
+        const follower = orderedChildren[i];
+        const predecessor = orderedChildren[i - p];
 
         if (wouldCycle(follower, predecessor)) {
           skipped++;
@@ -808,6 +807,94 @@ export function GanttView() {
     };
   }, [dragInfo, colWidth, scale, updateNode]);
 
+  // ── Drag-reorder rows in the task list ─────────────────────────
+  //
+  // Users drop a row above/below a sibling (same parent only) to rewrite
+  // the parent's childrenIds — which is exactly the sequencing key the
+  // sequential scheduler now reads. The mouse-move math is: find the row
+  // under the cursor by dividing the task-list-local Y by ROW_HEIGHT,
+  // then check "top half" vs "bottom half" of that row to decide whether
+  // the drop slot is before or after it. Reparenting is explicitly out
+  // of scope here — that gesture lives in the mindmap.
+  const handleRowMouseDown = useCallback(
+    (e: React.MouseEvent, nodeId: string) => {
+      // Ignore if clicking an interactive child (expand toggle, etc.)
+      const target = e.target as HTMLElement;
+      if (target.closest('button')) return;
+      const node = nodes[nodeId];
+      if (!node || !node.parentId) return;
+      e.preventDefault();
+      setReorderDrag({
+        sourceId: nodeId,
+        sourceParentId: node.parentId,
+        dropIdx: null,
+        dropY: null,
+      });
+    },
+    [nodes],
+  );
+
+  useEffect(() => {
+    if (!reorderDrag) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!taskListRef.current) return;
+      const rect = taskListRef.current.getBoundingClientRect();
+      const scrollTop = taskListRef.current.scrollTop;
+      const localY = e.clientY - rect.top + scrollTop;
+      const rowIdx = Math.floor(localY / ROW_HEIGHT);
+      if (rowIdx < 0 || rowIdx >= rows.length) {
+        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+        return;
+      }
+      const hoverRow = rows[rowIdx];
+      // Only same-parent drops are valid.
+      if (hoverRow.node.parentId !== reorderDrag.sourceParentId) {
+        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+        return;
+      }
+      const rowTop = rowIdx * ROW_HEIGHT;
+      const above = localY - rowTop < ROW_HEIGHT / 2;
+      // Map hover row to index within parent.childrenIds, then add 1 if dropping below.
+      const parent = nodes[reorderDrag.sourceParentId];
+      if (!parent) return;
+      const hoverInsideParent = parent.childrenIds.indexOf(hoverRow.node.id);
+      if (hoverInsideParent < 0) {
+        setReorderDrag((d) => (d ? { ...d, dropIdx: null, dropY: null } : d));
+        return;
+      }
+      const dropIdx = above ? hoverInsideParent : hoverInsideParent + 1;
+      const dropY = (above ? rowTop : rowTop + ROW_HEIGHT) - scrollTop;
+      setReorderDrag((d) => (d ? { ...d, dropIdx, dropY } : d));
+    };
+
+    const handleMouseUp = () => {
+      setReorderDrag((current) => {
+        if (!current || current.dropIdx == null) return null;
+        const parent = nodes[current.sourceParentId];
+        if (!parent) return null;
+        const srcIdx = parent.childrenIds.indexOf(current.sourceId);
+        if (srcIdx < 0) return null;
+        // Adjust drop index to account for removing the source first.
+        let target = current.dropIdx;
+        if (target > srcIdx) target -= 1;
+        if (target === srcIdx) return null; // no-op
+        const next = [...parent.childrenIds];
+        next.splice(srcIdx, 1);
+        next.splice(target, 0, current.sourceId);
+        reorderChildren(current.sourceParentId, next);
+        return null;
+      });
+    };
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [reorderDrag, rows, nodes, reorderChildren]);
+
   // ── Position helpers ────────────────────────────────────────────
 
   const pxPerDay = colWidth / getStepDays(scale);
@@ -1067,8 +1154,23 @@ export function GanttView() {
               flex: 1,
               overflowY: 'auto',
               overflowX: 'hidden',
+              position: 'relative',
             }}
           >
+            {reorderDrag?.dropY != null && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: 4,
+                  right: 4,
+                  top: reorderDrag.dropY,
+                  height: 0,
+                  borderTop: '2px solid #4f46e5',
+                  pointerEvents: 'none',
+                  zIndex: 10,
+                }}
+              />
+            )}
             <div style={{ height: totalHeight }}>
               {rows.map((row, idx) => {
                 const cv = computed.get(row.node.id);
@@ -1077,10 +1179,12 @@ export function GanttView() {
                 const effort = cv?.computedEffort ?? row.node.effortEstimate ?? 0;
                 const isSelected = row.node.id === selectedNodeId;
 
+                const isDragging = reorderDrag?.sourceId === row.node.id;
                 return (
                   <div
                     key={row.node.id}
                     onClick={() => selectNode(row.node.id)}
+                    onMouseDown={(e) => handleRowMouseDown(e, row.node.id)}
                     style={{
                       height: ROW_HEIGHT,
                       display: 'flex',
@@ -1088,15 +1192,18 @@ export function GanttView() {
                       padding: '0 8px',
                       borderBottom: '1px solid #f1f5f9',
                       background: isSelected ? '#eef2ff' : idx % 2 === 0 ? '#fff' : '#fafbfc',
-                      cursor: 'pointer',
-                      transition: 'background 0.1s',
+                      cursor: reorderDrag ? 'grabbing' : 'grab',
+                      opacity: isDragging ? 0.4 : 1,
+                      transition: 'background 0.1s, opacity 0.1s',
                       fontSize: 12,
+                      userSelect: 'none',
                     }}
                     onMouseEnter={(e) => {
-                      if (!isSelected) e.currentTarget.style.background = '#f8fafc';
+                      if (!isSelected && !reorderDrag) e.currentTarget.style.background = '#f8fafc';
                     }}
                     onMouseLeave={(e) => {
-                      if (!isSelected) e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafbfc';
+                      if (!isSelected && !reorderDrag)
+                        e.currentTarget.style.background = idx % 2 === 0 ? '#fff' : '#fafbfc';
                     }}
                   >
                     {/* Name with indent + expand toggle */}

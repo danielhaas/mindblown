@@ -438,6 +438,17 @@ export function moveNode(
   });
 }
 
+export function reorderChildren(
+  mapId: string,
+  parentId: string,
+  childrenIds: string[],
+): Promise<{ success: true }> {
+  return request<{ success: true }>(`/api/maps/${mapId}/nodes/reorder`, {
+    method: 'PUT',
+    body: JSON.stringify({ parentId, childrenIds }),
+  });
+}
+
 // ── Schedule ─────────────────────────────────────────────────────
 
 export function fetchSchedule(mapId: string): Promise<unknown> {

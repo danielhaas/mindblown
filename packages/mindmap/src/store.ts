@@ -107,6 +107,7 @@ export interface MindmapState {
   updateNode: (id: string, updates: Partial<Node>) => void;
   deleteNode: (id: string) => void;
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
+  reorderChildren: (parentId: string, childrenIds: string[]) => void;
   toggleCollapse: (id: string) => void;
   expandAll: () => void;
   collapseAll: () => void;
@@ -930,6 +931,31 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
           nodes: snapshot,
           computed: recomputeValues(snapshot),
           error: 'Failed to move node',
+        });
+      });
+    }
+  },
+
+  reorderChildren: (parentId, childrenIds) => {
+    const state = get();
+    const parent = state.nodes[parentId];
+    if (!parent) return;
+
+    const snapshot = { ...state.nodes };
+    const updatedNodes = { ...state.nodes };
+    updatedNodes[parentId] = { ...parent, childrenIds: [...childrenIds] };
+
+    set({
+      nodes: updatedNodes,
+      computed: recomputeValues(updatedNodes),
+    });
+
+    if (state.currentMapId && !parentId.startsWith('temp-')) {
+      api.reorderChildren(state.currentMapId, parentId, childrenIds).catch(() => {
+        set({
+          nodes: snapshot,
+          computed: recomputeValues(snapshot),
+          error: 'Failed to reorder children',
         });
       });
     }
