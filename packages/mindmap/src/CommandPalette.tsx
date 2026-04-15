@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import type { ActiveView } from './store.js';
 import type { LayoutType } from './layout.js';
+import * as api from './api.js';
 
 // ── Fuzzy match ──────────────────────────────────────────────
 
@@ -45,7 +46,37 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   const listRef = useRef<HTMLDivElement>(null);
 
   const nodes = useMindmapStore((s) => s.nodes);
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+
+  // Semantic search enrichment: for queries ≥ 3 chars, fire a debounced
+  // call to /api/ai/search and remember which node IDs should be promoted
+  // to the top of the goto- list. Falls back to fuzzy-only if the AI layer
+  // isn't available or the query is too short.
+  const [semanticRank, setSemanticRank] = useState<Map<string, number>>(new Map());
+  useEffect(() => {
+    if (!currentMapId || query.trim().length < 3) {
+      setSemanticRank((prev) => (prev.size === 0 ? prev : new Map()));
+      return;
+    }
+    let cancelled = false;
+    const handle = setTimeout(async () => {
+      try {
+        const res = await api.aiSearch(currentMapId, query, 8);
+        if (cancelled) return;
+        const ranked = new Map<string, number>();
+        res.matches.forEach((m, i) => ranked.set(m.nodeId, i));
+        setSemanticRank(ranked);
+      } catch {
+        // Silent — semantic search is best-effort enrichment
+      }
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(handle);
+    };
+  }, [query, currentMapId]);
+
   const addNode = useMindmapStore((s) => s.addNode);
   const deleteNode = useMindmapStore((s) => s.deleteNode);
   const updateNode = useMindmapStore((s) => s.updateNode);
@@ -206,8 +237,16 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   // Filter commands
   const filtered = useMemo(() => {
     let list = commands;
+    // For goto items: union of (fuzzy match) and (top semantic match) so
+    // conceptually-related nodes surface even without a substring hit.
     if (query) {
-      list = list.filter((c) => fuzzyMatch(query, c.label));
+      list = list.filter((c) => {
+        if (c.id.startsWith('goto-')) {
+          const nodeId = c.id.slice('goto-'.length);
+          return fuzzyMatch(query, c.label) || semanticRank.has(nodeId);
+        }
+        return fuzzyMatch(query, c.label);
+      });
     }
     // Hide selection-required commands when nothing selected (unless searching)
     if (!selectedNodeId && !query) {
@@ -219,11 +258,19 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
     if (gotos.length > 10 && !query) {
       return nonGotos;
     }
+    // Sort goto by semantic rank (lower index = more relevant), then everything else
+    if (semanticRank.size > 0) {
+      gotos.sort((a, b) => {
+        const ai = semanticRank.get(a.id.slice('goto-'.length)) ?? Infinity;
+        const bi = semanticRank.get(b.id.slice('goto-'.length)) ?? Infinity;
+        return ai - bi;
+      });
+    }
     if (gotos.length > 20) {
       return [...nonGotos, ...gotos.slice(0, 20)];
     }
-    return list;
-  }, [commands, query, selectedNodeId]);
+    return [...nonGotos, ...gotos];
+  }, [commands, query, selectedNodeId, semanticRank]);
 
   // Reset on open
   useEffect(() => {

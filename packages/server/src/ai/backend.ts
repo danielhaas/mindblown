@@ -11,6 +11,7 @@ import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import { scheduleEmbedNode } from './embeddings.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -154,6 +155,7 @@ export function createChatBackend(userId: string): ToolBackend {
         ...(fields ?? {}),
       });
       broadcast(mapId, { type: 'node:created', node });
+      scheduleEmbedNode(node.id);
       return toNodeWithComputed(node, undefined);
     },
 
@@ -166,6 +168,9 @@ export function createChatBackend(userId: string): ToolBackend {
         fields: Object.keys(fields),
         node: updated,
       });
+      if ('text' in fields || 'description' in fields) {
+        scheduleEmbedNode(nodeId);
+      }
       return toNodeWithComputed(updated, undefined);
     },
 

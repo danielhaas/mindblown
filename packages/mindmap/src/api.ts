@@ -563,6 +563,28 @@ export function aiEstimate(
   });
 }
 
+export interface SemanticMatch {
+  nodeId: string;
+  text: string;
+  score: number;
+}
+
+export function aiSearch(
+  mapId: string,
+  q: string,
+  limit = 10,
+): Promise<{ matches: SemanticMatch[] }> {
+  const params = new URLSearchParams({ mapId, q, limit: String(limit) });
+  return request(`/api/ai/search?${params.toString()}`);
+}
+
+export function aiBackfillEmbeddings(mapId: string): Promise<{ embedded: number; skipped: number; total: number }> {
+  return request('/api/ai/embeddings/backfill', {
+    method: 'POST',
+    body: JSON.stringify({ mapId }),
+  });
+}
+
 export function aiConfig(): Promise<{ enabled: boolean; model: string }> {
   return request('/api/ai/config');
 }

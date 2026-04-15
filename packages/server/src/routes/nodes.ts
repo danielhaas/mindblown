@@ -5,6 +5,7 @@ import { DependencyValidationError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
+import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { db } from '../db/connection.js';
 import { milestones } from '../db/schema.js';
 import { updateGitHubIssue, closeGitHubIssue } from '@mindblown/integrations';
@@ -108,6 +109,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // Broadcast to connected clients
     broadcast(req.params.id, { type: 'node:created', node });
 
+    // Schedule a background embedding for semantic search
+    scheduleEmbedNode(node.id);
+
     // Change history (fire-and-forget)
     events
       .recordEvent({
@@ -197,6 +201,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         fields: Object.keys(body),
         node: updated,
       });
+
+      // Re-embed if text or description changed (other fields don't affect the vector)
+      if (body.text !== undefined || body.description !== undefined) {
+        scheduleEmbedNode(req.params.nodeId);
+      }
 
       // Fire outbound GitHub sync (non-blocking)
       syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});

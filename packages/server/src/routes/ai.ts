@@ -7,6 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import OpenAI from 'openai';
 import { aiEnabled, aiConfig, chatCompletion, getClient as getAIClient } from '../ai/client.js';
 import { CHAT_TOOLS, executeTool, renderTreeForPrompt } from '../ai/tools.js';
+import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/embeddings.js';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
@@ -259,6 +260,7 @@ Node to break down: "${targetNode.text}"`;
       });
       created.push(node);
       broadcast(body.mapId, { type: 'node:created', node });
+      scheduleEmbedNode(node.id);
     }
 
     return reply.status(201).send({ created });
@@ -431,6 +433,56 @@ Rules:
       send('error', { message: err.message });
     } finally {
       reply.raw.end();
+    }
+  });
+
+  // ── GET /api/ai/search — semantic node search ─────────────────
+  //
+  // Query:    ?mapId=...&q=...&limit=10
+  // Response: { matches: Array<{ nodeId, text, score }> }
+  //
+  // Uses cosine similarity over pre-computed node embeddings. Nodes
+  // without an embedding are silently skipped — run /embeddings/backfill
+  // first if coverage matters.
+
+  app.get('/api/ai/search', async (req, reply) => {
+    const query = req.query as { mapId?: string; q?: string; limit?: string };
+    if (!query.mapId || !query.q?.trim()) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and q query params required' },
+      });
+    }
+    const limit = query.limit ? parseInt(query.limit, 10) : 10;
+    try {
+      const matches = await semanticSearch(query.mapId, query.q, Number.isFinite(limit) ? limit : 10);
+      return { matches };
+    } catch (err: any) {
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/embeddings/backfill — compute missing embeddings ─
+  //
+  // Walks every node in the given map, embedding any node whose
+  // source text has changed (or was never embedded). Idempotent —
+  // safe to run repeatedly.
+
+  app.post('/api/ai/embeddings/backfill', async (req, reply) => {
+    const body = req.body as { mapId: string };
+    if (!body.mapId) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId required' },
+      });
+    }
+    try {
+      const result = await backfillMapEmbeddings(body.mapId);
+      return result;
+    } catch (err: any) {
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
+      });
     }
   });
 
@@ -730,6 +782,7 @@ Title: "${targetText}"`;
         });
         createdCount++;
         broadcast(body.mapId, { type: 'node:created', node });
+        scheduleEmbedNode(node.id);
         if (hasChildren) await createSubtree(node.id, item.children);
       }
     }

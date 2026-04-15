@@ -298,5 +298,21 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
 
+  // ── Node embeddings (semantic search) ─────────────────────────
+  // Stored as jsonb float array — pgvector isn't available on the
+  // prod Postgres image, so similarity is computed in JS. Fine for
+  // the map sizes we're targeting (< 10k nodes). `embedding_text`
+  // tracks the exact text the vector was computed from so we know
+  // when to re-embed vs reuse.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS embedding JSONB
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS embedding_text TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS embedding_updated_at TIMESTAMPTZ
+  `);
+
   console.log('[db] Migrations complete.');
 }
