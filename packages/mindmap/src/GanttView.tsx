@@ -16,9 +16,9 @@ interface ScheduleResponse {
 
 // ── Constants ─────────────────────────────────────────────────────
 
-const DEFAULT_TASK_LIST_WIDTH = 300;
+const DEFAULT_TASK_LIST_WIDTH = 460;
 const MIN_TASK_LIST_WIDTH = 180;
-const MAX_TASK_LIST_WIDTH = 700;
+const MAX_TASK_LIST_WIDTH = 800;
 const ROW_HEIGHT = 36;
 const HEADER_HEIGHT = 48;
 const HEALTH_COLORS: Record<string, string> = {
