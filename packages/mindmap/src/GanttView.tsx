@@ -482,6 +482,23 @@ export function GanttView() {
       }
     };
 
+    // A subtree is "fully done" iff every leaf under it has pct >= 100.
+    // Done subtrees are pinned in the past and must not participate in
+    // the forward chain — otherwise an FS edge where they're either
+    // predecessor or follower would make the scheduler respect the
+    // later of (past pin, chain position), landing the done bar in
+    // the future chain instead of the past.
+    const isFullyDone = (id: string): boolean => {
+      const leaves = computeLeavesOf(id);
+      if (leaves.length === 0) return false;
+      for (const lid of leaves) {
+        const l = nodeById.get(lid);
+        if (!l) return false;
+        if ((l.percentComplete ?? 0) < 100) return false;
+      }
+      return true;
+    };
+
     const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
     let edges = 0;
     let skipped = 0;
@@ -494,9 +511,11 @@ export function GanttView() {
       // each epic we still chain siblings; that's the useful part.
       if (n.id === rootNodeId) continue;
 
-      // Chain in tree order — n.childrenIds IS the user-controlled
-      // sequence now that drag-reorder writes to it.
-      const orderedChildren = n.childrenIds;
+      // Chain in tree order, but drop fully-done children. Their bars
+      // live in the past via explicit pins; including them in the chain
+      // would let an FS predecessor push them forward into the future.
+      const orderedChildren = n.childrenIds.filter((cid) => !isFullyDone(cid));
+      if (orderedChildren.length < 2) continue;
 
       for (let i = p; i < orderedChildren.length; i++) {
         const follower = orderedChildren[i];
