@@ -1146,18 +1146,6 @@ export function GanttView() {
                         <div style={{ width: 16, flexShrink: 0 }} />
                       )}
 
-                      {/* Milestone icon */}
-                      {row.node.isMilestone && (
-                        <svg
-                          width="10"
-                          height="10"
-                          viewBox="0 0 10 10"
-                          style={{ marginRight: 4, flexShrink: 0 }}
-                        >
-                          <polygon points="5,0 10,5 5,10 0,5" fill="#8b5cf6" />
-                        </svg>
-                      )}
-
                       <span
                         style={{
                           overflow: 'hidden',
@@ -1438,7 +1426,7 @@ export function GanttView() {
                     );
                   })}
 
-                {/* ── Task bars / Milestone diamonds ──────────────── */}
+                {/* ── Task bars ──────────────────────────────────── */}
                 {rows.map((row, idx) => {
                   // Bar positions come from the computed schedule (effort +
                   // dependencies + manual pins), NOT directly from
@@ -1458,27 +1446,6 @@ export function GanttView() {
                   const barColor = HEALTH_COLORS[health] ?? HEALTH_COLORS.on_track;
 
                   const centerY = idx * ROW_HEIGHT + ROW_HEIGHT / 2;
-
-                  // Milestone diamond
-                  if (row.node.isMilestone) {
-                    const date = dueDate;
-                    const cx = getBarX(date);
-                    const size = 7;
-                    return (
-                      <g
-                        key={`bar-${row.node.id}`}
-                        style={{ pointerEvents: 'auto', cursor: 'pointer' }}
-                        onClick={() => selectNode(row.node.id)}
-                      >
-                        <polygon
-                          points={`${cx},${centerY - size} ${cx + size},${centerY} ${cx},${centerY + size} ${cx - size},${centerY}`}
-                          fill={isCritical ? '#dc2626' : '#8b5cf6'}
-                          stroke={isSelected ? '#4f46e5' : isCritical ? '#991b1b' : '#7c3aed'}
-                          strokeWidth={isSelected ? 2 : isCritical ? 2.5 : 1}
-                        />
-                      </g>
-                    );
-                  }
 
                   // Regular bar
                   const x = getBarX(startDate);

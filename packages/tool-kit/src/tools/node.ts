@@ -42,7 +42,6 @@ export const updateNodeTool = defineTool({
     tags: z.array(z.string()).optional().describe('Tags'),
     assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
-    isMilestone: z.boolean().optional().describe('Whether this is a milestone'),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};

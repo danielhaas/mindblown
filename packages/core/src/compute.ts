@@ -4,12 +4,9 @@ import type { Node, NodeId, NodeMap, HealthSignal, ComputedNodeValues } from './
  * Compute the effort rollup for a node.
  *
  * Leaf nodes return their effortEstimate (or 0 if unestimated).
- * Milestone nodes always return 0.
  * Parent nodes return the sum of all descendant leaf efforts.
  */
 export function computeEffort(node: Node, nodeMap: NodeMap): number {
-  if (node.isMilestone) return 0;
-
   if (node.childrenIds.length === 0) {
     // Leaf node: return stored estimate, or 0 if unestimated
     return node.effortEstimate ?? 0;

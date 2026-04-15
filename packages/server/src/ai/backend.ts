@@ -60,9 +60,7 @@ function toNodeWithComputed(
       type: d.type,
       lag: d.lag,
     })),
-    isMilestone: node.isMilestone,
     versionId: node.versionId,
-    milestoneId: node.milestoneId,
     cycleId: node.cycleId,
     externalLinks: node.externalLinks.map((l) => ({
       provider: l.provider,

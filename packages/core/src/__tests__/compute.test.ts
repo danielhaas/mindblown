@@ -31,9 +31,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     tags: [],
     customFields: {},
     dependencies: [],
-    isMilestone: false,
     versionId: null,
-    milestoneId: null,
     cycleId: null,
     externalLinks: [],
     createdAt: '2026-01-01T00:00:00Z',
@@ -151,16 +149,6 @@ describe('computeEffort', () => {
     expect(computeEffort(root, nodeMap)).toBe(24);
   });
 
-  it('returns 0 for milestone nodes regardless of children', () => {
-    const child = makeNode({ id: 'child', parentId: 'ms', effortEstimate: 5 });
-    const milestone = makeNode({
-      id: 'ms',
-      isMilestone: true,
-      childrenIds: ['child'],
-    });
-    const nm = toMap([milestone, child]);
-    expect(computeEffort(milestone, nm)).toBe(0);
-  });
 });
 
 // ── Progress rollup tests ───────────────────────────────────────

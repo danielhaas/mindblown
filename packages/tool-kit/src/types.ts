@@ -34,9 +34,7 @@ export interface NodeWithComputed {
   startDate: string | null;
   tags: string[];
   dependencies: Array<{ targetNodeId: string; type: string; lag: number }>;
-  isMilestone: boolean;
   versionId: string | null;
-  milestoneId: string | null;
   cycleId: string | null;
   externalLinks: Array<{
     provider: string;

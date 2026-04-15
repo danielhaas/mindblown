@@ -69,7 +69,6 @@ export interface CreateNodeInput {
   priority?: Priority;
   startDate?: string;
   dueDate?: string;
-  isMilestone?: boolean;
 }
 
 export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
@@ -88,7 +87,6 @@ export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
     priority: input.priority ?? null,
     startDate: input.startDate ?? null,
     dueDate: input.dueDate ?? null,
-    isMilestone: input.isMilestone ?? false,
     assigneeIds: [],
     tags: [],
     customFields: {},
@@ -144,9 +142,7 @@ export interface UpdateNodeInput {
   tags?: string[];
   customFields?: Record<string, CustomFieldValue>;
   dependencies?: Dependency[];
-  isMilestone?: boolean;
   versionId?: string | null;
-  milestoneId?: string | null;
   cycleId?: string | null;
   externalLinks?: ExternalLink[];
 }
@@ -192,9 +188,7 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
   if (input.tags !== undefined) updates.tags = input.tags;
   if (input.customFields !== undefined) updates.customFields = input.customFields;
   if (input.dependencies !== undefined) updates.dependencies = input.dependencies;
-  if (input.isMilestone !== undefined) updates.isMilestone = input.isMilestone;
   if (input.versionId !== undefined) updates.versionId = input.versionId;
-  if (input.milestoneId !== undefined) updates.milestoneId = input.milestoneId;
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
 

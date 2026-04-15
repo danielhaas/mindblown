@@ -146,11 +146,10 @@ export function MindmapNode({
   onDragStart,
 }: MindmapNodeProps) {
   const { x, y, width, height, depth, collapsed, hasChildren } = layout;
-  const isMilestone = node.isMilestone;
   const borderRadius = depth === 0 ? 12 : 8;
   const borderColor = getNodeColor(depth);
-  const bgColor = isMilestone ? '#f5f3ff' : getNodeBg(depth);
-  const textColor = isMilestone ? '#6d28d9' : getNodeTextColor(depth);
+  const bgColor = getNodeBg(depth);
+  const textColor = getNodeTextColor(depth);
 
   // Health signal border override
   let healthBorderColor: string | null = null;
@@ -164,12 +163,10 @@ export function MindmapNode({
       ? '#3b82f6'
       : isSelected
         ? '#4f46e5'
-        : isMilestone
-          ? '#8b5cf6'
-          : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
+        : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
   const strokeWidth = isDragTarget || isDragInvalid
     ? 2.5
-    : isSelected ? 2.5 : isMilestone ? 2 : depth === 0 ? 0 : 1.5;
+    : isSelected ? 2.5 : depth === 0 ? 0 : 1.5;
 
   // Computed values
   const progress = computedValues?.computedProgress ?? 0;
@@ -268,51 +265,27 @@ export function MindmapNode({
         onDoubleClick();
       }}
     >
-      {/* Node shape: diamond for milestones, rectangle for normal nodes */}
-      {isMilestone ? (
-        <g>
-          <polygon
-            points={`${x + width / 2},${y - 4} ${x + width + 4},${y + height / 2} ${x + width / 2},${y + height + 4} ${x - 4},${y + height / 2}`}
-            fill={bgColor}
-            stroke={strokeColor}
-            strokeWidth={strokeWidth}
-            filter={isSelected ? 'url(#node-shadow-selected)' : 'url(#node-shadow)'}
-          />
-          {/* Small milestone icon at top-left corner area */}
-          <svg x={x + 6} y={y + 4} width="10" height="10" viewBox="0 0 10 10">
-            <polygon points="5,0 10,5 5,10 0,5" fill="#8b5cf6" opacity="0.6" />
-          </svg>
-          <animate
-            attributeName="opacity"
-            from="0"
-            to="1"
-            dur="0.3s"
-            fill="freeze"
-          />
-        </g>
-      ) : (
-        <rect
-          x={x}
-          y={y}
-          width={width}
-          height={height}
-          rx={borderRadius}
-          ry={borderRadius}
-          fill={bgColor}
-          stroke={strokeColor}
-          strokeWidth={strokeWidth}
-          filter={isSelected ? 'url(#node-shadow-selected)' : 'url(#node-shadow)'}
-        >
-          {/* Subtle entrance animation */}
-          <animate
-            attributeName="opacity"
-            from="0"
-            to="1"
-            dur="0.3s"
-            fill="freeze"
-          />
-        </rect>
-      )}
+      <rect
+        x={x}
+        y={y}
+        width={width}
+        height={height}
+        rx={borderRadius}
+        ry={borderRadius}
+        fill={bgColor}
+        stroke={strokeColor}
+        strokeWidth={strokeWidth}
+        filter={isSelected ? 'url(#node-shadow-selected)' : 'url(#node-shadow)'}
+      >
+        {/* Subtle entrance animation */}
+        <animate
+          attributeName="opacity"
+          from="0"
+          to="1"
+          dur="0.3s"
+          fill="freeze"
+        />
+      </rect>
 
       {/* Collapse indicator */}
       {collapsed && !hasHiddenChildren && (
@@ -388,7 +361,7 @@ export function MindmapNode({
       )}
 
       {/* GitHub link indicator (top-right corner) */}
-      {githubLink && !isMilestone && (
+      {githubLink && (
         <g
           style={{ cursor: 'pointer' }}
           onClick={(e) => {

@@ -326,7 +326,6 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
   lines.push(`- **Percent complete:** ${node.percentComplete ?? 'unset'}`);
   lines.push(`- **Start date:** ${node.startDate ?? 'unset'}`);
   lines.push(`- **Due date:** ${node.dueDate ?? 'unset'}`);
-  lines.push(`- **Milestone:** ${node.isMilestone ? 'yes' : 'no'}`);
   lines.push(`- **Tags:** ${node.tags.length > 0 ? node.tags.join(', ') : 'none'}`);
   lines.push(`- **Assignees:** ${node.assigneeIds.length > 0 ? node.assigneeIds.join(', ') : 'none'}`);
   lines.push(`- **Sprint:** ${node.cycleId ?? 'unassigned'}`);

@@ -16,7 +16,7 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'milestones';
+export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'releases';
 
 export interface VisibleNode {
   node: Node;
@@ -716,9 +716,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       tags: [],
       customFields: {},
       dependencies: [],
-      isMilestone: false,
       versionId: null,
-      milestoneId: null,
       cycleId: null,
       externalLinks: [],
       createdAt: now,

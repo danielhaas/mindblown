@@ -39,9 +39,7 @@ export interface NodeWithComputed {
   startDate: string | null;
   tags: string[];
   dependencies: Array<{ targetNodeId: string; type: string; lag: number }>;
-  isMilestone: boolean;
   versionId: string | null;
-  milestoneId: string | null;
   cycleId: string | null;
   externalLinks: Array<{ provider: string; externalId: string; url: string; syncEnabled: boolean; lastSyncedAt: string | null }>;
   collapsed: boolean;
@@ -88,18 +86,6 @@ export interface ScheduleResult {
 
 export interface VersionInfo {
   id: string;
-  workspaceId: string;
-  name: string;
-  description: string | null;
-  status: string;
-  targetDate: string | null;
-  sortOrder: number;
-  createdAt: string;
-}
-
-export interface MilestoneInfo {
-  id: string;
-  versionId: string | null;
   workspaceId: string;
   name: string;
   description: string | null;
@@ -338,7 +324,6 @@ export function importGitHubIssues(
   linkedNodes: Array<{ nodeId: string; issueNumber: number }>;
   skippedNodes: Array<{ nodeId: string; issueNumber: number }>;
   versions: Record<string, string>;
-  milestones: Record<string, string>;
 }> {
   return request(`/api/maps/${mapId}/github/import`, {
     method: 'POST',
@@ -483,27 +468,6 @@ export function createVersion(
   return request<VersionInfo>('/api/versions', {
     method: 'POST',
     body: JSON.stringify({ workspaceId, name, description, targetDate }),
-  });
-}
-
-// ── Milestones ────────────────────────────────────────────────
-
-export function listMilestones(workspaceId: string, versionId?: string): Promise<MilestoneInfo[]> {
-  let url = `/api/milestones?workspaceId=${encodeURIComponent(workspaceId)}`;
-  if (versionId) url += `&versionId=${encodeURIComponent(versionId)}`;
-  return request<MilestoneInfo[]>(url);
-}
-
-export function createMilestone(
-  workspaceId: string,
-  name: string,
-  versionId?: string,
-  description?: string,
-  targetDate?: string,
-): Promise<MilestoneInfo> {
-  return request<MilestoneInfo>('/api/milestones', {
-    method: 'POST',
-    body: JSON.stringify({ workspaceId, name, versionId, description, targetDate }),
   });
 }
 

@@ -273,32 +273,26 @@ function SprintNodeList({ cycleId }: { cycleId: string }) {
               if (!isSelected) e.currentTarget.style.background = 'transparent';
             }}
           >
-            {/* Milestone diamond or checkbox */}
-            {node.isMilestone ? (
-              <svg width="12" height="12" viewBox="0 0 12 12" style={{ flexShrink: 0 }}>
-                <polygon points="6,0 12,6 6,12 0,6" fill="#8b5cf6" />
-              </svg>
-            ) : (
-              <div
-                style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: 3,
-                  border: isDone ? '2px solid #059669' : '2px solid #cbd5e1',
-                  background: isDone ? '#059669' : 'transparent',
-                  flexShrink: 0,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {isDone && (
-                  <svg width="8" height="8" viewBox="0 0 8 8">
-                    <path d="M1.5 4L3 5.5L6.5 2" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round" />
-                  </svg>
-                )}
-              </div>
-            )}
+            {/* Completion checkbox */}
+            <div
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: 3,
+                border: isDone ? '2px solid #059669' : '2px solid #cbd5e1',
+                background: isDone ? '#059669' : 'transparent',
+                flexShrink: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}
+            >
+              {isDone && (
+                <svg width="8" height="8" viewBox="0 0 8 8">
+                  <path d="M1.5 4L3 5.5L6.5 2" stroke="#fff" strokeWidth="1.5" fill="none" strokeLinecap="round" />
+                </svg>
+              )}
+            </div>
             <span
               style={{
                 flex: 1,

@@ -49,12 +49,11 @@ const server = new McpServer(
 ## Key concepts
 
 - **Maps** are projects. Each map has a root node and a tree of child nodes.
-- **Nodes** are everything: ideas, tasks, epics, milestones. A node starts as a simple text label and can be gradually enriched with estimates, status, priority, dates, assignees, etc.
+- **Nodes** are everything: ideas, tasks, epics, deliverables. A node starts as a simple text label and can be gradually enriched with estimates, status, priority, dates, assignees, etc.
 - **Leaf nodes** are where you set effort estimates and percent complete. Parent nodes auto-compute these values from their children using weighted rollup.
 - **Health signals** propagate upward: if any leaf is "behind", its entire ancestor chain is marked "behind" (worst-child-wins).
 - **Dependencies** link nodes with 4 types: Finish-to-Start (FS), Start-to-Start (SS), Finish-to-Finish (FF), Start-to-Finish (SF). These feed the critical path scheduler.
-- **Versions** are release containers (e.g. "V1", "V2"). They are NOT tree nodes — they are separate entities created with create_version. Nodes are linked to a version via update_node (set versionId), independent of their position in the tree. Multiple sprints and milestones belong to a version.
-- **Milestones** are key deliverables within a version (first-class entities, not node flags). Nodes can be linked to a milestone.
+- **Versions** are release containers (e.g. "V1", "V2"). They are NOT tree nodes — they are separate entities created with create_version. Nodes are linked to a version via update_node (set versionId), independent of their position in the tree. Sprints belong to a version.
 - **Sprints/Cycles** are time-boxed iterations within a version. Nodes can be assigned to a sprint.
 
 ## The planning loop
@@ -77,13 +76,12 @@ const server = new McpServer(
 **Working on a task — always update progress as you go:**
 When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started"). When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
 
-**Release planning (versions + milestones):**
+**Release planning (versions):**
 1. create_version to define a release (e.g. "V1", "V2")
-2. create_milestone to define key deliverables within that version (e.g. "Kernsystem MVP", "Billing Module")
-3. Tag nodes with a version using assign_to_version, or set versionId/milestoneId via update_node
-4. list_versions / list_milestones to review what's planned for each release
+2. Tag nodes with a version using assign_to_version, or set versionId via update_node
+3. list_versions to review what's planned for each release
 
-Example: A node "Data Retention Policy" lives under Compliance in the tree (functional), and is tagged with version "V1" and milestone "Kernsystem MVP" (release planning). These are independent dimensions.
+Example: A node "Data Retention Policy" lives under Compliance in the tree (functional) and is tagged with version "V1" (release planning). These are independent dimensions.
 
 **Multi-release project:**
 1. create_version for each release (e.g. "V1", "V2")
@@ -99,18 +97,17 @@ Example: A node "Data Retention Policy" lives under Compliance in the tree (func
 
 **Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
 
-**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates a FUNCTIONAL mindmap grouped by feature area, not by version; GitHub milestones become MindBlown versions + milestones; re-runs are safe — existing links are skipped, text matches are linked in place). link_github_issue attaches an existing node to a specific GitHub issue. create_github_issue_from_node does the reverse: promotes an existing MindBlown node to a new GitHub issue and links it back. NEVER use create_node when the task already exists as a GitHub issue — use import/link instead so it syncs.
+**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates a FUNCTIONAL mindmap grouped by feature area, not by version; GitHub milestones become MindBlown versions — the version prefix is extracted from the milestone title; re-runs are safe — existing links are skipped, text matches are linked in place). link_github_issue attaches an existing node to a specific GitHub issue. create_github_issue_from_node does the reverse: promotes an existing MindBlown node to a new GitHub issue and links it back. NEVER use create_node when the task already exists as a GitHub issue — use import/link instead so it syncs.
 
 ## Important: Mindmap = functional structure, Versions = release planning
 
 The mindmap tree is organized by **functional area** (e.g. "Compliance", "Billing", "Workflows") — this is the WHAT.
-Versions, milestones, and sprints are orthogonal metadata on nodes — this is the WHEN and WHY.
+Versions and sprints are orthogonal metadata on nodes — this is the WHEN and WHY.
 
 - **versionId** on a node = "this ships in V1"
-- **milestoneId** on a node = "this contributes to the Kernsystem MVP milestone"
 - **cycleId** on a node = "this is being worked on in Sprint 3"
 
-A node can have all three set independently. Never reorganize the tree by version — use these fields instead.
+A node can have both set independently. Never reorganize the tree by version — use these fields instead.
 
 **Do NOT create tree nodes for versions.** "V1" and "V2" are created with create_version, not create_node. If you create a "V1" node in the tree, it won't function as a version — it's just a regular node with no release-tracking capabilities.
 
@@ -337,34 +334,31 @@ server.tool(
 
 server.tool(
   'remaining_work',
-  'Report how much work is left for a node/subtree/version/milestone. Returns remaining effort, incomplete leaf count, weighted % done, and count of leaves with no estimate. Answers "how much is left?" — the basic MI question. Scope with one of nodeId (subtree), versionId, or milestoneId; omit all to report on the whole map.',
+  'Report how much work is left for a node/subtree/version. Returns remaining effort, incomplete leaf count, weighted % done, and count of leaves with no estimate. Answers "how much is left?" — the basic MI question. Scope with one of nodeId (subtree) or versionId; omit both to report on the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
-    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone (directly or via an ancestor)'),
   },
-  async ({ mapId, nodeId, versionId, milestoneId }) => {
+  async ({ mapId, nodeId, versionId }) => {
     try {
       const data = await api.getMap(mapId);
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-      // Walk ancestor chain for a given leaf, collecting version/milestone ids
+      // Walk ancestor chain for a given leaf, collecting version ids
       // encountered along the way. Used for inherited-scope matching.
-      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+      const ancestorTags = (leafId: string): { versions: Set<string> } => {
         const versions = new Set<string>();
-        const milestones = new Set<string>();
         let cur = nodeById.get(leafId);
         while (cur) {
           if (cur.versionId) versions.add(cur.versionId);
-          if (cur.milestoneId) milestones.add(cur.milestoneId);
           cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
         }
-        return { versions, milestones };
+        return { versions };
       };
 
       // Collect the set of leaf ids in scope. Subtree scoping walks down from
-      // nodeId; version/milestone scoping filters across the whole map using
+      // nodeId; version scoping filters across the whole map using
       // inherited tags.
       let leaves: typeof data.nodes;
       let scopeLabel = 'whole map';
@@ -394,10 +388,6 @@ server.tool(
       if (versionId) {
         scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
         leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
-      }
-      if (milestoneId) {
-        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
-        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
       }
 
       if (leaves.length === 0) {
@@ -474,28 +464,25 @@ server.tool(
 
 server.tool(
   'completion_forecast',
-  'Forecast "when will it be done?" for a node/subtree/version/milestone. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version/milestone or node dueDates), and slip vs target. Scope with one of nodeId, versionId, or milestoneId; omit all to forecast the whole map.',
+  'Forecast "when will it be done?" for a node/subtree/version. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version or node dueDates), and slip vs target. Scope with one of nodeId or versionId; omit both to forecast the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
-    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone (directly or via an ancestor)'),
   },
-  async ({ mapId, nodeId, versionId, milestoneId }) => {
+  async ({ mapId, nodeId, versionId }) => {
     try {
       const data = await api.getMap(mapId);
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+      const ancestorTags = (leafId: string): { versions: Set<string> } => {
         const versions = new Set<string>();
-        const milestones = new Set<string>();
         let cur = nodeById.get(leafId);
         while (cur) {
           if (cur.versionId) versions.add(cur.versionId);
-          if (cur.milestoneId) milestones.add(cur.milestoneId);
           cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
         }
-        return { versions, milestones };
+        return { versions };
       };
 
       // ── Determine scope (same logic as remaining_work) ──
@@ -525,10 +512,6 @@ server.tool(
       if (versionId) {
         scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
         leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
-      }
-      if (milestoneId) {
-        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
-        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
       }
 
       if (leaves.length === 0) {
@@ -599,23 +582,13 @@ server.tool(
       // ── Target date resolution ──
       let targetDate: string | null = null;
       let targetSource = '';
-      if (versionId || milestoneId) {
+      if (versionId) {
         try {
-          if (milestoneId) {
-            const milestones = await api.listMilestones(data.map.workspaceId);
-            const m = milestones.find((m) => m.id === milestoneId);
-            if (m?.targetDate) {
-              targetDate = m.targetDate.slice(0, 10);
-              targetSource = `milestone "${m.name}"`;
-            }
-          }
-          if (!targetDate && versionId) {
-            const versions = await api.listVersions(data.map.workspaceId);
-            const v = versions.find((v) => v.id === versionId);
-            if (v?.targetDate) {
-              targetDate = v.targetDate.slice(0, 10);
-              targetSource = `version "${v.name}"`;
-            }
+          const versions = await api.listVersions(data.map.workspaceId);
+          const v = versions.find((v) => v.id === versionId);
+          if (v?.targetDate) {
+            targetDate = v.targetDate.slice(0, 10);
+            targetSource = `version "${v.name}"`;
           }
         } catch {
           /* fall through to node dueDates */
@@ -684,29 +657,26 @@ server.tool(
 
 server.tool(
   'risk_scan',
-  'Surface project risks across a map/subtree/version/milestone: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early.',
+  'Surface project risks across a map/subtree/version: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version'),
-    milestoneId: z.string().optional().describe('Scope to leaves tagged with this milestone'),
     stalledDays: z.number().int().min(1).default(7).describe('Days since last update before in-progress work is flagged as stalled (default 7)'),
   },
-  async ({ mapId, nodeId, versionId, milestoneId, stalledDays }) => {
+  async ({ mapId, nodeId, versionId, stalledDays }) => {
     try {
       const data = await api.getMap(mapId);
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-      const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+      const ancestorTags = (leafId: string): { versions: Set<string> } => {
         const versions = new Set<string>();
-        const milestones = new Set<string>();
         let cur = nodeById.get(leafId);
         while (cur) {
           if (cur.versionId) versions.add(cur.versionId);
-          if (cur.milestoneId) milestones.add(cur.milestoneId);
           cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
         }
-        return { versions, milestones };
+        return { versions };
       };
 
       let leaves: typeof data.nodes;
@@ -735,10 +705,6 @@ server.tool(
       if (versionId) {
         scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
         leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
-      }
-      if (milestoneId) {
-        scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
-        leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
       }
 
       if (leaves.length === 0) {
@@ -898,7 +864,7 @@ server.tool(
 
 server.tool(
   'alert_digest',
-  'Generate a markdown alert digest for push delivery (email/slack/webhook). Reports threshold-triggered alerts only: milestones past target, scoped finish dates slipping past target, P0 nodes that are behind, and unassigned P0/P1 leaves. Returns nothing if no alerts. Pipe the output to your delivery channel of choice — MindBlown does not send the message itself.',
+  'Generate a markdown alert digest for push delivery (email/slack/webhook). Reports threshold-triggered alerts only: versions past target, P0 nodes that are behind, overdue leaves, and unassigned P0/P1 leaves. Returns nothing if no alerts. Pipe the output to your delivery channel of choice — MindBlown does not send the message itself.',
   {
     mapId: z.string().describe('The map ID'),
   },
@@ -908,23 +874,7 @@ server.tool(
       const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
       const today = new Date().toISOString().slice(0, 10);
 
-      // Slipped milestones: targetDate < today AND any contributing leaf incomplete
-      const milestones = await api.listMilestones(data.map.workspaceId).catch(() => []);
-      const slippedMilestones: Array<{ name: string; targetDate: string; incomplete: number }> = [];
-      for (const m of milestones) {
-        if (!m.targetDate) continue;
-        if (m.targetDate.slice(0, 10) >= today) continue;
-        const contributing = leaves.filter((l) => l.milestoneId === m.id && (l.percentComplete ?? 0) < 100);
-        if (contributing.length > 0) {
-          slippedMilestones.push({
-            name: m.name,
-            targetDate: m.targetDate.slice(0, 10),
-            incomplete: contributing.length,
-          });
-        }
-      }
-
-      // Slipped versions: same logic
+      // Slipped versions: targetDate < today AND any contributing leaf incomplete
       const versions = await api.listVersions(data.map.workspaceId).catch(() => []);
       const slippedVersions: Array<{ name: string; targetDate: string; incomplete: number }> = [];
       for (const v of versions) {
@@ -959,7 +909,6 @@ server.tool(
       );
 
       const totalAlerts =
-        slippedMilestones.length +
         slippedVersions.length +
         p0Behind.length +
         unassignedHigh.length +
@@ -973,13 +922,6 @@ server.tool(
       lines.push(`# 🚨 ${data.map.name} — ${totalAlerts} alert(s)`);
       lines.push('');
 
-      if (slippedMilestones.length > 0) {
-        lines.push(`## Milestones past target (${slippedMilestones.length})`);
-        for (const m of slippedMilestones) {
-          lines.push(`- **${m.name}** — was due ${m.targetDate}, ${m.incomplete} incomplete leaf(s)`);
-        }
-        lines.push('');
-      }
       if (slippedVersions.length > 0) {
         lines.push(`## Versions past target (${slippedVersions.length})`);
         for (const v of slippedVersions) {
@@ -1388,7 +1330,7 @@ server.tool(
 
 server.tool(
   'change_history',
-  'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, and field changes (estimate, progress, status, priority, dates, assignees, version/milestone/cycle). Filter by node, event type, field name, or a time window. Use this for "what changed since last review?" digests, audit trails, or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
+  'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, and field changes (estimate, progress, status, priority, dates, assignees, version/cycle). Filter by node, event type, field name, or a time window. Use this for "what changed since last review?" digests, audit trails, or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to a single node'),
@@ -1755,49 +1697,6 @@ server.tool(
   },
 );
 
-// ── Milestone tools ────────────────────────────────────────────
-
-server.tool(
-  'list_milestones',
-  'List all milestones for a workspace, optionally filtered by version',
-  {
-    workspaceId: z.string().describe('The workspace ID'),
-    versionId: z.string().optional().describe('Filter by version ID'),
-  },
-  async ({ workspaceId, versionId }) => {
-    try {
-      const res = await api.listMilestones(workspaceId, versionId);
-      if (res.length === 0) return toolResult('No milestones found.');
-      const lines = res.map((m) =>
-        `- ${m.name} (id: ${m.id}) [${m.status}]${m.versionId ? ` version: ${m.versionId}` : ''}${m.targetDate ? ` target: ${m.targetDate}` : ''}`,
-      );
-      return toolResult(lines.join('\n'));
-    } catch (err) {
-      return toolError(err);
-    }
-  },
-);
-
-server.tool(
-  'create_milestone',
-  'Create a new milestone within a version',
-  {
-    workspaceId: z.string().describe('The workspace ID'),
-    name: z.string().describe('Milestone name'),
-    versionId: z.string().optional().describe('Version ID this milestone belongs to'),
-    description: z.string().optional().describe('Milestone description'),
-    targetDate: z.string().optional().describe('Target date (ISO 8601)'),
-  },
-  async ({ workspaceId, name, versionId, description, targetDate }) => {
-    try {
-      const milestone = await api.createMilestone(workspaceId, name, versionId, description, targetDate);
-      return toolResult(`Created milestone "${name}" (id: ${milestone.id}).`);
-    } catch (err) {
-      return toolError(err);
-    }
-  },
-);
-
 // ── Sprint tools ────────────────────────────────────────────────
 
 server.tool(
@@ -2012,7 +1911,7 @@ server.tool(
 
 server.tool(
   'import_github_issues',
-  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions and milestones. Do NOT use create_node for GitHub issues — those won\'t be linked. If no repo is connected yet, use connect_github_repo first.',
+  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions (the version prefix is extracted from the milestone title). Do NOT use create_node for GitHub issues — those won\'t be linked. If no repo is connected yet, use connect_github_repo first.',
   {
     mapId: z.string().describe('The map ID to import into'),
     parentNodeId: z.string().optional().describe('Parent node ID to import under (defaults to root node)'),
@@ -2048,12 +1947,6 @@ server.tool(
         lines.push('\nVersions created:');
         for (const [name, versionId] of Object.entries(result.versions)) {
           lines.push(`  - "${name}" → version ${versionId}`);
-        }
-      }
-      if (result.milestones && Object.keys(result.milestones).length > 0) {
-        lines.push('\nMilestones created:');
-        for (const [name, milestoneId] of Object.entries(result.milestones)) {
-          lines.push(`  - "${name}" → milestone ${milestoneId}`);
         }
       }
       if (result.nodes.length > 0) {

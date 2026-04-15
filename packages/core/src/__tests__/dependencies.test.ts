@@ -30,9 +30,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     tags: [],
     customFields: {},
     dependencies: [],
-    isMilestone: false,
     versionId: null,
-    milestoneId: null,
     cycleId: null,
     externalLinks: [],
     createdAt: '2026-01-01T00:00:00Z',
@@ -81,7 +79,6 @@ function buildScheduleExample() {
   });
   const launch = makeNode({
     id: 'launch',
-    isMilestone: true,
     effortEstimate: 0,
     dependencies: [{ targetNodeId: 'integration', type: 'FS', lag: 0 }],
   });

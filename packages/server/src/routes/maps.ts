@@ -3,7 +3,6 @@ import { computeTree, schedule, criticalPath } from '@mindblown/core';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
-import * as milestoneDb from '../db/milestones.js';
 import * as versionDb from '../db/versions.js';
 import { db } from '../db/connection.js';
 import { workspaces, users } from '../db/schema.js';
@@ -360,9 +359,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           tags: [],
           customFields: {},
           dependencies: [],
-          isMilestone: false,
           versionId: null,
-          milestoneId: null,
           cycleId: null,
           externalLinks: [],
           createdAt: now,
@@ -505,14 +502,13 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/maps/:id/forecast — Completion forecast
   //
-  // Ports the MCP `completion_forecast` math to HTTP so browser views can
-  // render per-milestone / per-version ETAs. Scope with one of nodeId,
-  // versionId, or milestoneId (omit all to forecast the whole map).
-  // Returns planned finish (scheduler), velocity-adjusted finish (scaled by
-  // all-time estimation fudge), target date, and slip.
+  // Browser-facing forecast for a node subtree or a version. Returns
+  // planned finish (scheduler), velocity-adjusted finish (scaled by
+  // all-time estimation fudge), target date, and slip. Scope with one
+  // of nodeId or versionId; omit both to forecast the whole map.
   app.get<{
     Params: { id: string };
-    Querystring: { nodeId?: string; versionId?: string; milestoneId?: string };
+    Querystring: { nodeId?: string; versionId?: string };
   }>('/api/maps/:id/forecast', async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -521,19 +517,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { nodeId, versionId, milestoneId } = req.query;
+    const { nodeId, versionId } = req.query;
     const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-    const ancestorTags = (leafId: string): { versions: Set<string>; milestones: Set<string> } => {
+    const ancestorVersions = (leafId: string): Set<string> => {
       const versions = new Set<string>();
-      const milestones = new Set<string>();
       let cur: CoreNode | undefined = nodeById.get(leafId);
       while (cur) {
         if (cur.versionId) versions.add(cur.versionId);
-        if (cur.milestoneId) milestones.add(cur.milestoneId);
         cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
       }
-      return { versions, milestones };
+      return versions;
     };
 
     // ── Determine scope ──
@@ -566,11 +560,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
     if (versionId) {
       scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
-      leaves = leaves.filter((n) => ancestorTags(n.id).versions.has(versionId));
-    }
-    if (milestoneId) {
-      scopeLabel = `milestone ${milestoneId}` + (versionId || nodeId ? ` within ${scopeLabel}` : '');
-      leaves = leaves.filter((n) => ancestorTags(n.id).milestones.has(milestoneId));
+      leaves = leaves.filter((n) => ancestorVersions(n.id).has(versionId));
     }
 
     // ── Remaining effort ──
@@ -663,14 +653,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // ── Target date resolution ──
     let targetDate: string | null = null;
     let targetSource: string | null = null;
-    if (milestoneId) {
-      const m = await milestoneDb.getMilestone(milestoneId);
-      if (m?.targetDate) {
-        targetDate = m.targetDate.slice(0, 10);
-        targetSource = `milestone "${m.name}"`;
-      }
-    }
-    if (!targetDate && versionId) {
+    if (versionId) {
       const v = await versionDb.getVersion(versionId);
       if (v?.targetDate) {
         targetDate = v.targetDate.slice(0, 10);

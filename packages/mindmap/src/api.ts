@@ -1,4 +1,4 @@
-import type { Node, MindMap, Cycle, Version, Milestone, HealthSignal } from '@mindblown/core';
+import type { Node, MindMap, Cycle, Version } from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -503,34 +503,6 @@ export function fetchVersions(workspaceId: string): Promise<Version[]> {
   return request<Version[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
 }
 
-// ── Milestones ──────────────────────────────────────────────────
-
-export function fetchMilestones(
-  workspaceId: string,
-  versionId?: string,
-): Promise<Milestone[]> {
-  const qs = new URLSearchParams({ workspaceId });
-  if (versionId) qs.set('versionId', versionId);
-  return request<Milestone[]>(`/api/milestones?${qs.toString()}`);
-}
-
-export interface MilestoneDetailNode extends Node {
-  computedEffort: number;
-  computedProgress: number;
-  healthSignal: HealthSignal;
-}
-
-export interface MilestoneDetail {
-  milestone: Milestone;
-  nodes: MilestoneDetailNode[];
-  progress: number;
-  totalNodes: number;
-}
-
-export function fetchMilestoneDetail(id: string): Promise<MilestoneDetail> {
-  return request<MilestoneDetail>(`/api/milestones/${id}`);
-}
-
 // ── Forecast ────────────────────────────────────────────────────
 
 export interface ForecastResult {
@@ -553,12 +525,11 @@ export interface ForecastResult {
 
 export function fetchForecast(
   mapId: string,
-  scope: { nodeId?: string; versionId?: string; milestoneId?: string } = {},
+  scope: { nodeId?: string; versionId?: string } = {},
 ): Promise<ForecastResult> {
   const qs = new URLSearchParams();
   if (scope.nodeId) qs.set('nodeId', scope.nodeId);
   if (scope.versionId) qs.set('versionId', scope.versionId);
-  if (scope.milestoneId) qs.set('milestoneId', scope.milestoneId);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return request<ForecastResult>(`/api/maps/${mapId}/forecast${suffix}`);
 }

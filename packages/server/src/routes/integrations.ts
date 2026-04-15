@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { integrations, versions, milestones, nodes } from '../db/schema.js';
+import { integrations, versions, nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import {
   createGitHubIssue,
@@ -378,7 +378,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       const { owner, repo, token } = ghCtx;
 
-      // Get workspace ID for version/milestone creation
+      // Get workspace ID for version creation
       const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
 
       // Determine root node for the map (we'll attach imported nodes under a group node)
@@ -418,28 +418,22 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // ── Create versions and milestones from GitHub milestones ────
-      // Group by version prefix (e.g. "V1: 1a. Foo" → version "V1", milestone "Foo")
-      // Collect unique milestones titles and their version prefix
-      const milestoneInfoMap = new Map<string, { version: string; functionalName: string; githubNumber: number | null }>();
+      // ── Create versions from GitHub milestone prefixes ────────────
+      // GitHub milestone titles like "V1: 1a. Foo" parse to version "V1".
+      // The full milestone title also maps issues to their functional
+      // group node below (via item.groupLabel, computed by the import).
+      const versionByMilestoneTitle = new Map<string, string>();
+      const uniqueVersions = new Set<string>();
       for (const item of importedIssues) {
-        if (!item.milestoneTitle || milestoneInfoMap.has(item.milestoneTitle)) continue;
-        const version = extractVersionFromMilestone(item.milestoneTitle) ?? 'Unversioned';
-        // The functional name is already stripped via groupLabel, but we need the milestone's own name
-        const functionalName = item.milestoneTitle.replace(/^V\d+:\s*\d+[a-z]?\.\s*/i, '') || item.milestoneTitle;
-        milestoneInfoMap.set(item.milestoneTitle, {
-          version,
-          functionalName,
-          githubNumber: item.issue.milestone?.number ?? null,
-        });
+        if (!item.milestoneTitle) continue;
+        const versionName = extractVersionFromMilestone(item.milestoneTitle) ?? 'Unversioned';
+        uniqueVersions.add(versionName);
+        versionByMilestoneTitle.set(item.milestoneTitle, versionName);
       }
 
-      // Create versions (deduplicated)
       const versionToId = new Map<string, string>();
-      const uniqueVersions = new Set([...milestoneInfoMap.values()].map((m) => m.version));
       let sortOrder = 0;
       for (const versionName of uniqueVersions) {
-        // Check if version already exists
         const existing = await db.select()
           .from(versions)
           .where(and(eq(versions.workspaceId, workspaceId!), eq(versions.name, versionName)));
@@ -454,47 +448,6 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           }).returning();
           versionToId.set(versionName, newVersion.id);
         }
-      }
-
-      // Create milestones (deduplicated)
-      const milestoneToId = new Map<string, string>();
-      let msSortOrder = 0;
-      for (const [msTitle, info] of milestoneInfoMap) {
-        // Check if milestone already exists
-        const versionId = versionToId.get(info.version) ?? null;
-        const existing = await db.select()
-          .from(milestones)
-          .where(and(eq(milestones.workspaceId, workspaceId!), eq(milestones.name, info.functionalName)));
-        if (existing.length > 0) {
-          milestoneToId.set(msTitle, existing[0].id);
-          // Backfill githubMilestoneNumber if it wasn't set before — enables
-          // outbound milestone sync on milestones that were imported prior
-          // to this column existing.
-          if (info.githubNumber != null && existing[0].githubMilestoneNumber == null) {
-            await db.update(milestones)
-              .set({ githubMilestoneNumber: info.githubNumber })
-              .where(eq(milestones.id, existing[0].id));
-          }
-        } else {
-          const [newMs] = await db.insert(milestones).values({
-            workspaceId: workspaceId!,
-            versionId,
-            name: info.functionalName,
-            status: 'open',
-            sortOrder: msSortOrder++,
-            githubMilestoneNumber: info.githubNumber,
-          }).returning();
-          milestoneToId.set(msTitle, newMs.id);
-        }
-      }
-
-      // Build lookup: milestone title → { versionId, milestoneId }
-      const milestoneToIds = new Map<string, { versionId: string | null; milestoneId: string }>();
-      for (const [msTitle, info] of milestoneInfoMap) {
-        milestoneToIds.set(msTitle, {
-          versionId: versionToId.get(info.version) ?? null,
-          milestoneId: milestoneToId.get(msTitle)!,
-        });
       }
 
       // ── Group by functional label for tree structure ──────────────
@@ -541,15 +494,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         if (!existingByText.has(key)) existingByText.set(key, n.id);
       }
 
-      // Helper to get version/milestone IDs for an issue
+      // Helper to get the version ID for an issue
       const getIdsForIssue = (item: typeof importedIssues[0]) => {
         if (!item.milestoneTitle) return {};
-        const ids = milestoneToIds.get(item.milestoneTitle);
-        if (!ids) return {};
-        return {
-          ...(ids.versionId ? { versionId: ids.versionId } : {}),
-          milestoneId: ids.milestoneId,
-        };
+        const versionName = versionByMilestoneTitle.get(item.milestoneTitle);
+        if (!versionName) return {};
+        const versionId = versionToId.get(versionName);
+        return versionId ? { versionId } : {};
       };
 
       // Process one issue: skip / link-to-existing / create-new.
@@ -660,7 +611,6 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         linkedNodes,
         skippedNodes,
         versions: Object.fromEntries(versionToId),
-        milestones: Object.fromEntries(milestoneToId),
       });
     },
   );

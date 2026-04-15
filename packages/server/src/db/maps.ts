@@ -35,7 +35,6 @@ export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; 
     childrenOrder: [],
     text: input.name,
     collapsed: false,
-    isMilestone: false,
     assigneeIds: [],
     tags: [],
     customFields: {},

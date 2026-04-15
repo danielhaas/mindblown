@@ -29,9 +29,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     tags: (get('tags', 'tags') as string[]) ?? [],
     customFields: (get('customFields', 'custom_fields') as Record<string, unknown>) ?? {},
     dependencies: (get('dependencies', 'dependencies') as CoreNode['dependencies']) ?? [],
-    isMilestone: (get('isMilestone', 'is_milestone') as boolean) ?? false,
     versionId: (get('versionId', 'version_id') as string) ?? null,
-    milestoneId: (get('milestoneId', 'milestone_id') as string) ?? null,
     cycleId: (get('cycleId', 'cycle_id') as string) ?? null,
     externalLinks: (get('externalLinks', 'external_links') as CoreNode['externalLinks']) ?? [],
     createdAt: (get('createdAt', 'created_at') instanceof Date

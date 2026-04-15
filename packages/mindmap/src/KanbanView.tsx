@@ -88,12 +88,12 @@ function Card({
       onDragStart={onDragStart}
       onClick={onClick}
       style={{
-        background: node.isMilestone ? '#faf5ff' : '#ffffff',
+        background: '#ffffff',
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${node.isMilestone ? '#8b5cf6' : borderColor}`,
+        borderLeft: `3px solid ${borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -125,20 +125,8 @@ function Card({
 
       {/* Title row */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: 6 }}>
-        {/* Milestone diamond badge */}
-        {node.isMilestone && (
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            style={{ flexShrink: 0, marginTop: 3 }}
-            title="Milestone"
-          >
-            <polygon points="6,0 12,6 6,12 0,6" fill="#8b5cf6" />
-          </svg>
-        )}
         {/* Priority dot */}
-        {node.priority && !node.isMilestone && (
+        {node.priority && (
           <div
             style={{
               width: 8,
@@ -155,7 +143,7 @@ function Card({
           style={{
             fontSize: 13,
             fontWeight: 600,
-            color: node.isMilestone ? '#6d28d9' : '#1e293b',
+            color: '#1e293b',
             lineHeight: '1.3',
             flex: 1,
             wordBreak: 'break-word',

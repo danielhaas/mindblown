@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import * as versionDb from '../db/versions.js';
-import * as milestoneDb from '../db/milestones.js';
 import * as cycleDb from '../db/cycles.js';
 import { db } from '../db/connection.js';
 import { workspaces } from '../db/schema.js';
@@ -42,7 +41,7 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(allVersions);
   });
 
-  // ── GET /api/versions/:id — Get version with milestones and cycles
+  // ── GET /api/versions/:id — Get version with its cycles
   app.get<{ Params: { id: string } }>('/api/versions/:id', async (req, reply) => {
     const version = await versionDb.getVersion(req.params.id);
     if (!version) {
@@ -51,17 +50,11 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const [versionMilestones, versionCycles] = await Promise.all([
-      milestoneDb.listMilestones(version.workspaceId, version.id),
-      cycleDb.listCycles(version.workspaceId),
-    ]);
-
-    // Filter cycles belonging to this version
+    const versionCycles = await cycleDb.listCycles(version.workspaceId);
     const filteredCycles = versionCycles.filter((c) => c.versionId === version.id);
 
     return reply.send({
       version,
-      milestones: versionMilestones,
       cycles: filteredCycles,
     });
   });

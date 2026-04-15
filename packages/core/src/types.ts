@@ -4,7 +4,6 @@ export type NodeId = string;
 export type UserId = string;
 export type MapId = string;
 export type CycleId = string;
-export type MilestoneId = string;
 export type VersionId = string;
 
 // ── Enums / Unions ──────────────────────────────────────────────
@@ -109,12 +108,8 @@ export interface Node {
   // ── Dependencies ──────────────────────────────────────────
   dependencies: Dependency[]; // "this node depends on ..."
 
-  // ── Milestone ─────────────────────────────────────────────
-  isMilestone: boolean; // zero-effort checkpoint
-
-  // ── Version / Milestone / Sprint ──────────────────────────
+  // ── Version / Sprint ──────────────────────────────────────
   versionId: VersionId | null; // which version this node targets
-  milestoneId: MilestoneId | null; // which milestone this node contributes to
   cycleId: CycleId | null; // which sprint this node is worked in
 
   // ── Integrations ──────────────────────────────────────────
@@ -277,20 +272,6 @@ export interface Version {
   status: 'planning' | 'active' | 'released' | 'archived';
   targetDate: string | null; // ISO 8601 date
   sortOrder: number; // display ordering
-  createdAt: string;
-}
-
-// ── Milestone ───────────────────────────────────────────────────
-
-export interface Milestone {
-  id: MilestoneId;
-  versionId: VersionId | null; // which version this milestone belongs to
-  workspaceId: string;
-  name: string; // e.g. 'Kernsystem MVP', 'Billing Module'
-  description: string | null;
-  status: 'open' | 'closed';
-  targetDate: string | null; // ISO 8601 date
-  sortOrder: number;
   createdAt: string;
 }
 

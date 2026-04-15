@@ -3,7 +3,6 @@ import {
   uuid,
   text,
   real,
-  integer,
   boolean,
   jsonb,
   timestamp,
@@ -95,9 +94,7 @@ export const nodes = pgTable('nodes', {
   tags: jsonb('tags').notNull().default([]), // text[]
   customFields: jsonb('custom_fields').notNull().default({}),
   dependencies: jsonb('dependencies').notNull().default([]), // Dependency[]
-  isMilestone: boolean('is_milestone').notNull().default(false),
   versionId: uuid('version_id'),
-  milestoneId: uuid('milestone_id'),
   cycleId: uuid('cycle_id'),
   externalLinks: jsonb('external_links').notNull().default([]), // ExternalLink[]
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -192,21 +189,6 @@ export const versions = pgTable('versions', {
   status: text('status').notNull().default('planning'),
   targetDate: date('target_date'),
   sortOrder: real('sort_order').notNull().default(0),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
-
-// ── Milestones ────────────────────────────────────────────────────
-
-export const milestones = pgTable('milestones', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  versionId: uuid('version_id').references(() => versions.id),
-  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
-  name: text('name').notNull(),
-  description: text('description'),
-  status: text('status').notNull().default('open'),
-  targetDate: date('target_date'),
-  sortOrder: real('sort_order').notNull().default(0),
-  githubMilestoneNumber: integer('github_milestone_number'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 

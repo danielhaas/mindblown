@@ -30,7 +30,6 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'startDate',
   'dueDate',
   'versionId',
-  'milestoneId',
   'cycleId',
   'assigneeIds',
 ]);

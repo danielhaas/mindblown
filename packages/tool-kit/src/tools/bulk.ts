@@ -12,7 +12,6 @@ const VALID_NODE_FIELDS = new Set([
   'startDate',
   'tags',
   'assigneeIds',
-  'isMilestone',
 ]);
 
 /**
@@ -44,7 +43,7 @@ function normalizeBulkUpdateItem(
 export const bulkUpdateNodesTool = defineTool({
   name: 'bulk_update_nodes',
   description:
-    'Update multiple nodes at once. Each update is {nodeId, ...fields} OR {nodeId, fields: {...}} — both shapes are accepted. Valid fields: text, description, effortEstimate, percentComplete, status, priority, dueDate, startDate, tags, assigneeIds, isMilestone.',
+    'Update multiple nodes at once. Each update is {nodeId, ...fields} OR {nodeId, fields: {...}} — both shapes are accepted. Valid fields: text, description, effortEstimate, percentComplete, status, priority, dueDate, startDate, tags, assigneeIds.',
   schema: {
     mapId: z.string().describe('The map ID'),
     updates: z

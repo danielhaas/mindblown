@@ -1,28 +1,24 @@
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
 import * as nodeDb from '../db/nodes.js';
 import { DependencyValidationError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from '../ai/embeddings.js';
-import { db } from '../db/connection.js';
-import { milestones } from '../db/schema.js';
 import { updateGitHubIssue, closeGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
 
 // Fields that should trigger outbound GitHub sync
 const SYNC_FIELDS = new Set([
-  'text', 'description', 'percentComplete', 'status', 'tags', 'priority', 'milestoneId',
+  'text', 'description', 'percentComplete', 'status', 'tags', 'priority',
 ]);
 
 /**
  * Fire-and-forget outbound sync to GitHub for linked nodes.
  * Runs async — does not block the API response.
  *
- * Pushes: title, body, state (open/closed), labels, and — when the node's
- * milestoneId changed — the GitHub milestone.
+ * Pushes: title, body, state (open/closed), labels.
  */
 async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promise<void> {
   // Only sync if relevant fields changed
@@ -38,30 +34,9 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
   const ghCtx = await getGitHubContextForMap(node.mapId);
   if (!ghCtx) return;
 
-  // If milestoneId changed, resolve the corresponding GitHub milestone
-  // number (stored on the milestone row at import time). milestoneNumber:
-  //   - number → move the issue to that milestone on GitHub
-  //   - null   → clear the issue's milestone (MindBlown milestoneId was unset)
-  //   - undefined → don't touch the milestone
-  let milestoneNumber: number | null | undefined;
-  if (changedFields.includes('milestoneId')) {
-    if (node.milestoneId == null) {
-      milestoneNumber = null;
-    } else {
-      const [row] = await db
-        .select({ githubMilestoneNumber: milestones.githubMilestoneNumber })
-        .from(milestones)
-        .where(eq(milestones.id, node.milestoneId));
-      // If the milestone has no GitHub counterpart we leave the issue
-      // untouched rather than clearing it — that matches the user's intent
-      // better than accidentally unsetting the milestone.
-      milestoneNumber = row?.githubMilestoneNumber ?? undefined;
-    }
-  }
-
   for (const link of githubLinks) {
     try {
-      await updateGitHubIssue(node, link, ghCtx.token, milestoneNumber);
+      await updateGitHubIssue(node, link, ghCtx.token);
       // Update lastSyncedAt on the link
       const updatedLinks = node.externalLinks.map((l) =>
         l.provider === link.provider && l.externalId === link.externalId
@@ -90,7 +65,6 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       priority?: 'P0' | 'P1' | 'P2' | 'P3';
       startDate?: string;
       dueDate?: string;
-      isMilestone?: boolean;
     };
     const userId = req.userId ?? body.createdBy ?? 'system';
 

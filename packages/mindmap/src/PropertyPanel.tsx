@@ -548,28 +548,6 @@ function PropertyPanelInner({
         {/* Sprint / Cycle */}
         <CycleField nodeId={nodeId} currentCycleId={node.cycleId} />
 
-        {/* Milestone toggle */}
-        <Field label="Milestone">
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              fontSize: 12,
-              color: '#1e293b',
-              cursor: 'pointer',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={node.isMilestone}
-              onChange={(e) => directUpdate(nodeId, { isMilestone: e.target.checked })}
-              style={{ accentColor: '#8b5cf6' }}
-            />
-            Mark as milestone (zero-effort checkpoint)
-          </label>
-        </Field>
-
         {/* Divider */}
         <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
 

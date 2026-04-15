@@ -175,18 +175,13 @@ export async function createGitHubIssue(
 
 /**
  * Sync node changes to the linked GitHub Issue.
- * Updates title, body, state (open/closed), labels, and (optionally) milestone.
- *
- * milestoneNumber:
- *   - number     → set the issue's milestone to that number
- *   - null       → clear the issue's milestone
- *   - undefined  → leave the issue's milestone untouched
+ * Updates title, body, state (open/closed), and labels. The issue's
+ * GitHub milestone is left untouched (we no longer track it).
  */
 export async function updateGitHubIssue(
   node: Node,
   externalLink: ExternalLink,
   token: string,
-  milestoneNumber?: number | null,
 ): Promise<GitHubIssue> {
   const parsed = parseExternalId(externalLink.externalId);
   if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
@@ -213,9 +208,6 @@ export async function updateGitHubIssue(
     state: isClosed ? 'closed' : 'open',
     labels,
   };
-  if (milestoneNumber !== undefined) {
-    patchBody.milestone = milestoneNumber;
-  }
 
   const updatedIssue = await githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,

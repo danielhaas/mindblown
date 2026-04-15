@@ -65,7 +65,6 @@ export async function seedIfEmpty(): Promise<void> {
       status?: string;
       startDate?: string;
       dueDate?: string;
-      isMilestone?: boolean;
       dependencies?: Array<{ targetNodeId: string; type: string; lag: number }>;
     } = {},
   ) {
@@ -80,7 +79,6 @@ export async function seedIfEmpty(): Promise<void> {
       status: opts.status ?? null,
       startDate: opts.startDate ?? null,
       dueDate: opts.dueDate ?? null,
-      isMilestone: opts.isMilestone ?? false,
       dependencies: opts.dependencies ?? [],
       assigneeIds: [],
       tags: [],
@@ -110,7 +108,7 @@ export async function seedIfEmpty(): Promise<void> {
   //   │   ├── Copywriting (4d, 60%)
   //   │   └── Asset Creation (3d, 30%)
   //   ├── Integration Testing (3d, 0%)
-  //   └── 🔶 Launch (milestone)
+  //   └── Launch (checkpoint)
 
   const root = await createNode('Website Redesign', null);
 
@@ -199,9 +197,8 @@ export async function seedIfEmpty(): Promise<void> {
     ],
   });
 
-  // ── Launch milestone ─────────────────────────────────────
+  // ── Launch checkpoint ────────────────────────────────────
   const launch = await createNode('Launch', root.id, {
-    isMilestone: true,
     dueDate: '2026-04-18',
     dependencies: [{ targetNodeId: integrationTesting.id, type: 'FS', lag: 0 }],
   });

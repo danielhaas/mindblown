@@ -12,7 +12,7 @@ import { CommandPalette } from './CommandPalette.js';
 import { QuickAdd } from './QuickAdd.js';
 import { HillChart } from './HillChart.js';
 import { WorkloadView } from './WorkloadView.js';
-import { MilestonesView } from './MilestonesView.js';
+import { ReleasesView } from './ReleasesView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
@@ -442,7 +442,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'mindmap', label: 'Mindmap', enabled: true },
   { id: 'kanban', label: 'Kanban', enabled: true },
   { id: 'gantt', label: 'Gantt', enabled: true },
-  { id: 'milestones', label: 'Milestones', enabled: true },
+  { id: 'releases', label: 'Releases', enabled: true },
   { id: 'list', label: 'List', enabled: false },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -1362,7 +1362,7 @@ export function App() {
           {activeView === 'mindmap' && <MindmapEditor />}
           {activeView === 'kanban' && <KanbanView />}
           {activeView === 'gantt' && <GanttView />}
-          {activeView === 'milestones' && <MilestonesView />}
+          {activeView === 'releases' && <ReleasesView />}
           {activeView === 'list' && <ListView />}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}
