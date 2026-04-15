@@ -10,7 +10,32 @@ import type {
   CriticalPathResult,
 } from '@mindblown/core';
 import * as api from './api.js';
-import type { ReleaseForecastResponse, CalendarSubscribeUrls } from './api.js';
+import type {
+  ReleaseForecastResponse,
+  CalendarSubscribeUrls,
+  CalendarIcsView,
+} from './api.js';
+
+const CALENDAR_VIEW_META: Record<
+  CalendarIcsView,
+  { label: string; description: string }
+> = {
+  full: {
+    label: 'Full',
+    description:
+      'Every dated leaf, release targets, projected finishes, and sprint ranges. The most noise; everything goes in.',
+  },
+  milestones: {
+    label: 'Releases & sprints',
+    description:
+      'Only release targets, velocity-adjusted projected finishes, and sprint ranges. No individual tasks — good for stakeholders.',
+  },
+  owned: {
+    label: 'Owned tasks',
+    description:
+      'Like Full, but drops leaves imported from GitHub/Jira/Linear/GitLab. Keeps human-authored roadmap items only.',
+  },
+};
 
 // Shape of GET /api/maps/:id/schedule — mirrors GanttView's local type.
 interface ScheduleResponse {
@@ -404,6 +429,7 @@ export function CalendarView() {
   const [subscribeUrls, setSubscribeUrls] = useState<CalendarSubscribeUrls | null>(null);
   const [subscribeOpen, setSubscribeOpen] = useState(false);
   const [subscribeError, setSubscribeError] = useState<string | null>(null);
+  const [subscribeView, setSubscribeView] = useState<CalendarIcsView>('full');
   const [copied, setCopied] = useState(false);
 
   const openSubscribe = useCallback(async () => {
@@ -422,14 +448,15 @@ export function CalendarView() {
 
   const copyUrl = useCallback(async () => {
     if (!subscribeUrls) return;
+    const pair = subscribeUrls.views[subscribeView];
     try {
-      await navigator.clipboard.writeText(subscribeUrls.webcalUrl);
+      await navigator.clipboard.writeText(pair.webcalUrl);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
       setSubscribeError('Clipboard copy blocked — select the URL and copy manually.');
     }
-  }, [subscribeUrls]);
+  }, [subscribeUrls, subscribeView]);
 
   useEffect(() => {
     // Drop cached subscribe URL on map switch so the modal fetches a
@@ -1113,6 +1140,8 @@ export function CalendarView() {
       {subscribeOpen && (
         <SubscribeModal
           urls={subscribeUrls}
+          view={subscribeView}
+          onViewChange={setSubscribeView}
           error={subscribeError}
           copied={copied}
           onCopy={copyUrl}
@@ -1127,17 +1156,23 @@ export function CalendarView() {
 
 function SubscribeModal({
   urls,
+  view,
+  onViewChange,
   error,
   copied,
   onCopy,
   onClose,
 }: {
   urls: CalendarSubscribeUrls | null;
+  view: CalendarIcsView;
+  onViewChange: (v: CalendarIcsView) => void;
   error: string | null;
   copied: boolean;
   onCopy: () => void;
   onClose: () => void;
 }) {
+  const pair = urls?.views[view] ?? null;
+  const viewKeys: CalendarIcsView[] = ['full', 'milestones', 'owned'];
   return (
     <div
       onClick={onClose}
@@ -1175,8 +1210,58 @@ function SubscribeModal({
           <div style={{ fontSize: 12, color: '#991b1b', marginBottom: 12 }}>{error}</div>
         ) : null}
 
-        {urls ? (
+        {urls && pair ? (
           <>
+            {/* View picker — segmented control, one radio per view. */}
+            <div
+              role="radiogroup"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr 1fr 1fr',
+                gap: 6,
+                marginBottom: 12,
+              }}
+            >
+              {viewKeys.map((v) => {
+                const selected = v === view;
+                return (
+                  <button
+                    key={v}
+                    role="radio"
+                    aria-checked={selected}
+                    onClick={() => onViewChange(v)}
+                    style={{
+                      padding: '8px 10px',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      fontFamily: 'inherit',
+                      color: selected ? '#fff' : '#475569',
+                      background: selected ? '#4f46e5' : '#f1f5f9',
+                      border: '1px solid',
+                      borderColor: selected ? '#4f46e5' : '#e2e8f0',
+                      borderRadius: 6,
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                    }}
+                  >
+                    {CALENDAR_VIEW_META[v].label}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div
+              style={{
+                fontSize: 11,
+                color: '#64748b',
+                marginBottom: 12,
+                lineHeight: 1.5,
+                minHeight: 32,
+              }}
+            >
+              {CALENDAR_VIEW_META[view].description}
+            </div>
+
             <label
               style={{
                 fontSize: 10,
@@ -1186,11 +1271,11 @@ function SubscribeModal({
                 letterSpacing: 0.5,
               }}
             >
-              Webcal URL (click to copy)
+              Webcal URL (click to select)
             </label>
             <input
               readOnly
-              value={urls.webcalUrl}
+              value={pair.webcalUrl}
               onFocus={(e) => e.currentTarget.select()}
               style={{
                 width: '100%',
@@ -1210,7 +1295,7 @@ function SubscribeModal({
               <summary style={{ cursor: 'pointer' }}>Prefer the https:// version?</summary>
               <input
                 readOnly
-                value={urls.httpsUrl}
+                value={pair.httpsUrl}
                 onFocus={(e) => e.currentTarget.select()}
                 style={{
                   width: '100%',
@@ -1254,17 +1339,17 @@ function SubscribeModal({
           </button>
           <button
             onClick={onCopy}
-            disabled={!urls}
+            disabled={!pair}
             style={{
               padding: '6px 14px',
               fontSize: 12,
               fontWeight: 600,
               fontFamily: 'inherit',
               color: '#fff',
-              background: urls ? '#4f46e5' : '#cbd5e1',
+              background: pair ? '#4f46e5' : '#cbd5e1',
               border: 'none',
               borderRadius: 6,
-              cursor: urls ? 'pointer' : 'default',
+              cursor: pair ? 'pointer' : 'default',
             }}
           >
             {copied ? 'Copied!' : 'Copy URL'}

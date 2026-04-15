@@ -588,9 +588,15 @@ export function fetchReleaseForecast(
 
 // ── Calendar subscribe URL ─────────────────────────────────────
 
-export interface CalendarSubscribeUrls {
+export type CalendarIcsView = 'full' | 'milestones' | 'owned';
+
+export interface CalendarSubscribeUrlPair {
   httpsUrl: string;
   webcalUrl: string;
+}
+
+export interface CalendarSubscribeUrls {
+  views: Record<CalendarIcsView, CalendarSubscribeUrlPair>;
 }
 
 export function fetchCalendarSubscribeUrl(mapId: string): Promise<CalendarSubscribeUrls> {

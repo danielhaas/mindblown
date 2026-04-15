@@ -65,6 +65,29 @@ const stamp = (d: Date): string =>
 
 // ── Main builder ────────────────────────────────────────────────
 
+// The ics feed ships in three "views" so subscribers can pick a
+// granularity. The distinction is applied here, not at the route, so
+// future callers (e.g. the MCP server, or an email digest) get the
+// exact same slicing rules.
+//
+// - full:       every non-done leaf with a dueDate, plus version
+//               targets, projected finishes, and sprint ranges.
+// - milestones: drop leaves entirely. Only version targets/projections
+//               and sprint ranges. Good for exec-level subscribers.
+// - owned:      like full, but drop leaves whose `externalLinks` claim
+//               they came from a ticketing provider (GitHub, Jira, …).
+//               Keeps human-authored roadmap items while filtering the
+//               noise from importers.
+export type CalendarIcsView = 'full' | 'milestones' | 'owned';
+
+export const CALENDAR_VIEWS: readonly CalendarIcsView[] = ['full', 'milestones', 'owned'];
+
+export const CALENDAR_VIEW_LABEL: Record<CalendarIcsView, string> = {
+  full: 'Full planning feed',
+  milestones: 'Releases & sprints',
+  owned: 'Owned tasks',
+};
+
 export interface CalendarIcsInput {
   map: MindMap;
   nodes: CoreNode[];
@@ -72,22 +95,33 @@ export interface CalendarIcsInput {
   cycles: Cycle[];
   forecast: ReleaseForecastResult;
   doneStatusIds: Set<string>;
+  view: CalendarIcsView;
 }
 
+const EXTERNAL_PROVIDER_BLACKLIST = new Set(['github', 'jira', 'linear', 'gitlab']);
+
+const isExternallySourced = (n: CoreNode): boolean =>
+  (n.externalLinks ?? []).some((link) => EXTERNAL_PROVIDER_BLACKLIST.has(link.provider));
+
 export function buildCalendarIcs(input: CalendarIcsInput): string {
-  const { map, nodes, versions, cycles, forecast, doneStatusIds } = input;
+  const { map, nodes, versions, cycles, forecast, doneStatusIds, view } = input;
   const dtstamp = stamp(new Date());
 
+  const calSuffix = view === 'full' ? '' : ` · ${CALENDAR_VIEW_LABEL[view]}`;
   const lines: string[] = [
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
     'PRODID:-//MindBlown//Calendar//EN',
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
-    fold(`X-WR-CALNAME:${escapeText(`${map.name} — MindBlown`)}`),
+    fold(`X-WR-CALNAME:${escapeText(`${map.name} — MindBlown${calSuffix}`)}`),
     fold(
       `X-WR-CALDESC:${escapeText(
-        'MindBlown planning feed: leaves with due dates, version targets and projected finishes, sprint ranges.',
+        view === 'milestones'
+          ? 'MindBlown release targets, projected finishes, and sprint ranges.'
+          : view === 'owned'
+            ? 'MindBlown planning feed — human-authored tasks (no imported tickets), releases, and sprints.'
+            : 'MindBlown planning feed: leaves with due dates, version targets and projected finishes, sprint ranges.',
       )}`,
     ),
   ];
@@ -115,18 +149,23 @@ export function buildCalendarIcs(input: CalendarIcsInput): string {
   };
 
   // 1) Leaf nodes with a manually authored dueDate.
-  for (const n of nodes) {
-    if (!n.dueDate) continue;
-    if ((n.childrenIds?.length ?? 0) > 0) continue;
-    if (n.status && doneStatusIds.has(n.status)) continue;
-    const start = n.startDate ?? n.dueDate;
-    addEvent({
-      uid: `node-${n.id}@mindblown`,
-      summary: n.text || '(untitled task)',
-      startDate: start,
-      endDate: n.dueDate,
-      categories: ['MindBlown task'],
-    });
+  //    `milestones` skips leaves entirely; `owned` drops externally
+  //    imported ones so GitHub/Jira/etc. issues don't flood the feed.
+  if (view !== 'milestones') {
+    for (const n of nodes) {
+      if (!n.dueDate) continue;
+      if ((n.childrenIds?.length ?? 0) > 0) continue;
+      if (n.status && doneStatusIds.has(n.status)) continue;
+      if (view === 'owned' && isExternallySourced(n)) continue;
+      const start = n.startDate ?? n.dueDate;
+      addEvent({
+        uid: `node-${n.id}@mindblown`,
+        summary: n.text || '(untitled task)',
+        startDate: start,
+        endDate: n.dueDate,
+        categories: ['MindBlown task'],
+      });
+    }
   }
 
   // 2) Per-version target and velocity-adjusted projected finish.

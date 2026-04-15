@@ -12,6 +12,8 @@ import {
   buildCalendarIcs,
   calendarTokenFor,
   verifyCalendarToken,
+  CALENDAR_VIEWS,
+  type CalendarIcsView,
 } from '../lib/calendarIcs.js';
 import { db } from '../db/connection.js';
 import { workspaces, users, releaseSnapshots } from '../db/schema.js';
@@ -825,10 +827,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:id/calendar-url — Subscribe URL helper
   //
   // Authenticated endpoint that returns the webcal + https feed URLs
-  // for the current map. The client uses this to populate the
-  // "Subscribe" modal in the Calendar view — no other code path
-  // computes the HMAC, so the token format stays encapsulated in
-  // lib/calendarIcs.ts.
+  // for the current map, one pair per supported view. The client uses
+  // this to populate the "Subscribe" modal's view picker — no other
+  // code path computes the HMAC, so the token format stays
+  // encapsulated in lib/calendarIcs.ts.
   app.get<{ Params: { id: string } }>('/api/maps/:id/calendar-url', async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -840,9 +842,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // Host header is set to the origin Caddy forwards as, which is
     // how we reach the client. Fall back to the request's own host.
     const host = (req.headers['x-forwarded-host'] as string | undefined) ?? req.headers.host ?? '';
-    const httpsUrl = `https://${host}/api/maps/${req.params.id}/calendar.ics?token=${token}`;
-    const webcalUrl = httpsUrl.replace(/^https?:\/\//, 'webcal://');
-    return reply.send({ httpsUrl, webcalUrl });
+    const views: Record<CalendarIcsView, { httpsUrl: string; webcalUrl: string }> = {
+      full: { httpsUrl: '', webcalUrl: '' },
+      milestones: { httpsUrl: '', webcalUrl: '' },
+      owned: { httpsUrl: '', webcalUrl: '' },
+    };
+    for (const v of CALENDAR_VIEWS) {
+      const httpsUrl = `https://${host}/api/maps/${req.params.id}/calendar.ics?token=${token}&view=${v}`;
+      const webcalUrl = httpsUrl.replace(/^https?:\/\//, 'webcal://');
+      views[v] = { httpsUrl, webcalUrl };
+    }
+    return reply.send({ views });
   });
 
   // ── GET /api/maps/:id/calendar.ics — Public iCal feed
@@ -852,56 +862,68 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // with the URL gets read access, which is the whole point of a
   // shareable feed. Rotating JWT_SECRET invalidates every outstanding
   // feed at once, which is the escape hatch.
-  app.get<{ Params: { id: string }; Querystring: { token?: string } }>(
-    '/api/maps/:id/calendar.ics',
-    async (req, reply) => {
-      if (!verifyCalendarToken(req.params.id, req.query.token, JWT_SECRET)) {
-        return reply.status(403).send({
-          error: { code: 'INVALID_TOKEN', message: 'Invalid calendar token' },
-        });
-      }
-
-      const data = await mapDb.getMap(req.params.id);
-      if (!data) {
-        return reply.status(404).send({
-          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
-        });
-      }
-
-      const [allVersions, allCycles] = await Promise.all([
-        versionDb.listVersions(data.map.workspaceId),
-        cycleDb.listCycles(data.map.workspaceId),
-      ]);
-
-      const forecast = computeReleaseForecast(data.map, data.nodes, allVersions);
-
-      // Pull the "done" status ids out of the workflow so finished
-      // leaves don't clutter the subscribed feed.
-      const doneStatusIds = new Set<string>(
-        (data.map.statusWorkflow ?? [])
-          .filter((s) => s.category === 'done')
-          .map((s) => s.id),
-      );
-
-      const ics = buildCalendarIcs({
-        map: data.map,
-        nodes: data.nodes,
-        versions: allVersions,
-        cycles: allCycles,
-        forecast,
-        doneStatusIds,
+  app.get<{
+    Params: { id: string };
+    Querystring: { token?: string; view?: string };
+  }>('/api/maps/:id/calendar.ics', async (req, reply) => {
+    if (!verifyCalendarToken(req.params.id, req.query.token, JWT_SECRET)) {
+      return reply.status(403).send({
+        error: { code: 'INVALID_TOKEN', message: 'Invalid calendar token' },
       });
+    }
 
-      reply
-        .header('Content-Type', 'text/calendar; charset=utf-8')
-        .header(
-          'Content-Disposition',
-          `inline; filename="mindblown-${req.params.id}.ics"`,
-        )
-        // External calendar clients typically refetch every few hours
-        // anyway; this just nudges well-behaved proxies.
-        .header('Cache-Control', 'public, max-age=300')
-        .send(ics);
-    },
-  );
+    const rawView = req.query.view ?? 'full';
+    if (!CALENDAR_VIEWS.includes(rawView as CalendarIcsView)) {
+      return reply.status(400).send({
+        error: {
+          code: 'INVALID_VIEW',
+          message: `view must be one of: ${CALENDAR_VIEWS.join(', ')}`,
+        },
+      });
+    }
+    const view = rawView as CalendarIcsView;
+
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+
+    const [allVersions, allCycles] = await Promise.all([
+      versionDb.listVersions(data.map.workspaceId),
+      cycleDb.listCycles(data.map.workspaceId),
+    ]);
+
+    const forecast = computeReleaseForecast(data.map, data.nodes, allVersions);
+
+    // Pull the "done" status ids out of the workflow so finished
+    // leaves don't clutter the subscribed feed.
+    const doneStatusIds = new Set<string>(
+      (data.map.statusWorkflow ?? [])
+        .filter((s) => s.category === 'done')
+        .map((s) => s.id),
+    );
+
+    const ics = buildCalendarIcs({
+      map: data.map,
+      nodes: data.nodes,
+      versions: allVersions,
+      cycles: allCycles,
+      forecast,
+      doneStatusIds,
+      view,
+    });
+
+    reply
+      .header('Content-Type', 'text/calendar; charset=utf-8')
+      .header(
+        'Content-Disposition',
+        `inline; filename="mindblown-${req.params.id}-${view}.ics"`,
+      )
+      // External calendar clients typically refetch every few hours
+      // anyway; this just nudges well-behaved proxies.
+      .header('Cache-Control', 'public, max-age=300')
+      .send(ics);
+  });
 }
