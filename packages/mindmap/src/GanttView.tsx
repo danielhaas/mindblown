@@ -326,6 +326,8 @@ export function GanttView() {
     skipped: number;
     fills: number;
     pinnedLeaves: number;
+    doneLeaves: number;
+    activeLeaves: number;
     error: string | null;
   } | null>(() => {
     if (!serverScheduleData || !sequentialMode) return null;
@@ -336,7 +338,16 @@ export function GanttView() {
 
     const nodeList = Object.values(nodes);
     if (nodeList.length === 0) {
-      return { data: serverScheduleData, edges: 0, skipped: 0, fills: 0, pinnedLeaves: 0, error: 'no nodes' };
+      return {
+        data: serverScheduleData,
+        edges: 0,
+        skipped: 0,
+        fills: 0,
+        pinnedLeaves: 0,
+        doneLeaves: 0,
+        activeLeaves: 0,
+        error: 'no nodes',
+      };
     }
 
     const p = Math.max(1, parallelism);
@@ -504,33 +515,52 @@ export function GanttView() {
       }
     }
 
-    // Unestimated leaves have duration 0, which means an FS constraint
-    // (`earliestStart = pred.computedEnd`) doesn't actually push the
-    // follower forward — every leaf stays at day 0 and the cascade is
-    // invisible. In sequential mode we give any unestimated leaf a
-    // 1-day placeholder so the what-if view is actually readable.
+    // Patch leaf durations for sequential mode. Unestimated leaves get
+    // a 1-day placeholder (otherwise zero-duration bars can't cascade).
+    // In-progress leaves use their REMAINING work as duration so they
+    // visibly end when the remaining work does. Done leaves keep their
+    // original effort so the bar still takes the same visual width in
+    // the past.
     const minLeafEffort = unitsPerDay;
     let fills = 0;
     const patched: Node[] = nodeList.map((n) => {
       const extra = extraDeps.get(n.id);
       const isLeaf = n.childrenIds.length === 0;
-      const needsEffortFill = isLeaf && (n.effortEstimate == null || n.effortEstimate <= 0);
-      if (needsEffortFill) fills++;
-      if (!extra && !needsEffortFill) return n;
+
+      let effortEstimate: number | null | undefined = n.effortEstimate;
+      if (isLeaf) {
+        const pct = n.percentComplete ?? 0;
+        const baseEffort = (n.effortEstimate ?? 0) > 0 ? (n.effortEstimate as number) : minLeafEffort;
+        if ((n.effortEstimate ?? 0) <= 0) fills++;
+        if (pct > 0 && pct < 100) {
+          effortEstimate = Math.max(baseEffort * (1 - pct / 100), minLeafEffort);
+        } else {
+          effortEstimate = baseEffort;
+        }
+      }
+
+      if (!extra && effortEstimate === n.effortEstimate) return n;
       return {
         ...n,
         dependencies: extra ? [...n.dependencies, ...extra] : n.dependencies,
-        effortEstimate: needsEffortFill ? minLeafEffort : n.effortEstimate,
+        effortEstimate,
       };
     });
 
-    // Mirror the backend's constraint-building: pinned startDate → minStart,
-    // pinned dueDate → maxEnd, converted from ISO to effort-unit space.
+    // Constraint building. Only pin LEAVES (parent start/end rolls up
+    // from children, so a parent pin is a no-op at best and a subtree
+    // clamp at worst).
     //
-    // Only pin LEAVES. Pinning parents is pointless (their start/end gets
-    // rolled up from children) and, worse, an inherited pin on a non-leaf
-    // is a common way users accidentally lock the whole subtree. In
-    // sequential mode we want to see the what-if cascade, not the pins.
+    // Per-node pinning rules:
+    //  - Done (percentComplete === 100): pin to the recent past so the
+    //    bar visibly shows when it was done instead of sitting in the
+    //    middle of the upcoming chain. We anchor the END at today and
+    //    work backward by effort.
+    //  - In progress (0 < pct < 100): pin start to today; the remaining
+    //    duration extends from there. This anchors "what you're working
+    //    on now" at today so downstream cascade chains from here.
+    //  - Todo (0 or null pct): respect manual startDate/dueDate pins
+    //    if present, otherwise let the synthetic FS cascade decide.
     const MS_PER_DAY = 86400000;
     const isoToUnits = (isoDate: string): number => {
       const d = new Date(isoDate);
@@ -538,16 +568,48 @@ export function GanttView() {
       const calendarDays = Math.round((d.getTime() - anchor.getTime()) / MS_PER_DAY);
       return calendarDays * unitsPerDay;
     };
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const todayUnits = isoToUnits(today.toISOString().slice(0, 10));
+
     const constraints = new Map<NodeId, ScheduleConstraint>();
     let pinnedLeaves = 0;
+    let doneLeaves = 0;
+    let activeLeaves = 0;
     for (const n of patched) {
       if (n.childrenIds.length > 0) continue;
-      const pin: ScheduleConstraint = {};
-      if (n.startDate) pin.minStart = isoToUnits(n.startDate);
-      if (n.dueDate) pin.maxEnd = isoToUnits(n.dueDate);
-      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
-        constraints.set(n.id, pin);
+      const pct = n.percentComplete ?? 0;
+      const effortUnits = (n.effortEstimate ?? minLeafEffort) || minLeafEffort;
+
+      if (pct >= 100) {
+        // Done → end at today, bar occupies (today - effort, today)
+        constraints.set(n.id, {
+          minStart: todayUnits - effortUnits,
+          maxEnd: todayUnits,
+        });
+        doneLeaves++;
         pinnedLeaves++;
+      } else if (pct > 0) {
+        // In progress → start at today, remaining effort extends forward.
+        // effortEstimate on the patched node was already reduced to
+        // remaining, so we just pin the start and let duration do the
+        // rest (pin.maxEnd = today + remaining keeps the scheduler
+        // honest if its own math slightly drifts).
+        constraints.set(n.id, {
+          minStart: todayUnits,
+          maxEnd: todayUnits + effortUnits,
+        });
+        activeLeaves++;
+        pinnedLeaves++;
+      } else {
+        // Todo → honor manual pins only
+        const pin: ScheduleConstraint = {};
+        if (n.startDate) pin.minStart = isoToUnits(n.startDate);
+        if (n.dueDate) pin.maxEnd = isoToUnits(n.dueDate);
+        if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
+          constraints.set(n.id, pin);
+          pinnedLeaves++;
+        }
       }
     }
 
@@ -566,6 +628,8 @@ export function GanttView() {
         skipped,
         fills,
         pinnedLeaves,
+        doneLeaves,
+        activeLeaves,
         error: null,
       };
     } catch (e) {
@@ -575,10 +639,23 @@ export function GanttView() {
         skipped,
         fills,
         pinnedLeaves,
+        doneLeaves,
+        activeLeaves,
         error: e instanceof Error ? e.message : String(e),
       };
     }
   }, [serverScheduleData, sequentialMode, parallelism, nodes]);
+
+  // Recompute tick — bumps every time the sequential schedule runs.
+  // Lets us verify from the toolbar badge whether the memo actually
+  // fires on a drag.
+  const recomputeCountRef = useRef(0);
+  const [recomputeCount, setRecomputeCount] = useState(0);
+  useEffect(() => {
+    if (!sequentialMode) return;
+    recomputeCountRef.current += 1;
+    setRecomputeCount(recomputeCountRef.current);
+  }, [sequentialResult, sequentialMode]);
 
   const scheduleData: ScheduleResponse | null = sequentialMode
     ? sequentialResult?.data ?? serverScheduleData
@@ -1134,7 +1211,7 @@ export function GanttView() {
               >
                 {sequentialResult.error
                   ? `error: ${sequentialResult.error}`
-                  : `${sequentialResult.edges} edges, ${sequentialResult.skipped} skipped, ${sequentialResult.fills} filled, ${sequentialResult.pinnedLeaves} pinned`}
+                  : `${sequentialResult.edges} edges, ${sequentialResult.doneLeaves} done, ${sequentialResult.activeLeaves} active, ${sequentialResult.skipped} skipped · recomputes: ${recomputeCount}`}
               </span>
             )}
           </>
