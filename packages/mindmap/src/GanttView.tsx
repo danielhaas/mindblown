@@ -2062,6 +2062,7 @@ export function GanttView() {
                   const isLeafBar = row.node.childrenIds.length === 0;
                   const fmt = (d: Date) =>
                     d.toLocaleDateString(undefined, {
+                      weekday: 'short',
                       month: 'short',
                       day: 'numeric',
                       year: 'numeric',
