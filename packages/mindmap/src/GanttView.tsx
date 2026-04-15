@@ -16,9 +16,12 @@ interface ScheduleResponse {
 
 // ── Constants ─────────────────────────────────────────────────────
 
-const DEFAULT_TASK_LIST_WIDTH = 460;
+const DEFAULT_TASK_LIST_WIDTH = 900;
 const MIN_TASK_LIST_WIDTH = 180;
-const MAX_TASK_LIST_WIDTH = 800;
+const MAX_TASK_LIST_WIDTH = 1200;
+// Bumped from `mindblown_gantt_task_width` so users with cached
+// narrow widths get the new default on next load.
+const TASK_WIDTH_STORAGE_KEY = 'mindblown_gantt_task_width_v2';
 const ROW_HEIGHT = 36;
 const HEADER_HEIGHT = 48;
 const HEALTH_COLORS: Record<string, string> = {
@@ -304,7 +307,7 @@ export function GanttView() {
   const [savingPlan, setSavingPlan] = useState(false);
   const [savedFlash, setSavedFlash] = useState<string | null>(null);
   const [taskListWidth, setTaskListWidth] = useState<number>(() => {
-    const raw = typeof window !== 'undefined' ? window.localStorage.getItem('mindblown_gantt_task_width') : null;
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(TASK_WIDTH_STORAGE_KEY) : null;
     const n = raw ? parseInt(raw, 10) : NaN;
     return !isNaN(n) && n >= MIN_TASK_LIST_WIDTH && n <= MAX_TASK_LIST_WIDTH ? n : DEFAULT_TASK_LIST_WIDTH;
   });
@@ -1306,7 +1309,7 @@ export function GanttView() {
       document.body.style.cursor = '';
       document.body.style.userSelect = '';
       try {
-        window.localStorage.setItem('mindblown_gantt_task_width', String(taskListWidth));
+        window.localStorage.setItem(TASK_WIDTH_STORAGE_KEY, String(taskListWidth));
       } catch {
         /* ignore */
       }
@@ -1321,7 +1324,7 @@ export function GanttView() {
   // value is always the latest.
   useEffect(() => {
     try {
-      window.localStorage.setItem('mindblown_gantt_task_width', String(taskListWidth));
+      window.localStorage.setItem(TASK_WIDTH_STORAGE_KEY, String(taskListWidth));
     } catch {
       /* ignore */
     }
