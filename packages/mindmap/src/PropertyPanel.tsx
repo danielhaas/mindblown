@@ -3,6 +3,8 @@ import type { Node, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { GitHubNodeSection } from './GitHubPanel.js';
+import * as api from './api.js';
+import type { EstimateResult } from './api.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -102,6 +104,39 @@ const disabledInputStyle: React.CSSProperties = {
   cursor: 'default',
 };
 
+const aiEstimateBtnStyle: React.CSSProperties = {
+  padding: '6px 10px',
+  background: '#eff6ff',
+  color: '#1d4ed8',
+  border: '1px solid #bfdbfe',
+  borderRadius: 6,
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+  flexShrink: 0,
+};
+
+const acceptEstimateBtnStyle: React.CSSProperties = {
+  padding: '4px 10px',
+  background: '#3b82f6',
+  color: '#fff',
+  border: 'none',
+  borderRadius: 4,
+  fontSize: 11,
+  fontWeight: 500,
+  cursor: 'pointer',
+};
+
+const dismissEstimateBtnStyle: React.CSSProperties = {
+  padding: '4px 10px',
+  background: 'transparent',
+  color: '#64748b',
+  border: '1px solid #cbd5e1',
+  borderRadius: 4,
+  fontSize: 11,
+  cursor: 'pointer',
+};
+
 const selectStyle: React.CSSProperties = {
   ...inputStyle,
   appearance: 'none',
@@ -152,6 +187,11 @@ function PropertyPanelInner({
 }) {
   const debouncedUpdate = useDebouncedUpdate(nodeId);
   const hasChildren = node.childrenIds.length > 0;
+
+  // ── AI Estimate state ─────────────────────────────────────────
+  const [estimating, setEstimating] = useState(false);
+  const [estimateResult, setEstimateResult] = useState<EstimateResult | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
 
   // Local state for text fields
   const [title, setTitle] = useState(node.text);
@@ -333,21 +373,94 @@ function PropertyPanelInner({
 
         {/* Effort estimate */}
         <Field label="Effort Estimate" computed={hasChildren}>
-          <input
-            type="number"
-            min={0}
-            value={hasChildren ? (computedValues?.computedEffort ?? '') : effort}
-            onChange={(e) => {
-              if (hasChildren) return;
-              setEffort(e.target.value);
-              const val = e.target.value ? parseFloat(e.target.value) : null;
-              debouncedUpdate({ effortEstimate: val });
-            }}
-            onKeyDown={(e) => e.stopPropagation()}
-            disabled={hasChildren}
-            style={hasChildren ? disabledInputStyle : inputStyle}
-            placeholder={hasChildren ? 'Computed from children' : '0'}
-          />
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              type="number"
+              min={0}
+              value={hasChildren ? (computedValues?.computedEffort ?? '') : effort}
+              onChange={(e) => {
+                if (hasChildren) return;
+                setEffort(e.target.value);
+                const val = e.target.value ? parseFloat(e.target.value) : null;
+                debouncedUpdate({ effortEstimate: val });
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              disabled={hasChildren}
+              style={{ ...(hasChildren ? disabledInputStyle : inputStyle), flex: 1 }}
+              placeholder={hasChildren ? 'Computed from children' : '0'}
+            />
+            {!hasChildren && (
+              <button
+                type="button"
+                onClick={async () => {
+                  setEstimating(true);
+                  setEstimateError(null);
+                  setEstimateResult(null);
+                  try {
+                    const res = await api.aiEstimate(node.mapId, { nodeId });
+                    setEstimateResult(res);
+                  } catch (err: any) {
+                    setEstimateError(err.message || 'Failed to get AI estimate');
+                  } finally {
+                    setEstimating(false);
+                  }
+                }}
+                disabled={estimating}
+                style={aiEstimateBtnStyle}
+                title="AI Estimate: predicts effort from past completed items"
+              >
+                {estimating ? '…' : 'AI'}
+              </button>
+            )}
+          </div>
+          {estimateError && (
+            <div style={{ color: '#dc2626', fontSize: 11, marginTop: 4 }}>{estimateError}</div>
+          )}
+          {estimateResult && !hasChildren && (
+            <div
+              style={{
+                marginTop: 6,
+                padding: '6px 8px',
+                background: '#eff6ff',
+                border: '1px solid #bfdbfe',
+                borderRadius: 6,
+                fontSize: 11,
+                color: '#1e40af',
+              }}
+            >
+              <div style={{ fontWeight: 600 }}>
+                Suggested: {estimateResult.estimate} {estimateResult.effortUnit}
+                {' '}
+                <span style={{ fontWeight: 400, color: '#3b82f6' }}>
+                  ({estimateResult.confidence} confidence, {estimateResult.samplesUsed} samples,
+                  {' '}fudge ×{estimateResult.fudgeFactor})
+                </span>
+              </div>
+              {estimateResult.notes && (
+                <div style={{ color: '#475569', marginTop: 2 }}>{estimateResult.notes}</div>
+              )}
+              <div style={{ marginTop: 4, display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEffort(String(estimateResult.estimate));
+                    debouncedUpdate({ effortEstimate: estimateResult.estimate });
+                    setEstimateResult(null);
+                  }}
+                  style={acceptEstimateBtnStyle}
+                >
+                  Accept
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setEstimateResult(null)}
+                  style={dismissEstimateBtnStyle}
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
         </Field>
 
         {/* % Complete */}

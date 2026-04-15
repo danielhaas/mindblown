@@ -47,6 +47,29 @@ interface BreakdownSuggestion {
   estimate: number | null;
 }
 
+interface BraindumpNode {
+  text: string;
+  estimate: number | null;
+  children: BraindumpNode[];
+}
+
+function sanitizeBraindumpTree(value: unknown, depth = 0, maxDepth = 3): BraindumpNode[] {
+  if (!Array.isArray(value)) return [];
+  if (depth >= maxDepth) return [];
+  return value
+    .map((raw): BraindumpNode | null => {
+      if (!raw || typeof raw !== 'object') return null;
+      const r = raw as Record<string, unknown>;
+      const text = typeof r.text === 'string' ? r.text.trim() : '';
+      if (!text) return null;
+      const estimate =
+        typeof r.estimate === 'number' && r.estimate > 0 ? r.estimate : null;
+      const children = sanitizeBraindumpTree(r.children, depth + 1, maxDepth);
+      return { text, estimate, children };
+    })
+    .filter((n): n is BraindumpNode => n !== null);
+}
+
 // ── Routes ───────────────────────────────────────────────────────
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
@@ -408,6 +431,316 @@ Rules:
       send('error', { message: err.message });
     } finally {
       reply.raw.end();
+    }
+  });
+
+  // ── POST /api/ai/braindump — prose → nested tree preview ───────
+  //
+  // Request:  { mapId, parentId, prose, maxDepth? }
+  // Response: { tree: BraindumpNode[] }
+  //
+  // The model receives a blob of freeform prose and the current ancestor
+  // path and returns a hierarchical JSON tree. Users preview and edit
+  // before committing via /accept — same split as /breakdown.
+
+  app.post('/api/ai/braindump', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      parentId: string;
+      prose: string;
+      maxDepth?: number;
+    };
+
+    if (!body.mapId || !body.parentId || !body.prose?.trim()) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId, parentId, and non-empty prose are required' },
+      });
+    }
+
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` },
+      });
+    }
+
+    const nodeMap = new Map(mapDetail.nodes.map((n) => [n.id, n]));
+    const parentNode = nodeMap.get(body.parentId);
+    if (!parentNode) {
+      return reply.status(404).send({
+        error: { code: 'NODE_NOT_FOUND', message: `Parent ${body.parentId} not found` },
+      });
+    }
+
+    // Clamp depth: 1 = flat list, 3 = realistic upper bound for a 14B model
+    const maxDepth = Math.max(1, Math.min(body.maxDepth ?? 3, 3));
+    const path = ancestorPath(body.parentId, nodeMap);
+    const existingChildren = childrenTexts(body.parentId, mapDetail.nodes);
+    const effortUnit = mapDetail.map.effortUnit ?? 'days';
+
+    const systemPrompt = `You are a project planning assistant. Convert a brain-dump of prose into a structured tree of tasks that will be attached under an existing parent node.
+
+Rules:
+- Return ONLY a JSON object: {"tree": [{"text": "...", "estimate": <number or null>, "children": [...]}]}
+- Group related ideas under parent nodes where the prose implies structure; otherwise return a flat list
+- Keep text concise and imperative ("Add rate limiting", not "We should add rate limiting")
+- Strip numbering, bullets, and preamble
+- Maximum nesting depth: ${maxDepth}
+- Estimates are in ${effortUnit}. Use null when you can't estimate confidently
+- Do not duplicate any of the existing children listed below
+- No preamble, no markdown fences, no explanation — just the JSON`;
+
+    let userPrompt = `Project: ${mapDetail.map.name}
+Path: ${path.join(' → ')}
+Parent node: "${parentNode.text}"`;
+
+    if (existingChildren.length > 0) {
+      userPrompt += `\nExisting children (don't duplicate): ${existingChildren.join(', ')}`;
+    }
+    userPrompt += `\n\nBrain dump:\n${body.prose.trim()}`;
+
+    try {
+      const raw = await chatCompletion({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.4,
+        maxTokens: 3072,
+        jsonSchema: { name: 'braindump' },
+      });
+
+      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      const parsed = JSON.parse(cleaned) as { tree: unknown };
+
+      const tree = sanitizeBraindumpTree(parsed.tree, 0, maxDepth);
+      if (tree.length === 0) {
+        return reply.status(502).send({
+          error: { code: 'AI_BAD_RESPONSE', message: 'Model did not return any usable tasks' },
+        });
+      }
+
+      return { tree };
+    } catch (err: any) {
+      if (err instanceof SyntaxError) {
+        return reply.status(502).send({
+          error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
+        });
+      }
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/estimate — calibrated effort estimate ────────
+  //
+  // Request:  { mapId, text?, nodeId?, hint? }
+  // Response: { estimate, confidence, notes?, samplesUsed, fudgeFactor }
+  //
+  // Uses the same calibration set as get_estimation_accuracy: completed
+  // leaves with both an estimate and an actualEffort. The LLM gets the
+  // samples as context and returns a raw estimate; we then scale by the
+  // fudge factor so the prediction is in the same calibrated space as
+  // completion_forecast's velocity-adjusted dates.
+
+  app.post('/api/ai/estimate', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      text?: string;
+      nodeId?: string;
+      hint?: string;
+    };
+
+    if (!body.mapId || (!body.text && !body.nodeId)) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and one of text or nodeId required' },
+      });
+    }
+
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` },
+      });
+    }
+
+    // Resolve target text — either given directly or pulled from an existing node.
+    let targetText = body.text?.trim() ?? '';
+    let targetDescription = '';
+    let targetContext = '';
+    if (body.nodeId) {
+      const node = mapDetail.nodes.find((n) => n.id === body.nodeId);
+      if (!node) {
+        return reply.status(404).send({
+          error: { code: 'NODE_NOT_FOUND', message: `Node ${body.nodeId} not found` },
+        });
+      }
+      if (!targetText) targetText = node.text;
+      targetDescription = node.description ?? '';
+      const nodeMap = new Map(mapDetail.nodes.map((n) => [n.id, n]));
+      targetContext = ancestorPath(body.nodeId, nodeMap).join(' → ');
+    }
+
+    if (!targetText) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'No usable text to estimate' },
+      });
+    }
+
+    // Pull calibration samples: completed leaves with estimate and actual set.
+    // Take the 30 most recent by updatedAt so old noisy data doesn't dominate.
+    const calibrationLeaves = mapDetail.nodes
+      .filter(
+        (n) =>
+          (n.childrenIds?.length ?? 0) === 0 &&
+          n.effortEstimate != null &&
+          n.actualEffort != null,
+      )
+      .sort((a, b) => {
+        const au = a.updatedAt instanceof Date ? a.updatedAt.getTime() : Date.parse(a.updatedAt as unknown as string);
+        const bu = b.updatedAt instanceof Date ? b.updatedAt.getTime() : Date.parse(b.updatedAt as unknown as string);
+        return bu - au;
+      })
+      .slice(0, 30);
+
+    const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
+    const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
+    const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : 1.0;
+    const effortUnit = mapDetail.map.effortUnit ?? 'days';
+
+    const samplesText = calibrationLeaves.length > 0
+      ? calibrationLeaves
+          .map(
+            (n, i) =>
+              `${i + 1}. "${n.text}" — estimated ${n.effortEstimate} ${effortUnit}, actual ${n.actualEffort} ${effortUnit}`,
+          )
+          .join('\n')
+      : '(no calibration data yet — give an unscaled best-guess estimate)';
+
+    const systemPrompt = `You are a project estimation assistant. You produce calibrated effort estimates by reasoning from past completed work on the same project.
+
+Rules:
+- Return ONLY a JSON object: {"estimate": <number>, "confidence": "low" | "medium" | "high", "notes": "<one short sentence>"}
+- The raw estimate you produce should be in ${effortUnit}, in the SAME scale the team uses when planning (not calibrated — the caller applies the fudge factor)
+- Confidence is "high" when multiple samples strongly match, "medium" when you're inferring from loose analogies, "low" when calibration data is thin or the task is unusual
+- Notes should be one brief sentence justifying the estimate (e.g. "Similar to #3 and #7; added buffer for migration")
+- No preamble, no markdown fences, no explanation outside the JSON`;
+
+    let userPrompt = `Project: ${mapDetail.map.name}
+Effort unit: ${effortUnit}
+
+Past completed work (planned → actual):
+${samplesText}
+
+New item to estimate:
+Title: "${targetText}"`;
+    if (targetContext) userPrompt += `\nPath: ${targetContext}`;
+    if (targetDescription) userPrompt += `\nDescription: ${targetDescription}`;
+    if (body.hint) userPrompt += `\nHint: ${body.hint}`;
+    userPrompt += '\n\nReturn the JSON.';
+
+    try {
+      const raw = await chatCompletion({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.2,
+        maxTokens: 512,
+        jsonSchema: { name: 'estimate' },
+      });
+
+      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      const parsed = JSON.parse(cleaned) as {
+        estimate: unknown;
+        confidence: unknown;
+        notes?: unknown;
+      };
+
+      const rawEstimate = typeof parsed.estimate === 'number' ? parsed.estimate : NaN;
+      if (!Number.isFinite(rawEstimate) || rawEstimate < 0) {
+        return reply.status(502).send({
+          error: { code: 'AI_BAD_RESPONSE', message: 'Model did not return a usable numeric estimate' },
+        });
+      }
+
+      const confidence =
+        parsed.confidence === 'high' || parsed.confidence === 'medium' || parsed.confidence === 'low'
+          ? parsed.confidence
+          : 'low';
+      const notes = typeof parsed.notes === 'string' ? parsed.notes.trim() : undefined;
+
+      // Apply calibration: the LLM's output is in planning space; multiply by
+      // the fudge factor so the caller sees a velocity-corrected estimate.
+      const calibratedEstimate = Math.round(rawEstimate * fudgeFactor * 100) / 100;
+
+      return {
+        estimate: calibratedEstimate,
+        rawEstimate,
+        confidence,
+        notes,
+        samplesUsed: calibrationLeaves.length,
+        fudgeFactor: Math.round(fudgeFactor * 100) / 100,
+        effortUnit,
+      };
+    } catch (err: any) {
+      if (err instanceof SyntaxError) {
+        return reply.status(502).send({
+          error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
+        });
+      }
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/braindump/accept — create the proposed tree ───
+  //
+  // Request:  { mapId, parentId, tree: BraindumpNode[] }
+  // Response: { createdCount: number }
+
+  app.post('/api/ai/braindump/accept', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      parentId: string;
+      tree: BraindumpNode[];
+    };
+
+    if (!body.mapId || !body.parentId || !Array.isArray(body.tree) || body.tree.length === 0) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId, parentId, and non-empty tree required' },
+      });
+    }
+
+    const userId = (req as any).userId ?? 'system';
+    let createdCount = 0;
+
+    async function createSubtree(parentId: string, items: BraindumpNode[]): Promise<void> {
+      for (const item of items) {
+        const hasChildren = item.children.length > 0;
+        const node = await nodeDb.createNode({
+          mapId: body.mapId,
+          parentId,
+          text: item.text,
+          createdBy: userId,
+          // Only set estimate on leaves — parents auto-compute from children
+          effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
+        });
+        createdCount++;
+        broadcast(body.mapId, { type: 'node:created', node });
+        if (hasChildren) await createSubtree(node.id, item.children);
+      }
+    }
+
+    try {
+      await createSubtree(body.parentId, body.tree);
+      return reply.status(201).send({ createdCount });
+    } catch (err: any) {
+      return reply.status(500).send({
+        error: { code: 'CREATE_FAILED', message: err.message },
+      });
     }
   });
 }

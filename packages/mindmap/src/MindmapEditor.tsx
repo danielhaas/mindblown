@@ -7,6 +7,7 @@ import { Connector } from './Connector.js';
 import { DependencyLines } from './DependencyLines.js';
 import { CursorPresence } from './CursorPresence.js';
 import { AIBreakdownModal } from './AIBreakdownModal.js';
+import { AIBraindumpModal } from './AIBraindumpModal.js';
 import type { LayoutNode } from './layout.js';
 import type { Node } from '@mindblown/core';
 
@@ -269,6 +270,7 @@ export function MindmapEditor() {
 
   // ── AI breakdown modal state ──────────────────────────────────
   const [aiBreakdown, setAiBreakdown] = useState<{ nodeId: string; nodeText: string } | null>(null);
+  const [aiBraindump, setAiBraindump] = useState<{ parentId: string; parentText: string } | null>(null);
 
   // ── Cursor presence: throttled send ──────────────────────────
   const lastCursorSend = useRef(0);
@@ -1268,6 +1270,18 @@ export function MindmapEditor() {
             >
               AI Breakdown
             </button>
+            <button
+              style={{ ...ctxMenuItemStyle, color: '#3b82f6' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                const node = nodes[contextMenu.nodeId];
+                setAiBraindump({ parentId: contextMenu.nodeId, parentText: node?.text ?? '' });
+                setContextMenu(null);
+              }}
+            >
+              AI Brain Dump
+            </button>
             <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
             <button
               style={ctxMenuItemStyle}
@@ -1304,6 +1318,16 @@ export function MindmapEditor() {
           nodeId={aiBreakdown.nodeId}
           nodeText={aiBreakdown.nodeText}
           onClose={() => setAiBreakdown(null)}
+        />
+      )}
+
+      {/* AI Brain Dump modal */}
+      {aiBraindump && currentMapId && (
+        <AIBraindumpModal
+          mapId={currentMapId}
+          parentId={aiBraindump.parentId}
+          parentText={aiBraindump.parentText}
+          onClose={() => setAiBraindump(null)}
         />
       )}
     </div>

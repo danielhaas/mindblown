@@ -514,6 +514,55 @@ export function aiBreakdownAccept(
   });
 }
 
+export interface BraindumpNode {
+  text: string;
+  estimate: number | null;
+  children: BraindumpNode[];
+}
+
+export function aiBraindump(
+  mapId: string,
+  parentId: string,
+  prose: string,
+  maxDepth?: number,
+): Promise<{ tree: BraindumpNode[] }> {
+  return request('/api/ai/braindump', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+  });
+}
+
+export function aiBraindumpAccept(
+  mapId: string,
+  parentId: string,
+  tree: BraindumpNode[],
+): Promise<{ createdCount: number }> {
+  return request('/api/ai/braindump/accept', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, tree }),
+  });
+}
+
+export interface EstimateResult {
+  estimate: number;
+  rawEstimate: number;
+  confidence: 'low' | 'medium' | 'high';
+  notes?: string;
+  samplesUsed: number;
+  fudgeFactor: number;
+  effortUnit: string;
+}
+
+export function aiEstimate(
+  mapId: string,
+  opts: { text?: string; nodeId?: string; hint?: string },
+): Promise<EstimateResult> {
+  return request('/api/ai/estimate', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, ...opts }),
+  });
+}
+
 export function aiConfig(): Promise<{ enabled: boolean; model: string }> {
   return request('/api/ai/config');
 }
