@@ -262,6 +262,8 @@ export function GanttView() {
   const [selectedBaseline, setSelectedBaseline] = useState<string | null>(null);
   const [sequentialMode, setSequentialMode] = useState(false);
   const [parallelism, setParallelism] = useState(1);
+  const [savingPlan, setSavingPlan] = useState(false);
+  const [savedFlash, setSavedFlash] = useState<string | null>(null);
   const [taskListWidth, setTaskListWidth] = useState<number>(() => {
     const raw = typeof window !== 'undefined' ? window.localStorage.getItem('mindblown_gantt_task_width') : null;
     const n = raw ? parseInt(raw, 10) : NaN;
@@ -1180,6 +1182,45 @@ export function GanttView() {
     window.addEventListener('mouseup', handleMouseUp);
   }, []);
 
+  // ── Save the sequential what-if plan to real start/due dates ──
+  //
+  // Iterates the currently-visible rows, picks out todo leaves (done
+  // and in-progress leaves have special "today-relative" pins that
+  // aren't meaningful to persist), and writes each one's scheduleDates
+  // position as startDate / dueDate via updateNode.
+  //
+  // The store's updateNode is optimistic + fires one API call per
+  // node. For the typical sprint scope that's a few dozen writes;
+  // we run them in parallel.
+  const handleSavePlan = useCallback(async () => {
+    if (savingPlan) return;
+    setSavingPlan(true);
+    setSavedFlash(null);
+    try {
+      const toIso = (d: Date) => d.toISOString().slice(0, 10);
+      const tasks: Promise<void>[] = [];
+      let count = 0;
+      for (const row of rows) {
+        const node = row.node;
+        if (node.childrenIds.length > 0) continue; // parents roll up
+        const pct = node.percentComplete ?? 0;
+        if (pct !== 0) continue; // skip done + in-progress
+        const dates = scheduleDates.get(node.id);
+        if (!dates) continue;
+        const startIso = toIso(dates.start);
+        const dueIso = toIso(dates.end);
+        if (node.startDate === startIso && node.dueDate === dueIso) continue;
+        updateNode(node.id, { startDate: startIso, dueDate: dueIso });
+        count++;
+      }
+      await Promise.all(tasks);
+      setSavedFlash(`Saved ${count} task${count === 1 ? '' : 's'}`);
+      window.setTimeout(() => setSavedFlash(null), 3000);
+    } finally {
+      setSavingPlan(false);
+    }
+  }, [rows, scheduleDates, updateNode, savingPlan]);
+
   // ── Drag-resize the task-list / timeline split ────────────────
   const splitRootRef = useRef<HTMLDivElement>(null);
   const handleSplitMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1371,6 +1412,29 @@ export function GanttView() {
                 background: '#fff',
               }}
             />
+            <button
+              onClick={handleSavePlan}
+              disabled={savingPlan}
+              title="Write the current sequential schedule back to each visible todo leaf as startDate/dueDate. Done and in-progress leaves are left alone."
+              style={{
+                padding: '3px 10px',
+                borderRadius: 4,
+                border: '1px solid #16a34a',
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                cursor: savingPlan ? 'wait' : 'pointer',
+                background: savingPlan ? '#dcfce7' : '#16a34a',
+                color: savingPlan ? '#15803d' : '#fff',
+              }}
+            >
+              {savingPlan ? 'Saving…' : 'Save plan'}
+            </button>
+            {savedFlash && (
+              <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>
+                ✓ {savedFlash}
+              </span>
+            )}
             {sequentialResult && (
               <span
                 style={{
