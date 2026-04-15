@@ -181,49 +181,67 @@ Once connected, the AI can fully manage your projects through natural conversati
 |---------|-------------|
 | "What's the status of my project?" | AI reads the map tree and health report, gives an executive summary |
 | "Create a task for API authentication under the Backend branch" | AI calls `create_node` with the right parent |
-| "Estimate all unestimated tasks" | AI uses the `estimate_tasks` prompt to suggest estimates with reasoning |
+| "Estimate all unestimated tasks" | AI uses `ai_estimate` (calibrated) or the `estimate_tasks` prompt for reasoning |
 | "Mark the Design System as 75% complete" | AI calls `set_progress` on the leaf node |
-| "What's blocking us?" | AI analyzes dependencies, bottlenecks, and overdue items |
+| "What's blocking us?" | AI calls `risk_scan` and analyzes dependencies and overdue items |
 | "Create a sprint for next week with the top priority tasks" | AI creates a cycle and assigns appropriate nodes |
-| "Generate a standup update" | AI uses the `daily_standup` prompt to summarize recent changes |
+| "Break this epic into subtasks" | AI calls `ai_breakdown` to generate a child tree |
+| "Generate a standup update" | AI calls `ai_standup` (narrative) or uses the `daily_standup` prompt |
+| "What if we cut this feature?" | AI calls `scope_simulate` with a remove patch |
 
 ---
 
-## Available Tools (26)
+## Available Tools (57)
 
 ### Map Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `list_maps` | List all maps with progress and health | (none) |
-| `get_map` | Get full tree with computed fields | `mapId` |
+| `get_map` | Get tree with computed fields; optionally filter nodes | `mapId`, `status?`, `priority?`, `healthSignal?`, `tag?` |
 | `create_map` | Create a new map/project | `name`, `description?` |
+| `update_map` | Update name, description, WIP limit, or Gantt anchors | `mapId`, `name?`, `description?`, `wipLimit?`, `projectStartDate?`, `hoursPerDay?` |
+| `delete_map` | Permanently delete a map and its nodes | `mapId` |
 
 ### Node Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `create_node` | Create a node under a parent | `mapId`, `parentId`, `text`, `effortEstimate?`, `priority?`, `status?`, `dueDate?`, `startDate?` |
-| `update_node` | Update any field on a node | `mapId`, `nodeId`, `text?`, `description?`, `effortEstimate?`, `percentComplete?`, `status?`, `priority?`, `dueDate?`, `startDate?`, `tags?`, `assigneeIds?`, `isMilestone?` |
-| `delete_node` | Delete a node and descendants | `mapId`, `nodeId` |
+| `create_node` | Create a node under a parent | `mapId`, `parentId`, `text`, `effortEstimate?`, `priority?`, `status?`, `dueDate?`, `startDate?`, `versionId?` |
+| `update_node` | Update any field on a node | `mapId`, `nodeId`, `text?`, `description?`, `effortEstimate?`, `percentComplete?`, `status?`, `priority?`, `dueDate?`, `startDate?`, `tags?`, `assigneeIds?`, `versionId?`, `isMilestone?` |
+| `delete_node` | Delete a node and its descendants | `mapId`, `nodeId` |
 | `move_node` | Move a node to a new parent | `mapId`, `nodeId`, `newParentId`, `index?` |
-| `bulk_update_nodes` | Update multiple nodes at once | `mapId`, `updates` (array of `{nodeId, fields}`) |
-| `search_nodes` | Search nodes by text | `mapId`, `query` |
+| `search_nodes` | Search by text with optional structured filters | `mapId`, `query`, `status?`, `priority?`, `tag?` |
+| `change_history` | Read the append-only change log for a map | `mapId`, `nodeId?`, `eventType?`, `fieldName?`, `sinceDays?`, `limit?` |
+
+### Bulk Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `bulk_update_nodes` | Update many nodes at once (flat or nested form) | `mapId`, `updates` |
+| `bulk_create_nodes` | Create many nodes; later nodes can reference earlier `tempId`s as parents | `mapId`, `nodes` |
+| `bulk_set_estimate` | Set effort estimates on many leaves | `mapId`, `estimates` |
+| `bulk_set_progress` | Set percent complete on many leaves | `mapId`, `updates` |
+| `bulk_set_actual_effort` | Record actual effort on many leaves | `mapId`, `updates` |
+| `bulk_assign_to_sprint` | Assign many nodes to a sprint | `cycleId`, `nodeIds` |
+| `bulk_assign_to_version` | Assign many nodes to a version (empty string to unassign) | `mapId`, `versionId`, `nodeIds` |
+| `bulk_link_github_issue` | Link many nodes to GitHub issues (shared default owner/repo) | `mapId`, `owner?`, `repo?`, `links` |
 
 ### Task Property Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `set_estimate` | Set effort estimate on a leaf | `mapId`, `nodeId`, `estimate` |
+| `set_actual_effort` | Record actual effort spent on a leaf (feeds estimation feedback loop) | `mapId`, `nodeId`, `actualEffort` |
 | `set_progress` | Set percent complete on a leaf | `mapId`, `nodeId`, `percent` (0-100) |
-| `set_status` | Set status on a node | `mapId`, `nodeId`, `status` |
+| `set_status` | Set status on a node; warns if over WIP limit | `mapId`, `nodeId`, `status` |
 | `set_priority` | Set priority on a node | `mapId`, `nodeId`, `priority` (P0-P3) |
 
 ### Dependency Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `add_dependency` | Add dependency between nodes | `mapId`, `fromNodeId`, `toNodeId`, `type` (FS/SS/FF/SF) |
+| `add_dependency` | Add a dependency (blocks circular + self-refs) | `mapId`, `fromNodeId`, `toNodeId`, `type` (FS/SS/FF/SF) |
 | `remove_dependency` | Remove a dependency | `mapId`, `nodeId`, `targetNodeId` |
 
 ### Version Tools
@@ -232,6 +250,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 |------|-------------|------------|
 | `list_versions` | List all versions for a workspace | `workspaceId` |
 | `create_version` | Create a new version/release | `workspaceId`, `name`, `description?`, `targetDate?` |
+| `assign_to_version` | Assign one node to a version (empty string to unassign) | `mapId`, `nodeId`, `versionId` |
 
 ### Milestone Tools
 
@@ -240,20 +259,58 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `list_milestones` | List milestones, optionally filtered by version | `workspaceId`, `versionId?` |
 | `create_milestone` | Create a milestone within a version | `workspaceId`, `name`, `versionId?`, `description?`, `targetDate?` |
 
-### Sprint Tools
+### Sprint / Cycle Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `list_cycles` | List sprints for a workspace | `workspaceId` |
-| `create_cycle` | Create a new sprint, optionally within a version | `workspaceId`, `name`, `startDate`, `endDate`, `versionId?` |
+| `create_cycle` | Create a sprint, optionally within a version | `workspaceId`, `name`, `startDate`, `endDate`, `versionId?` |
+| `update_cycle` | Change a sprint's name, dates, status, or version | `cycleId`, `name?`, `startDate?`, `endDate?`, `status?`, `versionId?` |
 | `assign_to_sprint` | Assign a node to a sprint | `cycleId`, `nodeId` |
+| `unassign_from_sprint` | Remove a node from a sprint | `cycleId`, `nodeId` |
 | `rollover_sprint` | Move incomplete items between sprints | `fromCycleId`, `toCycleId` |
 
-### Utility Tools
+### Schedule & Forecast Tools
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `get_schedule` | Get computed schedule and critical path | `mapId` |
+| `get_schedule` | Computed schedule and critical path; optionally scoped to a version | `mapId`, `versionId?` |
+| `remaining_work` | How much is left for a map/subtree/version/milestone | `mapId`, `nodeId?`, `versionId?`, `milestoneId?` |
+| `completion_forecast` | Planned + velocity-adjusted finish date vs target | `mapId`, `nodeId?`, `versionId?`, `milestoneId?` |
+| `burnup` | Scope-flow + scope-creep detector over a time window | `mapId`, `sinceDays?`, `showDaily?` |
+| `get_wip_status` | Current in-progress leaf count vs the map's WIP limit | `mapId` |
+| `get_estimation_accuracy` | Actual vs estimated effort across completed leaves | `mapId`, `cycleId?`, `versionId?`, `assigneeId?` |
+
+### Management Intelligence Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `status_digest` | Markdown status digest: done / in progress / behind / changes | `mapId`, `sinceDays?` |
+| `alert_digest` | Threshold-triggered alerts (slipped milestones, overdue, unassigned P0/P1) | `mapId` |
+| `risk_scan` | Stalled WIP, no-estimate leaves, overruns, fragile critical path | `mapId`, `nodeId?`, `versionId?`, `milestoneId?`, `stalledDays?` |
+| `scope_simulate` | In-memory what-if: before/after totals for a list of add/remove/update patches | `mapId`, `patches` |
+
+### GitHub Integration Tools
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `connect_github_repo` | Connect a GitHub repo to a workspace | `workspaceId`, `owner`, `repo`, `token`, `webhookSecret?` |
+| `import_github_issues` | Import issues into a functional tree; auto-creates versions/milestones | `mapId`, `parentNodeId?`, `includeAll?`, `owner?`, `repo?` |
+| `link_github_issue` | Link a node to an existing GitHub issue | `mapId`, `nodeId`, `owner`, `repo`, `issueNumber` |
+| `create_github_issue_from_node` | Promote a node to a new GitHub issue and link it | `mapId`, `nodeId` |
+| `github_sync_overview` | Three-way diff: synced / only in MindBlown / only in GitHub | `mapId`, `includeClosed?`, `format?` |
+
+### AI Tools (v0.7.0)
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `ai_breakdown` | Break a node into suggested child tasks via the LLM; creates them by default | `mapId`, `nodeId`, `count?`, `hint?`, `apply?` |
+| `ai_braindump` | Turn freeform prose into a nested tree under a parent node | `mapId`, `parentId`, `prose`, `maxDepth?`, `apply?` |
+| `ai_estimate` | Calibrated effort estimate using past velocity + sample leaves | `mapId`, `text?`, `nodeId?`, `hint?` |
+| `semantic_search` | Embedding-based search ranked by cosine similarity | `mapId`, `q`, `limit?` |
+| `ai_standup` | Three-section narrative (Done / In progress / Blockers) over a look-back window | `mapId`, `sinceHours?` |
+
+The AI tools talk to the `/api/ai/*` endpoints on the MindBlown server. `ai_breakdown` and `ai_braindump` both have an `apply` flag -- default `true` creates the nodes, `false` returns only a preview. `ai_estimate` uses up to 30 recently-completed leaves as calibration samples and multiplies the raw LLM guess by the map's fudge factor so the answer lines up with `completion_forecast` projections. `semantic_search` silently skips nodes without an embedding -- coverage depends on whether embeddings have been backfilled for the map.
 
 ---
 
