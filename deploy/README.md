@@ -100,10 +100,14 @@ JWT_SECRET=$(openssl rand -hex 32)
 PORT=3001
 NODE_ENV=production
 
-# Optional — transactional email (share invitations). If RESEND_API_KEY
-# is unset, invitations are silently skipped (server logs a "dev mode"
-# line per attempt).
-# RESEND_API_KEY=re_xxx
+# Optional — transactional email (share invitations) over SMTP. If
+# SMTP_HOST is unset, invitations are silently skipped (server logs a
+# "dev mode" line per attempt). Port 465 uses implicit TLS; anything
+# else (587, 25) uses STARTTLS. Set SMTP_SECURE=true/false to override.
+# SMTP_HOST=smtp.example.com
+# SMTP_PORT=587
+# SMTP_USER=noreply@example.com
+# SMTP_PASS=CHANGE-ME
 # MAIL_FROM=MindBlown <noreply@example.com>
 EOF
 chmod 640 /etc/mindblown/api.env

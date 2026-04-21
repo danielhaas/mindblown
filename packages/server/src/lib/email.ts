@@ -1,17 +1,39 @@
 /**
- * Transactional email via Resend's REST API. Fires-and-forgets from the
+ * Transactional email over SMTP via nodemailer. Fires-and-forgets from the
  * caller's perspective — errors are logged, never propagated — so share
- * flows are never blocked by the provider. When RESEND_API_KEY is unset
- * (dev), logs what would have been sent and skips the network call.
+ * flows are never blocked by the mail server. When SMTP_HOST is unset
+ * (dev), logs what would have been sent and skips the connection.
  */
 
 import { eq } from 'drizzle-orm';
+import nodemailer, { type Transporter } from 'nodemailer';
 import { db } from '../db/connection.js';
 import { users, maps } from '../db/schema.js';
 
-const RESEND_API_KEY = process.env.RESEND_API_KEY;
+const SMTP_HOST = process.env.SMTP_HOST;
+const SMTP_PORT = Number(process.env.SMTP_PORT ?? 587);
+const SMTP_USER = process.env.SMTP_USER;
+const SMTP_PASS = process.env.SMTP_PASS;
+// `secure: true` is implicit TLS (port 465). Everything else (587, 25) uses
+// STARTTLS, which nodemailer negotiates automatically. Override with
+// SMTP_SECURE=true/false if your server is unusual.
+const SMTP_SECURE = process.env.SMTP_SECURE
+  ? process.env.SMTP_SECURE === 'true'
+  : SMTP_PORT === 465;
+
 const MAIL_FROM = process.env.MAIL_FROM ?? 'MindBlown <noreply@project.li>';
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5180';
+
+let transporter: Transporter | null = null;
+if (SMTP_HOST) {
+  transporter = nodemailer.createTransport({
+    host: SMTP_HOST,
+    port: SMTP_PORT,
+    secure: SMTP_SECURE,
+    auth: SMTP_USER && SMTP_PASS ? { user: SMTP_USER, pass: SMTP_PASS } : undefined,
+  });
+  console.log(`[email] SMTP transport ready (${SMTP_HOST}:${SMTP_PORT}, secure=${SMTP_SECURE})`);
+}
 
 // ── Low-level sender ──────────────────────────────────────────────
 
@@ -23,31 +45,21 @@ export interface EmailInput {
 }
 
 export async function sendEmail(input: EmailInput): Promise<void> {
-  if (!RESEND_API_KEY) {
+  if (!transporter) {
     console.log(
-      `[email] (dev mode, no RESEND_API_KEY) would send to ${input.to}: ${input.subject}`,
+      `[email] (dev mode, no SMTP_HOST) would send to ${input.to}: ${input.subject}`,
     );
     return;
   }
   try {
-    const res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        from: MAIL_FROM,
-        to: input.to,
-        subject: input.subject,
-        html: input.html,
-        text: input.text,
-      }),
+    const info = await transporter.sendMail({
+      from: MAIL_FROM,
+      to: input.to,
+      subject: input.subject,
+      html: input.html,
+      text: input.text,
     });
-    if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      console.warn(`[email] Resend ${res.status}: ${body}`);
-    }
+    console.log(`[email] sent to ${input.to} (messageId=${info.messageId})`);
   } catch (err) {
     console.warn('[email] Send failed:', err);
   }
