@@ -1,26 +1,18 @@
 {
   "name": "@mindblown/mcp",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "MindBlown MCP server — exposes MindBlown project management to AI agents over the Model Context Protocol.",
-  "private": true,
+  "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "bin": {
     "mindblown-mcp": "./dist/index.js"
-  },
-  "exports": {
-    ".": {
-      "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
-    }
   },
   "files": [
     "dist",
     "README.md"
   ],
   "scripts": {
-    "build": "tsc || true",
+    "build": "esbuild src/index.ts --bundle --platform=node --target=node20 --format=esm --outfile=dist/index.js --external:@modelcontextprotocol/sdk --external:zod && chmod +x dist/index.js",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
@@ -28,12 +20,13 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "@mindblown/core": "workspace:*",
-    "@mindblown/tool-kit": "workspace:*",
     "zod": "^3.25.0"
   },
   "devDependencies": {
+    "@mindblown/core": "workspace:*",
+    "@mindblown/tool-kit": "workspace:*",
     "@types/node": "^22.0.0",
+    "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.0"
   }
