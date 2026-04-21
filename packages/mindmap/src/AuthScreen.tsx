@@ -1,13 +1,25 @@
 import { useState } from 'react';
 import { useMindmapStore } from './store.js';
 
+// Read ?email= and ?mode=register off the URL so invite links can prefill the
+// register form and skip the login/register toggle.
+function readInviteParams(): { email: string; mode: 'login' | 'register'; invited: boolean } {
+  if (typeof window === 'undefined') return { email: '', mode: 'login', invited: false };
+  const params = new URLSearchParams(window.location.search);
+  const email = params.get('email') ?? '';
+  const mode = params.get('mode') === 'register' ? 'register' : 'login';
+  return { email, mode, invited: email !== '' && mode === 'register' };
+}
+
 export function AuthScreen() {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
-  const [email, setEmail] = useState('');
+  const initial = readInviteParams();
+  const [mode, setMode] = useState<'login' | 'register'>(initial.mode);
+  const [email, setEmail] = useState(initial.email);
   const [password, setPassword] = useState('');
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const invited = initial.invited;
 
   const login = useMindmapStore((s) => s.login);
   const register = useMindmapStore((s) => s.register);
@@ -94,6 +106,25 @@ export function AuthScreen() {
             </button>
           ))}
         </div>
+
+        {/* Invitation banner — shown when the user arrived via an invite link */}
+        {invited && mode === 'register' && (
+          <div
+            style={{
+              margin: '12px 28px 0',
+              padding: '10px 12px',
+              borderRadius: 6,
+              background: '#eef2ff',
+              border: '1px solid #c7d2fe',
+              color: '#3730a3',
+              fontSize: 12,
+              lineHeight: 1.5,
+            }}
+          >
+            You've been invited to MindBlown. Sign up with <strong>{email}</strong> to
+            accept the invitation and see the map that was shared with you.
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} style={{ padding: '20px 28px 28px' }}>

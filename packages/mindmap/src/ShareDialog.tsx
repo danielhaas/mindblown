@@ -30,6 +30,9 @@ export function ShareDialog({
   const [generatingLink, setGeneratingLink] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  // Per-invite "Copy link" feedback
+  const [copiedInviteEmail, setCopiedInviteEmail] = useState<string | null>(null);
+
   const loadPermissions = useCallback(async () => {
     try {
       const data = await api.fetchPermissions(mapId);
@@ -111,6 +114,16 @@ export function ShareDialog({
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  const handleCopyInviteLink = (email: string) => {
+    // Prefills the register form with this email. The existing pending_invites
+    // row is resolved automatically when the user signs up with that email.
+    const url = `${BASE_URL}/?email=${encodeURIComponent(email)}&mode=register`;
+    navigator.clipboard.writeText(url).then(() => {
+      setCopiedInviteEmail(email);
+      setTimeout(() => setCopiedInviteEmail(null), 2000);
     });
   };
 
@@ -462,7 +475,7 @@ export function ShareDialog({
                         </span>
                       </div>
                       <div style={{ fontSize: 11, color: '#94a3b8' }}>
-                        Will get access when they sign up
+                        Send them the invite link to sign up
                       </div>
                     </div>
                     <span
@@ -475,6 +488,25 @@ export function ShareDialog({
                     >
                       {invite.permission}
                     </span>
+                    <button
+                      onClick={() => handleCopyInviteLink(invite.email)}
+                      title="Copy invite link to clipboard"
+                      style={{
+                        background: copiedInviteEmail === invite.email ? '#059669' : '#4f46e5',
+                        color: '#fff',
+                        border: 'none',
+                        borderRadius: 6,
+                        padding: '4px 10px',
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: 'pointer',
+                        fontFamily: 'inherit',
+                        whiteSpace: 'nowrap',
+                        transition: 'background 0.15s',
+                      }}
+                    >
+                      {copiedInviteEmail === invite.email ? 'Copied!' : 'Copy link'}
+                    </button>
                     <button
                       onClick={() => handleRevokeInvite(invite.email)}
                       title="Cancel invite"
