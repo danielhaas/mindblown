@@ -21,6 +21,7 @@ import { AIChatPanel } from './AIChatPanel.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
+import { TicketButton } from './TicketButton.js';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -913,6 +914,7 @@ export function App() {
           <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
         )}
         {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
+        <TicketButton />
       </div>
     );
   }
@@ -1427,6 +1429,8 @@ export function App() {
           onClose={() => setAiChatOpen(false)}
         />
       )}
+
+      <TicketButton />
     </div>
   );
 }

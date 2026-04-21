@@ -16,6 +16,7 @@ import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { githubAuthRoutes } from './routes/auth-github.js';
 import { aiRoutes } from './routes/ai.js';
+import { feedbackRoutes } from './routes/feedback.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -59,6 +60,7 @@ async function main(): Promise<void> {
   await app.register(integrationRoutes);
   await app.register(githubAuthRoutes);
   await app.register(aiRoutes);
+  await app.register(feedbackRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 

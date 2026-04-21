@@ -51,6 +51,23 @@ export function createLongLivedToken(): Promise<{ token: string }> {
   return request('/api/auth/long-lived-token', { method: 'POST' });
 }
 
+export interface FeedbackTicketResponse {
+  success: boolean;
+  issueNumber: number;
+  url: string;
+}
+
+export function submitFeedbackTicket(input: {
+  title: string;
+  description: string;
+  page: string;
+}): Promise<FeedbackTicketResponse> {
+  return request('/api/feedback/ticket', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
 export interface AuthResponse {
   user: AuthUser;
   token: string;
