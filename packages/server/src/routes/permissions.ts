@@ -3,6 +3,7 @@ import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import * as permDb from '../db/permissions.js';
+import { sendMapInvitationEmail } from '../lib/email.js';
 
 export async function permissionRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps/:mapId/share — Share a map with a user ───────
@@ -44,24 +45,33 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
         .where(eq(users.email, body.email.toLowerCase()))
         .limit(1);
 
-      if (!targetUser) {
-        // User doesn't exist yet — create a pending invite
-        const invite = await permDb.createPendingInvite(
-          req.params.mapId,
-          body.email,
-          body.permission as permDb.PermissionLevel,
-          userId,
-        );
-        return reply.status(201).send({ ...invite, pending: true });
-      }
+      const isNewUser = !targetUser;
+      const response = isNewUser
+        ? {
+            ...(await permDb.createPendingInvite(
+              req.params.mapId,
+              body.email,
+              body.permission as permDb.PermissionLevel,
+              userId,
+            )),
+            pending: true as const,
+          }
+        : await permDb.setPermission(
+            req.params.mapId,
+            targetUser!.id,
+            body.permission as permDb.PermissionLevel,
+          );
 
-      const result = await permDb.setPermission(
-        req.params.mapId,
-        targetUser.id,
-        body.permission as permDb.PermissionLevel,
-      );
+      // Fire-and-forget invitation email. Errors are logged inside the
+      // helper; the API response succeeds either way.
+      void sendMapInvitationEmail({
+        mapId: req.params.mapId,
+        inviterId: userId,
+        recipientEmail: body.email,
+        isNewUser,
+      }).catch((err) => console.warn('[share] Email not sent:', err));
 
-      return reply.status(201).send(result);
+      return reply.status(201).send(response);
     },
   );
 

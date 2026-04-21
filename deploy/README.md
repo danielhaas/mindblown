@@ -99,6 +99,12 @@ DATABASE_URL=postgresql://mindblown:CHANGE-ME@localhost:5432/mindblown
 JWT_SECRET=$(openssl rand -hex 32)
 PORT=3001
 NODE_ENV=production
+
+# Optional — transactional email (share invitations). If RESEND_API_KEY
+# is unset, invitations are silently skipped (server logs a "dev mode"
+# line per attempt).
+# RESEND_API_KEY=re_xxx
+# MAIL_FROM=MindBlown <noreply@example.com>
 EOF
 chmod 640 /etc/mindblown/api.env
 chown root:mindblown /etc/mindblown/api.env
