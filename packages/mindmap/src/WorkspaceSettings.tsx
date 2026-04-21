@@ -13,6 +13,7 @@ import {
 import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
+import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -410,6 +411,9 @@ export function WorkspaceSettings({
               </div>
             )}
           </div>
+
+          {/* Connect to Claude — shown only in workspace-wide view */}
+          {!mapId && <ClaudeConnectPanel />}
 
           {/* Registration policy — shown only in workspace-wide view */}
           {!mapId && <RegistrationPolicyPanel />}

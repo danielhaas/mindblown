@@ -47,6 +47,10 @@ export function setRegistrationPolicy(policy: RegistrationPolicy): Promise<Regis
   });
 }
 
+export function createLongLivedToken(): Promise<{ token: string }> {
+  return request('/api/auth/long-lived-token', { method: 'POST' });
+}
+
 export interface AuthResponse {
   user: AuthUser;
   token: string;

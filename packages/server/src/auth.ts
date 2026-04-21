@@ -38,6 +38,15 @@ export function signToken(payload: JwtPayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
 }
 
+/**
+ * Mint a long-expiry JWT for headless clients (MCP server, CLI scripts).
+ * Same secret and payload shape as a session token, so the normal auth
+ * middleware accepts it with no changes — it just lives for a year.
+ */
+export function signLongLivedToken(payload: JwtPayload): string {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
+}
+
 export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, JWT_SECRET) as JwtPayload;
 }
@@ -218,6 +227,31 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       },
       token,
     });
+  });
+
+  // ── POST /api/auth/long-lived-token ───────────────────────────
+  // Mint a 1-year JWT for the caller — intended for the MCP server and
+  // other headless clients. Caller must already be authed via session
+  // JWT (you can't trade one long-lived token for another).
+  app.post('/api/auth/long-lived-token', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    const [user] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (!user) {
+      return reply.status(404).send({
+        error: { code: 'USER_NOT_FOUND', message: 'User not found' },
+      });
+    }
+    const token = signLongLivedToken({ userId: user.id, email: user.email });
+    return reply.send({ token });
   });
 
   // ── GET /api/auth/me ───────────────────────────────────────────
