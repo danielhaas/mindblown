@@ -535,6 +535,31 @@ export function fetchVersions(mapId: string): Promise<Version[]> {
   return request<Version[]>(`/api/versions?mapId=${encodeURIComponent(mapId)}`);
 }
 
+export interface CreateVersionFields {
+  name: string;
+  description?: string | null;
+  status?: Version['status'];
+  targetDate?: string | null;
+}
+
+export function createVersion(mapId: string, fields: CreateVersionFields): Promise<Version> {
+  return request<Version>('/api/versions', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, ...fields }),
+  });
+}
+
+export function updateVersion(id: string, fields: Partial<CreateVersionFields>): Promise<Version> {
+  return request<Version>(`/api/versions/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
+export function deleteVersion(id: string): Promise<void> {
+  return request<void>(`/api/versions/${id}`, { method: 'DELETE' });
+}
+
 // ── Forecast ────────────────────────────────────────────────────
 
 export interface ForecastResult {

@@ -92,6 +92,9 @@ export interface MindmapState {
 
   // Actions — version
   loadVersions: () => Promise<void>;
+  createVersion: (fields: api.CreateVersionFields) => Promise<Version | null>;
+  updateVersion: (id: string, fields: Partial<api.CreateVersionFields>) => Promise<void>;
+  deleteVersion: (id: string) => Promise<void>;
   setActiveVersionFilter: (versionId: string | null) => void;
 
   // Actions — layout
@@ -450,6 +453,50 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       set({ versions });
     } catch (e: any) {
       set({ error: e.message ?? 'Failed to load versions' });
+    }
+  },
+
+  createVersion: async (fields) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId) return null;
+    try {
+      const created = await api.createVersion(mapId, fields);
+      set({ versions: [...state.versions, created] });
+      return created;
+    } catch (e: any) {
+      set({ error: e.message ?? 'Failed to create version' });
+      return null;
+    }
+  },
+
+  updateVersion: async (id, fields) => {
+    const state = get();
+    const prev = state.versions;
+    set({
+      versions: state.versions.map((v) => (v.id === id ? { ...v, ...fields } as Version : v)),
+    });
+    try {
+      const updated = await api.updateVersion(id, fields);
+      set({
+        versions: get().versions.map((v) => (v.id === id ? updated : v)),
+      });
+    } catch (e: any) {
+      set({ versions: prev, error: e.message ?? 'Failed to update version' });
+    }
+  },
+
+  deleteVersion: async (id) => {
+    const state = get();
+    const prev = state.versions;
+    set({ versions: state.versions.filter((v) => v.id !== id) });
+    if (state.activeVersionFilter === id) {
+      set({ activeVersionFilter: null });
+    }
+    try {
+      await api.deleteVersion(id);
+    } catch (e: any) {
+      set({ versions: prev, error: e.message ?? 'Failed to delete version' });
     }
   },
 

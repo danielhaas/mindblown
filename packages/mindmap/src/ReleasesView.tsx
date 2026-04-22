@@ -20,6 +20,8 @@ const VERSION_STATUS_COLOR: Record<Version['status'], string> = {
   archived: '#94a3b8',
 };
 
+const STATUS_OPTIONS: Version['status'][] = ['planning', 'active', 'released', 'archived'];
+
 // ── Helpers ──────────────────────────────────────────────────────
 
 function formatDate(iso: string | null): string {
@@ -63,12 +65,45 @@ function formatAge(iso: string | null, now: Date = new Date()): string {
   return `${days}d ago`;
 }
 
+function toDateInput(iso: string | null): string {
+  return iso ? iso.slice(0, 10) : '';
+}
+
+// ── Form state ───────────────────────────────────────────────────
+
+interface FormFields {
+  name: string;
+  description: string;
+  status: Version['status'];
+  targetDate: string;
+}
+
+type FormState =
+  | { mode: 'create'; fields: FormFields }
+  | { mode: 'edit'; id: string; fields: FormFields };
+
+function emptyFields(): FormFields {
+  return { name: '', description: '', status: 'planning', targetDate: '' };
+}
+
+function fieldsFromVersion(v: Version): FormFields {
+  return {
+    name: v.name,
+    description: v.description ?? '',
+    status: v.status,
+    targetDate: toDateInput(v.targetDate),
+  };
+}
+
 // ── Component ────────────────────────────────────────────────────
 
 export function ReleasesView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const versions = useMindmapStore((s) => s.versions);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const createVersionAction = useMindmapStore((s) => s.createVersion);
+  const updateVersionAction = useMindmapStore((s) => s.updateVersion);
+  const deleteVersionAction = useMindmapStore((s) => s.deleteVersion);
 
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -76,6 +111,8 @@ export function ReleasesView() {
   const [error, setError] = useState<string | null>(null);
   // Bumped by the Refresh button to re-trigger the effect.
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [formState, setFormState] = useState<FormState | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -112,19 +149,68 @@ export function ReleasesView() {
 
   const handleRefresh = () => setRefreshNonce((n) => n + 1);
 
-  // Apply the top-bar filter client-side so the cumulative server math
-  // remains correct across all versions — we just hide the non-matching
-  // rows in the UI.
-  const rows: ReleaseForecastRow[] = useMemo(() => {
-    const all = forecast?.releases ?? [];
-    if (!activeVersionFilter) return all;
-    return all.filter((r) => r.versionId === activeVersionFilter);
-  }, [forecast, activeVersionFilter]);
+  // Merge store versions (authoritative list, includes empty ones) with
+  // the forecast rows (richer stats for versions that have linked leaves).
+  // We iterate over versions (sorted by sortOrder), attaching the forecast
+  // row when it exists — versions with 0 leaves show up as "no scope" rows.
+  const sortedVersions = useMemo(
+    () => [...versions].sort((a, b) => a.sortOrder - b.sortOrder),
+    [versions],
+  );
+  const forecastById = useMemo(() => {
+    const map = new Map<string, ReleaseForecastRow>();
+    for (const r of forecast?.releases ?? []) map.set(r.versionId, r);
+    return map;
+  }, [forecast]);
+  const displayVersions = useMemo(() => {
+    if (!activeVersionFilter) return sortedVersions;
+    return sortedVersions.filter((v) => v.id === activeVersionFilter);
+  }, [sortedVersions, activeVersionFilter]);
 
   const totalLeaves = useMemo(
-    () => rows.reduce((sum, r) => sum + r.leaves, 0),
-    [rows],
+    () =>
+      displayVersions.reduce((sum, v) => sum + (forecastById.get(v.id)?.leaves ?? 0), 0),
+    [displayVersions, forecastById],
   );
+
+  const startCreate = () => {
+    setFormState({ mode: 'create', fields: emptyFields() });
+  };
+  const startEdit = (v: Version) => {
+    setFormState({ mode: 'edit', id: v.id, fields: fieldsFromVersion(v) });
+  };
+  const cancelForm = () => setFormState(null);
+
+  const submitForm = async () => {
+    if (!formState) return;
+    const { name, description, status, targetDate } = formState.fields;
+    if (!name.trim()) return;
+    setSubmitting(true);
+    try {
+      const payload = {
+        name: name.trim(),
+        description: description.trim() ? description.trim() : null,
+        status,
+        targetDate: targetDate ? targetDate : null,
+      };
+      if (formState.mode === 'create') {
+        await createVersionAction(payload);
+      } else {
+        await updateVersionAction(formState.id, payload);
+      }
+      setFormState(null);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (v: Version) => {
+    const msg =
+      `Delete version "${v.name}"?\n\n` +
+      `Any nodes tagged with this version will be unassigned. This cannot be undone.`;
+    if (!window.confirm(msg)) return;
+    await deleteVersionAction(v.id);
+  };
 
   if (!currentMapId) {
     return (
@@ -142,27 +228,8 @@ export function ReleasesView() {
     );
   }
 
-  if (error) {
-    return (
-      <div style={containerStyle}>
-        <div style={{ padding: 40, color: '#991b1b', fontSize: 13 }}>Error: {error}</div>
-      </div>
-    );
-  }
-
-  if (!forecast || forecast.releases.length === 0) {
-    return (
-      <div style={containerStyle}>
-        <EmptyState
-          title="No releases yet"
-          message="Create a version to plan releases — use create_version via the MCP or the command palette."
-        />
-      </div>
-    );
-  }
-
-  const unit = forecast.effortUnit;
-  const fudge = forecast.fudgeFactor;
+  const unit = forecast?.effortUnit ?? 'days';
+  const fudge = forecast?.fudgeFactor ?? null;
 
   return (
     <div style={containerStyle}>
@@ -170,157 +237,305 @@ export function ReleasesView() {
         <div>
           <h2 style={{ margin: 0, fontSize: 16, color: '#1e293b' }}>Releases</h2>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-            {rows.length} version{rows.length === 1 ? '' : 's'} · {totalLeaves} linked leaves
-            {' · sequential by sortOrder, '}
-            {forecast.dailyCapacity} {unit}/day capacity
-            {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
-            {' · snapshot '}
-            {formatAge(forecast.lastSnapshotAt)}
+            {displayVersions.length} version{displayVersions.length === 1 ? '' : 's'} · {totalLeaves} linked leaves
+            {forecast && (
+              <>
+                {' · sequential by sortOrder, '}
+                {forecast.dailyCapacity} {unit}/day capacity
+                {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
+                {' · snapshot '}
+                {formatAge(forecast.lastSnapshotAt)}
+              </>
+            )}
             {activeVersionFilter && ' · filtered'}
           </div>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={refreshing}
-          title="Recompute and write a fresh snapshot"
-          style={{
-            padding: '6px 12px',
-            borderRadius: 6,
-            border: '1px solid #e2e8f0',
-            background: refreshing ? '#f1f5f9' : '#fff',
-            color: refreshing ? '#94a3b8' : '#1e293b',
-            fontSize: 12,
-            fontWeight: 500,
-            fontFamily: 'inherit',
-            cursor: refreshing ? 'default' : 'pointer',
-          }}
-        >
-          {refreshing ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={startCreate}
+            disabled={formState !== null}
+            style={primaryButtonStyle(formState !== null)}
+          >
+            + New version
+          </button>
+          <button
+            onClick={handleRefresh}
+            disabled={refreshing || !forecast}
+            title="Recompute and write a fresh snapshot"
+            style={secondaryButtonStyle(refreshing)}
+          >
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
-      <div style={{ overflow: 'auto', flex: 1 }}>
-        <table style={tableStyle}>
-          <thead>
-            <tr>
-              <th style={thStyle}>Release</th>
-              <th style={thStyle}>Status</th>
-              <th style={thStyle}>Start</th>
-              <th style={thStyle}>Target</th>
-              <th style={thStyle}>Projected</th>
-              <th style={thStyle}>Slip</th>
-              <th style={{ ...thStyle, width: 220 }}>Scope</th>
-              <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const projected =
-                row.velocityAdjustedFinishDate ?? row.plannedFinishDate ?? null;
-              // Prefer velocity slip (matches the Projected column);
-              // fall back to planned slip.
-              const slipDays = row.slipVelocityDays ?? row.slipPlannedDays ?? null;
-              const slip = formatSlip(slipDays);
-              const isArchived = row.versionStatus === 'archived';
-              const isReleased = row.versionStatus === 'released';
-              const pct =
-                row.totalEffort > 0
-                  ? Math.round(
-                      ((row.totalEffort - row.remainingEffort) / row.totalEffort) * 100,
-                    )
-                  : 0;
-              const duration = formatDateRange(row.effectiveStartDate, projected);
+      {error && (
+        <div style={{ padding: '10px 24px', color: '#991b1b', fontSize: 12, background: '#fef2f2' }}>
+          {error}
+        </div>
+      )}
 
-              return (
-                <tr
-                  key={row.versionId}
-                  style={{
-                    borderBottom: '1px solid #f1f5f9',
-                    opacity: isArchived || isReleased ? 0.55 : 1,
-                  }}
-                >
-                  <td style={tdStyle}>
-                    <div style={{ fontWeight: 600, color: '#1e293b' }}>{row.versionName}</div>
-                  </td>
-                  <td style={tdStyle}>
-                    <span
-                      style={{
-                        fontSize: 10,
-                        fontWeight: 600,
-                        padding: '2px 8px',
-                        borderRadius: 4,
-                        background: VERSION_STATUS_COLOR[row.versionStatus] + '20',
-                        color: VERSION_STATUS_COLOR[row.versionStatus],
-                        textTransform: 'uppercase',
-                        letterSpacing: 0.3,
-                      }}
-                    >
-                      {VERSION_STATUS_LABEL[row.versionStatus]}
-                    </span>
-                  </td>
-                  <td style={tdStyle}>{formatDate(row.effectiveStartDate)}</td>
-                  <td style={tdStyle}>{formatDate(row.targetDate)}</td>
-                  <td style={tdStyle}>
-                    <div>{formatDate(projected)}</div>
-                    {(() => {
-                      // Prefer the velocity-adjusted trend so it matches
-                      // the Projected column above; fall back to planned.
-                      const trend = formatTrend(
-                        row.velocityFinishDeltaDays7d ?? row.plannedFinishDeltaDays7d,
-                      );
-                      if (trend) {
-                        return (
-                          <div
-                            style={{
-                              fontSize: 10,
-                              color: trend.color,
-                              marginTop: 2,
-                              fontWeight: 500,
-                            }}
-                          >
-                            {trend.text}
-                          </div>
-                        );
-                      }
-                      if (duration !== '—') {
-                        return (
-                          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                            {duration}
-                          </div>
-                        );
-                      }
-                      return null;
-                    })()}
-                  </td>
-                  <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
-                  <td style={tdStyle}>
-                    <ProgressBar pct={pct} />
-                    <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                      {row.remainingEffort.toFixed(0)}/{row.totalEffort.toFixed(0)} {unit} remaining
-                    </div>
-                  </td>
-                  <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
-                    {row.leaves}
-                    {row.noEstimateLeaves > 0 && (
-                      <div
-                        style={{ fontSize: 10, color: '#f59e0b' }}
-                        title={`${row.noEstimateLeaves} leaves without estimate`}
+      {formState && (
+        <VersionForm
+          mode={formState.mode}
+          fields={formState.fields}
+          submitting={submitting}
+          onChange={(fields) =>
+            setFormState((s) => (s ? ({ ...s, fields } as FormState) : s))
+          }
+          onCancel={cancelForm}
+          onSubmit={submitForm}
+        />
+      )}
+
+      {displayVersions.length === 0 ? (
+        <EmptyState
+          title="No versions yet"
+          message={'Click "+ New version" above to create one.'}
+        />
+      ) : (
+        <div style={{ overflow: 'auto', flex: 1 }}>
+          <table style={tableStyle}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Release</th>
+                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Start</th>
+                <th style={thStyle}>Target</th>
+                <th style={thStyle}>Projected</th>
+                <th style={thStyle}>Slip</th>
+                <th style={{ ...thStyle, width: 220 }}>Scope</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
+                <th style={{ ...thStyle, width: 92, textAlign: 'right' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {displayVersions.map((v) => {
+                const row = forecastById.get(v.id);
+                const isArchived = v.status === 'archived';
+                const isReleased = v.status === 'released';
+                const projected = row
+                  ? row.velocityAdjustedFinishDate ?? row.plannedFinishDate ?? null
+                  : null;
+                const slipDays = row ? row.slipVelocityDays ?? row.slipPlannedDays ?? null : null;
+                const slip = formatSlip(slipDays);
+                const pct =
+                  row && row.totalEffort > 0
+                    ? Math.round(((row.totalEffort - row.remainingEffort) / row.totalEffort) * 100)
+                    : 0;
+                const duration = formatDateRange(row?.effectiveStartDate ?? null, projected);
+
+                return (
+                  <tr
+                    key={v.id}
+                    style={{
+                      borderBottom: '1px solid #f1f5f9',
+                      opacity: isArchived || isReleased ? 0.55 : 1,
+                    }}
+                  >
+                    <td style={tdStyle}>
+                      <div style={{ fontWeight: 600, color: '#1e293b' }}>{v.name}</div>
+                      {v.description && (
+                        <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                          {v.description}
+                        </div>
+                      )}
+                    </td>
+                    <td style={tdStyle}>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 600,
+                          padding: '2px 8px',
+                          borderRadius: 4,
+                          background: VERSION_STATUS_COLOR[v.status] + '20',
+                          color: VERSION_STATUS_COLOR[v.status],
+                          textTransform: 'uppercase',
+                          letterSpacing: 0.3,
+                        }}
                       >
-                        {row.noEstimateLeaves} unest.
+                        {VERSION_STATUS_LABEL[v.status]}
+                      </span>
+                    </td>
+                    <td style={tdStyle}>{formatDate(row?.effectiveStartDate ?? null)}</td>
+                    <td style={tdStyle}>{formatDate(v.targetDate)}</td>
+                    <td style={tdStyle}>
+                      <div>{formatDate(projected)}</div>
+                      {row &&
+                        (() => {
+                          const trend = formatTrend(
+                            row.velocityFinishDeltaDays7d ?? row.plannedFinishDeltaDays7d,
+                          );
+                          if (trend) {
+                            return (
+                              <div
+                                style={{
+                                  fontSize: 10,
+                                  color: trend.color,
+                                  marginTop: 2,
+                                  fontWeight: 500,
+                                }}
+                              >
+                                {trend.text}
+                              </div>
+                            );
+                          }
+                          if (duration !== '—') {
+                            return (
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                                {duration}
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
+                    </td>
+                    <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
+                    <td style={tdStyle}>
+                      {row ? (
+                        <>
+                          <ProgressBar pct={pct} />
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                            {row.remainingEffort.toFixed(0)}/{row.totalEffort.toFixed(0)} {unit} remaining
+                          </div>
+                        </>
+                      ) : (
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>No scope yet</span>
+                      )}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
+                      {row ? (
+                        <>
+                          {row.leaves}
+                          {row.noEstimateLeaves > 0 && (
+                            <div
+                              style={{ fontSize: 10, color: '#f59e0b' }}
+                              title={`${row.noEstimateLeaves} leaves without estimate`}
+                            >
+                              {row.noEstimateLeaves} unest.
+                            </div>
+                          )}
+                        </>
+                      ) : (
+                        '0'
+                      )}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: 'right' }}>
+                      <div style={{ display: 'inline-flex', gap: 4 }}>
+                        <button
+                          onClick={() => startEdit(v)}
+                          disabled={formState !== null}
+                          title="Edit version"
+                          style={iconButtonStyle(formState !== null)}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          onClick={() => handleDelete(v)}
+                          disabled={formState !== null}
+                          title="Delete version"
+                          style={iconDangerButtonStyle(formState !== null)}
+                        >
+                          Delete
+                        </button>
                       </div>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }
 
 // ── Sub-components ───────────────────────────────────────────────
+
+function VersionForm({
+  mode,
+  fields,
+  submitting,
+  onChange,
+  onCancel,
+  onSubmit,
+}: {
+  mode: 'create' | 'edit';
+  fields: FormFields;
+  submitting: boolean;
+  onChange: (fields: FormFields) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  const canSubmit = fields.name.trim().length > 0 && !submitting;
+  return (
+    <div
+      style={{
+        padding: '14px 24px',
+        borderBottom: '1px solid #e2e8f0',
+        background: '#f8fafc',
+        display: 'grid',
+        gridTemplateColumns: '2fr 1fr 1fr 1fr auto',
+        gap: 10,
+        alignItems: 'end',
+      }}
+    >
+      <div>
+        <label style={labelStyle}>Name</label>
+        <input
+          autoFocus
+          type="text"
+          placeholder="e.g. V1, Beta launch"
+          value={fields.name}
+          onChange={(e) => onChange({ ...fields, name: e.target.value })}
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label style={labelStyle}>Status</label>
+        <select
+          value={fields.status}
+          onChange={(e) => onChange({ ...fields, status: e.target.value as Version['status'] })}
+          style={inputStyle}
+        >
+          {STATUS_OPTIONS.map((s) => (
+            <option key={s} value={s}>
+              {VERSION_STATUS_LABEL[s]}
+            </option>
+          ))}
+        </select>
+      </div>
+      <div>
+        <label style={labelStyle}>Target date</label>
+        <input
+          type="date"
+          value={fields.targetDate}
+          onChange={(e) => onChange({ ...fields, targetDate: e.target.value })}
+          style={inputStyle}
+        />
+      </div>
+      <div>
+        <label style={labelStyle}>Description</label>
+        <input
+          type="text"
+          placeholder="Optional"
+          value={fields.description}
+          onChange={(e) => onChange({ ...fields, description: e.target.value })}
+          style={inputStyle}
+        />
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button onClick={onCancel} disabled={submitting} style={secondaryButtonStyle(submitting)}>
+          Cancel
+        </button>
+        <button onClick={onSubmit} disabled={!canSubmit} style={primaryButtonStyle(!canSubmit)}>
+          {submitting ? 'Saving…' : mode === 'create' ? 'Create' : 'Save'}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function ProgressBar({ pct }: { pct: number }) {
   const clamped = Math.max(0, Math.min(100, pct));
@@ -359,7 +574,7 @@ function EmptyState({ title, message }: { title: string; message: string }) {
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        height: '100%',
+        flex: 1,
         padding: 40,
         color: '#64748b',
         textAlign: 'center',
@@ -415,3 +630,81 @@ const tdStyle: React.CSSProperties = {
   color: '#334155',
   verticalAlign: 'top',
 };
+
+const labelStyle: React.CSSProperties = {
+  display: 'block',
+  fontSize: 10,
+  fontWeight: 600,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  color: '#64748b',
+  marginBottom: 4,
+};
+
+const inputStyle: React.CSSProperties = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '6px 10px',
+  fontSize: 12,
+  fontFamily: 'inherit',
+  border: '1px solid #cbd5e1',
+  borderRadius: 6,
+  background: '#fff',
+  color: '#1e293b',
+};
+
+function primaryButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: '6px 12px',
+    borderRadius: 6,
+    border: '1px solid #3b82f6',
+    background: disabled ? '#93c5fd' : '#3b82f6',
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: 'inherit',
+    cursor: disabled ? 'default' : 'pointer',
+  };
+}
+
+function secondaryButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: '6px 12px',
+    borderRadius: 6,
+    border: '1px solid #e2e8f0',
+    background: disabled ? '#f1f5f9' : '#fff',
+    color: disabled ? '#94a3b8' : '#1e293b',
+    fontSize: 12,
+    fontWeight: 500,
+    fontFamily: 'inherit',
+    cursor: disabled ? 'default' : 'pointer',
+  };
+}
+
+function iconButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: '4px 8px',
+    borderRadius: 4,
+    border: '1px solid #e2e8f0',
+    background: '#fff',
+    color: disabled ? '#cbd5e1' : '#334155',
+    fontSize: 11,
+    fontWeight: 500,
+    fontFamily: 'inherit',
+    cursor: disabled ? 'default' : 'pointer',
+  };
+}
+
+function iconDangerButtonStyle(disabled: boolean): React.CSSProperties {
+  return {
+    padding: '4px 8px',
+    borderRadius: 4,
+    border: '1px solid #fecaca',
+    background: '#fff',
+    color: disabled ? '#fca5a5' : '#b91c1c',
+    fontSize: 11,
+    fontWeight: 500,
+    fontFamily: 'inherit',
+    cursor: disabled ? 'default' : 'pointer',
+  };
+}
