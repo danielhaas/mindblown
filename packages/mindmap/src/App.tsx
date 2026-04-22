@@ -22,6 +22,8 @@ import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
 import { TicketButton } from './TicketButton.js';
+import { HealthListDialog } from './HealthListDialog.js';
+import type { HealthSignal } from '@mindblown/core';
 import type { MapSummary } from './api.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -748,6 +750,7 @@ export function App() {
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [healthListHealth, setHealthListHealth] = useState<HealthSignal | null>(null);
   const [ghBanner, setGhBanner] = useState<string | null>(null);
   const [authChecked, setAuthChecked] = useState(false);
 
@@ -1138,18 +1141,38 @@ export function App() {
 
           {/* Health badge */}
           {healthInfo && (
-            <span
-              style={{
-                fontSize: 11,
-                fontWeight: 600,
-                padding: '2px 8px',
-                borderRadius: 4,
-                background: healthInfo.bg,
-                color: healthInfo.fg,
-              }}
-            >
-              {healthInfo.text}
-            </span>
+            health === 'on_track' ? (
+              <span
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: healthInfo.bg,
+                  color: healthInfo.fg,
+                }}
+              >
+                {healthInfo.text}
+              </span>
+            ) : (
+              <button
+                onClick={() => setHealthListHealth(health)}
+                title={`Show ${healthInfo.text.toLowerCase()} tasks`}
+                style={{
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: '2px 8px',
+                  borderRadius: 4,
+                  background: healthInfo.bg,
+                  color: healthInfo.fg,
+                  border: 'none',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {healthInfo.text}
+              </button>
+            )
           )}
 
           {/* Connection status */}
@@ -1421,6 +1444,14 @@ export function App() {
 
       {/* Help / User Guide */}
       {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
+
+      {/* Health drilldown list */}
+      {healthListHealth && (
+        <HealthListDialog
+          health={healthListHealth}
+          onClose={() => setHealthListHealth(null)}
+        />
+      )}
 
       {/* AI Chat Panel */}
       {aiChatOpen && currentMapId && (
