@@ -1,6 +1,6 @@
 import { eq, asc, and, isNull } from 'drizzle-orm';
 import { db } from './connection.js';
-import { cycles, nodes } from './schema.js';
+import { cycles, nodes, versions, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import type { Cycle, Node as CoreNode } from '@mindblown/core';
 
@@ -10,7 +10,7 @@ function dbCycleToCore(row: Record<string, unknown>): Cycle {
   const get = (camel: string, snake: string) => row[camel] ?? row[snake];
   return {
     id: get('id', 'id') as string,
-    workspaceId: get('workspaceId', 'workspace_id') as string,
+    mapId: get('mapId', 'map_id') as string,
     versionId: (get('versionId', 'version_id') as string) ?? null,
     name: get('name', 'name') as string,
     startDate: get('startDate', 'start_date') as string,
@@ -22,17 +22,38 @@ function dbCycleToCore(row: Record<string, unknown>): Cycle {
   };
 }
 
+async function workspaceIdForMap(mapId: string): Promise<string | null> {
+  const [row] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, mapId));
+  return row?.workspaceId ?? null;
+}
+
 // ── Create ────────────────────────────────────────────────────────────
 
 export async function createCycle(
-  workspaceId: string,
+  mapId: string,
   name: string,
   startDate: string,
   endDate: string,
   versionId?: string | null,
 ): Promise<Cycle> {
+  const workspaceId = await workspaceIdForMap(mapId);
+  if (!workspaceId) {
+    throw new Error(`Map ${mapId} not found`);
+  }
+
+  if (versionId) {
+    const [version] = await db.select({ mapId: versions.mapId }).from(versions).where(eq(versions.id, versionId));
+    if (!version) {
+      throw new Error(`Version ${versionId} not found`);
+    }
+    if (version.mapId !== mapId) {
+      throw new Error(`Version ${versionId} belongs to a different map`);
+    }
+  }
+
   const [row] = await db.insert(cycles).values({
     workspaceId,
+    mapId,
     name,
     startDate,
     endDate,
@@ -45,10 +66,10 @@ export async function createCycle(
 
 // ── List ──────────────────────────────────────────────────────────────
 
-export async function listCycles(workspaceId: string): Promise<Cycle[]> {
+export async function listCycles(mapId: string): Promise<Cycle[]> {
   const rows = await db.select()
     .from(cycles)
-    .where(eq(cycles.workspaceId, workspaceId))
+    .where(eq(cycles.mapId, mapId))
     .orderBy(asc(cycles.startDate));
 
   return rows.map((r) => dbCycleToCore(r as unknown as Record<string, unknown>));
@@ -85,7 +106,17 @@ export async function updateCycle(id: string, input: UpdateCycleInput): Promise<
   if (input.startDate !== undefined) updates.startDate = input.startDate;
   if (input.endDate !== undefined) updates.endDate = input.endDate;
   if (input.status !== undefined) updates.status = input.status;
-  if (input.versionId !== undefined) updates.versionId = input.versionId;
+
+  if (input.versionId !== undefined) {
+    if (input.versionId) {
+      const [cycleRow] = await db.select({ mapId: cycles.mapId }).from(cycles).where(eq(cycles.id, id));
+      const [version] = await db.select({ mapId: versions.mapId }).from(versions).where(eq(versions.id, input.versionId));
+      if (cycleRow && version && cycleRow.mapId !== version.mapId) {
+        throw new Error(`Version ${input.versionId} belongs to a different map than this sprint`);
+      }
+    }
+    updates.versionId = input.versionId;
+  }
 
   const [row] = await db.update(cycles).set(updates).where(eq(cycles.id, id)).returning();
   if (!row) return null;
@@ -131,13 +162,19 @@ export async function getCycleNodes(cycleId: string): Promise<CoreNode[]> {
 // ── Assign / Unassign ─────────────────────────────────────────────────
 
 export async function assignNodeToCycle(nodeId: string, cycleId: string): Promise<CoreNode | null> {
+  // Cross-map assignment is forbidden — versions/cycles are per-map now.
+  const [cycle] = await db.select({ status: cycles.status, mapId: cycles.mapId }).from(cycles).where(eq(cycles.id, cycleId));
+  const [current] = await db.select({ status: nodes.status, mapId: nodes.mapId }).from(nodes).where(eq(nodes.id, nodeId));
+
+  if (!cycle || !current) return null;
+  if (cycle.mapId !== current.mapId) {
+    throw new Error(`Cannot assign node ${nodeId} to cycle ${cycleId}: different maps`);
+  }
+
   // If the target cycle is active and the node has no status yet, default it
   // to "todo" so adding tickets mid-sprint mirrors the activation sweep above.
-  const [cycle] = await db.select({ status: cycles.status }).from(cycles).where(eq(cycles.id, cycleId));
-  const [current] = await db.select({ status: nodes.status }).from(nodes).where(eq(nodes.id, nodeId));
-
   const updates: Record<string, unknown> = { cycleId, updatedAt: new Date() };
-  if (cycle?.status === 'active' && current?.status == null) {
+  if (cycle.status === 'active' && current.status == null) {
     updates.status = 'todo';
   }
 
@@ -164,6 +201,16 @@ export async function autoRollover(
   fromCycleId: string,
   toCycleId: string,
 ): Promise<{ movedCount: number; movedNodeIds: string[] }> {
+  // Both cycles must belong to the same map — rollover is strictly per-map.
+  const [fromCycle] = await db.select({ mapId: cycles.mapId }).from(cycles).where(eq(cycles.id, fromCycleId));
+  const [toCycle] = await db.select({ mapId: cycles.mapId }).from(cycles).where(eq(cycles.id, toCycleId));
+  if (!fromCycle || !toCycle) {
+    throw new Error('Source or target cycle not found');
+  }
+  if (fromCycle.mapId !== toCycle.mapId) {
+    throw new Error('Cannot roll over between cycles in different maps');
+  }
+
   // Get all nodes in the source cycle
   const sourceNodes = await db.select()
     .from(nodes)

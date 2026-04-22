@@ -478,19 +478,19 @@ export function fetchSchedule(mapId: string): Promise<unknown> {
 
 // ── Cycles / Sprints ────────────────────────────────────────────
 
-export function fetchCycles(workspaceId: string): Promise<Cycle[]> {
-  return request<Cycle[]>(`/api/cycles?workspaceId=${encodeURIComponent(workspaceId)}`);
+export function fetchCycles(mapId: string): Promise<Cycle[]> {
+  return request<Cycle[]>(`/api/cycles?mapId=${encodeURIComponent(mapId)}`);
 }
 
 export function createCycle(
-  workspaceId: string,
+  mapId: string,
   name: string,
   startDate: string,
   endDate: string,
 ): Promise<Cycle> {
   return request<Cycle>('/api/cycles', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, name, startDate, endDate }),
+    body: JSON.stringify({ mapId, name, startDate, endDate }),
   });
 }
 
@@ -531,8 +531,8 @@ export function rolloverCycle(fromId: string, toId: string): Promise<void> {
 
 // ── Versions ────────────────────────────────────────────────────
 
-export function fetchVersions(workspaceId: string): Promise<Version[]> {
-  return request<Version[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
+export function fetchVersions(mapId: string): Promise<Version[]> {
+  return request<Version[]>(`/api/versions?mapId=${encodeURIComponent(mapId)}`);
 }
 
 // ── Forecast ────────────────────────────────────────────────────

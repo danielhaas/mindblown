@@ -266,7 +266,7 @@ export interface MapPermission {
 
 export interface Version {
   id: VersionId;
-  workspaceId: string;
+  mapId: MapId;
   name: string; // e.g. 'V1', 'V2', '1.0'
   description: string | null;
   status: 'planning' | 'active' | 'released' | 'archived';
@@ -279,7 +279,7 @@ export interface Version {
 
 export interface Cycle {
   id: CycleId;
-  workspaceId: string;
+  mapId: MapId;
   versionId: VersionId | null; // which version this sprint belongs to
   name: string; // e.g. 'Sprint 14', 'April cycle'
   startDate: string; // ISO 8601

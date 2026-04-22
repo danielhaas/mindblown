@@ -86,7 +86,7 @@ export interface ScheduleResult {
 
 export interface VersionInfo {
   id: string;
-  workspaceId: string;
+  mapId: string;
   name: string;
   description: string | null;
   status: string;
@@ -97,7 +97,7 @@ export interface VersionInfo {
 
 export interface CycleInfo {
   id: string;
-  workspaceId: string;
+  mapId: string;
   versionId: string | null;
   name: string;
   startDate: string;
@@ -245,8 +245,8 @@ export function moveNode(
 
 // ── Cycles / Sprints ────────────────────────────────────────────
 
-export function listCycles(workspaceId: string): Promise<CycleInfo[]> {
-  return request<CycleInfo[]>(`/api/cycles?workspaceId=${encodeURIComponent(workspaceId)}`);
+export function listCycles(mapId: string): Promise<CycleInfo[]> {
+  return request<CycleInfo[]>(`/api/cycles?mapId=${encodeURIComponent(mapId)}`);
 }
 
 export function getCycle(cycleId: string): Promise<CycleDetail> {
@@ -254,7 +254,7 @@ export function getCycle(cycleId: string): Promise<CycleDetail> {
 }
 
 export function createCycle(
-  workspaceId: string,
+  mapId: string,
   name: string,
   startDate: string,
   endDate: string,
@@ -262,7 +262,7 @@ export function createCycle(
 ): Promise<CycleInfo> {
   return request<CycleInfo>('/api/cycles', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, name, startDate, endDate, versionId }),
+    body: JSON.stringify({ mapId, name, startDate, endDate, versionId }),
   });
 }
 
@@ -455,19 +455,19 @@ export function getChangeHistory(
 
 // ── Versions ──────────────────────────────────────────────────
 
-export function listVersions(workspaceId: string): Promise<VersionInfo[]> {
-  return request<VersionInfo[]>(`/api/versions?workspaceId=${encodeURIComponent(workspaceId)}`);
+export function listVersions(mapId: string): Promise<VersionInfo[]> {
+  return request<VersionInfo[]>(`/api/versions?mapId=${encodeURIComponent(mapId)}`);
 }
 
 export function createVersion(
-  workspaceId: string,
+  mapId: string,
   name: string,
   description?: string,
   targetDate?: string,
 ): Promise<VersionInfo> {
   return request<VersionInfo>('/api/versions', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, name, description, targetDate }),
+    body: JSON.stringify({ mapId, name, description, targetDate }),
   });
 }
 

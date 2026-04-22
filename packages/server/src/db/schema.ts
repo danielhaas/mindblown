@@ -184,6 +184,7 @@ export const integrations = pgTable('integrations', {
 export const versions = pgTable('versions', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
   name: text('name').notNull(),
   description: text('description'),
   status: text('status').notNull().default('planning'),
@@ -241,6 +242,7 @@ export const changeEvents = pgTable('change_events', {
 export const cycles = pgTable('cycles', {
   id: uuid('id').primaryKey().defaultRandom(),
   workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
   versionId: uuid('version_id').references(() => versions.id),
   name: text('name').notNull(),
   startDate: date('start_date').notNull(),

@@ -730,7 +730,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const allVersions = await versionDb.listVersions(data.map.workspaceId);
+    const allVersions = await versionDb.listVersions(data.map.id);
 
     // Compute current forecast via the shared helper — same code path
     // as the hourly snapshot job, so the two surfaces never disagree.
@@ -891,8 +891,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const [allVersions, allCycles] = await Promise.all([
-      versionDb.listVersions(data.map.workspaceId),
-      cycleDb.listCycles(data.map.workspaceId),
+      versionDb.listVersions(data.map.id),
+      cycleDb.listCycles(data.map.id),
     ]);
 
     const forecast = computeReleaseForecast(data.map, data.nodes, allVersions);

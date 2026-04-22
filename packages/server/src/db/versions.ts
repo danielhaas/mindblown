@@ -1,6 +1,6 @@
 import { eq, asc } from 'drizzle-orm';
 import { db } from './connection.js';
-import { versions, cycles, nodes } from './schema.js';
+import { versions, cycles, nodes, maps } from './schema.js';
 import type { Version } from '@mindblown/core';
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -9,7 +9,7 @@ function dbVersionToCore(row: Record<string, unknown>): Version {
   const get = (camel: string, snake: string) => row[camel] ?? row[snake];
   return {
     id: get('id', 'id') as string,
-    workspaceId: get('workspaceId', 'workspace_id') as string,
+    mapId: get('mapId', 'map_id') as string,
     name: get('name', 'name') as string,
     description: (get('description', 'description') as string) ?? null,
     status: get('status', 'status') as Version['status'],
@@ -21,10 +21,15 @@ function dbVersionToCore(row: Record<string, unknown>): Version {
   };
 }
 
+async function workspaceIdForMap(mapId: string): Promise<string | null> {
+  const [row] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, mapId));
+  return row?.workspaceId ?? null;
+}
+
 // ── Create ────────────────────────────────────────────────────────────
 
 export interface CreateVersionInput {
-  workspaceId: string;
+  mapId: string;
   name: string;
   description?: string;
   status?: Version['status'];
@@ -33,8 +38,14 @@ export interface CreateVersionInput {
 }
 
 export async function createVersion(input: CreateVersionInput): Promise<Version> {
+  const workspaceId = await workspaceIdForMap(input.mapId);
+  if (!workspaceId) {
+    throw new Error(`Map ${input.mapId} not found`);
+  }
+
   const [row] = await db.insert(versions).values({
-    workspaceId: input.workspaceId,
+    workspaceId,
+    mapId: input.mapId,
     name: input.name,
     description: input.description ?? null,
     status: input.status ?? 'planning',
@@ -48,10 +59,10 @@ export async function createVersion(input: CreateVersionInput): Promise<Version>
 
 // ── List ──────────────────────────────────────────────────────────────
 
-export async function listVersions(workspaceId: string): Promise<Version[]> {
+export async function listVersions(mapId: string): Promise<Version[]> {
   const rows = await db.select()
     .from(versions)
-    .where(eq(versions.workspaceId, workspaceId))
+    .where(eq(versions.mapId, mapId))
     .orderBy(asc(versions.sortOrder));
 
   return rows.map((r) => dbVersionToCore(r as unknown as Record<string, unknown>));

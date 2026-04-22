@@ -225,6 +225,7 @@ export async function seedIfEmpty(): Promise<void> {
   // ── Cycles ──────────────────────────────────────────────────────
   const [sprint1] = await db.insert(cycles).values({
     workspaceId: workspace.id,
+    mapId: map.id,
     name: 'Sprint 1',
     startDate: '2026-04-01',
     endDate: '2026-04-14',
@@ -234,6 +235,7 @@ export async function seedIfEmpty(): Promise<void> {
 
   const [sprint2] = await db.insert(cycles).values({
     workspaceId: workspace.id,
+    mapId: map.id,
     name: 'Sprint 2',
     startDate: '2026-04-15',
     endDate: '2026-04-28',

@@ -436,12 +436,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       for (const versionName of uniqueVersions) {
         const existing = await db.select()
           .from(versions)
-          .where(and(eq(versions.workspaceId, workspaceId!), eq(versions.name, versionName)));
+          .where(and(eq(versions.mapId, req.params.mapId), eq(versions.name, versionName)));
         if (existing.length > 0) {
           versionToId.set(versionName, existing[0].id);
         } else {
           const [newVersion] = await db.insert(versions).values({
             workspaceId: workspaceId!,
+            mapId: req.params.mapId,
             name: versionName,
             status: 'planning',
             sortOrder: sortOrder++,

@@ -119,6 +119,103 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS version_id UUID REFERENCES versions(id)
   `);
 
+  // ── Scope versions and cycles to a map (not just a workspace) ──
+  // Versions and sprints are per-map, matching the way nodes are
+  // organized. Added 2026-04-22. Backfill logic:
+  //   1. For versions with node refs: mode of nodes.map_id.
+  //   2. Otherwise: oldest map in the same workspace.
+  //   3. For cycles: inherit from version if set, else same fallback.
+  // After backfill we null out cross-map node.version_id / cycle_id
+  // refs so the new (nodes.map_id, version.map_id) invariant holds.
+  await db.execute(sql`
+    ALTER TABLE versions ADD COLUMN IF NOT EXISTS map_id UUID REFERENCES maps(id) ON DELETE CASCADE
+  `);
+  await db.execute(sql`
+    ALTER TABLE cycles ADD COLUMN IF NOT EXISTS map_id UUID REFERENCES maps(id) ON DELETE CASCADE
+  `);
+
+  await db.execute(sql`
+    UPDATE versions v
+    SET map_id = sub.map_id
+    FROM (
+      SELECT DISTINCT ON (n.version_id) n.version_id, n.map_id, COUNT(*) OVER (PARTITION BY n.version_id, n.map_id) AS cnt
+      FROM nodes n
+      WHERE n.version_id IS NOT NULL
+      ORDER BY n.version_id, cnt DESC, n.map_id
+    ) sub
+    WHERE v.id = sub.version_id AND v.map_id IS NULL
+  `);
+
+  await db.execute(sql`
+    UPDATE versions v
+    SET map_id = (
+      SELECT m.id FROM maps m
+      WHERE m.workspace_id = v.workspace_id
+      ORDER BY m.created_at ASC
+      LIMIT 1
+    )
+    WHERE v.map_id IS NULL
+  `);
+
+  await db.execute(sql`
+    UPDATE cycles c
+    SET map_id = v.map_id
+    FROM versions v
+    WHERE c.version_id = v.id AND c.map_id IS NULL
+  `);
+
+  await db.execute(sql`
+    UPDATE cycles c
+    SET map_id = sub.map_id
+    FROM (
+      SELECT DISTINCT ON (n.cycle_id) n.cycle_id, n.map_id, COUNT(*) OVER (PARTITION BY n.cycle_id, n.map_id) AS cnt
+      FROM nodes n
+      WHERE n.cycle_id IS NOT NULL
+      ORDER BY n.cycle_id, cnt DESC, n.map_id
+    ) sub
+    WHERE c.id = sub.cycle_id AND c.map_id IS NULL
+  `);
+
+  await db.execute(sql`
+    UPDATE cycles c
+    SET map_id = (
+      SELECT m.id FROM maps m
+      WHERE m.workspace_id = c.workspace_id
+      ORDER BY m.created_at ASC
+      LIMIT 1
+    )
+    WHERE c.map_id IS NULL
+  `);
+
+  // Null out cross-map node refs so the invariant holds.
+  await db.execute(sql`
+    UPDATE nodes n
+    SET version_id = NULL
+    WHERE n.version_id IS NOT NULL
+      AND (SELECT map_id FROM versions v WHERE v.id = n.version_id) <> n.map_id
+  `);
+  await db.execute(sql`
+    UPDATE nodes n
+    SET cycle_id = NULL
+    WHERE n.cycle_id IS NOT NULL
+      AND (SELECT map_id FROM cycles c WHERE c.id = n.cycle_id) <> n.map_id
+  `);
+
+  // Versions/cycles with no workspace maps at all stay NULL; leaving the
+  // column nullable for that edge case (orphan workspace). In practice
+  // every prod workspace has at least one map, so the guards here are belt-
+  // and-braces — not a runtime hot path.
+  await db.execute(sql`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM versions WHERE map_id IS NULL) THEN
+        ALTER TABLE versions ALTER COLUMN map_id SET NOT NULL;
+      END IF;
+      IF NOT EXISTS (SELECT 1 FROM cycles WHERE map_id IS NULL) THEN
+        ALTER TABLE cycles ALTER COLUMN map_id SET NOT NULL;
+      END IF;
+    END $$
+  `);
+
   // ── Add password_hash and public_token columns (idempotent) ────
   await db.execute(sql`
     ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT

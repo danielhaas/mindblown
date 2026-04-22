@@ -26,7 +26,7 @@ export async function snapshotReleaseForecastForMap(
   if (!result) {
     const data = await mapDb.getMap(mapId);
     if (!data) return 0;
-    const versions = await versionDb.listVersions(data.map.workspaceId);
+    const versions = await versionDb.listVersions(data.map.id);
     result = computeReleaseForecast(data.map, data.nodes, versions);
   }
 

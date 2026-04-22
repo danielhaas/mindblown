@@ -584,7 +584,7 @@ server.tool(
       let targetSource = '';
       if (versionId) {
         try {
-          const versions = await api.listVersions(data.map.workspaceId);
+          const versions = await api.listVersions(data.map.id);
           const v = versions.find((v) => v.id === versionId);
           if (v?.targetDate) {
             targetDate = v.targetDate.slice(0, 10);
@@ -875,7 +875,7 @@ server.tool(
       const today = new Date().toISOString().slice(0, 10);
 
       // Slipped versions: targetDate < today AND any contributing leaf incomplete
-      const versions = await api.listVersions(data.map.workspaceId).catch(() => []);
+      const versions = await api.listVersions(data.map.id).catch(() => []);
       const slippedVersions: Array<{ name: string; targetDate: string; incomplete: number }> = [];
       for (const v of versions) {
         if (!v.targetDate) continue;
@@ -1660,13 +1660,13 @@ server.tool(
 
 server.tool(
   'list_versions',
-  'List all versions for a workspace',
+  'List all versions for a map',
   {
-    workspaceId: z.string().describe('The workspace ID'),
+    mapId: z.string().describe('The map ID'),
   },
-  async ({ workspaceId }) => {
+  async ({ mapId }) => {
     try {
-      const res = await api.listVersions(workspaceId);
+      const res = await api.listVersions(mapId);
       if (res.length === 0) return toolResult('No versions found.');
       const lines = res.map((v) =>
         `- ${v.name} (id: ${v.id}) [${v.status}]${v.targetDate ? ` target: ${v.targetDate}` : ''}`,
@@ -1680,16 +1680,16 @@ server.tool(
 
 server.tool(
   'create_version',
-  'Create a new version/release',
+  'Create a new version/release scoped to a map',
   {
-    workspaceId: z.string().describe('The workspace ID'),
+    mapId: z.string().describe('The map ID'),
     name: z.string().describe('Version name (e.g. "V1", "2.0")'),
     description: z.string().optional().describe('Version description'),
     targetDate: z.string().optional().describe('Target release date (ISO 8601)'),
   },
-  async ({ workspaceId, name, description, targetDate }) => {
+  async ({ mapId, name, description, targetDate }) => {
     try {
-      const version = await api.createVersion(workspaceId, name, description, targetDate);
+      const version = await api.createVersion(mapId, name, description, targetDate);
       return toolResult(`Created version "${name}" (id: ${version.id}).`);
     } catch (err) {
       return toolError(err);
@@ -1701,13 +1701,13 @@ server.tool(
 
 server.tool(
   'list_cycles',
-  'List all sprints/cycles for a workspace',
+  'List all sprints/cycles for a map',
   {
-    workspaceId: z.string().describe('The workspace ID'),
+    mapId: z.string().describe('The map ID'),
   },
-  async ({ workspaceId }) => {
+  async ({ mapId }) => {
     try {
-      const cycles = await api.listCycles(workspaceId);
+      const cycles = await api.listCycles(mapId);
       if (cycles.length === 0) return toolResult('No sprints found.');
       const lines = cycles.map((c) =>
         `- ${c.name} (id: ${c.id}) [${c.status}] ${c.startDate} to ${c.endDate}${c.versionId ? ` version: ${c.versionId}` : ''}`,
@@ -1721,17 +1721,17 @@ server.tool(
 
 server.tool(
   'create_cycle',
-  'Create a new sprint/cycle, optionally within a version',
+  'Create a new sprint/cycle scoped to a map, optionally within a version',
   {
-    workspaceId: z.string().describe('The workspace ID'),
+    mapId: z.string().describe('The map ID'),
     name: z.string().describe('Sprint name'),
     startDate: z.string().describe('Start date (ISO 8601)'),
     endDate: z.string().describe('End date (ISO 8601)'),
-    versionId: z.string().optional().describe('Version ID this sprint belongs to'),
+    versionId: z.string().optional().describe('Version ID this sprint belongs to (must be in the same map)'),
   },
-  async ({ workspaceId, name, startDate, endDate, versionId }) => {
+  async ({ mapId, name, startDate, endDate, versionId }) => {
     try {
-      const cycle = await api.createCycle(workspaceId, name, startDate, endDate, versionId);
+      const cycle = await api.createCycle(mapId, name, startDate, endDate, versionId);
       return toolResult(`Created sprint "${name}" (id: ${cycle.id}) from ${startDate} to ${endDate}.`);
     } catch (err) {
       return toolError(err);

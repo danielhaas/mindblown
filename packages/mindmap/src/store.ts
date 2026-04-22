@@ -329,9 +329,13 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   loadCycles: async () => {
     const state = get();
-    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    const mapId = state.currentMapId;
+    if (!mapId) {
+      set({ cycles: [] });
+      return;
+    }
     try {
-      const cycles = await api.fetchCycles(workspaceId);
+      const cycles = await api.fetchCycles(mapId);
       set({ cycles });
     } catch (e: any) {
       set({ error: e.message ?? 'Failed to load cycles' });
@@ -340,9 +344,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   createCycle: async (name, startDate, endDate) => {
     const state = get();
-    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    const mapId = state.currentMapId;
+    if (!mapId) return;
     try {
-      const cycle = await api.createCycle(workspaceId, name, startDate, endDate);
+      const cycle = await api.createCycle(mapId, name, startDate, endDate);
       set({ cycles: [...state.cycles, cycle] });
     } catch (e: any) {
       set({ error: e.message ?? 'Failed to create cycle' });
@@ -435,9 +440,13 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   loadVersions: async () => {
     const state = get();
-    const workspaceId = state.currentMap?.workspaceId ?? 'default';
+    const mapId = state.currentMapId;
+    if (!mapId) {
+      set({ versions: [] });
+      return;
+    }
     try {
-      const versions = await api.fetchVersions(workspaceId);
+      const versions = await api.fetchVersions(mapId);
       set({ versions });
     } catch (e: any) {
       set({ error: e.message ?? 'Failed to load versions' });
