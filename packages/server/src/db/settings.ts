@@ -69,3 +69,69 @@ export async function setRegistrationPolicy(policy: RegistrationPolicy): Promise
   }
   return normalized;
 }
+
+// ── AI provider preference ────────────────────────────────────────
+//
+// Controls which chat backend the in-app assistant routes to.
+//   - 'auto'      → use whatever's configured (Anthropic preferred when its
+//                   key is set; falls back to Ollama otherwise)
+//   - 'ollama'    → force the local OpenAI-compatible backend
+//   - 'anthropic' → force the Claude API
+//
+// The resolver still falls back to an available backend if the preferred
+// one isn't configured — the setting is a preference, not a hard pin.
+
+export type AiProviderPreference = 'auto' | 'ollama' | 'anthropic';
+
+export interface AiProviderSettings {
+  preference: AiProviderPreference;
+}
+
+const DEFAULT_AI_PROVIDER: AiProviderSettings = { preference: 'auto' };
+
+const AI_PROVIDER_KEY = 'ai_provider';
+
+function normalizeAiProvider(raw: unknown): AiProviderSettings {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_AI_PROVIDER };
+  const r = raw as Record<string, unknown>;
+  const preference: AiProviderPreference =
+    r.preference === 'auto' || r.preference === 'ollama' || r.preference === 'anthropic'
+      ? r.preference
+      : DEFAULT_AI_PROVIDER.preference;
+  return { preference };
+}
+
+export async function getAiProviderSettings(): Promise<AiProviderSettings> {
+  const [row] = await db
+    .select({ value: systemSettings.value })
+    .from(systemSettings)
+    .where(eq(systemSettings.key, AI_PROVIDER_KEY))
+    .limit(1);
+  if (!row) return { ...DEFAULT_AI_PROVIDER };
+  return normalizeAiProvider(row.value);
+}
+
+export async function setAiProviderSettings(
+  settings: AiProviderSettings,
+): Promise<AiProviderSettings> {
+  const normalized = normalizeAiProvider(settings);
+  const now = new Date();
+  const [existing] = await db
+    .select({ key: systemSettings.key })
+    .from(systemSettings)
+    .where(eq(systemSettings.key, AI_PROVIDER_KEY))
+    .limit(1);
+  if (existing) {
+    await db
+      .update(systemSettings)
+      .set({ value: normalized, updatedAt: now })
+      .where(eq(systemSettings.key, AI_PROVIDER_KEY));
+  } else {
+    await db.insert(systemSettings).values({
+      key: AI_PROVIDER_KEY,
+      value: normalized,
+      updatedAt: now,
+    });
+  }
+  return normalized;
+}

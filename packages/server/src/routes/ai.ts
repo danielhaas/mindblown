@@ -4,9 +4,11 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import OpenAI from 'openai';
-import { aiEnabled, aiConfig, chatCompletion, getClient as getAIClient } from '../ai/client.js';
-import { CHAT_TOOLS, executeTool, renderTreeForPrompt } from '../ai/tools.js';
+import { aiEnabled, aiConfig, chatCompletion } from '../ai/client.js';
+import { getChatToolSpecs, executeTool, renderTreeForPrompt, renderFocusContext } from '../ai/tools.js';
+import { resolveProvider, providerStatus } from '../ai/providers/index.js';
+import { anthropicAvailable } from '../ai/providers/anthropic.js';
+import type { NormalizedMessage, NormalizedToolCall } from '../ai/providers/types.js';
 import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/embeddings.js';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
@@ -74,23 +76,47 @@ function sanitizeBraindumpTree(value: unknown, depth = 0, maxDepth = 3): Braindu
 // ── Routes ───────────────────────────────────────────────────────
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
-  // Gate: if AI is not configured, register a single catch-all that explains why
-  if (!aiEnabled) {
+  // Catch-all only if NO provider is configured. Individual endpoints below
+  // gate themselves to Ollama when they specifically need it (embeddings,
+  // legacy JSON-mode endpoints) — the chat endpoint works against either
+  // backend via the provider resolver.
+  const anyProviderAvailable = aiEnabled || anthropicAvailable;
+  if (!anyProviderAvailable) {
     app.all('/api/ai/*', async (_req, reply) => {
       return reply.status(503).send({
-        error: { code: 'AI_NOT_CONFIGURED', message: 'AI features require AI_BASE_URL env var' },
+        error: {
+          code: 'AI_NOT_CONFIGURED',
+          message: 'AI features require ANTHROPIC_API_KEY or AI_BASE_URL',
+        },
       });
     });
     return;
   }
 
+  // Helper for endpoints that specifically require the Ollama backend
+  // (embeddings + legacy JSON-mode chat completions live there today).
+  const requireOllama = (
+    reply: import('fastify').FastifyReply,
+  ): boolean => {
+    if (aiEnabled) return true;
+    reply.status(503).send({
+      error: {
+        code: 'AI_NOT_CONFIGURED',
+        message: 'This endpoint requires the local AI backend (set AI_BASE_URL)',
+      },
+    });
+    return false;
+  };
+
   // ── Config / health ────────────────────────────────────────────
   app.get('/api/ai/config', async () => {
-    return aiConfig();
+    const status = await providerStatus();
+    return { ...aiConfig(), ...status };
   });
 
   // ── Ping — quick round-trip to the LLM to verify connectivity ─
   app.get('/api/ai/ping', async (_req, reply) => {
+    if (!requireOllama(reply)) return;
     try {
       const t0 = Date.now();
       const result = await chatCompletion({
@@ -121,6 +147,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   // separate from the write so the user can preview.
 
   app.post('/api/ai/breakdown', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const body = req.body as {
       mapId: string;
       nodeId: string;
@@ -271,17 +298,19 @@ Node to break down: "${targetNode.text}"`;
   // Request:  { mapId, messages: ChatMessage[] }
   // Response: SSE stream of { type: 'delta'|'tool_call'|'tool_result'|'done'|'error', ... }
   //
-  // The endpoint runs a tool-use loop: the model can call tools, we execute
-  // them, feed results back, and let the model continue — up to MAX_STEPS
-  // iterations to prevent runaway loops on the 14B model.
+  // Provider-agnostic: a ChatProvider (Ollama or Anthropic) handles the
+  // model-specific bits and emits normalized events; this loop translates
+  // them into SSE, executes tool calls, and feeds results back as the
+  // next-turn input. MAX_STEPS bounds runaway loops.
 
   const MAX_STEPS = 6;
-  const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
+  const MUTATING_TOOLS = new Set(['create_node', 'update_node', 'move_node', 'delete_node']);
 
   app.post('/api/ai/chat', async (req, reply) => {
     const body = req.body as {
       mapId: string;
       messages: Array<{ role: string; content: string }>;
+      selectedNodeId?: string | null;
     };
 
     if (!body.mapId || !Array.isArray(body.messages) || body.messages.length === 0) {
@@ -305,6 +334,8 @@ Node to break down: "${targetNode.text}"`;
     };
 
     try {
+      const provider = await resolveProvider();
+
       // Pre-load the map tree so the model already has all node IDs
       const mapDetail = await mapDb.getMap(body.mapId);
       if (!mapDetail) {
@@ -317,12 +348,25 @@ Node to break down: "${targetNode.text}"`;
       const treeText = renderTreeForPrompt(mapDetail.nodes);
 
       const rootId = rootNode?.id ?? '';
+      // Focus context: when the user has a node selected, give the model a
+      // tighter view (path + subtree) so deictic phrases like "this" / "here"
+      // resolve. Falls through to the full-tree render if nothing is selected
+      // or the ID was stale.
+      const focusBlock =
+        body.selectedNodeId && body.selectedNodeId.length > 0
+          ? renderFocusContext(mapDetail.nodes, body.selectedNodeId)
+          : null;
+
+      const focusParentLine = focusBlock
+        ? `When the user says "this" or "here", they mean the focused node above. Use its id as parentId for "add a child" requests unless told otherwise.`
+        : `When the user says "add X" without a parent, use parentId "${rootId}".`;
+
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
 mapId = "${body.mapId}"
 
 The root node is "${rootNode?.text ?? 'Root'}" with id "${rootId}".
-When the user says "add X" without a parent, use parentId "${rootId}".
+${focusBlock ? `\n${focusBlock}\n` : ''}${focusParentLine}
 
 Current nodes:
 ${treeText}
@@ -333,99 +377,75 @@ Rules:
 3. One tool call per message. Confirm what you did in one short English sentence.
 4. You cannot delete nodes.`;
 
-      const messages: OpenAI.ChatCompletionMessageParam[] = [
-        { role: 'system', content: systemPrompt },
-        ...body.messages.map((m) => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-        })),
-      ];
+      const messages: NormalizedMessage[] = body.messages.map((m) =>
+        m.role === 'assistant'
+          ? { role: 'assistant' as const, content: m.content, toolCalls: [] }
+          : { role: 'user' as const, content: m.content },
+      );
 
-      const client = getAIClient();
-      const MUTATING_TOOLS = new Set(['create_node', 'update_node', 'move_node', 'delete_node']);
       let mutationDone = false;
 
-      // Tool-use loop
       for (let step = 0; step < MAX_STEPS; step++) {
-        const response = await client.chat.completions.create({
-          model: AI_MODEL,
+        let assistantText = '';
+        let firstToolCall: NormalizedToolCall | null = null;
+
+        for await (const ev of provider.runTurn({
+          systemPrompt,
           messages,
-          tools: CHAT_TOOLS,
-          temperature: 0.3,
-          max_tokens: 2048,
-        });
-
-        const choice = response.choices[0];
-        if (!choice) break;
-
-        const msg = choice.message;
-
-        // If the model produced text content, stream it
-        if (msg.content) {
-          // Strip non-English text (qwen2.5 outputs Thai/Chinese despite instructions)
-          // Remove any segment that contains non-Latin unicode characters
-          const cleaned = msg.content
-            .split('\n')
-            .filter((line) => !/[\u0E00-\u0E7F\u4E00-\u9FFF\u3040-\u30FF]/.test(line))
-            .join('\n')
-            .replace(/\n{3,}/g, '\n\n')
-            .trim();
-          if (cleaned) {
-            send('delta', { content: cleaned });
+          tools: getChatToolSpecs(provider.name),
+        })) {
+          if (ev.type === 'text_delta') {
+            assistantText += ev.text;
+            send('delta', { content: ev.text });
+          } else if (ev.type === 'tool_call') {
+            // Only the first tool call per turn \u2014 keeps both providers
+            // consistent and matches the legacy 14B-stable behavior.
+            if (!firstToolCall) firstToolCall = ev.toolCall;
           }
         }
 
-        // If no tool calls, we're done
-        if (!msg.tool_calls || msg.tool_calls.length === 0) {
-          break;
-        }
-
-        // If we already did a mutation and the model is trying to call more tools,
-        // stop the loop to prevent duplicates
-        if (mutationDone) break;
-
-        // Execute only the FIRST tool call to prevent chaotic multi-tool responses
-        const tc = msg.tool_calls[0];
-
-        // Add a sanitized assistant message with only the one tool call we'll execute
+        // Append the assistant turn so the next provider call sees the history.
         messages.push({
           role: 'assistant',
-          content: msg.content ?? null,
-          tool_calls: [tc],
-        } as OpenAI.ChatCompletionMessageParam);
-        {
-          const fn = (tc as any).function as { name: string; arguments: string };
-          const fnName = fn.name;
-          let fnArgs: Record<string, unknown>;
-          try {
-            fnArgs = JSON.parse(fn.arguments);
-          } catch {
-            fnArgs = {};
-          }
+          content: assistantText,
+          toolCalls: firstToolCall ? [firstToolCall] : [],
+        });
 
-          send('tool_call', { id: tc.id, name: fnName, args: fnArgs });
+        if (!firstToolCall) break;
 
-          let result: string;
-          try {
-            result = await executeTool(fnName, fnArgs, { userId, mapId: body.mapId });
-          } catch (err: any) {
-            result = `Error: ${err.message}`;
-          }
+        // Defense against runaway mutations across steps.
+        if (mutationDone) break;
 
-          if (MUTATING_TOOLS.has(fnName)) mutationDone = true;
+        send('tool_call', {
+          id: firstToolCall.id,
+          name: firstToolCall.name,
+          args: firstToolCall.args,
+        });
 
-          send('tool_result', { id: tc.id, name: fnName, result });
-
-          // Feed the tool result back to the model
-          messages.push({
-            role: 'tool',
-            tool_call_id: tc.id,
-            content: result,
+        let result: string;
+        try {
+          result = await executeTool(firstToolCall.name, firstToolCall.args, {
+            userId,
+            mapId: body.mapId,
           });
+        } catch (err: any) {
+          result = `Error: ${err.message}`;
         }
 
-        // If the model said stop (not a tool call), break
-        if (choice.finish_reason === 'stop') break;
+        send('tool_result', {
+          id: firstToolCall.id,
+          name: firstToolCall.name,
+          result,
+        });
+
+        messages.push({
+          role: 'tool',
+          toolCallId: firstToolCall.id,
+          toolName: firstToolCall.name,
+          content: result,
+        });
+
+        if (MUTATING_TOOLS.has(firstToolCall.name)) mutationDone = true;
       }
 
       send('done', {});
@@ -446,6 +466,7 @@ Rules:
   // first if coverage matters.
 
   app.get('/api/ai/search', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const query = req.query as { mapId?: string; q?: string; limit?: string };
     if (!query.mapId || !query.q?.trim()) {
       return reply.status(400).send({
@@ -470,6 +491,7 @@ Rules:
   // safe to run repeatedly.
 
   app.post('/api/ai/embeddings/backfill', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const body = req.body as { mapId: string };
     if (!body.mapId) {
       return reply.status(400).send({
@@ -496,6 +518,7 @@ Rules:
   // before committing via /accept — same split as /breakdown.
 
   app.post('/api/ai/braindump', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const body = req.body as {
       mapId: string;
       parentId: string;
@@ -597,6 +620,7 @@ Parent node: "${parentNode.text}"`;
   // completion_forecast's velocity-adjusted dates.
 
   app.post('/api/ai/estimate', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const body = req.body as {
       mapId: string;
       text?: string;
@@ -806,6 +830,7 @@ Title: "${targetText}"`;
   // leaves, then asks the LLM to produce a short narrative standup.
 
   app.post('/api/ai/standup', async (req, reply) => {
+    if (!requireOllama(reply)) return;
     const body = req.body as { mapId: string; sinceHours?: number };
     if (!body.mapId) {
       return reply.status(400).send({

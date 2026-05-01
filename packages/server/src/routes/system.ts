@@ -12,6 +12,10 @@ import {
   getRegistrationPolicy,
   setRegistrationPolicy,
   type RegistrationPolicy,
+  getAiProviderSettings,
+  setAiProviderSettings,
+  type AiProviderSettings,
+  type AiProviderPreference,
 } from '../db/settings.js';
 
 async function requireAdmin(userId: string | undefined): Promise<boolean> {
@@ -57,6 +61,47 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const saved = await setRegistrationPolicy({
       mode: body.mode,
       allowlist: Array.isArray(body.allowlist) ? body.allowlist : [],
+    });
+    return saved;
+  });
+
+  // ── GET /api/system/ai-provider ────────────────────────────────
+  // Any authenticated user can read the current preference (the chat panel
+  // surfaces it as a status badge). Writes are admin-only below.
+  app.get('/api/system/ai-provider', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    return await getAiProviderSettings();
+  });
+
+  // ── PUT /api/system/ai-provider ────────────────────────────────
+  app.put('/api/system/ai-provider', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!(await requireAdmin(userId))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+    const body = req.body as Partial<AiProviderSettings>;
+    const preference = body?.preference;
+    if (
+      preference !== 'auto' &&
+      preference !== 'ollama' &&
+      preference !== 'anthropic'
+    ) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'preference must be one of: auto, ollama, anthropic',
+        },
+      });
+    }
+    const saved = await setAiProviderSettings({
+      preference: preference as AiProviderPreference,
     });
     return saved;
   });

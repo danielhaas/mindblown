@@ -1,7 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import type { ChatSSEEvent } from './api.js';
+import type { ChatSSEEvent, AiConfigResponse } from './api.js';
 
 interface ChatMessage {
   role: 'user' | 'assistant';
@@ -18,9 +18,13 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [config, setConfig] = useState<AiConfigResponse | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const loadMap = useMindmapStore((s) => s.loadMap);
+  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const nodes = useMindmapStore((s) => s.nodes);
+  const focusedNodeText = selectedNodeId ? nodes[selectedNodeId]?.text : null;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -28,6 +32,9 @@ export function AIChatPanel({ mapId, onClose }: Props) {
 
   useEffect(scrollToBottom, [messages]);
   useEffect(() => { inputRef.current?.focus(); }, []);
+  useEffect(() => {
+    api.aiConfig().then(setConfig).catch(() => setConfig(null));
+  }, []);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -47,7 +54,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
       const toolCalls: ChatMessage['toolCalls'] = [];
       let needsRefresh = false;
 
-      for await (const event of api.aiChat(mapId, apiMessages)) {
+      for await (const event of api.aiChat(mapId, apiMessages, { selectedNodeId })) {
         switch (event.type) {
           case 'delta':
             assistantContent += event.content ?? '';
@@ -141,8 +148,26 @@ export function AIChatPanel({ mapId, onClose }: Props) {
       {/* Header */}
       <div style={headerStyle}>
         <span style={{ fontWeight: 600, fontSize: 14 }}>AI Chat</span>
+        {config?.active && (
+          <span
+            title={`Provider: ${config.active.name}${
+              config.preferenceHonored ? '' : ' (fallback — preferred backend not configured)'
+            }`}
+            style={modelBadgeStyle}
+          >
+            {config.active.model}
+          </span>
+        )}
         <button onClick={onClose} style={closeBtnStyle}>&times;</button>
       </div>
+
+      {/* Focus row — surfaces what "this" refers to in the conversation */}
+      {focusedNodeText && (
+        <div style={focusRowStyle} title="Tools and 'this'/'here' resolve to the selected node">
+          <span style={{ color: '#94a3b8' }}>Focus:</span>{' '}
+          <span style={{ color: '#1e293b', fontWeight: 500 }}>{focusedNodeText}</span>
+        </div>
+      )}
 
       {/* Messages */}
       <div style={messagesStyle}>
@@ -264,6 +289,28 @@ const headerStyle: React.CSSProperties = {
   padding: '12px 16px',
   borderBottom: '1px solid #e2e8f0',
   background: '#f8fafc',
+};
+
+const focusRowStyle: React.CSSProperties = {
+  padding: '6px 16px',
+  borderBottom: '1px solid #e2e8f0',
+  background: '#fef9c3',
+  fontSize: 12,
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+const modelBadgeStyle: React.CSSProperties = {
+  flex: 1,
+  textAlign: 'right',
+  marginRight: 8,
+  fontSize: 11,
+  color: '#64748b',
+  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 };
 
 const closeBtnStyle: React.CSSProperties = {

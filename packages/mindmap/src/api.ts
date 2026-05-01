@@ -750,8 +750,36 @@ export function aiBackfillEmbeddings(mapId: string): Promise<{ embedded: number;
   });
 }
 
-export function aiConfig(): Promise<{ enabled: boolean; model: string }> {
+export type AiProviderPreference = 'auto' | 'ollama' | 'anthropic';
+export type AiProviderName = 'ollama' | 'anthropic';
+
+export interface AiProviderSettings {
+  preference: AiProviderPreference;
+}
+
+export interface AiConfigResponse {
+  enabled: boolean;
+  model: string;
+  active: { name: AiProviderName; model: string } | null;
+  preference: AiProviderPreference;
+  preferenceHonored: boolean;
+  available: { ollama: boolean; anthropic: boolean };
+  models: { ollama: string | null; anthropic: string | null };
+}
+
+export function aiConfig(): Promise<AiConfigResponse> {
   return request('/api/ai/config');
+}
+
+export function getAiProvider(): Promise<AiProviderSettings> {
+  return request('/api/system/ai-provider');
+}
+
+export function setAiProvider(settings: AiProviderSettings): Promise<AiProviderSettings> {
+  return request('/api/system/ai-provider', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  });
 }
 
 export interface ChatSSEEvent {
@@ -771,6 +799,7 @@ export interface ChatSSEEvent {
 export async function* aiChat(
   mapId: string,
   messages: Array<{ role: string; content: string }>,
+  options?: { selectedNodeId?: string | null },
 ): AsyncGenerator<ChatSSEEvent> {
   const token = getToken();
   const res = await fetch(`${BASE_URL}/api/ai/chat`, {
@@ -779,7 +808,11 @@ export async function* aiChat(
       'Content-Type': 'application/json',
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ mapId, messages }),
+    body: JSON.stringify({
+      mapId,
+      messages,
+      selectedNodeId: options?.selectedNodeId ?? null,
+    }),
   });
 
   if (!res.ok) {
