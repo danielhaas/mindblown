@@ -55,6 +55,9 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   // input = base + final + interim, so the user can still see what they had
   // typed before they hit the mic.
   const baseInputRef = useRef<string>('');
+  // Final (non-interim) transcript collected during this listen. onend reads
+  // this to decide whether to auto-submit.
+  const finalTranscriptRef = useRef<string>('');
   const loadMap = useMindmapStore((s) => s.loadMap);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const nodes = useMindmapStore((s) => s.nodes);
@@ -104,6 +107,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
     rec.lang = navigator.language || 'en-US';
 
     baseInputRef.current = input;
+    finalTranscriptRef.current = '';
 
     rec.onresult = (event: SpeechRecognitionEvent) => {
       let finalText = '';
@@ -113,6 +117,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
         if (event.results[i].isFinal) finalText += transcript;
         else interimText += transcript;
       }
+      finalTranscriptRef.current = finalText;
       const sep = baseInputRef.current && (finalText || interimText) ? ' ' : '';
       setInput(baseInputRef.current + sep + finalText + interimText);
     };
@@ -120,8 +125,17 @@ export function AIChatPanel({ mapId, onClose }: Props) {
     rec.onend = () => {
       setListening(false);
       recognitionRef.current = null;
-      // Refocus the textfield so the user can edit / press Enter immediately.
-      inputRef.current?.focus();
+      const finalText = finalTranscriptRef.current.trim();
+      if (finalText) {
+        // Auto-submit the dictated text. Compose with whatever the user had
+        // typed before hitting the mic so we never lose pre-existing input.
+        const sep = baseInputRef.current ? ' ' : '';
+        const composed = (baseInputRef.current + sep + finalText).trim();
+        sendMessageRef.current(composed);
+      } else {
+        // Nothing transcribed — just refocus so the user can type/retry.
+        inputRef.current?.focus();
+      }
     };
 
     rec.onerror = () => {
@@ -134,8 +148,8 @@ export function AIChatPanel({ mapId, onClose }: Props) {
     rec.start();
   }, [listening, input]);
 
-  const sendMessage = useCallback(async () => {
-    const text = input.trim();
+  const sendMessage = useCallback(async (overrideText?: string) => {
+    const text = (overrideText ?? input).trim();
     if (!text || loading) return;
 
     const userMsg: ChatMessage = { role: 'user', content: text };
@@ -233,6 +247,13 @@ export function AIChatPanel({ mapId, onClose }: Props) {
       setLoading(false);
     }
   }, [input, messages, loading, mapId, loadMap]);
+
+  // Latest-sendMessage ref — rec.onend captures toggleMic's closure, which
+  // would otherwise see a stale sendMessage and submit with stale state.
+  const sendMessageRef = useRef(sendMessage);
+  useEffect(() => {
+    sendMessageRef.current = sendMessage;
+  }, [sendMessage]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -338,7 +359,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
           </button>
         )}
         <button
-          onClick={sendMessage}
+          onClick={() => sendMessage()}
           disabled={loading || !input.trim()}
           style={{
             ...sendBtnStyle,
