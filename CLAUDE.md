@@ -56,3 +56,10 @@ This project uses specialized agents. See `.claude/agents/` for definitions:
 - Opinionated defaults. Works without configuration.
 - The mindmap is the primary surface. Other views are derived.
 - Leaf nodes hold estimates and progress. Parents auto-compute.
+
+## Working Principles
+
+1. Don't assume. Don't hide confusion. Surface tradeoffs.
+2. Minimum code that solves the problem. Nothing speculative.
+3. Touch only what you must. Clean up only your own mess.
+4. Define success criteria. Loop until verified.
