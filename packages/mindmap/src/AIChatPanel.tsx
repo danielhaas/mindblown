@@ -3,6 +3,34 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { ChatSSEEvent, AiConfigResponse } from './api.js';
 
+// Web Speech API isn't part of lib.dom.d.ts (still experimental). Minimal
+// types for the bits we use — covers the shape Chrome/Safari expose.
+interface SpeechRecognitionAlternative {
+  transcript: string;
+}
+interface SpeechRecognitionResult {
+  isFinal: boolean;
+  readonly length: number;
+  [index: number]: SpeechRecognitionAlternative;
+}
+interface SpeechRecognitionResultList {
+  readonly length: number;
+  [index: number]: SpeechRecognitionResult;
+}
+interface SpeechRecognitionEvent extends Event {
+  results: SpeechRecognitionResultList;
+}
+interface SpeechRecognition extends EventTarget {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: SpeechRecognitionEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: (() => void) | null;
+  start(): void;
+  stop(): void;
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -19,12 +47,26 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<AiConfigResponse | null>(null);
+  const [listening, setListening] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Snapshot of the input when listening starts. Each onresult event rebuilds
+  // input = base + final + interim, so the user can still see what they had
+  // typed before they hit the mic.
+  const baseInputRef = useRef<string>('');
   const loadMap = useMindmapStore((s) => s.loadMap);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const nodes = useMindmapStore((s) => s.nodes);
   const focusedNodeText = selectedNodeId ? nodes[selectedNodeId]?.text : null;
+
+  const speechSupported =
+    typeof window !== 'undefined' &&
+    Boolean(
+      (window as unknown as { SpeechRecognition?: unknown }).SpeechRecognition ??
+        (window as unknown as { webkitSpeechRecognition?: unknown })
+          .webkitSpeechRecognition,
+    );
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -35,6 +77,62 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   useEffect(() => {
     api.aiConfig().then(setConfig).catch(() => setConfig(null));
   }, []);
+
+  // Stop recognition if the panel unmounts mid-listen.
+  useEffect(() => {
+    return () => {
+      try { recognitionRef.current?.stop(); } catch { /* already stopped */ }
+    };
+  }, []);
+
+  const toggleMic = useCallback(() => {
+    if (listening) {
+      try { recognitionRef.current?.stop(); } catch { /* noop */ }
+      return;
+    }
+    const Ctor =
+      (window as unknown as { SpeechRecognition?: new () => SpeechRecognition })
+        .SpeechRecognition ??
+      (window as unknown as {
+        webkitSpeechRecognition?: new () => SpeechRecognition;
+      }).webkitSpeechRecognition;
+    if (!Ctor) return;
+
+    const rec = new Ctor();
+    rec.continuous = false;
+    rec.interimResults = true;
+    rec.lang = navigator.language || 'en-US';
+
+    baseInputRef.current = input;
+
+    rec.onresult = (event: SpeechRecognitionEvent) => {
+      let finalText = '';
+      let interimText = '';
+      for (let i = 0; i < event.results.length; i++) {
+        const transcript = event.results[i][0]?.transcript ?? '';
+        if (event.results[i].isFinal) finalText += transcript;
+        else interimText += transcript;
+      }
+      const sep = baseInputRef.current && (finalText || interimText) ? ' ' : '';
+      setInput(baseInputRef.current + sep + finalText + interimText);
+    };
+
+    rec.onend = () => {
+      setListening(false);
+      recognitionRef.current = null;
+      // Refocus the textfield so the user can edit / press Enter immediately.
+      inputRef.current?.focus();
+    };
+
+    rec.onerror = () => {
+      setListening(false);
+      recognitionRef.current = null;
+    };
+
+    recognitionRef.current = rec;
+    setListening(true);
+    rec.start();
+  }, [listening, input]);
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
@@ -218,10 +316,27 @@ export function AIChatPanel({ mapId, onClose }: Props) {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="Ask the AI..."
+          placeholder={listening ? 'Listening...' : 'Ask the AI...'}
           disabled={loading}
           style={inputFieldStyle}
         />
+        {speechSupported && (
+          <button
+            type="button"
+            onClick={toggleMic}
+            disabled={loading}
+            title={listening ? 'Stop dictation' : 'Dictate with your voice'}
+            aria-label={listening ? 'Stop dictation' : 'Start dictation'}
+            style={{
+              ...micBtnStyle,
+              background: listening ? '#dc2626' : '#fff',
+              color: listening ? '#fff' : '#475569',
+              borderColor: listening ? '#dc2626' : '#cbd5e1',
+            }}
+          >
+            <MicIcon />
+          </button>
+        )}
         <button
           onClick={sendMessage}
           disabled={loading || !input.trim()}
@@ -388,6 +503,39 @@ const inputFieldStyle: React.CSSProperties = {
   fontSize: 13,
   outline: 'none',
 };
+
+const micBtnStyle: React.CSSProperties = {
+  width: 36,
+  height: 36,
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  borderRadius: 8,
+  border: '1px solid #cbd5e1',
+  cursor: 'pointer',
+  padding: 0,
+  flexShrink: 0,
+};
+
+function MicIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" x2="12" y1="19" y2="22" />
+    </svg>
+  );
+}
 
 const sendBtnStyle: React.CSSProperties = {
   padding: '8px 16px',
