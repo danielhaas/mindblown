@@ -67,13 +67,15 @@ function isAncestor(
 
 // ── "+" handle position per layout direction ────────────────
 // Children flow right in tree-lr/radial/org-chart-LR style; down in
-// tree-tb. Place the handle along the child-flow edge so it reads as
-// "extend from here."
+// tree-tb. Place the handle so its 10-radius circle overlaps the
+// node's edge by ~2px — any visible gap fires mouseleave on the
+// wrapper <g> as the cursor crosses it, which unmounts the handle
+// before you can reach it.
 function getCreateHandlePos(ln: LayoutNode, layoutType: LayoutType): { cx: number; cy: number } {
   if (layoutType === 'tree-tb') {
-    return { cx: ln.x + ln.width / 2, cy: ln.y + ln.height + 14 };
+    return { cx: ln.x + ln.width / 2, cy: ln.y + ln.height + 8 };
   }
-  return { cx: ln.x + ln.width + 14, cy: ln.y + ln.height / 2 };
+  return { cx: ln.x + ln.width + 8, cy: ln.y + ln.height / 2 };
 }
 
 // ── Layout selector labels ──────────────────────────────────
