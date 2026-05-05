@@ -140,9 +140,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(201).send(result);
   });
 
-  // ── GET /api/maps — List all maps ─────────────────────────────
+  // ── GET /api/maps — List maps the caller can access ───────────
   app.get('/api/maps', async (req, reply) => {
-    const allMaps = await mapDb.listMaps();
+    const userId = req.userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    const allMaps = await mapDb.listMapsForUser(userId);
 
     // For each map, compute aggregate progress and health
     const results = await Promise.all(

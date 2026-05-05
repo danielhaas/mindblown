@@ -1,6 +1,6 @@
-import { eq } from 'drizzle-orm';
+import { eq, inArray, or } from 'drizzle-orm';
 import { db } from './connection.js';
-import { maps, nodes } from './schema.js';
+import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
 
@@ -75,6 +75,25 @@ export async function getMap(mapId: string): Promise<{ map: MindMap; nodes: Core
 
 export async function listMaps(): Promise<MindMap[]> {
   const rows = await db.select().from(maps).orderBy(maps.createdAt);
+  return rows.map((r) => dbMapToCore(r as unknown as Record<string, unknown>));
+}
+
+/**
+ * Lists maps a user can see: ones they created plus ones explicitly shared
+ * via mapPermissions. The detail/update/delete routes already enforce ACL
+ * per request — this just keeps unshared maps off the home screen.
+ */
+export async function listMapsForUser(userId: string): Promise<MindMap[]> {
+  const sharedMapIds = db
+    .select({ mapId: mapPermissions.mapId })
+    .from(mapPermissions)
+    .where(eq(mapPermissions.userId, userId));
+
+  const rows = await db
+    .select()
+    .from(maps)
+    .where(or(eq(maps.createdBy, userId), inArray(maps.id, sharedMapIds)))
+    .orderBy(maps.createdAt);
   return rows.map((r) => dbMapToCore(r as unknown as Record<string, unknown>));
 }
 

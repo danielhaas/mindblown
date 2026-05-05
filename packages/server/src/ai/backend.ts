@@ -85,7 +85,7 @@ function toNodeWithComputed(
 export function createChatBackend(userId: string): ToolBackend {
   return {
     async listMaps(): Promise<MapSummary[]> {
-      const all = await mapDb.listMaps();
+      const all = await mapDb.listMapsForUser(userId);
       return Promise.all(
         all.map(async (m) => {
           const data = await mapDb.getMap(m.id);
