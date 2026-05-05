@@ -19,6 +19,7 @@ import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { MapChatPanel } from './MapChatPanel.js';
+import { useMapChatUnread } from './useMapChatUnread.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
@@ -750,6 +751,7 @@ export function App() {
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [mapChatOpen, setMapChatOpen] = useState(false);
+  const mapChatUnread = useMapChatUnread(currentMapId, rootNodeId, mapChatOpen);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [healthListHealth, setHealthListHealth] = useState<HealthSignal | null>(null);
@@ -1229,8 +1231,13 @@ export function App() {
               setMapChatOpen((v) => !v);
               setAiChatOpen(false);
             }}
-            title="Chat with others on this map"
+            title={
+              mapChatUnread > 0
+                ? `Map chat — ${mapChatUnread} new`
+                : 'Chat with others on this map'
+            }
             style={{
+              position: 'relative',
               padding: '3px 10px',
               borderRadius: 4,
               border: '1px solid #e2e8f0',
@@ -1244,6 +1251,28 @@ export function App() {
             }}
           >
             Map chat
+            {mapChatUnread > 0 && !mapChatOpen && (
+              <span
+                style={{
+                  position: 'absolute',
+                  top: -5,
+                  right: -5,
+                  minWidth: 16,
+                  height: 16,
+                  padding: '0 4px',
+                  borderRadius: 8,
+                  background: '#dc2626',
+                  color: '#fff',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  lineHeight: '16px',
+                  textAlign: 'center',
+                  boxShadow: '0 0 0 1.5px #fff',
+                }}
+              >
+                {mapChatUnread > 99 ? '99+' : mapChatUnread}
+              </span>
+            )}
           </button>
 
           {/* GitHub settings */}
