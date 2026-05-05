@@ -119,6 +119,9 @@ export interface Node {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   createdBy: UserId;
+  // Bumps on every successful update. Clients send their last-seen value
+  // as expectedRevision so concurrent edits don't silently clobber.
+  revision: number;
 }
 
 // ── Computed values (returned alongside nodes, never stored) ────

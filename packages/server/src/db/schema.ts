@@ -7,6 +7,7 @@ import {
   jsonb,
   timestamp,
   date,
+  integer,
   primaryKey,
 } from 'drizzle-orm/pg-core';
 
@@ -100,6 +101,8 @@ export const nodes = pgTable('nodes', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
+  // Optimistic-locking counter — bumps on every successful update.
+  revision: integer('revision').notNull().default(1),
   // Semantic search — jsonb float array; see packages/server/src/ai/embeddings.ts
   embedding: jsonb('embedding'),
   embeddingText: text('embedding_text'),

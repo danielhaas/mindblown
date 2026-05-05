@@ -1,9 +1,21 @@
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+
+/**
+ * Thrown by updateNode when the caller passed an expectedRevision and the
+ * row's current revision doesn't match — i.e. someone else wrote first.
+ * Carries the current node so the route can return it to the client.
+ */
+export class RevisionConflictError extends Error {
+  constructor(public current: CoreNode) {
+    super(`Node ${current.id} was modified by someone else (revision ${current.revision})`);
+    this.name = 'RevisionConflictError';
+  }
+}
 
 // ── Auto-status from progress ─────────────────────────────────────
 //
@@ -147,7 +159,11 @@ export interface UpdateNodeInput {
   externalLinks?: ExternalLink[];
 }
 
-export async function updateNode(nodeId: string, input: UpdateNodeInput): Promise<CoreNode | null> {
+export async function updateNode(
+  nodeId: string,
+  input: UpdateNodeInput,
+  expectedRevision?: number,
+): Promise<CoreNode | null> {
   // Validate dependencies if provided
   if (input.dependencies !== undefined) {
     await validateDependencies(nodeId, input.dependencies);
@@ -170,7 +186,10 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
     }
   }
 
-  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  const updates: Record<string, unknown> = {
+    updatedAt: new Date(),
+    revision: sql`${nodes.revision} + 1`,
+  };
 
   if (input.text !== undefined) updates.text = input.text;
   if (input.description !== undefined) updates.description = input.description;
@@ -192,9 +211,24 @@ export async function updateNode(nodeId: string, input: UpdateNodeInput): Promis
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
 
-  const [row] = await db.update(nodes).set(updates).where(eq(nodes.id, nodeId)).returning();
-  if (!row) return null;
-  return dbNodeToCore(row as unknown as Record<string, unknown>);
+  // Conditional update: when expectedRevision is provided, the WHERE clause
+  // also matches on revision so a stale write affects 0 rows. We then look
+  // up the current state to distinguish "not found" from "conflict" and
+  // raise RevisionConflictError accordingly.
+  const where =
+    expectedRevision === undefined
+      ? eq(nodes.id, nodeId)
+      : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision));
+
+  const [row] = await db.update(nodes).set(updates).where(where).returning();
+  if (row) return dbNodeToCore(row as unknown as Record<string, unknown>);
+
+  // No row affected — either the node doesn't exist, or the revision was stale.
+  if (expectedRevision !== undefined) {
+    const current = await getNode(nodeId);
+    if (current) throw new RevisionConflictError(current);
+  }
+  return null;
 }
 
 // ── Delete (with descendants) ──────────────────────────────────────

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as nodeDb from '../db/nodes.js';
-import { DependencyValidationError } from '../db/nodes.js';
+import { DependencyValidationError, RevisionConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
@@ -140,7 +140,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   app.put<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId',
     async (req, reply) => {
-      const body = req.body as nodeDb.UpdateNodeInput;
+      // expectedRevision is an optional sibling of the patch fields. When
+      // present, the DB layer enforces optimistic locking and throws on
+      // mismatch.
+      const { expectedRevision, ...body } = req.body as nodeDb.UpdateNodeInput & {
+        expectedRevision?: number;
+      };
 
       // Snapshot current values of tracked fields before mutating so we can
       // diff them into the change log.
@@ -148,11 +153,20 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
       let updated: CoreNode | null;
       try {
-        updated = await nodeDb.updateNode(req.params.nodeId, body);
+        updated = await nodeDb.updateNode(req.params.nodeId, body, expectedRevision);
       } catch (err) {
         if (err instanceof DependencyValidationError) {
           return reply.status(400).send({
             error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        if (err instanceof RevisionConflictError) {
+          return reply.status(409).send({
+            error: {
+              code: 'REVISION_CONFLICT',
+              message: 'Node was modified by someone else; reload and retry.',
+              current: err.current,
+            },
           });
         }
         throw err;

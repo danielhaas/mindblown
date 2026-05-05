@@ -395,6 +395,14 @@ export async function runMigrations(): Promise<void> {
     AND NOT EXISTS (SELECT 1 FROM users WHERE is_admin = true)
   `);
 
+  // ── Optimistic locking counter on nodes ───────────────────────
+  // Bumps on every successful update. Clients pass their last-seen
+  // value; server rejects mismatches with 409 so concurrent edits
+  // don't silently clobber each other.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS revision INTEGER NOT NULL DEFAULT 1
+  `);
+
   // ── Node embeddings (semantic search) ─────────────────────────
   // Stored as jsonb float array — pgvector isn't available on the
   // prod Postgres image, so similarity is computed in JS. Fine for

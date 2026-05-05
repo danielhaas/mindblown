@@ -159,7 +159,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new ApiError(res.status, body?.error?.message ?? res.statusText, body?.error?.code);
+    throw new ApiError(
+      res.status,
+      body?.error?.message ?? res.statusText,
+      body?.error?.code,
+      body?.error,
+    );
   }
   if (res.status === 204) return undefined as unknown as T;
   return res.json();
@@ -170,6 +175,9 @@ export class ApiError extends Error {
     public status: number,
     message: string,
     public code?: string,
+    /** Full error object from the server — carries extras like the current
+     *  node on REVISION_CONFLICT. */
+    public details?: Record<string, unknown>,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -434,10 +442,13 @@ export function updateNode(
   mapId: string,
   nodeId: string,
   fields: Partial<Node>,
+  expectedRevision?: number,
 ): Promise<Node> {
+  const body =
+    expectedRevision !== undefined ? { ...fields, expectedRevision } : fields;
   return request<Node>(`/api/maps/${mapId}/nodes/${nodeId}`, {
     method: 'PUT',
-    body: JSON.stringify(fields),
+    body: JSON.stringify(body),
   });
 }
 

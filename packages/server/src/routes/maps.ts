@@ -378,6 +378,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           createdAt: now,
           updatedAt: now,
           createdBy: parent.createdBy,
+          revision: 1,
         };
         cloned.push(stub);
         byId.set(id, stub);

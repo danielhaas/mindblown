@@ -884,12 +884,29 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
     // Sync to API (skip for temp nodes)
     if (state.currentMapId && !id.startsWith('temp-')) {
-      api.updateNode(state.currentMapId, id, updates).catch(() => {
-        // Revert
-        const current = get();
-        const nodes = { ...current.nodes, [id]: prevNode };
-        set({ nodes, computed: recomputeValues(nodes), error: 'Failed to update node' });
-      });
+      api
+        .updateNode(state.currentMapId, id, updates, prevNode.revision)
+        .catch((err: unknown) => {
+          const current = get();
+          // 409 → someone else wrote first. Server returned their current
+          // state in error.details.current; replace ours with that and tell
+          // the user we discarded their edit so they can retry.
+          if (err instanceof api.ApiError && err.code === 'REVISION_CONFLICT') {
+            const serverNode = (err.details?.current as Node | undefined) ?? null;
+            if (serverNode) {
+              const nodes = { ...current.nodes, [id]: serverNode };
+              set({
+                nodes,
+                computed: recomputeValues(nodes),
+                error: 'Someone else changed this node — your edit was discarded.',
+              });
+              return;
+            }
+          }
+          // Other failures — revert to the pre-edit local state.
+          const nodes = { ...current.nodes, [id]: prevNode };
+          set({ nodes, computed: recomputeValues(nodes), error: 'Failed to update node' });
+        });
     }
   },
 
