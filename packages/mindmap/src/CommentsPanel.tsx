@@ -20,9 +20,18 @@ function formatTime(iso: string): string {
 export function CommentsPanel({
   mapId,
   nodeId,
+  maxHeight = 240,
+  hideHeader = false,
 }: {
   mapId: string;
   nodeId: string;
+  /** Max height (px) for the message list. Default 240 keeps the per-node
+   *  comments compact inside PropertyPanel; pass a larger number (or
+   *  '100%') for the map-wide chat surface. */
+  maxHeight?: number | string;
+  /** Hide the "Comments (N)" header — useful when the parent already
+   *  provides its own header. */
+  hideHeader?: boolean;
 }) {
   const user = useMindmapStore((s) => s.user);
   const [comments, setComments] = useState<Comment[]>([]);
@@ -125,18 +134,20 @@ export function CommentsPanel({
         height: '100%',
       }}
     >
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 600,
-          color: '#64748b',
-          textTransform: 'uppercase',
-          letterSpacing: '0.04em',
-          padding: '0 0 8px',
-        }}
-      >
-        Comments ({comments.length})
-      </div>
+      {!hideHeader && (
+        <div
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: '#64748b',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            padding: '0 0 8px',
+          }}
+        >
+          Comments ({comments.length})
+        </div>
+      )}
 
       {/* Comments list */}
       <div
@@ -148,7 +159,7 @@ export function CommentsPanel({
           flexDirection: 'column',
           gap: 8,
           minHeight: 0,
-          maxHeight: 240,
+          maxHeight,
         }}
       >
         {loading && (

@@ -18,6 +18,7 @@ import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
+import { MapChatPanel } from './MapChatPanel.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
@@ -748,6 +749,7 @@ export function App() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [mapChatOpen, setMapChatOpen] = useState(false);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   const [healthListHealth, setHealthListHealth] = useState<HealthSignal | null>(null);
@@ -1201,7 +1203,10 @@ export function App() {
 
           {/* AI Chat toggle */}
           <button
-            onClick={() => setAiChatOpen((v) => !v)}
+            onClick={() => {
+              setAiChatOpen((v) => !v);
+              setMapChatOpen(false);
+            }}
             style={{
               padding: '3px 10px',
               borderRadius: 4,
@@ -1216,6 +1221,29 @@ export function App() {
             }}
           >
             AI Chat
+          </button>
+
+          {/* Map chat toggle (talk to other people on this map) */}
+          <button
+            onClick={() => {
+              setMapChatOpen((v) => !v);
+              setAiChatOpen(false);
+            }}
+            title="Chat with others on this map"
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: mapChatOpen ? '#0ea5e9' : '#fff',
+              color: mapChatOpen ? '#fff' : '#0ea5e9',
+              transition: 'all 0.15s',
+            }}
+          >
+            Map chat
           </button>
 
           {/* GitHub settings */}
@@ -1458,6 +1486,15 @@ export function App() {
         <AIChatPanel
           mapId={currentMapId}
           onClose={() => setAiChatOpen(false)}
+        />
+      )}
+
+      {/* Map Chat Panel */}
+      {mapChatOpen && currentMapId && rootNodeId && (
+        <MapChatPanel
+          mapId={currentMapId}
+          rootNodeId={rootNodeId}
+          onClose={() => setMapChatOpen(false)}
         />
       )}
 
