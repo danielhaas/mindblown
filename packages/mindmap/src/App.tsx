@@ -846,6 +846,34 @@ export function App() {
 
   // Auto-open if there's only one map
   const autoOpened = useRef(false);
+
+  // URL → state: on first auth, open the map in ?map=<id> if present.
+  // Sets autoOpened so the single-map auto-opener doesn't race ahead.
+  const urlMapInitDone = useRef(false);
+  useEffect(() => {
+    if (!user || urlMapInitDone.current) return;
+    urlMapInitDone.current = true;
+    const mapId = new URLSearchParams(window.location.search).get('map');
+    if (mapId) {
+      autoOpened.current = true;
+      loadMap(mapId);
+    }
+  }, [user, loadMap]);
+
+  // State → URL: mirror currentMapId into ?map=<id> via replaceState so the
+  // URL is shareable / reload-safe without polluting browser history.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const current = url.searchParams.get('map');
+    if (currentMapId && current !== currentMapId) {
+      url.searchParams.set('map', currentMapId);
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    } else if (!currentMapId && current) {
+      url.searchParams.delete('map');
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    }
+  }, [currentMapId]);
+
   useEffect(() => {
     if (!autoOpened.current && !currentMapId && !loading && maps.length === 1) {
       autoOpened.current = true;
