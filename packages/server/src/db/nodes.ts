@@ -75,6 +75,8 @@ export interface CreateNodeInput {
   text: string;
   createdBy: string;
   position?: number; // index in parent's children_order; omit = append
+  x?: number; // explicit canvas position; omit = auto-layout
+  y?: number;
   effortEstimate?: number;
   percentComplete?: number;
   status?: string;
@@ -93,6 +95,8 @@ export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
     childrenOrder: [],
     text: input.text,
     collapsed: false,
+    x: input.x ?? null,
+    y: input.y ?? null,
     effortEstimate: input.effortEstimate ?? null,
     percentComplete: input.percentComplete ?? null,
     status: input.status ?? null,

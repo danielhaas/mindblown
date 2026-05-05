@@ -65,6 +65,17 @@ function isAncestor(
   return false;
 }
 
+// ── "+" handle position per layout direction ────────────────
+// Children flow right in tree-lr/radial/org-chart-LR style; down in
+// tree-tb. Place the handle along the child-flow edge so it reads as
+// "extend from here."
+function getCreateHandlePos(ln: LayoutNode, layoutType: LayoutType): { cx: number; cy: number } {
+  if (layoutType === 'tree-tb') {
+    return { cx: ln.x + ln.width / 2, cy: ln.y + ln.height + 14 };
+  }
+  return { cx: ln.x + ln.width + 14, cy: ln.y + ln.height / 2 };
+}
+
 // ── Layout selector labels ──────────────────────────────────
 
 const LAYOUT_OPTIONS: Array<{ id: LayoutType; label: string }> = [
@@ -282,6 +293,21 @@ export function MindmapEditor() {
   const [invalidDrop, setInvalidDrop] = useState(false);
   const dragRef = useRef<DragState | null>(null);
   dragRef.current = drag;
+
+  // ── Hover + create-child gesture ──────────────────────────────
+  // Hovering a node reveals a "+" handle. Clicking it adds a child;
+  // dragging it places the child where you drop. Distinct from the
+  // move-drag above: createDrag stores the source's node id and tracks
+  // its own pointer state.
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [createDrag, setCreateDrag] = useState<{
+    sourceId: string;
+    startClientX: number;
+    startClientY: number;
+    currentClientX: number;
+    currentClientY: number;
+    isDragging: boolean;
+  } | null>(null);
 
   // ── Visible nodes computation ───────────────────────────────
 
@@ -589,6 +615,22 @@ export function MindmapEditor() {
         return;
       }
 
+      if (createDrag) {
+        const dx = e.clientX - createDrag.startClientX;
+        const dy = e.clientY - createDrag.startClientY;
+        const isDragging =
+          createDrag.isDragging ||
+          Math.abs(dx) > DRAG_THRESHOLD ||
+          Math.abs(dy) > DRAG_THRESHOLD;
+        setCreateDrag({
+          ...createDrag,
+          currentClientX: e.clientX,
+          currentClientY: e.clientY,
+          isDragging,
+        });
+        return;
+      }
+
       if (!isPanning || !panStart.current) return;
       const dx = e.clientX - panStart.current.x;
       const dy = e.clientY - panStart.current.y;
@@ -598,11 +640,30 @@ export function MindmapEditor() {
         panY: panStart.current!.panY + dy,
       }));
     },
-    [isPanning, drag, clientToSvg, findDropTarget, user],
+    [isPanning, drag, createDrag, clientToSvg, findDropTarget, user],
   );
 
   const handleMouseUp = useCallback(
     (e: React.MouseEvent) => {
+      if (createDrag) {
+        // Drop from a node's "+" handle. Click (no drag) → child of source,
+        // auto-positioned. Drag → child of source, placed at drop point.
+        if (createDrag.isDragging) {
+          const svgPos = clientToSvg(e.clientX, e.clientY);
+          // Center the new node roughly under the cursor. We don't know its
+          // size yet, so just use the drop point — auto-layout adjusts on
+          // refresh anyway.
+          addNode(createDrag.sourceId, undefined, false, {
+            x: svgPos.x - 60,
+            y: svgPos.y - 16,
+          });
+        } else {
+          addNode(createDrag.sourceId);
+        }
+        setCreateDrag(null);
+        return;
+      }
+
       if (drag?.isDragging) {
         if (dropTarget && !invalidDrop) {
           const dragNode = nodes[drag.nodeId];
@@ -637,7 +698,7 @@ export function MindmapEditor() {
       setIsPanning(false);
       panStart.current = null;
     },
-    [drag, dropTarget, invalidDrop, nodes, moveNode, updateNode, clientToSvg, layoutMap],
+    [drag, createDrag, dropTarget, invalidDrop, nodes, moveNode, updateNode, addNode, clientToSvg, layoutMap],
   );
 
   // ── Zoom handling (native listener to avoid passive event issue) ──
@@ -1110,6 +1171,14 @@ export function MindmapEditor() {
             const nodeData = nodes[ln.id];
             if (!nodeData) return null;
 
+            const showCreateHandle =
+              hoveredNodeId === ln.id &&
+              !isDimmed &&
+              !drag &&
+              !createDrag &&
+              ln.id !== editingNodeId;
+            const handlePos = getCreateHandlePos(ln, layoutType);
+
             return (
               <g
                 key={ln.id}
@@ -1117,6 +1186,10 @@ export function MindmapEditor() {
                   opacity: isDimmed ? 0.3 : 1,
                   transition: 'opacity 0.3s ease',
                 }}
+                onMouseEnter={() => setHoveredNodeId(ln.id)}
+                onMouseLeave={() =>
+                  setHoveredNodeId((id) => (id === ln.id ? null : id))
+                }
               >
                 <MindmapNode
                   layout={ln}
@@ -1160,9 +1233,84 @@ export function MindmapEditor() {
                   onEditCancel={() => startEditing(null)}
                   onDragStart={isDimmed ? undefined : handleNodeDragStart}
                 />
+
+                {/* "+" create-child handle, shown on hover. Click adds a
+                    child; drag positions the new node at drop. */}
+                {showCreateHandle && (
+                  <g
+                    style={{ cursor: 'crosshair' }}
+                    onMouseDown={(e) => {
+                      if (e.button !== 0) return;
+                      e.stopPropagation();
+                      e.preventDefault();
+                      setCreateDrag({
+                        sourceId: ln.id,
+                        startClientX: e.clientX,
+                        startClientY: e.clientY,
+                        currentClientX: e.clientX,
+                        currentClientY: e.clientY,
+                        isDragging: false,
+                      });
+                    }}
+                  >
+                    <title>Add child node</title>
+                    <circle
+                      cx={handlePos.cx}
+                      cy={handlePos.cy}
+                      r={10}
+                      fill="#4f46e5"
+                      stroke="#fff"
+                      strokeWidth={2}
+                      filter="url(#node-shadow)"
+                    />
+                    <line
+                      x1={handlePos.cx - 4}
+                      y1={handlePos.cy}
+                      x2={handlePos.cx + 4}
+                      y2={handlePos.cy}
+                      stroke="#fff"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                    <line
+                      x1={handlePos.cx}
+                      y1={handlePos.cy - 4}
+                      x2={handlePos.cx}
+                      y2={handlePos.cy + 4}
+                      stroke="#fff"
+                      strokeWidth={2}
+                      strokeLinecap="round"
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  </g>
+                )}
               </g>
             );
           })}
+
+          {/* Create-drag preview: dashed line from source node to cursor */}
+          {createDrag?.isDragging && (() => {
+            const ln = layoutMap.get(createDrag.sourceId);
+            if (!ln) return null;
+            const handlePos = getCreateHandlePos(ln, layoutType);
+            const cursor = clientToSvg(createDrag.currentClientX, createDrag.currentClientY);
+            return (
+              <g style={{ pointerEvents: 'none' }}>
+                <line
+                  x1={handlePos.cx}
+                  y1={handlePos.cy}
+                  x2={cursor.x}
+                  y2={cursor.y}
+                  stroke="#4f46e5"
+                  strokeWidth={2}
+                  strokeDasharray="4 3"
+                  opacity={0.6}
+                />
+                <circle cx={cursor.x} cy={cursor.y} r={6} fill="#4f46e5" opacity={0.85} />
+              </g>
+            );
+          })()}
 
           {/* Drag ghost */}
           {dragGhost && (

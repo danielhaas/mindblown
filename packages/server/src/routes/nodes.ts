@@ -59,6 +59,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       text: string;
       createdBy?: string;
       position?: number;
+      x?: number;
+      y?: number;
       effortEstimate?: number;
       percentComplete?: number;
       status?: string;

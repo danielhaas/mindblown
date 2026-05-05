@@ -106,7 +106,7 @@ export interface MindmapState {
   selectAllNodes: () => void;
   clearSelection: () => void;
   startEditing: (id: string | null) => void;
-  addNode: (parentId: string, text?: string, asSibling?: boolean) => string;
+  addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   deleteNode: (id: string) => void;
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
@@ -730,7 +730,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   startEditing: (id) => set({ editingNodeId: id }),
 
-  addNode: (parentId, text = 'New node', asSibling = false) => {
+  addNode: (parentId, text = 'New node', asSibling = false, position) => {
     const state = get();
     const mapId = state.currentMapId;
     let targetParentId = parentId;
@@ -759,8 +759,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       childrenIds: [],
       text,
       description: null,
-      x: null,
-      y: null,
+      x: position?.x ?? null,
+      y: position?.y ?? null,
       collapsed: false,
       effortEstimate: null,
       actualEffort: null,
@@ -779,6 +779,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       createdAt: now,
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',
+      revision: 1,
     };
 
     // Optimistic local update
@@ -805,7 +806,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
     // Sync to API
     if (mapId) {
-      api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined)
+      api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined, position)
         .then((serverNode) => {
           // Replace temp node with server node
           const current = get();

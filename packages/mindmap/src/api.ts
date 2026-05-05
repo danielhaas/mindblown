@@ -431,10 +431,18 @@ export function createNode(
   parentId: string,
   text: string,
   position?: number,
+  coords?: { x: number; y: number },
 ): Promise<Node> {
   return request<Node>(`/api/maps/${mapId}/nodes`, {
     method: 'POST',
-    body: JSON.stringify({ parentId, text, createdBy: 'current-user', position }),
+    body: JSON.stringify({
+      parentId,
+      text,
+      createdBy: 'current-user',
+      position,
+      x: coords?.x,
+      y: coords?.y,
+    }),
   });
 }
 
