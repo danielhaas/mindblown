@@ -5,10 +5,11 @@
   "license": "MIT",
   "type": "module",
   "bin": {
-    "mindblown-mcp": "./dist/index.js"
+    "mindblown-mcp": "dist/index.js"
   },
   "files": [
-    "dist",
+    "dist/index.js",
+    "dist/index.js.map",
     "README.md"
   ],
   "scripts": {
