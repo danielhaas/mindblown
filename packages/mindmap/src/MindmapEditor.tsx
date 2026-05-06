@@ -6,6 +6,7 @@ import { MindmapNode } from './MindmapNode.js';
 import { Connector } from './Connector.js';
 import { DependencyLines } from './DependencyLines.js';
 import { CursorPresence } from './CursorPresence.js';
+import { PresenceBar } from './PresenceBar.js';
 import { AIBreakdownModal } from './AIBreakdownModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { exportPNG } from './ImportExport.js';
@@ -279,6 +280,9 @@ export function MindmapEditor() {
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const currentMap = useMindmapStore((s) => s.currentMap);
+  const presence = useMindmapStore((s) => s.presence);
+  const followingUserId = useMindmapStore((s) => s.followingUserId);
+  const setFollowingUser = useMindmapStore((s) => s.setFollowingUser);
 
   // ── Context menu state ──────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -289,6 +293,61 @@ export function MindmapEditor() {
 
   // ── Cursor presence: throttled send ──────────────────────────
   const lastCursorSend = useRef(0);
+
+  // ── Viewport presence: debounced broadcast ───────────────────
+  const viewportSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Broadcast our own viewport whenever it changes — UNLESS we're
+  // following someone (then our viewport is just a mirror, no point
+  // re-emitting and risking feedback loops).
+  useEffect(() => {
+    if (!user || !currentMapId) return;
+    if (followingUserId) return;
+    if (viewportSendTimer.current) clearTimeout(viewportSendTimer.current);
+    viewportSendTimer.current = setTimeout(() => {
+      const ws = getWsClient();
+      const svg = svgRef.current;
+      if (!ws || !svg) return;
+      const rect = svg.getBoundingClientRect();
+      // Logical SVG coords of the viewport center, so different
+      // window sizes still center on the same content.
+      const cx = (rect.width / 2 - view.panX) / view.zoom;
+      const cy = (rect.height / 2 - view.panY) / view.zoom;
+      ws.send({
+        type: 'presence:viewport',
+        cx,
+        cy,
+        zoom: view.zoom,
+        focusNodeId: focusNodeId ?? null,
+      });
+    }, 100);
+    return () => {
+      if (viewportSendTimer.current) clearTimeout(viewportSendTimer.current);
+    };
+  }, [view, focusNodeId, user, currentMapId, followingUserId]);
+
+  // Apply the followed user's viewport+focus to our own state.
+  // Runs on every presence update for that user.
+  useEffect(() => {
+    if (!followingUserId) return;
+    const remote = presence[followingUserId];
+    if (!remote) return;
+
+    const svg = svgRef.current;
+    if (!svg) return;
+    const rect = svg.getBoundingClientRect();
+    const panX = rect.width / 2 - remote.cx * remote.zoom;
+    const panY = rect.height / 2 - remote.cy * remote.zoom;
+    setView({ panX, panY, zoom: remote.zoom });
+
+    // Mirror their drill-down state too. setFocusNode is a no-op if
+    // the node doesn't exist locally — fine, ws node sync will catch
+    // it up shortly.
+    const curFocus = useMindmapStore.getState().focusNodeId;
+    if (curFocus !== remote.focusNodeId) {
+      useMindmapStore.setState({ focusNodeId: remote.focusNodeId });
+    }
+  }, [followingUserId, presence]);
 
   // ── Drag-and-drop state ───────────────────────────────────────
 
@@ -452,16 +511,18 @@ export function MindmapEditor() {
     fitToScreen();
   }, [layoutNodes, rootNodeId, fitToScreen]);
 
-  // Re-fit when focus node changes (drill-down animation)
+  // Re-fit when focus node changes (drill-down animation).
+  // Skipped while following — the followed user's viewport will be
+  // applied instead, and we don't want fit-to-screen to clobber it.
   const prevFocusRef = useRef<string | null>(null);
   useEffect(() => {
     if (prevFocusRef.current !== focusNodeId) {
       prevFocusRef.current = focusNodeId;
-      // Short delay so layout has time to recompute
+      if (followingUserId) return;
       const timer = setTimeout(() => fitToScreen(), 50);
       return () => clearTimeout(timer);
     }
-  }, [focusNodeId, fitToScreen]);
+  }, [focusNodeId, fitToScreen, followingUserId]);
 
   // Re-fit when depth limit changes
   const prevMaxDepthRef = useRef(maxDepth);
@@ -573,11 +634,13 @@ export function MindmapEditor() {
     (e: React.MouseEvent) => {
       if (e.button === 1 || (e.button === 0 && e.target === svgRef.current)) {
         e.preventDefault();
+        // Manual pan breaks follow mode.
+        if (followingUserId) setFollowingUser(null);
         setIsPanning(true);
         panStart.current = { x: e.clientX, y: e.clientY, panX: view.panX, panY: view.panY };
       }
     },
-    [view.panX, view.panY],
+    [view.panX, view.panY, followingUserId, setFollowingUser],
   );
 
   const handleMouseMove = useCallback(
@@ -713,6 +776,10 @@ export function MindmapEditor() {
 
     const handleWheel = (e: WheelEvent) => {
       e.preventDefault();
+      // Manual zoom breaks follow mode.
+      if (useMindmapStore.getState().followingUserId) {
+        useMindmapStore.getState().setFollowingUser(null);
+      }
       const rect = svg.getBoundingClientRect();
       const mouseX = e.clientX - rect.left;
       const mouseY = e.clientY - rect.top;
@@ -1013,6 +1080,8 @@ export function MindmapEditor() {
           alignItems: 'center',
         }}
       >
+        <PresenceBar />
+
         <select
           value={layoutType}
           onChange={(e) => setLayoutType(e.target.value as LayoutType)}

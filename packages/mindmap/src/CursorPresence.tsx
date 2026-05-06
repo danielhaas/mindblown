@@ -18,7 +18,7 @@ const CURSOR_COLORS = [
   '#3b82f6', '#8b5cf6', '#ec4899', '#14b8a6', '#f43f5e',
 ];
 
-function colorForUser(userId: string): string {
+export function colorForUser(userId: string): string {
   let hash = 0;
   for (let i = 0; i < userId.length; i++) {
     hash = ((hash << 5) - hash + userId.charCodeAt(i)) | 0;

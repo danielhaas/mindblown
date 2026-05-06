@@ -26,6 +26,21 @@ export interface VisibleNode {
   isDimmed: boolean; // true for sibling branches shown for context
 }
 
+/**
+ * Live presence info for another user on this map.
+ * Broadcast over WebSocket; viewport is encoded as a logical SVG center
+ * (cx, cy) + zoom so it survives different window sizes.
+ */
+export interface RemotePresence {
+  userId: string;
+  name: string;
+  cx: number;
+  cy: number;
+  zoom: number;
+  focusNodeId: string | null;
+  lastSeen: number;
+}
+
 export interface MindmapState {
   // Auth state
   user: AuthUser | null;
@@ -64,6 +79,10 @@ export interface MindmapState {
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
+
+  // Presence / follow mode
+  presence: Record<string, RemotePresence>;
+  followingUserId: string | null;
 
   // Actions — auth
   login: (email: string, password: string) => Promise<void>;
@@ -119,6 +138,9 @@ export interface MindmapState {
   // Drill-down actions
   setFocusNode: (nodeId: string | null) => void;
   setMaxDepth: (depth: number) => void;
+
+  // Presence / follow mode actions
+  setFollowingUser: (userId: string | null) => void;
   getVisibleNodes: () => VisibleNode[];
   getFocusBreadcrumb: () => Array<{ id: string; text: string }>;
 
@@ -160,6 +182,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   loading: false,
   error: null,
   wsConnected: false,
+  presence: {},
+  followingUserId: null,
 
   // ── Auth actions ──────────────────────────────────────────────
 
@@ -207,6 +231,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       computed: new Map(),
       wsConnected: false,
       error: null,
+      presence: {},
+      followingUserId: null,
     });
   },
 
@@ -266,6 +292,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         maxDepth: 1,
         loading: false,
         error: null,
+        presence: {},
+        followingUserId: null,
       });
 
       // Connect WebSocket
@@ -312,6 +340,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       versions: [],
       activeVersionFilter: null,
       wsConnected: false,
+      presence: {},
+      followingUserId: null,
     });
   },
 
@@ -516,6 +546,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   },
 
   setMaxDepth: (depth) => set({ maxDepth: depth }),
+
+  setFollowingUser: (userId) => set({ followingUserId: userId }),
 
   getVisibleNodes: () => {
     const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter } = get();
@@ -1090,6 +1122,45 @@ function handleWsMessage(
   // Dispatch comment events to window for CommentsPanel component
   if (msg.type?.startsWith('comment:')) {
     window.dispatchEvent(new CustomEvent('ws:comment', { detail: msg }));
+    return;
+  }
+
+  // Viewport / focus presence (follow mode)
+  if (msg.type === 'presence:viewport' && msg.userId) {
+    const cur = get().presence;
+    set({
+      presence: {
+        ...cur,
+        [msg.userId]: {
+          userId: msg.userId,
+          name: msg.name ?? 'User',
+          cx: msg.cx,
+          cy: msg.cy,
+          zoom: msg.zoom,
+          focusNodeId: msg.focusNodeId ?? null,
+          lastSeen: Date.now(),
+        },
+      },
+    });
+    return;
+  }
+
+  // Track user join/leave for the presence list
+  if (msg.type === 'user:leave' && msg.userId) {
+    const cur = get();
+    if (!(msg.userId in cur.presence) && cur.followingUserId !== msg.userId) return;
+    const presence = { ...cur.presence };
+    delete presence[msg.userId];
+    set({
+      presence,
+      followingUserId: cur.followingUserId === msg.userId ? null : cur.followingUserId,
+    });
+    return;
+  }
+
+  if (msg.type === 'user:join') {
+    // Just a hint that someone joined; we'll start tracking them once
+    // they emit their first presence:viewport. Nothing to do here yet.
     return;
   }
 

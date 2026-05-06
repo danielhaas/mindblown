@@ -126,6 +126,27 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
           return;
         }
 
+        // Viewport / focus presence (for follow mode). Stamp userId/name
+        // server-side so clients can't impersonate.
+        if (parsed.type === 'presence:viewport' && userId) {
+          const msg = JSON.stringify({
+            type: 'presence:viewport',
+            userId,
+            name: userName,
+            cx: parsed.cx,
+            cy: parsed.cy,
+            zoom: parsed.zoom,
+            focusNodeId: parsed.focusNodeId ?? null,
+          });
+
+          for (const c of clients) {
+            if (c.ws !== ws && c.ws.readyState === 1) {
+              c.ws.send(msg);
+            }
+          }
+          return;
+        }
+
         // Forward other messages to other clients in the room
         for (const c of clients) {
           if (c.ws !== ws && c.ws.readyState === 1) {
