@@ -8,6 +8,7 @@ import { DependencyLines } from './DependencyLines.js';
 import { CursorPresence } from './CursorPresence.js';
 import { AIBreakdownModal } from './AIBreakdownModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
+import { exportPNG } from './ImportExport.js';
 import type { LayoutNode } from './layout.js';
 import type { Node } from '@mindblown/core';
 
@@ -277,6 +278,7 @@ export function MindmapEditor() {
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
+  const currentMap = useMindmapStore((s) => s.currentMap);
 
   // ── Context menu state ──────────────────────────────────────
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; nodeId: string } | null>(null);
@@ -783,6 +785,21 @@ export function MindmapEditor() {
         return;
       }
 
+      // Escape works regardless of selection: pop drill-down, then clear selection
+      if (e.key === 'Escape') {
+        if (focusNodeId) {
+          const focusNode = nodes[focusNodeId];
+          if (focusNode?.parentId && focusNode.parentId !== rootNodeId) {
+            setFocusNode(focusNode.parentId);
+          } else {
+            setFocusNode(null);
+          }
+        } else {
+          clearSelection();
+        }
+        return;
+      }
+
       if (!selectedNodeId) return;
 
       switch (e.key) {
@@ -813,20 +830,6 @@ export function MindmapEditor() {
         case 'F2': {
           e.preventDefault();
           startEditing(selectedNodeId);
-          break;
-        }
-        case 'Escape': {
-          // If drilled into a node, go back up one level first
-          if (focusNodeId) {
-            const focusNode = nodes[focusNodeId];
-            if (focusNode?.parentId && focusNode.parentId !== rootNodeId) {
-              setFocusNode(focusNode.parentId);
-            } else {
-              setFocusNode(null);
-            }
-          } else {
-            clearSelection();
-          }
           break;
         }
         case 'ArrowLeft': {
@@ -1093,10 +1096,30 @@ export function MindmapEditor() {
         >
           Fit
         </button>
+
+        <button
+          onClick={() => exportPNG(currentMap?.name ?? 'mindmap')}
+          title="Export as PNG"
+          style={{
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            padding: '4px 10px',
+            fontSize: 11,
+            fontWeight: 600,
+            color: '#475569',
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+            boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+          }}
+        >
+          PNG
+        </button>
       </div>
 
       <svg
         ref={svgRef}
+        data-mindmap-svg
         style={{
           width: '100%',
           height: '100%',

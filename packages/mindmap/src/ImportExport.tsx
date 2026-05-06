@@ -117,33 +117,54 @@ function exportOPML(nodes: Record<string, Node>, rootNodeId: string, mapName: st
 
 // ── Export: PNG ───────────────────────────────────────────────────
 
-async function exportPNG(mapName: string): Promise<void> {
-  // Find the mindmap SVG in the DOM
+export async function exportPNG(mapName: string): Promise<void> {
   const svgEl = document.querySelector('[data-mindmap-svg]') as SVGSVGElement | null;
   if (!svgEl) {
-    // Fallback: try to find any large SVG in the editor area
-    const allSvgs = document.querySelectorAll('svg');
-    let targetSvg: SVGSVGElement | null = null;
-    let maxArea = 0;
-    allSvgs.forEach((svg) => {
-      const rect = svg.getBoundingClientRect();
-      const area = rect.width * rect.height;
-      if (area > maxArea) {
-        maxArea = area;
-        targetSvg = svg;
-      }
-    });
-    if (!targetSvg) {
-      alert('Could not find the mindmap SVG element for export. Switch to Mindmap view first.');
-      return;
-    }
-    await svgToCanvas(targetSvg, mapName);
+    alert('Could not find the mindmap SVG. Switch to Mindmap view first.');
     return;
   }
-  await svgToCanvas(svgEl, mapName);
+
+  // The inner <g> holds the pan/zoom transform; its children are the actual content.
+  const innerG = svgEl.querySelector(':scope > g[transform]') as SVGGElement | null;
+  if (!innerG) {
+    alert('Mindmap content not found.');
+    return;
+  }
+
+  // getBBox() returns content bounds in the local (pre-transform) coordinate system,
+  // so it ignores the current pan/zoom — exactly what we want for a "fit-all" export.
+  const bbox = innerG.getBBox();
+  if (bbox.width <= 0 || bbox.height <= 0) {
+    alert('Mindmap is empty.');
+    return;
+  }
+
+  const padding = 24;
+  const viewX = bbox.x - padding;
+  const viewY = bbox.y - padding;
+  const viewW = bbox.width + padding * 2;
+  const viewH = bbox.height + padding * 2;
+
+  // Clone, drop the pan/zoom transform, and pin explicit viewBox/dimensions so the
+  // rasterized image has the actual content rendered at full size.
+  const clone = svgEl.cloneNode(true) as SVGSVGElement;
+  const innerGClone = clone.querySelector(':scope > g[transform]') as SVGGElement | null;
+  if (innerGClone) innerGClone.removeAttribute('transform');
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  clone.setAttribute('viewBox', `${viewX} ${viewY} ${viewW} ${viewH}`);
+  clone.setAttribute('width', String(viewW));
+  clone.setAttribute('height', String(viewH));
+  clone.removeAttribute('style');
+
+  await rasterizeSvg(clone, mapName, viewW, viewH);
 }
 
-async function svgToCanvas(svgEl: SVGSVGElement, filename: string): Promise<void> {
+async function rasterizeSvg(
+  svgEl: SVGSVGElement,
+  filename: string,
+  width: number,
+  height: number,
+): Promise<void> {
   const serializer = new XMLSerializer();
   const svgString = serializer.serializeToString(svgEl);
   const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
@@ -153,13 +174,13 @@ async function svgToCanvas(svgEl: SVGSVGElement, filename: string): Promise<void
   img.onload = () => {
     const canvas = document.createElement('canvas');
     const scale = 2; // retina
-    canvas.width = img.width * scale;
-    canvas.height = img.height * scale;
+    canvas.width = Math.ceil(width * scale);
+    canvas.height = Math.ceil(height * scale);
     const ctx = canvas.getContext('2d')!;
     ctx.scale(scale, scale);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, img.width, img.height);
-    ctx.drawImage(img, 0, 0);
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
 
     canvas.toBlob((blob) => {
       if (blob) {
