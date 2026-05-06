@@ -156,6 +156,11 @@ export async function exportPNG(mapName: string): Promise<void> {
   clone.setAttribute('height', String(viewH));
   clone.removeAttribute('style');
 
+  // Strip <animate> elements: the rasterizer starts a fresh animation timeline
+  // at t=0, leaving anything that animates `from="0"` (rect/connector opacity)
+  // invisible in the exported PNG.
+  clone.querySelectorAll('animate, animateTransform, animateMotion').forEach((el) => el.remove());
+
   await rasterizeSvg(clone, mapName, viewW, viewH);
 }
 
