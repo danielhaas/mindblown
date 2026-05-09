@@ -335,6 +335,22 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_repo_name TEXT
   `);
 
+  // ── GitHub Repo Sync State ─────────────────────────────────────
+  // Per-repo "last successful catch-up reconcile" timestamp. The
+  // periodic catch-up uses this as the `since=` filter on GitHub's
+  // issues API so we only refetch things that have changed since the
+  // last clean sweep. Keyed by (owner, repo) — a single repo may be
+  // shared across maps/workspaces, but we sync it once per cycle.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS github_repo_sync (
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      last_synced_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner, repo)
+    )
+  `);
+
   // ── Pending Invites ────────────────────────────────────────────
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS pending_invites (

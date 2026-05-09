@@ -4,6 +4,7 @@ import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
+import { runAllCatchups } from './sync/githubCatchup.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
@@ -104,6 +105,34 @@ async function main(): Promise<void> {
   // Startup run is fire-and-forget so a slow DB doesn't delay the listen.
   runSnapshot();
   setInterval(runSnapshot, SNAPSHOT_INTERVAL_MS);
+
+  // ── GitHub catch-up reconcile (webhook backstop) ─────────────
+  // Webhooks are realtime but best-effort — server downtime or signature
+  // mismatches drop events. This periodic sweep asks GitHub "what's
+  // changed since last sync?" and applies any drift to linked nodes,
+  // so missed webhooks self-heal within one cycle. Startup pass heals
+  // whatever the most recent reboot/migration dropped.
+  const CATCHUP_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+  const runCatchup = async () => {
+    try {
+      const results = await runAllCatchups();
+      const touched = results.reduce((n, r) => n + r.applied, 0);
+      const fetched = results.reduce((n, r) => n + r.fetched, 0);
+      const failed = results.filter((r) => r.error);
+      if (touched > 0 || failed.length > 0 || fetched > 0) {
+        console.log(
+          `[github-catchup] repos=${results.length} fetched=${fetched} applied=${touched} failed=${failed.length}`,
+        );
+        for (const r of failed) {
+          console.warn(`[github-catchup] ${r.repo}: ${r.error}`);
+        }
+      }
+    } catch (err) {
+      console.error('[github-catchup] sweep failed:', err);
+    }
+  };
+  runCatchup();
+  setInterval(runCatchup, CATCHUP_INTERVAL_MS);
 }
 
 main();

@@ -439,6 +439,27 @@ export function GitHubSettingsDialog({
   const [syncLoading, setSyncLoading] = useState(false);
   const [syncIncludeClosed, setSyncIncludeClosed] = useState(false);
 
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileResult, setReconcileResult] = useState<api.GitHubReconcileResult | null>(null);
+
+  const handleReconcile = async () => {
+    setReconciling(true);
+    setError(null);
+    setReconcileResult(null);
+    try {
+      const result = await api.reconcileGitHub(mapId);
+      setReconcileResult(result);
+      if (result.applied > 0) {
+        loadMap(mapId);
+        if (syncOverview) await handleSyncOverview(syncIncludeClosed);
+      }
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to reconcile');
+    } finally {
+      setReconciling(false);
+    }
+  };
+
   const handleSyncOverview = async (includeClosed: boolean) => {
     setSyncLoading(true);
     setError(null);
@@ -621,6 +642,24 @@ export function GitHubSettingsDialog({
                 {syncLoading ? 'Loading...' : syncOverview ? 'Refresh Sync Status' : 'Sync Status'}
               </button>
               <button
+                onClick={handleReconcile}
+                disabled={reconciling}
+                title="Pull recent issue state changes from GitHub (catch up missed webhooks)"
+                style={{
+                  background: '#f1f5f9',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 6,
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: '#475569',
+                  cursor: reconciling ? 'default' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {reconciling ? 'Reconciling...' : 'Reconcile'}
+              </button>
+              <button
                 onClick={onClose}
                 style={{
                   background: '#f1f5f9',
@@ -638,6 +677,19 @@ export function GitHubSettingsDialog({
                 Close
               </button>
             </div>
+
+            {reconcileResult && (
+              <div style={{
+                marginBottom: 12, padding: '8px 12px', borderRadius: 6,
+                background: reconcileResult.error ? '#fef2f2' : '#f0fdf4',
+                border: reconcileResult.error ? '1px solid #fecaca' : '1px solid #bbf7d0',
+                fontSize: 12, color: reconcileResult.error ? '#991b1b' : '#166534',
+              }}>
+                {reconcileResult.error
+                  ? `Reconcile failed: ${reconcileResult.error}`
+                  : `Reconciled ${reconcileResult.repo}: ${reconcileResult.applied} updated, ${reconcileResult.fetched} checked.`}
+              </div>
+            )}
 
             {syncOverview && (
               <SyncOverviewSection

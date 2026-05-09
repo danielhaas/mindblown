@@ -394,6 +394,23 @@ export function getGitHubSyncOverview(
   return request<GitHubSyncOverview>(`/api/maps/${mapId}/github/sync-overview${qs}`);
 }
 
+export interface GitHubReconcileResult {
+  repo: string;
+  fetched: number;
+  applied: number;
+  skipped: number;
+  noTransition: number;
+  durationMs: number;
+  since: string | null;
+  error?: string;
+}
+
+export function reconcileGitHub(mapId: string): Promise<GitHubReconcileResult> {
+  return request<GitHubReconcileResult>(`/api/maps/${mapId}/github/reconcile`, {
+    method: 'POST',
+  });
+}
+
 // ── Maps ─────────────────────────────────────────────────────────
 
 export function fetchMaps(): Promise<MapSummary[]> {

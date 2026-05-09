@@ -12,6 +12,7 @@ export {
   closeGitHubIssue,
   processWebhook,
   importGitHubIssues,
+  fetchChangedIssues,
   extractVersionFromMilestone,
   getGitHubIssue,
   verifyWebhookSignature,

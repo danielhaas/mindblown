@@ -13,6 +13,7 @@ import {
   mintInstallationToken,
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
+import { reconcileRepo } from '../sync/githubCatchup.js';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
@@ -613,6 +614,36 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         skippedNodes,
         versions: Object.fromEntries(versionToId),
       });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/github/reconcile ────────────────────
+  // On-demand catch-up reconcile for the repo bound to this map.
+  // Webhooks normally drive realtime sync; this endpoint is the manual
+  // escape hatch when webhooks have been missed (downtime, secret
+  // mismatch). Same code path the periodic catch-up uses.
+  app.post<{ Params: { mapId: string } }>(
+    '/api/maps/:mapId/github/reconcile',
+    async (req, reply) => {
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
+        return reply.status(400).send({
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+        });
+      }
+
+      const result = await reconcileRepo({
+        owner: ghCtx.owner,
+        repo: ghCtx.repo,
+        // Token captured at request time. The reconcile completes within
+        // a single HTTP turn, so we don't need to re-mint mid-flight.
+        resolveToken: async () => ghCtx.token,
+      });
+
+      if (result.error) {
+        return reply.status(502).send({ error: { code: 'GITHUB_RECONCILE_FAILED', message: result.error }, result });
+      }
+      return reply.send(result);
     },
   );
 

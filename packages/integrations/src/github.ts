@@ -487,6 +487,54 @@ export async function importGitHubIssues(
 }
 
 /**
+ * Fetch issues that have been updated since a given timestamp.
+ *
+ * Used by the reconciliation/catch-up sync to recover from missed webhook
+ * deliveries (server downtime, signature mismatches, etc.). Returns raw
+ * `GitHubIssue` objects — caller decides how to map state to nodes.
+ *
+ * - `since` is an ISO 8601 timestamp; null/undefined fetches everything.
+ *   GitHub filters on `updated_at >= since`, which catches state changes,
+ *   edits, label changes, and assignments — i.e. the same surface webhooks
+ *   cover.
+ * - PRs are filtered out (the issues endpoint returns both).
+ * - Pagination is bounded to 1000 issues per call to avoid runaway scans.
+ */
+export async function fetchChangedIssues(
+  repoOwner: string,
+  repoName: string,
+  token: string,
+  since: string | null | undefined,
+): Promise<GitHubIssue[]> {
+  const issues: GitHubIssue[] = [];
+  let page = 1;
+  const perPage = 100;
+
+  while (true) {
+    const params = new URLSearchParams({
+      state: 'all',
+      per_page: String(perPage),
+      page: String(page),
+      sort: 'updated',
+      direction: 'asc',
+    });
+    if (since) params.set('since', since);
+
+    const batch = await githubFetch<GitHubIssue[]>(
+      `/repos/${repoOwner}/${repoName}/issues?${params.toString()}`,
+      token,
+    );
+    issues.push(...batch.filter((i) => !i.pull_request));
+
+    if (batch.length < perPage) break;
+    page++;
+    if (issues.length >= 1000) break;
+  }
+
+  return issues;
+}
+
+/**
  * Fetch a single GitHub Issue by number.
  */
 export async function getGitHubIssue(

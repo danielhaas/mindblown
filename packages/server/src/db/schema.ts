@@ -182,6 +182,19 @@ export const integrations = pgTable('integrations', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── GitHub Repo Sync State ───────────────────────────────────────
+// Tracks the last successful catch-up reconcile per (owner, repo) so
+// the periodic catch-up can ask GitHub for "issues updated since X"
+// instead of refetching the world. Webhooks remain the realtime path;
+// this table backstops missed deliveries (downtime, signature mismatch).
+
+export const githubRepoSync = pgTable('github_repo_sync', {
+  owner: text('owner').notNull(),
+  repo: text('repo').notNull(),
+  lastSyncedAt: timestamp('last_synced_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Versions ──────────────────────────────────────────────────────
 
 export const versions = pgTable('versions', {
