@@ -583,6 +583,38 @@ export function GitHubSettingsDialog({
           </div>
         )}
 
+        {/* Reconcile — always available; works for App- and PAT-bound maps. */}
+        <div style={{ marginBottom: 16, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <button
+            onClick={handleReconcile}
+            disabled={reconciling}
+            title="Pull recent issue state changes from GitHub (catch up missed webhooks)"
+            style={{
+              background: '#f1f5f9',
+              border: '1px solid #e2e8f0',
+              borderRadius: 6,
+              padding: '6px 12px',
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#475569',
+              cursor: reconciling ? 'default' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {reconciling ? 'Reconciling...' : 'Reconcile with GitHub'}
+          </button>
+          {reconcileResult && !reconcileResult.error && (
+            <span style={{ fontSize: 11, color: '#475569' }}>
+              {reconcileResult.repo}: {reconcileResult.applied} updated, {reconcileResult.fetched} checked
+            </span>
+          )}
+          {reconcileResult?.error && (
+            <span style={{ fontSize: 11, color: '#991b1b' }}>
+              {reconcileResult.error}
+            </span>
+          )}
+        </div>
+
         {/* App-connected repo */}
         {hasAppRepo && (
           <div>
@@ -642,24 +674,6 @@ export function GitHubSettingsDialog({
                 {syncLoading ? 'Loading...' : syncOverview ? 'Refresh Sync Status' : 'Sync Status'}
               </button>
               <button
-                onClick={handleReconcile}
-                disabled={reconciling}
-                title="Pull recent issue state changes from GitHub (catch up missed webhooks)"
-                style={{
-                  background: '#f1f5f9',
-                  border: '1px solid #e2e8f0',
-                  borderRadius: 6,
-                  padding: '8px 16px',
-                  fontSize: 12,
-                  fontWeight: 600,
-                  color: '#475569',
-                  cursor: reconciling ? 'default' : 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                {reconciling ? 'Reconciling...' : 'Reconcile'}
-              </button>
-              <button
                 onClick={onClose}
                 style={{
                   background: '#f1f5f9',
@@ -677,19 +691,6 @@ export function GitHubSettingsDialog({
                 Close
               </button>
             </div>
-
-            {reconcileResult && (
-              <div style={{
-                marginBottom: 12, padding: '8px 12px', borderRadius: 6,
-                background: reconcileResult.error ? '#fef2f2' : '#f0fdf4',
-                border: reconcileResult.error ? '1px solid #fecaca' : '1px solid #bbf7d0',
-                fontSize: 12, color: reconcileResult.error ? '#991b1b' : '#166534',
-              }}>
-                {reconcileResult.error
-                  ? `Reconcile failed: ${reconcileResult.error}`
-                  : `Reconciled ${reconcileResult.repo}: ${reconcileResult.applied} updated, ${reconcileResult.fetched} checked.`}
-              </div>
-            )}
 
             {syncOverview && (
               <SyncOverviewSection
