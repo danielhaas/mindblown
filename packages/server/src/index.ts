@@ -119,13 +119,14 @@ async function main(): Promise<void> {
       const touched = results.reduce((n, r) => n + r.applied, 0);
       const fetched = results.reduce((n, r) => n + r.fetched, 0);
       const failed = results.filter((r) => r.error);
-      if (touched > 0 || failed.length > 0 || fetched > 0) {
-        console.log(
-          `[github-catchup] repos=${results.length} fetched=${fetched} applied=${touched} failed=${failed.length}`,
-        );
-        for (const r of failed) {
-          console.warn(`[github-catchup] ${r.repo}: ${r.error}`);
-        }
+      // Log every tick so the cadence is visible — even quiet ticks
+      // (fetched=0) confirm the schedule is alive and the since=
+      // filter is doing its job.
+      console.log(
+        `[github-catchup] repos=${results.length} fetched=${fetched} applied=${touched} failed=${failed.length}`,
+      );
+      for (const r of failed) {
+        console.warn(`[github-catchup] ${r.repo}: ${r.error}`);
       }
     } catch (err) {
       console.error('[github-catchup] sweep failed:', err);
