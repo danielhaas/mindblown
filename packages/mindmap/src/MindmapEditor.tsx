@@ -11,7 +11,7 @@ import { AIBreakdownModal } from './AIBreakdownModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { exportPNG } from './ImportExport.js';
 import type { LayoutNode } from './layout.js';
-import type { Node } from '@mindblown/core';
+import type { Node, Priority } from '@mindblown/core';
 
 // ── Pan & Zoom state ───────────────────────────────────────────
 
@@ -101,7 +101,7 @@ function BulkActionBar({
 }: {
   count: number;
   onSetStatus: (status: string) => void;
-  onSetPriority: (priority: string) => void;
+  onSetPriority: (priority: Priority) => void;
   onDelete: () => void;
   onCollapse: () => void;
   onExpand: () => void;
@@ -160,7 +160,7 @@ function BulkActionBar({
       <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
         <span style={{ color: '#94a3b8' }}>Priority:</span>
         <select
-          onChange={(e) => { if (e.target.value) onSetPriority(e.target.value); e.target.value = ''; }}
+          onChange={(e) => { if (e.target.value) onSetPriority(e.target.value as Priority); e.target.value = ''; }}
           onKeyDown={(e) => e.stopPropagation()}
           style={{
             background: '#334155',
@@ -954,7 +954,7 @@ export function MindmapEditor() {
     for (const id of selectedNodeIds) updateNode(id, { status });
   }, [selectedNodeIds, updateNode]);
 
-  const handleBulkSetPriority = useCallback((priority: string) => {
+  const handleBulkSetPriority = useCallback((priority: Priority) => {
     for (const id of selectedNodeIds) updateNode(id, { priority });
   }, [selectedNodeIds, updateNode]);
 
