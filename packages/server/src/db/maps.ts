@@ -101,7 +101,7 @@ export async function listMapsForUser(userId: string): Promise<MindMap[]> {
 
 export interface UpdateMapInput {
   name?: string;
-  description?: string;
+  description?: string | null;
   effortUnit?: EffortUnit;
   statusWorkflow?: StatusDef[];
   customFieldDefs?: CustomFieldDef[];

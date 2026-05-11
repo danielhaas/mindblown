@@ -1,4 +1,4 @@
-import type { Node as CoreNode, MindMap } from '@mindblown/core';
+import type { Node as CoreNode, MindMap, CustomFieldValue } from '@mindblown/core';
 
 /**
  * Convert a database node row to the core Node type.
@@ -27,7 +27,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     dueDate: (get('dueDate', 'due_date') as string) ?? null,
     startDate: (get('startDate', 'start_date') as string) ?? null,
     tags: (get('tags', 'tags') as string[]) ?? [],
-    customFields: (get('customFields', 'custom_fields') as Record<string, unknown>) ?? {},
+    customFields: (get('customFields', 'custom_fields') as Record<string, CustomFieldValue>) ?? {},
     dependencies: (get('dependencies', 'dependencies') as CoreNode['dependencies']) ?? [],
     versionId: (get('versionId', 'version_id') as string) ?? null,
     cycleId: (get('cycleId', 'cycle_id') as string) ?? null,

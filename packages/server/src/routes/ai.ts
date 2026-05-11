@@ -697,11 +697,7 @@ Parent node: "${parentNode.text}"`;
           n.effortEstimate != null &&
           n.actualEffort != null,
       )
-      .sort((a, b) => {
-        const au = a.updatedAt instanceof Date ? a.updatedAt.getTime() : Date.parse(a.updatedAt as unknown as string);
-        const bu = b.updatedAt instanceof Date ? b.updatedAt.getTime() : Date.parse(b.updatedAt as unknown as string);
-        return bu - au;
-      })
+      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, 30);
 
     const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);

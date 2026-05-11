@@ -50,9 +50,12 @@ const SHARED_CHAT_TOOL_NAMES = new Set<string>([
   'bulk_set_progress',
 ]);
 
-const sharedChatSpecs: ToolSpec[] = sharedTools.filter((s) =>
+// Cast widens the union of concrete ToolSpec<{...}> shapes back to the
+// homogeneous ToolSpec[]; handler arg variance fails on the union otherwise.
+// Runtime safety comes from each handler validating args via zod.
+const sharedChatSpecs = sharedTools.filter((s) =>
   SHARED_CHAT_TOOL_NAMES.has(s.name),
-);
+) as ToolSpec[];
 
 // ── Chat-only extras (server-side, not in tool-kit) ───────────
 
