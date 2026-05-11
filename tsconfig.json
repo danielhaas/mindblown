@@ -13,14 +13,7 @@
     "declaration": true,
     "declarationMap": true,
     "sourceMap": true,
-    "outDir": "dist",
-    "paths": {
-      "@mindblown/core": ["./packages/core/src"],
-      "@mindblown/mindmap": ["./packages/mindmap/src"],
-      "@mindblown/views": ["./packages/views/src"],
-      "@mindblown/server": ["./packages/server/src"],
-      "@mindblown/integrations": ["./packages/integrations/src"]
-    }
+    "outDir": "dist"
   },
   "exclude": ["node_modules", "dist"]
 }
