@@ -834,7 +834,11 @@ export interface ChatSSEEvent {
  */
 export async function* aiChat(
   mapId: string,
-  messages: Array<{ role: string; content: string }>,
+  messages: Array<{
+    role: string;
+    content: string;
+    toolCalls?: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown }>;
+  }>,
   options?: { selectedNodeId?: string | null },
 ): AsyncGenerator<ChatSSEEvent> {
   const token = getToken();

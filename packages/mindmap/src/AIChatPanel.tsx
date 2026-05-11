@@ -34,7 +34,7 @@ interface SpeechRecognition extends EventTarget {
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-  toolCalls?: Array<{ name: string; args: Record<string, unknown>; result?: unknown }>;
+  toolCalls?: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown }>;
 }
 
 interface Props {
@@ -158,8 +158,13 @@ export function AIChatPanel({ mapId, onClose }: Props) {
     setInput('');
     setLoading(true);
 
-    // Build the message history for the API (only role + content)
-    const apiMessages = updatedMessages.map((m) => ({ role: m.role, content: m.content }));
+    // Include toolCalls + results so the model sees what it actually did
+    // on prior turns — otherwise it second-guesses its own narration prose.
+    const apiMessages = updatedMessages.map((m) => ({
+      role: m.role,
+      content: m.content,
+      toolCalls: m.toolCalls,
+    }));
 
     try {
       let assistantContent = '';
@@ -181,7 +186,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
             break;
 
           case 'tool_call':
-            toolCalls.push({ name: event.name!, args: event.args ?? {} });
+            toolCalls.push({ id: event.id ?? '', name: event.name!, args: event.args ?? {} });
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last?.role === 'assistant') {
@@ -193,7 +198,9 @@ export function AIChatPanel({ mapId, onClose }: Props) {
 
           case 'tool_result': {
             // Update the tool call with its result
-            const tc = toolCalls.find((t) => t.name === event.name && !t.result);
+            const tc = toolCalls.find((t) =>
+              event.id ? t.id === event.id : t.name === event.name && !t.result,
+            );
             if (tc) tc.result = event.result;
             // Mark that we need a map refresh if a mutating tool was called
             if (event.name !== 'get_map' && event.name !== 'search_nodes') {

@@ -304,12 +304,20 @@ Node to break down: "${targetNode.text}"`;
   // next-turn input. MAX_STEPS bounds runaway loops.
 
   const MAX_STEPS = 6;
-  const MUTATING_TOOLS = new Set(['create_node', 'update_node', 'move_node', 'delete_node']);
 
   app.post('/api/ai/chat', async (req, reply) => {
     const body = req.body as {
       mapId: string;
-      messages: Array<{ role: string; content: string }>;
+      messages: Array<{
+        role: string;
+        content: string;
+        toolCalls?: Array<{
+          id?: string;
+          name: string;
+          args?: Record<string, unknown>;
+          result?: unknown;
+        }>;
+      }>;
       selectedNodeId?: string | null;
     };
 
@@ -377,13 +385,34 @@ Rules:
 3. One tool call per message. Confirm what you did in one short English sentence.
 4. You cannot delete nodes.`;
 
-      const messages: NormalizedMessage[] = body.messages.map((m) =>
-        m.role === 'assistant'
-          ? { role: 'assistant' as const, content: m.content, toolCalls: [] }
-          : { role: 'user' as const, content: m.content },
-      );
-
-      let mutationDone = false;
+      // Round-trip prior turns' tool calls + results so the model can see
+      // what it actually did — without these blocks it second-guesses its
+      // own prose and re-executes completed actions.
+      const messages: NormalizedMessage[] = [];
+      for (let mIdx = 0; mIdx < body.messages.length; mIdx++) {
+        const m = body.messages[mIdx];
+        if (m.role !== 'assistant') {
+          messages.push({ role: 'user' as const, content: m.content });
+          continue;
+        }
+        // Drop tool calls without results — Anthropic rejects an unmatched tool_use block.
+        const completed = (m.toolCalls ?? []).filter((tc) => tc.result !== undefined);
+        const toolCalls: NormalizedToolCall[] = completed.map((tc, i) => ({
+          id: tc.id ?? `prior-${mIdx}-${i}`,
+          name: tc.name,
+          args: tc.args ?? {},
+        }));
+        messages.push({ role: 'assistant' as const, content: m.content, toolCalls });
+        for (let i = 0; i < completed.length; i++) {
+          const tc = completed[i];
+          messages.push({
+            role: 'tool' as const,
+            toolCallId: toolCalls[i].id,
+            toolName: tc.name,
+            content: typeof tc.result === 'string' ? tc.result : JSON.stringify(tc.result),
+          });
+        }
+      }
 
       for (let step = 0; step < MAX_STEPS; step++) {
         let assistantText = '';
@@ -413,9 +442,6 @@ Rules:
 
         if (!firstToolCall) break;
 
-        // Defense against runaway mutations across steps.
-        if (mutationDone) break;
-
         send('tool_call', {
           id: firstToolCall.id,
           name: firstToolCall.name,
@@ -444,8 +470,6 @@ Rules:
           toolName: firstToolCall.name,
           content: result,
         });
-
-        if (MUTATING_TOOLS.has(firstToolCall.name)) mutationDone = true;
       }
 
       send('done', {});
