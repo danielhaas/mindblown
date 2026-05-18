@@ -54,8 +54,55 @@ interface Props {
   onClose: () => void;
 }
 
+// Persisted-message key per map. Survives Map Chat toggling AI Chat off,
+// closing+reopening the panel, and full-page reloads. Restricted to messages
+// (not loading/input/listening — those are session-local UI state).
+const STORAGE_KEY_PREFIX = 'mindblown:aichat:';
+
+function loadStoredMessages(mapId: string): ChatMessage[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(`${STORAGE_KEY_PREFIX}${mapId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // Drop any tool calls still marked "running" — they can't actually be
+    // resumed across mount, and a stale spinner would be misleading.
+    return parsed.map((m: ChatMessage) => {
+      if (m.role !== 'assistant' || !m.toolCalls?.length) return m;
+      const toolCalls = m.toolCalls.map((tc) =>
+        tc.state === 'running' ? { ...tc, state: 'error' as const } : tc,
+      );
+      return { ...m, toolCalls };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function storeMessages(mapId: string, messages: ChatMessage[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (messages.length === 0) {
+      window.localStorage.removeItem(`${STORAGE_KEY_PREFIX}${mapId}`);
+    } else {
+      window.localStorage.setItem(
+        `${STORAGE_KEY_PREFIX}${mapId}`,
+        JSON.stringify(messages),
+      );
+    }
+  } catch {
+    // Quota exceeded or storage disabled — silently drop. The in-memory state
+    // is still authoritative for this session.
+  }
+}
+
 export function AIChatPanel({ mapId, onClose }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  // Initialize from storage so toggling Map Chat / × / reload doesn't wipe
+  // the conversation. Lazy initializer runs once per mount.
+  const [messages, setMessages] = useState<ChatMessage[]>(() =>
+    loadStoredMessages(mapId),
+  );
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [config, setConfig] = useState<AiConfigResponse | null>(null);
@@ -67,6 +114,35 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   // ref rather than state so the Stop click reads the current controller
   // without dragging it through React's render loop.
   const abortRef = useRef<AbortController | null>(null);
+
+  // Persist on every change. localStorage writes are cheap for small payloads
+  // and the chat history is bounded by what a human will type/read in a session.
+  useEffect(() => {
+    storeMessages(mapId, messages);
+  }, [mapId, messages]);
+
+  // If the user switches to a different map while the panel stays mounted,
+  // hydrate that map's stored conversation. Without this, the panel would
+  // keep showing the prior map's messages until manually cleared.
+  const lastMapIdRef = useRef(mapId);
+  useEffect(() => {
+    if (lastMapIdRef.current === mapId) return;
+    lastMapIdRef.current = mapId;
+    setMessages(loadStoredMessages(mapId));
+  }, [mapId]);
+
+  // Abort any in-flight chat when the panel unmounts — otherwise the fetch
+  // keeps running in the background and we leak it.
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  const clearMessages = useCallback(() => {
+    abortRef.current?.abort();
+    setMessages([]);
+  }, []);
   // Snapshot of the input when listening starts. Each onresult event rebuilds
   // input = base + final + interim, so the user can still see what they had
   // typed before they hit the mic.
@@ -333,7 +409,18 @@ export function AIChatPanel({ mapId, onClose }: Props) {
             {config.active.model}
           </span>
         )}
-        <button onClick={onClose} style={closeBtnStyle}>&times;</button>
+        {messages.length > 0 && (
+          <button
+            onClick={clearMessages}
+            title="Clear this conversation"
+            aria-label="Clear conversation"
+            style={clearBtnStyle}
+            disabled={loading}
+          >
+            Clear
+          </button>
+        )}
+        <button onClick={onClose} style={closeBtnStyle} title="Close (your chat is saved)">&times;</button>
       </div>
 
       {/* Focus row — surfaces what "this" refers to in the conversation */}
@@ -556,6 +643,19 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
   padding: '0 4px',
   lineHeight: 1,
+};
+
+const clearBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: '1px solid #e2e8f0',
+  borderRadius: 4,
+  fontSize: 11,
+  color: '#64748b',
+  cursor: 'pointer',
+  padding: '2px 8px',
+  marginRight: 4,
+  lineHeight: 1.4,
+  fontFamily: 'inherit',
 };
 
 const messagesStyle: React.CSSProperties = {
