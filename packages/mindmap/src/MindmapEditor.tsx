@@ -1443,6 +1443,57 @@ export function MindmapEditor() {
         </g>
       </svg>
 
+      {/* Floating zoom controls — persistent, discoverable. Bottom-left to
+          stay clear of the right-docked chat panel and the top toolbar. */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 12,
+          bottom: 12,
+          zIndex: 15,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          background: '#fff',
+          border: '1px solid #e2e8f0',
+          borderRadius: 8,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          overflow: 'hidden',
+          fontFamily: 'inherit',
+          minWidth: 44,
+        }}
+      >
+        <button
+          onClick={() => setView((v) => ({ ...v, zoom: Math.min(MAX_ZOOM, v.zoom * 1.2) }))}
+          title="Zoom in"
+          aria-label="Zoom in"
+          style={zoomCtrlBtnStyle}
+        >+</button>
+        <button
+          onClick={() => setView((v) => ({ ...v, zoom: 1 }))}
+          title="Reset zoom to 100%"
+          aria-label="Reset zoom"
+          style={{ ...zoomCtrlBtnStyle, fontSize: 11, fontWeight: 600, color: '#64748b' }}
+        >{Math.round(view.zoom * 100)}%</button>
+        <button
+          onClick={() => setView((v) => ({ ...v, zoom: Math.max(MIN_ZOOM, v.zoom / 1.2) }))}
+          title="Zoom out"
+          aria-label="Zoom out"
+          style={zoomCtrlBtnStyle}
+        >−</button>
+        <button
+          onClick={fitToScreen}
+          title="Fit to screen (Cmd/Ctrl+0)"
+          aria-label="Fit to screen"
+          style={{
+            ...zoomCtrlBtnStyle,
+            borderTop: '1px solid #e2e8f0',
+            fontSize: 16,
+            lineHeight: 1,
+          }}
+        >⛶</button>
+      </div>
+
       {/* Bulk action bar */}
       {showBulkActions && (
         <BulkActionBar
@@ -1586,4 +1637,17 @@ const ctxMenuItemStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 13,
   color: '#1e293b',
+};
+
+const zoomCtrlBtnStyle: React.CSSProperties = {
+  background: '#fff',
+  border: 'none',
+  padding: '6px 0',
+  fontSize: 14,
+  fontWeight: 600,
+  color: '#475569',
+  cursor: 'pointer',
+  textAlign: 'center',
+  lineHeight: 1,
+  fontFamily: 'inherit',
 };
