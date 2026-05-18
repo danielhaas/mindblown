@@ -423,6 +423,84 @@ export interface ImportedIssue {
   groupLabel: string | null;
   /** GitHub milestone title, if the issue belongs to one. */
   milestoneTitle: string | null;
+  /**
+   * Parent issue number from the same repo, if a hierarchy was detected.
+   * See parseParentRelationships for the patterns that count.
+   */
+  parentNumber: number | null;
+}
+
+/**
+ * Infer a parent-issue number for each issue by scanning bodies for the two
+ * conventions teams actually use to express an "epic → task" hierarchy in
+ * GitHub:
+ *
+ * 1. **Task-list children.** An epic issue lists its children as markdown
+ *    checkboxes: `- [ ] #42`. Each referenced issue gets that epic as parent.
+ * 2. **Explicit parent declaration.** A child issue starts its body with
+ *    `Parent: #5`, `Epic: #5`, `Sub-issue of #5`, or `Part of #5`.
+ *
+ * Only edges where both endpoints are in the import batch survive — we can't
+ * link to an issue we didn't fetch. Cycles are broken by dropping the closing
+ * edge. First-detected parent wins for any given child.
+ */
+export function parseParentRelationships(issues: GitHubIssue[]): Map<number, number> {
+  const inBatch = new Set(issues.map((i) => i.number));
+  const parentOf = new Map<number, number>();
+
+  // Pass 1 — task lists in epic bodies.
+  // `- [ ] #42` or `- [x] owner/repo#42`. Same-repo cross-references only;
+  // we deliberately ignore cross-repo (we can't link to nodes outside this map).
+  const taskListRe = /^\s*[-*]\s+\[[ xX]\]\s+(?:[\w.-]+\/[\w.-]+)?#(\d+)/gm;
+  for (const issue of issues) {
+    const body = issue.body ?? '';
+    let m: RegExpExecArray | null;
+    const re = new RegExp(taskListRe.source, taskListRe.flags);
+    while ((m = re.exec(body)) !== null) {
+      const childNum = Number.parseInt(m[1], 10);
+      if (childNum === issue.number) continue;
+      if (!inBatch.has(childNum)) continue;
+      if (parentOf.has(childNum)) continue;
+      parentOf.set(childNum, issue.number);
+    }
+  }
+
+  // Pass 2 — explicit parent declarations near the top of the body.
+  // Capped at ~500 chars to avoid matching the same phrase buried in
+  // long discussion or a closing checklist. Word boundary stops "parents"
+  // (or longer words) from being matched as "parent".
+  const parentRe = /(?:^|\n)\s*(?:parent|epic|sub-?issue\s+of|part\s+of)\b[:\s]*#(\d+)/i;
+  for (const issue of issues) {
+    if (parentOf.has(issue.number)) continue;
+    const head = (issue.body ?? '').slice(0, 500);
+    const m = parentRe.exec(head);
+    if (!m) continue;
+    const parentNum = Number.parseInt(m[1], 10);
+    if (parentNum === issue.number) continue;
+    if (!inBatch.has(parentNum)) continue;
+    parentOf.set(issue.number, parentNum);
+  }
+
+  // Pass 3 — break cycles. Walking parent→...→ancestor from each child must
+  // terminate; if we see the same node twice in a chain, drop the edge that
+  // closes the cycle so the rest of the chain can still be honored.
+  const settled = new Set<number>();
+  for (const start of [...parentOf.keys()]) {
+    if (settled.has(start)) continue;
+    const onPath = new Set<number>();
+    let cur: number | undefined = start;
+    while (cur !== undefined && !settled.has(cur)) {
+      if (onPath.has(cur)) {
+        parentOf.delete(cur);
+        break;
+      }
+      onPath.add(cur);
+      cur = parentOf.get(cur);
+    }
+    for (const n of onPath) settled.add(n);
+  }
+
+  return parentOf;
 }
 
 /**
@@ -462,6 +540,8 @@ export async function importGitHubIssues(
     if (issues.length >= 1000) break;
   }
 
+  const parentOf = parseParentRelationships(issues);
+
   return issues.map((issue) => {
     // Prefer milestone's functional part for grouping (e.g. "V1: 3. Erweiterte Funktionen" → "Erweiterte Funktionen")
     // Fall back to first non-priority label if no milestone
@@ -482,6 +562,7 @@ export async function importGitHubIssues(
       externalLink: buildExternalLink(repoOwner, repoName, issue),
       groupLabel,
       milestoneTitle: issue.milestone?.title ?? null,
+      parentNumber: parentOf.get(issue.number) ?? null,
     };
   });
 }
