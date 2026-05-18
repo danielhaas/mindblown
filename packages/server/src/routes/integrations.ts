@@ -452,20 +452,6 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         }
       }
 
-      // ── Group by functional label for tree structure ──────────────
-      const groups = new Map<string, typeof importedIssues>();
-      const ungrouped: typeof importedIssues = [];
-
-      for (const item of importedIssues) {
-        if (item.groupLabel) {
-          const group = groups.get(item.groupLabel) ?? [];
-          group.push(item);
-          groups.set(item.groupLabel, group);
-        } else {
-          ungrouped.push(item);
-        }
-      }
-
       const createdNodes: Array<{ nodeId: string; issueNumber: number }> = [];
       const linkedNodes: Array<{ nodeId: string; issueNumber: number }> = [];
       const skippedNodes: Array<{ nodeId: string; issueNumber: number }> = [];
@@ -496,6 +482,56 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         if (!existingByText.has(key)) existingByText.set(key, n.id);
       }
 
+      // ── Hierarchy resolution ──────────────────────────────────────
+      // importGitHubIssues already inferred parentNumber (task-list + body
+      // "Parent: #N" patterns). We now want each child issue to land under
+      // its parent's node, falling through to milestone/label grouping only
+      // when no parent can be resolved in this batch or in pre-existing nodes.
+      const importedByNumber = new Map<number, typeof importedIssues[0]>();
+      for (const item of importedIssues) {
+        importedByNumber.set(item.issue.number, item);
+      }
+
+      const externalIdOf = (n: number) => `${owner}/${repo}#${n}`;
+      const nodeIdByIssueNumber = new Map<number, string>();
+
+      // An item is a "root" in the import iff it has no parentNumber, or its
+      // parent isn't anywhere reachable (not in this batch, not in the DB).
+      // Roots are the ones that need group/Backlog branch placement; everything
+      // else attaches to a concrete parent node id.
+      const isRootForImport = (item: typeof importedIssues[0]): boolean => {
+        if (item.parentNumber == null) return true;
+        if (importedByNumber.has(item.parentNumber)) return false;
+        if (existingByExternalId.has(externalIdOf(item.parentNumber))) return false;
+        return true;
+      };
+
+      const resolveParentNode = (
+        item: typeof importedIssues[0],
+      ): string | null => {
+        if (item.parentNumber == null) return null;
+        const fromBatch = nodeIdByIssueNumber.get(item.parentNumber);
+        if (fromBatch) return fromBatch;
+        const fromExisting = existingByExternalId.get(externalIdOf(item.parentNumber));
+        if (fromExisting) return fromExisting;
+        return null;
+      };
+
+      // ── Group ROOTS by functional label for branch creation ───────
+      // (Child items will attach to their parent node and bypass this entirely.)
+      const groups = new Map<string, typeof importedIssues>();
+      const ungrouped: typeof importedIssues = [];
+      for (const item of importedIssues) {
+        if (!isRootForImport(item)) continue;
+        if (item.groupLabel) {
+          const group = groups.get(item.groupLabel) ?? [];
+          group.push(item);
+          groups.set(item.groupLabel, group);
+        } else {
+          ungrouped.push(item);
+        }
+      }
+
       // Helper to get the version ID for an issue
       const getIdsForIssue = (item: typeof importedIssues[0]) => {
         if (!item.milestoneTitle) return {};
@@ -505,18 +541,20 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return versionId ? { versionId } : {};
       };
 
-      // Process one issue: skip / link-to-existing / create-new.
-      // Returns 'created' if a fresh node was made under newParentFn (lazy),
-      // 'linked' if attached to an existing node, or 'skipped' if already linked.
+      // Process one issue: skip / link-to-existing / create-new under getParentId.
+      // Returns the resolved node id (whether newly created, linked to an
+      // existing match, or already-linked skip) so children can attach to it.
+      // `getParentId` is lazy so we don't create empty branch nodes when every
+      // item in a group ends up routed to an existing node.
       const processItem = async (
         item: typeof importedIssues[0],
-        newParentFn: () => Promise<string>,
-      ): Promise<'created' | 'linked' | 'skipped'> => {
+        getParentId: () => Promise<string>,
+      ): Promise<string> => {
         // (1) Already linked?
         const existingId = existingByExternalId.get(item.externalLink.externalId);
         if (existingId) {
           skippedNodes.push({ nodeId: existingId, issueNumber: item.issue.number });
-          return 'skipped';
+          return existingId;
         }
 
         // (2) Text match on an unlinked existing node?
@@ -535,11 +573,11 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           // same batch can't re-link it.
           existingByExternalId.set(item.externalLink.externalId, textMatchId);
           linkedNodes.push({ nodeId: textMatchId, issueNumber: item.issue.number });
-          return 'linked';
+          return textMatchId;
         }
 
         // (3) Create new child under the branch (lazy — only create branch if needed).
-        const parentId = await newParentFn();
+        const parentId = await getParentId();
         const childNode = await nodeDb.createNode({
           mapId: req.params.mapId,
           parentId,
@@ -564,29 +602,23 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         existingByExternalId.set(item.externalLink.externalId, childNode.id);
         existingByText.set(normalizeText(item.issue.title), childNode.id);
         createdNodes.push({ nodeId: childNode.id, issueNumber: item.issue.number });
-        return 'created';
+        return childNode.id;
       };
 
-      // Create functional group branch nodes and their children (lazily)
-      for (const [label, items] of groups) {
-        let branchId: string | null = null;
-        const ensureBranch = async (): Promise<string> => {
-          if (branchId) return branchId;
-          const branchNode = await nodeDb.createNode({
-            mapId: req.params.mapId,
-            parentId: parentNodeId,
-            text: label,
-            createdBy,
-          });
-          branchId = branchNode.id;
-          return branchId;
-        };
-        for (const item of items) {
-          await processItem(item, ensureBranch);
-        }
-      }
-
-      // Create ungrouped issues under a "Backlog" branch (lazily)
+      // ── Phase A: process ROOTS through group/Backlog branches ─────
+      const branchIds = new Map<string, string>();
+      const ensureBranch = (label: string) => async (): Promise<string> => {
+        const cached = branchIds.get(label);
+        if (cached) return cached;
+        const branchNode = await nodeDb.createNode({
+          mapId: req.params.mapId,
+          parentId: parentNodeId,
+          text: label,
+          createdBy,
+        });
+        branchIds.set(label, branchNode.id);
+        return branchNode.id;
+      };
       let backlogId: string | null = null;
       const ensureBacklog = async (): Promise<string> => {
         if (backlogId) return backlogId;
@@ -599,8 +631,48 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         backlogId = backlogNode.id;
         return backlogId;
       };
+
+      for (const [label, items] of groups) {
+        const ensureThisBranch = ensureBranch(label);
+        for (const item of items) {
+          const nodeId = await processItem(item, ensureThisBranch);
+          nodeIdByIssueNumber.set(item.issue.number, nodeId);
+        }
+      }
       for (const item of ungrouped) {
-        await processItem(item, ensureBacklog);
+        const nodeId = await processItem(item, ensureBacklog);
+        nodeIdByIssueNumber.set(item.issue.number, nodeId);
+      }
+
+      // ── Phase B: process CHILDREN, draining parents-first ─────────
+      // Each pass picks up items whose parent is now known (either freshly
+      // created in Phase A, created earlier in this loop, or pre-existing in
+      // the DB). Loops until a pass makes no progress — anything still left
+      // is a cycle remainder the parser couldn't break, flushed as a root.
+      const pendingChildren = importedIssues.filter((i) => !isRootForImport(i));
+      let madeProgress = true;
+      while (pendingChildren.length > 0 && madeProgress) {
+        madeProgress = false;
+        for (let i = 0; i < pendingChildren.length; ) {
+          const item = pendingChildren[i];
+          const parentNodeId = resolveParentNode(item);
+          if (parentNodeId == null) {
+            i++;
+            continue;
+          }
+          const nodeId = await processItem(item, async () => parentNodeId);
+          nodeIdByIssueNumber.set(item.issue.number, nodeId);
+          pendingChildren.splice(i, 1);
+          madeProgress = true;
+        }
+      }
+      // Cycle leftovers — fall through to group/Backlog so nothing is dropped.
+      for (const item of pendingChildren) {
+        const fallback = item.groupLabel
+          ? ensureBranch(item.groupLabel)
+          : ensureBacklog;
+        const nodeId = await processItem(item, fallback);
+        nodeIdByIssueNumber.set(item.issue.number, nodeId);
       }
 
       broadcast(req.params.mapId, { type: 'github:imported', count: createdNodes.length });
