@@ -243,6 +243,7 @@ const DEPTH_OPTIONS = [
   { value: 1, label: '1' },
   { value: 2, label: '2' },
   { value: 3, label: '3' },
+  { value: 5, label: '5' },
   { value: 0, label: 'All' },
 ];
 
@@ -404,6 +405,18 @@ export function MindmapEditor() {
     }
     return meta;
   }, [visibleNodes]);
+
+  // Total nodes the current depth cap is hiding. Surfaced next to the Depth
+  // selector so users notice when their map is deeper than what's on screen
+  // (the original "I thought this only supported 3 layers" confusion).
+  const hiddenByDepthCount = useMemo(() => {
+    if (maxDepth === 0) return 0;
+    let total = 0;
+    for (const vn of visibleNodes) {
+      if (vn.hasHiddenChildren) total += vn.hiddenDescendantCount;
+    }
+    return total;
+  }, [visibleNodes, maxDepth]);
 
   // ── Layout computation ─────────────────────────────────────
 
@@ -1145,6 +1158,27 @@ export function MindmapEditor() {
               {opt.label}
             </button>
           ))}
+          {hiddenByDepthCount > 0 && (
+            <button
+              onClick={() => setMaxDepth(0)}
+              title={`${hiddenByDepthCount} node${hiddenByDepthCount === 1 ? '' : 's'} hidden by current depth — click to show all levels`}
+              style={{
+                marginLeft: 4,
+                padding: '2px 8px',
+                fontSize: 10,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                color: '#b45309',
+                background: '#fef3c7',
+                border: '1px solid #fde68a',
+                borderRadius: 4,
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              +{hiddenByDepthCount} hidden
+            </button>
+          )}
         </div>
 
         <button
