@@ -708,6 +708,80 @@ function SprintIndicator({
   );
 }
 
+/**
+ * A small floating pill rendered in place of a docked chat panel when the
+ * user has minimised it. Click the label to restore the panel, click × to
+ * fully close. Stacked above the TicketButton in the bottom-right corner.
+ */
+function MinimisedChip({
+  label,
+  color,
+  bottom,
+  onExpand,
+  onClose,
+}: {
+  label: string;
+  color: string;
+  bottom: number;
+  onExpand: () => void;
+  onClose: () => void;
+}) {
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        right: 20,
+        bottom,
+        zIndex: 40,
+        display: 'flex',
+        alignItems: 'stretch',
+        height: 32,
+        borderRadius: 16,
+        background: '#fff',
+        border: `1px solid ${color}`,
+        boxShadow: '0 4px 12px rgba(0,0,0,0.12)',
+        overflow: 'hidden',
+        fontFamily: 'inherit',
+      }}
+    >
+      <button
+        onClick={onExpand}
+        title={`Restore ${label}`}
+        style={{
+          padding: '0 12px',
+          background: 'transparent',
+          border: 'none',
+          color,
+          fontSize: 12,
+          fontWeight: 600,
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+        }}
+      >
+        {label}
+      </button>
+      <button
+        onClick={onClose}
+        title="Close"
+        aria-label="Close"
+        style={{
+          padding: '0 10px',
+          background: 'transparent',
+          border: 'none',
+          borderLeft: `1px solid ${color}33`,
+          color: '#94a3b8',
+          fontSize: 16,
+          lineHeight: 1,
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ── Main App ───────────────────────────────────────────────────
 
 export function App() {
@@ -750,7 +824,9 @@ export function App() {
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
+  const [aiChatMinimised, setAiChatMinimised] = useState(false);
   const [mapChatOpen, setMapChatOpen] = useState(false);
+  const [mapChatMinimised, setMapChatMinimised] = useState(false);
   const mapChatUnread = useMapChatUnread(currentMapId, rootNodeId, mapChatOpen);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
@@ -1234,8 +1310,20 @@ export function App() {
           {/* AI Chat toggle */}
           <button
             onClick={() => {
-              setAiChatOpen((v) => !v);
-              setMapChatOpen(false);
+              // Three states: closed → fully open, minimised → restore,
+              // open → close. Bringing AI Chat fully on screen force-minimises
+              // (not closes) a fully-open Map chat — both 380px right-docks
+              // overlap, but its conversation is preserved.
+              if (!aiChatOpen) {
+                setAiChatOpen(true);
+                setAiChatMinimised(false);
+                if (mapChatOpen && !mapChatMinimised) setMapChatMinimised(true);
+              } else if (aiChatMinimised) {
+                setAiChatMinimised(false);
+                if (mapChatOpen && !mapChatMinimised) setMapChatMinimised(true);
+              } else {
+                setAiChatOpen(false);
+              }
             }}
             style={{
               padding: '3px 10px',
@@ -1256,8 +1344,16 @@ export function App() {
           {/* Map chat toggle (talk to other people on this map) */}
           <button
             onClick={() => {
-              setMapChatOpen((v) => !v);
-              setAiChatOpen(false);
+              if (!mapChatOpen) {
+                setMapChatOpen(true);
+                setMapChatMinimised(false);
+                if (aiChatOpen && !aiChatMinimised) setAiChatMinimised(true);
+              } else if (mapChatMinimised) {
+                setMapChatMinimised(false);
+                if (aiChatOpen && !aiChatMinimised) setAiChatMinimised(true);
+              } else {
+                setMapChatOpen(false);
+              }
             }}
             title={
               mapChatUnread > 0
@@ -1538,19 +1634,48 @@ export function App() {
         />
       )}
 
-      {/* AI Chat Panel */}
-      {aiChatOpen && currentMapId && (
+      {/* AI Chat Panel — full panel when open & !minimised, chip when minimised */}
+      {aiChatOpen && currentMapId && !aiChatMinimised && (
         <AIChatPanel
           mapId={currentMapId}
+          onClose={() => setAiChatOpen(false)}
+          onMinimise={() => setAiChatMinimised(true)}
+        />
+      )}
+      {aiChatOpen && currentMapId && aiChatMinimised && (
+        <MinimisedChip
+          label="AI Chat"
+          color="#3b82f6"
+          bottom={72}
+          onExpand={() => {
+            setAiChatMinimised(false);
+            // Force-minimise (not close) the other chat if it's fully open,
+            // so the two 380px right-docked panels don't overlap. Leave it
+            // alone if it's already minimised or fully closed.
+            if (mapChatOpen && !mapChatMinimised) setMapChatMinimised(true);
+          }}
           onClose={() => setAiChatOpen(false)}
         />
       )}
 
-      {/* Map Chat Panel */}
-      {mapChatOpen && currentMapId && rootNodeId && (
+      {/* Map Chat Panel — same minimise pattern */}
+      {mapChatOpen && currentMapId && rootNodeId && !mapChatMinimised && (
         <MapChatPanel
           mapId={currentMapId}
           rootNodeId={rootNodeId}
+          onClose={() => setMapChatOpen(false)}
+          onMinimise={() => setMapChatMinimised(true)}
+        />
+      )}
+      {mapChatOpen && currentMapId && rootNodeId && mapChatMinimised && (
+        <MinimisedChip
+          label={mapChatUnread > 0 ? `Map chat · ${mapChatUnread > 99 ? '99+' : mapChatUnread}` : 'Map chat'}
+          color="#0ea5e9"
+          bottom={aiChatOpen && aiChatMinimised ? 116 : 72}
+          onExpand={() => {
+            setMapChatMinimised(false);
+            if (aiChatOpen && !aiChatMinimised) setAiChatMinimised(true);
+          }}
           onClose={() => setMapChatOpen(false)}
         />
       )}

@@ -52,6 +52,7 @@ interface ChatMessage {
 interface Props {
   mapId: string;
   onClose: () => void;
+  onMinimise?: () => void;
 }
 
 // Persisted-message key per map. Survives Map Chat toggling AI Chat off,
@@ -97,7 +98,7 @@ function storeMessages(mapId: string, messages: ChatMessage[]): void {
   }
 }
 
-export function AIChatPanel({ mapId, onClose }: Props) {
+export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   // Initialize from storage so toggling Map Chat / × / reload doesn't wipe
   // the conversation. Lazy initializer runs once per mount.
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
@@ -420,6 +421,16 @@ export function AIChatPanel({ mapId, onClose }: Props) {
             Clear
           </button>
         )}
+        {onMinimise && (
+          <button
+            onClick={onMinimise}
+            style={minimiseBtnStyle}
+            title="Minimise"
+            aria-label="Minimise"
+          >
+            −
+          </button>
+        )}
         <button onClick={onClose} style={closeBtnStyle} title="Close (your chat is saved)">&times;</button>
       </div>
 
@@ -655,6 +666,17 @@ const clearBtnStyle: React.CSSProperties = {
   padding: '2px 8px',
   marginRight: 4,
   lineHeight: 1.4,
+  fontFamily: 'inherit',
+};
+
+const minimiseBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  fontSize: 20,
+  color: '#94a3b8',
+  cursor: 'pointer',
+  padding: '0 6px',
+  lineHeight: 1,
   fontFamily: 'inherit',
 };
 

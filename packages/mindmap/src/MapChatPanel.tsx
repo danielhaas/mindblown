@@ -11,18 +11,32 @@ export function MapChatPanel({
   mapId,
   rootNodeId,
   onClose,
+  onMinimise,
 }: {
   mapId: string;
   rootNodeId: string;
   onClose: () => void;
+  onMinimise?: () => void;
 }) {
   return (
     <div style={panelStyle}>
       <div style={headerStyle}>
         <span style={{ fontWeight: 600, fontSize: 14 }}>Map chat</span>
-        <button onClick={onClose} style={closeBtnStyle} aria-label="Close">
-          &times;
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          {onMinimise && (
+            <button
+              onClick={onMinimise}
+              style={minimiseBtnStyle}
+              aria-label="Minimise"
+              title="Minimise"
+            >
+              −
+            </button>
+          )}
+          <button onClick={onClose} style={closeBtnStyle} aria-label="Close" title="Close">
+            &times;
+          </button>
+        </div>
       </div>
       <div style={bodyStyle}>
         <CommentsPanel
@@ -66,6 +80,16 @@ const closeBtnStyle: React.CSSProperties = {
   color: '#94a3b8',
   cursor: 'pointer',
   padding: '0 4px',
+  lineHeight: 1,
+};
+
+const minimiseBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  fontSize: 20,
+  color: '#94a3b8',
+  cursor: 'pointer',
+  padding: '0 6px',
   lineHeight: 1,
 };
 
