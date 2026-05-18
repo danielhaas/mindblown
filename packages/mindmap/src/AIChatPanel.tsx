@@ -31,10 +31,22 @@ interface SpeechRecognition extends EventTarget {
   stop(): void;
 }
 
+type ToolCallState = 'running' | 'done' | 'error';
+
+interface ChatToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+  result?: unknown;
+  state?: ToolCallState;
+}
+
 interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
-  toolCalls?: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown }>;
+  toolCalls?: ChatToolCall[];
+  /** Non-bubble status notice (rendered as a banner under the message). */
+  statusBanner?: { kind: 'error' | 'info'; text: string };
 }
 
 interface Props {
@@ -51,6 +63,10 @@ export function AIChatPanel({ mapId, onClose }: Props) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Lets the user cancel an in-flight request via the Stop button. We hold a
+  // ref rather than state so the Stop click reads the current controller
+  // without dragging it through React's render loop.
+  const abortRef = useRef<AbortController | null>(null);
   // Snapshot of the input when listening starts. Each onresult event rebuilds
   // input = base + final + interim, so the user can still see what they had
   // typed before they hit the mic.
@@ -166,94 +182,126 @@ export function AIChatPanel({ mapId, onClose }: Props) {
       toolCalls: m.toolCalls,
     }));
 
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    // Commits the in-flight assistant message into state. Called after every
+    // event so the UI reflects partial progress (deltas, tool start/finish).
+    let assistantContent = '';
+    const toolCalls: ChatToolCall[] = [];
+    let banner: ChatMessage['statusBanner'] = undefined;
+    const flush = () => {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        const draft: ChatMessage = {
+          role: 'assistant',
+          content: assistantContent,
+          toolCalls: toolCalls.map((tc) => ({ ...tc })),
+          statusBanner: banner,
+        };
+        if (last?.role === 'assistant') return [...prev.slice(0, -1), draft];
+        if (assistantContent || toolCalls.length > 0 || banner) return [...prev, draft];
+        return prev;
+      });
+    };
+
     try {
-      let assistantContent = '';
-      const toolCalls: ChatMessage['toolCalls'] = [];
       let needsRefresh = false;
 
-      for await (const event of api.aiChat(mapId, apiMessages, { selectedNodeId })) {
+      for await (const event of api.aiChat(mapId, apiMessages, {
+        selectedNodeId,
+        signal: controller.signal,
+      })) {
         switch (event.type) {
           case 'delta':
             assistantContent += event.content ?? '';
-            // Update the assistant message in real-time
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: assistantContent, toolCalls: [...toolCalls] }];
-              }
-              return [...prev, { role: 'assistant', content: assistantContent, toolCalls: [...toolCalls] }];
-            });
+            flush();
             break;
 
           case 'tool_call':
-            toolCalls.push({ id: event.id ?? '', name: event.name!, args: event.args ?? {} });
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: assistantContent, toolCalls: [...toolCalls] }];
-              }
-              return [...prev, { role: 'assistant', content: assistantContent, toolCalls: [...toolCalls] }];
+            toolCalls.push({
+              id: event.id ?? '',
+              name: event.name!,
+              args: event.args ?? {},
+              state: 'running',
             });
+            flush();
             break;
 
           case 'tool_result': {
-            // Update the tool call with its result
             const tc = toolCalls.find((t) =>
-              event.id ? t.id === event.id : t.name === event.name && !t.result,
+              event.id ? t.id === event.id : t.name === event.name && t.state === 'running',
             );
-            if (tc) tc.result = event.result;
-            // Mark that we need a map refresh if a mutating tool was called
+            if (tc) {
+              tc.result = event.result;
+              tc.state =
+                typeof event.result === 'string' && event.result.startsWith('Error:')
+                  ? 'error'
+                  : 'done';
+            }
             if (event.name !== 'get_map' && event.name !== 'search_nodes') {
               needsRefresh = true;
             }
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: assistantContent, toolCalls: [...toolCalls] }];
-              }
-              return [...prev, { role: 'assistant', content: assistantContent, toolCalls: [...toolCalls] }];
-            });
+            flush();
             break;
           }
 
+          case 'step_limit':
+            banner = {
+              kind: 'info',
+              text: `Stopped after ${event.maxSteps ?? 6} tool steps — ask a follow-up to continue.`,
+            };
+            flush();
+            break;
+
           case 'error':
-            assistantContent += `\n\nError: ${event.message}`;
-            setMessages((prev) => {
-              const last = prev[prev.length - 1];
-              if (last?.role === 'assistant') {
-                return [...prev.slice(0, -1), { ...last, content: assistantContent }];
-              }
-              return [...prev, { role: 'assistant', content: assistantContent }];
-            });
+            banner = {
+              kind: 'error',
+              text: event.message ?? 'The AI hit an error.',
+            };
+            // Any tool still marked "running" never reported back — mark it
+            // failed so the user doesn't think it's still doing something.
+            for (const tc of toolCalls) {
+              if (tc.state === 'running') tc.state = 'error';
+            }
+            flush();
             break;
         }
       }
 
-      // Ensure the final assistant message is saved
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last?.role === 'assistant') {
-          return [...prev.slice(0, -1), { ...last, content: assistantContent, toolCalls: [...toolCalls] }];
-        }
-        if (assistantContent || toolCalls.length > 0) {
-          return [...prev, { role: 'assistant', content: assistantContent, toolCalls: [...toolCalls] }];
-        }
-        return prev;
-      });
+      flush();
 
-      // Refresh the map if any mutating tools were called
       if (needsRefresh) {
         await loadMap(mapId);
       }
     } catch (err: any) {
-      setMessages((prev) => [
-        ...prev,
-        { role: 'assistant', content: `Error: ${err.message}` },
-      ]);
+      if (controller.signal.aborted) {
+        banner = { kind: 'info', text: 'Stopped.' };
+      } else {
+        const code = (err as { code?: string }).code;
+        banner = {
+          kind: 'error',
+          text:
+            code === 'AI_DISCONNECTED'
+              ? 'Connection to the AI was lost. Try again.'
+              : err?.message
+                ? `Error: ${err.message}`
+                : 'Something went wrong.',
+        };
+      }
+      for (const tc of toolCalls) {
+        if (tc.state === 'running') tc.state = 'error';
+      }
+      flush();
     } finally {
+      if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
     }
-  }, [input, messages, loading, mapId, loadMap]);
+  }, [input, messages, loading, mapId, loadMap, selectedNodeId]);
+
+  const stop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
 
   // Latest-sendMessage ref — rec.onend captures toggleMic's closure, which
   // would otherwise see a stale sendMessage and submit with stale state.
@@ -271,6 +319,7 @@ export function AIChatPanel({ mapId, onClose }: Props) {
 
   return (
     <div style={panelStyle}>
+      <style>{`@keyframes mindblown-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }`}</style>
       {/* Header */}
       <div style={headerStyle}>
         <span style={{ fontWeight: 600, fontSize: 14 }}>AI Chat</span>
@@ -315,6 +364,9 @@ export function AIChatPanel({ mapId, onClose }: Props) {
             </div>
             {msg.toolCalls?.map((tc, j) => (
               <div key={j} style={toolCallStyle}>
+                <span style={{ ...toolBadgeStyle, ...toolBadgeVariant(tc.state) }}>
+                  {toolBadgeLabel(tc.state)}
+                </span>
                 <span style={{ fontWeight: 500 }}>{formatToolName(tc.name)}</span>
                 {tc.args && Object.keys(tc.args).length > 0 && (
                   <span style={{ color: '#64748b' }}>
@@ -322,16 +374,33 @@ export function AIChatPanel({ mapId, onClose }: Props) {
                   </span>
                 )}
                 {tc.result != null && (
-                  <div style={{ fontSize: 11, color: '#16a34a', marginTop: 2 }}>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: tc.state === 'error' ? '#dc2626' : '#16a34a',
+                      marginTop: 2,
+                    }}
+                  >
                     {formatToolResult(tc.name, tc.result)}
                   </div>
                 )}
               </div>
             ))}
+            {msg.statusBanner && (
+              <div
+                style={
+                  msg.statusBanner.kind === 'error' ? errorBannerStyle : infoBannerStyle
+                }
+              >
+                {msg.statusBanner.text}
+              </div>
+            )}
           </div>
         ))}
-        {loading && messages[messages.length - 1]?.role === 'user' && (
-          <div style={{ ...assistantBubbleStyle, opacity: 0.5 }}>Thinking...</div>
+        {loading && (
+          <div style={workingIndicatorStyle} aria-live="polite">
+            <span style={dotPulseStyle} /> AI is working…
+          </div>
         )}
         <div ref={messagesEndRef} />
       </div>
@@ -365,19 +434,42 @@ export function AIChatPanel({ mapId, onClose }: Props) {
             <MicIcon />
           </button>
         )}
-        <button
-          onClick={() => sendMessage()}
-          disabled={loading || !input.trim()}
-          style={{
-            ...sendBtnStyle,
-            opacity: loading || !input.trim() ? 0.4 : 1,
-          }}
-        >
-          Send
-        </button>
+        {loading ? (
+          <button
+            onClick={stop}
+            title="Stop the AI"
+            aria-label="Stop"
+            style={stopBtnStyle}
+          >
+            Stop
+          </button>
+        ) : (
+          <button
+            onClick={() => sendMessage()}
+            disabled={!input.trim()}
+            style={{
+              ...sendBtnStyle,
+              opacity: !input.trim() ? 0.4 : 1,
+            }}
+          >
+            Send
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+function toolBadgeLabel(state: ToolCallState | undefined): string {
+  if (state === 'done') return '✓';
+  if (state === 'error') return '✗';
+  return '…';
+}
+
+function toolBadgeVariant(state: ToolCallState | undefined): React.CSSProperties {
+  if (state === 'done') return { background: '#dcfce7', color: '#166534' };
+  if (state === 'error') return { background: '#fee2e2', color: '#991b1b' };
+  return { background: '#e0e7ff', color: '#3730a3' };
 }
 
 // ── Formatters ─────────────────────────────────────────────────
@@ -574,4 +666,69 @@ const sendBtnStyle: React.CSSProperties = {
   fontSize: 13,
   fontWeight: 500,
   cursor: 'pointer',
+};
+
+const stopBtnStyle: React.CSSProperties = {
+  padding: '8px 16px',
+  background: '#fff',
+  color: '#dc2626',
+  border: '1px solid #fecaca',
+  borderRadius: 8,
+  fontSize: 13,
+  fontWeight: 500,
+  cursor: 'pointer',
+};
+
+const toolBadgeStyle: React.CSSProperties = {
+  display: 'inline-block',
+  minWidth: 16,
+  textAlign: 'center',
+  marginRight: 6,
+  padding: '0 5px',
+  borderRadius: 4,
+  fontSize: 10,
+  fontWeight: 700,
+  lineHeight: '14px',
+  verticalAlign: 'middle',
+};
+
+const errorBannerStyle: React.CSSProperties = {
+  marginTop: 4,
+  padding: '6px 10px',
+  background: '#fef2f2',
+  color: '#991b1b',
+  border: '1px solid #fecaca',
+  borderRadius: 6,
+  fontSize: 12,
+  maxWidth: '85%',
+};
+
+const infoBannerStyle: React.CSSProperties = {
+  marginTop: 4,
+  padding: '6px 10px',
+  background: '#fef9c3',
+  color: '#854d0e',
+  border: '1px solid #fde68a',
+  borderRadius: 6,
+  fontSize: 12,
+  maxWidth: '85%',
+};
+
+const workingIndicatorStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 4px',
+  fontSize: 12,
+  color: '#64748b',
+  fontStyle: 'italic',
+};
+
+const dotPulseStyle: React.CSSProperties = {
+  display: 'inline-block',
+  width: 8,
+  height: 8,
+  borderRadius: '50%',
+  background: '#3b82f6',
+  animation: 'mindblown-pulse 1s ease-in-out infinite',
 };

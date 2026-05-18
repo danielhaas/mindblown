@@ -71,13 +71,16 @@ export const ollamaProvider: ChatProvider = {
       (s: ToolSpec) => specToOpenAiTool(s) as unknown as OpenAI.ChatCompletionTool,
     );
 
-    const response = await client.chat.completions.create({
-      model: AI_MODEL,
-      messages: toOpenAiMessages(opts.systemPrompt, opts.messages),
-      tools,
-      temperature: 0.3,
-      max_tokens: opts.maxTokens ?? 2048,
-    });
+    const response = await client.chat.completions.create(
+      {
+        model: AI_MODEL,
+        messages: toOpenAiMessages(opts.systemPrompt, opts.messages),
+        tools,
+        temperature: 0.3,
+        max_tokens: opts.maxTokens ?? 2048,
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    );
 
     const choice = response.choices[0];
     if (!choice) {

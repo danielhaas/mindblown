@@ -819,18 +819,25 @@ export function setAiProvider(settings: AiProviderSettings): Promise<AiProviderS
 }
 
 export interface ChatSSEEvent {
-  type: 'delta' | 'tool_call' | 'tool_result' | 'done' | 'error';
+  type: 'delta' | 'tool_call' | 'tool_result' | 'step_limit' | 'done' | 'error';
   content?: string;
   id?: string;
   name?: string;
   args?: Record<string, unknown>;
   result?: unknown;
   message?: string;
+  code?: string;
+  maxSteps?: number;
 }
 
 /**
  * Stream a chat conversation with the AI. Returns an async iterator of SSE events.
  * The AI can call tools (create/move/delete nodes) and we get notified of each step.
+ *
+ * If the underlying stream closes before a `done` or `error` event arrives
+ * (e.g. server crash, proxy timeout, killed connection), the generator throws
+ * an Error tagged `code: 'AI_DISCONNECTED'` so the UI can surface it instead
+ * of silently leaving the user staring at a half-written reply.
  */
 export async function* aiChat(
   mapId: string,
@@ -839,7 +846,7 @@ export async function* aiChat(
     content: string;
     toolCalls?: Array<{ id: string; name: string; args: Record<string, unknown>; result?: unknown }>;
   }>,
-  options?: { selectedNodeId?: string | null },
+  options?: { selectedNodeId?: string | null; signal?: AbortSignal },
 ): AsyncGenerator<ChatSSEEvent> {
   const token = getToken();
   const res = await fetch(`${BASE_URL}/api/ai/chat`, {
@@ -853,6 +860,7 @@ export async function* aiChat(
       messages,
       selectedNodeId: options?.selectedNodeId ?? null,
     }),
+    signal: options?.signal,
   });
 
   if (!res.ok) {
@@ -865,6 +873,7 @@ export async function* aiChat(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let sawTerminal = false;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -881,10 +890,17 @@ export async function* aiChat(
       } else if (line.startsWith('data: ') && currentEvent) {
         try {
           const data = JSON.parse(line.slice(6));
+          if (currentEvent === 'done' || currentEvent === 'error') sawTerminal = true;
           yield { type: currentEvent as ChatSSEEvent['type'], ...data };
         } catch { /* skip malformed */ }
         currentEvent = '';
       }
     }
+  }
+
+  if (!sawTerminal && !options?.signal?.aborted) {
+    const err = new Error('Connection to the AI was lost mid-response.');
+    (err as Error & { code?: string }).code = 'AI_DISCONNECTED';
+    throw err;
   }
 }

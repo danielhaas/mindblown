@@ -304,6 +304,13 @@ Node to break down: "${targetNode.text}"`;
   // next-turn input. MAX_STEPS bounds runaway loops.
 
   const MAX_STEPS = 6;
+  // No provider event for this long → assume upstream is wedged, abort.
+  // Generous because qwen2.5:14b on Ollama can take ~90s for tool-heavy turns.
+  const TURN_WATCHDOG_MS = 120_000;
+  // Idle SSE comment cadence — keeps reverse-proxy connections alive while
+  // we wait on a non-streaming upstream (e.g. Ollama returning a whole
+  // completion in one shot). Comments are ignored by EventSource.
+  const HEARTBEAT_MS = 10_000;
 
   app.post('/api/ai/chat', async (req, reply) => {
     const body = req.body as {
@@ -337,9 +344,41 @@ Node to break down: "${targetNode.text}"`;
       'X-Accel-Buffering': 'no',
     });
 
+    // Connection state. Once the client disconnects (or we wrote `done`/`error`
+    // and ended the response) further writes would EPIPE; guard the helper.
+    let clientGone = false;
     const send = (event: string, data: unknown) => {
-      reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      if (clientGone || reply.raw.destroyed) return;
+      try {
+        reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+      } catch {
+        clientGone = true;
+      }
     };
+    const heartbeat = setInterval(() => {
+      if (clientGone || reply.raw.destroyed) return;
+      try {
+        reply.raw.write(`: hb\n\n`);
+      } catch {
+        clientGone = true;
+      }
+    }, HEARTBEAT_MS);
+
+    // Per-request abort: fires on client disconnect OR watchdog timeout. We
+    // record the *reason* in a closure variable so the catch block below can
+    // distinguish "user closed the panel" from "upstream wedged" and either
+    // exit silently or surface AI_TIMEOUT to the (still-watching) user.
+    type AbortReason = 'client_disconnect' | 'timeout' | null;
+    let abortReason: AbortReason = null;
+    const controller = new AbortController();
+    const onClientClose = () => {
+      clientGone = true;
+      if (!controller.signal.aborted) {
+        abortReason = 'client_disconnect';
+        controller.abort();
+      }
+    };
+    reply.raw.on('close', onClientClose);
 
     try {
       const provider = await resolveProvider();
@@ -414,23 +453,47 @@ Rules:
         }
       }
 
+      let hitStepLimit = false;
       for (let step = 0; step < MAX_STEPS; step++) {
         let assistantText = '';
         let firstToolCall: NormalizedToolCall | null = null;
 
-        for await (const ev of provider.runTurn({
-          systemPrompt,
-          messages,
-          tools: getChatToolSpecs(provider.name),
-        })) {
-          if (ev.type === 'text_delta') {
-            assistantText += ev.text;
-            send('delta', { content: ev.text });
-          } else if (ev.type === 'tool_call') {
-            // Only the first tool call per turn \u2014 keeps both providers
-            // consistent and matches the legacy 14B-stable behavior.
-            if (!firstToolCall) firstToolCall = ev.toolCall;
+        // Watchdog: trip if the provider goes silent for too long. Reset on
+        // every event we receive. With Ollama's non-streaming runTurn the
+        // *only* event arrival is the end of the upstream completion, so the
+        // watchdog effectively caps total turn time; with Anthropic streaming
+        // the deltas arrive in milliseconds and the watchdog never trips.
+        let watchdog: NodeJS.Timeout | null = null;
+        const armWatchdog = () => {
+          if (watchdog) clearTimeout(watchdog);
+          watchdog = setTimeout(() => {
+            if (!controller.signal.aborted) {
+              abortReason = 'timeout';
+              controller.abort();
+            }
+          }, TURN_WATCHDOG_MS);
+        };
+        armWatchdog();
+
+        try {
+          for await (const ev of provider.runTurn({
+            systemPrompt,
+            messages,
+            tools: getChatToolSpecs(provider.name),
+            signal: controller.signal,
+          })) {
+            armWatchdog();
+            if (ev.type === 'text_delta') {
+              assistantText += ev.text;
+              send('delta', { content: ev.text });
+            } else if (ev.type === 'tool_call') {
+              // Only the first tool call per turn \u2014 keeps both providers
+              // consistent and matches the legacy 14B-stable behavior.
+              if (!firstToolCall) firstToolCall = ev.toolCall;
+            }
           }
+        } finally {
+          if (watchdog) clearTimeout(watchdog);
         }
 
         // Append the assistant turn so the next provider call sees the history.
@@ -441,6 +504,11 @@ Rules:
         });
 
         if (!firstToolCall) break;
+
+        // If this was the final allowed iteration and the model still wants
+        // to call tools, we'll execute this one but mark that we ran out of
+        // room to let it summarise \u2014 surface that to the UI as step_limit.
+        if (step === MAX_STEPS - 1) hitStepLimit = true;
 
         send('tool_call', {
           id: firstToolCall.id,
@@ -470,13 +538,27 @@ Rules:
           toolName: firstToolCall.name,
           content: result,
         });
+
+        if (clientGone) break;
       }
 
+      if (hitStepLimit) send('step_limit', { maxSteps: MAX_STEPS });
       send('done', {});
     } catch (err: any) {
-      send('error', { message: err.message });
+      if (abortReason === 'client_disconnect') {
+        // Client is gone, no one's listening \u2014 just unwind silently.
+      } else if (abortReason === 'timeout') {
+        send('error', {
+          code: 'AI_TIMEOUT',
+          message: `The AI took too long to respond (waited ${TURN_WATCHDOG_MS / 1000}s). Try again or simplify the request.`,
+        });
+      } else {
+        send('error', { message: err.message });
+      }
     } finally {
-      reply.raw.end();
+      clearInterval(heartbeat);
+      reply.raw.off('close', onClientClose);
+      if (!reply.raw.destroyed) reply.raw.end();
     }
   });
 
