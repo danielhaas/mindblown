@@ -81,23 +81,26 @@ export const anthropicProvider: ChatProvider = {
       (s) => specToAnthropicTool(s) as unknown as Anthropic.Tool,
     );
 
-    const stream = client.messages.stream({
-      model: ANTHROPIC_MODEL,
-      max_tokens: opts.maxTokens ?? 4096,
-      // effort: 'high' is the floor for intelligence-sensitive work on Opus 4.7.
-      // `output_config` may not be in every SDK version's strict types yet;
-      // pass it through with a typed loosening rather than guess at the shape.
-      ...({ output_config: { effort: 'high' } } as Record<string, unknown>),
-      system: [
-        {
-          type: 'text',
-          text: opts.systemPrompt,
-          cache_control: { type: 'ephemeral' },
-        },
-      ],
-      tools,
-      messages: toAnthropicMessages(opts.messages),
-    });
+    const stream = client.messages.stream(
+      {
+        model: ANTHROPIC_MODEL,
+        max_tokens: opts.maxTokens ?? 4096,
+        // effort: 'high' is the floor for intelligence-sensitive work on Opus 4.7.
+        // `output_config` may not be in every SDK version's strict types yet;
+        // pass it through with a typed loosening rather than guess at the shape.
+        ...({ output_config: { effort: 'high' } } as Record<string, unknown>),
+        system: [
+          {
+            type: 'text',
+            text: opts.systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+        tools,
+        messages: toAnthropicMessages(opts.messages),
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    );
 
     // Per-block accumulators for tool_use input JSON, keyed by content-block index.
     const toolBlocks = new Map<

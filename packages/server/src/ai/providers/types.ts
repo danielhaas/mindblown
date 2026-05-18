@@ -31,6 +31,8 @@ export interface RunTurnOptions {
   messages: NormalizedMessage[];
   tools: ToolSpec[];
   maxTokens?: number;
+  /** Abort the upstream HTTP call (client disconnect or watchdog timeout). */
+  signal?: AbortSignal;
 }
 
 export type ProviderName = 'ollama' | 'anthropic';
