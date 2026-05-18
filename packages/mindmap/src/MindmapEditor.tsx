@@ -476,18 +476,30 @@ export function MindmapEditor() {
 
   // ── Fit to screen function ─────────────────────────────────
 
-  const fitToScreen = useCallback(() => {
-    if (allLayoutNodes.length === 0) return;
+  // One fit attempt — returns true on success, false if the SVG isn't
+  // properly sized yet (we'll retry next frame).
+  const tryFit = useCallback((): boolean => {
+    if (allLayoutNodes.length === 0) return true; // nothing to fit; treat as done
     const svg = svgRef.current;
-    if (!svg) return;
+    if (!svg) return true;
 
-    const bounds = computeBounds(allLayoutNodes);
     const svgRect = svg.getBoundingClientRect();
     const padding = 80;
+    // SVG hasn't been laid out yet (e.g. fired immediately after a view
+    // switch, before flex sizing settled). Reading width/height as 0
+    // previously produced negative scale factors and an inverted "shrunk
+    // to a dot" transform — caller should retry next frame.
+    if (svgRect.width <= padding * 2 || svgRect.height <= padding * 2) {
+      return false;
+    }
 
+    const bounds = computeBounds(allLayoutNodes);
     const scaleX = (svgRect.width - padding * 2) / (bounds.width + padding);
     const scaleY = (svgRect.height - padding * 2) / (bounds.height + padding);
-    const zoom = Math.min(1, Math.min(scaleX, scaleY));
+    // Clamp inside [MIN_ZOOM, 1]. The upper bound stays — fitToScreen
+    // shouldn't ever ENLARGE — but the lower bound prevents pathological
+    // inputs from producing 0 / negative zoom when bounds are degenerate.
+    const zoom = Math.max(MIN_ZOOM, Math.min(1, Math.min(scaleX, scaleY)));
 
     const centerX = bounds.minX + bounds.width / 2;
     const centerY = bounds.minY + bounds.height / 2;
@@ -497,7 +509,17 @@ export function MindmapEditor() {
       panX: svgRect.width / 2 - centerX * zoom,
       panY: svgRect.height / 2 - centerY * zoom,
     });
+    return true;
   }, [allLayoutNodes]);
+
+  const fitToScreen = useCallback(() => {
+    let retries = 5;
+    const attempt = () => {
+      if (tryFit()) return;
+      if (retries-- > 0) requestAnimationFrame(attempt);
+    };
+    attempt();
+  }, [tryFit]);
 
   // Expose fitToScreen, zoomIn, zoomOut on the window for the command palette / App
   useEffect(() => {
