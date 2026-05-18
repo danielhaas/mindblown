@@ -408,6 +408,14 @@ Node to break down: "${targetNode.text}"`;
         ? `When the user says "this" or "here", they mean the focused node above. Use its id as parentId for "add a child" requests unless told otherwise.`
         : `When the user says "add X" without a parent, use parentId "${rootId}".`;
 
+      // Tell the model to recover from typos with whatever search tool it
+      // has. Anthropic gets semantic_search; Ollama only sees search_nodes
+      // (the local 14B model drifts when both are exposed at once).
+      const typoRecoveryHint =
+        provider.name === 'anthropic'
+          ? `If the user names a node that doesn't appear in the tree above, treat it as a possible typo or paraphrase — try search_nodes (substring) or semantic_search (meaning) before assuming they meant something literal. E.g. "rename the lawyer node" on a map with no "lawyer" likely means "layer". When still unsure after one search, ask one short clarifying question instead of guessing.`
+          : `If the user names a node that doesn't appear in the tree above, treat it as a possible typo — try search_nodes with the closest substring before assuming they meant something literal. E.g. "rename the lawyer node" on a map with no "lawyer" likely means "layer". When still unsure, ask one short clarifying question instead of guessing.`;
+
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
 mapId = "${body.mapId}"
@@ -422,7 +430,8 @@ Rules:
 1. Only use IDs shown in [id:...] above. Never invent an ID.
 2. For move_node: "source" is the node being moved, "destination" is where it goes.
 3. One tool call per message. Confirm what you did in one short English sentence.
-4. You cannot delete nodes.`;
+4. You cannot delete nodes.
+5. ${typoRecoveryHint}`;
 
       // Round-trip prior turns' tool calls + results so the model can see
       // what it actually did — without these blocks it second-guesses its
