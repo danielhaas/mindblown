@@ -14,6 +14,12 @@ export const createNodeTool = defineTool({
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
+    autoProgress: z
+      .enum(['off', 'children'])
+      .optional()
+      .describe(
+        "Parent-epic auto-progress mode. 'children' opts this node into rollup (its computed progress is derived from its children's weighted estimates × progress). 'off' is the default and leaves the manually-set percentComplete in place.",
+      ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -47,6 +53,12 @@ export const updateNodeTool = defineTool({
     tags: z.array(z.string()).optional().describe('Tags'),
     assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
+    autoProgress: z
+      .enum(['off', 'children'])
+      .optional()
+      .describe(
+        "Parent-epic auto-progress mode. 'children' opts the node into rollup so its computed progress is derived from children's weighted estimates × progress. 'off' (default) keeps the manually-set percentComplete.",
+      ),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};

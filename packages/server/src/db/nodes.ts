@@ -83,6 +83,7 @@ export interface CreateNodeInput {
   priority?: Priority;
   startDate?: string;
   dueDate?: string;
+  autoProgress?: 'off' | 'children';
 }
 
 export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
@@ -103,6 +104,7 @@ export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
     priority: input.priority ?? null,
     startDate: input.startDate ?? null,
     dueDate: input.dueDate ?? null,
+    autoProgress: input.autoProgress ?? 'off',
     assigneeIds: [],
     tags: [],
     customFields: {},

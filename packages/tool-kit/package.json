@@ -13,7 +13,9 @@
   },
   "scripts": {
     "build": "tsc || true",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@mindblown/core": "workspace:*",
@@ -21,6 +23,7 @@
     "zod-to-json-schema": "^3.25.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }
