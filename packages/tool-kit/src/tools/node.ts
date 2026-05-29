@@ -14,6 +14,12 @@ export const createNodeTool = defineTool({
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
+    autoProgress: z
+      .enum(['off', 'children'])
+      .optional()
+      .describe(
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+      ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -47,6 +53,12 @@ export const updateNodeTool = defineTool({
     tags: z.array(z.string()).optional().describe('Tags'),
     assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
+    autoProgress: z
+      .enum(['off', 'children'])
+      .optional()
+      .describe(
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+      ),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};

@@ -5,9 +5,108 @@ import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from '../ai/embeddings.js';
-import { updateGitHubIssue, closeGitHubIssue } from '@mindblown/integrations';
+import { updateGitHubIssue, closeGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
+
+// ── Auto-link helper (#58) ──────────────────────────────────────
+// Titles that begin with `#NNNN` are almost always referencing an existing
+// GitHub issue — the planning agent knew which issue this node represents
+// but forgot to call link_github_issue. We catch that here so the orphan
+// bucket stays empty without per-call discipline. Spec: GitHub issue #58.
+//
+// Pattern: leading `#NNNN` followed by either a space or end-of-string.
+// Anchored — `#NNNN` mid-title is most likely a co-mention (e.g. an inline
+// PR reference), not the node's own identity.
+const AUTOLINK_TITLE_RE = /^#(\d+)(?:\s|$)/;
+
+/**
+ * Extract the leading issue number from a title, or null when the title
+ * doesn't match the auto-link pattern.
+ */
+export function extractAutoLinkIssueNumber(title: string): number | null {
+  if (!title) return null;
+  const m = AUTOLINK_TITLE_RE.exec(title);
+  if (!m) return null;
+  const n = Number.parseInt(m[1], 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * If the title starts with `#NNNN` and the map has a GitHub repo bound to
+ * it, verify the issue exists and attach an `externalLink`. Skips silently
+ * when:
+ *   - the title doesn't match the pattern,
+ *   - no GitHub repo is connected,
+ *   - the issue lookup returns a non-2xx (404 = the planning-prefix case
+ *     where `#NNNN` isn't actually an issue number — common false positive),
+ *   - the node already has a GitHub link (caller's explicit link wins).
+ *
+ * Fire-and-forget side of the create/update routes: errors are logged but
+ * never propagate; the node creation/update itself has already succeeded.
+ *
+ * Returns the attached ExternalLink, or null when no link was attached.
+ */
+async function autoLinkNodeFromTitle(
+  nodeId: string,
+  mapId: string,
+  title: string,
+): Promise<ExternalLink | null> {
+  const issueNumber = extractAutoLinkIssueNumber(title);
+  if (issueNumber === null) return null;
+
+  // Re-fetch node to see current externalLinks state (race with concurrent
+  // link_github_issue is extremely unlikely on the create-path, but cheap
+  // to check). For update-path the caller has already gated on "no existing
+  // link" via shouldAutoLinkOnUpdate, but we double-check defensively.
+  const node = await nodeDb.getNode(nodeId);
+  if (!node) return null;
+  const alreadyHasGithub = node.externalLinks.some((l) => l.provider === 'github');
+  if (alreadyHasGithub) return null;
+
+  const ghCtx = await getGitHubContextForMap(mapId);
+  if (!ghCtx) return null;
+
+  // Verify issue exists. 404 is a legit "this is a planning prefix, not an
+  // issue" signal — skip silently. Any other error is logged but also
+  // swallowed; we never want auto-link failure to bubble up.
+  let issue: Awaited<ReturnType<typeof getGitHubIssue>>;
+  try {
+    issue = await getGitHubIssue(ghCtx.owner, ghCtx.repo, issueNumber, ghCtx.token);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Don't spam logs for 404s — that's the "not really an issue ref" case.
+    if (!/404/.test(msg)) {
+      console.warn(
+        `[github-autolink] Issue lookup failed for ${ghCtx.owner}/${ghCtx.repo}#${issueNumber}:`,
+        msg,
+      );
+    }
+    return null;
+  }
+
+  const externalLink: ExternalLink = {
+    provider: 'github',
+    externalId: `${ghCtx.owner}/${ghCtx.repo}#${issueNumber}`,
+    url: issue.html_url,
+    syncEnabled: true,
+    lastSyncedAt: new Date().toISOString(),
+  };
+
+  const updated = await nodeDb.updateNode(nodeId, {
+    externalLinks: [...node.externalLinks, externalLink],
+  });
+  if (updated) {
+    broadcast(mapId, {
+      type: 'node:updated',
+      nodeId,
+      fields: ['externalLinks'],
+      node: updated,
+      source: 'github_autolink',
+    });
+  }
+  return externalLink;
+}
 
 // Fields that should trigger outbound GitHub sync
 const SYNC_FIELDS = new Set([
@@ -67,6 +166,14 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       priority?: 'P0' | 'P1' | 'P2' | 'P3';
       startDate?: string;
       dueDate?: string;
+      autoProgress?: 'off' | 'children';
+      /**
+       * Set to `true` when the caller wants to disable the `^#NNNN`
+       * auto-link backstop (#58). Useful when the leading `#NNNN` is
+       * planning syntax unrelated to a real issue and the caller
+       * doesn't want the issue-existence ping.
+       */
+      skipAutoLink?: boolean;
     };
     const userId = req.userId ?? body.createdBy ?? 'system';
 
@@ -76,8 +183,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // `skipAutoLink` is not a column on the nodes table — strip it before
+    // forwarding to the DB layer.
+    const { skipAutoLink, ...nodeFields } = body;
     const node = await nodeDb.createNode({
-      ...body,
+      ...nodeFields,
       mapId: req.params.id,
       createdBy: userId,
     });
@@ -87,6 +197,16 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
     // Schedule a background embedding for semantic search
     scheduleEmbedNode(node.id);
+
+    // Auto-link to GitHub issue when title starts with `#NNNN` (#58).
+    // Fire-and-forget — the node creation itself has succeeded and the
+    // caller already has the response. Concurrent clients see the link
+    // appear via WebSocket once it lands.
+    if (!skipAutoLink && body.text) {
+      autoLinkNodeFromTitle(node.id, req.params.id, body.text).catch((err) => {
+        console.warn('[github-autolink] create_node autolink failed:', err);
+      });
+    }
 
     // Change history (fire-and-forget)
     events
@@ -199,6 +319,19 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
       // Fire outbound GitHub sync (non-blocking)
       syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
+
+      // Auto-link to GitHub when the title was just changed AND the node has
+      // no existing GitHub link (#58). The "no existing link" gate is the
+      // important one — we must never override an explicit prior link, even
+      // if the new title points elsewhere.
+      if (body.text !== undefined && before) {
+        const hadGithubLink = before.externalLinks.some((l) => l.provider === 'github');
+        if (!hadGithubLink) {
+          autoLinkNodeFromTitle(req.params.nodeId, req.params.id, updated.text).catch((err) => {
+            console.warn('[github-autolink] update_node autolink failed:', err);
+          });
+        }
+      }
 
       // Change history (fire-and-forget): one event per tracked field that
       // actually changed.

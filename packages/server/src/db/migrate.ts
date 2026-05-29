@@ -467,6 +467,14 @@ export async function runMigrations(): Promise<void> {
     ON release_snapshots(map_id, snapshot_date DESC)
   `);
 
+  // ── Parent-epic auto-progress flag on nodes (#57) ─────────────
+  // Default 'off' so existing nodes keep manual progress; flip to
+  // 'children' to opt into auto-rollup from GitHub child-PR patterns.
+  // No backfill needed — the default covers every existing row.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS auto_progress TEXT NOT NULL DEFAULT 'off'
+  `);
+
   // ── Drop Milestone entity (collapsed into Version) ────────────
   // Historical: milestones were a first-class entity and nodes carried
   // both milestone_id and an is_milestone boolean checkpoint flag.

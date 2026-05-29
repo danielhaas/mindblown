@@ -116,6 +116,16 @@ export interface Node {
   // ── Integrations ──────────────────────────────────────────
   externalLinks: ExternalLink[];
 
+  // ── Auto-progress (parent-epic rollup) ────────────────────
+  /**
+   * When set to `'children'`, the server auto-computes percentComplete on this
+   * node by counting closed/open GitHub child issues whose titles reference
+   * this node's linked issue (e.g. `[#NNNN-followup] ...`). See
+   * `packages/server/src/sync/parentEpicRollup.ts` for the supported patterns.
+   * `'off'` (default) leaves manual progress authoritative.
+   */
+  autoProgress: 'off' | 'children';
+
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601

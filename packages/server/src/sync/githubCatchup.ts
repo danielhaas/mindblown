@@ -23,6 +23,10 @@ import { db } from '../db/connection.js';
 import { integrations, maps, nodes, githubRepoSync } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import {
+  parseParentReferences,
+  applyRollupForFetchedIssues,
+} from './parentEpicRollup.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -236,6 +240,40 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         node: updated,
         source: 'github_catchup',
       });
+    }
+  }
+
+  // ── Parent-epic rollup (#57) ─────────────────────────────────
+  // For every changed issue whose title matches one of our child-PR
+  // patterns, recompute its parent epic's progress. We dedupe parent
+  // numbers across the batch and fetch the full repo issue list at most
+  // once (parent rollup needs the WHOLE sibling set, not just the changed
+  // slice). On a sleepy repo this is a single extra fetch per cycle; on a
+  // busy one with multiple parent matches it's still just one fetch.
+  const parentNumbers = new Set<number>();
+  for (const issue of issues) {
+    for (const n of parseParentReferences(issue.title)) {
+      parentNumbers.add(n);
+    }
+  }
+  if (parentNumbers.size > 0) {
+    try {
+      // since=null → full issue list for accurate sibling counts.
+      const allIssues = await fetchChangedIssues(target.owner, target.repo, token, null);
+      await applyRollupForFetchedIssues(
+        [...parentNumbers],
+        allIssues,
+        { owner: target.owner, repo: target.repo },
+      );
+    } catch (err) {
+      // Rollup failures don't taint the reconcile result — they just mean
+      // parent percentages stay stale until next cycle.
+      console.warn(
+        '[catchup] Parent-epic rollup failed for',
+        repoLabel,
+        ':',
+        err instanceof Error ? err.message : err,
+      );
     }
   }
 
