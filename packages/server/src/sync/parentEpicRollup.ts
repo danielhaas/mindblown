@@ -53,21 +53,35 @@ import { broadcast } from '../ws.js';
 // Order matters only for documentation; we test each one independently
 // and union the results.
 //
-// All patterns:
-//   - Anchor at the start of the title (`^`) — a `#NNNN` buried mid-title
-//     is most likely a different reference (a co-mentioned issue, a PR
-//     link in a checklist, etc.), not a parent claim.
-//   - Capture the parent issue number in group 1.
+// Patterns split into two families:
+//
+//   - Leading-anchor (`^`): a `#NNNN` that opens the title is a strong
+//     parent claim (the bracketed and "Follow-up to" forms).
+//   - Embedded: trailing-paren `(#NNNN follow-up)` (end-anchored) and
+//     reviewer-attributed `(Ray|Rita|Dana review of #NNNN ...)`
+//     (mid-string OK) are how Stella's decomposition titles surface most
+//     often in practice — e.g.
+//       `Sweep denormalised ChatMessage.mandate ... (#664 follow-up)`
+//       `Fix stale role='advisor' literal ... (Ray review of #614 followup)`
+//     We deliberately require either the literal "follow-up" trailer or
+//     a reviewer keyword ("review of" / "follow-up to") so that incidental
+//     mid-title `#NNNN` (e.g. `random text (Ray helped with #614)`) does
+//     not match.
+//   - All patterns capture the parent issue number in group 1.
 
 const PATTERN_BRACKETED_FOLLOWUP = /^\[#(\d+)(?:-followup)?\]/;
 const PATTERN_FOLLOWUP_TO = /^Follow-up to #(\d+)/i;
 const PATTERN_V_UAT = /^\[V\d+\s+UAT\s+#(\d+)\]/i;
+const PATTERN_TRAILING_FOLLOWUP = /\(#(\d+)\s+(?:[^)]*\s+)?follow-?up\)$/i;
+const PATTERN_REVIEWER_ATTRIBUTED = /\((?:Ray|Rita|Dana)\s+(?:review of|follow-up to)\s+#(\d+)[^)]*\)/i;
 
 /** All patterns we recognize, exported for documentation/test introspection. */
 export const DEFAULT_PARENT_PATTERNS: ReadonlyArray<RegExp> = [
   PATTERN_BRACKETED_FOLLOWUP,
   PATTERN_FOLLOWUP_TO,
   PATTERN_V_UAT,
+  PATTERN_TRAILING_FOLLOWUP,
+  PATTERN_REVIEWER_ATTRIBUTED,
 ];
 
 /**
@@ -208,27 +222,38 @@ export async function applyRollupToParent(
   if (counts.total <= 0) return false;
 
   const pct = computeRollupPercent(counts);
-  const currentDescription =
-    typeof parentNode.description === 'string' ? parentNode.description : null;
-  const newDescription = updateChildPrsTailLine(currentDescription, counts);
 
-  // We pass description as a string. The DB column is jsonb, but the
-  // existing helpers already round-trip strings through it (see how the
-  // GitHub importer writes `description: item.issue.body`). Mixed-shape
-  // descriptions are preserved by writing only when the existing value
-  // was a string or null — non-string ProseMirror docs would be a bug to
-  // overwrite. We keep the same conservative rule here.
-  const updates: nodeDb.UpdateNodeInput = {
-    percentComplete: pct,
-    description: newDescription as unknown as nodeDb.UpdateNodeInput['description'],
-  };
+  // ProseMirror JSON descriptions are preserved as-is. The DB column is
+  // jsonb and the existing GitHub importer writes a plain string into it
+  // (`description: item.issue.body`); for those nodes we maintain the
+  // `Child PRs: X/Y merged (auto-tracked)` tail line in the string body.
+  // For nodes whose description is a ProseMirror doc (rich-text editor
+  // output), overwriting it with a plain-string tail line would silently
+  // destroy the rich content, so we only update `percentComplete` and
+  // leave the doc alone. Injecting the tail line into a ProseMirror tree
+  // is a deliberate non-goal here — see the MindBlown CLAUDE.md "Feature
+  // Definition of Done" notes on valid follow-ups vs blocked surfaces.
+  const updates: nodeDb.UpdateNodeInput = { percentComplete: pct };
+  const updatedFields: Array<'percentComplete' | 'description'> = ['percentComplete'];
+  if (
+    typeof parentNode.description === 'string' ||
+    parentNode.description === null ||
+    parentNode.description === undefined
+  ) {
+    const currentDescription =
+      typeof parentNode.description === 'string' ? parentNode.description : null;
+    const newDescription = updateChildPrsTailLine(currentDescription, counts);
+    updates.description =
+      newDescription as unknown as nodeDb.UpdateNodeInput['description'];
+    updatedFields.push('description');
+  }
 
   const updated = await nodeDb.updateNode(parentNode.id, updates);
   if (updated) {
     broadcast(updated.mapId, {
       type: 'node:updated',
       nodeId: parentNode.id,
-      fields: ['percentComplete', 'description'],
+      fields: updatedFields,
       node: updated,
       source: 'parent_epic_rollup',
     });

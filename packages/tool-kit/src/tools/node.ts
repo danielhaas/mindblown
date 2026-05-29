@@ -18,7 +18,7 @@ export const createNodeTool = defineTool({
       .enum(['off', 'children'])
       .optional()
       .describe(
-        "Parent-epic auto-progress mode. 'children' opts this node into rollup (its computed progress is derived from its children's weighted estimates × progress). 'off' is the default and leaves the manually-set percentComplete in place.",
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
@@ -57,7 +57,7 @@ export const updateNodeTool = defineTool({
       .enum(['off', 'children'])
       .optional()
       .describe(
-        "Parent-epic auto-progress mode. 'children' opts the node into rollup so its computed progress is derived from children's weighted estimates × progress. 'off' (default) keeps the manually-set percentComplete.",
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
