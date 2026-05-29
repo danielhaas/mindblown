@@ -809,6 +809,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       versionId: null,
       cycleId: null,
       externalLinks: [],
+      autoProgress: 'off',
       createdAt: now,
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',

@@ -99,6 +99,10 @@ export const nodes = pgTable('nodes', {
   versionId: uuid('version_id'),
   cycleId: uuid('cycle_id'),
   externalLinks: jsonb('external_links').notNull().default([]), // ExternalLink[]
+  // Parent-epic auto-progress rollup. 'off' (default) = manual progress is
+  // authoritative; 'children' = computed from linked GitHub child PRs via
+  // parentEpicRollup. See packages/server/src/sync/parentEpicRollup.ts.
+  autoProgress: text('auto_progress').notNull().default('off'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),

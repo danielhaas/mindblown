@@ -162,6 +162,7 @@ export interface UpdateNodeInput {
   versionId?: string | null;
   cycleId?: string | null;
   externalLinks?: ExternalLink[];
+  autoProgress?: 'off' | 'children';
 }
 
 export async function updateNode(
@@ -216,6 +217,7 @@ export async function updateNode(
   if (input.versionId !== undefined) updates.versionId = input.versionId;
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
+  if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
 
   // Conditional update: when expectedRevision is provided, the WHERE clause
   // also matches on revision so a stale write affects 0 rows. We then look

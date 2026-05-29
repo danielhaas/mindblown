@@ -384,6 +384,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           versionId: null,
           cycleId: null,
           externalLinks: [],
+          autoProgress: 'off',
           createdAt: now,
           updatedAt: now,
           createdBy: parent.createdBy,

@@ -14,6 +14,7 @@ import {
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
+import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
@@ -71,6 +72,62 @@ export async function getGitHubContextForMap(mapId: string): Promise<GitHubMapCo
   const integration = await getGitHubIntegration(map.workspaceId);
   if (integration) {
     return { owner: integration.config.owner, repo: integration.config.repo, token: integration.config.token };
+  }
+
+  return null;
+}
+
+/**
+ * Resolve a GitHub token + repo for a given `owner/repo`, scanning every
+ * map's App binding then every workspace's PAT integration. Used by the
+ * parent-epic rollup, which fires on webhook events for child PRs that
+ * may have no linked node themselves — so we can't go via a mapId.
+ *
+ * Best-effort: returns the first successfully-minted token. Errors minting
+ * an App token (revoked install, etc.) fall through to PAT.
+ */
+async function getGitHubContextForRepo(
+  fullName: string,
+): Promise<GitHubMapContext | null> {
+  const slashIdx = fullName.indexOf('/');
+  if (slashIdx <= 0) return null;
+  const owner = fullName.slice(0, slashIdx);
+  const repo = fullName.slice(slashIdx + 1);
+
+  // App bindings first
+  const appMaps = await db
+    .select({
+      installationId: maps.githubInstallationId,
+      owner: maps.githubRepoOwner,
+      repo: maps.githubRepoName,
+    })
+    .from(maps)
+    .where(
+      and(
+        eq(maps.githubRepoOwner, owner),
+        eq(maps.githubRepoName, repo),
+      ),
+    );
+  for (const m of appMaps) {
+    if (!m.installationId) continue;
+    try {
+      const token = await mintInstallationToken(m.installationId);
+      return { owner, repo, token };
+    } catch (err) {
+      console.warn('[github] Failed to mint installation token in repo lookup:', err);
+    }
+  }
+
+  // Fall back to any PAT integration that points at this repo
+  const patIntegrations = await db
+    .select()
+    .from(integrations)
+    .where(and(eq(integrations.provider, 'github'), eq(integrations.enabled, true)));
+  for (const integ of patIntegrations) {
+    const cfg = integ.config as unknown as GitHubConfig;
+    if (cfg?.owner === owner && cfg?.repo === repo && cfg?.token) {
+      return { owner, repo, token: cfg.token };
+    }
   }
 
   return null;
@@ -764,7 +821,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // Special handling for issues.closed / issues.reopened: preserve and restore
     // the pre-close progress + status so reopening a partially-completed issue
     // doesn't discard the user's prior progress.
-    const issuePayload = payload.issue as { number?: number } | undefined;
+    const issuePayload = payload.issue as { number?: number; title?: string } | undefined;
     const payloadAction = payload.action as string | undefined;
     if (
       event === 'issues' &&
@@ -772,6 +829,29 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       repoFullName &&
       (payloadAction === 'closed' || payloadAction === 'reopened')
     ) {
+      // Parent-epic rollup (#57): if the closing/reopening issue's title
+      // matches one of our child-PR patterns, recompute the parent epic's
+      // progress. Runs regardless of whether the child itself has a linked
+      // node — that's the whole point of the feature. Fire-and-forget so
+      // the webhook response stays snappy and a fetch failure doesn't
+      // prevent us from applying the primary state transition below.
+      if (issuePayload.title) {
+        const closingTitle = issuePayload.title;
+        const closingRepo = repoFullName;
+        (async () => {
+          const ctx = await getGitHubContextForRepo(closingRepo);
+          if (!ctx) return;
+          try {
+            await rollupParentsForChildTitle(closingTitle, ctx);
+          } catch (err) {
+            console.warn(
+              '[parent-epic-rollup] Webhook rollup failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        })().catch(() => {});
+      }
+
       const externalId = `${repoFullName}#${issuePayload.number}`;
       const nodeId = await findNodeByExternalId(externalId);
       const actionLabel = `issues.${payloadAction}`;
