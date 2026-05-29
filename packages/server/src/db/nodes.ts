@@ -151,6 +151,7 @@ export interface UpdateNodeInput {
   actualEffort?: number | null;
   percentComplete?: number | null;
   status?: string | null;
+  blockedReason?: string | null;
   assigneeIds?: string[];
   priority?: Priority | null;
   dueDate?: string | null;
@@ -204,6 +205,7 @@ export async function updateNode(
   if (input.actualEffort !== undefined) updates.actualEffort = input.actualEffort;
   if (input.percentComplete !== undefined) updates.percentComplete = input.percentComplete;
   if (input.status !== undefined) updates.status = input.status;
+  if (input.blockedReason !== undefined) updates.blockedReason = input.blockedReason;
   if (input.assigneeIds !== undefined) updates.assigneeIds = input.assigneeIds;
   if (input.priority !== undefined) updates.priority = input.priority;
   if (input.dueDate !== undefined) updates.dueDate = input.dueDate;

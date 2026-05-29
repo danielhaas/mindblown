@@ -3,6 +3,7 @@ import {
   computeEffort,
   computeProgress,
   computeHealth,
+  computeIsBlocked,
   computeTree,
   leafHealth,
 } from '../compute.js';
@@ -24,6 +25,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     actualEffort: null,
     percentComplete: null,
     status: null,
+    blockedReason: null,
     assigneeIds: [],
     priority: null,
     dueDate: null,
@@ -339,5 +341,95 @@ describe('computeTree', () => {
     const { allNodes } = buildWebsiteRedesign();
     const result = computeTree(allNodes);
     expect(result.size).toBe(allNodes.length);
+  });
+});
+
+// ── computeIsBlocked ───────────────────────────────────────────
+
+describe('computeIsBlocked', () => {
+  it('flags a leaf with blockedReason as manually blocked', () => {
+    const a = makeNode({ id: 'a', blockedReason: 'waiting on legal' });
+    const map = toMap([a]);
+    const result = computeIsBlocked(a, map);
+    expect(result.isBlocked).toBe(true);
+    expect(result.blockedBy.manual).toBe(true);
+    expect(result.blockedBy.predecessorIds).toEqual([]);
+  });
+
+  it('flags a leaf with an incomplete FS predecessor as derived-blocked', () => {
+    const upstream = makeNode({ id: 'upstream', percentComplete: 50 });
+    const downstream = makeNode({
+      id: 'downstream',
+      dependencies: [{ targetNodeId: 'upstream', type: 'FS', lag: 0 }],
+    });
+    const map = toMap([upstream, downstream]);
+    const result = computeIsBlocked(downstream, map);
+    expect(result.isBlocked).toBe(true);
+    expect(result.blockedBy.manual).toBe(false);
+    expect(result.blockedBy.predecessorIds).toEqual(['upstream']);
+  });
+
+  it('does NOT flag a leaf whose FS predecessor is 100% complete', () => {
+    const upstream = makeNode({ id: 'upstream', percentComplete: 100 });
+    const downstream = makeNode({
+      id: 'downstream',
+      dependencies: [{ targetNodeId: 'upstream', type: 'FS', lag: 0 }],
+    });
+    const map = toMap([upstream, downstream]);
+    const result = computeIsBlocked(downstream, map);
+    expect(result.isBlocked).toBe(false);
+    expect(result.blockedBy.predecessorIds).toEqual([]);
+  });
+
+  it('ignores non-FS dependency types (SS, FF, SF)', () => {
+    const upstream = makeNode({ id: 'upstream', percentComplete: 0 });
+    const downstream = makeNode({
+      id: 'downstream',
+      dependencies: [
+        { targetNodeId: 'upstream', type: 'SS', lag: 0 },
+        { targetNodeId: 'upstream', type: 'FF', lag: 0 },
+        { targetNodeId: 'upstream', type: 'SF', lag: 0 },
+      ],
+    });
+    const map = toMap([upstream, downstream]);
+    const result = computeIsBlocked(downstream, map);
+    expect(result.isBlocked).toBe(false);
+    expect(result.blockedBy.predecessorIds).toEqual([]);
+  });
+
+  it('rolls up: a parent is blocked when any descendant leaf is blocked', () => {
+    const blockedLeaf = makeNode({
+      id: 'blocked-leaf',
+      parentId: 'parent',
+      blockedReason: 'vendor SLA',
+    });
+    const okLeaf = makeNode({ id: 'ok-leaf', parentId: 'parent' });
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['blocked-leaf', 'ok-leaf'],
+    });
+    const map = toMap([parent, blockedLeaf, okLeaf]);
+
+    const parentResult = computeIsBlocked(parent, map);
+    expect(parentResult.isBlocked).toBe(true);
+    expect(parentResult.blockedBy.blockedDescendantCount).toBe(1);
+    expect(parentResult.blockedBy.manual).toBe(false);
+
+    const okResult = computeIsBlocked(okLeaf, map);
+    expect(okResult.isBlocked).toBe(false);
+  });
+
+  it('computeTree attaches isBlocked + blockedBy to every node', () => {
+    const blocked = makeNode({ id: 'blocked', blockedReason: 'review pending' });
+    const free = makeNode({ id: 'free' });
+    const result = computeTree([blocked, free]);
+    expect(result.get('blocked')!.isBlocked).toBe(true);
+    expect(result.get('blocked')!.blockedBy.manual).toBe(true);
+    expect(result.get('free')!.isBlocked).toBe(false);
+    expect(result.get('free')!.blockedBy).toEqual({
+      manual: false,
+      predecessorIds: [],
+      blockedDescendantCount: 0,
+    });
   });
 });

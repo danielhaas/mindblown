@@ -33,6 +33,7 @@ export interface NodeWithComputed {
   actualEffort: number | null;
   percentComplete: number | null;
   status: string | null;
+  blockedReason: string | null;
   assigneeIds: string[];
   priority: string | null;
   dueDate: string | null;
@@ -48,6 +49,12 @@ export interface NodeWithComputed {
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;
+  isBlocked: boolean;
+  blockedBy: {
+    manual: boolean;
+    predecessorIds: string[];
+    blockedDescendantCount: number;
+  };
 }
 
 export interface MapDetail {

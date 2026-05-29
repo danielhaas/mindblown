@@ -98,6 +98,7 @@ export interface Node {
   actualEffort: number | null; // leaf-only input; null = unrecorded. Same unit as effortEstimate. Used to compute estimation accuracy.
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
+  blockedReason: string | null; // null = not manually blocked; string = blocker description
   assigneeIds: UserId[]; // zero or more assignees
   priority: Priority | null;
   dueDate: string | null; // ISO 8601 date
@@ -130,6 +131,15 @@ export interface ComputedNodeValues {
   computedEffort: number;
   computedProgress: number;
   healthSignal: HealthSignal;
+  isBlocked: boolean;
+  blockedBy: BlockedBy;
+}
+
+/** Detail behind isBlocked — which signals fired. */
+export interface BlockedBy {
+  manual: boolean; // true if blockedReason is set on this node
+  predecessorIds: NodeId[]; // FS predecessors with progress < 100
+  blockedDescendantCount: number; // leaves under this parent that are blocked
 }
 
 // ── Map schema types ────────────────────────────────────────────

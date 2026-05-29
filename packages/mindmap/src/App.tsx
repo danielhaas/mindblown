@@ -8,6 +8,7 @@ import { GanttView } from './GanttView.js';
 import { ListView } from './ListView.js';
 import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
+import { BlockedPanel } from './BlockedPanel.js';
 import { CommandPalette } from './CommandPalette.js';
 import { QuickAdd } from './QuickAdd.js';
 import { HillChart } from './HillChart.js';
@@ -577,6 +578,63 @@ function VersionIndicator({
   );
 }
 
+// ── Blocked Indicator ─────────────────────────────────────────
+
+function BlockedIndicator({
+  count,
+  panelOpen,
+  onOpenPanel,
+}: {
+  count: number;
+  panelOpen: boolean;
+  onOpenPanel: () => void;
+}) {
+  const hasBlocked = count > 0;
+  const fg = panelOpen ? '#991b1b' : hasBlocked ? '#991b1b' : '#64748b';
+  const bg = panelOpen ? '#fee2e2' : '#fff';
+  const border = panelOpen ? '#fca5a5' : hasBlocked ? '#fecaca' : '#e2e8f0';
+  return (
+    <button
+      onClick={onOpenPanel}
+      title={hasBlocked ? `${count} blocked node(s)` : 'No blocked nodes'}
+      style={{
+        padding: '3px 10px',
+        borderRadius: 4,
+        border: `1px solid ${border}`,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        cursor: 'pointer',
+        background: bg,
+        color: fg,
+        transition: 'all 0.15s',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+      }}
+    >
+      <span>🔒</span>
+      <span>Blocked</span>
+      {hasBlocked && (
+        <span
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            background: panelOpen ? '#991b1b' : '#fecaca',
+            color: panelOpen ? '#fff' : '#991b1b',
+            padding: '0 5px',
+            borderRadius: 8,
+            minWidth: 14,
+            textAlign: 'center',
+          }}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Sprint Indicator ──────────────────────────────────────────
 
 function SprintIndicator({
@@ -818,6 +876,7 @@ export function App() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
+  const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [importExportOpen, setImportExportOpen] = useState(false);
@@ -1038,6 +1097,11 @@ export function App() {
   const health = rootComputed?.healthSignal ?? 'on_track';
   const healthInfo = HEALTH_LABEL[health];
   const nodeCount = Object.keys(nodes).length;
+  let blockedLeafCount = 0;
+  for (const n of Object.values(nodes)) {
+    if (n.childrenIds.length > 0) continue;
+    if (computed.get(n.id)?.isBlocked) blockedLeafCount += 1;
+  }
 
   // Loading overlay for map load
   if (loading && nodeCount === 0) {
@@ -1205,8 +1269,23 @@ export function App() {
             cycles={cycles}
             activeCycleFilter={activeCycleFilter}
             onFilterChange={setActiveCycleFilter}
-            onOpenPanel={() => setSprintPanelOpen(!sprintPanelOpen)}
+            onOpenPanel={() => {
+              setSprintPanelOpen(!sprintPanelOpen);
+              if (!sprintPanelOpen) setBlockedPanelOpen(false);
+            }}
             panelOpen={sprintPanelOpen}
+          />
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* Blocked indicator */}
+          <BlockedIndicator
+            count={blockedLeafCount}
+            panelOpen={blockedPanelOpen}
+            onOpenPanel={() => {
+              setBlockedPanelOpen(!blockedPanelOpen);
+              if (!blockedPanelOpen) setSprintPanelOpen(false);
+            }}
           />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
@@ -1574,7 +1653,9 @@ export function App() {
           {activeView === 'hill' && <HillChart />}
           {activeView === 'workload' && <WorkloadView />}
         </div>
-        {sprintPanelOpen ? (
+        {blockedPanelOpen ? (
+          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
+        ) : sprintPanelOpen ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
         ) : (
           <PropertyPanel />

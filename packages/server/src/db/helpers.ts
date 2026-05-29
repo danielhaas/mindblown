@@ -22,6 +22,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     actualEffort: (get('actualEffort', 'actual_effort') as number) ?? null,
     percentComplete: (get('percentComplete', 'percent_complete') as number) ?? null,
     status: (get('status', 'status') as string) ?? null,
+    blockedReason: (get('blockedReason', 'blocked_reason') as string) ?? null,
     assigneeIds: (get('assigneeIds', 'assignee_ids') as string[]) ?? [],
     priority: (get('priority', 'priority') as CoreNode['priority']) ?? null,
     dueDate: (get('dueDate', 'due_date') as string) ?? null,

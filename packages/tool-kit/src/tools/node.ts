@@ -36,6 +36,11 @@ export const updateNodeTool = defineTool({
     effortEstimate: z.number().nullable().optional().describe('Effort estimate'),
     percentComplete: z.number().nullable().optional().describe('Percent complete (0-100)'),
     status: z.string().nullable().optional().describe('Status'),
+    blockedReason: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Why this node is blocked (e.g. "waiting on legal"). null/empty to clear.'),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).nullable().optional().describe('Priority'),
     dueDate: z.string().nullable().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().nullable().optional().describe('Start date (ISO 8601)'),

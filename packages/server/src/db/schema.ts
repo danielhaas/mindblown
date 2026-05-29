@@ -88,6 +88,7 @@ export const nodes = pgTable('nodes', {
   actualEffort: real('actual_effort'),
   percentComplete: real('percent_complete'),
   status: text('status'),
+  blockedReason: text('blocked_reason'),
   assigneeIds: jsonb('assignee_ids').notNull().default([]), // uuid[]
   priority: text('priority'),
   dueDate: date('due_date'),

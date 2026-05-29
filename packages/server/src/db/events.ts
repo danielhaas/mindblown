@@ -26,6 +26,7 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'actualEffort',
   'percentComplete',
   'status',
+  'blockedReason',
   'priority',
   'startDate',
   'dueDate',

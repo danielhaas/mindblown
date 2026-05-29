@@ -1182,6 +1182,119 @@ server.tool(
 );
 
 server.tool(
+  'blocked_digest',
+  'List every blocked node across a map. A node counts as blocked if its `blockedReason` is set (manual) OR it has an incomplete Finish-to-Start predecessor (derived). Output groups manual vs dependency-waiting and includes blocker text or predecessor titles. Use this to triage what is stuck before a standup or to decide what to unblock first.',
+  {
+    mapId: z.string().describe('The map ID'),
+    versionId: z.string().optional().describe('Limit to nodes targeting this version'),
+    scopeNodeId: z.string().optional().describe('Limit to descendants of this node'),
+  },
+  async ({ mapId, versionId, scopeNodeId }) => {
+    try {
+      const data = await api.getMap(mapId);
+
+      // Build subtree filter once if scopeNodeId provided
+      const allowedIds = new Set<string>();
+      if (scopeNodeId) {
+        const childrenOf = new Map<string, string[]>();
+        for (const n of data.nodes) childrenOf.set(n.id, n.childrenIds ?? []);
+        const stack = [scopeNodeId];
+        while (stack.length > 0) {
+          const id = stack.pop()!;
+          if (allowedIds.has(id)) continue;
+          allowedIds.add(id);
+          for (const c of childrenOf.get(id) ?? []) stack.push(c);
+        }
+      }
+
+      const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      const inScope = leaves.filter((n) => {
+        if (scopeNodeId && !allowedIds.has(n.id)) return false;
+        if (versionId && n.versionId !== versionId) return false;
+        return true;
+      });
+
+      const blocked = inScope.filter((n) => n.isBlocked);
+      const manual = blocked.filter((n) => n.blockedBy?.manual);
+      const depWaiting = blocked.filter((n) => !n.blockedBy?.manual && (n.blockedBy?.predecessorIds.length ?? 0) > 0);
+
+      // Map ids → titles for predecessor lookups
+      const titleById = new Map<string, string>();
+      for (const n of data.nodes) titleById.set(n.id, n.text);
+
+      const fmtNode = (n: typeof inScope[number]) => {
+        const bits: string[] = [`**${n.text}**`];
+        if (n.priority) bits.push(`[${n.priority}]`);
+        if (n.dueDate) bits.push(`(due ${n.dueDate})`);
+        const assigneeCount = n.assigneeIds?.length ?? 0;
+        if (assigneeCount > 0) bits.push(`${assigneeCount} assignee${assigneeCount === 1 ? '' : 's'}`);
+        return bits.join(' ');
+      };
+
+      // Parents with blocked descendants (scoped the same way as leaves)
+      const blockedSubtrees = data.nodes.filter((n) => {
+        if ((n.childrenIds?.length ?? 0) === 0) return false;
+        if (scopeNodeId && !allowedIds.has(n.id)) return false;
+        const count = n.blockedBy?.blockedDescendantCount ?? 0;
+        return count > 0;
+      });
+
+      const lines: string[] = [];
+      const scopeNote =
+        scopeNodeId
+          ? ` (scope: subtree of "${titleById.get(scopeNodeId) ?? scopeNodeId}")`
+          : versionId
+            ? ` (version ${versionId})`
+            : '';
+      lines.push(`# Blocked — ${data.map.name}${scopeNote}`);
+      lines.push('');
+
+      if (blocked.length === 0) {
+        lines.push('_Nothing blocked. 🎉_');
+        return toolResult(lines.join('\n'));
+      }
+
+      lines.push(`**${blocked.length} blocked leaf node(s)** — ${manual.length} manual, ${depWaiting.length} waiting on dependencies.`);
+      lines.push('');
+
+      if (manual.length > 0) {
+        lines.push(`## Manually blocked (${manual.length})`);
+        for (const n of manual.slice(0, 30)) {
+          lines.push(`- 🔒 ${fmtNode(n)} — "${n.blockedReason ?? ''}"`);
+        }
+        if (manual.length > 30) lines.push(`- _… and ${manual.length - 30} more_`);
+        lines.push('');
+      }
+
+      if (depWaiting.length > 0) {
+        lines.push(`## Waiting on dependencies (${depWaiting.length})`);
+        for (const n of depWaiting.slice(0, 30)) {
+          const predTitles = (n.blockedBy?.predecessorIds ?? [])
+            .map((pid) => titleById.get(pid) ?? pid)
+            .map((t) => `"${t}"`)
+            .join(', ');
+          lines.push(`- ⛓ ${fmtNode(n)} — blocked by: ${predTitles}`);
+        }
+        if (depWaiting.length > 30) lines.push(`- _… and ${depWaiting.length - 30} more_`);
+        lines.push('');
+      }
+
+      if (blockedSubtrees.length > 0) {
+        lines.push(`## Blocked subtrees (${blockedSubtrees.length})`);
+        for (const n of blockedSubtrees.slice(0, 15)) {
+          lines.push(`- 📁 **${n.text}** — ${n.blockedBy?.blockedDescendantCount ?? 0} blocked leaf(s) below`);
+        }
+        if (blockedSubtrees.length > 15) lines.push(`- _… and ${blockedSubtrees.length - 15} more_`);
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'burnup',
   'Burnup / scope-creep detector over a time window. Reports current scope and completed effort, plus the flow through the window: scope added, scope removed, effort completed — per day and in total. Flags when scope is growing faster than completion. Uses change_events, so only shows flow since the change-history feature was deployed.',
   {

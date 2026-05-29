@@ -798,6 +798,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       actualEffort: null,
       percentComplete: null,
       status: null,
+      blockedReason: null,
       assigneeIds: [],
       priority: null,
       dueDate: null,

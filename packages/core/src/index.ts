@@ -15,6 +15,7 @@ export type {
   ExternalLink,
   Node,
   ComputedNodeValues,
+  BlockedBy,
   CustomFieldDef,
   StatusDef,
   Baseline,
@@ -39,6 +40,7 @@ export {
   computeProgress,
   computeHealth,
   leafHealth,
+  computeIsBlocked,
   computeTree,
 } from './compute.js';
 

@@ -23,6 +23,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     actualEffort: null,
     percentComplete: null,
     status: null,
+    blockedReason: null,
     assigneeIds: [],
     priority: null,
     dueDate: null,

@@ -1,4 +1,11 @@
-import type { Node, NodeId, NodeMap, HealthSignal, ComputedNodeValues } from './types.js';
+import type {
+  Node,
+  NodeId,
+  NodeMap,
+  HealthSignal,
+  ComputedNodeValues,
+  BlockedBy,
+} from './types.js';
 
 /**
  * Compute the effort rollup for a node.
@@ -138,6 +145,57 @@ export function computeHealth(
 }
 
 /**
+ * Compute whether a node is blocked.
+ *
+ * Leaf: blocked if `blockedReason` is set OR any FS predecessor's rolled-up
+ * progress is below 100%.
+ * Parent: blocked if any leaf descendant is blocked (worst-child-wins,
+ * mirroring `computeHealth`).
+ */
+export function computeIsBlocked(
+  node: Node,
+  nodeMap: NodeMap,
+): { isBlocked: boolean; blockedBy: BlockedBy } {
+  if (node.childrenIds.length === 0) {
+    const manual = node.blockedReason != null;
+    const predecessorIds: NodeId[] = [];
+    for (const dep of node.dependencies) {
+      if (dep.type !== 'FS') continue;
+      const target = nodeMap.get(dep.targetNodeId);
+      if (!target) continue; // external/missing target — ignore
+      if (computeProgress(target, nodeMap) < 100) {
+        predecessorIds.push(dep.targetNodeId);
+      }
+    }
+    return {
+      isBlocked: manual || predecessorIds.length > 0,
+      blockedBy: { manual, predecessorIds, blockedDescendantCount: 0 },
+    };
+  }
+
+  let blockedDescendantCount = 0;
+  for (const childId of node.childrenIds) {
+    const child = nodeMap.get(childId);
+    if (!child) continue;
+    const childResult = computeIsBlocked(child, nodeMap);
+    if (child.childrenIds.length === 0) {
+      if (childResult.isBlocked) blockedDescendantCount += 1;
+    } else {
+      blockedDescendantCount += childResult.blockedBy.blockedDescendantCount;
+    }
+  }
+
+  return {
+    isBlocked: blockedDescendantCount > 0,
+    blockedBy: {
+      manual: false,
+      predecessorIds: [],
+      blockedDescendantCount,
+    },
+  };
+}
+
+/**
  * Compute effort, progress, and health for every node in a flat array.
  * Returns a map of NodeId -> ComputedNodeValues.
  */
@@ -154,10 +212,13 @@ export function computeTree(
   const result = new Map<NodeId, ComputedNodeValues>();
 
   for (const node of nodes) {
+    const blocked = computeIsBlocked(node, nodeMap);
     result.set(node.id, {
       computedEffort: computeEffort(node, nodeMap),
       computedProgress: computeProgress(node, nodeMap),
       healthSignal: computeHealth(node, nodeMap, threshold, now),
+      isBlocked: blocked.isBlocked,
+      blockedBy: blocked.blockedBy,
     });
   }
 

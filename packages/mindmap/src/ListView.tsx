@@ -145,6 +145,7 @@ export function ListView() {
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set());
+  const [blockedFilter, setBlockedFilter] = useState<'all' | 'blocked' | 'unblocked'>('all');
   const [leavesOnly, setLeavesOnly] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
@@ -242,13 +243,30 @@ export function ListView() {
       rows = rows.filter((r) => matchIds.has(r.node.id));
     }
 
+    // Blocked filter
+    if (blockedFilter !== 'all') {
+      const matchIds = new Set<string>();
+      for (const r of rows) {
+        const blocked = r.cv?.isBlocked ?? false;
+        if ((blockedFilter === 'blocked' && blocked) || (blockedFilter === 'unblocked' && !blocked)) {
+          matchIds.add(r.node.id);
+          let cur = r.node;
+          while (cur.parentId && nodes[cur.parentId]) {
+            matchIds.add(cur.parentId);
+            cur = nodes[cur.parentId];
+          }
+        }
+      }
+      rows = rows.filter((r) => matchIds.has(r.node.id));
+    }
+
     // Leaves only
     if (leavesOnly) {
       rows = rows.filter((r) => r.isLeaf);
     }
 
     return rows;
-  }, [flatRows, searchText, statusFilter, priorityFilter, leavesOnly, nodes]);
+  }, [flatRows, searchText, statusFilter, priorityFilter, blockedFilter, leavesOnly, nodes]);
 
   // ── Sort ──────────────────────────────────────────────────────
 
@@ -618,13 +636,35 @@ export function ListView() {
               ))}
             </select>
           ) : (
-            statusInfo ? (
-              <span style={{ fontSize: 11, fontWeight: 500, padding: '2px 6px', borderRadius: 4, background: statusInfo.bg, color: statusInfo.fg }}>
-                {statusLabel}
-              </span>
-            ) : (
-              <span style={{ fontSize: 11, color: '#cbd5e1' }}>-</span>
-            )
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, overflow: 'hidden' }}>
+              {statusInfo ? (
+                <span style={{ fontSize: 11, fontWeight: 500, padding: '2px 6px', borderRadius: 4, background: statusInfo.bg, color: statusInfo.fg }}>
+                  {statusLabel}
+                </span>
+              ) : (
+                <span style={{ fontSize: 11, color: '#cbd5e1' }}>-</span>
+              )}
+              {cv?.isBlocked && (
+                <span
+                  title={
+                    cv.blockedBy?.manual
+                      ? `Blocked: ${node.blockedReason ?? ''}`
+                      : `Waiting on ${cv.blockedBy?.predecessorIds.length ?? 0} predecessor(s)`
+                  }
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 600,
+                    padding: '2px 5px',
+                    borderRadius: 4,
+                    background: STATUS_BADGE.blocked.bg,
+                    color: STATUS_BADGE.blocked.fg,
+                    flexShrink: 0,
+                  }}
+                >
+                  🔒
+                </span>
+              )}
+            </div>
           )}
         </div>
 
@@ -938,6 +978,35 @@ export function ListView() {
           selected={priorityFilter}
           onToggle={togglePriorityFilter}
         />
+
+        {/* Blocked filter */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {(['all', 'blocked', 'unblocked'] as const).map((mode) => {
+            const active = blockedFilter === mode;
+            return (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => setBlockedFilter(mode)}
+                style={{
+                  fontSize: 11,
+                  fontWeight: 500,
+                  padding: '4px 8px',
+                  borderRadius: 6,
+                  background: active ? (mode === 'blocked' ? '#fee2e2' : '#eef2ff') : 'transparent',
+                  border: active
+                    ? `1px solid ${mode === 'blocked' ? '#fecaca' : '#c7d2fe'}`
+                    : '1px solid transparent',
+                  color: active ? (mode === 'blocked' ? '#991b1b' : '#4338ca') : '#64748b',
+                  cursor: 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {mode === 'all' ? 'All' : mode === 'blocked' ? '🔒 Blocked' : 'Unblocked'}
+              </button>
+            );
+          })}
+        </div>
 
         {/* Leaves only */}
         <label

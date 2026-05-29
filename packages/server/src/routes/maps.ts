@@ -202,6 +202,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         computedEffort: cv?.computedEffort ?? 0,
         computedProgress: cv?.computedProgress ?? 0,
         healthSignal: cv?.healthSignal ?? 'on_track',
+        isBlocked: cv?.isBlocked ?? false,
+        blockedBy: cv?.blockedBy ?? { manual: false, predecessorIds: [], blockedDescendantCount: 0 },
       };
     });
 
@@ -371,6 +373,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           actualEffort: null,
           percentComplete: null,
           status: null,
+          blockedReason: null,
           assigneeIds: [],
           priority: null,
           dueDate: p.dueDate ?? null,

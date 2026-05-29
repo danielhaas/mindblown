@@ -234,6 +234,10 @@ export async function runMigrations(): Promise<void> {
   `);
 
   await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocked_reason TEXT
+  `);
+
+  await db.execute(sql`
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS project_start_date DATE
   `);
   await db.execute(sql`

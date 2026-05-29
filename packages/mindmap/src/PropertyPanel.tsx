@@ -201,6 +201,7 @@ function PropertyPanelInner({
   const [tags, setTags] = useState(node.tags.join(', '));
   const [dueDate, setDueDate] = useState(node.dueDate ?? '');
   const [startDate, setStartDate] = useState(node.startDate ?? '');
+  const [blockedReason, setBlockedReason] = useState(node.blockedReason ?? '');
 
   // Sync local state when node changes externally
   useEffect(() => { setTitle(node.text); }, [node.text]);
@@ -210,6 +211,11 @@ function PropertyPanelInner({
   useEffect(() => { setTags(node.tags.join(', ')); }, [node.tags]);
   useEffect(() => { setDueDate(node.dueDate ?? ''); }, [node.dueDate]);
   useEffect(() => { setStartDate(node.startDate ?? ''); }, [node.startDate]);
+  useEffect(() => { setBlockedReason(node.blockedReason ?? ''); }, [node.blockedReason]);
+
+  const allNodes = useMindmapStore((s) => s.nodes);
+  const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
+    .map((pid) => allNodes[pid]?.text ?? pid);
 
   const health = computedValues?.healthSignal ?? 'on_track';
   const healthInfo = HEALTH_LABELS[health];
@@ -351,6 +357,42 @@ function PropertyPanelInner({
               </option>
             ))}
           </select>
+        </Field>
+
+        {/* Blocked reason */}
+        <Field label="Blocked reason">
+          <input
+            value={blockedReason}
+            onChange={(e) => {
+              setBlockedReason(e.target.value);
+              debouncedUpdate({ blockedReason: e.target.value || null });
+            }}
+            onBlur={() => {
+              const trimmed = blockedReason.trim();
+              const persisted = node.blockedReason ?? '';
+              if (trimmed !== persisted) {
+                directUpdate(nodeId, { blockedReason: trimmed || null });
+              }
+            }}
+            onKeyDown={(e) => e.stopPropagation()}
+            style={inputStyle}
+            placeholder="Why is this blocked? (leave empty if not blocked)"
+          />
+          {predecessorTitles.length > 0 && (
+            <div
+              style={{
+                marginTop: 6,
+                padding: '6px 8px',
+                background: '#fef2f2',
+                border: '1px solid #fecaca',
+                borderRadius: 6,
+                fontSize: 11,
+                color: '#991b1b',
+              }}
+            >
+              Waiting on: {predecessorTitles.map((t) => `"${t}"`).join(', ')}
+            </div>
+          )}
         </Field>
 
         {/* Priority */}
