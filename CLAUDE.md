@@ -63,3 +63,45 @@ This project uses specialized agents. See `.claude/agents/` for definitions:
 2. Minimum code that solves the problem. Nothing speculative.
 3. Touch only what you must. Clean up only your own mess.
 4. Define success criteria. Loop until verified.
+
+## Feature Definition of Done
+
+A feature isn't shipped until a real user can exercise it through their normal tools. Server-side correctness alone is not "done." This rule exists because the codebase has multiple surface layers (DB, REST, MCP, mindmap UI) and a feature added to fewer than all of them works in unit tests but is invisible to the end user.
+
+### When adding a field to `Node` (or any cross-cutting type)
+
+Every layer below must be touched in the same PR. Skipping any one silently breaks the feature at runtime for at least one consumer:
+
+| # | Layer | File(s) | What changes |
+|---|---|---|---|
+| 1 | Type definition | `packages/core/src/types.ts` | Add the field to `Node` (and to `CreateNodeInput` / `UpdateNodeInput` if applicable) |
+| 2 | DB schema | `packages/server/src/db/schema.ts` | Drizzle column definition |
+| 3 | DB migration | `packages/server/src/db/migrate.ts` | Idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` so it lands on API startup |
+| 4 | DB mapping | `packages/server/src/db/{helpers,nodes}.ts` | `dbNodeToCore` round-trip + insert/update pass-through |
+| 5 | REST API | `packages/server/src/routes/nodes.ts` | Request body type + handler forwards the field to the DB layer |
+| 6 | MCP tool-kit | `packages/tool-kit/src/tools/node.ts` | Zod schema on BOTH `create_node` and `update_node` |
+| 7 | Frontend store | `packages/mindmap/src/store.ts` | Stub `Node` literals include the field (TypeScript fails otherwise) |
+| 8 | Tests | each layer | Round-trip test in tool-kit; webhook/route test in server; type assertions in core |
+
+### Common failure mode
+
+Adding (2)–(5) but skipping (6). The feature works in HTTP curl but is invisible to MCP agents (Jenna, etc.) who only have the tool-kit surface. The DB column exists, the route accepts the field, the type system passes — and the feature is effectively dead for every agent-driven user.
+
+If you are tempted to file an "expose X in the MCP" follow-up issue: stop. That follow-up IS the feature, not a polish item. Land it in the same PR.
+
+### Sanity check before opening a PR
+
+- `pnpm turbo typecheck` clean across all packages
+- `pnpm turbo test` clean across all packages
+- The new behavior is reachable through `packages/tool-kit` (the MCP surface), not only through direct HTTP calls
+- A user invoking the relevant tool gets the new field on the round trip
+
+### Valid follow-ups vs blocked surfaces
+
+| Valid follow-up | Blocked surface (must ship in this PR) |
+|---|---|
+| Additional test coverage beyond the happy path | Any layer where the new field is silently dropped |
+| Performance optimizations | MCP tool-kit zod schema |
+| OpenAPI / docs updates | REST route accepting the field |
+| Migration for backfilling existing data | DB column + migration |
+| Rich-text variants of a description tail | Round-trip mapping in `dbNodeToCore` |
