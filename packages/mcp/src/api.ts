@@ -478,6 +478,21 @@ export function createVersion(
   });
 }
 
+export function updateVersion(
+  versionId: string,
+  fields: {
+    name?: string;
+    description?: string | null;
+    targetDate?: string | null;
+    status?: 'planning' | 'active' | 'released' | 'archived';
+  },
+): Promise<VersionInfo> {
+  return request<VersionInfo>(`/api/versions/${versionId}`, {
+    method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
 // ── AI ────────────────────────────────────────────────────────
 
 export interface BreakdownSuggestion {

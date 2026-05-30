@@ -1810,6 +1810,31 @@ server.tool(
   },
 );
 
+server.tool(
+  'update_version',
+  'Update a version — change its name, description, target date, or status. Pass null to clear description or targetDate.',
+  {
+    versionId: z.string().describe('The version ID'),
+    name: z.string().optional().describe('New name'),
+    description: z.string().nullable().optional().describe('New description (null clears)'),
+    targetDate: z.string().nullable().optional().describe('Target release date (ISO 8601; null clears)'),
+    status: z.enum(['planning', 'active', 'released', 'archived']).optional().describe('Lifecycle status'),
+  },
+  async ({ versionId, ...fields }) => {
+    try {
+      const cleanFields: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(fields)) {
+        if (v !== undefined) cleanFields[k] = v;
+      }
+      if (Object.keys(cleanFields).length === 0) return toolResult('No fields to update.');
+      const version = await api.updateVersion(versionId, cleanFields);
+      return toolResult(`Updated version "${version.name}" (${Object.keys(cleanFields).join(', ')}).`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 // ── Sprint tools ────────────────────────────────────────────────
 
 server.tool(
