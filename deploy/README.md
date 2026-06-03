@@ -116,6 +116,7 @@ NODE_ENV=production
 # KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
+# KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
 
 # Optional — consecutive GH 401 ticks per repo before the catchup
 # fires `status=down msg=auth_failed:owner/repo` on the auth-failure
@@ -252,6 +253,23 @@ section is optional — but strongly recommended in production.
   fetch on that repo resets the counter and the monitor goes UP on
   the next tick.
 
+- **Webhook auth (`KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL`)** — pushed
+  once a day. Catches a silent failure mode the three monitors above
+  miss: the GH-side webhook secret has rotated, mindblown's copy is
+  stale, every webhook POST fails signature verification → 401, and
+  the 5-min catchup loop silently papers over the gap. The realtime
+  path is dead but drift stays at 0 so nothing else alarms. The
+  scheduler reads a 24h rolling counter and pushes
+  `status=down msg=webhook_auth_failed:received_N_authenticated_0`
+  when N ≥ 3 calls all failed verification, `status=up` when at
+  least one passed, or skips the push entirely when fewer than 3
+  calls landed (avoids false-alarming a quiet day where one
+  transient blip is the only sample). Note: the all-zero case
+  ("GH webhook never configured at all") is deliberately NOT
+  alarmed by this monitor — that's a different failure mode and
+  conflating them would page operators on fresh deploys with no
+  webhook wired yet.
+
 ### Creating the monitors in Kuma
 
 1. Open your Kuma instance, **Add New Monitor** → **Push**.
@@ -260,8 +278,9 @@ section is optional — but strongly recommended in production.
 3. Save. Kuma generates a push URL like
    `https://kuma.example.com/api/push/abc123XYZ`.
 4. Repeat for the drift-audit monitor.
-5. Wire each push URL into `/etc/mindblown/api.env` (uncomment the two
-   `KUMA_GITHUB_*` lines) and `systemctl restart mindblown-api`.
+5. Wire each push URL into `/etc/mindblown/api.env` (uncomment the
+   relevant `KUMA_GITHUB_*` / `KUMA_WEBHOOK_*` lines) and
+   `systemctl restart mindblown-api`.
 
 ### Suggested Kuma thresholds
 
@@ -270,6 +289,7 @@ section is optional — but strongly recommended in production.
 | catchup heartbeat | 60 s | 10 min | API pushes every 5 min — 10 min absorbs one missed tick (restart/upgrade) without false-alarming. |
 | drift audit | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack for restart timing, clock drift, etc. |
 | auth failure | 60 s | 20 min | API pushes only on the threshold-crossing tick + every subsequent failing tick; 20 min covers two consecutive 5-min catchup ticks so a single delayed Kuma push doesn't flap the monitor. |
+| webhook auth | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack matching the drift audit. Push only fires when ≥ 3 webhook calls landed in the rolling 24h; before that the monitor sits in "no push received" but Kuma should NOT alarm on it during normal low-traffic periods — set the down threshold generously. |
 
 ### Auto-backfill on drift detection
 
@@ -308,6 +328,39 @@ journalctl -u mindblown-api | grep auto-backfill
 - `drift detected, per-map auto-backfill failed: <error>` → expected:
   read the warn log for the underlying cause (revoked GitHub token,
   GitHub 503, rate-limit, etc.) and fix that before re-running.
+
+### Triage `webhook_auth_failed` alerts
+
+The webhook-auth monitor pushes `status=down msg=webhook_auth_failed:received_N_authenticated_0`
+when N ≥ 3 webhook deliveries arrived in the last 24h and ALL of them
+failed signature verification. The catchup loop will be silently
+papering over the gap — node updates still flow, but with up to 5 min
+of lag — so the operator-visible symptom is "sync feels sluggish but
+nothing is broken". Triage:
+
+1. Verify the alarm is real — hit `journalctl -u mindblown-api | grep "invalid signature"`
+   to see the rejected POSTs. Each line carries the GH event type and
+   the source IP; the IP should match GitHub's published webhook ranges.
+2. Check whether the secret was rotated on the GitHub side. For a
+   GitHub App: **App settings → Webhook → "Generate new secret"**
+   history. For a per-integration PAT: ask whoever set it up most
+   recently.
+3. Update the matching secret in mindblown:
+   - GitHub App: `GITHUB_APP_WEBHOOK_SECRET` in `/etc/mindblown/api.env`
+     → `systemctl restart mindblown-api`.
+   - PAT integration: `POST /api/integrations/github/connect` with the
+     new `webhookSecret` (the connect endpoint is the supported way to
+     edit a stored secret — direct DB UPDATEs work but aren't audited).
+4. Within 24h the rolling counter clears and the monitor flips back
+   to `up`. To verify the fix faster, override the cadence:
+   `WEBHOOK_AUTH_CHECK_INTERVAL_MS=60000` in `api.env`, restart, and
+   the next successful webhook delivery + tick will push `status=up`.
+   Remove the override afterwards.
+
+If no webhook traffic has landed yet (received < 3), the monitor sits
+in "no push received" — that's normal and Kuma should NOT alarm on a
+short window of no pushes. Tune the down threshold to ~30 h
+(matching the daily push cadence + slack).
 
 ### Watchdog auto-restart
 

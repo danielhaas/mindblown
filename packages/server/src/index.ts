@@ -7,6 +7,7 @@ import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
 import { runDriftAudit } from './sync/driftAudit.js';
 import { runCanary } from './sync/canary.js';
+import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { sdNotifyReady } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
@@ -223,6 +224,40 @@ async function main(): Promise<void> {
     }
   };
   setInterval(canaryTick, CANARY_INTERVAL_MS);
+
+  // ── Daily webhook auth-check (silent realtime-failure probe) ─
+  // The webhook handler keeps a 24h rolling counter of
+  // (received, authenticated). Once a day we read the counter and push
+  // to a dedicated Kuma monitor:
+  //   - received >= MIN && authenticated == 0 → status=down (the
+  //     bad-secret case — webhook is being hit, all pushes fail
+  //     signature check, but the catchup loop is silently papering
+  //     over the gap)
+  //   - received >= MIN && authenticated >= 1 → status=up
+  //   - received < MIN → no push (too few samples to draw a
+  //     conclusion; deliberately also covers "GH webhook never
+  //     configured at all", which is a distinct failure mode)
+  // No-op when KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL is unset, same shape
+  // as the other Kuma probes above. Allow WEBHOOK_AUTH_CHECK_INTERVAL_MS
+  // env-var override so operators can dial the cadence down for a
+  // one-off post-deploy smoke test, same convention the canary uses.
+  const WEBHOOK_AUTH_CHECK_INTERVAL_MS = parseInt(
+    process.env.WEBHOOK_AUTH_CHECK_INTERVAL_MS ?? `${24 * 60 * 60 * 1000}`,
+    10,
+  );
+  const webhookAuthCheckTick = async (): Promise<void> => {
+    try {
+      await runWebhookAuthCheck();
+    } catch (err) {
+      // runWebhookAuthCheck delegates to pushKumaHeartbeat, which
+      // swallows its own fetch errors. This catch is defence-in-depth
+      // for an unexpected synchronous throw.
+      console.error('[webhook-auth-check] scheduler caught unexpected error:', err);
+    }
+  };
+  // Deliberately no startup invocation — the counter is empty at
+  // boot, so the first tick would always be a `received==0` no-op.
+  setInterval(webhookAuthCheckTick, WEBHOOK_AUTH_CHECK_INTERVAL_MS);
 }
 
 main();
