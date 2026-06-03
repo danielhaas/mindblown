@@ -115,6 +115,13 @@ NODE_ENV=production
 # audit, but silent failures have no external alarm. See below.
 # KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
+# KUMA_GITHUB_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
+
+# Optional — consecutive GH 401 ticks per repo before the catchup
+# fires `status=down msg=auth_failed:owner/repo` on the auth-failure
+# Kuma monitor. Lower = louder, higher = more tolerant of a flaky
+# bridge. Default 3 (≈ 15 min on a 5-min catchup tick).
+# CATCHUP_AUTH_FAILURE_THRESHOLD=3
 
 # Optional — Uptime-Kuma push URL for the weekly Pushover-canary
 # (alarm-chain liveness probe). Unset = canary is disabled. See the
@@ -224,7 +231,7 @@ The API exposes two passive heartbeats for the GitHub→MindBlown sync
 loop. Both are no-ops unless the corresponding env var is set, so this
 section is optional — but strongly recommended in production.
 
-### Why two monitors
+### Why three monitors
 
 - **Catchup heartbeat (`KUMA_GITHUB_CATCHUP_PUSH_URL`)** — pushed once
   per catchup tick (every 5 min). Alarms when pushes stop = catchup
@@ -235,6 +242,15 @@ section is optional — but strongly recommended in production.
   with no linked MindBlown node. Alarms when push is `down` OR pushes
   stop entirely = webhook silently misconfigured on the GH side, the
   ingest path is silently throwing, etc.
+
+- **Auth failure (`KUMA_GITHUB_AUTH_FAILURE_PUSH_URL`)** — pushed only
+  when a specific repo has hit `CATCHUP_AUTH_FAILURE_THRESHOLD`
+  consecutive 401s (default 3, ≈ 15 min on a 5-min catchup tick).
+  Message is `auth_failed:owner/repo` so the alert names the bound
+  repo whose token/install needs attention; one revoked install on a
+  multi-repo deployment doesn't drown out the others. A successful
+  fetch on that repo resets the counter and the monitor goes UP on
+  the next tick.
 
 ### Creating the monitors in Kuma
 
@@ -253,6 +269,7 @@ section is optional — but strongly recommended in production.
 |---|---|---|---|
 | catchup heartbeat | 60 s | 10 min | API pushes every 5 min — 10 min absorbs one missed tick (restart/upgrade) without false-alarming. |
 | drift audit | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack for restart timing, clock drift, etc. |
+| auth failure | 60 s | 20 min | API pushes only on the threshold-crossing tick + every subsequent failing tick; 20 min covers two consecutive 5-min catchup ticks so a single delayed Kuma push doesn't flap the monitor. |
 
 ### Auto-backfill on drift detection
 
