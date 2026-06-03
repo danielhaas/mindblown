@@ -546,6 +546,37 @@ describe('auditDrift', () => {
     expect(tokenErrors[0].reason).toBe('app: install revoked');
   });
 
+  it('reports a `pat: missing` tokenError when a map has no installationId AND no matching PAT (#87)', async () => {
+    // Pre-#87, this case silently dropped the map: no installationId
+    // skipped the App-mint branch entirely; no matching PAT skipped
+    // the targets.push; nothing ever made it into either `targets`
+    // OR `tokenErrors`. The docstring on `auditDrift` says tokenErrors
+    // lists "every map whose binding couldn't resolve a current token"
+    // — make that true.
+    dbState.maps.push({
+      id: 'm1',
+      name: 'Unbound Map',
+      workspaceId: 'ws',
+      githubInstallationId: null,
+      githubRepoOwner: 'owner',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    // No PAT integration matches.
+    // Even though issues exist on the repo, no fetch happens.
+    setupRepoIssues('owner', 'repo', [1, 2, 3]);
+
+    const { reports, tokenErrors } = await auditDrift();
+
+    expect(reports).toEqual([]);
+    expect(tokenErrors).toHaveLength(1);
+    expect(tokenErrors[0]).toEqual({
+      mapId: 'm1',
+      mapName: 'Unbound Map',
+      reason: 'pat: missing',
+    });
+  });
+
   it('preserves the raw error message in tokenError.reason for non-revocation failures', async () => {
     // Defensive: the resolver stringifies arbitrary errors into
     // `reason`. Make sure a non-"install revoked" message threads

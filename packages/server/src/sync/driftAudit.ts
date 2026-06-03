@@ -66,10 +66,12 @@ interface AuditTarget {
  * One map whose token resolution failed. Surfaced in `AuditDriftResult`
  * so the operator endpoint can show the failure without log access.
  *
- * `reason` is a short stringified cause — typical values:
+ * `reason` is a short stringified cause — defined values:
  *   - `app: install revoked`       (App-token mint threw, no PAT fallback)
- *   - `app: <octokit message>`     (other App-token mint failure)
- *   - bare error message if no `app:` prefix applies
+ *   - `app: <error message>`       (other App-token mint failure)
+ *   - `pat: missing`               (map has no installationId AND no
+ *                                  workspace PAT for the bound repo —
+ *                                  closes the silent-drop gap from #87)
  */
 export interface TokenError {
   mapId: string;
@@ -162,6 +164,21 @@ async function resolveTargets(): Promise<ResolvedTargets> {
       const idx = tokenErrors.findIndex((te) => te.mapId === m.id);
       if (idx >= 0) tokenErrors.splice(idx, 1);
       targets.push({ mapId: m.id, mapName: m.name, owner: m.owner, repo: m.repo, token: cfg.token });
+    } else if (!m.installationId) {
+      // No App binding AND no matching PAT — this map silently fell
+      // off the end of the resolver pre-#87. The docstring on
+      // `auditDrift` claims `tokenErrors` lists "every map whose
+      // binding couldn't resolve a current token"; surface this case
+      // so that promise holds.
+      //
+      // Note: the App-binding-failed AND no-PAT case is already covered
+      // by the `app: ...` push in the try/catch above — we only need
+      // the no-App-at-all branch here.
+      tokenErrors.push({
+        mapId: m.id,
+        mapName: m.name,
+        reason: 'pat: missing',
+      });
     }
   }
 
@@ -347,6 +364,14 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
   // own (they can't be auto-healed and don't count as drift), but
   // appending the count lets a Kuma watcher catch persistent binding
   // outages even when drift is otherwise clean.
+  //
+  // Status-flip debate (deferred — see danielhaas/mindblown#87 item 5):
+  // a revoked App install is exactly the kind of failure operators want
+  // a Pushover ping for, since it can't self-heal. Flipping to `down`
+  // whenever `tokenErrors.length > 0` is a one-line change. Deferred
+  // until we have production data on whether operators actually miss
+  // token outages with the current suffix-only signal — turning it on
+  // now risks flapping new monitors before we know the baseline.
   const tokenSuffix = tokenErrors.length > 0 ? `,token-errors-${tokenErrors.length}` : '';
 
   // No drift → clean push and bail. Skip auto-backfill entirely

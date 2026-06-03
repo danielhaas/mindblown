@@ -272,6 +272,23 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   try {
     token = await target.resolveToken();
   } catch (err) {
+    // Mirror the fetch-401 escalation below (#83 follow-up, #86): a
+    // suspended/uninstalled GitHub App install throws at
+    // `mintInstallationToken`, NOT at `fetchChangedIssues`, so without
+    // this branch the consecutive-401 counter never ticked for the
+    // App-suspended failure mode. App-suspended is arguably the more
+    // common production failure on `mind.project.li`. Other token
+    // errors (PAT lookup throwing for non-401 reasons, etc.) stay on
+    // the "no counter bump" path — they're transient and shouldn't
+    // pin the escalation.
+    if (err instanceof GitHubApiError && err.status === 401) {
+      const next = (consecutiveAuthFailures.get(repoLabel) ?? 0) + 1;
+      consecutiveAuthFailures.set(repoLabel, next);
+      const threshold = getAuthFailureThreshold();
+      if (next >= threshold) {
+        await pushAuthFailureAlarm(repoLabel);
+      }
+    }
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,

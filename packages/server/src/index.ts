@@ -7,6 +7,7 @@ import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
 import { runDriftAudit } from './sync/driftAudit.js';
 import { resolveDriftAuditIntervalMs } from './sync/driftAuditInterval.js';
+import { parsePositiveIntMs } from './sync/parseInterval.js';
 import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { sdNotifyReady } from './sync/sdNotify.js';
@@ -221,9 +222,14 @@ async function main(): Promise<void> {
   // the cadence down for a one-off post-deploy smoke test, then put
   // it back to weekly afterwards. Deliberately no startup invocation
   // — we don't want a Pushover on every restart/upgrade.
-  const CANARY_INTERVAL_MS = parseInt(
-    process.env.CANARY_INTERVAL_MS ?? `${7 * 24 * 60 * 60 * 1000}`,
-    10,
+  //
+  // Parsed via `parsePositiveIntMs` so a typo like `CANARY_INTERVAL_MS=1d`
+  // (which `parseInt` would NaN-coerce, turning `setInterval(NaN)` into
+  // event-loop-rate firing) falls back to the weekly default instead of
+  // DDOS-ing Kuma + Pushover.
+  const CANARY_INTERVAL_MS = parsePositiveIntMs(
+    process.env.CANARY_INTERVAL_MS,
+    7 * 24 * 60 * 60 * 1000,
   );
   const canaryTick = async (): Promise<void> => {
     try {
@@ -252,9 +258,11 @@ async function main(): Promise<void> {
   // as the other Kuma probes above. Allow WEBHOOK_AUTH_CHECK_INTERVAL_MS
   // env-var override so operators can dial the cadence down for a
   // one-off post-deploy smoke test, same convention the canary uses.
-  const WEBHOOK_AUTH_CHECK_INTERVAL_MS = parseInt(
-    process.env.WEBHOOK_AUTH_CHECK_INTERVAL_MS ?? `${24 * 60 * 60 * 1000}`,
-    10,
+  // Same NaN-guard rationale as `CANARY_INTERVAL_MS` — a typo'd value
+  // here would otherwise put `setInterval` into event-loop-rate firing.
+  const WEBHOOK_AUTH_CHECK_INTERVAL_MS = parsePositiveIntMs(
+    process.env.WEBHOOK_AUTH_CHECK_INTERVAL_MS,
+    24 * 60 * 60 * 1000,
   );
   const webhookAuthCheckTick = async (): Promise<void> => {
     try {

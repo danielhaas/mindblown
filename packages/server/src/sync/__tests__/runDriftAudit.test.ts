@@ -358,4 +358,83 @@ describe('runDriftAudit', () => {
     expect(formatAutoBackfillMsg(summary(0, 5))).toBe('manual-5');
     expect(formatAutoBackfillMsg(summary(2, 5))).toBe('auto-backfilled-2,manual-5');
   });
+
+  // ── token-errors suffix coverage (#87) ──────────────────────────
+  // These cases pin the contract that token errors append a
+  // `,token-errors-N` suffix to the Kuma msg WITHOUT flipping status.
+  // The status-flip debate is filed as #87 item 5 for deferral.
+
+  it('no drift + token error → status=up msg=no-drift,token-errors-1', async () => {
+    // Build a map with installationId set but no PAT, so resolveTargets
+    // produces a tokenError via the (now-fixed) PAT-missing or
+    // App-mint-failed path. Easiest setup: pre-existing case where
+    // an App install token mint succeeds and the map audits cleanly,
+    // BUT a sibling map has no installationId and no PAT, so the
+    // resolver pushes a `pat: missing` tokenError for it.
+    setupDriftyMap('m1', 'Clean Map', 0);
+    // Sibling map: no installation, no matching PAT → tokenError.
+    dbState.maps.push({
+      id: 'm2',
+      name: 'Orphan Map',
+      workspaceId: 'wsX',
+      githubInstallationId: null,
+      githubRepoOwner: 'orphan-owner',
+      githubRepoName: 'orphan-repo',
+      autoImportNewIssues: true,
+    });
+    // m1 has no drift to audit; the m1 setup also wired importedByRepo
+    // for owner/repo with zero entries. m2 is dropped before any fetch
+    // because no token resolves.
+
+    const result = await runDriftAudit();
+
+    expect(runAutoBackfillMock).not.toHaveBeenCalled();
+    expect(pushKumaMock).toHaveBeenCalledTimes(1);
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    expect(status).toBe('up');
+    expect(msg).toBe('no-drift,token-errors-1');
+    expect(result.tokenErrors).toHaveLength(1);
+    expect(result.tokenErrors[0].reason).toBe('pat: missing');
+  });
+
+  it('drift-with-backfill + token error → suffix appended to backfill msg', async () => {
+    setupDriftyMap('m1', 'Drifty Map', 3);
+    runAutoBackfillMock.mockResolvedValue(summary(3, 0));
+    // Add a second orphaned map → 1 tokenError.
+    dbState.maps.push({
+      id: 'm2',
+      name: 'Orphan Map',
+      workspaceId: 'wsX',
+      githubInstallationId: null,
+      githubRepoOwner: 'orphan-owner',
+      githubRepoName: 'orphan-repo',
+      autoImportNewIssues: true,
+    });
+
+    await runDriftAudit();
+
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    // Status stays UP because backfill healed all drift — token errors
+    // don't flip status (see deferred-debate comment in driftAudit.ts).
+    expect(status).toBe('up');
+    expect(msg).toBe('auto-backfilled-3,token-errors-1');
+  });
+
+  it('audit_failed error-return path includes tokenErrors: [] in shape', async () => {
+    // Force the FIRST DB query (resolveTargets) to throw — auditDrift's
+    // outer catch in runDriftAudit fires, and the early-return shape
+    // MUST include `tokenErrors: []` (not undefined) so the operator
+    // endpoint's response shape stays consistent.
+    dbState.failureOnSelect = new Error('drizzle connection lost');
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await runDriftAudit();
+    errSpy.mockRestore();
+
+    expect(result.tokenErrors).toEqual([]);
+    expect(result.error).toMatch(/drizzle connection lost/);
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    expect(status).toBe('down');
+    expect(msg).toMatch(/^audit_failed:/);
+  });
 });

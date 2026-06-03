@@ -238,11 +238,11 @@ The API runs migrations on every startup, so schema changes apply automatically.
 
 ## GitHub-sync observability (Uptime-Kuma push monitors)
 
-The API exposes two passive heartbeats for the GitHub→MindBlown sync
-loop. Both are no-ops unless the corresponding env var is set, so this
+The API exposes four passive heartbeats for the GitHub→MindBlown sync
+loop. Each is a no-op unless the corresponding env var is set, so this
 section is optional — but strongly recommended in production.
 
-### Why three monitors
+### Why four monitors
 
 - **Catchup heartbeat (`KUMA_GITHUB_CATCHUP_PUSH_URL`)** — pushed once
   per catchup tick (every 5 min). Alarms when pushes stop = catchup
@@ -289,9 +289,12 @@ section is optional — but strongly recommended in production.
    interval — see suggested thresholds below.
 3. Save. Kuma generates a push URL like
    `https://kuma.example.com/api/push/abc123XYZ`.
-4. Repeat for the drift-audit monitor.
+4. Repeat for the drift-audit, auth-failure, and webhook-auth monitors
+   (four monitors total — one per env var below).
 5. Wire each push URL into `/etc/mindblown/api.env` (uncomment the
-   relevant `KUMA_GITHUB_*` / `KUMA_WEBHOOK_*` lines) and
+   `KUMA_GITHUB_CATCHUP_PUSH_URL`, `KUMA_GITHUB_DRIFT_PUSH_URL`,
+   `KUMA_GITHUB_AUTH_FAILURE_PUSH_URL`, and
+   `KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL` lines) and
    `systemctl restart mindblown-api`.
 
 ### Suggested Kuma thresholds
@@ -353,6 +356,11 @@ nothing is broken". Triage:
 1. Verify the alarm is real — hit `journalctl -u mindblown-api | grep "invalid signature"`
    to see the rejected POSTs. Each line carries the GH event type and
    the source IP; the IP should match GitHub's published webhook ranges.
+   **DoS check:** if `received_N` is unexpectedly large (orders of
+   magnitude beyond your normal webhook volume), grep the source IPs
+   against GitHub's published [hooks ranges](https://api.github.com/meta) —
+   non-GH traffic hitting the webhook endpoint should be rate-limited
+   at the ingress (Caddy / load balancer), not papered over here.
 2. Check whether the secret was rotated on the GitHub side. For a
    GitHub App: **App settings → Webhook → "Generate new secret"**
    history. For a per-integration PAT: ask whoever set it up most
@@ -367,7 +375,12 @@ nothing is broken". Triage:
    to `up`. To verify the fix faster, override the cadence:
    `WEBHOOK_AUTH_CHECK_INTERVAL_MS=60000` in `api.env`, restart, and
    the next successful webhook delivery + tick will push `status=up`.
-   Remove the override afterwards.
+   To verify the alarm actually fires end-to-end, send ≥ 3 deliveries
+   with the WRONG secret first (e.g. trigger 3 issue events from a
+   test repo while the secret is intentionally stale), then wait for
+   one tick — Kuma should flip `down`, fire its notification, then
+   flip `up` once correct deliveries land and the rolling window
+   refreshes. Remove the override afterwards.
 
 If no webhook traffic has landed yet (received < 3), the monitor sits
 in "no push received" — that's normal and Kuma should NOT alarm on a
@@ -437,11 +450,13 @@ curl -sf -X POST https://mindblown.example.com/api/maps/sync/audit-drift \
   -H "Cookie: <session cookie from your browser>" | jq .
 ```
 
-Returns `{reports: DriftReport[], autoBackfill: {...}, counts: {...}}`.
-The manual trigger runs the same auto-backfill + Kuma push the
-scheduled audit does, so it's a faithful end-to-end smoke test of the
-auto-repair flow. API-key auth is deliberately rejected — this is a
-session-only operator surface.
+Returns `{reports: DriftReport[], tokenErrors: TokenError[], autoBackfill: {...}, counts: {...}}`.
+`tokenErrors` lists every map whose GitHub binding couldn't resolve
+a current token (App install revoked, PAT expired, or no binding at
+all — see `reason` field for the cause). The manual trigger runs the
+same auto-backfill + Kuma push the scheduled audit does, so it's a
+faithful end-to-end smoke test of the auto-repair flow. API-key auth
+is deliberately rejected — this is a session-only operator surface.
 
 ## Pushover canary (weekly alarm-chain liveness probe)
 
@@ -465,11 +480,17 @@ surfaces within a week instead of during the next real incident.
 1. **Add New Monitor** → **Push**.
 2. Name: `mindblown-alarm-canary`.
 3. Heartbeat interval: 60 s.
-4. **Down threshold: 90 s.** This is the critical bit — short enough
-   that the synthetic `status=down` trips Kuma's alarm channel before
-   the ack push lands 60 s later, so the monitor briefly flips to
-   `down`, fires its notification, then recovers when the ack
-   arrives.
+4. **Down threshold: 90 s.** Kuma flips a push monitor to `down`
+   *immediately* on receipt of `status=down` (and fires its
+   notification right then), independent of the missed-heartbeat
+   threshold — so the canary alarm trips as soon as the synthetic
+   down push lands, not after 90 s. The 90 s threshold is the
+   *liveness* signal: it catches a dead canary (mindblown-api
+   crashed, scheduler frozen) at the next missed weekly tick — Kuma
+   alarms on "no push received within 90 s" once the heartbeat
+   timeout passes. So the 90 s value is a safety floor for missed
+   ticks, not a race-condition control between the down and ack
+   pushes.
 5. Save. Copy the generated push URL.
 
 ### 2. Route to a dedicated Pushover device (recommended)

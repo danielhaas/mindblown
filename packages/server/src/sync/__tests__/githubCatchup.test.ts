@@ -486,3 +486,109 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     expect(_getAuthFailureCountForTests('o/r')).toBe(0);
   });
 });
+
+// ── 401-escalation tests for token-resolution path (#86) ─────────
+//
+// Scenario: `resolveToken` (i.e. `mintInstallationToken`) throws a
+// `GitHubApiError(401)` because the GitHub App install was suspended
+// or uninstalled. Without #86's parallel branch, that error fell into
+// the generic token-resolution catch and returned `error: token: ...`
+// without ticking the consecutive-failure counter — so a permanently
+// suspended install never escalated to the dedicated Kuma alarm.
+//
+// These three cases assert the new branch mirrors the fetch-401 path:
+// 3 consecutive 401s push, one 401 then success resets, plain Error
+// stays on the legacy "no counter" path (backcompat).
+
+function makeMintFailingTarget(
+  owner: string,
+  repo: string,
+  err: Error,
+): { owner: string; repo: string; resolveToken: () => Promise<string> } {
+  return {
+    owner,
+    repo,
+    resolveToken: async (): Promise<string> => {
+      throw err;
+    },
+  };
+}
+
+describe('reconcileRepo → 401 auth-failure escalation, token-resolution path (#86)', () => {
+  beforeEach(() => {
+    _resetAuthFailureCountersForTests();
+    pushKumaMock.mockReset();
+    pushKumaMock.mockResolvedValue(undefined);
+    fetchChangedIssuesMock.mockReset();
+    // Successful fetch by default — these tests are exercising the
+    // mint-side failure path, fetch never runs.
+    fetchChangedIssuesMock.mockResolvedValue([]);
+    delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+    delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  });
+
+  afterEach(() => {
+    _resetAuthFailureCountersForTests();
+    delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+    delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  });
+
+  it('pushes status=down on the third consecutive mint 401 (App suspended)', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    const mintErr = new MockGitHubApiError(401, 'Bad credentials');
+
+    const result1 = await reconcileRepo(makeMintFailingTarget('o', 'r', mintErr));
+    const result2 = await reconcileRepo(makeMintFailingTarget('o', 'r', mintErr));
+    const result3 = await reconcileRepo(makeMintFailingTarget('o', 'r', mintErr));
+
+    // Each return carries the token-resolution failure shape, not fetch-error shape.
+    expect(result1.error).toMatch(/^token: /);
+    expect(result2.error).toMatch(/^token: /);
+    expect(result3.error).toMatch(/^token: /);
+
+    // Counter ticks on every 401, pushes on the threshold-crossing tick.
+    expect(_getAuthFailureCountForTests('o/r')).toBe(3);
+    expect(pushKumaMock).toHaveBeenCalledTimes(1);
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    expect(status).toBe('down');
+    expect(msg).toBe('auth_failed:o/r');
+  });
+
+  it('resets the counter to 0 on a successful mint after one failure', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    const mintErr = new MockGitHubApiError(401, 'Bad credentials');
+
+    // Tick 1: mint throws 401 → counter = 1.
+    await reconcileRepo(makeMintFailingTarget('o', 'r', mintErr));
+    expect(_getAuthFailureCountForTests('o/r')).toBe(1);
+
+    // Tick 2: mint succeeds → fetch runs (resolves []) → counter resets
+    // via the post-fetch `consecutiveAuthFailures.delete` call.
+    const okTarget = {
+      owner: 'o',
+      repo: 'r',
+      resolveToken: async (): Promise<string> => 'tok',
+    };
+    await reconcileRepo(okTarget);
+    expect(_getAuthFailureCountForTests('o/r')).toBe(0);
+
+    // No push fired at any point (never crossed the 3-default threshold).
+    expect(pushKumaMock).not.toHaveBeenCalled();
+  });
+
+  it('does NOT escalate when mint throws a plain (non-typed) Error', async () => {
+    // Backcompat: a generic `new Error('PAT lookup failed')` from the
+    // resolveToken closure must NOT tick the auth-failure counter —
+    // those are typically transient (DB blip, network) and shouldn't
+    // pin escalation. Only typed GitHubApiError(401) counts.
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    const plainErr = new Error('PAT lookup failed');
+
+    for (let i = 0; i < 5; i++) {
+      await reconcileRepo(makeMintFailingTarget('o', 'r', plainErr));
+    }
+
+    expect(pushKumaMock).not.toHaveBeenCalled();
+    expect(_getAuthFailureCountForTests('o/r')).toBe(0);
+  });
+});
