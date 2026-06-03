@@ -6,6 +6,7 @@ import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
 import { runDriftAudit } from './sync/driftAudit.js';
+import { resolveDriftAuditIntervalMs } from './sync/driftAuditInterval.js';
 import { runCanary } from './sync/canary.js';
 import { sdNotifyReady } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
@@ -171,16 +172,26 @@ async function main(): Promise<void> {
   runCatchup();
   setInterval(runCatchup, CATCHUP_INTERVAL_MS);
 
-  // ── Daily drift audit (GitHub→MindBlown reconciliation gate) ─
+  // ── Drift audit (GitHub→MindBlown reconciliation gate) ──────────
   // The webhook + catchup pair is good at "an event happened, did we
   // apply it?", but neither alarms when the event NEVER reached us —
   // bad webhook URL on the GH side, expired install token during the
   // catchup window, an ingest exception that dropped an issue. This
-  // sweep diffs open GitHub issues against linked nodes once a day,
-  // tries to auto-backfill any drift under the per-day cap, and pushes
-  // the result to a Kuma monitor. Drift left after auto-backfill → Kuma
-  // alarms via its normal channels (Pushover, etc.).
-  const DRIFT_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  // sweep diffs open GitHub issues against linked nodes every 6 hours
+  // (configurable via DRIFT_AUDIT_INTERVAL_MS), tries to auto-backfill
+  // any drift under the per-day cap, and pushes the result to a Kuma
+  // monitor. Drift left after auto-backfill → Kuma alarms via its
+  // normal channels (Pushover, etc.).
+  //
+  // Cadence is 6h (down from a previous 24h hardcode, closes #72) so
+  // alarm-to-detect latency shrinks from a 24h max to a 6h max. Tighter
+  // intervals (sub-1h) are rejected: at 100+ opted-in maps the GitHub
+  // API rate-limit pressure starts to matter, and the floor protects
+  // against an env-var typo like `DRIFT_AUDIT_INTERVAL_MS=0` turning
+  // setInterval into a DDoS amplifier.
+  const DRIFT_AUDIT_INTERVAL_MS = resolveDriftAuditIntervalMs(
+    process.env.DRIFT_AUDIT_INTERVAL_MS,
+  );
   const driftAuditTick = async (): Promise<void> => {
     try {
       await runDriftAudit();
