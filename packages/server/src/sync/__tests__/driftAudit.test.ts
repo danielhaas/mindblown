@@ -15,6 +15,9 @@
  *     query — we model that by simply not putting the map in the dataset).
  *   - PAT fallback when an App-binding token mint fails → still produces
  *     a report.
+ *   - Token-error surfacing (#70): when an App-token mint fails AND no
+ *     PAT fallback works, the failing map appears in `tokenErrors` with
+ *     a reason derived from the error. Tested in 4 variants below.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -261,8 +264,9 @@ describe('auditDrift', () => {
     linkNodeToIssue('m1', 'owner', 'repo', 2);
     linkNodeToIssue('m1', 'owner', 'repo', 3);
 
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     expect(reports).toEqual([]);
+    expect(tokenErrors).toEqual([]);
   });
 
   it('returns a DriftReport when issues exist with no linked node', async () => {
@@ -279,7 +283,7 @@ describe('auditDrift', () => {
     linkNodeToIssue('m1', 'owner', 'repo', 10);
     // 11 and 12 are unlinked
 
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     expect(reports).toHaveLength(1);
     expect(reports[0]).toEqual({
       mapId: 'm1',
@@ -288,6 +292,7 @@ describe('auditDrift', () => {
       onlyInGitHub: 2,
       exampleIssues: [11, 12],
     });
+    expect(tokenErrors).toEqual([]);
   });
 
   it('truncates exampleIssues to 5 even when N is much larger', async () => {
@@ -303,7 +308,7 @@ describe('auditDrift', () => {
     // 8 open issues, none linked
     setupRepoIssues('owner', 'repo', [1, 2, 3, 4, 5, 6, 7, 8]);
 
-    const reports = await auditDrift();
+    const { reports } = await auditDrift();
     expect(reports).toHaveLength(1);
     expect(reports[0].onlyInGitHub).toBe(8);
     expect(reports[0].exampleIssues).toEqual([1, 2, 3, 4, 5]);
@@ -322,8 +327,9 @@ describe('auditDrift', () => {
     setupRepoIssues('owner', 'repo', [1, 2, 3]);
     // Zero nodes linked — would be drift if the map were opted in.
 
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     expect(reports).toEqual([]);
+    expect(tokenErrors).toEqual([]);
   });
 
   it('skips maps with no GitHub binding (owner/repo null)', async () => {
@@ -340,8 +346,9 @@ describe('auditDrift', () => {
     // the resolveTargets isNotNull predicate filters this out.
     setupRepoIssues('owner', 'repo', [1, 2, 3]);
 
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     expect(reports).toEqual([]);
+    expect(tokenErrors).toEqual([]);
   });
 
   it('reports one map per opted-in target, not aggregated by repo', async () => {
@@ -370,7 +377,7 @@ describe('auditDrift', () => {
     linkNodeToIssue('mB', 'owner', 'repo', 1);
     linkNodeToIssue('mB', 'owner', 'repo', 2); // mB misses 3
 
-    const reports = await auditDrift();
+    const { reports } = await auditDrift();
     const byId = new Map(reports.map((r) => [r.mapId, r]));
     expect(byId.get('mA')?.onlyInGitHub).toBe(2);
     expect(byId.get('mB')?.onlyInGitHub).toBe(1);
@@ -396,10 +403,13 @@ describe('auditDrift', () => {
     setupRepoIssues('owner', 'repo', [42]);
     // No node linked → expect drift
 
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     expect(reports).toHaveLength(1);
     expect(reports[0].onlyInGitHub).toBe(1);
     expect(reports[0].exampleIssues).toEqual([42]);
+    // PAT fallback worked → no token error reported (the earlier
+    // App-mint failure is dropped once the PAT succeeds).
+    expect(tokenErrors).toEqual([]);
   });
 
   it('logs and skips a map whose GitHub fetch throws, without aborting other maps', async () => {
@@ -425,11 +435,138 @@ describe('auditDrift', () => {
     importErrors.set('bad/repo', 'GitHub 503');
 
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const reports = await auditDrift();
+    const { reports, tokenErrors } = await auditDrift();
     warnSpy.mockRestore();
 
     // mGood still reports its drift; mBad failed silently.
     expect(reports.map((r) => r.mapId)).toEqual(['mGood']);
     expect(reports[0].onlyInGitHub).toBe(1);
+    // Per-map fetch errors do NOT populate tokenErrors — those are
+    // reserved for token-resolution failures (App revoked / PAT missing).
+    expect(tokenErrors).toEqual([]);
+  });
+
+  // ── Token-error surfacing (#70) ─────────────────────────────────
+
+  it('reports a tokenError when App mint fails AND no PAT fallback exists', async () => {
+    dbState.maps.push({
+      id: 'm1',
+      name: 'Revoked Install Map',
+      workspaceId: 'ws',
+      githubInstallationId: 'inst-revoked',
+      githubRepoOwner: 'owner',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    // App mint throws; no PAT integration in dbState.integrations →
+    // map can't resolve a token at all.
+    mintErrors.set('inst-revoked', 'install revoked');
+    // Even though issues exist on the repo, the map is skipped from
+    // the audit entirely — no fetch happens, no report.
+    setupRepoIssues('owner', 'repo', [1, 2, 3]);
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { reports, tokenErrors } = await auditDrift();
+    warnSpy.mockRestore();
+
+    expect(reports).toEqual([]);
+    expect(tokenErrors).toHaveLength(1);
+    expect(tokenErrors[0]).toEqual({
+      mapId: 'm1',
+      mapName: 'Revoked Install Map',
+      // Reason format: `app: <error message>` — see resolveTargets()
+      // in driftAudit.ts.
+      reason: 'app: install revoked',
+    });
+  });
+
+  it('omits a tokenError when App mint fails BUT PAT fallback succeeds', async () => {
+    // This is the existing PAT-fallback case re-asserted at the
+    // tokenErrors contract level: a downstream PAT save means there
+    // is NO token error to surface, even though the App mint blew up.
+    dbState.maps.push({
+      id: 'm1',
+      name: 'App+PAT Map',
+      workspaceId: 'ws',
+      githubInstallationId: 'inst-revoked',
+      githubRepoOwner: 'owner',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    dbState.integrations.push({
+      workspaceId: 'ws',
+      provider: 'github',
+      enabled: true,
+      config: { owner: 'owner', repo: 'repo', token: 'pat-fallback' },
+    });
+    mintErrors.set('inst-revoked', 'install revoked');
+    setupRepoIssues('owner', 'repo', [1]);
+
+    const { reports, tokenErrors } = await auditDrift();
+    // Map IS audited normally because the PAT works.
+    expect(reports).toHaveLength(1);
+    expect(reports[0].mapId).toBe('m1');
+    // And tokenErrors is empty — the App-mint failure was recovered.
+    expect(tokenErrors).toEqual([]);
+  });
+
+  it('reports tokenErrors alongside reports for a mix of normal + token-errored maps', async () => {
+    // mNormal — drifted, audits cleanly.
+    dbState.maps.push({
+      id: 'mNormal',
+      name: 'Normal Map',
+      workspaceId: 'wsA',
+      githubInstallationId: 'inst-ok',
+      githubRepoOwner: 'good',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    setupRepoIssues('good', 'repo', [5]); // unlinked → drift
+
+    // mBroken — App revoked, no PAT → tokenError.
+    dbState.maps.push({
+      id: 'mBroken',
+      name: 'Broken Token Map',
+      workspaceId: 'wsB',
+      githubInstallationId: 'inst-revoked',
+      githubRepoOwner: 'bad',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    mintErrors.set('inst-revoked', 'install revoked');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { reports, tokenErrors } = await auditDrift();
+    warnSpy.mockRestore();
+
+    expect(reports.map((r) => r.mapId)).toEqual(['mNormal']);
+    expect(reports[0].onlyInGitHub).toBe(1);
+    expect(tokenErrors).toHaveLength(1);
+    expect(tokenErrors[0].mapId).toBe('mBroken');
+    expect(tokenErrors[0].reason).toBe('app: install revoked');
+  });
+
+  it('preserves the raw error message in tokenError.reason for non-revocation failures', async () => {
+    // Defensive: the resolver stringifies arbitrary errors into
+    // `reason`. Make sure a non-"install revoked" message threads
+    // through verbatim so the operator UI can render the actual cause.
+    dbState.maps.push({
+      id: 'm1',
+      name: 'JWT Map',
+      workspaceId: 'ws',
+      githubInstallationId: 'inst-jwt',
+      githubRepoOwner: 'owner',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    mintErrors.set('inst-jwt', 'JWT signature invalid');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { reports, tokenErrors } = await auditDrift();
+    warnSpy.mockRestore();
+
+    expect(reports).toEqual([]);
+    expect(tokenErrors).toHaveLength(1);
+    expect(tokenErrors[0].reason).toBe('app: JWT signature invalid');
   });
 });
