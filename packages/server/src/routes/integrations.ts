@@ -14,7 +14,7 @@ import {
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
-import { auditDrift } from '../sync/driftAudit.js';
+import { runDriftAudit } from '../sync/driftAudit.js';
 import { requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
@@ -777,12 +777,27 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      const reports = await auditDrift();
+      // runDriftAudit triggers the same auto-backfill code path the
+      // daily scheduler uses — manual + scheduled paths must produce
+      // identical outcomes (incl. the Kuma push) so operators can use
+      // this endpoint to test the auto-repair flow without waiting 24h.
+      const result = await runDriftAudit();
+      if (result.error) {
+        return reply.status(500).send({
+          error: {
+            code: 'DRIFT_AUDIT_FAILED',
+            message: result.error,
+          },
+        });
+      }
       return reply.send({
-        reports,
+        reports: result.reports,
+        autoBackfill: result.autoBackfill,
         counts: {
-          driftedMaps: reports.length,
-          totalDriftedIssues: reports.reduce((n, r) => n + r.onlyInGitHub, 0),
+          driftedMaps: result.reports.length,
+          totalDriftedIssues: result.reports.reduce((n, r) => n + r.onlyInGitHub, 0),
+          autoBackfilled: result.autoBackfill.totalImported,
+          manualPending: result.autoBackfill.totalManualPending,
         },
       });
     } catch (err) {

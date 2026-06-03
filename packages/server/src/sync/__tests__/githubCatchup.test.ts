@@ -88,9 +88,22 @@ vi.mock('../kumaPush.js', () => ({
     pushKumaMock(url, status, msg, tag),
 }));
 
+// Mock the systemd watchdog ping so we can verify it fires only on
+// fully-clean ticks (the failure mode the watchdog catches is a frozen
+// catchup loop — pinging on partial failures defeats its purpose).
+const sdWatchdogMock = vi.fn(async (): Promise<boolean> => true);
+vi.mock('../sdNotify.js', () => ({
+  sdNotifyWatchdog: () => sdWatchdogMock(),
+}));
+
 // ── SUT import (after mocks) ──────────────────────────────────────
 
-import { runAllCatchups, pushCatchupHeartbeat, type ReconcileResult } from '../githubCatchup.js';
+import {
+  runAllCatchups,
+  pushCatchupHeartbeat,
+  isHealthyTick,
+  type ReconcileResult,
+} from '../githubCatchup.js';
 
 function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
   return {
@@ -114,6 +127,8 @@ describe('runAllCatchups → Kuma heartbeat', () => {
   beforeEach(() => {
     pushKumaMock.mockReset();
     pushKumaMock.mockResolvedValue(undefined);
+    sdWatchdogMock.mockReset();
+    sdWatchdogMock.mockResolvedValue(true);
     delete process.env.KUMA_GITHUB_CATCHUP_PUSH_URL;
   });
 
@@ -214,5 +229,65 @@ describe('pushCatchupHeartbeat (direct helper)', () => {
     ]);
     const [, status] = pushKumaMock.mock.calls[0];
     expect(status).toBe('down');
+  });
+});
+
+describe('runAllCatchups → systemd watchdog', () => {
+  beforeEach(() => {
+    sdWatchdogMock.mockReset();
+    sdWatchdogMock.mockResolvedValue(true);
+    pushKumaMock.mockReset();
+    pushKumaMock.mockResolvedValue(undefined);
+    delete process.env.KUMA_GITHUB_CATCHUP_PUSH_URL;
+  });
+
+  it('pings the watchdog after a clean tick (zero repos, no errors)', async () => {
+    // With the DB mocked to return zero targets, results is [], every()
+    // returns true, isHealthyTick returns true → watchdog should fire.
+    await runAllCatchups();
+    expect(sdWatchdogMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw when sdNotifyWatchdog rejects (notify failure must not affect main flow)', async () => {
+    sdWatchdogMock.mockRejectedValueOnce(new Error('notify socket gone'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const results = await runAllCatchups();
+    warnSpy.mockRestore();
+    expect(Array.isArray(results)).toBe(true);
+    expect(sdWatchdogMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('isHealthyTick', () => {
+  it('returns true for an empty results array (sweep completed without crashing)', () => {
+    expect(isHealthyTick([])).toBe(true);
+  });
+
+  it('returns true when every repo is clean', () => {
+    expect(
+      isHealthyTick([makeResult({ fetched: 3, applied: 2 })]),
+    ).toBe(true);
+  });
+
+  it('returns false when any repo reports ingestErrored > 0', () => {
+    expect(
+      isHealthyTick([
+        makeResult(),
+        makeResult({ repo: 'b/c', ingestErrored: 1 }),
+      ]),
+    ).toBe(false);
+  });
+
+  it('returns false when any repo reports stateSyncErrored > 0', () => {
+    expect(
+      isHealthyTick([makeResult({ stateSyncErrored: 1 })]),
+    ).toBe(false);
+  });
+
+  it('returns false when any repo carries an error string', () => {
+    expect(
+      isHealthyTick([makeResult({ error: 'fetch: 503' })]),
+    ).toBe(false);
   });
 });

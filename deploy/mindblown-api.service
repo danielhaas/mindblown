@@ -5,7 +5,24 @@ After=network.target postgresql.service
 Wants=postgresql.service
 
 [Service]
-Type=simple
+# Type=notify so the API can report READY=1 when Fastify finishes
+# binding its port (see sdNotifyReady() in src/index.ts) and can ping
+# WATCHDOG=1 after every successful catchup tick. Together with
+# WatchdogSec=300 below, this auto-recovers from a frozen catchup loop
+# (network stall, blocked pg query) — systemd kills + restarts the
+# service after 5 min of no pings.
+Type=notify
+# NotifyAccess=all (not =main) because WATCHDOG=1 is sent via
+# systemd-notify(1) spawned as a child of the node process. Under
+# =main, systemd only accepts pings whose sender PID matches the
+# unit's main PID — systemd-notify(1) tries to spoof the parent PID
+# via SCM_CREDENTIALS but that needs CAP_SYS_ADMIN, which the non-root
+# child does not have, so the spoof fails and systemd rejects the
+# message. =all still restricts to processes within the unit's
+# cgroup (same security boundary — only mindblown UID is in there).
+NotifyAccess=all
+WatchdogSec=300
+
 User=mindblown
 Group=mindblown
 WorkingDirectory=/opt/mindblown/packages/server
@@ -19,7 +36,7 @@ Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 ExecStart=/usr/bin/env pnpm exec tsx src/index.ts
 
 Restart=on-failure
-RestartSec=5
+RestartSec=10s
 StandardOutput=journal
 StandardError=journal
 

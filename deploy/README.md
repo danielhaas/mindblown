@@ -115,6 +115,12 @@ NODE_ENV=production
 # audit, but silent failures have no external alarm. See below.
 # KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
+
+# Optional — cap on the number of drift nodes the daily audit will
+# auto-backfill PER MAP per tick. Drift over this cap is left in
+# place so the Kuma alarm escalates to a human. Set to 0 to disable
+# auto-backfill entirely (audit still runs + alarms). Default: 50.
+# AUTO_BACKFILL_MAX_PER_DAY=50
 EOF
 chmod 640 /etc/mindblown/api.env
 chown root:mindblown /etc/mindblown/api.env
@@ -243,6 +249,59 @@ section is optional — but strongly recommended in production.
 | catchup heartbeat | 60 s | 10 min | API pushes every 5 min — 10 min absorbs one missed tick (restart/upgrade) without false-alarming. |
 | drift audit | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack for restart timing, clock drift, etc. |
 
+### Auto-backfill on drift detection
+
+When the daily audit finds drift, the API attempts to self-heal by
+calling the same code path as the manual "Backfill" button in the UI
+for each drifted map. The cap is per-map per audit tick:
+
+| Setting | Default | Behaviour |
+|---|---|---|
+| `AUTO_BACKFILL_MAX_PER_DAY=50` (default) | up to 50 drift nodes per map | auto-healed; Kuma `up msg=auto-backfilled-N` |
+| drift > cap | none | left in place; Kuma `down msg=manual-N` |
+| `AUTO_BACKFILL_MAX_PER_DAY=0` | 0 | kill switch: audit still runs + alarms, nothing self-heals |
+
+The Kuma message format makes both outcomes auditable from the alert
+history:
+
+- `no-drift` — clean tick (status=up).
+- `auto-backfilled-3` — 3 nodes self-healed (status=up).
+- `manual-5` — 5 nodes left for manual ack (status=down).
+- `auto-backfilled-2,manual-3` — mixed (status=down).
+- `audit_failed:<reason>` — audit itself threw (status=down).
+
+`status=up` for full self-heal means the operator never gets paged
+when the system recovers itself; anything requiring action still
+alarms.
+
+**Triage `manual-N` alerts.** The same `manual-N` message covers two
+distinct failure modes — grep the server logs to tell them apart:
+
+```bash
+journalctl -u mindblown-api | grep auto-backfill
+```
+
+- `drift detected, all N maps over the per-day cap` → expected: hit
+  the manual backfill endpoint (or raise `AUTO_BACKFILL_MAX_PER_DAY`).
+- `drift detected, per-map auto-backfill failed: <error>` → expected:
+  read the warn log for the underlying cause (revoked GitHub token,
+  GitHub 503, rate-limit, etc.) and fix that before re-running.
+
+### Watchdog auto-restart
+
+The unit file uses `Type=notify` + `WatchdogSec=300` so a frozen
+catchup loop (network stall, hung pg query) triggers a systemd-driven
+kill + restart after 5 min of no `WATCHDOG=1` pings. The catchup loop
+pings only after a fully-successful tick — partial failures
+deliberately don't reset the watchdog because that's the failure mode
+the watchdog exists to catch. Combined with `Restart=on-failure +
+RestartSec=10s`, a hung API recovers in ≤ 5 min 10 s without operator
+involvement.
+
+The READY ping is sent once Fastify has bound the port; without it,
+`Type=notify` would leave `systemctl start` blocked forever waiting
+for ready notification.
+
 ### Manual trigger
 
 For ops testing without waiting 24h for the next scheduled drift
@@ -253,8 +312,11 @@ curl -sf -X POST https://mindblown.example.com/api/maps/sync/audit-drift \
   -H "Cookie: <session cookie from your browser>" | jq .
 ```
 
-Returns `{reports: DriftReport[], counts: {...}}`. API-key auth is
-deliberately rejected — this is a session-only operator surface.
+Returns `{reports: DriftReport[], autoBackfill: {...}, counts: {...}}`.
+The manual trigger runs the same auto-backfill + Kuma push the
+scheduled audit does, so it's a faithful end-to-end smoke test of the
+auto-repair flow. API-key auth is deliberately rejected — this is a
+session-only operator surface.
 
 ## What's NOT in the LXC backup
 

@@ -5,8 +5,8 @@ import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
-import { auditDrift, type DriftReport } from './sync/driftAudit.js';
-import { pushKumaHeartbeat } from './sync/kumaPush.js';
+import { runDriftAudit } from './sync/driftAudit.js';
+import { sdNotifyReady } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
@@ -103,6 +103,22 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // ── Tell systemd we're up (Type=notify) ────────────────────────
+  // The mindblown-api.service unit uses `Type=notify` so dependent
+  // services (Caddy reload, etc.) only fire once we've actually bound
+  // a port. Without this `READY=1` ping, systemd waits forever in
+  // "starting up" mode → unit appears stuck and `systemctl start`
+  // never returns. Silent no-op when run outside systemd (no
+  // $NOTIFY_SOCKET).
+  try {
+    await sdNotifyReady();
+  } catch (err) {
+    console.warn(
+      '[sd-notify] READY ping unexpectedly threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
   // ── Release snapshot cron (daily trend history) ──────────────
   // Catch-up on startup (cheap, idempotent), then re-snapshot every
   // hour. Each hourly call upserts today's row per (map, version),
@@ -159,39 +175,18 @@ async function main(): Promise<void> {
   // apply it?", but neither alarms when the event NEVER reached us —
   // bad webhook URL on the GH side, expired install token during the
   // catchup window, an ingest exception that dropped an issue. This
-  // sweep diffs open GitHub issues against linked nodes once a day and
-  // pushes the result to a Kuma monitor. Drift > 0 → Kuma alarms via
-  // its normal channels (Pushover, etc.).
+  // sweep diffs open GitHub issues against linked nodes once a day,
+  // tries to auto-backfill any drift under the per-day cap, and pushes
+  // the result to a Kuma monitor. Drift left after auto-backfill → Kuma
+  // alarms via its normal channels (Pushover, etc.).
   const DRIFT_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
-  const runDriftAudit = async () => {
-    const url = process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
-    let reports: DriftReport[];
+  const driftAuditTick = async (): Promise<void> => {
     try {
-      reports = await auditDrift();
+      await runDriftAudit();
     } catch (err) {
-      console.error('[drift-audit] sweep failed:', err);
-      // Tell Kuma the audit itself broke. Without this, an exception
-      // mid-sweep looks identical to "clean" from Kuma's vantage.
-      if (url) {
-        const msg = `audit_failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
-        await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
-      }
-      return;
-    }
-    if (reports.length === 0) {
-      console.log('[drift-audit] clean — no drift');
-      if (url) {
-        await pushKumaHeartbeat(url, 'up', 'no-drift', '[kuma-push] drift audit');
-      }
-      return;
-    }
-    const summary = reports.map((r) => `${r.mapName}=${r.onlyInGitHub} issues`).join(', ');
-    console.warn(`[drift-audit] drift detected: ${summary}`);
-    if (url) {
-      // Truncate at 200 chars so the Kuma push URL doesn't blow past
-      // common HTTP query-length limits when there are many drifted maps.
-      const msg = `drift_detected: ${summary}`.slice(0, 200);
-      await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
+      // runDriftAudit handles its own error paths + Kuma push; this
+      // catch is defence-in-depth for an unexpected synchronous throw.
+      console.error('[drift-audit] scheduler caught unexpected error:', err);
     }
   };
   // Deliberately no startup invocation. Drift audit fans out one
@@ -202,7 +197,7 @@ async function main(): Promise<void> {
   // open issue unconditionally. Wait for the first interval tick;
   // operators can hit POST /api/maps/sync/audit-drift to force a run
   // post-deploy.
-  setInterval(runDriftAudit, DRIFT_AUDIT_INTERVAL_MS);
+  setInterval(driftAuditTick, DRIFT_AUDIT_INTERVAL_MS);
 }
 
 main();

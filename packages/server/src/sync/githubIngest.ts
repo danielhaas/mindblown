@@ -41,6 +41,7 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
+import { importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
@@ -522,4 +523,191 @@ export async function ingestNewIssuesForRepo(
   }
 
   return summary;
+}
+
+// ── Backfill a specific map ───────────────────────────────────────
+
+/**
+ * Number of days back from "now" we consider a closed issue eligible
+ * for backfill. Matches the constant inlined in the
+ * `/api/maps/:mapId/github/ingest-new` route. Kept here so the
+ * auto-backfill caller picks up the same window without duplicating
+ * the magic number.
+ */
+export const BACKFILL_CLOSED_WINDOW_DAYS = 30;
+
+export interface BackfillMapResult {
+  /** Count of new nodes created in this map. */
+  imported: number;
+  /** Total candidates (unlinked issues passing the closed-window filter). */
+  total: number;
+  /** True when `total` exceeded `maxToImport` and we ingested only a slice. */
+  capped: boolean;
+  /** Count of issues whose per-issue ingest threw (logged inside). */
+  errored: number;
+}
+
+export interface BackfillMapOpts {
+  /**
+   * Cap on the number of issues to actually ingest in this call. Default
+   * 200 (matches the manual backfill endpoint). When `total > maxToImport`,
+   * the helper ingests the first `maxToImport` candidates and reports
+   * `capped: true`.
+   */
+  maxToImport?: number;
+  /**
+   * Override the `createdBy` attribution for new nodes. Defaults to the
+   * map's `createdBy` — used as the attribution for auto-backfill calls
+   * where there's no acting user.
+   */
+  createdBy?: string;
+  /**
+   * Closed-issue window in days. Defaults to 30 (matches the manual
+   * backfill endpoint). The auto-backfill caller from drift audit can
+   * pass 0 to restrict to open issues only, since drift only counts open.
+   */
+  allowClosedWithinDays?: number;
+}
+
+/**
+ * Bulk-backfill into a single map: fetch every issue on the bound repo,
+ * filter to unlinked + (open OR closed-within-window), then ensure a
+ * node for the first `maxToImport` of them. Resolves the GitHub token
+ * the same way as `getGitHubContextForMap` in `routes/integrations.ts`
+ * (App-installation first, PAT fallback).
+ *
+ * Extracted from the `POST /api/maps/:mapId/github/ingest-new` handler
+ * so both the operator-clicks-the-button path and the auto-backfill
+ * drift remediation path share the same code. Differences from the
+ * inline route version:
+ *
+ *   - Lives in `sync/githubIngest.ts` instead of the route file so the
+ *     audit code can import it without dragging in Fastify types.
+ *   - Returns a typed result instead of throwing for non-2xx cases;
+ *     callers decide how to surface "no integration" / "fetch failed".
+ *
+ * Throws only on token-resolution / fetch failure / no-binding — those
+ * are infra-level problems the caller needs to know about (so the drift
+ * audit's Kuma push can flip to `down`). Per-issue ingest errors are
+ * caught + counted; the helper still returns its summary.
+ */
+export async function backfillMap(
+  mapId: string,
+  opts: BackfillMapOpts = {},
+): Promise<BackfillMapResult> {
+  const maxToImport = opts.maxToImport ?? 200;
+  const allowClosedWithinDays = opts.allowClosedWithinDays ?? BACKFILL_CLOSED_WINDOW_DAYS;
+
+  const [mapRow] = await db
+    .select({
+      id: maps.id,
+      createdBy: maps.createdBy,
+      workspaceId: maps.workspaceId,
+      githubInstallationId: maps.githubInstallationId,
+      githubRepoOwner: maps.githubRepoOwner,
+      githubRepoName: maps.githubRepoName,
+    })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!mapRow) {
+    throw new Error(`backfillMap: map ${mapId} not found`);
+  }
+
+  // Resolve owner/repo + token. App-binding first, then workspace PAT.
+  // This mirrors `getGitHubContextForMap` in routes/integrations.ts —
+  // we don't import it to avoid a cycle (it lives in the routes layer).
+  let owner: string | null = null;
+  let repo: string | null = null;
+  let token: string | null = null;
+
+  if (mapRow.githubInstallationId && mapRow.githubRepoOwner && mapRow.githubRepoName) {
+    try {
+      token = await mintInstallationToken(mapRow.githubInstallationId);
+      owner = mapRow.githubRepoOwner;
+      repo = mapRow.githubRepoName;
+    } catch (err) {
+      console.warn(
+        `[backfill] mint installation token failed for map ${mapId}, falling back to PAT:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  if (!token) {
+    const [integ] = await db
+      .select()
+      .from(integrations)
+      .where(
+        and(
+          eq(integrations.workspaceId, mapRow.workspaceId),
+          eq(integrations.provider, 'github'),
+          eq(integrations.enabled, true),
+        ),
+      );
+    if (integ) {
+      const cfg = integ.config as { owner?: string; repo?: string; token?: string } | null;
+      if (cfg?.owner && cfg?.repo && cfg?.token) {
+        owner = cfg.owner;
+        repo = cfg.repo;
+        token = cfg.token;
+      }
+    }
+  }
+
+  if (!owner || !repo || !token) {
+    throw new Error(`backfillMap: no GitHub binding resolvable for map ${mapId}`);
+  }
+
+  const importedIssues = await importGitHubIssues(owner, repo, token, {
+    includeAll: true,
+  });
+
+  const allExternalIds = importedIssues.map((i) => i.externalLink.externalId);
+  const linkedIds = await findNodesByExternalIds(allExternalIds);
+
+  const cutoffMs = Date.now() - allowClosedWithinDays * 24 * 60 * 60 * 1000;
+  const candidates = importedIssues
+    .filter((item) => !linkedIds.has(item.externalLink.externalId))
+    .filter((item) => {
+      if (item.issue.state === 'open') return true;
+      if (allowClosedWithinDays <= 0) return false;
+      if (!item.issue.closed_at) return true;
+      const closed = new Date(item.issue.closed_at).getTime();
+      if (Number.isNaN(closed)) return true;
+      return closed >= cutoffMs;
+    });
+
+  const total = candidates.length;
+  const slice = candidates.slice(0, maxToImport);
+  const createdBy = opts.createdBy ?? (mapRow.createdBy as string);
+
+  const inboxId = await ensureInboxNode(mapId, createdBy);
+
+  let imported = 0;
+  let errored = 0;
+  for (const item of slice) {
+    try {
+      const result = await ensureNodeForIssue(
+        mapId,
+        inboxId,
+        item.issue,
+        { owner, repo, createdBy },
+        { allowClosedWithinDays },
+      );
+      if (result.status === 'created') imported++;
+    } catch (err) {
+      errored++;
+      console.warn(
+        `[backfill] ingest #${item.issue.number} failed for map ${mapId}:`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
+  return {
+    imported,
+    total,
+    capped: total > maxToImport,
+    errored,
+  };
 }
