@@ -29,15 +29,27 @@ const { runCanary } = await import('../canary.js');
 
 describe('runCanary', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
+  // Save + clear `KUMA_ALARM_CANARY_PUSH_URL` for the whole describe so
+  // a dev who exported it for a real smoke test (`KUMA_ALARM_CANARY_PUSH_URL=…
+  // pnpm test`) doesn't see test 1 fail with a confusing error — the
+  // "URL is undefined" case silently depended on the env var being unset.
+  let originalCanaryUrl: string | undefined;
 
   beforeEach(() => {
     pushKumaHeartbeatMock.mockReset();
     pushKumaHeartbeatMock.mockResolvedValue(undefined);
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    originalCanaryUrl = process.env.KUMA_ALARM_CANARY_PUSH_URL;
+    delete process.env.KUMA_ALARM_CANARY_PUSH_URL;
   });
 
   afterEach(() => {
     warnSpy.mockRestore();
+    if (originalCanaryUrl === undefined) {
+      delete process.env.KUMA_ALARM_CANARY_PUSH_URL;
+    } else {
+      process.env.KUMA_ALARM_CANARY_PUSH_URL = originalCanaryUrl;
+    }
   });
 
   it('does NOT call pushKumaHeartbeat when the URL is undefined', async () => {

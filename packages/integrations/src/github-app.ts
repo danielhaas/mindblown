@@ -5,6 +5,8 @@
  * and repo listing — all via native fetch + jsonwebtoken. No @octokit deps.
  */
 
+import { GitHubApiError } from './github.js';
+
 // ── Types ─────────────────────────────────────────────────────────
 
 export interface GitHubAppConfig {
@@ -132,6 +134,16 @@ const _tokenCache = new Map<string, InstallationToken>();
  * Get an installation access token (cached, ~50 min TTL).
  * These are short-lived tokens that let us act as the installed App
  * on specific repos.
+ *
+ * On a 401 or 404 we throw `GitHubApiError` so the catchup loop's
+ * consecutive-auth-failure escalation (githubCatchup.ts) can branch on
+ * `err instanceof GitHubApiError && err.status === 401` for both the
+ * fetch-401 path AND the mint-401 path (App suspended / installation
+ * revoked). Other statuses still throw a plain `Error` — those are
+ * transient (5xx / 502) and shouldn't pin the auth-failure counter.
+ *
+ * The error message format is preserved verbatim for log/backcompat
+ * reasons; only the throw class changes.
  */
 export async function mintInstallationToken(installationId: string): Promise<string> {
   const cached = _tokenCache.get(installationId);
@@ -155,6 +167,15 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   if (!res.ok) {
     const body = await res.text();
+    if (res.status === 401 || res.status === 404) {
+      // `GitHubApiError`'s constructor formats the message as
+      // `GitHub API <status>: <body>`, which slots into the catchup
+      // token-resolution catch the same way a fetch-401 from `github.ts`
+      // does — both flow through the same `err.message` path in logs.
+      // Other statuses (5xx, etc.) stay as plain Error: those are
+      // transient, the auth-failure counter shouldn't tick on them.
+      throw new GitHubApiError(res.status, body);
+    }
     throw new Error(`Failed to mint installation token: ${res.status} ${body}`);
   }
 
