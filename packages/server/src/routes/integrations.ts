@@ -15,6 +15,7 @@ import {
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
+import { recordWebhookCall } from '../sync/webhookAuthCheck.js';
 import { requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
@@ -1006,6 +1007,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         }
       }
     }
+
+    // Feed the 24h rolling auth counter (see #74). We record EVERY
+    // inbound webhook call — both pass and fail — so the daily
+    // scheduler can detect "received N, all failed verification" =
+    // the GH-side secret has rotated and mindblown's copy is stale.
+    // Recorded BEFORE the 401 short-circuit below so failing calls
+    // are counted even though we reject them.
+    recordWebhookCall(signatureVerified);
 
     // Enforce signature verification for the entire webhook handler.
     // Before this guard, an attacker who knew the webhook URL could POST a
