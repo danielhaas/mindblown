@@ -274,6 +274,19 @@ history:
 when the system recovers itself; anything requiring action still
 alarms.
 
+**Triage `manual-N` alerts.** The same `manual-N` message covers two
+distinct failure modes — grep the server logs to tell them apart:
+
+```bash
+journalctl -u mindblown-api | grep auto-backfill
+```
+
+- `drift detected, all N maps over the per-day cap` → expected: hit
+  the manual backfill endpoint (or raise `AUTO_BACKFILL_MAX_PER_DAY`).
+- `drift detected, per-map auto-backfill failed: <error>` → expected:
+  read the warn log for the underlying cause (revoked GitHub token,
+  GitHub 503, rate-limit, etc.) and fix that before re-running.
+
 ### Watchdog auto-restart
 
 The unit file uses `Type=notify` + `WatchdogSec=300` so a frozen

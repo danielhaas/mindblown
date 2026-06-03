@@ -12,7 +12,15 @@ Wants=postgresql.service
 # (network stall, blocked pg query) — systemd kills + restarts the
 # service after 5 min of no pings.
 Type=notify
-NotifyAccess=main
+# NotifyAccess=all (not =main) because WATCHDOG=1 is sent via
+# systemd-notify(1) spawned as a child of the node process. Under
+# =main, systemd only accepts pings whose sender PID matches the
+# unit's main PID — systemd-notify(1) tries to spoof the parent PID
+# via SCM_CREDENTIALS but that needs CAP_SYS_ADMIN, which the non-root
+# child does not have, so the spoof fails and systemd rejects the
+# message. =all still restricts to processes within the unit's
+# cgroup (same security boundary — only mindblown UID is in there).
+NotifyAccess=all
 WatchdogSec=300
 
 User=mindblown
