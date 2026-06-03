@@ -346,34 +346,23 @@ export async function ensureNodeForIssue(
     }
   }
 
-  // (3) Wrap lock + precheck + create in a Postgres transaction.
-  // pg_advisory_xact_lock only holds for the duration of the current
-  // transaction; without an explicit tx, drizzle commits between every
-  // statement and the lock releases immediately — making the race
-  // protection illusory. By wrapping here, the second concurrent call
-  // for the same externalId blocks at takeIngestLock until the first
-  // call's tx commits, at which point its precheck reads the freshly-
-  // inserted externalLink and returns skipped_exists.
+  // (3) Wrap lock + precheck + create + link-update in a Postgres
+  // transaction. The advisory lock holds for the duration of this tx; the
+  // precheck SELECT, the createNode insert, and the updateNode that
+  // attaches the externalLink ALL run on the `tx` handle, so they share
+  // the same transaction scope. Two consequences:
+  //
+  //   1. Race safety: a concurrent call for the same externalId blocks
+  //      at takeIngestLock until this tx commits, then its precheck reads
+  //      the (now committed) externalLink and returns skipped_exists.
+  //   2. Atomicity: if any throw happens between createNode and end of
+  //      tx, the rollback undoes the insert + the link update together —
+  //      no orphan node is left behind. (Previously these calls ran on
+  //      the global `db` handle and autocommitted independently, which
+  //      worked by accident for the happy path but leaked on any throw
+  //      in between. mindblown#66.)
   const isClosed = issue.state === 'closed';
   const text = `#${issue.number} ${issue.title}`;
-  // NOTE(githubIngest-tx-scope): `nodeDb.createNode` and `nodeDb.updateNode`
-  // below run against the global `db` handle, NOT the `tx` we just opened.
-  // They autocommit independently of this outer transaction. The race
-  // protection still works because the advisory lock + the precheck SELECT
-  // ARE on `tx`: by the time a concurrent call B's precheck runs, call A
-  // has already released the lock (committed its tx), and A's autocommitted
-  // createNode/updateNode writes are globally visible — so B's precheck
-  // finds the row and returns skipped_exists.
-  //
-  // Fragility: if any error path between the createNode call and the end
-  // of the tx callback throws AFTER createNode has autocommitted, we leak
-  // an orphaned node (the outer tx rollback can't undo the autocommit).
-  // Today there are only two awaits between them (updateNode + the link
-  // object construction), so the window is small but nonzero.
-  //
-  // TODO(githubIngest-tx-scope): thread tx through nodeDb.createNode /
-  // nodeDb.updateNode so the whole sequence is atomic. Tracked as a
-  // follow-up after the auto-ingest PR lands.
   type TxResult =
     | { kind: 'created'; nodeId: string; node: Awaited<ReturnType<typeof nodeDb.getNode>>; link: ExternalLink }
     | { kind: 'exists'; nodeId: string };
@@ -386,14 +375,17 @@ export async function ensureNodeForIssue(
     // The create-node auto-link runs on the HTTP route, not here, so we
     // attach the externalLink ourselves so downstream sync paths
     // (reconcile, webhook close/reopen) can find the node by externalId.
-    const created = await nodeDb.createNode({
-      mapId,
-      parentId: inboxNodeId,
-      text,
-      createdBy: ctx.createdBy,
-      percentComplete: isClosed ? 100 : 0,
-      status: isClosed ? 'done' : 'todo',
-    });
+    const created = await nodeDb.createNode(
+      {
+        mapId,
+        parentId: inboxNodeId,
+        text,
+        createdBy: ctx.createdBy,
+        percentComplete: isClosed ? 100 : 0,
+        status: isClosed ? 'done' : 'todo',
+      },
+      tx,
+    );
     const link: ExternalLink = {
       provider: 'github',
       externalId,
@@ -401,10 +393,15 @@ export async function ensureNodeForIssue(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
     };
-    const updated = await nodeDb.updateNode(created.id, {
-      externalLinks: [link],
-      description: issue.body ?? null,
-    });
+    const updated = await nodeDb.updateNode(
+      created.id,
+      {
+        externalLinks: [link],
+        description: issue.body ?? null,
+      },
+      undefined,
+      tx,
+    );
     // Prefer the post-update row (it has the externalLinks/description
     // populated). Fall back to `created` if updateNode returned null for
     // any reason — the broadcast will still carry a valid Node shape.
