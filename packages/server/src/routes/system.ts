@@ -32,10 +32,10 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── PUT /api/system/registration-policy ────────────────────────
-  // Admin-only.
+  // Admin-only. `requireAdmin` rejects API-key auth even for admin users
+  // (see auth.ts).
   app.put('/api/system/registration-policy', async (req, reply) => {
-    const userId = (req as { userId?: string }).userId;
-    if (!(await requireAdmin(userId))) {
+    if (!(await requireAdmin(req))) {
       return reply.status(403).send({
         error: { code: 'FORBIDDEN', message: 'Admin access required' },
       });
@@ -67,9 +67,10 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── PUT /api/system/ai-provider ────────────────────────────────
+  // Admin-only. `requireAdmin` rejects API-key auth even for admin users
+  // (see auth.ts).
   app.put('/api/system/ai-provider', async (req, reply) => {
-    const userId = (req as { userId?: string }).userId;
-    if (!(await requireAdmin(userId))) {
+    if (!(await requireAdmin(req))) {
       return reply.status(403).send({
         error: { code: 'FORBIDDEN', message: 'Admin access required' },
       });
