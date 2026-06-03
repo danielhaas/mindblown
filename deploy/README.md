@@ -116,6 +116,11 @@ NODE_ENV=production
 # KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
 
+# Optional — Uptime-Kuma push URL for the weekly Pushover-canary
+# (alarm-chain liveness probe). Unset = canary is disabled. See the
+# "Pushover canary" section below for the full operator runbook.
+# KUMA_ALARM_CANARY_PUSH_URL=https://kuma.example.com/api/push/<token>
+
 # Optional — cap on the number of drift nodes the daily audit will
 # auto-backfill PER MAP per tick. Drift over this cap is left in
 # place so the Kuma alarm escalates to a human. Set to 0 to disable
@@ -317,6 +322,102 @@ The manual trigger runs the same auto-backfill + Kuma push the
 scheduled audit does, so it's a faithful end-to-end smoke test of the
 auto-repair flow. API-key auth is deliberately rejected — this is a
 session-only operator surface.
+
+## Pushover canary (weekly alarm-chain liveness probe)
+
+The catchup heartbeat + drift audit alarm when the GitHub sync breaks.
+But they only exercise the **delivery chain** (mindblown → Kuma →
+Pushover) during a real outage. If Pushover credentials silently
+expire, or the Kuma monitor loses its notification link, we'd only
+find out during the next actual incident — by which point the
+operator is flying blind.
+
+The canary fires a synthetic `status=down` push to a dedicated Kuma
+monitor once a week, waits 60 s, then fires `status=up` to recover.
+If the chain works, the operator gets a Pushover saying "synthetic
+test" once a week. If the chain is broken, either the Pushover never
+arrives (Pushover credentials expired) or Kuma's own "missing push"
+threshold alarms (mindblown-api dead) — either way the breakage
+surfaces within a week instead of during the next real incident.
+
+### 1. Create the Kuma monitor
+
+1. **Add New Monitor** → **Push**.
+2. Name: `mindblown-alarm-canary`.
+3. Heartbeat interval: 60 s.
+4. **Down threshold: 90 s.** This is the critical bit — short enough
+   that the synthetic `status=down` trips Kuma's alarm channel before
+   the ack push lands 60 s later, so the monitor briefly flips to
+   `down`, fires its notification, then recovers when the ack
+   arrives.
+5. Save. Copy the generated push URL.
+
+### 2. Route to a dedicated Pushover device (recommended)
+
+A weekly Pushover that says "synthetic-test" on your main device is
+annoying. Configure a separate Pushover device key for the canary
+monitor so it doesn't spam the channel you actually triage from:
+
+1. In Pushover, register a second device (e.g. `mindblown-canary`).
+   You can use the iOS/Android Pushover app's "Add Device" flow, or
+   create a virtual device via the Pushover web UI.
+2. In Kuma, **Settings → Notifications**, add a new Pushover
+   notification with that device key.
+3. Link the new notification to the `mindblown-alarm-canary` monitor
+   only — leave your main GitHub-sync monitors pointing at the
+   default device.
+
+This way a weekly "I'm alive" ping lands on a phone surface you can
+mute or silence, while real outage alerts on the main monitors still
+escalate normally.
+
+### 3. Wire the env var
+
+Add to `/etc/mindblown/api.env`:
+
+```bash
+KUMA_ALARM_CANARY_PUSH_URL=https://kuma.example.com/api/push/<token>
+```
+
+Then `systemctl restart mindblown-api`.
+
+### 4. Verify on first deploy
+
+The scheduler runs every 7 days, so you don't want to wait a week to
+confirm the wiring works. Override the interval with the
+`CANARY_INTERVAL_MS` env var for a single test run:
+
+```bash
+# As root, edit api.env and add at the bottom:
+CANARY_INTERVAL_MS=60000
+
+systemctl restart mindblown-api
+```
+
+Within ~60 s the canary fires `status=down`. Kuma's 90 s "down"
+threshold trips, you get a Pushover saying `synthetic-test` (or
+similar — Pushover renders the Kuma monitor name + msg). 60 s later
+the canary fires `status=up`, Kuma flips back to up, the next push
+60 s after that keeps it green.
+
+**Once confirmed, REMOVE the `CANARY_INTERVAL_MS` line from
+`api.env`** so it falls back to the weekly default, and restart:
+
+```bash
+# Remove the CANARY_INTERVAL_MS line
+systemctl restart mindblown-api
+```
+
+### Notes
+
+- The canary intentionally has **no startup invocation** — we don't
+  want a Pushover on every restart/upgrade. The first push lands
+  `CANARY_INTERVAL_MS` after process start.
+- The canary is a **pure no-op** when `KUMA_ALARM_CANARY_PUSH_URL` is
+  unset, so deploying without the env var costs nothing.
+- Both pushes are best-effort: the ack push fires even if the down
+  push throws, so a transient error during the first push can't
+  leave the monitor stuck in `down` state.
 
 ## What's NOT in the LXC backup
 

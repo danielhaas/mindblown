@@ -6,6 +6,7 @@ import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
 import { runDriftAudit } from './sync/driftAudit.js';
+import { runCanary } from './sync/canary.js';
 import { sdNotifyReady } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
@@ -198,6 +199,30 @@ async function main(): Promise<void> {
   // operators can hit POST /api/maps/sync/audit-drift to force a run
   // post-deploy.
   setInterval(driftAuditTick, DRIFT_AUDIT_INTERVAL_MS);
+
+  // ── Weekly Pushover canary (alarm-chain liveness probe) ──────
+  // Fires a `status=down` then `status=up` to a dedicated Kuma push
+  // monitor once a week. Confirms the catchup-heartbeat → Kuma →
+  // Pushover chain is alive without waiting for a real outage to
+  // exercise it. No-op when `KUMA_ALARM_CANARY_PUSH_URL` is unset.
+  // Allow `CANARY_INTERVAL_MS` env-var override so operators can dial
+  // the cadence down for a one-off post-deploy smoke test, then put
+  // it back to weekly afterwards. Deliberately no startup invocation
+  // — we don't want a Pushover on every restart/upgrade.
+  const CANARY_INTERVAL_MS = parseInt(
+    process.env.CANARY_INTERVAL_MS ?? `${7 * 24 * 60 * 60 * 1000}`,
+    10,
+  );
+  const canaryTick = async (): Promise<void> => {
+    try {
+      await runCanary();
+    } catch (err) {
+      // runCanary handles its own per-push error paths; this is
+      // defence-in-depth for an unexpected synchronous throw.
+      console.error('[canary] scheduler caught unexpected error:', err);
+    }
+  };
+  setInterval(canaryTick, CANARY_INTERVAL_MS);
 }
 
 main();
