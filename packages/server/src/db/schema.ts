@@ -31,6 +31,26 @@ export const systemSettings = pgTable('system_settings', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── API Keys (per-user, GitHub-PAT style) ─────────────────────────
+//
+// Headless clients (the HTTP MCP at /mcp, future CLI tools) authenticate
+// with a long-lived per-user secret rather than a session JWT. Plaintext
+// looks like `mb_<32-char base64url>`; only the scrypt hash is stored.
+// `keyPrefix` keeps the first 8 plaintext chars so the management UI
+// can show "mb_abc12345…" without exposing the full secret.
+
+export const apiKeys = pgTable('api_keys', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  name: text('name').notNull(),
+  keyHash: text('key_hash').notNull(),
+  keyPrefix: text('key_prefix').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  expiresAt: timestamp('expires_at', { withTimezone: true }),
+});
+
 // ── Workspaces ─────────────────────────────────────────────────────
 
 export const workspaces = pgTable('workspaces', {

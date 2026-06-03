@@ -4,6 +4,14 @@
   "description": "MindBlown MCP server — exposes MindBlown project management to AI agents over the Model Context Protocol.",
   "license": "MIT",
   "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
   "bin": {
     "mindblown-mcp": "dist/index.js"
   },
@@ -17,18 +25,21 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@mindblown/core": "workspace:*",
+    "@mindblown/tool-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@mindblown/core": "workspace:*",
-    "@mindblown/tool-kit": "workspace:*",
     "@types/node": "^22.0.0",
     "esbuild": "^0.24.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   }
 }

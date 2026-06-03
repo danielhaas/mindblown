@@ -15,6 +15,17 @@ mindblown.example.com {
         reverse_proxy localhost:3001
     }
 
+    # MCP HTTP endpoint (Claude Code, future CLI clients). Same
+    # upstream as /api/* — auth is per-user API keys (Authorization
+    # header), CRUD'd from Settings → API keys in the web UI.
+    handle /mcp* {
+        reverse_proxy localhost:3001 {
+            # MCP can stream JSON-RPC responses — disable any buffering
+            # that would coalesce them.
+            flush_interval -1
+        }
+    }
+
     # WebSocket (Caddy auto-detects upgrade headers)
     handle /ws/* {
         reverse_proxy localhost:3001

@@ -1,10 +1,59 @@
 /**
  * MindBlown API client for the MCP server.
  * Uses native fetch (Node.js 18+) to communicate with the backend.
+ *
+ * Configuration model:
+ * - The default (process-wide) baseUrl + token come from env vars and
+ *   serve the stdio MCP binary which is single-user per process.
+ * - Concurrent callers (the HTTP-hosted MCP route inside the API server)
+ *   override with `runWithApiContext({baseUrl, token}, async () => …)`
+ *   which uses AsyncLocalStorage to bind the override to the duration
+ *   of one tool call. This avoids rewriting 30+ exported functions to
+ *   thread a config parameter through every signature.
  */
 
-const API_URL = process.env.MINDBLOWN_API_URL ?? 'http://localhost:3001';
-const TOKEN = process.env.MINDBLOWN_TOKEN ?? '';
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+interface ApiContext {
+  baseUrl: string;
+  token: string;
+}
+
+// New env vars (`MINDBLOWN_MCP_URL` + `MINDBLOWN_MCP_TOKEN`) match the
+// HTTP-MCP-era documentation, with the older `MINDBLOWN_API_URL` +
+// `MINDBLOWN_TOKEN` kept as fallback so unmigrated stdio configs keep
+// working through one release cycle.
+const DEFAULT_API_URL =
+  process.env.MINDBLOWN_MCP_URL ?? process.env.MINDBLOWN_API_URL ?? 'http://localhost:3001';
+const DEFAULT_TOKEN = process.env.MINDBLOWN_MCP_TOKEN ?? process.env.MINDBLOWN_TOKEN ?? '';
+
+const apiContextStorage = new AsyncLocalStorage<ApiContext>();
+
+function getContext(): ApiContext {
+  return (
+    apiContextStorage.getStore() ?? { baseUrl: DEFAULT_API_URL, token: DEFAULT_TOKEN }
+  );
+}
+
+/**
+ * Run `fn` with `ctx` as the current API context. All `api.*` calls inside
+ * `fn` (including transitive ones) will use `ctx.baseUrl` + `ctx.token`.
+ *
+ * Used by the HTTP-hosted MCP route to scope a Claude Code request to a
+ * specific user's API key without rewriting every api function.
+ */
+export function runWithApiContext<T>(ctx: ApiContext, fn: () => Promise<T>): Promise<T> {
+  return apiContextStorage.run(ctx, fn);
+}
+
+/**
+ * Test-only helper: read the current effective api context. Used by unit
+ * tests to assert AsyncLocalStorage isolation across concurrent calls.
+ * Not part of the public surface — but harmless to leak (read-only).
+ */
+export function __peekApiContext(): ApiContext {
+  return getContext();
+}
 
 // ── Types matching API responses ────────────────────────────────
 
@@ -137,15 +186,16 @@ export class ApiError extends Error {
 // ── Request helper ──────────────────────────────────────────────
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const ctx = getContext();
   const headers: Record<string, string> = {
     ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
     ...(init?.headers as Record<string, string> ?? {}),
   };
-  if (TOKEN) {
-    headers['Authorization'] = `Bearer ${TOKEN}`;
+  if (ctx.token) {
+    headers['Authorization'] = `Bearer ${ctx.token}`;
   }
 
-  const res = await fetch(`${API_URL}${path}`, {
+  const res = await fetch(`${ctx.baseUrl}${path}`, {
     ...init,
     headers,
   });

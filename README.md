@@ -124,7 +124,7 @@ Open `http://localhost:5180` in your browser.
 | Backend | Fastify, Drizzle ORM, PostgreSQL 16 |
 | Real-time | WebSocket (Fastify plugin) |
 | Build | Turborepo, pnpm workspaces, TypeScript |
-| MCP | @modelcontextprotocol/sdk, stdio transport |
+| MCP | @modelcontextprotocol/sdk, HTTP streamable transport (stdio shim kept for legacy clients) |
 
 ## Project Structure
 
@@ -139,35 +139,38 @@ packages/
 
 ## MCP Integration
 
-MindBlown includes an MCP (Model Context Protocol) server that lets AI agents read and manage your projects.
+MindBlown exposes its entire project-management surface to AI agents via the
+Model Context Protocol. The canonical entry point is the HTTP MCP endpoint at
+`/mcp` on the deployed API — no client-side build, no stdio binary, no
+per-machine config drift. The tool schema is always whatever the API server
+serves.
 
-### Setup
+### Setup (HTTP MCP — recommended)
 
-1. Build the MCP server:
-
-```bash
-cd packages/mcp
-pnpm build
-```
-
-2. Get a JWT token by logging in via the API (see [API Reference](docs/api-reference.md)).
-
-3. Add to your Claude Code or Cursor MCP config:
+1. Sign in to MindBlown and open Settings → API keys.
+2. Click **Generate for Claude Code**, name the key, copy the JSON snippet.
+3. Paste into your Claude Code MCP config (e.g. `~/.claude/mcp.json`):
 
 ```json
 {
   "mcpServers": {
     "mindblown": {
-      "command": "node",
-      "args": ["packages/mcp/dist/index.js"],
-      "env": {
-        "MINDBLOWN_API_URL": "http://localhost:3001",
-        "MINDBLOWN_TOKEN": "<your-jwt-token>"
-      }
+      "type": "http",
+      "url": "https://mind.project.li/mcp",
+      "headers": { "Authorization": "Bearer mb_<your-key>" }
     }
   }
 }
 ```
+
+4. Restart Claude Code. The MCP schema is fetched live from the server.
+
+### Legacy stdio shim
+
+The stdio `@mindblown/mcp` binary is still shipped for one release cycle. Set
+`MINDBLOWN_MCP_TOKEN=mb_<key>` (or the older `MINDBLOWN_TOKEN=<jwt>`) and
+point `args` at `packages/mcp/dist/index.js`. New deployments should prefer
+the HTTP endpoint above.
 
 See [docs/mcp-guide.md](docs/mcp-guide.md) for the full list of tools, resources, and example conversations.
 

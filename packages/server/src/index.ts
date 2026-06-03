@@ -18,6 +18,8 @@ import { integrationRoutes } from './routes/integrations.js';
 import { githubAuthRoutes } from './routes/auth-github.js';
 import { aiRoutes } from './routes/ai.js';
 import { feedbackRoutes } from './routes/feedback.js';
+import { apiKeyRoutes } from './routes/api-keys.js';
+import { mcpRoutes } from './routes/mcp.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -30,11 +32,24 @@ async function main(): Promise<void> {
   });
 
   // ── Plugins ────────────────────────────────────────────────────
+  // CORS is locked down to the frontends that talk to this API. The MCP
+  // HTTP endpoint at /mcp is exempt from credential-CORS — MCP clients
+  // (Claude Code, etc.) talk to it from non-browser contexts that don't
+  // honour CORS — and authenticated callers provide a Bearer header
+  // rather than a cookie.
+  const allowedOrigins = [
+    'http://localhost:5180', // Vite dev server
+    'http://localhost:3000', // Production frontend (legacy)
+    'https://mind.project.li',
+  ];
+  if (process.env.EXTRA_CORS_ORIGINS) {
+    for (const origin of process.env.EXTRA_CORS_ORIGINS.split(',')) {
+      const trimmed = origin.trim();
+      if (trimmed) allowedOrigins.push(trimmed);
+    }
+  }
   await app.register(cors, {
-    origin: [
-      'http://localhost:5180', // Vite dev server
-      'http://localhost:3000', // Production frontend
-    ],
+    origin: allowedOrigins,
     credentials: true,
   });
 
@@ -62,6 +77,8 @@ async function main(): Promise<void> {
   await app.register(githubAuthRoutes);
   await app.register(aiRoutes);
   await app.register(feedbackRoutes);
+  await app.register(apiKeyRoutes);
+  await app.register(mcpRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 

@@ -62,9 +62,11 @@ export function ClaudeConnectPanel() {
       </div>
 
       <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 12px' }}>
-        Add MindBlown as an MCP server so Claude Code can read and edit your maps.
-        Clicking below mints a 1-year token and gives you a single command to paste
-        into your terminal.
+        <strong>Legacy stdio MCP setup.</strong> Prefer the HTTP MCP endpoint above
+        (Generate for Claude Code) — it always exposes the latest tool schema with
+        no client rebuild needed. This panel mints a 1-year JWT for the legacy
+        <code style={{ marginLeft: 4, fontSize: 11 }}>@mindblown/mcp</code> stdio
+        binary, which is kept working for one release cycle.
       </p>
 
       {error && (

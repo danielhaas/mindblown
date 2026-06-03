@@ -51,6 +51,42 @@ export function createLongLivedToken(): Promise<{ token: string }> {
   return request('/api/auth/long-lived-token', { method: 'POST' });
 }
 
+// ── API Keys (HTTP MCP, headless clients) ───────────────────────
+
+export interface ApiKey {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  expiresAt: string | null;
+  revokedAt: string | null;
+}
+
+export interface CreatedApiKey {
+  id: string;
+  name: string;
+  key: string; // plaintext — shown ONCE
+  prefix: string;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export function listApiKeys(): Promise<{ keys: ApiKey[] }> {
+  return request('/api/api-keys');
+}
+
+export function createApiKey(name: string, expiresInDays?: number): Promise<CreatedApiKey> {
+  return request('/api/api-keys', {
+    method: 'POST',
+    body: JSON.stringify({ name, expiresInDays }),
+  });
+}
+
+export function revokeApiKey(id: string): Promise<void> {
+  return request(`/api/api-keys/${id}`, { method: 'DELETE' });
+}
+
 export interface FeedbackTicketResponse {
   success: boolean;
   issueNumber: number;
