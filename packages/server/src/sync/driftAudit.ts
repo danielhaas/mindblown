@@ -20,9 +20,11 @@
  *     opted out of auto-creation).
  *   - Maps with no GitHub binding (no repo to compare against).
  *   - Maps whose binding can't currently resolve a token (App install
- *     revoked, PAT expired). Surfaced as an `error` field on the report
- *     so the operator sees it in the manual-trigger response, but doesn't
- *     count as drift for the Kuma alarm.
+ *     revoked, PAT expired). Logged via `console.warn` and excluded
+ *     from the returned reports — they don't count as drift for the
+ *     Kuma alarm. Surfacing these in the manual-trigger response is
+ *     tracked as a follow-up; today the operator reads them from the
+ *     server log when investigating a Kuma alert.
  */
 
 import { eq, and, isNotNull } from 'drizzle-orm';

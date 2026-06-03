@@ -32,11 +32,16 @@ export type KumaStatus = 'up' | 'down';
  * "[kuma-push] drift audit").
  */
 export async function pushKumaHeartbeat(
-  url: string,
+  url: string | undefined,
   status: KumaStatus,
   msg: string,
   logTag: string,
 ): Promise<void> {
+  // Defence-in-depth: callers already guard `if (url)` before invoking
+  // us, but treat a falsy URL as a hard no-op here too so a config
+  // regression can't accidentally fire a malformed GET against `?…`.
+  if (!url) return;
+
   // Append status/msg/ping as query params. We deliberately don't try to
   // be clever about an existing `?` — Kuma push URLs are vanilla, and the
   // ping marker is included so each push is unique even with proxies that

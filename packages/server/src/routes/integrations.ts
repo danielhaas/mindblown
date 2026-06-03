@@ -1,4 +1,4 @@
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, versions, nodes } from '../db/schema.js';
@@ -15,6 +15,7 @@ import {
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { auditDrift } from '../sync/driftAudit.js';
+import { requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
   ingestNewIssuesForRepo,
@@ -160,32 +161,6 @@ async function findNodeByExternalId(externalId: string): Promise<string | null> 
 async function getWorkspaceIdForMap(mapId: string): Promise<string | null> {
   const [row] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, mapId));
   return row?.workspaceId ?? null;
-}
-
-// ── Session-only guard ────────────────────────────────────────────
-// The drift-audit endpoint is an operator tool — it hits GitHub for
-// every opted-in map, so we don't want API-key-scoped callers (the MCP
-// surface, integrations) to be able to fan-out a load-amplifying call.
-// Mirrors the pattern in routes/api-keys.ts.
-
-function requireSessionAuth(req: FastifyRequest, reply: FastifyReply): string | null {
-  const userId = req.userId;
-  if (!userId) {
-    reply.status(401).send({
-      error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
-    });
-    return null;
-  }
-  if (req.authSource === 'api-key') {
-    reply.status(403).send({
-      error: {
-        code: 'FORBIDDEN',
-        message: 'API keys cannot trigger sync admin actions. Sign in via the web UI.',
-      },
-    });
-    return null;
-  }
-  return userId;
 }
 
 // ── Routes ────────────────────────────────────────────────────────
@@ -784,10 +759,22 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // Manual trigger for the daily drift-audit sweep. Returns the full
   // DriftReport[] so the operator can see exactly which maps drifted
   // (and the example issue numbers) without waiting 24h for the next
-  // scheduled run. Session-only auth — see `requireSessionAuth` above.
+  // scheduled run. Admin-only: the audit iterates EVERY opted-in map
+  // across EVERY workspace and returns map names + repo bindings, so
+  // gating below admin would leak cross-workspace metadata and let any
+  // logged-in user fan out N GitHub API calls per request.
   app.post('/api/maps/sync/audit-drift', async (req, reply) => {
-    const userId = requireSessionAuth(req, reply);
-    if (!userId) return reply;
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    if (!(await requireAdmin(userId))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
 
     try {
       const reports = await auditDrift();

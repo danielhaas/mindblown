@@ -194,9 +194,14 @@ async function main(): Promise<void> {
       await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
     }
   };
-  // Startup run is fire-and-forget — the audit hits GitHub, so we don't
-  // want a slow remote to delay the listen() handshake.
-  runDriftAudit();
+  // Deliberately no startup invocation. Drift audit fans out one
+  // `importGitHubIssues` call per opted-in map across the entire
+  // deployment, so a crashloop or rolling restart would hammer GitHub
+  // on every boot. The catchup loop (above) is fine to run on startup
+  // because it uses a `since=` cursor, but drift audit fetches every
+  // open issue unconditionally. Wait for the first interval tick;
+  // operators can hit POST /api/maps/sync/audit-drift to force a run
+  // post-deploy.
   setInterval(runDriftAudit, DRIFT_AUDIT_INTERVAL_MS);
 }
 
