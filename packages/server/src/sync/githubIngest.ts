@@ -355,7 +355,27 @@ export async function ensureNodeForIssue(
   // inserted externalLink and returns skipped_exists.
   const isClosed = issue.state === 'closed';
   const text = `#${issue.number} ${issue.title}`;
-  type TxResult = { kind: 'created'; nodeId: string; link: ExternalLink } | { kind: 'exists'; nodeId: string };
+  // NOTE(githubIngest-tx-scope): `nodeDb.createNode` and `nodeDb.updateNode`
+  // below run against the global `db` handle, NOT the `tx` we just opened.
+  // They autocommit independently of this outer transaction. The race
+  // protection still works because the advisory lock + the precheck SELECT
+  // ARE on `tx`: by the time a concurrent call B's precheck runs, call A
+  // has already released the lock (committed its tx), and A's autocommitted
+  // createNode/updateNode writes are globally visible — so B's precheck
+  // finds the row and returns skipped_exists.
+  //
+  // Fragility: if any error path between the createNode call and the end
+  // of the tx callback throws AFTER createNode has autocommitted, we leak
+  // an orphaned node (the outer tx rollback can't undo the autocommit).
+  // Today there are only two awaits between them (updateNode + the link
+  // object construction), so the window is small but nonzero.
+  //
+  // TODO(githubIngest-tx-scope): thread tx through nodeDb.createNode /
+  // nodeDb.updateNode so the whole sequence is atomic. Tracked as a
+  // follow-up after the auto-ingest PR lands.
+  type TxResult =
+    | { kind: 'created'; nodeId: string; node: Awaited<ReturnType<typeof nodeDb.getNode>>; link: ExternalLink }
+    | { kind: 'exists'; nodeId: string };
   const result: TxResult = await db.transaction(async (tx) => {
     await takeIngestLock(tx, externalId);
     const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
@@ -380,20 +400,26 @@ export async function ensureNodeForIssue(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
     };
-    await nodeDb.updateNode(created.id, {
+    const updated = await nodeDb.updateNode(created.id, {
       externalLinks: [link],
       description: issue.body ?? null,
     });
-    return { kind: 'created', nodeId: created.id, link };
+    // Prefer the post-update row (it has the externalLinks/description
+    // populated). Fall back to `created` if updateNode returned null for
+    // any reason — the broadcast will still carry a valid Node shape.
+    return { kind: 'created', nodeId: created.id, node: updated ?? created, link };
   });
 
   if (result.kind === 'exists') {
     return { status: 'skipped_exists', nodeId: result.nodeId, mapId };
   }
 
+  // Match the broadcast shape used by every other `node:created` emitter
+  // (routes/nodes.ts, routes/ai.ts, ai/backend.ts). The frontend reads
+  // `msg.node` and will TypeError on undefined.
   broadcast(mapId, {
     type: 'node:created',
-    nodeId: result.nodeId,
+    node: result.node,
     source: 'github_ingest',
   });
 
@@ -407,6 +433,13 @@ export interface IngestSummary {
   created: number;
   /** Count of issues that didn't produce a node (already linked, closed, PR, etc.). */
   skipped: number;
+  /**
+   * Count of issues whose per-issue ensure-call threw (or whose map's
+   * inbox-ensure threw). Surfaced separately from `skipped` so callers
+   * (catchup) can decide whether to bump their per-repo cursor — bumping
+   * past a failed issue would orphan it until manual backfill.
+   */
+  errored: number;
   /** Per-map count of created nodes. */
   perMap: Record<string, number>;
 }
@@ -435,7 +468,7 @@ export async function ingestNewIssuesForRepo(
   issues: GitHubIssue[],
   opts: IngestOpts = {},
 ): Promise<IngestSummary> {
-  const summary: IngestSummary = { created: 0, skipped: 0, perMap: {} };
+  const summary: IngestSummary = { created: 0, skipped: 0, errored: 0, perMap: {} };
 
   // Open-only pre-filter for catchup (the dominant caller). For the
   // backfill path the caller raises allowClosedWithinDays, which makes
@@ -450,6 +483,10 @@ export async function ingestNewIssuesForRepo(
     try {
       inboxId = await ensureInboxNode(t.mapId, t.createdBy);
     } catch (err) {
+      // Treat every issue in this map's slice as errored — none of them
+      // can be processed without a viable inbox, and the catchup caller
+      // needs to know not to bump its cursor.
+      summary.errored += issues.length;
       console.warn(
         `[github-ingest] ensureInboxNode failed for map ${t.mapId}:`,
         err instanceof Error ? err.message : err,
@@ -473,7 +510,9 @@ export async function ingestNewIssuesForRepo(
           summary.skipped++;
         }
       } catch (err) {
-        summary.skipped++;
+        // Track separately from `skipped` so the catchup driver can decide
+        // not to bump lastSyncedAt past a transient failure.
+        summary.errored++;
         console.warn(
           `[github-ingest] ensureNodeForIssue failed for ${target.owner}/${target.repo}#${issue.number} in map ${t.mapId}:`,
           err instanceof Error ? err.message : err,

@@ -941,6 +941,17 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Enforce signature verification for the entire webhook handler.
+    // Before this guard, an attacker who knew the webhook URL could POST a
+    // forged `issues.opened` payload and force inbox-node creation in every
+    // opted-in map (attacker-controlled title/body) — and could equally
+    // forge `issues.closed` / `issues.reopened` to flip status on existing
+    // nodes. The signature was computed above but never required. We now
+    // reject any unsigned/invalid-signed request before touching the DB.
+    if (!signatureVerified) {
+      return reply.status(401).send({ error: 'invalid signature' });
+    }
+
     // Special handling for issues.closed / issues.reopened: preserve and restore
     // the pre-close progress + status so reopening a partially-completed issue
     // doesn't discard the user's prior progress.

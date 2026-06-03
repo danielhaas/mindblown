@@ -33,8 +33,8 @@ const dbExecute = vi.fn(async (_sqlObj?: unknown) => undefined);
 type DbState = {
   // mapId → {rootNodeId, inboxId, createdBy}
   maps: Map<string, { rootNodeId: string; inboxId: string | null; createdBy: string }>;
-  // nodeId → row{id, mapId, externalLinks}
-  nodes: Map<string, { id: string; mapId: string; externalLinks: Array<{ provider: string; externalId: string }> }>;
+  // nodeId → row{id, mapId, parentId, externalLinks}
+  nodes: Map<string, { id: string; mapId: string; parentId: string | null; externalLinks: Array<{ provider: string; externalId: string }> }>;
   // PAT integrations
   integrations: Array<{ workspaceId: string; provider: string; enabled: boolean; config: { owner?: string; repo?: string } }>;
 };
@@ -289,7 +289,12 @@ vi.mock('../../db/nodes.js', () => ({
       revision: 1,
     };
     // Also register it in dbState.nodes so subsequent existence pre-checks see it.
-    dbState.nodes.set(id, { id, mapId: input.mapId as string, externalLinks: [] });
+    dbState.nodes.set(id, {
+      id,
+      mapId: input.mapId as string,
+      parentId: (input.parentId as string | undefined) ?? null,
+      externalLinks: [],
+    });
     return row;
   },
   updateNode: async (nodeId: string, input: Record<string, unknown>) => {
@@ -301,7 +306,17 @@ vi.mock('../../db/nodes.js', () => ({
         row.externalLinks = input.externalLinks as Array<{ provider: string; externalId: string }>;
       }
     }
-    return { id: nodeId, mapId: 'm1', externalLinks: input.externalLinks ?? [] };
+    const row = dbState.nodes.get(nodeId);
+    // Return a row that mirrors the production `nodeDb.updateNode` shape
+    // (fields the broadcast for `node:created` reads). Pulling parentId
+    // off the dbState row keeps the mock honest for tests that assert on
+    // the broadcast payload shape.
+    return {
+      id: nodeId,
+      mapId: row?.mapId ?? 'm1',
+      parentId: (row as { parentId?: string } | undefined)?.parentId ?? null,
+      externalLinks: input.externalLinks ?? [],
+    };
   },
 }));
 
@@ -359,7 +374,7 @@ beforeEach(() => {
 describe('ensureInboxNode', () => {
   it('reuses an existing inbox node id when set and the node exists', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
-    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', externalLinks: [] });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
     getNodeMock.mockResolvedValueOnce({ id: 'inbox-1', mapId: 'm1' });
 
     const id = await ensureInboxNode('m1', 'u1');
@@ -397,7 +412,7 @@ describe('ensureInboxNode', () => {
 describe('ensureNodeForIssue', () => {
   it('creates a node with `#NNNN <title>` and status=todo for an open issue', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
-    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', externalLinks: [] });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
 
     const result = await ensureNodeForIssue(
       'm1',
@@ -430,7 +445,7 @@ describe('ensureNodeForIssue', () => {
 
   it('is idempotent — second call with same externalId returns skipped_exists', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
-    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', externalLinks: [] });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
 
     const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
     const first = await ensureNodeForIssue('m1', 'inbox-1', issue(42), ctx);
@@ -444,7 +459,7 @@ describe('ensureNodeForIssue', () => {
 
   it('with allowClosedWithinDays=30, closed-recent issue → status=done, pct=100', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
-    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', externalLinks: [] });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
 
     const closedAt = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
     const result = await ensureNodeForIssue(
@@ -502,14 +517,40 @@ describe('ensureNodeForIssue', () => {
     expect(createNodeCalls.length).toBe(0);
   });
 
-  it('race safety: two parallel calls with same externalId create exactly one node', async () => {
+  it('is idempotent across sequential awaits — second call returns skipped_exists', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
-    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', externalLinks: [] });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
 
-    // The mocked advisory lock doesn't actually serialize; instead we rely on
-    // the existence precheck reading the mutated state from the first call.
-    // Run sequentially (Node.js single-threaded await chain) — the second
-    // call should see the first call's node and return skipped_exists.
+    // Two awaited calls in series — the second call's precheck sees the
+    // first call's already-committed externalLink and returns
+    // skipped_exists. This is the cheap baseline; the race-safety test
+    // below is the one that actually exercises the simulated advisory lock.
+    const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
+    const first = await ensureNodeForIssue('m1', 'inbox-1', issue(7), ctx);
+    const second = await ensureNodeForIssue('m1', 'inbox-1', issue(7), ctx);
+
+    expect(first.status).toBe('created');
+    expect(second.status).toBe('skipped_exists');
+    expect(createNodeCalls.length).toBe(1);
+  });
+
+  it('race safety: parallel calls with serialized advisory lock create exactly one node', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+
+    // The simulated advisory lock (lockQueues / takeLockSimulated at the top
+    // of this file) serializes any two `pg_advisory_xact_lock` calls on the
+    // same key — the second blocks until the first transaction commits
+    // (which releases the lock at the end of the tx callback). This test
+    // launches both calls in parallel via Promise.all so the second one
+    // genuinely enters its tx before the first one finishes, and we verify
+    // that the lock serialisation forces it to observe the first's
+    // committed externalLink and short-circuit to skipped_exists.
+    //
+    // Asserting (a) that exactly one createNode happened across the two
+    // calls and (b) that the lock was taken twice (once per tx) is the
+    // meaningful invariant — anything less would prove only happy-path
+    // idempotency, not race safety.
     const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
     const [a, b] = await Promise.all([
       ensureNodeForIssue('m1', 'inbox-1', issue(7), ctx),
@@ -519,6 +560,44 @@ describe('ensureNodeForIssue', () => {
     const statuses = [a.status, b.status].sort();
     expect(statuses).toEqual(['created', 'skipped_exists']);
     expect(createNodeCalls.length).toBe(1);
+    // Both transactions must have called pg_advisory_xact_lock — proving
+    // the lock infra was actually exercised, not bypassed.
+    expect(advisoryLocksTaken.length).toBe(2);
+  });
+
+  it('broadcast payload for node:created carries the full node row', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+
+    const { broadcast } = await import('../../ws.js');
+    const broadcastMock = broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(123, { title: 'WS shape check' }),
+      { owner: 'owner', repo: 'repo', createdBy: 'u1' },
+    );
+
+    expect(result.status).toBe('created');
+    // The broadcast call must include a `node` field with at least id,
+    // mapId, parentId, and externalLinks — same shape every other
+    // node:created emitter sends. The frontend handler reads `msg.node`
+    // and TypeErrors on undefined.
+    expect(broadcastMock).toHaveBeenCalledWith(
+      'm1',
+      expect.objectContaining({
+        type: 'node:created',
+        source: 'github_ingest',
+        node: expect.objectContaining({
+          id: expect.any(String),
+          mapId: 'm1',
+          parentId: 'inbox-1',
+          externalLinks: expect.any(Array),
+        }),
+      }),
+    );
   });
 });
 
@@ -529,11 +608,13 @@ describe('findNodesByExternalIds', () => {
     dbState.nodes.set('n1', {
       id: 'n1',
       mapId: 'm1',
+      parentId: null,
       externalLinks: [{ provider: 'github', externalId: 'owner/repo#1' }],
     });
     dbState.nodes.set('n2', {
       id: 'n2',
       mapId: 'm1',
+      parentId: null,
       externalLinks: [{ provider: 'github', externalId: 'owner/repo#2' }],
     });
 
