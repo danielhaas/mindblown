@@ -92,7 +92,13 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
     // header, and we want loopback calls to take the JWT codepath in
     // middleware (zero new branches, single source of truth on
     // authentication semantics).
-    const loopbackJwt = signToken({ userId: validated.userId, email: '' });
+    // Sentinel email — the loopback JWT is consumed by our own middleware
+    // and never echoed back to a user-visible surface. Stamping a marker
+    // string (vs. an empty string or a real DB lookup) keeps audit logs
+    // honest about where the request originated without burning a DB
+    // query per /mcp call. If we ever need the real email for an audit
+    // surface, swap this to `await fetchUserEmail(validated.userId)`.
+    const loopbackJwt = signToken({ userId: validated.userId, email: 'api-key-loopback' });
     const baseUrl = loopbackBaseUrl(req);
 
     // Build a fresh MCP server + stateless transport for this request.

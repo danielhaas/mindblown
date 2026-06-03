@@ -28,13 +28,21 @@ function mcpConfigSnippet(plaintextKey: string): string {
   // Heuristic: if the API is served at https://<host>, the MCP endpoint
   // is at /mcp on the same host. For localhost dev, point at the API
   // server directly. Either way, the token is the API key plaintext.
+  //
+  // Shape MUST match README.md's "Setup (HTTP MCP)" block — Claude
+  // Code's ~/.claude/mcp.json requires the outer `mcpServers` wrapper.
+  // Without it the paste does nothing on the user's side and step 3 of
+  // the persona test ("paste UI snippet into ~/.claude/mcp.json") fails
+  // silently.
   const mcpUrl = `${API_URL.replace(/\/$/, '')}/mcp`;
   return JSON.stringify(
     {
-      mindblown: {
-        type: 'http',
-        url: mcpUrl,
-        headers: { Authorization: `Bearer ${plaintextKey}` },
+      mcpServers: {
+        mindblown: {
+          type: 'http',
+          url: mcpUrl,
+          headers: { Authorization: `Bearer ${plaintextKey}` },
+        },
       },
     },
     null,

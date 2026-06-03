@@ -5,13 +5,26 @@
  * Only the scrypt hash is persisted — same encoding as the existing
  * password_hash column, so we reuse hashPassword/verifyPassword.
  *
- * Hot-path validation hits a 60s in-memory LRU cache keyed on the
- * plaintext so a Claude Code session firing a dozen tool calls per
- * minute doesn't burn a DB roundtrip + scrypt each time. Cache entries
- * are evicted on revoke (via invalidateApiKeyCache).
+ * Hot-path validation hits a 60s in-memory TTL+FIFO cache keyed on the
+ * SHA-256 hash of the plaintext so a Claude Code session firing a
+ * dozen tool calls per minute doesn't burn a fresh scrypt verification
+ * each time. We also coalesce last_used_at bumps to at most one DB
+ * UPDATE per minute per key — without the coalescing, every cache hit
+ * still fires a fire-and-forget UPDATE, defeating most of the speedup.
+ *
+ * Why the SHA-256 hashed Map key (instead of using the plaintext
+ * directly)? So a heap dump or accidental `for…of validationCache`
+ * iteration over the cache doesn't surface every active key. The scrypt
+ * hash in the DB is salted-and-slow precisely to make at-rest secrets
+ * useless to an attacker; mirroring that here is cheap.
+ *
+ * Cache entries are evicted on revoke (via invalidateApiKeyCache) and
+ * on TTL expiry. Eviction order under pressure is insertion-order
+ * (FIFO — Map preserves insertion order, and cacheGet does not re-insert
+ * on hit, so this is TTL+FIFO, not LRU).
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { and, desc, eq, isNull, or, gt } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { apiKeys } from '../db/schema.js';
@@ -22,6 +35,8 @@ const PLAINTEXT_BYTES = 24; // 24 bytes → 32 base64url chars
 export const API_KEY_PREFIX = 'mb_';
 const CACHE_TTL_MS = 60_000;
 const CACHE_MAX_ENTRIES = 1000;
+/** How often we permit ourselves to bump last_used_at for a given key. */
+const LAST_USED_BUMP_INTERVAL_MS = 60_000;
 
 interface CachedHit {
   userId: string;
@@ -29,14 +44,39 @@ interface CachedHit {
   expiresAt: number;
 }
 
+/**
+ * SHA-256 the plaintext before using it as a Map key. Deterministic so
+ * cache hits + invalidation still work, but prevents plaintext keys
+ * from sitting in memory for the 60s TTL window.
+ */
+function cacheKey(plaintext: string): string {
+  return createHash('sha256').update(plaintext).digest('hex');
+}
+
 // Map insertion order is the eviction order; we keep size bounded.
+// Keyed on SHA-256(plaintext), NOT plaintext itself.
 const validationCache = new Map<string, CachedHit>();
 
+/**
+ * Last-seen timestamp per api_keys.id for coalescing last_used_at UPDATEs.
+ * Without this, every cache hit fires a DB UPDATE — fast in the happy
+ * path, but a per-request slow leak under DB stalls and pointless work.
+ */
+const lastUsedBumpAt = new Map<string, number>();
+
+/**
+ * In-flight bump set: keys currently mid-UPDATE. Concurrent requests for
+ * the same api_keys row only schedule one DB write at a time. Cleared
+ * in the .then/.catch of the fire-and-forget promise.
+ */
+const inFlightBumps = new Set<string>();
+
 function cacheGet(plaintext: string): CachedHit | null {
-  const hit = validationCache.get(plaintext);
+  const k = cacheKey(plaintext);
+  const hit = validationCache.get(k);
   if (!hit) return null;
   if (hit.expiresAt < Date.now()) {
-    validationCache.delete(plaintext);
+    validationCache.delete(k);
     return null;
   }
   return hit;
@@ -48,7 +88,7 @@ function cacheSet(plaintext: string, value: { userId: string; apiKeyId: string }
     const firstKey = validationCache.keys().next().value;
     if (firstKey !== undefined) validationCache.delete(firstKey);
   }
-  validationCache.set(plaintext, {
+  validationCache.set(cacheKey(plaintext), {
     ...value,
     expiresAt: Date.now() + CACHE_TTL_MS,
   });
@@ -56,14 +96,37 @@ function cacheSet(plaintext: string, value: { userId: string; apiKeyId: string }
 
 /** Invalidate any cached plaintext lookups bound to a given api_keys row. */
 export function invalidateApiKeyCache(apiKeyId: string): void {
-  for (const [plaintext, hit] of validationCache.entries()) {
-    if (hit.apiKeyId === apiKeyId) validationCache.delete(plaintext);
+  for (const [k, hit] of validationCache.entries()) {
+    if (hit.apiKeyId === apiKeyId) validationCache.delete(k);
   }
+  // Also drop the bump-coalescing entry so any future cache hit gets a
+  // fresh UPDATE rather than incorrectly skipping based on stale state.
+  lastUsedBumpAt.delete(apiKeyId);
 }
 
 export function clearApiKeyCache(): void {
   validationCache.clear();
+  lastUsedBumpAt.clear();
+  inFlightBumps.clear();
 }
+
+/**
+ * Test-only handles into the validation cache. Not part of the public
+ * API; the prefix `__` and the `_for_tests` suffix are both load-bearing
+ * for readers grep'ing the codebase. Used by the TTL/FIFO suite under
+ * src/lib/__tests__/apiKeys.test.ts.
+ */
+export const __cacheForTests = {
+  set(plaintext: string, value: { userId: string; apiKeyId: string }): void {
+    cacheSet(plaintext, value);
+  },
+  get(plaintext: string): CachedHit | null {
+    return cacheGet(plaintext);
+  },
+  size(): number {
+    return validationCache.size;
+  },
+};
 
 /** Generate a fresh plaintext key. NEVER persisted — only its hash is. */
 export function generatePlaintextKey(): string {
@@ -215,11 +278,31 @@ export async function validateApiKey(plaintext: string): Promise<ValidApiKey | n
 }
 
 function bumpLastUsed(apiKeyId: string): void {
+  // Coalesce: at most one DB UPDATE per minute per key. Without this,
+  // every cache hit fires a fire-and-forget UPDATE, which (a) defeats
+  // the cache's stated job of avoiding DB roundtrips, and (b) is a
+  // per-request slow leak when the DB is under stress.
+  const now = Date.now();
+  const last = lastUsedBumpAt.get(apiKeyId) ?? 0;
+  if (now - last < LAST_USED_BUMP_INTERVAL_MS) return;
+
+  // Backpressure: drop the bump if one is already in flight for this
+  // key. Concurrent cache hits should NOT pile up DB writes.
+  if (inFlightBumps.has(apiKeyId)) return;
+
+  // Mark before the await; release in the .finally so we never strand
+  // the inFlightBumps entry on an unhandled rejection.
+  lastUsedBumpAt.set(apiKeyId, now);
+  inFlightBumps.add(apiKeyId);
+
   // Fire-and-forget — never block the request hot path on this update.
   db.update(apiKeys)
     .set({ lastUsedAt: new Date() })
     .where(eq(apiKeys.id, apiKeyId))
     .catch((err) => {
       console.warn('[api-keys] failed to bump last_used_at:', err);
+    })
+    .finally(() => {
+      inFlightBumps.delete(apiKeyId);
     });
 }

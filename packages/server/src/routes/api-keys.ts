@@ -1,39 +1,55 @@
 /**
  * Per-user API key management.
  *
- * - POST /api/api-keys      → mint a new key (plaintext returned ONCE)
- * - GET  /api/api-keys      → list current user's keys (prefix only)
- * - DELETE /api/api-keys/:id → soft-revoke
+ * - POST   /api/api-keys      → mint a new key (plaintext returned ONCE)
+ * - GET    /api/api-keys      → list current user's keys (prefix only)
+ * - DELETE /api/api-keys/:id  → soft-revoke
  *
- * All routes require the caller's session JWT — you cannot mint or list
- * keys via an API key itself.
+ * All routes require the caller's session JWT — you cannot mint, list,
+ * OR revoke keys via an API key itself. The guard is centralised in
+ * `requireSessionAuth` below; a leaked `mb_…` key would otherwise be
+ * able to enumerate (GET) or revoke-all (DELETE) the legit user's other
+ * keys, even though it can't mint new ones.
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createApiKey, listApiKeysForUser, revokeApiKey } from '../lib/apiKeys.js';
+
+/**
+ * Require an interactive session for any /api/api-keys mutation OR read.
+ * Returns true if the request may proceed; otherwise writes the 401/403
+ * response onto `reply` and returns false.
+ *
+ * The security invariant: API keys can NEVER read, mint, or revoke other
+ * API keys. An attacker with a leaked `mb_…` key must not be able to
+ * enumerate the user's other keys (GET) or lock them out (DELETE) — only
+ * web-session-auth (the JWT login flow) reaches these routes.
+ */
+function requireSessionAuth(req: FastifyRequest, reply: FastifyReply): string | null {
+  const userId = req.userId;
+  if (!userId) {
+    reply.status(401).send({
+      error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+    });
+    return null;
+  }
+  if (req.authSource === 'api-key') {
+    reply.status(403).send({
+      error: {
+        code: 'FORBIDDEN',
+        message: 'API keys cannot manage other API keys. Sign in via the web UI to manage keys.',
+      },
+    });
+    return null;
+  }
+  return userId;
+}
 
 export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/api-keys ─────────────────────────────────────────
   app.post('/api/api-keys', async (req, reply) => {
-    const userId = req.userId;
-    if (!userId) {
-      return reply.status(401).send({
-        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
-      });
-    }
-    // Reject session-less callers (only JWT-authed users can mint keys
-    // — you cannot bootstrap a key from another key). The auth middleware
-    // sets userId only when the Bearer header carried a valid session JWT,
-    // not when the request was carried by an API key on /mcp.
-    const authSource = (req as { authSource?: string }).authSource;
-    if (authSource === 'api-key') {
-      return reply.status(403).send({
-        error: {
-          code: 'FORBIDDEN',
-          message: 'API keys cannot mint other API keys. Sign in via the web UI to manage keys.',
-        },
-      });
-    }
+    const userId = requireSessionAuth(req, reply);
+    if (!userId) return reply;
 
     const body = req.body as { name?: string; expiresInDays?: number };
     const name = (body.name ?? '').trim();
@@ -73,24 +89,16 @@ export async function apiKeyRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/api-keys ─────────────────────────────────────────
   app.get('/api/api-keys', async (req, reply) => {
-    const userId = req.userId;
-    if (!userId) {
-      return reply.status(401).send({
-        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
-      });
-    }
+    const userId = requireSessionAuth(req, reply);
+    if (!userId) return reply;
     const keys = await listApiKeysForUser(userId);
     return reply.send({ keys });
   });
 
   // ── DELETE /api/api-keys/:id ──────────────────────────────────
   app.delete<{ Params: { id: string } }>('/api/api-keys/:id', async (req, reply) => {
-    const userId = req.userId;
-    if (!userId) {
-      return reply.status(401).send({
-        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
-      });
-    }
+    const userId = requireSessionAuth(req, reply);
+    if (!userId) return reply;
     const ok = await revokeApiKey(userId, req.params.id);
     if (!ok) {
       return reply.status(404).send({

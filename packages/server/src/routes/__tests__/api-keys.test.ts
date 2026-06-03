@@ -80,3 +80,96 @@ describe('api-keys route registration (smoke)', () => {
     expect(res.statusCode).toBe(405);
   });
 });
+
+/**
+ * Security-invariant tests: API-key auth is forbidden on /api/api-keys.
+ *
+ * If a user's `mb_…` key leaks, the attacker must NOT be able to mint
+ * fresh keys (POST), enumerate the user's other keys (GET), or revoke
+ * them and lock the legit user out (DELETE). Web-session JWT auth is
+ * the only entry point to this surface.
+ */
+describe('api-keys forbid API-key auth (security invariant)', () => {
+  let app: FastifyInstance;
+  const FAKE_USER_ID = '11111111-1111-1111-1111-111111111111';
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    // Stand in for the real authPreHandler — pretend every request was
+    // authenticated via an API key.
+    app.addHook('preHandler', async (req) => {
+      req.userId = FAKE_USER_ID;
+      req.authSource = 'api-key';
+    });
+    await app.register(apiKeyRoutes);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('POST returns 403 FORBIDDEN when authSource is api-key', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/api-keys',
+      payload: { name: 'leaked-key-tries-to-mint' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
+  it('GET returns 403 FORBIDDEN when authSource is api-key', async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/api-keys' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
+  it('DELETE returns 403 FORBIDDEN when authSource is api-key', async () => {
+    const res = await app.inject({
+      method: 'DELETE',
+      url: '/api/api-keys/00000000-0000-0000-0000-000000000000',
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+});
+
+/**
+ * Sanity check: with authSource='jwt' the guard does NOT block — these
+ * routes still 401/404/etc. based on their own business logic, but they
+ * must reach it. Otherwise we'd have proven nothing in the test above:
+ * a 403 for both means the routes are broken, not that the guard works.
+ *
+ * We don't have a Postgres connection here, so the test is limited to
+ * the surface the route does BEFORE touching the DB. GET and DELETE
+ * both hit the DB unconditionally with a real userId, so those would
+ * fall over without a connection; POST hits validation first, so we
+ * exercise the empty-name path (400 VALIDATION_ERROR, NOT 403).
+ */
+describe('api-keys allow session JWT auth (negative control)', () => {
+  let app: FastifyInstance;
+  const FAKE_USER_ID = '22222222-2222-2222-2222-222222222222';
+
+  beforeAll(async () => {
+    app = Fastify({ logger: false });
+    app.addHook('preHandler', async (req) => {
+      req.userId = FAKE_USER_ID;
+      req.authSource = 'jwt';
+    });
+    await app.register(apiKeyRoutes);
+  });
+
+  afterAll(async () => {
+    await app.close();
+  });
+
+  it('POST with empty name returns 400 (guard did not 403 first)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/api-keys',
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error?.code).toBe('VALIDATION_ERROR');
+  });
+});
