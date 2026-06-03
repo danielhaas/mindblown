@@ -33,6 +33,8 @@ import { importGitHubIssues, mintInstallationToken } from '@mindblown/integratio
 
 import { db } from '../db/connection.js';
 import { maps, nodes, integrations } from '../db/schema.js';
+import { pushKumaHeartbeat } from './kumaPush.js';
+import { runAutoBackfill, type AutoBackfillSummary } from './autoBackfill.js';
 
 export interface DriftReport {
   mapId: string;
@@ -222,4 +224,145 @@ export async function auditDrift(): Promise<DriftReport[]> {
     }
   }
   return reports;
+}
+
+/**
+ * Result of one `runDriftAudit()` invocation, returned to callers
+ * (the daily scheduler in index.ts and the manual operator endpoint
+ * in routes/integrations.ts so they can show what auto-backfill did).
+ */
+export interface DriftAuditRunResult {
+  reports: DriftReport[];
+  autoBackfill: AutoBackfillSummary;
+  /** Set when the audit itself threw — short reason string for ops UI. */
+  error?: string;
+}
+
+/**
+ * Build the Kuma message string from an auto-backfill summary.
+ * Exported for tests.
+ *
+ * Examples:
+ *   - clean       → "no-drift"
+ *   - all healed  → "auto-backfilled-3"
+ *   - all manual  → "manual-5"
+ *   - mixed       → "auto-backfilled-2,manual-3"
+ */
+export function formatAutoBackfillMsg(summary: AutoBackfillSummary): string {
+  const parts: string[] = [];
+  if (summary.totalImported > 0) {
+    parts.push(`auto-backfilled-${summary.totalImported}`);
+  }
+  if (summary.totalManualPending > 0) {
+    parts.push(`manual-${summary.totalManualPending}`);
+  }
+  if (parts.length === 0) return 'no-drift';
+  return parts.join(',');
+}
+
+/**
+ * Run the drift audit, attempt auto-backfill on every drift report that
+ * fits under the per-day cap, then push a single Kuma heartbeat
+ * summarising the outcome.
+ *
+ * Pushes:
+ *   - No drift                       → status=up, msg="no-drift"
+ *   - Drift fully auto-healed        → status=up, msg="auto-backfilled-N"
+ *   - Drift partially auto-healed    → status=down, msg="auto-backfilled-X,manual-Y"
+ *   - All drift over cap / killed    → status=down, msg="manual-N"
+ *   - Audit itself threw             → status=down, msg="audit_failed:<reason>"
+ *
+ * Kuma URL comes from `KUMA_GITHUB_DRIFT_PUSH_URL`; if unset the push
+ * is skipped entirely (dev / test environments). Push errors are
+ * swallowed by `pushKumaHeartbeat`, but we re-wrap here so any future
+ * helper misbehaviour can't take down the run result.
+ */
+export async function runDriftAudit(): Promise<DriftAuditRunResult> {
+  const url = process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
+  let reports: DriftReport[];
+  try {
+    reports = await auditDrift();
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error('[drift-audit] sweep failed:', err);
+    if (url) {
+      const msg = `audit_failed: ${reason}`.slice(0, 200);
+      try {
+        await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
+      } catch (pushErr) {
+        console.warn(
+          '[kuma-push] drift audit heartbeat unexpectedly threw:',
+          pushErr instanceof Error ? pushErr.message : pushErr,
+        );
+      }
+    }
+    return {
+      reports: [],
+      autoBackfill: { totalImported: 0, totalManualPending: 0, outcomes: [] },
+      error: reason,
+    };
+  }
+
+  // No drift → clean push and bail. Skip auto-backfill entirely
+  // (nothing to heal).
+  if (reports.length === 0) {
+    console.log('[drift-audit] clean — no drift');
+    if (url) {
+      try {
+        await pushKumaHeartbeat(url, 'up', 'no-drift', '[kuma-push] drift audit');
+      } catch (pushErr) {
+        console.warn(
+          '[kuma-push] drift audit heartbeat unexpectedly threw:',
+          pushErr instanceof Error ? pushErr.message : pushErr,
+        );
+      }
+    }
+    return {
+      reports: [],
+      autoBackfill: { totalImported: 0, totalManualPending: 0, outcomes: [] },
+    };
+  }
+
+  // Drift detected — log + auto-backfill what we can.
+  const summary = reports.map((r) => `${r.mapName}=${r.onlyInGitHub} issues`).join(', ');
+  console.warn(`[drift-audit] drift detected: ${summary}`);
+
+  const autoBackfill = await runAutoBackfill(reports);
+
+  if (autoBackfill.totalImported > 0) {
+    const perMap = autoBackfill.outcomes
+      .filter((o) => o.kind === 'healed')
+      .map((o) => `${o.mapName}=${(o as { imported: number }).imported}`)
+      .join(', ');
+    console.log(`[auto-backfill] healed ${autoBackfill.totalImported} drift node(s): ${perMap}`);
+  }
+  if (autoBackfill.totalManualPending > 0) {
+    const perMap = autoBackfill.outcomes
+      .filter((o) => o.kind === 'over-cap' || o.kind === 'failed')
+      .map((o) => {
+        if (o.kind === 'failed') {
+          return `${o.mapName}=${(o as { pending: number }).pending} (failed: ${(o as { reason: string }).reason})`;
+        }
+        return `${o.mapName}=${(o as { pending: number }).pending} (over cap)`;
+      })
+      .join(', ');
+    console.warn(`[auto-backfill] ${autoBackfill.totalManualPending} drift node(s) need manual action: ${perMap}`);
+  }
+
+  // Build the Kuma message and status.
+  const msg = formatAutoBackfillMsg(autoBackfill).slice(0, 200);
+  const status = autoBackfill.totalManualPending > 0 ? 'down' : 'up';
+
+  if (url) {
+    try {
+      await pushKumaHeartbeat(url, status, msg, '[kuma-push] drift audit');
+    } catch (pushErr) {
+      console.warn(
+        '[kuma-push] drift audit heartbeat unexpectedly threw:',
+        pushErr instanceof Error ? pushErr.message : pushErr,
+      );
+    }
+  }
+
+  return { reports, autoBackfill };
 }

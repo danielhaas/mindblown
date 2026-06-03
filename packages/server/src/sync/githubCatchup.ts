@@ -29,6 +29,7 @@ import {
 } from './parentEpicRollup.js';
 import { ingestNewIssuesForRepo } from './githubIngest.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
+import { sdNotifyWatchdog } from './sdNotify.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -477,7 +478,44 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
       err instanceof Error ? err.message : err,
     );
   }
+
+  // Watchdog ping — only fired on a healthy tick (see `isHealthyTick`).
+  // Wrapped in try/catch defensively: sdNotifyWatchdog already
+  // suppresses its own errors, but a synchronous throw at the top of
+  // the function or an unhandled rejection escaping must NOT take down
+  // the catchup return value.
+  if (isHealthyTick(results)) {
+    try {
+      await sdNotifyWatchdog();
+    } catch (err) {
+      console.warn(
+        '[sd-notify] watchdog ping unexpectedly threw:',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   return results;
+}
+
+/**
+ * A tick is "healthy" — and therefore eligible to ping the systemd
+ * watchdog — when EVERY per-repo result reported no error, zero
+ * ingest failures, and zero state-sync failures. The watchdog exists
+ * to catch the failure mode where the catchup loop has frozen
+ * entirely; pinging on a partial-failure path would defeat its
+ * purpose by hiding exactly those incidents from systemd.
+ *
+ * An empty `results` array (no repos discovered, no work done) counts
+ * as healthy — the sweep completed without crashing, which is what
+ * the watchdog actually measures.
+ *
+ * Exported for unit-test access.
+ */
+export function isHealthyTick(results: ReconcileResult[]): boolean {
+  return results.every(
+    (r) => !r.error && r.ingestErrored === 0 && r.stateSyncErrored === 0,
+  );
 }
 
 /**
