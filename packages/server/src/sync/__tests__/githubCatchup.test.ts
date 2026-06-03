@@ -65,10 +65,28 @@ vi.mock('../../db/nodes.js', () => ({
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
-vi.mock('@mindblown/integrations', () => ({
-  fetchChangedIssues: vi.fn(async () => []),
-  mintInstallationToken: vi.fn(async () => 'tok'),
-}));
+// Local `GitHubApiError` stand-in so the SUT's `instanceof` check
+// passes when tests throw it from the fetch mock. Class is defined
+// inside the `vi.mock` factory (hoisted) and re-imported through the
+// mocked module below — putting the class at top-level would be
+// captured by the closure BEFORE the hoist, throwing TDZ.
+vi.mock('@mindblown/integrations', () => {
+  class MockGitHubApiError extends Error {
+    readonly status: number;
+    readonly body: string;
+    constructor(status: number, body = '') {
+      super(`GitHub API ${status}: ${body}`);
+      this.name = 'GitHubApiError';
+      this.status = status;
+      this.body = body;
+    }
+  }
+  return {
+    fetchChangedIssues: vi.fn(async () => []),
+    mintInstallationToken: vi.fn(async () => 'tok'),
+    GitHubApiError: MockGitHubApiError,
+  };
+});
 
 vi.mock('../parentEpicRollup.js', () => ({
   parseParentReferences: () => [],
@@ -102,8 +120,16 @@ import {
   runAllCatchups,
   pushCatchupHeartbeat,
   isHealthyTick,
+  reconcileRepo,
+  _resetAuthFailureCountersForTests,
+  _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
+import { fetchChangedIssues, GitHubApiError } from '@mindblown/integrations';
+
+// Re-aliased for readability in tests: this is the mock class from
+// the `vi.mock` factory above, not the real one.
+const MockGitHubApiError = GitHubApiError;
 
 function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
   return {
@@ -289,5 +315,174 @@ describe('isHealthyTick', () => {
     expect(
       isHealthyTick([makeResult({ error: 'fetch: 503' })]),
     ).toBe(false);
+  });
+});
+
+// ── 401-escalation tests (#75) ───────────────────────────────────
+//
+// Scenario: `fetchChangedIssues` throws a `GitHubApiError` with
+// `status=401` (App install revoked, PAT expired, etc.). The catchup
+// must track consecutive failures per repo and push a dedicated Kuma
+// alarm once we cross `CATCHUP_AUTH_FAILURE_THRESHOLD`. On any
+// successful fetch the counter resets.
+
+const fetchChangedIssuesMock = vi.mocked(fetchChangedIssues);
+
+function makeTarget(owner: string, repo: string) {
+  return {
+    owner,
+    repo,
+    resolveToken: async (): Promise<string> => 'tok',
+  };
+}
+
+describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
+  beforeEach(() => {
+    _resetAuthFailureCountersForTests();
+    pushKumaMock.mockReset();
+    pushKumaMock.mockResolvedValue(undefined);
+    fetchChangedIssuesMock.mockReset();
+    delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+    delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  });
+
+  afterEach(() => {
+    _resetAuthFailureCountersForTests();
+    delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+    delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  });
+
+  it('does NOT push on the first 401 (counter below default threshold of 3)', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    const result = await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(result.error).toMatch(/^fetch: GitHub API 401/);
+    expect(pushKumaMock).not.toHaveBeenCalled();
+    expect(_getAuthFailureCountForTests('o/r')).toBe(1);
+  });
+
+  it('does NOT push on the second consecutive 401', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(pushKumaMock).not.toHaveBeenCalled();
+    expect(_getAuthFailureCountForTests('o/r')).toBe(2);
+  });
+
+  it('pushes status=down msg=auth_failed:owner/repo on the third consecutive 401', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(pushKumaMock).toHaveBeenCalledTimes(1);
+    const [url, status, msg, tag] = pushKumaMock.mock.calls[0];
+    expect(url).toBe('https://kuma/api/push/auth');
+    expect(status).toBe('down');
+    expect(msg).toBe('auth_failed:o/r');
+    expect(tag).toContain('github auth failure');
+    expect(_getAuthFailureCountForTests('o/r')).toBe(3);
+  });
+
+  it('continues to push on every subsequent 401 once over the threshold', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    // 4 consecutive 401s: ticks 3 and 4 each push.
+    for (let i = 0; i < 4; i++) {
+      await reconcileRepo(makeTarget('o', 'r'));
+    }
+
+    // Pushes fired on ticks 3 and 4.
+    expect(pushKumaMock).toHaveBeenCalledTimes(2);
+    expect(pushKumaMock.mock.calls[0][2]).toBe('auth_failed:o/r');
+    expect(pushKumaMock.mock.calls[1][2]).toBe('auth_failed:o/r');
+    expect(_getAuthFailureCountForTests('o/r')).toBe(4);
+  });
+
+  it('resets the counter to 0 on the next successful fetch', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock
+      .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'))
+      .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'))
+      .mockResolvedValueOnce([]) // success — counter resets
+      .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'));
+
+    await reconcileRepo(makeTarget('o', 'r')); // 1 failure
+    await reconcileRepo(makeTarget('o', 'r')); // 2 failures
+    expect(_getAuthFailureCountForTests('o/r')).toBe(2);
+    await reconcileRepo(makeTarget('o', 'r')); // success → reset
+    expect(_getAuthFailureCountForTests('o/r')).toBe(0);
+    await reconcileRepo(makeTarget('o', 'r')); // 1 failure again
+    expect(_getAuthFailureCountForTests('o/r')).toBe(1);
+
+    // Counter never crossed threshold across this run — no push.
+    expect(pushKumaMock).not.toHaveBeenCalled();
+  });
+
+  it('tracks counters PER repo — repo A escalating must not affect repo B', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockImplementation(async (owner) => {
+      throw new MockGitHubApiError(401, `Bad credentials for ${owner}`);
+    });
+
+    // Repo A: 3 failures → push.
+    await reconcileRepo(makeTarget('a', 'a'));
+    await reconcileRepo(makeTarget('a', 'a'));
+    await reconcileRepo(makeTarget('a', 'a'));
+    // Repo B: 1 failure → no push.
+    await reconcileRepo(makeTarget('b', 'b'));
+
+    // Exactly one push — and it's for repo A.
+    expect(pushKumaMock).toHaveBeenCalledTimes(1);
+    expect(pushKumaMock.mock.calls[0][2]).toBe('auth_failed:a/a');
+    expect(_getAuthFailureCountForTests('a/a')).toBe(3);
+    expect(_getAuthFailureCountForTests('b/b')).toBe(1);
+  });
+
+  it('honours CATCHUP_AUTH_FAILURE_THRESHOLD=1 — first 401 immediately pushes', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    process.env.CATCHUP_AUTH_FAILURE_THRESHOLD = '1';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(pushKumaMock).toHaveBeenCalledTimes(1);
+    expect(pushKumaMock.mock.calls[0][2]).toBe('auth_failed:o/r');
+  });
+
+  it('does NOT push when KUMA_GITHUB_AUTH_FAILURE_PUSH_URL is unset (no-op like catchup heartbeat)', async () => {
+    delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(401, 'Bad credentials'));
+
+    // 5 consecutive 401s — would push twice if the URL were set.
+    for (let i = 0; i < 5; i++) {
+      await reconcileRepo(makeTarget('o', 'r'));
+    }
+
+    expect(pushKumaMock).not.toHaveBeenCalled();
+    // Counter still ticks up — the env-var gate is at the push side
+    // only, so a later turn-on of the alarm sees the right state.
+    expect(_getAuthFailureCountForTests('o/r')).toBe(5);
+  });
+
+  it('does NOT escalate on a non-401 fetch error (5xx, network)', async () => {
+    process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(503, 'Service Unavailable'));
+
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+    await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(pushKumaMock).not.toHaveBeenCalled();
+    expect(_getAuthFailureCountForTests('o/r')).toBe(0);
   });
 });

@@ -16,6 +16,7 @@ export {
   extractVersionFromMilestone,
   getGitHubIssue,
   verifyWebhookSignature,
+  GitHubApiError,
 } from './github.js';
 
 export type {

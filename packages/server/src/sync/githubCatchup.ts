@@ -16,7 +16,11 @@
 
 import { eq, and, isNotNull, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
-import { fetchChangedIssues, mintInstallationToken } from '@mindblown/integrations';
+import {
+  fetchChangedIssues,
+  mintInstallationToken,
+  GitHubApiError,
+} from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
@@ -30,6 +34,65 @@ import {
 import { ingestNewIssuesForRepo } from './githubIngest.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
+
+// ── Per-repo auth-failure tracking (#75) ─────────────────────────
+//
+// Consecutive 401 ticks per `${owner}/${repo}` key. When this hits
+// `CATCHUP_AUTH_FAILURE_THRESHOLD` (default 3), the catchup pushes
+// `status=down msg=auth_failed:owner/repo` to a dedicated Kuma push
+// monitor (`KUMA_GITHUB_AUTH_FAILURE_PUSH_URL`). On any successful
+// fetch the counter resets to 0.
+//
+// Concurrency: a single mindblown-api process serialises catchup
+// ticks (`runAllCatchups` is invoked from the catchup scheduler, not
+// concurrently), so the in-memory `Map` is safe without a lock. Two
+// concurrent processes hitting the same DB would each track their
+// own counter — fine, they'd just escalate independently.
+const consecutiveAuthFailures = new Map<string, number>();
+
+const DEFAULT_AUTH_FAILURE_THRESHOLD = 3;
+
+function getAuthFailureThreshold(): number {
+  const raw = process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  if (!raw) return DEFAULT_AUTH_FAILURE_THRESHOLD;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1) return DEFAULT_AUTH_FAILURE_THRESHOLD;
+  return n;
+}
+
+/**
+ * Reset (for tests) the per-repo consecutive-auth-failure counter.
+ * Production code never calls this — it's exported only so unit tests
+ * can start each case from a clean slate without leaking state across
+ * cases. The module-level `Map` is private otherwise.
+ */
+export function _resetAuthFailureCountersForTests(): void {
+  consecutiveAuthFailures.clear();
+}
+
+/**
+ * Snapshot the per-repo counter (for tests). Production code does not
+ * read this.
+ */
+export function _getAuthFailureCountForTests(repoLabel: string): number {
+  return consecutiveAuthFailures.get(repoLabel) ?? 0;
+}
+
+/**
+ * Push the `auth_failed` alarm to Kuma. No-op when the env var is
+ * unset (same pattern as the catchup heartbeat — dev/test environments
+ * don't need to wire this).
+ */
+async function pushAuthFailureAlarm(repoLabel: string): Promise<void> {
+  const url = process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+  if (!url) return;
+  await pushKumaHeartbeat(
+    url,
+    'down',
+    `auth_failed:${repoLabel}`,
+    '[kuma-push] github auth failure',
+  );
+}
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -222,6 +285,30 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   try {
     issues = await fetchChangedIssues(target.owner, target.repo, token, sinceWithOverlap);
   } catch (err) {
+    // 401-specific escalation path (#75). The "auth revoked" failure
+    // mode looks identical to a transient fetch error in the existing
+    // path — the operator sees `error: fetch: GitHub API 401` and has
+    // to grep logs to diagnose. Track consecutive 401s per repo and
+    // fire a dedicated Kuma alarm once we've crossed the threshold,
+    // so the operator gets `auth_failed:owner/repo` instead of a
+    // generic "catchup is broken".
+    if (err instanceof GitHubApiError && err.status === 401) {
+      const next = (consecutiveAuthFailures.get(repoLabel) ?? 0) + 1;
+      consecutiveAuthFailures.set(repoLabel, next);
+      const threshold = getAuthFailureThreshold();
+      if (next >= threshold) {
+        // Push every tick once we're over the threshold (not just
+        // the threshold-crossing tick). Kuma's "down" state is
+        // sticky as long as the pushes keep arriving with `down`;
+        // letting subsequent ticks fall silent would cause Kuma to
+        // also alarm on "monitor went dark" after its push-timeout,
+        // which double-counts the same incident. Keeping the alarm
+        // hot every tick also means a fixed install (real success)
+        // immediately resets the counter and the next clean tick
+        // can let the monitor go UP again.
+        await pushAuthFailureAlarm(repoLabel);
+      }
+    }
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -230,6 +317,13 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+
+  // Successful fetch — clear the per-repo auth-failure counter so the
+  // next 401 starts over at 1. This MUST happen even if subsequent
+  // passes (ingest, rollup) fail, because the auth-failure detector
+  // is specifically about the GitHub credential, not about downstream
+  // node-write errors.
+  consecutiveAuthFailures.delete(repoLabel);
 
   const externalIds = issues.map((i) => `${target.owner}/${target.repo}#${i.number}`);
   const linkIndex = await findNodesByExternalIds(externalIds);

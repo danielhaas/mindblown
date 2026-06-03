@@ -65,6 +65,28 @@ const PRIORITY_PREFIX = 'priority:';
 
 const GITHUB_API = 'https://api.github.com';
 
+/**
+ * Thrown by every `githubFetch` call that hits a non-2xx response from
+ * the GitHub REST API.
+ *
+ * Callers that need to react to specific HTTP statuses (auth expiry, rate
+ * limit, etc.) should branch on `err instanceof GitHubApiError` and read
+ * `err.status` — the previous behaviour of grepping the `Error.message`
+ * string for "GitHub API 401" was both fragile and a foot-gun once the
+ * message format changed. The string body is still preserved on `.body`
+ * for log lines.
+ */
+export class GitHubApiError extends Error {
+  readonly status: number;
+  readonly body: string;
+  constructor(status: number, body: string) {
+    super(`GitHub API ${status}: ${body}`);
+    this.name = 'GitHubApiError';
+    this.status = status;
+    this.body = body;
+  }
+}
+
 async function githubFetch<T>(
   path: string,
   token: string,
@@ -84,7 +106,7 @@ async function githubFetch<T>(
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`GitHub API ${res.status}: ${body}`);
+    throw new GitHubApiError(res.status, body);
   }
 
   // 204 No Content
