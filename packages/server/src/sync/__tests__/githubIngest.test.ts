@@ -133,7 +133,19 @@ function mockSelect(_cols?: unknown) {
 // implementation intercepts pg_advisory_xact_lock to enforce per-key
 // serialization across concurrent transactions, then releases the lock
 // when the callback resolves (modelling tx commit).
+//
+// The `__rollbacks` list on the returned tx handle lets the mocked
+// `nodeDb.createNode` / `nodeDb.updateNode` register undo callbacks for
+// the writes they made under this tx. If the cb throws, the transaction
+// mock walks the rollbacks and applies them, modelling Postgres's
+// rollback of every write in the aborted transaction. This is what lets
+// the orphan-rollback test assert that no node row remains after the
+// throw — without rollback simulation, the mock would behave as if
+// every nodeDb call autocommitted, defeating the whole point of the
+// test.
+type TxHandle = ReturnType<typeof buildTxHandle>;
 function buildTxHandle(releaseHooks: Array<() => void>) {
+  const rollbacks: Array<() => void> = [];
   return {
     execute: async (sqlObj: unknown) => {
       const raw = JSON.stringify(sqlObj);
@@ -161,7 +173,12 @@ function buildTxHandle(releaseHooks: Array<() => void>) {
         returning: async () => [],
       }),
     }),
+    /** Undo callbacks registered by tx-scoped node writes. */
+    __rollbacks: rollbacks,
   };
+}
+function isTxHandle(x: unknown): x is TxHandle {
+  return !!x && typeof x === 'object' && Array.isArray((x as { __rollbacks?: unknown }).__rollbacks);
 }
 
 vi.mock('../../db/connection.js', () => ({
@@ -189,10 +206,17 @@ vi.mock('../../db/connection.js', () => ({
       const tx = buildTxHandle(releaseHooks);
       try {
         const result = await cb(tx);
-        // tx commit — release any held advisory locks
+        // tx commit — release any held advisory locks. Drop the
+        // rollback list because the writes are now committed.
         for (const r of releaseHooks) r();
         return result;
       } catch (err) {
+        // tx rollback — walk the rollback list in reverse order so
+        // later writes undo before earlier ones (mirrors Postgres's
+        // statement-order rollback semantics), then release locks.
+        for (let i = tx.__rollbacks.length - 1; i >= 0; i--) {
+          try { tx.__rollbacks[i](); } catch { /* swallow per-undo failure */ }
+        }
         for (const r of releaseHooks) r();
         throw err;
       }
@@ -252,9 +276,17 @@ vi.mock('drizzle-orm', async () => {
   };
 });
 
+// Hook for tests that want updateNode to throw — used by the orphan
+// rollback test to simulate a failure between createNode and the end of
+// the tx callback. When set, updateNode invokes this before applying
+// its normal logic; the throw propagates out of the tx callback and
+// triggers the rollback path.
+let updateNodeThrowOnNthCall: number | null = null;
+let updateNodeMockShouldThrow: ((callIndex: number) => Error | null) | null = null;
+
 vi.mock('../../db/nodes.js', () => ({
   getNode: (id: string) => getNodeMock(id),
-  createNode: async (input: Record<string, unknown>) => {
+  createNode: async (input: Record<string, unknown>, tx?: unknown) => {
     createNodeCalls.push(input);
     const id = `node-${createNodeCalls.length}`;
     const row = {
@@ -288,23 +320,57 @@ vi.mock('../../db/nodes.js', () => ({
       createdBy: input.createdBy as string,
       revision: 1,
     };
-    // Also register it in dbState.nodes so subsequent existence pre-checks see it.
+    // Register it in dbState.nodes so subsequent existence pre-checks see it.
     dbState.nodes.set(id, {
       id,
       mapId: input.mapId as string,
       parentId: (input.parentId as string | undefined) ?? null,
       externalLinks: [],
     });
+    // If we were given a tx handle, register a rollback that removes
+    // the row from dbState (and the createNodeCalls log) when the tx
+    // aborts. Mirrors Postgres rolling back the INSERT.
+    if (isTxHandle(tx)) {
+      tx.__rollbacks.push(() => {
+        dbState.nodes.delete(id);
+        const idx = createNodeCalls.indexOf(input);
+        if (idx >= 0) createNodeCalls.splice(idx, 1);
+      });
+    }
     return row;
   },
-  updateNode: async (nodeId: string, input: Record<string, unknown>) => {
+  updateNode: async (
+    nodeId: string,
+    input: Record<string, unknown>,
+    _expectedRevision?: number,
+    tx?: unknown,
+  ) => {
+    const callIndex = updateNodeCalls.length;
     updateNodeCalls.push({ nodeId, input });
+    if (updateNodeMockShouldThrow) {
+      const err = updateNodeMockShouldThrow(callIndex);
+      if (err) throw err;
+    }
+    if (updateNodeThrowOnNthCall !== null && callIndex === updateNodeThrowOnNthCall) {
+      throw new Error(`simulated updateNode failure on call ${callIndex}`);
+    }
+    // Snapshot the pre-update externalLinks for rollback.
+    const prevRow = dbState.nodes.get(nodeId);
+    const prevExternalLinks = prevRow?.externalLinks
+      ? [...prevRow.externalLinks]
+      : [];
     // Mirror externalLinks into dbState so the existence precheck sees them.
     if (input.externalLinks) {
       const row = dbState.nodes.get(nodeId);
       if (row) {
         row.externalLinks = input.externalLinks as Array<{ provider: string; externalId: string }>;
       }
+    }
+    if (isTxHandle(tx)) {
+      tx.__rollbacks.push(() => {
+        const row = dbState.nodes.get(nodeId);
+        if (row) row.externalLinks = prevExternalLinks;
+      });
     }
     const row = dbState.nodes.get(nodeId);
     // Return a row that mirrors the production `nodeDb.updateNode` shape
@@ -363,6 +429,8 @@ function resetState() {
   createNodeCalls.length = 0;
   advisoryLocksTaken.length = 0;
   getNodeMock.mockReset();
+  updateNodeThrowOnNthCall = null;
+  updateNodeMockShouldThrow = null;
 }
 
 beforeEach(() => {
@@ -563,6 +631,50 @@ describe('ensureNodeForIssue', () => {
     // Both transactions must have called pg_advisory_xact_lock — proving
     // the lock infra was actually exercised, not bypassed.
     expect(advisoryLocksTaken.length).toBe(2);
+  });
+
+  it('tx rollback: throw after createNode leaves no orphan node (mindblown#66)', async () => {
+    // Regression: ensureNodeForIssue used to call nodeDb.createNode and
+    // nodeDb.updateNode on the global `db` handle, so each autocommitted
+    // outside the outer `db.transaction(...)` that held the advisory
+    // lock. Any throw between createNode and end-of-tx would leave an
+    // orphan row that the rollback couldn't undo.
+    //
+    // After #66, both calls receive the `tx` handle and participate in
+    // the outer tx. This test simulates a failure on the link-attach
+    // updateNode and asserts that no row remains in dbState.nodes —
+    // proving the rollback actually walked back the insert.
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+
+    const nodesBefore = new Set(dbState.nodes.keys());
+    // Make the first updateNode call inside the tx throw (this is the
+    // updateNode that attaches the externalLink + description in
+    // ensureNodeForIssue). The tx callback re-throws and the mocked
+    // db.transaction walks the rollback list, reverting the createNode.
+    updateNodeThrowOnNthCall = 0;
+
+    await expect(
+      ensureNodeForIssue(
+        'm1',
+        'inbox-1',
+        issue(77, { title: 'roll me back' }),
+        { owner: 'owner', repo: 'repo', createdBy: 'u1' },
+      ),
+    ).rejects.toThrow(/simulated updateNode failure/);
+
+    // The advisory lock was still taken (so we know we entered the tx).
+    expect(advisoryLocksTaken.length).toBe(1);
+    // Critically: after rollback, no NEW node row exists. Only the
+    // pre-existing inbox row is in dbState.
+    const nodesAfter = new Set(dbState.nodes.keys());
+    expect(nodesAfter).toEqual(nodesBefore);
+    // And no node has owner/repo#77 in its externalLinks (orphan check
+    // via the same precheck the production path uses).
+    const orphans = [...dbState.nodes.values()].filter((n) =>
+      n.externalLinks.some((l) => l.provider === 'github' && l.externalId === 'owner/repo#77'),
+    );
+    expect(orphans).toEqual([]);
   });
 
   it('broadcast payload for node:created carries the full node row', async () => {

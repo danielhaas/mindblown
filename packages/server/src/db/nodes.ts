@@ -6,6 +6,23 @@ import { hasCycle } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 
 /**
+ * A handle that can issue queries — either the global `db` or a transaction
+ * handle (`tx`) from `db.transaction(async (tx) => ...)`. Both expose the
+ * same drizzle query-builder surface (`select`, `insert`, `update`, ...);
+ * `PgTransaction` extends `PgDatabase`, so a tx is structurally assignable
+ * to this type modulo the `$client` field that only `db` carries (and which
+ * we don't use here). Callers that want their `createNode`/`updateNode`
+ * writes to roll back with an outer transaction pass the `tx` they got
+ * from `db.transaction`; callers that don't care (the default) get
+ * autocommit on the global `db`.
+ *
+ * We extract the tx type via `Parameters` to avoid a brittle dependency
+ * on drizzle's private export paths.
+ */
+type DrizzleTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+export type DbHandle = typeof db | DrizzleTx;
+
+/**
  * Thrown by updateNode when the caller passed an expectedRevision and the
  * row's current revision doesn't match — i.e. someone else wrote first.
  * Carries the current node so the route can return it to the client.
@@ -39,6 +56,7 @@ async function deriveAutoStatus(
   mapId: string,
   currentStatus: string | null,
   newProgress: number | null | undefined,
+  handle: DbHandle = db,
 ): Promise<string | undefined> {
   const targetCategory: 'todo' | 'in_progress' | 'done' =
     newProgress == null || newProgress <= 0
@@ -47,7 +65,7 @@ async function deriveAutoStatus(
         ? 'done'
         : 'in_progress';
 
-  const [map] = await db
+  const [map] = await handle
     .select({ statusWorkflow: maps.statusWorkflow })
     .from(maps)
     .where(eq(maps.id, mapId));
@@ -86,11 +104,21 @@ export interface CreateNodeInput {
   autoProgress?: 'off' | 'children';
 }
 
-export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
+export async function createNode(
+  input: CreateNodeInput,
+  /**
+   * Optional transaction handle. When provided, the insert + parent
+   * children_order update participate in the caller's tx and roll back
+   * with it. When omitted (the common case), writes go through the
+   * global `db` handle and autocommit individually.
+   */
+  txHandle?: DbHandle,
+): Promise<CoreNode> {
+  const handle: DbHandle = txHandle ?? db;
   const now = new Date();
 
   // Create the node
-  const [row] = await db.insert(nodes).values({
+  const [row] = await handle.insert(nodes).values({
     mapId: input.mapId,
     parentId: input.parentId,
     childrenOrder: [],
@@ -116,7 +144,7 @@ export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
   }).returning();
 
   // Add to parent's children_order
-  const [parent] = await db.select().from(nodes).where(eq(nodes.id, input.parentId));
+  const [parent] = await handle.select().from(nodes).where(eq(nodes.id, input.parentId));
   if (parent) {
     const order = (parent.childrenOrder as string[]) ?? [];
     const idx = input.position;
@@ -125,7 +153,7 @@ export async function createNode(input: CreateNodeInput): Promise<CoreNode> {
     } else {
       order.push(row.id);
     }
-    await db.update(nodes)
+    await handle.update(nodes)
       .set({ childrenOrder: order, updatedAt: now })
       .where(eq(nodes.id, input.parentId));
   }
@@ -171,16 +199,25 @@ export async function updateNode(
   nodeId: string,
   input: UpdateNodeInput,
   expectedRevision?: number,
+  /**
+   * Optional transaction handle. When provided, the update (and the
+   * status-derivation / dependency-validation precheck reads) participate
+   * in the caller's tx and roll back with it. When omitted, writes
+   * autocommit on the global `db` handle.
+   */
+  txHandle?: DbHandle,
 ): Promise<CoreNode | null> {
+  const handle: DbHandle = txHandle ?? db;
+
   // Validate dependencies if provided
   if (input.dependencies !== undefined) {
-    await validateDependencies(nodeId, input.dependencies);
+    await validateDependencies(nodeId, input.dependencies, handle);
   }
 
   // Auto-derive status from percentComplete when status is not explicitly set
   // in this update. See deriveAutoStatus for the exact rules.
   if (input.percentComplete !== undefined && input.status === undefined) {
-    const [current] = await db
+    const [current] = await handle
       .select({ status: nodes.status, mapId: nodes.mapId })
       .from(nodes)
       .where(eq(nodes.id, nodeId));
@@ -189,6 +226,7 @@ export async function updateNode(
         current.mapId as string,
         (current.status as string | null) ?? null,
         input.percentComplete,
+        handle,
       );
       if (derived !== undefined) input.status = derived;
     }
@@ -230,7 +268,7 @@ export async function updateNode(
       ? eq(nodes.id, nodeId)
       : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision));
 
-  const [row] = await db.update(nodes).set(updates).where(where).returning();
+  const [row] = await handle.update(nodes).set(updates).where(where).returning();
   if (row) return dbNodeToCore(row as unknown as Record<string, unknown>);
 
   // No row affected — either the node doesn't exist, or the revision was stale.
@@ -408,12 +446,15 @@ export async function reorderChildren(
  * Build a NodeMap from all nodes sharing the same mapId as `nodeId`.
  * Used for cycle detection via the core `hasCycle` function.
  */
-async function buildNodeMapForNode(nodeId: string): Promise<{ mapId: string; nodeMap: NodeMap }> {
-  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+async function buildNodeMapForNode(
+  nodeId: string,
+  handle: DbHandle = db,
+): Promise<{ mapId: string; nodeMap: NodeMap }> {
+  const [node] = await handle.select().from(nodes).where(eq(nodes.id, nodeId));
   if (!node) throw new DependencyValidationError(`Node ${nodeId} not found`);
 
   const mapId = node.mapId as string;
-  const allNodes = await db.select().from(nodes).where(eq(nodes.mapId, mapId));
+  const allNodes = await handle.select().from(nodes).where(eq(nodes.mapId, mapId));
   const nodeMap: NodeMap = new Map();
   for (const n of allNodes) {
     const coreNode = dbNodeToCore(n as unknown as Record<string, unknown>);
@@ -426,7 +467,11 @@ async function buildNodeMapForNode(nodeId: string): Promise<{ mapId: string; nod
  * Validate a full dependency array for a node.
  * Rejects self-references and circular dependencies.
  */
-async function validateDependencies(nodeId: string, deps: Dependency[]): Promise<void> {
+async function validateDependencies(
+  nodeId: string,
+  deps: Dependency[],
+  handle: DbHandle = db,
+): Promise<void> {
   // Check for self-references
   for (const dep of deps) {
     if (dep.targetNodeId === nodeId) {
@@ -438,7 +483,7 @@ async function validateDependencies(nodeId: string, deps: Dependency[]): Promise
 
   // Check for circular dependencies by simulating the new dependency set
   if (deps.length > 0) {
-    const { nodeMap } = await buildNodeMapForNode(nodeId);
+    const { nodeMap } = await buildNodeMapForNode(nodeId, handle);
 
     // Temporarily update the node's dependencies in the map for cycle detection
     const currentNode = nodeMap.get(nodeId);
