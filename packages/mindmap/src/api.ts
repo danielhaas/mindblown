@@ -438,6 +438,18 @@ export interface GitHubReconcileResult {
   noTransition: number;
   /** Nodes auto-created in the ingest pass (issues with no linked node yet). */
   ingested: number;
+  /**
+   * Count of per-issue / per-inbox errors raised during the ingest pass.
+   * When >0 the server deliberately does NOT bump `lastSyncedAt` so the next
+   * catch-up tick will re-fetch the failed issues. Surfaced in the UI as an
+   * inline warning so partial failures are observable to the operator.
+   */
+  ingestErrored: number;
+  /**
+   * Count of node-update errors hit during the state-sync loop. Same retry
+   * semantics as `ingestErrored` — the next tick will retry the window.
+   */
+  stateSyncErrored: number;
   durationMs: number;
   since: string | null;
   error?: string;

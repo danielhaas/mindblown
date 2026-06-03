@@ -661,6 +661,25 @@ export function GitHubSettingsDialog({
               {reconcileResult.repo}: {reconcileResult.applied} updated, {reconcileResult.ingested ?? 0} ingested, {reconcileResult.fetched} checked
             </span>
           )}
+          {reconcileResult &&
+            !reconcileResult.error &&
+            ((reconcileResult.ingestErrored ?? 0) > 0 ||
+              (reconcileResult.stateSyncErrored ?? 0) > 0) && (
+              <span
+                data-testid="reconcile-errors-warning"
+                style={{
+                  fontSize: 11,
+                  background: '#fef3c7',
+                  border: '1px solid #fde68a',
+                  color: '#92400e',
+                  padding: '3px 8px',
+                  borderRadius: 4,
+                  fontWeight: 600,
+                }}
+              >
+                ⚠ Last sync had {reconcileResult.ingestErrored ?? 0} ingest failures and {reconcileResult.stateSyncErrored ?? 0} state-sync failures — will retry next tick.
+              </span>
+            )}
           {reconcileResult?.error && (
             <span style={{ fontSize: 11, color: '#991b1b' }}>
               {reconcileResult.error}
