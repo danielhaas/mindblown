@@ -28,6 +28,7 @@ import {
   applyRollupForFetchedIssues,
 } from './parentEpicRollup.js';
 import { ingestNewIssuesForRepo } from './githubIngest.js';
+import { pushKumaHeartbeat } from './kumaPush.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -441,6 +442,11 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
 /**
  * Reconcile every known GitHub repo. Errors on one repo don't abort the
  * sweep — each repo is independent.
+ *
+ * After the per-repo loop completes we push a Kuma heartbeat (if
+ * `KUMA_GITHUB_CATCHUP_PUSH_URL` is set) summarising this tick's stats.
+ * The push is fire-and-forget — Kuma being unreachable must never stall
+ * or fail the catchup itself.
  */
 export async function runAllCatchups(): Promise<ReconcileResult[]> {
   const targets = await discoverTargets();
@@ -458,5 +464,48 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
       });
     }
   }
+  // Heartbeat is a defence-in-depth wrapper: pushKumaHeartbeat already
+  // swallows its own errors, but we re-wrap here so any future helper
+  // misbehaviour (a synchronous throw at the top of the function, an
+  // unhandled rejection promoting to a hard error) can't take down the
+  // catchup return value. The catchup MUST always return its results.
+  try {
+    await pushCatchupHeartbeat(results);
+  } catch (err) {
+    console.warn(
+      '[kuma-push] catchup heartbeat unexpectedly threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
   return results;
+}
+
+/**
+ * Push the catchup tick's roll-up stats to Kuma. Reads the URL from
+ * `KUMA_GITHUB_CATCHUP_PUSH_URL`; silently skips if unset (so dev/test
+ * environments don't need the env var). Wraps in try/catch — a failed
+ * push must NEVER affect the main catchup flow.
+ *
+ * Status is `down` if any repo errored, had an ingest failure, or had a
+ * state-sync failure. Otherwise `up`. Message includes per-tick totals
+ * so the Kuma monitor's history shows whether catchup is actually
+ * making progress, not just whether it's running.
+ *
+ * Exported for unit-test access — production callers go through
+ * `runAllCatchups` which invokes this at end of sweep.
+ */
+export async function pushCatchupHeartbeat(results: ReconcileResult[]): Promise<void> {
+  const url = process.env.KUMA_GITHUB_CATCHUP_PUSH_URL;
+  if (!url) return;
+
+  const sum = (pick: (r: ReconcileResult) => number): number =>
+    results.reduce((acc, r) => acc + pick(r), 0);
+
+  const hasError = results.some(
+    (r) => r.error || r.ingestErrored > 0 || r.stateSyncErrored > 0,
+  );
+  const status = hasError ? 'down' : 'up';
+  const msg = `repos=${results.length} fetched=${sum((r) => r.fetched)} ingested=${sum((r) => r.ingested)} applied=${sum((r) => r.applied)} errored=${sum((r) => r.ingestErrored + r.stateSyncErrored)}`;
+
+  await pushKumaHeartbeat(url, status, msg, '[kuma-push] catchup heartbeat');
 }

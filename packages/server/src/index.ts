@@ -5,6 +5,8 @@ import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups } from './sync/githubCatchup.js';
+import { auditDrift, type DriftReport } from './sync/driftAudit.js';
+import { pushKumaHeartbeat } from './sync/kumaPush.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
@@ -151,6 +153,51 @@ async function main(): Promise<void> {
   };
   runCatchup();
   setInterval(runCatchup, CATCHUP_INTERVAL_MS);
+
+  // ── Daily drift audit (GitHub→MindBlown reconciliation gate) ─
+  // The webhook + catchup pair is good at "an event happened, did we
+  // apply it?", but neither alarms when the event NEVER reached us —
+  // bad webhook URL on the GH side, expired install token during the
+  // catchup window, an ingest exception that dropped an issue. This
+  // sweep diffs open GitHub issues against linked nodes once a day and
+  // pushes the result to a Kuma monitor. Drift > 0 → Kuma alarms via
+  // its normal channels (Pushover, etc.).
+  const DRIFT_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  const runDriftAudit = async () => {
+    const url = process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
+    let reports: DriftReport[];
+    try {
+      reports = await auditDrift();
+    } catch (err) {
+      console.error('[drift-audit] sweep failed:', err);
+      // Tell Kuma the audit itself broke. Without this, an exception
+      // mid-sweep looks identical to "clean" from Kuma's vantage.
+      if (url) {
+        const msg = `audit_failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 200);
+        await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
+      }
+      return;
+    }
+    if (reports.length === 0) {
+      console.log('[drift-audit] clean — no drift');
+      if (url) {
+        await pushKumaHeartbeat(url, 'up', 'no-drift', '[kuma-push] drift audit');
+      }
+      return;
+    }
+    const summary = reports.map((r) => `${r.mapName}=${r.onlyInGitHub} issues`).join(', ');
+    console.warn(`[drift-audit] drift detected: ${summary}`);
+    if (url) {
+      // Truncate at 200 chars so the Kuma push URL doesn't blow past
+      // common HTTP query-length limits when there are many drifted maps.
+      const msg = `drift_detected: ${summary}`.slice(0, 200);
+      await pushKumaHeartbeat(url, 'down', msg, '[kuma-push] drift audit');
+    }
+  };
+  // Startup run is fire-and-forget — the audit hits GitHub, so we don't
+  // want a slow remote to delay the listen() handshake.
+  runDriftAudit();
+  setInterval(runDriftAudit, DRIFT_AUDIT_INTERVAL_MS);
 }
 
 main();

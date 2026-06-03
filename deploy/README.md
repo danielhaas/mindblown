@@ -109,6 +109,12 @@ NODE_ENV=production
 # SMTP_USER=noreply@example.com
 # SMTP_PASS=CHANGE-ME
 # MAIL_FROM=MindBlown <noreply@example.com>
+
+# Optional — Uptime-Kuma push URLs for GitHub-sync observability.
+# Without these, the API still runs the catchup loop + daily drift
+# audit, but silent failures have no external alarm. See below.
+# KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
+# KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
 EOF
 chmod 640 /etc/mindblown/api.env
 chown root:mindblown /etc/mindblown/api.env
@@ -200,6 +206,55 @@ systemctl reload caddy   # only if you changed the Caddyfile
 ```
 
 The API runs migrations on every startup, so schema changes apply automatically.
+
+## GitHub-sync observability (Uptime-Kuma push monitors)
+
+The API exposes two passive heartbeats for the GitHub→MindBlown sync
+loop. Both are no-ops unless the corresponding env var is set, so this
+section is optional — but strongly recommended in production.
+
+### Why two monitors
+
+- **Catchup heartbeat (`KUMA_GITHUB_CATCHUP_PUSH_URL`)** — pushed once
+  per catchup tick (every 5 min). Alarms when pushes stop = catchup
+  scheduler dead, mindblown-api crashed, network broken, etc.
+
+- **Drift audit (`KUMA_GITHUB_DRIFT_PUSH_URL`)** — pushed once per
+  day. Pushes `status=down` if any opted-in map has open GitHub issues
+  with no linked MindBlown node. Alarms when push is `down` OR pushes
+  stop entirely = webhook silently misconfigured on the GH side, the
+  ingest path is silently throwing, etc.
+
+### Creating the monitors in Kuma
+
+1. Open your Kuma instance, **Add New Monitor** → **Push**.
+2. Set a name (e.g. `mindblown-github-catchup`) and a heartbeat
+   interval — see suggested thresholds below.
+3. Save. Kuma generates a push URL like
+   `https://kuma.example.com/api/push/abc123XYZ`.
+4. Repeat for the drift-audit monitor.
+5. Wire each push URL into `/etc/mindblown/api.env` (uncomment the two
+   `KUMA_GITHUB_*` lines) and `systemctl restart mindblown-api`.
+
+### Suggested Kuma thresholds
+
+| Monitor | Heartbeat interval | "Down" threshold | Notes |
+|---|---|---|---|
+| catchup heartbeat | 60 s | 10 min | API pushes every 5 min — 10 min absorbs one missed tick (restart/upgrade) without false-alarming. |
+| drift audit | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack for restart timing, clock drift, etc. |
+
+### Manual trigger
+
+For ops testing without waiting 24h for the next scheduled drift
+audit, hit the manual endpoint as a logged-in user:
+
+```bash
+curl -sf -X POST https://mindblown.example.com/api/maps/sync/audit-drift \
+  -H "Cookie: <session cookie from your browser>" | jq .
+```
+
+Returns `{reports: DriftReport[], counts: {...}}`. API-key auth is
+deliberately rejected — this is a session-only operator surface.
 
 ## What's NOT in the LXC backup
 
