@@ -1,16 +1,24 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { verifyToken } from '../auth.js';
+import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
     userId?: string;
+    /** How the request was authenticated. Routes that mutate auth state (e.g.
+     * minting more API keys) consult this so a leaked key can't bootstrap
+     * fresh keys. */
+    authSource?: 'jwt' | 'api-key';
   }
 }
 
 /**
- * JWT authentication preHandler hook.
- * Extracts the Bearer token from Authorization header, verifies it,
- * and attaches userId to the request.
+ * JWT (or API-key) authentication preHandler hook.
+ *
+ * Extracts the Bearer token from the Authorization header. If it starts with
+ * the `mb_` API-key prefix, it's looked up as an API key; otherwise it's
+ * treated as a session JWT. On success, attaches `userId` + `authSource` to
+ * the request.
  */
 async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise<void> {
   const authHeader = req.headers.authorization;
@@ -22,9 +30,22 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
 
   const token = authHeader.slice(7);
 
+  if (token.startsWith(API_KEY_PREFIX)) {
+    const result = await validateApiKey(token);
+    if (!result) {
+      return reply.status(401).send({
+        error: { code: 'INVALID_API_KEY', message: 'Invalid or revoked API key' },
+      });
+    }
+    req.userId = result.userId;
+    req.authSource = 'api-key';
+    return;
+  }
+
   try {
     const payload = verifyToken(token);
     req.userId = payload.userId;
+    req.authSource = 'jwt';
   } catch {
     return reply.status(401).send({
       error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' },
@@ -56,7 +77,14 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
       return;
     }
 
-    // Apply auth to all other /api/ routes
+    // /mcp does its own auth + returns JSON-RPC-shaped errors. We skip the
+    // generic middleware so a 401 there isn't the {error:{code,message}}
+    // shape that confuses MCP clients.
+    if (url.startsWith('/mcp')) {
+      return;
+    }
+
+    // Apply auth to all /api/ routes.
     if (url.startsWith('/api/')) {
       return authPreHandler(req, reply);
     }

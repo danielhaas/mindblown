@@ -3,7 +3,20 @@
  * MindBlown MCP Server
  *
  * Exposes MindBlown's project management capabilities to AI agents
- * via the Model Context Protocol (stdio transport).
+ * via the Model Context Protocol.
+ *
+ * This module exports `createMindblownMcpServer()` — a factory that
+ * builds a fully-configured `McpServer` with every tool, prompt, and
+ * resource registered. Two transports use it:
+ *
+ *  - Stdio (this file's `main()` — kept for back-compat / legacy clients
+ *    that haven't yet switched to the HTTP endpoint).
+ *  - HTTP, mounted at `/mcp` by `packages/server/src/routes/mcp.ts`.
+ *
+ * Authentication for the stdio transport comes from the `MINDBLOWN_TOKEN`
+ * env var (a session JWT or an `mb_…` API key). The HTTP transport reads
+ * an API key from the Authorization header and rebinds the per-request
+ * api context via `runWithApiContext`.
  */
 
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -13,6 +26,16 @@ import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import * as api from './api.js';
 import { httpBackend } from './backend.js';
 import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
+
+export { runWithApiContext } from './api.js';
+
+/**
+ * Build a fully-configured MCP server instance ready to be connected to
+ * any transport. Pure factory — every call returns a brand-new server
+ * with its own tool registrations (the MCP SDK doesn't share state
+ * across instances). Cheap enough to call per HTTP request.
+ */
+export function createMindblownMcpServer(): McpServer {
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -2814,14 +2837,45 @@ server.prompt(
   },
 );
 
-// ── Start ───────────────────────────────────────────────────────
+  return server;
+}
+
+// ── Stdio entrypoint (legacy / dev) ─────────────────────────────
+//
+// The stdio MCP binary is now considered legacy — new clients should
+// connect to the HTTP MCP endpoint at https://mind.project.li/mcp using
+// an API key generated from Settings → API keys. We keep the stdio
+// shim working so unmigrated Claude Code configs don't break.
 
 async function main() {
+  if (!process.env.MINDBLOWN_MCP_SILENT) {
+    console.error(
+      '[mindblown-mcp] stdio transport is deprecated; use the HTTP endpoint at ' +
+        (process.env.MINDBLOWN_API_URL ?? 'https://mind.project.li') +
+        '/mcp with an API key generated at /settings/api-keys.',
+    );
+  }
+  const server = createMindblownMcpServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
 
-main().catch((err) => {
-  console.error('MCP server failed to start:', err);
-  process.exit(1);
-});
+// Only auto-start when this file is the process entrypoint. When imported
+// (e.g. from packages/server's HTTP route), the importer drives startup.
+const isEntry = (() => {
+  try {
+    const argv1 = process.argv[1];
+    if (!argv1) return false;
+    // import.meta.url is a file:// URL; argv[1] is a path. Compare via URL.
+    return new URL(`file://${argv1}`).pathname === new URL(import.meta.url).pathname;
+  } catch {
+    return false;
+  }
+})();
+
+if (isEntry) {
+  main().catch((err) => {
+    console.error('MCP server failed to start:', err);
+    process.exit(1);
+  });
+}

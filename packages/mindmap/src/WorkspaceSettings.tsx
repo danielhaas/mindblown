@@ -14,6 +14,7 @@ import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
+import { SettingsApiKeys } from './SettingsApiKeys.js';
 import { AiProviderPanel } from './AiProviderPanel.js';
 
 export function WorkspaceSettings({
@@ -413,7 +414,10 @@ export function WorkspaceSettings({
             )}
           </div>
 
-          {/* Connect to Claude — shown only in workspace-wide view */}
+          {/* API keys (HTTP MCP, headless clients) — shown only in workspace-wide view */}
+          {!mapId && <SettingsApiKeys />}
+
+          {/* Connect to Claude (legacy stdio MCP shim) — shown only in workspace-wide view */}
           {!mapId && <ClaudeConnectPanel />}
 
           {/* Registration policy — shown only in workspace-wide view */}

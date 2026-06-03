@@ -489,6 +489,35 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS auto_progress TEXT NOT NULL DEFAULT 'off'
   `);
 
+  // ── API Keys (per-user, GitHub-PAT style) ────────────────────
+  // Plaintext format: `mb_<32-char base64url>`. We store only the scrypt
+  // hash (salt+key, same format as the password_hash column) plus the
+  // first 8 plaintext chars in `key_prefix` so the UI can show a
+  // recognizable stub. revoked_at = NULL means active; expires_at = NULL
+  // means never expires. last_used_at is updated best-effort on each
+  // successful validation so users can audit dormant keys.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS api_keys (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL,
+      key_prefix TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_api_keys_user_id_active
+    ON api_keys(user_id) WHERE revoked_at IS NULL
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix
+    ON api_keys(key_prefix)
+  `);
+
   // ── Drop Milestone entity (collapsed into Version) ────────────
   // Historical: milestones were a first-class entity and nodes carried
   // both milestone_id and an is_milestone boolean checkpoint flag.
