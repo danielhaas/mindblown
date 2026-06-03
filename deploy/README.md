@@ -111,8 +111,8 @@ NODE_ENV=production
 # MAIL_FROM=MindBlown <noreply@example.com>
 
 # Optional — Uptime-Kuma push URLs for GitHub-sync observability.
-# Without these, the API still runs the catchup loop + daily drift
-# audit, but silent failures have no external alarm. See below.
+# Without these, the API still runs the catchup loop + drift audit,
+# but silent failures have no external alarm. See below.
 # KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
 # KUMA_GITHUB_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
@@ -129,7 +129,17 @@ NODE_ENV=production
 # "Pushover canary" section below for the full operator runbook.
 # KUMA_ALARM_CANARY_PUSH_URL=https://kuma.example.com/api/push/<token>
 
-# Optional — cap on the number of drift nodes the daily audit will
+# Optional — drift-audit cadence in milliseconds. Default 21600000
+# (6h). Minimum 3600000 (1h) — values below the minimum (incl. zero
+# or non-numeric) are rejected with a console warning and the default
+# is used. Tighter intervals shrink alarm-to-detect latency but
+# multiply GitHub API calls (one list-issues per opted-in map per
+# tick); the 1h floor protects against env-var typos turning the
+# audit into a rate-limit grinder. See the "GitHub-sync observability"
+# section below for the full rationale.
+# DRIFT_AUDIT_INTERVAL_MS=21600000
+
+# Optional — cap on the number of drift nodes the audit will
 # auto-backfill PER MAP per tick. Drift over this cap is left in
 # place so the Kuma alarm escalates to a human. Set to 0 to disable
 # auto-backfill entirely (audit still runs + alarms). Default: 50.
@@ -239,10 +249,12 @@ section is optional — but strongly recommended in production.
   scheduler dead, mindblown-api crashed, network broken, etc.
 
 - **Drift audit (`KUMA_GITHUB_DRIFT_PUSH_URL`)** — pushed once per
-  day. Pushes `status=down` if any opted-in map has open GitHub issues
-  with no linked MindBlown node. Alarms when push is `down` OR pushes
-  stop entirely = webhook silently misconfigured on the GH side, the
-  ingest path is silently throwing, etc.
+  drift-audit tick (every 6h by default; configurable via
+  `DRIFT_AUDIT_INTERVAL_MS`, minimum 1h). Pushes `status=down` if any
+  opted-in map has open GitHub issues with no linked MindBlown node.
+  Alarms when push is `down` OR pushes stop entirely = webhook
+  silently misconfigured on the GH side, the ingest path is silently
+  throwing, etc.
 
 - **Auth failure (`KUMA_GITHUB_AUTH_FAILURE_PUSH_URL`)** — pushed only
   when a specific repo has hit `CATCHUP_AUTH_FAILURE_THRESHOLD`
@@ -287,13 +299,13 @@ section is optional — but strongly recommended in production.
 | Monitor | Heartbeat interval | "Down" threshold | Notes |
 |---|---|---|---|
 | catchup heartbeat | 60 s | 10 min | API pushes every 5 min — 10 min absorbs one missed tick (restart/upgrade) without false-alarming. |
-| drift audit | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack for restart timing, clock drift, etc. |
+| drift audit | 60 s | 8 h | API pushes every 6 h by default — 8 h gives 2 h of slack for restart timing, clock drift, etc. If you raise `DRIFT_AUDIT_INTERVAL_MS`, raise the down threshold to `interval + 2h` to match. |
 | auth failure | 60 s | 20 min | API pushes only on the threshold-crossing tick + every subsequent failing tick; 20 min covers two consecutive 5-min catchup ticks so a single delayed Kuma push doesn't flap the monitor. |
 | webhook auth | 60 s | 30 h | API pushes daily — 30 h gives 6 h of slack matching the drift audit. Push only fires when ≥ 3 webhook calls landed in the rolling 24h; before that the monitor sits in "no push received" but Kuma should NOT alarm on it during normal low-traffic periods — set the down threshold generously. |
 
 ### Auto-backfill on drift detection
 
-When the daily audit finds drift, the API attempts to self-heal by
+When the drift audit finds drift, the API attempts to self-heal by
 calling the same code path as the manual "Backfill" button in the UI
 for each drifted map. The cap is per-map per audit tick:
 
@@ -377,10 +389,48 @@ The READY ping is sent once Fastify has bound the port; without it,
 `Type=notify` would leave `systemctl start` blocked forever waiting
 for ready notification.
 
+### Tuning the drift-audit cadence
+
+The drift audit runs every **6 hours** by default. Override via
+`DRIFT_AUDIT_INTERVAL_MS` in `/etc/mindblown/api.env` (value in
+milliseconds, minimum `3600000` = 1 hour):
+
+```bash
+# Every 4 hours
+DRIFT_AUDIT_INTERVAL_MS=14400000
+
+# Every 6 hours (the default — equivalent to leaving it unset)
+DRIFT_AUDIT_INTERVAL_MS=21600000
+
+# Every 12 hours (lighter on GitHub API at large scale, longer
+# alarm-to-detect latency)
+DRIFT_AUDIT_INTERVAL_MS=43200000
+```
+
+Then `systemctl restart mindblown-api`.
+
+**Rationale.** The audit was previously hardcoded to 24h; a drift
+incident that started at 09:00 could wait until 08:59 the next day
+before alarming. Dropping to 6h caps that latency at 6h max and only
+4× the GitHub API spend (still one `list-issues` call per opted-in
+map per tick — negligible at single-digit map counts).
+
+**Floor.** Values below `3600000` (1h) — including `0`, a typo like
+`6h`, and any non-numeric string — are rejected with a console
+warning and the 6h default is used instead. The floor exists because
+`setInterval(0)` would hammer the GitHub API at the event-loop rate,
+and the same map fetched a hundred times a second would tank both
+the audit's own rate-limit budget and any other GitHub-touching code
+in the API.
+
+**If you raise the interval**, also raise the Kuma down-threshold on
+the drift-audit monitor (interval + ~2h slack for restart timing,
+clock drift) so a single missed tick doesn't false-alarm.
+
 ### Manual trigger
 
-For ops testing without waiting 24h for the next scheduled drift
-audit, hit the manual endpoint as a logged-in user:
+For ops testing without waiting up to 6h for the next scheduled
+drift audit, hit the manual endpoint as a logged-in user:
 
 ```bash
 curl -sf -X POST https://mindblown.example.com/api/maps/sync/audit-drift \
