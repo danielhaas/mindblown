@@ -14,6 +14,8 @@ import {
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
+import { auditDrift } from '../sync/driftAudit.js';
+import { requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
   ingestNewIssuesForRepo,
@@ -752,6 +754,46 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       });
     },
   );
+
+  // ── POST /api/maps/sync/audit-drift ───────────────────────────
+  // Manual trigger for the daily drift-audit sweep. Returns the full
+  // DriftReport[] so the operator can see exactly which maps drifted
+  // (and the example issue numbers) without waiting 24h for the next
+  // scheduled run. Admin-only: the audit iterates EVERY opted-in map
+  // across EVERY workspace and returns map names + repo bindings, so
+  // gating below admin would leak cross-workspace metadata and let any
+  // logged-in user fan out N GitHub API calls per request.
+  app.post('/api/maps/sync/audit-drift', async (req, reply) => {
+    const userId = (req as { userId?: string }).userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    if (!(await requireAdmin(userId))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+
+    try {
+      const reports = await auditDrift();
+      return reply.send({
+        reports,
+        counts: {
+          driftedMaps: reports.length,
+          totalDriftedIssues: reports.reduce((n, r) => n + r.onlyInGitHub, 0),
+        },
+      });
+    } catch (err) {
+      return reply.status(500).send({
+        error: {
+          code: 'DRIFT_AUDIT_FAILED',
+          message: err instanceof Error ? err.message : 'Drift audit failed',
+        },
+      });
+    }
+  });
 
   // ── POST /api/maps/:mapId/github/reconcile ────────────────────
   // On-demand catch-up reconcile for the repo bound to this map.

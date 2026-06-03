@@ -51,6 +51,23 @@ export function verifyToken(token: string): JwtPayload {
   return jwt.verify(token, JWT_SECRET) as JwtPayload;
 }
 
+// ── Admin check ───────────────────────────────────────────────────
+//
+// Returns true if `userId` resolves to a row with `is_admin = true`.
+// Returns false for missing/unknown userId or non-admin users. Used by
+// any route that must be gated to deployment admins (registration
+// policy writes, AI provider settings, sync admin endpoints).
+
+export async function requireAdmin(userId: string | undefined): Promise<boolean> {
+  if (!userId) return false;
+  const [row] = await db
+    .select({ isAdmin: users.isAdmin })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return Boolean(row?.isAdmin);
+}
+
 // ── Registration policy ──────────────────────────────────────────
 //
 // Policy lives in system_settings (see db/settings.ts) and is editable via

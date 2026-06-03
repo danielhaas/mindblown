@@ -5,9 +5,6 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { eq } from 'drizzle-orm';
-import { db } from '../db/connection.js';
-import { users } from '../db/schema.js';
 import {
   getRegistrationPolicy,
   setRegistrationPolicy,
@@ -17,16 +14,7 @@ import {
   type AiProviderSettings,
   type AiProviderPreference,
 } from '../db/settings.js';
-
-async function requireAdmin(userId: string | undefined): Promise<boolean> {
-  if (!userId) return false;
-  const [row] = await db
-    .select({ isAdmin: users.isAdmin })
-    .from(users)
-    .where(eq(users.id, userId))
-    .limit(1);
-  return Boolean(row?.isAdmin);
-}
+import { requireAdmin } from '../auth.js';
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/system/registration-policy ────────────────────────
