@@ -764,13 +764,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // gating below admin would leak cross-workspace metadata and let any
   // logged-in user fan out N GitHub API calls per request.
   app.post('/api/maps/sync/audit-drift', async (req, reply) => {
-    const userId = (req as { userId?: string }).userId;
-    if (!userId) {
+    if (!req.userId) {
       return reply.status(401).send({
         error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
       });
     }
-    if (!(await requireAdmin(userId))) {
+    // requireAdmin also rejects API-key auth (see auth.ts) — see #69:
+    // a leaked admin's mb_… key must not be able to fan this audit out
+    // across every workspace.
+    if (!(await requireAdmin(req))) {
       return reply.status(403).send({
         error: { code: 'FORBIDDEN', message: 'Admin access required' },
       });

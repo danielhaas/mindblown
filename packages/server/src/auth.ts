@@ -53,17 +53,38 @@ export function verifyToken(token: string): JwtPayload {
 
 // ── Admin check ───────────────────────────────────────────────────
 //
-// Returns true if `userId` resolves to a row with `is_admin = true`.
-// Returns false for missing/unknown userId or non-admin users. Used by
-// any route that must be gated to deployment admins (registration
-// policy writes, AI provider settings, sync admin endpoints).
+// Returns true if the request was authenticated via a session JWT AND
+// the user row has `is_admin = true`. Returns false for:
+//   - missing userId (not authenticated)
+//   - non-admin users
+//   - api-key-authenticated requests, even if the underlying user IS an
+//     admin (see security note below)
+//
+// Security note (closes #69): API keys are bearer credentials that
+// historically had the same scope as the issuing user, including admin
+// rights. This meant a leaked admin's API key could rewrite registration
+// policy, switch AI providers, or fan out the drift-audit endpoint
+// across every workspace. Following the convention set by `/api/api-keys`
+// (which forbids API-key auth from managing API keys), we require an
+// interactive web session for any admin action. Service automation that
+// needs to mutate system-wide state must go through the web UI, or
+// (future) a dedicated service-token type with its own narrow scope.
+//
+// Caller receives the FastifyRequest (or a stub with `userId` +
+// `authSource`) so this helper can enforce both invariants without each
+// route re-wiring the same check.
 
-export async function requireAdmin(userId: string | undefined): Promise<boolean> {
-  if (!userId) return false;
+export async function requireAdmin(
+  req: { userId?: string; authSource?: 'jwt' | 'api-key' },
+): Promise<boolean> {
+  // API keys never reach admin endpoints, even if the issuing user is an
+  // admin. See security note above.
+  if (req.authSource === 'api-key') return false;
+  if (!req.userId) return false;
   const [row] = await db
     .select({ isAdmin: users.isAdmin })
     .from(users)
-    .where(eq(users.id, userId))
+    .where(eq(users.id, req.userId))
     .limit(1);
   return Boolean(row?.isAdmin);
 }
