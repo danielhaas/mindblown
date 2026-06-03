@@ -20,11 +20,13 @@
  *     opted out of auto-creation).
  *   - Maps with no GitHub binding (no repo to compare against).
  *   - Maps whose binding can't currently resolve a token (App install
- *     revoked, PAT expired). Logged via `console.warn` and excluded
- *     from the returned reports — they don't count as drift for the
- *     Kuma alarm. Surfacing these in the manual-trigger response is
- *     tracked as a follow-up; today the operator reads them from the
- *     server log when investigating a Kuma alert.
+ *     revoked, PAT expired). Logged via `console.warn` AND surfaced in
+ *     the `tokenErrors` array of the returned `AuditDriftResult` so the
+ *     operator hitting `POST /api/maps/sync/audit-drift` can see exactly
+ *     which maps need attention without SSH-ing for logs. They still
+ *     don't count as drift for the Kuma "up/down" decision — auto-backfill
+ *     can't heal a token problem — but `tokenErrors.length` is included
+ *     in the Kuma message so a token outage shows up in the dashboard.
  */
 
 import { eq, and, isNotNull } from 'drizzle-orm';
@@ -60,7 +62,16 @@ interface AuditTarget {
   token: string;
 }
 
-interface TokenError {
+/**
+ * One map whose token resolution failed. Surfaced in `AuditDriftResult`
+ * so the operator endpoint can show the failure without log access.
+ *
+ * `reason` is a short stringified cause — typical values:
+ *   - `app: install revoked`       (App-token mint threw, no PAT fallback)
+ *   - `app: <octokit message>`     (other App-token mint failure)
+ *   - bare error message if no `app:` prefix applies
+ */
+export interface TokenError {
   mapId: string;
   mapName: string;
   reason: string;
@@ -68,6 +79,18 @@ interface TokenError {
 
 interface ResolvedTargets {
   targets: AuditTarget[];
+  tokenErrors: TokenError[];
+}
+
+/**
+ * Return shape of `auditDrift()`. `reports` is the per-map drift list
+ * (every entry has `onlyInGitHub > 0`); `tokenErrors` is every map that
+ * couldn't be audited because its GitHub binding failed to resolve a
+ * token. The two are disjoint by construction — a map with a token
+ * error isn't audited so can't produce a report.
+ */
+export interface AuditDriftResult {
+  reports: DriftReport[];
   tokenErrors: TokenError[];
 }
 
@@ -193,14 +216,18 @@ async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
 
 /**
  * Audit every opted-in map for GitHub→MindBlown drift. Returns one
- * DriftReport per drifted map (empty array when everything's clean).
+ * DriftReport per drifted map (empty when everything's clean) PLUS a
+ * `tokenErrors` array listing every map whose binding couldn't resolve
+ * a current token (App install revoked, PAT expired/missing).
  *
- * Per-map fetch failures are logged but don't abort the sweep — one
- * map's outage shouldn't mask drift in another map. They're surfaced
- * via console.warn and (for the most common cause, token resolution)
- * via the returned reports' implicit absence.
+ * Per-map fetch failures (network/5xx during `importGitHubIssues`) are
+ * still logged via `console.warn` and don't abort the sweep — one map's
+ * outage shouldn't mask drift in another. Those are NOT collected into
+ * `tokenErrors` because they're typically transient and clear by the
+ * next sweep; token errors are persistent until an operator fixes the
+ * binding, so they're worth surfacing in the response shape.
  */
-export async function auditDrift(): Promise<DriftReport[]> {
+export async function auditDrift(): Promise<AuditDriftResult> {
   const { targets, tokenErrors } = await resolveTargets();
 
   if (tokenErrors.length > 0) {
@@ -223,16 +250,21 @@ export async function auditDrift(): Promise<DriftReport[]> {
       );
     }
   }
-  return reports;
+  return { reports, tokenErrors };
 }
 
 /**
  * Result of one `runDriftAudit()` invocation, returned to callers
  * (the daily scheduler in index.ts and the manual operator endpoint
  * in routes/integrations.ts so they can show what auto-backfill did).
+ *
+ * `tokenErrors` is propagated from `auditDrift()` so the manual operator
+ * endpoint can surface binding failures alongside drift + auto-backfill
+ * results in a single response.
  */
 export interface DriftAuditRunResult {
   reports: DriftReport[];
+  tokenErrors: TokenError[];
   autoBackfill: AutoBackfillSummary;
   /** Set when the audit itself threw — short reason string for ops UI. */
   error?: string;
@@ -272,6 +304,11 @@ export function formatAutoBackfillMsg(summary: AutoBackfillSummary): string {
  *   - All drift over cap / killed    → status=down, msg="manual-N"
  *   - Audit itself threw             → status=down, msg="audit_failed:<reason>"
  *
+ * If any maps had token errors, `,token-errors-N` is appended to the
+ * msg (e.g. `no-drift,token-errors-2`). Token errors alone do not flip
+ * status to down — they're surfaced via the response shape's
+ * `tokenErrors` field for the operator endpoint to render.
+ *
  * Kuma URL comes from `KUMA_GITHUB_DRIFT_PUSH_URL`; if unset the push
  * is skipped entirely (dev / test environments). Push errors are
  * swallowed by `pushKumaHeartbeat`, but we re-wrap here so any future
@@ -280,8 +317,9 @@ export function formatAutoBackfillMsg(summary: AutoBackfillSummary): string {
 export async function runDriftAudit(): Promise<DriftAuditRunResult> {
   const url = process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
   let reports: DriftReport[];
+  let tokenErrors: TokenError[];
   try {
-    reports = await auditDrift();
+    ({ reports, tokenErrors } = await auditDrift());
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.error('[drift-audit] sweep failed:', err);
@@ -298,18 +336,27 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
     }
     return {
       reports: [],
+      tokenErrors: [],
       autoBackfill: { totalImported: 0, totalManualPending: 0, outcomes: [] },
       error: reason,
     };
   }
 
+  // Suffix appended to the Kuma message when any map's binding failed
+  // to resolve a token. Token errors don't trigger status=down on their
+  // own (they can't be auto-healed and don't count as drift), but
+  // appending the count lets a Kuma watcher catch persistent binding
+  // outages even when drift is otherwise clean.
+  const tokenSuffix = tokenErrors.length > 0 ? `,token-errors-${tokenErrors.length}` : '';
+
   // No drift → clean push and bail. Skip auto-backfill entirely
-  // (nothing to heal).
+  // (nothing to heal). Token errors still get appended so a "no drift
+  // but token broken" state is visible at the Kuma dashboard.
   if (reports.length === 0) {
     console.log('[drift-audit] clean — no drift');
     if (url) {
       try {
-        await pushKumaHeartbeat(url, 'up', 'no-drift', '[kuma-push] drift audit');
+        await pushKumaHeartbeat(url, 'up', `no-drift${tokenSuffix}`, '[kuma-push] drift audit');
       } catch (pushErr) {
         console.warn(
           '[kuma-push] drift audit heartbeat unexpectedly threw:',
@@ -319,6 +366,7 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
     }
     return {
       reports: [],
+      tokenErrors,
       autoBackfill: { totalImported: 0, totalManualPending: 0, outcomes: [] },
     };
   }
@@ -350,7 +398,7 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
   }
 
   // Build the Kuma message and status.
-  const msg = formatAutoBackfillMsg(autoBackfill).slice(0, 200);
+  const msg = `${formatAutoBackfillMsg(autoBackfill)}${tokenSuffix}`.slice(0, 200);
   const status = autoBackfill.totalManualPending > 0 ? 'down' : 'up';
 
   if (url) {
@@ -364,5 +412,5 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
     }
   }
 
-  return { reports, autoBackfill };
+  return { reports, tokenErrors, autoBackfill };
 }

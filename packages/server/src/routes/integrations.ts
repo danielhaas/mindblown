@@ -756,13 +756,18 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ── POST /api/maps/sync/audit-drift ───────────────────────────
-  // Manual trigger for the daily drift-audit sweep. Returns the full
-  // DriftReport[] so the operator can see exactly which maps drifted
-  // (and the example issue numbers) without waiting 24h for the next
-  // scheduled run. Admin-only: the audit iterates EVERY opted-in map
-  // across EVERY workspace and returns map names + repo bindings, so
-  // gating below admin would leak cross-workspace metadata and let any
-  // logged-in user fan out N GitHub API calls per request.
+  // Manual trigger for the daily drift-audit sweep. Returns:
+  //   - `reports`      — DriftReport[] (one per map with drift)
+  //   - `tokenErrors`  — TokenError[] for maps whose binding couldn't
+  //                      resolve a token (App install revoked, PAT
+  //                      expired/missing). Surfaced here so operators
+  //                      see binding failures without SSH-ing for logs.
+  //   - `autoBackfill` — what the auto-backfill pass did
+  //   - `counts`       — flat numeric summary for dashboards
+  // Admin-only: the audit iterates EVERY opted-in map across EVERY
+  // workspace and returns map names + repo bindings, so gating below
+  // admin would leak cross-workspace metadata and let any logged-in
+  // user fan out N GitHub API calls per request.
   app.post('/api/maps/sync/audit-drift', async (req, reply) => {
     if (!req.userId) {
       return reply.status(401).send({
@@ -794,12 +799,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
       return reply.send({
         reports: result.reports,
+        tokenErrors: result.tokenErrors,
         autoBackfill: result.autoBackfill,
         counts: {
           driftedMaps: result.reports.length,
           totalDriftedIssues: result.reports.reduce((n, r) => n + r.onlyInGitHub, 0),
           autoBackfilled: result.autoBackfill.totalImported,
           manualPending: result.autoBackfill.totalManualPending,
+          tokenErrors: result.tokenErrors.length,
         },
       });
     } catch (err) {

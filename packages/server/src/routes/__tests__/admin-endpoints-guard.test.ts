@@ -54,6 +54,7 @@ vi.mock('../../db/settings.js', () => ({
 vi.mock('../../sync/driftAudit.js', () => ({
   runDriftAudit: vi.fn(async () => ({
     reports: [],
+    tokenErrors: [],
     autoBackfill: { totalImported: 0, totalManualPending: 0 },
   })),
 }));
