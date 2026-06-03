@@ -27,6 +27,7 @@ import {
   parseParentReferences,
   applyRollupForFetchedIssues,
 } from './parentEpicRollup.js';
+import { ingestNewIssuesForRepo } from './githubIngest.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -50,6 +51,22 @@ export interface ReconcileResult {
   applied: number;         // nodes updated
   skipped: number;         // issues with no linked node
   noTransition: number;    // linked node already in correct state
+  /**
+   * Count of node-update errors hit during the state-sync loop. Surfaced
+   * alongside `ingestErrored` so partial failures are observable.
+   */
+  stateSyncErrored: number;
+  /**
+   * Count of new nodes auto-created in the ingestion pass (across every
+   * map opted into auto-import for this repo).
+   */
+  ingested: number;
+  /**
+   * Count of per-issue / per-inbox errors raised during the ingest pass.
+   * When >0 we deliberately do NOT bump `lastSyncedAt` so the next catchup
+   * tick re-fetches the failed issues instead of orphaning them.
+   */
+  ingestErrored: number;
   durationMs: number;
   since: string | null;
   error?: string;          // present when reconcile failed before completion
@@ -192,7 +209,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -205,7 +222,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -218,29 +235,73 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   let applied = 0;
   let skipped = 0;
   let noTransition = 0;
+  let stateSyncErrored = 0;
 
   for (const issue of issues) {
     const externalId = `${target.owner}/${target.repo}#${issue.number}`;
     const hit = linkIndex.get(externalId);
     if (!hit) { skipped++; continue; }
 
-    const node = await nodeDb.getNode(hit.nodeId);
-    if (!node) { skipped++; continue; }
+    try {
+      const node = await nodeDb.getNode(hit.nodeId);
+      if (!node) { skipped++; continue; }
 
-    const updates = computeStateUpdates(node, issue, externalId);
-    if (!updates) { noTransition++; continue; }
+      const updates = computeStateUpdates(node, issue, externalId);
+      if (!updates) { noTransition++; continue; }
 
-    const updated = await nodeDb.updateNode(hit.nodeId, updates);
-    if (updated) {
-      applied++;
-      broadcast(updated.mapId, {
-        type: 'node:updated',
-        nodeId: hit.nodeId,
-        fields: Object.keys(updates),
-        node: updated,
-        source: 'github_catchup',
-      });
+      const updated = await nodeDb.updateNode(hit.nodeId, updates);
+      if (updated) {
+        applied++;
+        broadcast(updated.mapId, {
+          type: 'node:updated',
+          nodeId: hit.nodeId,
+          fields: Object.keys(updates),
+          node: updated,
+          source: 'github_catchup',
+        });
+      } else {
+        // updateNode returned null — treat as a transient failure so the
+        // cursor doesn't advance past this issue.
+        stateSyncErrored++;
+      }
+    } catch (err) {
+      stateSyncErrored++;
+      console.warn(
+        '[catchup] state-sync failed for',
+        externalId,
+        ':',
+        err instanceof Error ? err.message : err,
+      );
     }
+  }
+
+  // ── Auto-ingest of new issues (gap-closer for between-import tickets) ─
+  // For every map opted into auto-import on this repo, create a node for
+  // any issue we haven't seen yet. Reuses the already-fetched `issues`
+  // slice — no extra GitHub round-trip. Open-only here: closed-without-
+  // node ingestion is reserved for the explicit backfill route so we
+  // don't repopulate "what shipped last month" if `lastSyncedAt` is ever
+  // lost or rewound.
+  let ingestCreated = 0;
+  let ingestErrored = 0;
+  try {
+    const ingest = await ingestNewIssuesForRepo(
+      { owner: target.owner, repo: target.repo },
+      issues,
+    );
+    ingestCreated = ingest.created;
+    ingestErrored = ingest.errored;
+  } catch (err) {
+    // A throw from the fan-out helper itself (rare — it catches per-issue
+    // and per-inbox already) is treated as failing every issue in the
+    // window, so the cursor doesn't advance past anything we tried.
+    ingestErrored = issues.length || 1;
+    console.warn(
+      '[catchup] new-issue ingest failed for',
+      repoLabel,
+      ':',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // ── Parent-epic rollup (#57) ─────────────────────────────────
@@ -277,8 +338,21 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
   }
 
-  // Only bump `lastSyncedAt` on success — partial failures retry next tick.
-  await setLastSyncedAt(target.owner, target.repo, startedAt);
+  // Only bump `lastSyncedAt` when both passes succeeded for every issue in
+  // the window. Bumping past a failed issue would mean the next catchup
+  // tick skips it entirely (it's no longer "changed since cursor"), so
+  // the issue stays orphaned until manual backfill. The 60s overlap
+  // buffer accepts re-fetching some issues already; widening the retry
+  // window when something actually failed is the conservative choice.
+  if (ingestErrored === 0 && stateSyncErrored === 0) {
+    await setLastSyncedAt(target.owner, target.repo, startedAt);
+  } else {
+    console.warn(
+      '[catchup] not bumping lastSyncedAt for',
+      repoLabel,
+      `(stateSyncErrored=${stateSyncErrored}, ingestErrored=${ingestErrored}); next tick will retry the window.`,
+    );
+  }
 
   return {
     repo: repoLabel,
@@ -286,6 +360,9 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     applied,
     skipped,
     noTransition,
+    stateSyncErrored,
+    ingested: ingestCreated,
+    ingestErrored,
     durationMs: Date.now() - startedAt.getTime(),
     since,
   };
@@ -374,7 +451,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),

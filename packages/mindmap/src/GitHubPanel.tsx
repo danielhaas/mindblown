@@ -442,6 +442,59 @@ export function GitHubSettingsDialog({
   const [reconciling, setReconciling] = useState(false);
   const [reconcileResult, setReconcileResult] = useState<api.GitHubReconcileResult | null>(null);
 
+  // ── Auto-import toggle (per-map opt-in for new-issue ingest) ──────
+  // On first connect we default the UI to checked, so a user wiring up
+  // a fresh repo gets auto-import without an extra click. The server
+  // default is OFF for safety (existing maps don't flood retroactively).
+  const [autoImport, setAutoImport] = useState<boolean>(
+    currentMap?.autoImportNewIssues ?? true,
+  );
+  useEffect(() => {
+    setAutoImport(currentMap?.autoImportNewIssues ?? true);
+  }, [currentMap?.id, currentMap?.autoImportNewIssues]);
+  const [autoImportSaving, setAutoImportSaving] = useState(false);
+  const [ingestNotice, setIngestNotice] = useState<string | null>(null);
+
+  const handleToggleAutoImport = async (next: boolean) => {
+    setAutoImportSaving(true);
+    setError(null);
+    setIngestNotice(null);
+    try {
+      await api.updateMap(mapId, { autoImportNewIssues: next });
+      setAutoImport(next);
+
+      // If turning ON, surface the dry-run count so users know whether
+      // turning on the toggle will produce a wave of new nodes. If the
+      // user confirms we run the real backfill.
+      if (next) {
+        try {
+          const dry = await api.ingestNewIssues(mapId, { dryRun: true });
+          if (dry.wouldImport > 0) {
+            const ok = window.confirm(
+              `Auto-import is now ON. There are ${dry.wouldImport} unlinked GitHub issues (open + closed-within-30d). Backfill them into the GitHub Inbox now?`,
+            );
+            if (ok) {
+              const result = await api.ingestNewIssues(mapId);
+              const capNote = result.capped
+                ? ` (capped at 200; ${result.total} total — run again for the rest)`
+                : '';
+              setIngestNotice(`Imported ${result.imported} issues to GitHub Inbox${capNote}.`);
+            }
+          }
+        } catch (err: any) {
+          // Backfill is best-effort; the toggle itself succeeded.
+          console.warn('[github-ingest] backfill failed:', err);
+        }
+      }
+      // Reload to get the fresh map + new inbox node if it was just made.
+      await loadMap(mapId);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to update auto-import setting');
+    } finally {
+      setAutoImportSaving(false);
+    }
+  };
+
   const handleReconcile = async () => {
     setReconciling(true);
     setError(null);
@@ -605,7 +658,7 @@ export function GitHubSettingsDialog({
           </button>
           {reconcileResult && !reconcileResult.error && (
             <span style={{ fontSize: 11, color: '#475569' }}>
-              {reconcileResult.repo}: {reconcileResult.applied} updated, {reconcileResult.fetched} checked
+              {reconcileResult.repo}: {reconcileResult.applied} updated, {reconcileResult.ingested ?? 0} ingested, {reconcileResult.fetched} checked
             </span>
           )}
           {reconcileResult?.error && (
@@ -636,6 +689,54 @@ export function GitHubSettingsDialog({
                 Linked to {appRepoLabel}
               </span>
             </div>
+
+            {/* Auto-import toggle — new GitHub issues land in the Inbox node. */}
+            <div
+              style={{
+                marginBottom: 16,
+                padding: '10px 14px',
+                borderRadius: 8,
+                background: '#f8fafc',
+                border: '1px solid #e2e8f0',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+              }}
+            >
+              <input
+                id="github-auto-import"
+                type="checkbox"
+                checked={autoImport}
+                disabled={autoImportSaving}
+                onChange={(e) => handleToggleAutoImport(e.target.checked)}
+                style={{ marginTop: 3 }}
+              />
+              <label htmlFor="github-auto-import" style={{ cursor: 'pointer', flex: 1 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
+                  Auto-import new GitHub issues
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  New issues on {appRepoLabel} appear under the "GitHub Inbox" node
+                  (created on demand). Catchup sweep + webhook both feed this.
+                </div>
+              </label>
+            </div>
+
+            {ingestNotice && (
+              <div
+                style={{
+                  marginBottom: 16,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: '#dbeafe',
+                  color: '#1e40af',
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {ingestNotice}
+              </div>
+            )}
 
             <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
               <button

@@ -79,5 +79,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     githubInstallationId: (get('githubInstallationId', 'github_installation_id') as string) ?? null,
     githubRepoOwner: (get('githubRepoOwner', 'github_repo_owner') as string) ?? null,
     githubRepoName: (get('githubRepoName', 'github_repo_name') as string) ?? null,
+    autoImportNewIssues: (get('autoImportNewIssues', 'auto_import_new_issues') as boolean) ?? false,
+    githubInboxNodeId: (get('githubInboxNodeId', 'github_inbox_node_id') as string) ?? null,
   };
 }

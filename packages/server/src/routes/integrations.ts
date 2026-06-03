@@ -15,6 +15,13 @@ import {
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
+import {
+  ingestNewIssuesForRepo,
+  ensureInboxNode,
+  ensureNodeForIssue,
+  findNodesByExternalIds,
+} from '../sync/githubIngest.js';
+import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
@@ -776,6 +783,122 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── POST /api/maps/:mapId/github/ingest-new ───────────────────
+  // Bulk-ingest GitHub issues that aren't linked to any node anywhere
+  // into this map's Inbox. Open issues + issues closed within the last
+  // 30 days are eligible. Hard-capped at 200 per call to avoid runaway
+  // backfills — the toggle-on flow surfaces this via the wouldImport
+  // dry-run count.
+  app.post<{
+    Params: { mapId: string };
+    Querystring: { dryRun?: string };
+  }>(
+    '/api/maps/:mapId/github/ingest-new',
+    async (req, reply) => {
+      const userId = req.userId;
+      const ghCtx = await getGitHubContextForMap(req.params.mapId);
+      if (!ghCtx) {
+        return reply.status(400).send({
+          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+        });
+      }
+      const dryRun = req.query.dryRun === 'true';
+
+      // Pull the map row so we can resolve the createdBy for the inbox
+      // and the bound (owner, repo). We don't require autoImportNewIssues
+      // to be on here — backfill is an explicit user action.
+      const [mapRow] = await db.select().from(maps).where(eq(maps.id, req.params.mapId));
+      if (!mapRow) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.mapId} not found` },
+        });
+      }
+
+      // Fetch all repo issues (including closed) and filter to unlinked +
+      // (open OR closed-within-30d). Skip PRs — importGitHubIssues already
+      // filters those out for us.
+      let importedIssues;
+      try {
+        importedIssues = await importGitHubIssues(ghCtx.owner, ghCtx.repo, ghCtx.token, {
+          includeAll: true,
+        });
+      } catch (err) {
+        return reply.status(400).send({
+          error: {
+            code: 'GITHUB_API_ERROR',
+            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+          },
+        });
+      }
+
+      const allExternalIds = importedIssues.map((i) => i.externalLink.externalId);
+      const linkedIds = await findNodesByExternalIds(allExternalIds);
+
+      const CLOSED_WINDOW_DAYS = 30;
+      const cutoffMs = Date.now() - CLOSED_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+      const candidates = importedIssues
+        .filter((item) => !linkedIds.has(item.externalLink.externalId))
+        .filter((item) => {
+          if (item.issue.state === 'open') return true;
+          if (!item.issue.closed_at) return true;
+          const closed = new Date(item.issue.closed_at).getTime();
+          if (Number.isNaN(closed)) return true;
+          return closed >= cutoffMs;
+        });
+
+      if (dryRun) {
+        return reply.send({
+          wouldImport: candidates.length,
+          candidates: candidates.map((c) => c.issue.number),
+        });
+      }
+
+      const HARD_CAP = 200;
+      const total = candidates.length;
+      const slice = candidates.slice(0, HARD_CAP);
+
+      // Force-ingest the slice into JUST THIS map even if the map's
+      // autoImportNewIssues toggle is off — backfill is an explicit
+      // user action. We bypass findIngestTargetMaps and inline the
+      // ensureInboxNode + ensureNodeForIssue loop.
+      const createdBy = userId ?? (mapRow.createdBy as string);
+      let imported = 0;
+      try {
+        const inboxId = await ensureInboxNode(req.params.mapId, createdBy);
+        for (const item of slice) {
+          try {
+            const result = await ensureNodeForIssue(
+              req.params.mapId,
+              inboxId,
+              item.issue,
+              { owner: ghCtx.owner, repo: ghCtx.repo, createdBy },
+              { allowClosedWithinDays: CLOSED_WINDOW_DAYS },
+            );
+            if (result.status === 'created') imported++;
+          } catch (err) {
+            console.warn(
+              `[github-ingest] backfill item failed (#${item.issue.number}):`,
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      } catch (err) {
+        return reply.status(500).send({
+          error: {
+            code: 'INBOX_ENSURE_FAILED',
+            message: err instanceof Error ? err.message : 'Failed to ensure GitHub Inbox',
+          },
+        });
+      }
+
+      return reply.send({
+        imported,
+        capped: total > HARD_CAP,
+        total,
+      });
+    },
+  );
+
   // ── POST /api/webhooks/github ─────────────────────────────────
   // Webhook endpoint for GitHub events.
   app.post('/api/webhooks/github', async (req, reply) => {
@@ -818,11 +941,54 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Enforce signature verification for the entire webhook handler.
+    // Before this guard, an attacker who knew the webhook URL could POST a
+    // forged `issues.opened` payload and force inbox-node creation in every
+    // opted-in map (attacker-controlled title/body) — and could equally
+    // forge `issues.closed` / `issues.reopened` to flip status on existing
+    // nodes. The signature was computed above but never required. We now
+    // reject any unsigned/invalid-signed request before touching the DB.
+    if (!signatureVerified) {
+      return reply.status(401).send({ error: 'invalid signature' });
+    }
+
     // Special handling for issues.closed / issues.reopened: preserve and restore
     // the pre-close progress + status so reopening a partially-completed issue
     // doesn't discard the user's prior progress.
     const issuePayload = payload.issue as { number?: number; title?: string } | undefined;
     const payloadAction = payload.action as string | undefined;
+
+    // ── Auto-ingest new GitHub issues into the map's Inbox ──────────
+    // Runs before the close/reopen state-sync below so a `reopened`
+    // event creates the node (if it didn't exist) then state-sync
+    // can no-op — they're not mutually exclusive. Failures are
+    // swallowed so the webhook still acknowledges the underlying
+    // event. The webhook covers opened / reopened / edited; the
+    // catchup pass + manual backfill cover everything else.
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      (payloadAction === 'opened' || payloadAction === 'reopened' || payloadAction === 'edited')
+    ) {
+      const slashIdx = repoFullName.indexOf('/');
+      if (slashIdx > 0) {
+        const owner = repoFullName.slice(0, slashIdx);
+        const repo = repoFullName.slice(slashIdx + 1);
+        const issue = payload.issue as GitHubIssue | undefined;
+        if (issue) {
+          try {
+            await ingestNewIssuesForRepo({ owner, repo }, [issue]);
+          } catch (err) {
+            console.warn(
+              '[github-ingest] webhook ingest failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        }
+      }
+    }
+
     if (
       event === 'issues' &&
       issuePayload?.number != null &&

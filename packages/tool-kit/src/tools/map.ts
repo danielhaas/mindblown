@@ -67,7 +67,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, or Gantt scheduling anchors. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -83,20 +83,26 @@ export const updateMapTool = defineTool({
       .min(0.1)
       .optional()
       .describe('Working hours per day for Gantt conversion when effortUnit is "hours" (default 8)'),
+    autoImportNewIssues: z
+      .boolean()
+      .optional()
+      .describe('When true, new GitHub issues on the bound repo are auto-imported into this map\'s GitHub Inbox.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, autoImportNewIssues }) => {
     const fields: {
       name?: string;
       description?: string | null;
       wipLimit?: number | null;
       projectStartDate?: string | null;
       hoursPerDay?: number;
+      autoImportNewIssues?: boolean;
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
     if (wipLimit !== undefined) fields.wipLimit = wipLimit;
     if (projectStartDate !== undefined) fields.projectStartDate = projectStartDate;
     if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
+    if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
     return `Updated map "${updated.name}" (id: ${updated.id})`;

@@ -252,6 +252,22 @@ export interface MindMap {
   githubInstallationId?: string | null;
   githubRepoOwner?: string | null;
   githubRepoName?: string | null;
+  /**
+   * When true, new GitHub issues on the bound repo are auto-imported as
+   * nodes under the map's GitHub Inbox (lazy-created child of root).
+   * Default is `false` so existing maps don't flood retroactively on
+   * the next catchup sweep — the frontend defaults this to checked on
+   * first GitHub connect, so new connections opt in naturally.
+   * See packages/server/src/sync/githubIngest.ts for the ingest pipeline.
+   */
+  autoImportNewIssues?: boolean;
+  /**
+   * ID of the "GitHub Inbox" node — a child of root that holds
+   * auto-ingested issue nodes. Lazily created on first ingest and
+   * persisted here so it survives node deletions (the deletion case
+   * is handled by treating a dangling ID as "recreate on next ingest").
+   */
+  githubInboxNodeId?: string | null;
 }
 
 // ── User / Workspace / Team ─────────────────────────────────────

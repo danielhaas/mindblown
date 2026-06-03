@@ -31,6 +31,8 @@ export interface GitHubIssue {
   html_url: string;
   created_at: string;
   updated_at: string;
+  /** ISO timestamp when the issue was closed; null for open issues. */
+  closed_at?: string | null;
   pull_request?: { merged_at: string | null };
 }
 
