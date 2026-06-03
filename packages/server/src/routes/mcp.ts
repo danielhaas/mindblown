@@ -23,16 +23,23 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { createMindblownMcpServer, runWithApiContext } from '@mindblown/mcp';
+import {
+  createMindblownMcpServer,
+  runWithApiContext,
+  type Injector,
+} from '@mindblown/mcp';
 import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
 import { signToken } from '../auth.js';
 
 /**
- * Loopback base URL the MCP tool handlers' fetch() calls should target.
- * Default points to the same Fastify process by 127.0.0.1 — the MCP route
- * runs inside the server, so going out the network stack and back in is
- * silly but reuses every existing route's permission checks unchanged.
- * Configurable via env so tests can pin a port.
+ * Loopback base URL the MCP tool handlers' fetch() calls should target
+ * when we fall back to the legacy HTTP path. Only relevant when
+ * `MINDBLOWN_INTERNAL_API_URL` is set as the escape hatch (e.g. tests
+ * that want true HTTP semantics, or out-of-process diagnostics).
+ *
+ * In normal operation the route binds `app.inject` as the injector and
+ * tool handlers never touch the network — see the `app.inject` wiring
+ * inside `handleMcp` below.
  */
 function loopbackBaseUrl(_req: FastifyRequest): string {
   if (process.env.MINDBLOWN_INTERNAL_API_URL) {
@@ -40,6 +47,37 @@ function loopbackBaseUrl(_req: FastifyRequest): string {
   }
   const port = parseInt(process.env.PORT ?? '3001', 10);
   return `http://127.0.0.1:${port}`;
+}
+
+/**
+ * Build the per-request injector that backs `runWithApiContext`. Exported
+ * so the unit test in `__tests__/mcp.test.ts` can assert the env-var
+ * branching contract:
+ *
+ *  - `MINDBLOWN_INTERNAL_API_URL` UNSET → returns a wrapper around
+ *    `app.inject`. Tool calls run fully in-process, no TCP.
+ *  - `MINDBLOWN_INTERNAL_API_URL` SET → returns `undefined`, which makes
+ *    the api client fall back to `fetch(baseUrl + path)`. The escape
+ *    hatch exists for tests/diagnostics that need real HTTP semantics.
+ *
+ * Visibility is `export` (not the default) so library callers won't
+ * accidentally bind it to a non-MCP request lifecycle.
+ */
+export function buildMcpInjector(app: FastifyInstance): Injector | undefined {
+  if (process.env.MINDBLOWN_INTERNAL_API_URL) return undefined;
+  return async ({ method, url, headers, payload }) => {
+    const res = await app.inject({
+      method: method as any,
+      url,
+      headers,
+      payload: payload as any,
+    });
+    return {
+      statusCode: res.statusCode,
+      body: res.body,
+      headers: res.headers,
+    };
+  };
 }
 
 export async function mcpRoutes(app: FastifyInstance): Promise<void> {
@@ -101,6 +139,15 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
     const loopbackJwt = signToken({ userId: validated.userId, email: 'api-key-loopback' });
     const baseUrl = loopbackBaseUrl(req);
 
+    // Wire `app.inject` as the in-process injector — that skips localhost
+    // TCP/HTTP serialization on every tool call (~1-2 ms saved per call)
+    // but still runs every preHandler / auth check, so route-level
+    // permission semantics stay identical. If `MINDBLOWN_INTERNAL_API_URL`
+    // is set we fall back to real HTTP via the existing fetch path —
+    // that escape hatch is for tests/diagnostics that want true HTTP
+    // semantics (network errors, real cookie jars, etc).
+    const injector = buildMcpInjector(app);
+
     // Build a fresh MCP server + stateless transport for this request.
     const mcpServer = createMindblownMcpServer();
     const transport = new StreamableHTTPServerTransport({
@@ -114,7 +161,7 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
 
     try {
       await mcpServer.connect(transport);
-      await runWithApiContext({ baseUrl, token: loopbackJwt }, async () => {
+      await runWithApiContext({ baseUrl, token: loopbackJwt, injector }, async () => {
         await transport.handleRequest(req.raw, reply.raw, req.body);
       });
     } catch (err) {

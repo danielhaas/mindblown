@@ -14,9 +14,44 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 
+/**
+ * Light-weight shape of a Fastify `app.inject(...)` response. We only
+ * use these three fields, and we intentionally don't pull `fastify` into
+ * the `@mindblown/mcp` package's dependency closure to type this — the
+ * package still has to ship as a standalone stdio binary with no
+ * Fastify import.
+ */
+export interface InjectResponse {
+  statusCode: number;
+  body: string;
+  // Compatible with Node's `OutgoingHttpHeaders` shape (which Fastify's
+  // `inject` returns) — `number` shows up there for things like
+  // `content-length`. We don't actually read headers in the client,
+  // but the type has to match what Fastify hands us.
+  headers: Record<string, string | string[] | number | undefined>;
+}
+
+export interface InjectOptions {
+  method: string;
+  url: string;
+  headers?: Record<string, string>;
+  payload?: unknown;
+}
+
+/**
+ * In-process Fastify request injector. Provided by the HTTP-MCP route so
+ * tool calls run through Fastify's full lifecycle (preHandlers, auth,
+ * permission checks) without taking a localhost TCP round-trip.
+ *
+ * Stdio MCP doesn't have a Fastify instance to bind here, so this stays
+ * undefined and `request()` falls back to plain `fetch(baseUrl + path)`.
+ */
+export type Injector = (opts: InjectOptions) => Promise<InjectResponse>;
+
 interface ApiContext {
   baseUrl: string;
   token: string;
+  injector?: Injector;
 }
 
 // New env vars (`MINDBLOWN_MCP_URL` + `MINDBLOWN_MCP_TOKEN`) match the
@@ -193,6 +228,41 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   };
   if (ctx.token) {
     headers['Authorization'] = `Bearer ${ctx.token}`;
+  }
+
+  // Fast path: in-process Fastify inject. Skips localhost TCP round-trip
+  // (~1-2 ms per call) but still runs every preHandler/auth check
+  // because Fastify's `inject` is the full request lifecycle.
+  if (ctx.injector) {
+    const method = (init?.method ?? 'GET').toUpperCase();
+    // Pass the body through as a parsed payload when possible. The
+    // request body shape on our API surface is always JSON; the
+    // wrappers stringify before calling. Fastify's inject accepts
+    // either string or object as `payload`, so pass the raw string
+    // — that preserves byte-for-byte equivalence with fetch.
+    const payload =
+      init?.body == null ? undefined : (init.body as string | Buffer);
+    const res = await ctx.injector({
+      method,
+      url: path,
+      headers,
+      payload,
+    });
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      let parsed: unknown = {};
+      try {
+        parsed = res.body ? JSON.parse(res.body) : {};
+      } catch {
+        /* non-JSON body — fall through with empty obj */
+      }
+      throw new ApiError(
+        res.statusCode,
+        (parsed as any)?.error?.message ?? `HTTP ${res.statusCode}`,
+        (parsed as any)?.error?.code,
+      );
+    }
+    if (res.statusCode === 204 || !res.body) return undefined as unknown as T;
+    return JSON.parse(res.body) as T;
   }
 
   const res = await fetch(`${ctx.baseUrl}${path}`, {

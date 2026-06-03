@@ -28,6 +28,7 @@ import { httpBackend } from './backend.js';
 import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
 
 export { runWithApiContext } from './api.js';
+export type { Injector, InjectOptions, InjectResponse } from './api.js';
 
 /**
  * Build a fully-configured MCP server instance ready to be connected to
