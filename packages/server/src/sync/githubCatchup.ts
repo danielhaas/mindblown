@@ -27,6 +27,7 @@ import {
   parseParentReferences,
   applyRollupForFetchedIssues,
 } from './parentEpicRollup.js';
+import { ingestNewIssuesForRepo } from './githubIngest.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -50,6 +51,12 @@ export interface ReconcileResult {
   applied: number;         // nodes updated
   skipped: number;         // issues with no linked node
   noTransition: number;    // linked node already in correct state
+  /**
+   * Count of new nodes auto-created in the ingestion pass (across every
+   * map opted into auto-import for this repo). Failures in the pass are
+   * swallowed (logged) so they don't taint the rest of the result.
+   */
+  ingested: number;
   durationMs: number;
   since: string | null;
   error?: string;          // present when reconcile failed before completion
@@ -192,7 +199,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, ingested: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -205,7 +212,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, ingested: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -241,6 +248,29 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         source: 'github_catchup',
       });
     }
+  }
+
+  // ── Auto-ingest of new issues (gap-closer for between-import tickets) ─
+  // For every map opted into auto-import on this repo, create a node for
+  // any issue we haven't seen yet. Reuses the already-fetched `issues`
+  // slice — no extra GitHub round-trip. Open-only here: closed-without-
+  // node ingestion is reserved for the explicit backfill route so we
+  // don't repopulate "what shipped last month" if `lastSyncedAt` is ever
+  // lost or rewound.
+  let ingestCreated = 0;
+  try {
+    const ingest = await ingestNewIssuesForRepo(
+      { owner: target.owner, repo: target.repo },
+      issues,
+    );
+    ingestCreated = ingest.created;
+  } catch (err) {
+    console.warn(
+      '[catchup] new-issue ingest failed for',
+      repoLabel,
+      ':',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // ── Parent-epic rollup (#57) ─────────────────────────────────
@@ -286,6 +316,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     applied,
     skipped,
     noTransition,
+    ingested: ingestCreated,
     durationMs: Date.now() - startedAt.getTime(),
     since,
   };
@@ -374,7 +405,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, ingested: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),

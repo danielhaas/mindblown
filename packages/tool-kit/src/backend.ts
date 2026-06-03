@@ -22,6 +22,7 @@ export interface ToolBackend {
       wipLimit?: number | null;
       projectStartDate?: string | null;
       hoursPerDay?: number;
+      autoImportNewIssues?: boolean;
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;

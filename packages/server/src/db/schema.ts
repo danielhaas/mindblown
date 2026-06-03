@@ -70,6 +70,15 @@ export const maps = pgTable('maps', {
   githubInstallationId: text('github_installation_id'),
   githubRepoOwner: text('github_repo_owner'),
   githubRepoName: text('github_repo_name'),
+  // Per-map opt-in: when true, new GitHub issues on the bound repo are
+  // auto-imported as nodes under the GitHub Inbox. Default false so
+  // existing maps don't flood retroactively when this column lands.
+  autoImportNewIssues: boolean('auto_import_new_issues').notNull().default(false),
+  // Cached "GitHub Inbox" node id — created lazily on first ingest and
+  // refreshed when the stored node is gone (deleted by the user).
+  // Deliberately no FK so deleting the node doesn't cascade-mutate this
+  // column; ensureInboxNode() detects the dangling ref and recreates.
+  githubInboxNodeId: uuid('github_inbox_node_id'),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

@@ -400,6 +400,8 @@ export interface GitHubReconcileResult {
   applied: number;
   skipped: number;
   noTransition: number;
+  /** Nodes auto-created in the ingest pass (issues with no linked node yet). */
+  ingested: number;
   durationMs: number;
   since: string | null;
   error?: string;
@@ -407,6 +409,42 @@ export interface GitHubReconcileResult {
 
 export function reconcileGitHub(mapId: string): Promise<GitHubReconcileResult> {
   return request<GitHubReconcileResult>(`/api/maps/${mapId}/github/reconcile`, {
+    method: 'POST',
+  });
+}
+
+/** Result of a backfill ingest dry-run: candidates the server would import. */
+export interface GitHubIngestDryRunResult {
+  wouldImport: number;
+  candidates: number[];
+}
+
+/** Result of a backfill ingest commit: nodes actually imported into the inbox. */
+export interface GitHubIngestCommitResult {
+  imported: number;
+  capped: boolean;
+  total: number;
+}
+
+/**
+ * Backfill any unlinked GitHub issues (open + closed-within-30d) into
+ * the map's Inbox. Dry-run first to surface the count, then commit on
+ * user confirmation.
+ */
+export function ingestNewIssues(
+  mapId: string,
+  opts: { dryRun: true },
+): Promise<GitHubIngestDryRunResult>;
+export function ingestNewIssues(
+  mapId: string,
+  opts?: { dryRun?: false },
+): Promise<GitHubIngestCommitResult>;
+export function ingestNewIssues(
+  mapId: string,
+  opts: { dryRun?: boolean } = {},
+): Promise<GitHubIngestDryRunResult | GitHubIngestCommitResult> {
+  const qs = opts.dryRun ? '?dryRun=true' : '';
+  return request(`/api/maps/${mapId}/github/ingest-new${qs}`, {
     method: 'POST',
   });
 }

@@ -1352,6 +1352,7 @@ export function MindmapEditor() {
                   isDragInvalid={isInvalidTarget ?? false}
                   hasHiddenChildren={meta?.hasHiddenChildren ?? false}
                   hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
+                  isGithubInbox={ln.id === currentMap?.githubInboxNodeId}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();

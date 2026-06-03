@@ -119,6 +119,11 @@ interface MindmapNodeProps {
   isDragging?: boolean;
   hasHiddenChildren?: boolean;
   hiddenDescendantCount?: number;
+  /**
+   * When true, render the GitHub-Inbox marker (octocat) on this node.
+   * Set from the editor when `node.id === map.githubInboxNodeId`.
+   */
+  isGithubInbox?: boolean;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -138,6 +143,7 @@ export function MindmapNode({
   isDragging = false,
   hasHiddenChildren = false,
   hiddenDescendantCount = 0,
+  isGithubInbox = false,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -375,6 +381,19 @@ export function MindmapNode({
             y={y + 3}
             size={11}
             color={githubLink.syncEnabled ? '#1f2937' : '#9ca3af'}
+          />
+        </g>
+      )}
+
+      {/* GitHub Inbox marker — surfaces the auto-import landing zone. */}
+      {isGithubInbox && !githubLink && (
+        <g>
+          <title>GitHub Inbox — auto-imported issues land here</title>
+          <OctocatIcon
+            x={x + width - 14}
+            y={y + 3}
+            size={11}
+            color="#4f46e5"
           />
         </g>
       )}

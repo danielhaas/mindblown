@@ -467,6 +467,20 @@ export async function runMigrations(): Promise<void> {
     ON release_snapshots(map_id, snapshot_date DESC)
   `);
 
+  // ── Auto-ingest of new GitHub issues into a map's "Inbox" node ──
+  // Per-map opt-in flag + cached inbox node id. Default off so existing
+  // maps don't repopulate "what shipped last month" on the next
+  // catchup tick when this feature lands. The frontend defaults the
+  // toggle to checked on first GitHub connect, so new connections
+  // get auto-import naturally. No FK on the node id — when the user
+  // deletes the inbox node, ensureInboxNode() lazy-recreates.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS auto_import_new_issues BOOLEAN NOT NULL DEFAULT false
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS github_inbox_node_id UUID
+  `);
+
   // ── Parent-epic auto-progress flag on nodes (#57) ─────────────
   // Default 'off' so existing nodes keep manual progress; flip to
   // 'children' to opt into auto-rollup from GitHub child-PR patterns.
