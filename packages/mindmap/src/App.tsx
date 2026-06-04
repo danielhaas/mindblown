@@ -965,6 +965,23 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [currentMapId]);
 
+  // Mouse "back" button (XButton1) — pop one focus level when drilled in.
+  // When not focused, the browser's default back navigation is preserved.
+  useEffect(() => {
+    if (!currentMapId) return;
+    const handler = (e: MouseEvent) => {
+      if (e.button !== 3) return;
+      const { focusNodeId, nodes, rootNodeId, setFocusNode } = useMindmapStore.getState();
+      if (!focusNodeId) return;
+      e.preventDefault();
+      const focusNode = nodes[focusNodeId];
+      const parentId = focusNode?.parentId;
+      setFocusNode(parentId && parentId !== rootNodeId ? parentId : null);
+    };
+    window.addEventListener('mousedown', handler);
+    return () => window.removeEventListener('mousedown', handler);
+  }, [currentMapId]);
+
   // Helper callbacks for command palette
   const handleFitToScreen = useCallback(() => {
     (window as any).__mindmapFitToScreen?.();
