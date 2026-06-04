@@ -181,6 +181,11 @@ const mocks = vi.hoisted(() => ({
     mapId: 'map-1',
     parentId: 'epic-1',
   })),
+  moveNodeMock: vi.fn(async (nodeId: string, newParentId: string) => ({
+    id: nodeId,
+    mapId: 'map-1',
+    parentId: newParentId,
+  })),
   triageIssueMock: vi.fn(async () => ({
     decision: 'place' as const,
     parentNodeId: 'epic-1',
@@ -190,10 +195,12 @@ const mocks = vi.hoisted(() => ({
 }));
 const createNodeMock = mocks.createNodeMock;
 const updateNodeMock = mocks.updateNodeMock;
+const moveNodeMock = mocks.moveNodeMock;
 const triageIssueMock = mocks.triageIssueMock;
 vi.mock('../../db/nodes.js', () => ({
   createNode: mocks.createNodeMock,
   updateNode: mocks.updateNodeMock,
+  moveNode: mocks.moveNodeMock,
 }));
 
 // Permission stub — the test toggles `permissionLevel` to drive the gate.
@@ -242,6 +249,7 @@ beforeEach(() => {
   permissionLevel = 'edit';
   createNodeMock.mockClear();
   updateNodeMock.mockClear();
+  moveNodeMock.mockClear();
   triageIssueMock.mockClear();
 });
 
@@ -522,6 +530,76 @@ describe('POST .../override', () => {
     expect(res.json().nodeId).toBe('existing-node');
     expect(createNodeMock).not.toHaveBeenCalled();
   });
+
+  // mindblown#99 fix 3 — override of an already-placed node with a
+  // different parentNodeId must call moveNode + broadcast node:moved,
+  // not silently drop the reparent.
+  it('place + already-placed + new parentNodeId → calls moveNode and broadcasts', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+    });
+    // Both old + new parents are in this map.
+    nodes.set('epic-A', { id: 'epic-A', mapId: 'map-1', parentId: 'root-1' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    // The placed node currently lives under epic-A.
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('moved');
+    expect(res.json().nodeId).toBe('placed-node');
+    expect(moveNodeMock).toHaveBeenCalledOnce();
+    expect(moveNodeMock.mock.calls[0][0]).toBe('placed-node');
+    expect(moveNodeMock.mock.calls[0][1]).toBe('epic-B');
+    expect(createNodeMock).not.toHaveBeenCalled();
+    // node:moved broadcast carries the new parent so any open UI updates.
+    expect(broadcastMock).toHaveBeenCalledWith(
+      'map-1',
+      expect.objectContaining({
+        type: 'node:moved',
+        nodeId: 'placed-node',
+        newParentId: 'epic-B',
+      }),
+    );
+    // Row was marked reviewed + operator-decided.
+    const row = triageRows.get('tr-1')!;
+    expect(row.decidedBy).toBe('operator');
+    expect(row.reviewed).toBe(true);
+  });
+
+  it('place + already-placed + SAME parent → no move, status=already_placed', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+    });
+    nodes.set('epic-A', { id: 'epic-A', mapId: 'map-1', parentId: 'root-1' });
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-A' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('already_placed');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+  });
 });
 
 // ── POST /reclassify ─────────────────────────────────────────────
@@ -564,5 +642,63 @@ describe('POST .../reclassify', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(404);
+  });
+
+  // mindblown#99 fix 4 — when reclassify produces a non-place decision
+  // on a row that had placed a node before, the row must clear
+  // `placedNodeId` so it stops referencing an orphan. The node itself
+  // is intentionally NOT deleted (operator removes via the UI).
+  it('reclassify → skip clears placedNodeId on a previously-placed row', async () => {
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip' as const,
+      parentNodeId: undefined,
+      reason: 'no longer relevant',
+      confidence: 92,
+    } as unknown as Awaited<ReturnType<typeof triageIssueMock>>);
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'orphan-node',
+      confidence: 80,
+      reviewed: true,
+      decidedBy: 'operator',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().decision).toBe('skip');
+    const row = triageRows.get('tr-1')!;
+    expect(row.decision).toBe('skip');
+    expect(row.placedNodeId).toBeNull();
+    expect(row.reviewed).toBe(false);
+    expect(row.decidedBy).toBe('auto');
+  });
+
+  it('reclassify → place keeps placedNodeId (only non-place clears it)', async () => {
+    // Default triageIssueMock returns decision='place' with parentNodeId='epic-1'.
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'node-still-here',
+      confidence: 50,
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    // Reclassify doesn't auto-apply (no node created here) — but it
+    // also doesn't clear the previously-placed node id, since the new
+    // decision is still 'place'.
+    expect(row.placedNodeId).toBe('node-still-here');
   });
 });

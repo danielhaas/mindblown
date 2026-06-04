@@ -210,9 +210,61 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // If the operator wants a place but a node was already created
-      // by a prior auto-apply, short-circuit — we don't want to create
-      // a duplicate. Surface the existing node id.
+      // by a prior auto-apply, we DON'T create a second node — but if
+      // the submitted parentNodeId differs from where the node sits
+      // today, we DO call `moveNode` so the operator's intent isn't
+      // silently dropped (mindblown#99 fix 3). The previous behaviour
+      // returned the old node-id and let the operator wonder why
+      // their click didn't reparent.
       if (decision === 'place' && row.placedNodeId) {
+        // The operator MAY supply a parentNodeId that's a no-op (it
+        // matches the current parent). That's fine; moveNode is a
+        // safe identity in that case but we still don't bother
+        // calling it if parents already match.
+        const placedNodeId = row.placedNodeId as string;
+        const submittedParent = body.parentNodeId as string;
+
+        // Validate the submitted parent is in this map (same gate as
+        // the create-path below).
+        const [parent] = await db
+          .select({ id: nodes.id, mapId: nodes.mapId })
+          .from(nodes)
+          .where(eq(nodes.id, submittedParent));
+        if (!parent || parent.mapId !== req.params.mapId) {
+          return reply.status(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'parentNodeId must be a node in this map',
+            },
+          });
+        }
+
+        // Look up the placed node's current parent so we know whether
+        // we need to move it.
+        const [placedNode] = await db
+          .select({ id: nodes.id, parentId: nodes.parentId })
+          .from(nodes)
+          .where(eq(nodes.id, placedNodeId));
+
+        let moved = false;
+        if (placedNode && placedNode.parentId !== submittedParent) {
+          // moveNode runs outside the tx that updates the decision
+          // row — it has its own internal write fan-out (children
+          // ordering on both old + new parent, parentId on the node
+          // itself) that doesn't share the route's outer tx. The
+          // payoff is the operator's reparent intent is honored.
+          const movedNode = await nodeDb.moveNode(placedNodeId, submittedParent);
+          moved = movedNode != null;
+          if (moved) {
+            broadcast(req.params.mapId, {
+              type: 'node:moved',
+              nodeId: placedNodeId,
+              newParentId: submittedParent,
+              position: undefined,
+            });
+          }
+        }
+
         await db
           .update(triageDecisions)
           .set({
@@ -228,8 +280,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           .where(eq(triageDecisions.id, row.id));
         return reply.send({
           decisionId: row.id,
-          status: 'already_placed',
-          nodeId: row.placedNodeId,
+          status: moved ? 'moved' : 'already_placed',
+          nodeId: placedNodeId,
         });
       }
 
@@ -399,6 +451,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         mapContext,
       });
 
+      // mindblown#99 fix 4: when reclassify produces a non-place
+      // decision and the row had a previous `placedNodeId`, the row
+      // is internally inconsistent ("decision says skip, but here's a
+      // node we placed earlier"). Clear placedNodeId so the row stops
+      // referencing the orphan. The original node is intentionally
+      // NOT auto-deleted on reclassify (Ray's spec: "operator can
+      // delete via UI") — only the decision-row reference is dropped.
+      const clearPlacedNode = decision.decision !== 'place' && row.placedNodeId != null;
+
       await db
         .update(triageDecisions)
         .set({
@@ -410,6 +471,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           reviewed: false,
           reviewedAt: null,
           reviewedBy: null,
+          ...(clearPlacedNode ? { placedNodeId: null } : {}),
         })
         .where(eq(triageDecisions.id, row.id));
 

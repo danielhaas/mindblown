@@ -1092,6 +1092,174 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(dbState.triageDecisions.size).toBe(0);
   });
 
+  // mindblown#99 fix 2 — `issues.edited` (or any re-triage trigger)
+  // must NOT wipe `reviewed=true, decidedBy='operator'`. The fix
+  // short-circuits BEFORE the LLM call, so we also assert the triage
+  // mock was never invoked.
+  it('operator-reviewed row: re-triage short-circuits, NO LLM call, row unchanged', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // Seed an existing operator-reviewed decision row.
+    dbState.triageDecisions.set('curated', {
+      id: 'curated',
+      mapId: 'm1',
+      externalId: 'owner/repo#200',
+      issueTitle: 'My carefully-curated decision',
+      issueState: 'open',
+      decision: 'skip',
+      reason: 'operator says no',
+      confidence: 100,
+      placedNodeId: null,
+      decidedAt: new Date('2026-01-01T00:00:00Z'),
+      decidedBy: 'operator',
+      reviewed: true,
+      reviewedAt: new Date('2026-01-01T00:00:00Z'),
+      reviewedBy: 'u1',
+    });
+    // Whatever the LLM would have said — if we call it, the test fails.
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'fresh take',
+      confidence: 90,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(200, { title: 'edited title' }), ctx);
+
+    // We treat operator-reviewed `skip` as the live answer.
+    expect(result.status).toBe('triaged_skip');
+    // LLM was NOT called — the precheck short-circuited.
+    expect(triageMockCalls.length).toBe(0);
+    // The decision row is untouched (still operator-reviewed, still skip).
+    const curated = dbState.triageDecisions.get('curated')!;
+    expect(curated.decision).toBe('skip');
+    expect(curated.decidedBy).toBe('operator');
+    expect(curated.reviewed).toBe(true);
+    expect(curated.reason).toBe('operator says no');
+    // No node was created.
+    expect(createNodeCalls.length).toBe(0);
+  });
+
+  it('operator-reviewed place row: re-triage returns the placed node, NO LLM call', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // The placed node is what an operator put under epic-1.
+    dbState.nodes.set('curated-node', {
+      id: 'curated-node',
+      mapId: 'm1',
+      parentId: 'epic-1',
+      externalLinks: [], // Note: no externalLink (legacy migration scenario)
+    });
+    dbState.triageDecisions.set('curated', {
+      id: 'curated',
+      mapId: 'm1',
+      externalId: 'owner/repo#201',
+      issueTitle: 'op-placed',
+      issueState: 'open',
+      decision: 'place',
+      reason: 'operator chose epic-1',
+      confidence: 100,
+      placedNodeId: 'curated-node',
+      decidedAt: new Date(),
+      decidedBy: 'operator',
+      reviewed: true,
+      reviewedAt: new Date(),
+      reviewedBy: 'u1',
+    });
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'never',
+      confidence: 90,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(201), ctx);
+
+    expect(result.status).toBe('created');
+    expect(result.nodeId).toBe('curated-node');
+    expect(triageMockCalls.length).toBe(0);
+    expect(createNodeCalls.length).toBe(0);
+  });
+
+  // mindblown#99 fix 1 — race safety in the triage path. Two parallel
+  // calls on a triage_enabled map serialize on the advisory lock; the
+  // second observes the first's just-committed node and short-circuits
+  // to skipped_exists. Exactly one node + one triage_decisions row.
+  it('race safety in triage path: parallel calls create exactly one node + one decision row', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'matches Frontend',
+      confidence: 90,
+    };
+
+    const [a, b] = await Promise.all([
+      ensureNodeForIssue('m1', 'inbox-1', issue(202), ctx),
+      ensureNodeForIssue('m1', 'inbox-1', issue(202), ctx),
+    ]);
+
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual(['created', 'skipped_exists']);
+    // Exactly one create across the two calls.
+    expect(createNodeCalls.length).toBe(1);
+    // The triage path took the advisory lock at least twice (once per
+    // call — actually four times because the path takes the lock for
+    // both the precheck tx AND the upsert tx). Either way, the lock
+    // infra was exercised, not bypassed.
+    expect(advisoryLocksTaken.length).toBeGreaterThanOrEqual(2);
+    // Exactly one triage_decisions row materialised across the two calls.
+    expect(dbState.triageDecisions.size).toBe(1);
+  });
+
+  // mindblown#99 fix 5 — when the caller passes triageEnabled in opts,
+  // the function MUST NOT issue an extra `SELECT maps.triage_enabled`
+  // per issue. We can't easily count SELECTs against the maps table
+  // from the mock infra, but we CAN assert the fast-path behaviour
+  // works: a map with NO entry in dbState.maps but explicit
+  // triageEnabled=true in opts should still hit the triage fork.
+  it('opts.triageEnabled overrides the per-issue maps SELECT', async () => {
+    // Note: dbState.maps does NOT contain m1 — so the fallback SELECT
+    // would return no row, and triageEnabled would be false. Passing
+    // it via opts must override that.
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'matches',
+      confidence: 90,
+    };
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(300, { title: 'fast-path' }),
+      ctx,
+      { triageEnabled: true },
+    );
+
+    expect(result.status).toBe('created');
+    expect(result.triage?.decision).toBe('place');
+    // The triage path was entered — proves opts.triageEnabled won
+    // without us populating dbState.maps.
+    expect(triageMockCalls.length).toBe(1);
+  });
+
   it('triage_enabled=true + place high-confidence with invalid parent UUID → downgrades to uncertain', async () => {
     dbState.maps.set('m1', {
       rootNodeId: 'root-1',
