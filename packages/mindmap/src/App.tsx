@@ -1444,7 +1444,16 @@ export function App() {
             onFilterChange={setActiveCycleFilter}
             onOpenPanel={() => {
               setSprintPanelOpen(!sprintPanelOpen);
-              if (!sprintPanelOpen) setBlockedPanelOpen(false);
+              if (!sprintPanelOpen) {
+                setBlockedPanelOpen(false);
+                // Mutual-exclusion fix from Ray's #100 review: the
+                // Blocked + Triage handlers below close Sprint when
+                // they open, but Sprint wasn't symmetrically closing
+                // Triage. Result: the Triage indicator stayed
+                // highlighted while Sprint rendered (panel precedence
+                // chain at the right-dock favours Sprint).
+                setTriagePanelOpen(false);
+              }
             }}
             panelOpen={sprintPanelOpen}
           />

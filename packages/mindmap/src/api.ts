@@ -1074,6 +1074,13 @@ export interface ReclassifyTriageResponse {
   confidence: number;
   reason: string;
   parentNodeId: string | null;
+  /**
+   * The (potentially-just-nulled) placedNodeId after reclassify. When
+   * a previously-placed row reclassifies to skip/uncertain, the server
+   * nulls this; surfacing it here saves the client a refetch.
+   * (#100 Round 2 nit from Ray.)
+   */
+  placedNodeId: string | null;
 }
 
 export function reclassifyTriageDecision(
@@ -1086,19 +1093,28 @@ export function reclassifyTriageDecision(
   );
 }
 
+export interface ConfirmTriageResponse {
+  decisionId: string;
+  status: 'confirmed';
+  nodeId: string | null;
+}
+
 /**
- * Confirm a triage decision (mark reviewed). We model this as an
- * override that keeps the existing decision/reason — the route stamps
- * decidedBy='operator' + reviewed=true regardless of whether anything
- * else changed.
+ * Confirm a triage decision (mark reviewed). Hits the dedicated
+ * `/confirm` route — does NOT send a `parentNodeId`. The original
+ * implementation routed through `overrideTriageDecision` with
+ * `parentNodeId: decision.placedNodeId`, which fell through the
+ * override's already-placed branch and self-loop'd the node
+ * (`moveNode(placedNodeId, placedNodeId)`). Ray flagged this on the
+ * #100 review — splitting into a dedicated route makes the misuse
+ * impossible at the API boundary.
  */
 export function confirmTriageDecision(
   mapId: string,
   decision: TriageDecision,
-): Promise<OverrideTriageResponse> {
-  return overrideTriageDecision(mapId, decision.id, {
-    decision: decision.decision,
-    parentNodeId: decision.placedNodeId ?? undefined,
-    reason: decision.reason,
-  });
+): Promise<ConfirmTriageResponse> {
+  return request<ConfirmTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/${decision.id}/confirm`,
+    { method: 'POST' },
+  );
 }

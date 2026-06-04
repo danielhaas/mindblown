@@ -318,7 +318,6 @@ export function TriagePanel({
       {/* Node picker modal */}
       {pickerForDecision && (
         <NodePickerModal
-          mapId={mapId}
           title={`Pick a parent for "${pickerForDecision.issueTitle}"`}
           excludeNodeIds={pickerForDecision.placedNodeId ? [pickerForDecision.placedNodeId] : []}
           onPick={handlePickParent}

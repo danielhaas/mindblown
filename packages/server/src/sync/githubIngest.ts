@@ -553,7 +553,14 @@ async function ensureNodeForIssueViaTriage(
         node: Awaited<ReturnType<typeof nodeDb.getNode>>;
       }
     | { kind: 'decision_only'; decisionId: string }
-    | { kind: 'lost_race'; nodeId: string };
+    | { kind: 'lost_race'; nodeId: string }
+    | {
+        kind: 'operator_reviewed_late';
+        decisionId: string;
+        nodeId: string | null;
+        decision: TriageDecision['decision'];
+        confidence: number;
+      };
 
   const result: TxResult = await db.transaction(async (tx) => {
     await takeIngestLock(tx, externalId);
@@ -565,6 +572,49 @@ async function ensureNodeForIssueViaTriage(
     const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
     if (existingNodeId) {
       return { kind: 'lost_race', nodeId: existingNodeId };
+    }
+
+    // Mirror the operator-reviewed precheck inside this tx (Ray's
+    // #100 Round 2 fix — lost-race operator-protect). The precheck tx
+    // above checks "node exists" AND "operator-reviewed row exists",
+    // but during the LLM-call window between Tx A and Tx B an
+    // operator can mark a row reviewed=true, decidedBy='operator'.
+    // Without this re-check, the upsert's SET clause below would
+    // overwrite that decision back to auto + unreviewed, wiping the
+    // operator's curation. The cost is one extra index lookup —
+    // cheaper than a wasted LLM round-trip, cheaper than losing the
+    // operator decision. We re-fetch (don't reuse the precheck row)
+    // because the precheck tx is long-since closed; the visibility
+    // we need is "what's committed NOW," and the advisory lock above
+    // means no other ingest tx can stomp before we exit this block.
+    const [existingDecisionInUpsertTx] = await tx
+      .select({
+        id: triageDecisions.id,
+        reviewed: triageDecisions.reviewed,
+        decidedBy: triageDecisions.decidedBy,
+        decision: triageDecisions.decision,
+        confidence: triageDecisions.confidence,
+        placedNodeId: triageDecisions.placedNodeId,
+      })
+      .from(triageDecisions)
+      .where(
+        and(
+          eq(triageDecisions.mapId, mapId),
+          eq(triageDecisions.externalId, externalId),
+        ),
+      );
+    if (
+      existingDecisionInUpsertTx &&
+      existingDecisionInUpsertTx.reviewed === true &&
+      existingDecisionInUpsertTx.decidedBy === 'operator'
+    ) {
+      return {
+        kind: 'operator_reviewed_late',
+        decisionId: existingDecisionInUpsertTx.id as string,
+        nodeId: (existingDecisionInUpsertTx.placedNodeId as string | null) ?? null,
+        decision: existingDecisionInUpsertTx.decision as TriageDecision['decision'],
+        confidence: existingDecisionInUpsertTx.confidence as number,
+      };
     }
 
     // Upsert the decision row. ON CONFLICT updates the existing row in
@@ -653,6 +703,45 @@ async function ensureNodeForIssueViaTriage(
     // winner persisted both the node AND its own decision row, so
     // returning skipped_exists is the safe outcome.
     return { status: 'skipped_exists', nodeId: result.nodeId, mapId };
+  }
+
+  if (result.kind === 'operator_reviewed_late') {
+    // Ray's #100 Round 2 fix — an operator marked the row reviewed
+    // during the LLM-call window between the precheck tx and the
+    // upsert tx. We did pay for the LLM call (sunk cost — the wider
+    // fix is to also short-circuit upstream once the lock can't
+    // observe the change, but that's a bigger rework), but the
+    // operator's decision wins. Mirror the precheck's mapping of
+    // operator_reviewed → matching IngestResult so downstream
+    // consumers see the operator's call, not the (now-discarded)
+    // LLM call.
+    if (result.decision === 'place' && result.nodeId) {
+      return {
+        status: 'created',
+        nodeId: result.nodeId,
+        mapId,
+        triage: {
+          decisionId: result.decisionId,
+          decision: result.decision,
+          confidence: result.confidence,
+        },
+      };
+    }
+    const lateStatus: IngestResult['status'] =
+      result.decision === 'skip'
+        ? 'triaged_skip'
+        : result.decision === 'uncertain'
+          ? 'triaged_uncertain'
+          : 'triaged_low_confidence';
+    return {
+      status: lateStatus,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: result.decision,
+        confidence: result.confidence,
+      },
+    };
   }
 
   if (result.kind === 'auto_placed') {

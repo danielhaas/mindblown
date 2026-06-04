@@ -386,6 +386,14 @@ let triageMockResponse: {
   confidence: number;
 } = { decision: 'uncertain', reason: 'default-mock', confidence: 0 };
 const triageMockCalls: Array<{ issueNumber: number; mapId: string }> = [];
+/**
+ * Optional async hook that runs INSIDE the triage mock, before it
+ * returns its mocked decision. Used by the lost-race operator-protect
+ * test to mutate `dbState.triageDecisions` mid-call — simulating an
+ * operator hitting Confirm during the LLM window between the precheck
+ * tx and the upsert tx.
+ */
+let triageMockMidCallHook: (() => Promise<void>) | null = null;
 
 vi.mock('../triage.js', () => ({
   triageIssue: vi.fn(async (input: { issue: { number: number }; mapContext: { mapId: string } }) => {
@@ -393,6 +401,9 @@ vi.mock('../triage.js', () => ({
       issueNumber: input.issue.number,
       mapId: input.mapContext.mapId,
     });
+    if (triageMockMidCallHook) {
+      await triageMockMidCallHook();
+    }
     return { ...triageMockResponse };
   }),
   TRIAGE_AUTO_APPLY_CONFIDENCE: 75,
@@ -571,6 +582,7 @@ function resetState() {
   getNodeMock.mockReset();
   updateNodeThrowOnNthCall = null;
   updateNodeMockShouldThrow = null;
+  triageMockMidCallHook = null;
 }
 
 beforeEach(() => {
@@ -1187,6 +1199,78 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(result.status).toBe('created');
     expect(result.nodeId).toBe('curated-node');
     expect(triageMockCalls.length).toBe(0);
+    expect(createNodeCalls.length).toBe(0);
+  });
+
+  // #100 Round 2 — lost-race operator-protect. The precheck tx checks
+  // "operator-reviewed row exists" but the upsert tx (previously) only
+  // re-checked "node exists." If an operator marks the row reviewed
+  // during the LLM-call window, the upsert's SET clause wipes the
+  // operator decision. The fix mirrors the operator-reviewed precheck
+  // INSIDE the upsert tx and short-circuits if it fires.
+  it('lost-race operator-protect: operator marks reviewed mid-LLM, upsert does NOT overwrite', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // Seed an existing auto-decided row (operator hasn't reviewed yet).
+    // The precheck tx will see this as "proceed" and pay for the LLM.
+    dbState.triageDecisions.set('pending', {
+      id: 'pending',
+      mapId: 'm1',
+      externalId: 'owner/repo#250',
+      issueTitle: 'a candidate',
+      issueState: 'open',
+      decision: 'uncertain',
+      reason: 'auto unsure',
+      confidence: 40,
+      placedNodeId: null,
+      decidedAt: new Date('2026-01-01T00:00:00Z'),
+      decidedBy: 'auto',
+      reviewed: false,
+      reviewedAt: null,
+      reviewedBy: null,
+    });
+    // The LLM call returns "place" — without the fix, the upsert would
+    // happily clobber the operator's decision below.
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'fresh take from the model',
+      confidence: 92,
+    };
+    // Simulate an operator hitting Confirm DURING the LLM call window:
+    // mutate the existing decision row to reviewed=true,
+    // decidedBy='operator', decision='skip'. This is what the operator
+    // would have written.
+    triageMockMidCallHook = async () => {
+      const row = dbState.triageDecisions.get('pending')!;
+      row.reviewed = true;
+      row.decidedBy = 'operator';
+      row.decision = 'skip';
+      row.reason = 'operator vetoed';
+      row.reviewedAt = new Date('2026-01-02T00:00:00Z');
+      row.reviewedBy = 'u1';
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(250), ctx);
+
+    // The LLM was called (cost already sunk before the operator click)
+    expect(triageMockCalls.length).toBe(1);
+    // ...but the upsert tx detected the operator-reviewed flip and
+    // returned the operator's decision instead of overwriting it.
+    expect(result.status).toBe('triaged_skip');
+    // Decision row is operator's, NOT auto.
+    const row = dbState.triageDecisions.get('pending')!;
+    expect(row.decision).toBe('skip');
+    expect(row.decidedBy).toBe('operator');
+    expect(row.reviewed).toBe(true);
+    expect(row.reason).toBe('operator vetoed');
+    expect(row.confidence).toBe(40); // un-clobbered
+    // No node was created (operator said skip).
     expect(createNodeCalls.length).toBe(0);
   });
 

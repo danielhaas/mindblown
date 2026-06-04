@@ -26,18 +26,22 @@ interface TreeRow {
 }
 
 export function NodePickerModal({
-  mapId: _mapId,
   title,
   excludeNodeIds = [],
   onPick,
   onClose,
 }: {
-  mapId: string;
   title: string;
   excludeNodeIds?: string[];
   onPick: (nodeId: string) => void;
   onClose: () => void;
 }) {
+  // The picker reads nodes from the in-memory mindmap store (already
+  // populated with the active map's tree). A `mapId` prop used to be
+  // accepted but never read — dropping it per Ray's #100 nit. Phase 2
+  // bulk-action reuse will still target the current map; if a future
+  // caller needs cross-map picking, re-add `mapId` and wire it through
+  // a dedicated lookup.
   const nodes = useMindmapStore((s) => s.nodes);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const [search, setSearch] = useState('');
@@ -310,7 +314,9 @@ export function NodePickerModal({
                     {row.node.text}
                   </span>
                   {isExcluded && (
-                    <span style={{ fontSize: 10, color: '#94a3b8' }}>(current)</span>
+                    <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                      (placed node)
+                    </span>
                   )}
                 </div>
               );
