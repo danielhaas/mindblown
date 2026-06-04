@@ -99,6 +99,13 @@ export const maps = pgTable('maps', {
   // Deliberately no FK so deleting the node doesn't cascade-mutate this
   // column; ensureInboxNode() detects the dangling ref and recreates.
   githubInboxNodeId: uuid('github_inbox_node_id'),
+  // Per-map opt-in for the AI triage pipeline (#92, #93). When true, new
+  // GitHub issues bound to this map go through `triageIssue()` before
+  // any node is created; the decision is persisted in `triage_decisions`
+  // and high-confidence place-decisions auto-create the node under the
+  // suggested parent. Default false → ingest behaves exactly like
+  // before (flat under the GitHub Inbox).
+  triageEnabled: boolean('triage_enabled').notNull().default(false),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -285,6 +292,33 @@ export const changeEvents = pgTable('change_events', {
   oldValue: jsonb('old_value'),
   newValue: jsonb('new_value'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Triage Decisions (#92, #93) ───────────────────────────────────
+// Per-issue AI triage outcome. Written by the triage pipeline before a
+// node is created; persisted regardless of decision so operators can
+// audit + override. UNIQUE on (map_id, external_id) so re-triage is an
+// idempotent upsert. `placed_node_id` is non-FK on purpose — when the
+// auto-created node is later deleted, the decision row stays around as
+// audit trail (same convention as `release_snapshots.version_id`).
+// `decided_by`: 'auto' for pipeline-produced rows, 'operator' once an
+// override or reclassify has been applied.
+
+export const triageDecisions = pgTable('triage_decisions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  externalId: text('external_id').notNull(), // "owner/repo#NNN"
+  issueTitle: text('issue_title').notNull(),
+  issueState: text('issue_state').notNull(), // 'open' | 'closed'
+  decision: text('decision').notNull(), // 'skip' | 'place' | 'uncertain'
+  reason: text('reason').notNull(),
+  confidence: integer('confidence').notNull(), // 0-100
+  placedNodeId: uuid('placed_node_id'),
+  decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  decidedBy: text('decided_by').notNull(), // 'auto' | 'operator'
+  reviewed: boolean('reviewed').notNull().default(false),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+  reviewedBy: uuid('reviewed_by').references(() => users.id),
 });
 
 // ── Cycles ─────────────────────────────────────────────────────────

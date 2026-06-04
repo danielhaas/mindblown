@@ -31,18 +31,40 @@ async function takeLockSimulated(key: string): Promise<() => void> {
 
 const dbExecute = vi.fn(async (_sqlObj?: unknown) => undefined);
 type DbState = {
-  // mapId → {rootNodeId, inboxId, createdBy}
-  maps: Map<string, { rootNodeId: string; inboxId: string | null; createdBy: string }>;
-  // nodeId → row{id, mapId, parentId, externalLinks}
-  nodes: Map<string, { id: string; mapId: string; parentId: string | null; externalLinks: Array<{ provider: string; externalId: string }> }>;
+  // mapId → {rootNodeId, inboxId, createdBy, triageEnabled?, childrenOrder?, name?, description?}
+  maps: Map<string, {
+    rootNodeId: string;
+    inboxId: string | null;
+    createdBy: string;
+    triageEnabled?: boolean;
+    name?: string;
+    description?: string | null;
+  }>;
+  // nodeId → row{id, mapId, parentId, externalLinks, text?, description?, childrenOrder?}
+  nodes: Map<string, {
+    id: string;
+    mapId: string;
+    parentId: string | null;
+    externalLinks: Array<{ provider: string; externalId: string }>;
+    text?: string;
+    description?: unknown;
+    childrenOrder?: string[];
+  }>;
   // PAT integrations
   integrations: Array<{ workspaceId: string; provider: string; enabled: boolean; config: { owner?: string; repo?: string } }>;
+  // Triage decision rows, keyed by id. Populated by the insert mock so
+  // tests can assert on what was persisted.
+  triageDecisions: Map<string, Record<string, unknown>>;
 };
 const dbState: DbState = {
   maps: new Map(),
   nodes: new Map(),
   integrations: [],
+  triageDecisions: new Map(),
 };
+
+// Counter for generating triage decision ids.
+let nextTriageDecisionId = 1;
 
 // Track update calls for assertions
 const updateNodeCalls: Array<{ nodeId: string; input: Record<string, unknown> }> = [];
@@ -96,15 +118,27 @@ function buildChain(): {
         githubRepoName: 'repo',
         autoImportNewIssues: true,
         workspaceId: 'ws',
+        // Triage (#92, #93): default false unless the test fixture
+        // opts in. Map name/description default to empty so the
+        // mapContext builder has something to render.
+        triageEnabled: m.triageEnabled ?? false,
+        name: m.name ?? `map-${id}`,
+        description: m.description ?? null,
       }));
     } else if (step.table === 'nodes') {
       rows = [...dbState.nodes.values()].map((n) => ({
         id: n.id,
         mapId: n.mapId,
+        parentId: n.parentId,
         externalLinks: n.externalLinks,
+        text: n.text ?? '',
+        description: n.description ?? null,
+        childrenOrder: n.childrenOrder ?? [],
       }));
     } else if (step.table === 'integrations') {
       rows = dbState.integrations.map((i) => ({ ...i }));
+    } else if (step.table === 'triageDecisions') {
+      rows = [...dbState.triageDecisions.values()].map((r) => ({ ...r }));
     }
     return applyPred(rows, step.pred);
   };
@@ -163,22 +197,81 @@ function buildTxHandle(releaseHooks: Array<() => void>) {
       return dbExecute(sqlObj);
     },
     select: (cols?: unknown) => mockSelect(cols),
-    update: () => ({
-      set: () => ({
-        where: async () => undefined,
-      }),
-    }),
-    insert: () => ({
-      values: () => ({
-        returning: async () => [],
-      }),
-    }),
+    update: (table: { __name?: string }) => mockUpdate(table),
+    insert: (table: { __name?: string }) => mockInsert(table),
     /** Undo callbacks registered by tx-scoped node writes. */
     __rollbacks: rollbacks,
   };
 }
 function isTxHandle(x: unknown): x is TxHandle {
   return !!x && typeof x === 'object' && Array.isArray((x as { __rollbacks?: unknown }).__rollbacks);
+}
+
+// Builder for `insert(table)` that knows about the triageDecisions
+// table; everything else returns the legacy no-op stub.
+function mockInsert(table: { __name?: string }) {
+  if (table?.__name === 'triageDecisions') {
+    return {
+      values: (vals: Record<string, unknown>) => {
+        const id = `triage-${nextTriageDecisionId++}`;
+        const stored = { ...vals, id, decidedAt: new Date(), reviewed: vals.reviewed ?? false };
+        return {
+          onConflictDoUpdate: ({ set }: { target?: unknown; set: Record<string, unknown> }) => {
+            // Check for an existing row with the same (mapId, externalId)
+            // and update it; otherwise insert.
+            const existing = [...dbState.triageDecisions.values()].find(
+              (r) => r.mapId === vals.mapId && r.externalId === vals.externalId,
+            );
+            return {
+              returning: async () => {
+                if (existing) {
+                  Object.assign(existing, set);
+                  return [{ id: existing.id }];
+                }
+                dbState.triageDecisions.set(id, stored);
+                return [{ id }];
+              },
+            };
+          },
+          returning: async () => {
+            dbState.triageDecisions.set(id, stored);
+            return [{ id }];
+          },
+        };
+      },
+    };
+  }
+  return {
+    values: () => ({
+      returning: async () => [],
+    }),
+  };
+}
+
+// Builder for `update(table)` that handles triageDecisions placedNodeId
+// stamping after a node was auto-created; everything else is a no-op.
+function mockUpdate(table: { __name?: string }) {
+  if (table?.__name === 'triageDecisions') {
+    return {
+      set: (vals: Record<string, unknown>) => ({
+        where: async (pred: unknown) => {
+          // The where predicate filters by triageDecisions.id —
+          // walk the in-memory map and apply.
+          const p = pred as { __pred?: true; check?: (row: Record<string, unknown>) => boolean };
+          for (const row of dbState.triageDecisions.values()) {
+            if (p?.check?.(row as unknown as Record<string, unknown>)) {
+              Object.assign(row, vals);
+            }
+          }
+        },
+      }),
+    };
+  }
+  return {
+    set: () => ({
+      where: async () => undefined,
+    }),
+  };
 }
 
 vi.mock('../../db/connection.js', () => ({
@@ -191,16 +284,8 @@ vi.mock('../../db/connection.js', () => ({
       return dbExecute(sqlObj);
     },
     select: (cols?: unknown) => mockSelect(cols),
-    update: () => ({
-      set: () => ({
-        where: async () => undefined,
-      }),
-    }),
-    insert: () => ({
-      values: () => ({
-        returning: async () => [],
-      }),
-    }),
+    update: (table: { __name?: string }) => mockUpdate(table),
+    insert: (table: { __name?: string }) => mockInsert(table),
     transaction: async <T>(cb: (tx: ReturnType<typeof buildTxHandle>) => Promise<T>): Promise<T> => {
       const releaseHooks: Array<() => void> = [];
       const tx = buildTxHandle(releaseHooks);
@@ -240,18 +325,31 @@ vi.mock('../../db/schema.js', () => {
       githubInboxNodeId: col('githubInboxNodeId'),
       rootNodeId: col('rootNodeId'),
       workspaceId: col('workspaceId'),
+      triageEnabled: col('triageEnabled'),
+      name: col('name'),
+      description: col('description'),
     },
     nodes: {
       __name: 'nodes',
       id: col('id'),
       mapId: col('mapId'),
+      parentId: col('parentId'),
       externalLinks: col('externalLinks'),
+      text: col('text'),
+      description: col('description'),
+      childrenOrder: col('childrenOrder'),
     },
     integrations: {
       __name: 'integrations',
       workspaceId: col('workspaceId'),
       provider: col('provider'),
       enabled: col('enabled'),
+    },
+    triageDecisions: {
+      __name: 'triageDecisions',
+      id: col('id'),
+      mapId: col('mapId'),
+      externalId: col('externalId'),
     },
   };
 });
@@ -275,6 +373,44 @@ vi.mock('drizzle-orm', async () => {
     }),
   };
 });
+
+// Triage + mapContext mocks. Triage tests live in their own file with a
+// fake provider; here we only care about ensureNodeForIssue's branching.
+// `triageMockResponse` is the next decision the mock returns, set per
+// test. `buildMapContext` returns a static minimal context — the triage
+// fork uses it to validate epic UUIDs only.
+let triageMockResponse: {
+  decision: 'place' | 'skip' | 'uncertain';
+  parentNodeId?: string;
+  reason: string;
+  confidence: number;
+} = { decision: 'uncertain', reason: 'default-mock', confidence: 0 };
+const triageMockCalls: Array<{ issueNumber: number; mapId: string }> = [];
+
+vi.mock('../triage.js', () => ({
+  triageIssue: vi.fn(async (input: { issue: { number: number }; mapContext: { mapId: string } }) => {
+    triageMockCalls.push({
+      issueNumber: input.issue.number,
+      mapId: input.mapContext.mapId,
+    });
+    return { ...triageMockResponse };
+  }),
+  TRIAGE_AUTO_APPLY_CONFIDENCE: 75,
+}));
+
+const mapContextEpics = [
+  { nodeId: 'epic-1', title: 'Frontend', description: 'UI' },
+  { nodeId: 'epic-2', title: 'Backend', description: 'API' },
+];
+vi.mock('../mapContext.js', () => ({
+  buildMapContext: vi.fn(async (mapId: string) => ({
+    mapId,
+    mapName: `map-${mapId}`,
+    mapDescription: '',
+    epics: mapContextEpics,
+  })),
+  invalidateMapContext: vi.fn(),
+}));
 
 // Hook for tests that want updateNode to throw — used by the orphan
 // rollback test to simulate a failure between createNode and the end of
@@ -425,9 +561,13 @@ function resetState() {
   dbState.maps.clear();
   dbState.nodes.clear();
   dbState.integrations = [];
+  dbState.triageDecisions.clear();
   updateNodeCalls.length = 0;
   createNodeCalls.length = 0;
   advisoryLocksTaken.length = 0;
+  triageMockCalls.length = 0;
+  triageMockResponse = { decision: 'uncertain', reason: 'default-mock', confidence: 0 };
+  nextTriageDecisionId = 1;
   getNodeMock.mockReset();
   updateNodeThrowOnNthCall = null;
   updateNodeMockShouldThrow = null;
@@ -777,5 +917,204 @@ describe('findIngestTargetMaps', () => {
     const targets = await findIngestTargetMaps('owner', 'repo');
     expect(targets.length).toBeGreaterThan(0);
     expect(targets[0]).toMatchObject({ mapId: 'm1', createdBy: 'u1' });
+  });
+});
+
+// ── Triage integration (#92, #93) ───────────────────────────────
+
+describe('ensureNodeForIssue — triage fork', () => {
+  const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
+
+  it('triage_enabled=false → falls through to existing inbox path (no triage call)', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: false,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(100), ctx);
+
+    expect(result.status).toBe('created');
+    expect(result.nodeId).toBeDefined();
+    // No triage row was written.
+    expect(dbState.triageDecisions.size).toBe(0);
+    // The triage service was NOT called.
+    expect(triageMockCalls.length).toBe(0);
+    // Node was placed under the inbox, not under an epic.
+    expect(createNodeCalls[0]).toMatchObject({
+      mapId: 'm1',
+      parentId: 'inbox-1',
+    });
+  });
+
+  it('triage_enabled=true + place high-confidence → node created under suggested parent', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'matches Frontend',
+      confidence: 90,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(101), ctx);
+
+    expect(result.status).toBe('created');
+    expect(result.triage).toMatchObject({
+      decision: 'place',
+      confidence: 90,
+    });
+    // Node created under the LLM-suggested epic, NOT under the inbox.
+    expect(createNodeCalls.length).toBe(1);
+    expect(createNodeCalls[0]).toMatchObject({
+      mapId: 'm1',
+      parentId: 'epic-1',
+      text: '#101 Issue 101',
+    });
+    // Triage row persisted with decided_by='auto'.
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      mapId: 'm1',
+      decision: 'place',
+      decidedBy: 'auto',
+      reviewed: false,
+    });
+    // placed_node_id was stamped after the node was created.
+    expect(rows[0].placedNodeId).toBeDefined();
+  });
+
+  it('triage_enabled=true + place LOW-confidence → triage row persisted, NO node created', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-1',
+      reason: 'plausible but unsure',
+      confidence: 60, // below 75 threshold
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(102), ctx);
+
+    expect(result.status).toBe('triaged_low_confidence');
+    expect(result.nodeId).toBeUndefined();
+    expect(createNodeCalls.length).toBe(0);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({
+      decision: 'place',
+      confidence: 60,
+      decidedBy: 'auto',
+    });
+    // placed_node_id is null since no node was created.
+    expect(rows[0].placedNodeId).toBeNull();
+  });
+
+  it('triage_enabled=true + skip → triage row persisted, no node created', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'closed bug, unrelated component',
+      confidence: 92,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(103), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls.length).toBe(0);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ decision: 'skip' });
+  });
+
+  it('triage_enabled=true + uncertain → triage row persisted, no node created', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'uncertain',
+      reason: "couldn't decide",
+      confidence: 40,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(104), ctx);
+
+    expect(result.status).toBe('triaged_uncertain');
+    expect(createNodeCalls.length).toBe(0);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ decision: 'uncertain' });
+  });
+
+  it('idempotent: a triaged issue already linked to a node short-circuits to skipped_exists', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    dbState.nodes.set('preexisting', {
+      id: 'preexisting',
+      mapId: 'm1',
+      parentId: 'epic-1',
+      externalLinks: [{ provider: 'github', externalId: 'owner/repo#105' }],
+    });
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(105), ctx);
+
+    expect(result.status).toBe('skipped_exists');
+    // Triage was NOT called — the precheck short-circuited before paying
+    // LLM tokens.
+    expect(triageMockCalls.length).toBe(0);
+    expect(dbState.triageDecisions.size).toBe(0);
+  });
+
+  it('triage_enabled=true + place high-confidence with invalid parent UUID → downgrades to uncertain', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // LLM returned a UUID that isn't in the offered epics list. Triage
+    // is supposed to downgrade these to uncertain itself, but the
+    // ingest pipeline runs the same check as belt-and-braces.
+    triageMockResponse = {
+      decision: 'place',
+      parentNodeId: 'epic-NEVER',
+      reason: 'I made this up',
+      confidence: 95,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(106), ctx);
+
+    expect(result.status).toBe('triaged_uncertain');
+    expect(createNodeCalls.length).toBe(0);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows[0]).toMatchObject({ decision: 'uncertain' });
   });
 });

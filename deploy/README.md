@@ -144,6 +144,37 @@ NODE_ENV=production
 # place so the Kuma alarm escalates to a human. Set to 0 to disable
 # auto-backfill entirely (audit still runs + alarms). Default: 50.
 # AUTO_BACKFILL_MAX_PER_DAY=50
+
+# ── AI triage (#92, #93) ────────────────────────────────────────
+# Triage is opt-in PER MAP via the `maps.triage_enabled` column
+# (default false). When true, new GitHub issues for that map go
+# through `triageIssue()` before any node is created; the LLM
+# decides skip / place / uncertain and the choice is persisted in
+# the `triage_decisions` table. High-confidence place-decisions
+# auto-create the node under the suggested epic; everything else
+# waits for human review via the CRUD routes under
+# /api/maps/:id/triage-decisions.
+#
+# Requires ANTHROPIC_API_KEY to be set. There is no Ollama fallback
+# for triage in Phase 0 — the prompt-caching path that makes triage
+# cost-effective is Anthropic-specific.
+#
+# To enable triage on a map (Phase 0 has no UI yet — direct SQL):
+#   UPDATE maps SET triage_enabled = TRUE WHERE id = '<map-uuid>';
+#
+# Optional — model used by `triageIssue()`. Defaults to a Haiku-class
+# model since triage is cheap classification. Override if you want
+# Sonnet for higher accuracy. Set to any Anthropic model id.
+# TRIAGE_MODEL=claude-haiku-4-5
+#
+# Optional — confidence threshold (0-100) above which a `place`
+# decision is auto-applied. Below this, the decision is persisted
+# but no node is created — operator must review and override.
+# Default 75. Lower = more auto-apply (fewer manual reviews, more
+# false positives). Higher = stricter (more reviews queued, fewer
+# false positives). Values outside [0, 100] fall back to 75 with a
+# console warning.
+# TRIAGE_AUTO_APPLY_CONFIDENCE=75
 EOF
 chmod 640 /etc/mindblown/api.env
 chown root:mindblown /etc/mindblown/api.env
