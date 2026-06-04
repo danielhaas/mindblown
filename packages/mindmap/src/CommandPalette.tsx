@@ -237,33 +237,47 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   // Filter commands
   const filtered = useMemo(() => {
     let list = commands;
-    // For goto items: union of (fuzzy match) and (top semantic match) so
-    // conceptually-related nodes surface even without a substring hit.
-    if (query) {
+    const q = query.trim().toLowerCase();
+
+    // Score goto items so substring matches outrank semantic-only matches.
+    // Lower score = better. null = no match.
+    const scoreGoto = (label: string, nodeId: string): number | null => {
+      const t = label.toLowerCase();
+      // Strip the "Go to: " prefix so substring matching looks at the node text
+      const text = t.startsWith('go to: ') ? t.slice(7) : t;
+      const idx = text.indexOf(q);
+      if (idx === 0) return 0;                          // prefix hit
+      if (idx > 0) return 1 + idx / 1000;               // earlier substring hit wins
+      const semIdx = semanticRank.get(nodeId);
+      if (semIdx !== undefined) return 100 + semIdx;    // semantic-only — far below substring
+      return null;
+    };
+
+    if (q) {
       list = list.filter((c) => {
         if (c.id.startsWith('goto-')) {
           const nodeId = c.id.slice('goto-'.length);
-          return fuzzyMatch(query, c.label) || semanticRank.has(nodeId);
+          return scoreGoto(c.label, nodeId) !== null;
         }
-        return fuzzyMatch(query, c.label);
+        return fuzzyMatch(q, c.label);
       });
     }
     // Hide selection-required commands when nothing selected (unless searching)
-    if (!selectedNodeId && !query) {
+    if (!selectedNodeId && !q) {
       list = list.filter((c) => !c.requiresSelection);
     }
     // Limit goto results to avoid huge list
     const gotos = list.filter((c) => c.id.startsWith('goto-'));
     const nonGotos = list.filter((c) => !c.id.startsWith('goto-'));
-    if (gotos.length > 10 && !query) {
+    if (gotos.length > 10 && !q) {
       return nonGotos;
     }
-    // Sort goto by semantic rank (lower index = more relevant), then everything else
-    if (semanticRank.size > 0) {
+    // Sort goto by computed score
+    if (q) {
       gotos.sort((a, b) => {
-        const ai = semanticRank.get(a.id.slice('goto-'.length)) ?? Infinity;
-        const bi = semanticRank.get(b.id.slice('goto-'.length)) ?? Infinity;
-        return ai - bi;
+        const sa = scoreGoto(a.label, a.id.slice('goto-'.length)) ?? Infinity;
+        const sb = scoreGoto(b.label, b.id.slice('goto-'.length)) ?? Infinity;
+        return sa - sb;
       });
     }
     if (gotos.length > 20) {
