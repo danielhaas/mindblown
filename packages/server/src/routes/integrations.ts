@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { integrations, versions, nodes } from '../db/schema.js';
+import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import {
   createGitHubIssue,
@@ -24,6 +24,8 @@ import {
   ensureNodeForIssue,
   findNodesByExternalIds,
 } from '../sync/githubIngest.js';
+import { triageIssue } from '../sync/triage.js';
+import { buildMapContext } from '../sync/mapContext.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
@@ -162,6 +164,116 @@ async function findNodeByExternalId(externalId: string): Promise<string | null> 
 async function getWorkspaceIdForMap(mapId: string): Promise<string | null> {
   const [row] = await db.select({ workspaceId: maps.workspaceId }).from(maps).where(eq(maps.id, mapId));
   return row?.workspaceId ?? null;
+}
+
+// ── Triage lifecycle helper (#95 Phase 2) ─────────────────────────
+//
+// Sync existing triage_decisions rows after an `issues.reopened`
+// webhook. Two responsibilities:
+//   1. Refresh issue_state='open' on every row matching externalId,
+//      regardless of operator-reviewed state or map's triage_enabled.
+//      The column is a passive mirror of GH state, used by the UI
+//      filter; keeping it stale would degrade Phase 2's open/closed
+//      filter quality.
+//   2. For maps whose triage_enabled is still true AND whose row is
+//      NOT operator-reviewed, re-run `triageIssue` with the current
+//      map context and upsert the new decision in place.
+//      Operator-reviewed rows are immutable here — the operator
+//      explicitly hits Re-classify in the UI to override their own
+//      call (#100 Round 2 / mindblown#99 fix 2).
+//
+// Re-triage failures per-row are swallowed (warn + continue) so a
+// flaky LLM doesn't block the issue_state refresh on sibling rows.
+//
+// Exported for tests; called from the webhook handler when
+// payloadAction === 'reopened'.
+export async function syncTriageRowsForReopen(
+  externalId: string,
+  issue: GitHubIssue | undefined,
+): Promise<void> {
+  // (1) Refresh issue_state on every matching row.
+  await db
+    .update(triageDecisions)
+    .set({ issueState: 'open' })
+    .where(eq(triageDecisions.externalId, externalId));
+
+  // (2) Re-triage every (map, externalId) where the map is still
+  // triage_enabled AND the row is not operator-reviewed.
+  const candidates = await db
+    .select({
+      id: triageDecisions.id,
+      mapId: triageDecisions.mapId,
+      issueTitle: triageDecisions.issueTitle,
+      placedNodeId: triageDecisions.placedNodeId,
+      reviewed: triageDecisions.reviewed,
+      decidedBy: triageDecisions.decidedBy,
+    })
+    .from(triageDecisions)
+    .where(eq(triageDecisions.externalId, externalId));
+
+  for (const row of candidates) {
+    // Operator-reviewed guard.
+    if (row.reviewed === true && row.decidedBy === 'operator') {
+      continue;
+    }
+    // Map-level triage_enabled gate.
+    const [mapRow] = await db
+      .select({ triageEnabled: maps.triageEnabled })
+      .from(maps)
+      .where(eq(maps.id, row.mapId));
+    if (!mapRow || mapRow.triageEnabled !== true) {
+      continue;
+    }
+
+    try {
+      const mapContext = await buildMapContext(row.mapId);
+      // Prefer the webhook-supplied issue body / title (operator may
+      // have edited GH-side); fall back to the row title if the
+      // payload didn't carry one (defensive — `issues.reopened`
+      // always includes the issue object).
+      const decision = await triageIssue({
+        issue: issue ?? {
+          id: 0,
+          number: 0,
+          title: row.issueTitle,
+          body: null,
+          state: 'open',
+          labels: [],
+          assignees: [],
+          milestone: null,
+          html_url: '',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+        mapContext,
+      });
+
+      // Clear placedNodeId when reclassify lands on a non-place
+      // decision and we had a placed node previously (mindblown#99
+      // fix 4 — orphan cleanup).
+      const clearPlacedNode =
+        decision.decision !== 'place' && row.placedNodeId != null;
+      await db
+        .update(triageDecisions)
+        .set({
+          decision: decision.decision,
+          reason: decision.reason,
+          confidence: decision.confidence,
+          decidedBy: 'auto',
+          decidedAt: new Date(),
+          reviewed: false,
+          reviewedAt: null,
+          reviewedBy: null,
+          ...(clearPlacedNode ? { placedNodeId: null } : {}),
+        })
+        .where(eq(triageDecisions.id, row.id));
+    } catch (err) {
+      console.warn(
+        `[triage-reopen] re-triage failed for row ${row.id} (map ${row.mapId}):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
 }
 
 // ── Routes ────────────────────────────────────────────────────────
@@ -1061,6 +1173,70 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             );
           }
         }
+      }
+    }
+
+    // ── Triage lifecycle: issues.reopened → re-triage (#95 Phase 2) ──
+    //
+    // Two passes per (map, externalId) where a triage_decisions row exists:
+    //   (a) Always refresh `issue_state='open'` so the row reflects the
+    //       current GH state — even if the map's triage_enabled was
+    //       flipped off between the original decision and now, AND even
+    //       when the row is operator-reviewed. issue_state is the
+    //       row-level mirror of GH state, not a triage decision itself.
+    //   (b) If the map still has triage_enabled=true AND the row is
+    //       NOT operator-reviewed (reviewed=true AND decidedBy='operator'),
+    //       re-run triageIssue and upsert the new decision in place.
+    //       Operator-reviewed rows are immutable — the operator's call
+    //       stands until they explicitly hit Re-classify. This mirrors
+    //       the precheck-tx guard in ensureNodeForIssueViaTriage
+    //       (mindblown#99 fix 2 / Ray's #100 Round 2 lost-race fix).
+    //
+    // We run this BEFORE the close/reopen state-sync block below because:
+    //   - state-sync mutates the node row (status/percentComplete); the
+    //     triage row update is independent (it's just metadata audit).
+    //   - if re-triage produces a new auto-applied node placement, the
+    //     state-sync block still handles the node-level open/close
+    //     transition on whatever node was placed.
+    //
+    // Failures here are swallowed (warn + continue) — the webhook still
+    // needs to acknowledge the underlying state-sync.
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      payloadAction === 'reopened'
+    ) {
+      try {
+        const externalId = `${repoFullName}#${issuePayload.number}`;
+        await syncTriageRowsForReopen(externalId, payload.issue as GitHubIssue | undefined);
+      } catch (err) {
+        console.warn(
+          '[triage-reopen] failed to refresh triage rows:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+    // Mirror the issue_state for `closed` events too — same audit-row
+    // contract, no re-triage needed. (The reclassify branch is
+    // reopen-only; closed events just keep the audit row in sync.)
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      payloadAction === 'closed'
+    ) {
+      try {
+        const externalId = `${repoFullName}#${issuePayload.number}`;
+        await db
+          .update(triageDecisions)
+          .set({ issueState: 'closed' })
+          .where(eq(triageDecisions.externalId, externalId));
+      } catch (err) {
+        console.warn(
+          '[triage-close] failed to refresh triage rows:',
+          err instanceof Error ? err.message : err,
+        );
       }
     }
 
