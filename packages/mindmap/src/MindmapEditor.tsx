@@ -521,7 +521,13 @@ export function MindmapEditor() {
     attempt();
   }, [tryFit]);
 
-  // Expose fitToScreen, zoomIn, zoomOut on the window for the command palette / App
+  // Pan target — when set, a useEffect below pans to the node once it
+  // appears in layoutMap (which may be on a later render if focus changes
+  // first). Cleared after pan, or after a few retries if the node never
+  // becomes visible.
+  const [panTarget, setPanTarget] = useState<{ id: string; attempts: number } | null>(null);
+
+  // Expose fitToScreen, zoomIn, zoomOut, panToNode on the window for the command palette / App
   useEffect(() => {
     (window as any).__mindmapFitToScreen = fitToScreen;
     (window as any).__mindmapZoomIn = () => {
@@ -530,12 +536,43 @@ export function MindmapEditor() {
     (window as any).__mindmapZoomOut = () => {
       setView((v) => ({ ...v, zoom: Math.max(MIN_ZOOM, v.zoom / 1.2) }));
     };
+    (window as any).__mindmapPanToNode = (id: string) => {
+      setPanTarget({ id, attempts: 0 });
+    };
     return () => {
       delete (window as any).__mindmapFitToScreen;
       delete (window as any).__mindmapZoomIn;
       delete (window as any).__mindmapZoomOut;
+      delete (window as any).__mindmapPanToNode;
     };
   }, [fitToScreen]);
+
+  // Fulfil pending panTarget once layout positions the node
+  useEffect(() => {
+    if (!panTarget) return;
+    const ln = layoutMap.get(panTarget.id);
+    const svg = svgRef.current;
+    if (!ln || !svg) {
+      // Layout doesn't include this node yet — retry on next layout change
+      // up to a small bound, then give up (avoids leaks if node never appears).
+      if (panTarget.attempts >= 10) {
+        setPanTarget(null);
+        return;
+      }
+      const t = setTimeout(() => {
+        setPanTarget((cur) => (cur && cur.id === panTarget.id ? { id: cur.id, attempts: cur.attempts + 1 } : cur));
+      }, 60);
+      return () => clearTimeout(t);
+    }
+    const rect = svg.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return;
+    setView((v) => ({
+      ...v,
+      panX: rect.width / 2 - ln.x * v.zoom,
+      panY: rect.height / 2 - ln.y * v.zoom,
+    }));
+    setPanTarget(null);
+  }, [panTarget, layoutMap]);
 
   // ── Fit to view on first render ────────────────────────────
 

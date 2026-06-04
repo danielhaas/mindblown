@@ -109,6 +109,8 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   const expandAll = useMindmapStore((s) => s.expandAll);
   const collapseAll = useMindmapStore((s) => s.collapseAll);
   const selectNode = useMindmapStore((s) => s.selectNode);
+  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
+  const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
   const setLayoutType = useMindmapStore((s) => s.setLayoutType);
 
@@ -248,13 +250,24 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
         id: `goto-${n.id}`,
         label: `Go to: ${n.text}`,
         section: 'Go to node',
-        action: () => selectNode(n.id),
+        action: () => {
+          selectNode(n.id);
+          // Drill so the node is in the visible subtree even if hidden by
+          // depth / collapse. Skip if already focused on the right parent.
+          if (n.id !== rootNodeId) {
+            const targetFocus = n.parentId && n.parentId !== rootNodeId ? n.parentId : null;
+            setFocusNode(targetFocus);
+          } else {
+            setFocusNode(null);
+          }
+          (window as any).__mindmapPanToNode?.(n.id);
+        },
       });
     }
 
     return cmds;
   }, [
-    selectedNodeId, nodes, addNode, deleteNode, updateNode, toggleCollapse,
+    selectedNodeId, nodes, rootNodeId, setFocusNode, addNode, deleteNode, updateNode, toggleCollapse,
     expandAll, collapseAll, selectNode, setActiveView, setLayoutType,
     onFitToScreen, onZoomIn, onZoomOut,
   ]);
