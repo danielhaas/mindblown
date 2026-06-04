@@ -910,6 +910,21 @@ export function MindmapEditor() {
         return;
       }
 
+      // Don't intercept when focus is in a form control or contenteditable —
+      // AI Chat input, CommandPalette, dialogs etc. need their own keys.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === 'INPUT' ||
+          tag === 'TEXTAREA' ||
+          tag === 'SELECT' ||
+          target.isContentEditable
+        ) {
+          return;
+        }
+      }
+
       // Cmd+A to select all
       if ((e.metaKey || e.ctrlKey) && e.key === 'a') {
         e.preventDefault();
