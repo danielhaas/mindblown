@@ -990,3 +990,131 @@ export async function* aiChat(
     throw err;
   }
 }
+
+// ── Triage decisions (#92, #93, #94) ─────────────────────────────
+//
+// Mirrors the server-side `triage_decisions` table. Operator drives
+// review via three actions: confirm (mark reviewed), override (pick
+// a different placement), and reclassify (re-run the LLM).
+
+export type TriageDecisionKind = 'place' | 'skip' | 'uncertain';
+
+export interface TriageDecision {
+  id: string;
+  mapId: string;
+  externalId: string; // "owner/repo#NNN"
+  issueTitle: string;
+  issueState: 'open' | 'closed';
+  decision: TriageDecisionKind;
+  reason: string;
+  confidence: number; // 0-100
+  placedNodeId: string | null;
+  decidedAt: string;
+  decidedBy: 'auto' | 'operator';
+  reviewed: boolean;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+}
+
+export interface ListTriageDecisionsFilters {
+  reviewed?: boolean;
+  decision?: TriageDecisionKind;
+  limit?: number;
+}
+
+export interface ListTriageDecisionsResponse {
+  mapId: string;
+  total: number;
+  decisions: TriageDecision[];
+}
+
+export function listTriageDecisions(
+  mapId: string,
+  filters: ListTriageDecisionsFilters = {},
+): Promise<ListTriageDecisionsResponse> {
+  const qs = new URLSearchParams();
+  if (filters.reviewed !== undefined) qs.set('reviewed', String(filters.reviewed));
+  if (filters.decision) qs.set('decision', filters.decision);
+  if (filters.limit) qs.set('limit', String(filters.limit));
+  const q = qs.toString();
+  return request<ListTriageDecisionsResponse>(
+    `/api/maps/${mapId}/triage-decisions${q ? `?${q}` : ''}`,
+  );
+}
+
+export interface OverrideTriageBody {
+  decision: TriageDecisionKind;
+  parentNodeId?: string;
+  reason?: string;
+}
+
+export interface OverrideTriageResponse {
+  decisionId: string;
+  status: 'placed' | 'moved' | 'already_placed' | 'skip' | 'uncertain';
+  nodeId: string | null;
+}
+
+export function overrideTriageDecision(
+  mapId: string,
+  decisionId: string,
+  body: OverrideTriageBody,
+): Promise<OverrideTriageResponse> {
+  return request<OverrideTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/${decisionId}/override`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export interface ReclassifyTriageResponse {
+  decisionId: string;
+  decision: TriageDecisionKind;
+  confidence: number;
+  reason: string;
+  parentNodeId: string | null;
+  /**
+   * The (potentially-just-nulled) placedNodeId after reclassify. When
+   * a previously-placed row reclassifies to skip/uncertain, the server
+   * nulls this; surfacing it here saves the client a refetch.
+   * (#100 Round 2 nit from Ray.)
+   */
+  placedNodeId: string | null;
+}
+
+export function reclassifyTriageDecision(
+  mapId: string,
+  decisionId: string,
+): Promise<ReclassifyTriageResponse> {
+  return request<ReclassifyTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/${decisionId}/reclassify`,
+    { method: 'POST' },
+  );
+}
+
+export interface ConfirmTriageResponse {
+  decisionId: string;
+  status: 'confirmed';
+  nodeId: string | null;
+}
+
+/**
+ * Confirm a triage decision (mark reviewed). Hits the dedicated
+ * `/confirm` route — does NOT send a `parentNodeId`. The original
+ * implementation routed through `overrideTriageDecision` with
+ * `parentNodeId: decision.placedNodeId`, which fell through the
+ * override's already-placed branch and self-loop'd the node
+ * (`moveNode(placedNodeId, placedNodeId)`). Ray flagged this on the
+ * #100 review — splitting into a dedicated route makes the misuse
+ * impossible at the API boundary.
+ */
+export function confirmTriageDecision(
+  mapId: string,
+  decision: TriageDecision,
+): Promise<ConfirmTriageResponse> {
+  return request<ConfirmTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/${decision.id}/confirm`,
+    { method: 'POST' },
+  );
+}

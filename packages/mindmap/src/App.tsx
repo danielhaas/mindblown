@@ -9,6 +9,8 @@ import { ListView } from './ListView.js';
 import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
 import { BlockedPanel } from './BlockedPanel.js';
+import { TriagePanel } from './TriagePanel.js';
+import { listTriageDecisions } from './api.js';
 import { CommandPalette } from './CommandPalette.js';
 import { QuickAdd } from './QuickAdd.js';
 import { HillChart } from './HillChart.js';
@@ -635,6 +637,65 @@ function BlockedIndicator({
   );
 }
 
+// ── Triage Indicator (#94) ────────────────────────────────────
+
+function TriageIndicator({
+  count,
+  panelOpen,
+  onOpenPanel,
+}: {
+  count: number;
+  panelOpen: boolean;
+  onOpenPanel: () => void;
+}) {
+  const hasPending = count > 0;
+  const fg = panelOpen ? '#1d4ed8' : hasPending ? '#1d4ed8' : '#64748b';
+  const bg = panelOpen ? '#dbeafe' : '#fff';
+  const border = panelOpen ? '#93c5fd' : hasPending ? '#bfdbfe' : '#e2e8f0';
+  return (
+    <button
+      data-testid="triage-indicator"
+      onClick={onOpenPanel}
+      title={hasPending ? `${count} triage decision(s) pending review` : 'Triage'}
+      style={{
+        padding: '3px 10px',
+        borderRadius: 4,
+        border: `1px solid ${border}`,
+        fontSize: 11,
+        fontWeight: 600,
+        fontFamily: 'inherit',
+        cursor: 'pointer',
+        background: bg,
+        color: fg,
+        transition: 'all 0.15s',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 4,
+      }}
+    >
+      <span>🧭</span>
+      <span>Triage</span>
+      {hasPending && (
+        <span
+          data-testid="triage-indicator-count"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            background: panelOpen ? '#1d4ed8' : '#bfdbfe',
+            color: panelOpen ? '#fff' : '#1d4ed8',
+            padding: '0 5px',
+            borderRadius: 8,
+            minWidth: 14,
+            textAlign: 'center',
+          }}
+        >
+          {count}
+        </span>
+      )}
+    </button>
+  );
+}
+
 // ── Sprint Indicator ──────────────────────────────────────────
 
 function SprintIndicator({
@@ -877,6 +938,8 @@ export function App() {
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
+  const [triagePanelOpen, setTriagePanelOpen] = useState(false);
+  const [triagePendingCount, setTriagePendingCount] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [importExportOpen, setImportExportOpen] = useState(false);
@@ -897,6 +960,38 @@ export function App() {
   useEffect(() => {
     checkAuth().finally(() => setAuthChecked(true));
   }, [checkAuth]);
+
+  // Poll the pending-triage count for the active map. Cheap (one
+  // SELECT, server-side-filtered), used by the TriageIndicator badge.
+  // The panel itself does its own pull when opened — this is just for
+  // the always-visible counter. We re-poll when the panel closes so
+  // the badge reflects post-action state. 60s heartbeat covers the
+  // "operator-on-GitHub-edits-an-issue" path; for the real-time path
+  // Phase 1 follow-up will wire a `triage:decision_*` broadcast.
+  useEffect(() => {
+    if (!currentMapId) {
+      setTriagePendingCount(0);
+      return;
+    }
+    let cancelled = false;
+    const tick = () => {
+      listTriageDecisions(currentMapId, { reviewed: false, limit: 200 })
+        .then((res) => {
+          if (cancelled) return;
+          setTriagePendingCount(res.total);
+        })
+        .catch(() => {
+          // Triage may not be opted in for this map — silently zero out.
+          if (!cancelled) setTriagePendingCount(0);
+        });
+    };
+    tick();
+    const interval = window.setInterval(tick, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [currentMapId, triagePanelOpen]);
 
   // Handle GitHub OAuth callback redirect (?gh=connected or ?gh=error)
   useEffect(() => {
@@ -1349,7 +1444,16 @@ export function App() {
             onFilterChange={setActiveCycleFilter}
             onOpenPanel={() => {
               setSprintPanelOpen(!sprintPanelOpen);
-              if (!sprintPanelOpen) setBlockedPanelOpen(false);
+              if (!sprintPanelOpen) {
+                setBlockedPanelOpen(false);
+                // Mutual-exclusion fix from Ray's #100 review: the
+                // Blocked + Triage handlers below close Sprint when
+                // they open, but Sprint wasn't symmetrically closing
+                // Triage. Result: the Triage indicator stayed
+                // highlighted while Sprint rendered (panel precedence
+                // chain at the right-dock favours Sprint).
+                setTriagePanelOpen(false);
+              }
             }}
             panelOpen={sprintPanelOpen}
           />
@@ -1362,7 +1466,25 @@ export function App() {
             panelOpen={blockedPanelOpen}
             onOpenPanel={() => {
               setBlockedPanelOpen(!blockedPanelOpen);
-              if (!blockedPanelOpen) setSprintPanelOpen(false);
+              if (!blockedPanelOpen) {
+                setSprintPanelOpen(false);
+                setTriagePanelOpen(false);
+              }
+            }}
+          />
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* Triage indicator (#94) */}
+          <TriageIndicator
+            count={triagePendingCount}
+            panelOpen={triagePanelOpen}
+            onOpenPanel={() => {
+              setTriagePanelOpen(!triagePanelOpen);
+              if (!triagePanelOpen) {
+                setSprintPanelOpen(false);
+                setBlockedPanelOpen(false);
+              }
             }}
           />
 
@@ -1735,6 +1857,11 @@ export function App() {
           <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
         ) : sprintPanelOpen ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
+        ) : triagePanelOpen && currentMapId ? (
+          <TriagePanel
+            mapId={currentMapId}
+            onClose={() => setTriagePanelOpen(false)}
+          />
         ) : (
           <PropertyPanel />
         )}

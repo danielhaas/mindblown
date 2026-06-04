@@ -181,6 +181,11 @@ const mocks = vi.hoisted(() => ({
     mapId: 'map-1',
     parentId: 'epic-1',
   })),
+  moveNodeMock: vi.fn(async (nodeId: string, newParentId: string) => ({
+    id: nodeId,
+    mapId: 'map-1',
+    parentId: newParentId,
+  })),
   triageIssueMock: vi.fn(async () => ({
     decision: 'place' as const,
     parentNodeId: 'epic-1',
@@ -190,10 +195,12 @@ const mocks = vi.hoisted(() => ({
 }));
 const createNodeMock = mocks.createNodeMock;
 const updateNodeMock = mocks.updateNodeMock;
+const moveNodeMock = mocks.moveNodeMock;
 const triageIssueMock = mocks.triageIssueMock;
 vi.mock('../../db/nodes.js', () => ({
   createNode: mocks.createNodeMock,
   updateNode: mocks.updateNodeMock,
+  moveNode: mocks.moveNodeMock,
 }));
 
 // Permission stub — the test toggles `permissionLevel` to drive the gate.
@@ -242,6 +249,7 @@ beforeEach(() => {
   permissionLevel = 'edit';
   createNodeMock.mockClear();
   updateNodeMock.mockClear();
+  moveNodeMock.mockClear();
   triageIssueMock.mockClear();
 });
 
@@ -502,6 +510,36 @@ describe('POST .../override', () => {
     expect(row.reviewed).toBe(true);
   });
 
+  // #100 Round 2 — defense-in-depth at the override route. The
+  // dedicated /confirm route is the primary fix; this assertion
+  // guarantees the override route ALSO rejects the malformed input so
+  // a future caller (curl, MCP, alt UI) can't re-trigger the self-loop
+  // by sending parentNodeId === placedNodeId.
+  it('place + parentNodeId === placedNodeId → 400 SELF_LOOP_BLOCKED, moveNode NOT called', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+    });
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'placed-node' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error?.code).toBe('SELF_LOOP_BLOCKED');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    expect(createNodeMock).not.toHaveBeenCalled();
+    // Row was NOT marked reviewed by the rejected request.
+    const row = triageRows.get('tr-1')!;
+    expect(row.reviewed).toBe(false);
+    expect(row.decidedBy).toBe('auto');
+  });
+
   it('place when placedNodeId already exists → does not double-create', async () => {
     seedRow({
       id: 'tr-1',
@@ -521,6 +559,184 @@ describe('POST .../override', () => {
     expect(res.json().status).toBe('already_placed');
     expect(res.json().nodeId).toBe('existing-node');
     expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
+  // mindblown#99 fix 3 — override of an already-placed node with a
+  // different parentNodeId must call moveNode + broadcast node:moved,
+  // not silently drop the reparent.
+  it('place + already-placed + new parentNodeId → calls moveNode and broadcasts', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+    });
+    // Both old + new parents are in this map.
+    nodes.set('epic-A', { id: 'epic-A', mapId: 'map-1', parentId: 'root-1' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    // The placed node currently lives under epic-A.
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('moved');
+    expect(res.json().nodeId).toBe('placed-node');
+    expect(moveNodeMock).toHaveBeenCalledOnce();
+    expect(moveNodeMock.mock.calls[0][0]).toBe('placed-node');
+    expect(moveNodeMock.mock.calls[0][1]).toBe('epic-B');
+    expect(createNodeMock).not.toHaveBeenCalled();
+    // node:moved broadcast carries the new parent so any open UI updates.
+    expect(broadcastMock).toHaveBeenCalledWith(
+      'map-1',
+      expect.objectContaining({
+        type: 'node:moved',
+        nodeId: 'placed-node',
+        newParentId: 'epic-B',
+      }),
+    );
+    // Row was marked reviewed + operator-decided.
+    const row = triageRows.get('tr-1')!;
+    expect(row.decidedBy).toBe('operator');
+    expect(row.reviewed).toBe(true);
+  });
+
+  it('place + already-placed + SAME parent → no move, status=already_placed', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+    });
+    nodes.set('epic-A', { id: 'epic-A', mapId: 'map-1', parentId: 'root-1' });
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-A' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('already_placed');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+  });
+});
+
+// ── POST /confirm ────────────────────────────────────────────────
+
+// #100 Round 2 — dedicated confirm route. The original frontend wired
+// Confirm through /override with parentNodeId=placedNodeId, which fell
+// through the already-placed branch and self-loop'd the node. The
+// dedicated route accepts no body parameters and never touches
+// parentage.
+describe('POST .../confirm', () => {
+  it('marks reviewed=true, decidedBy=operator without touching placedNodeId or parentage', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'placed-node',
+      reviewed: false,
+      decidedBy: 'auto',
+      confidence: 88,
+      reason: 'matches Frontend',
+    });
+    nodes.set('placed-node', { id: 'placed-node', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('confirmed');
+    expect(res.json().nodeId).toBe('placed-node');
+    // moveNode + createNode were NEVER reachable — confirm doesn't even
+    // look at node tables. The self-loop bug is structurally impossible.
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    expect(createNodeMock).not.toHaveBeenCalled();
+    const row = triageRows.get('tr-1')!;
+    expect(row.reviewed).toBe(true);
+    expect(row.decidedBy).toBe('operator');
+    // Decision/reason/confidence untouched (confirm = "accept as-is").
+    expect(row.decision).toBe('place');
+    expect(row.reason).toBe('matches Frontend');
+    expect(row.confidence).toBe(88);
+    // placedNodeId is intact — confirm never nulls it.
+    expect(row.placedNodeId).toBe('placed-node');
+    // The placed node's parent is intact at the dbState level too — no
+    // self-loop write happened. (We can't observe the node from the
+    // mock's update path because the confirm route never calls
+    // nodes.update; this assertion documents intent.)
+    expect(nodes.get('placed-node')!.parentId).toBe('epic-A');
+  });
+
+  it('works on a skip row too — confirm just marks reviewed, no parentNodeId required', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'skip',
+      placedNodeId: null,
+      reviewed: false,
+      decidedBy: 'auto',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().nodeId).toBeNull();
+    const row = triageRows.get('tr-1')!;
+    expect(row.reviewed).toBe(true);
+    expect(row.decidedBy).toBe('operator');
+    expect(row.decision).toBe('skip');
+  });
+
+  it('404 when the row does not exist', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/missing/confirm',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    seedRow({ id: 'tr-1' });
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('403 for JWT with view-only', async () => {
+    permissionLevel = 'view';
+    seedRow({ id: 'tr-1' });
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
   });
 });
 
@@ -564,5 +780,63 @@ describe('POST .../reclassify', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(404);
+  });
+
+  // mindblown#99 fix 4 — when reclassify produces a non-place decision
+  // on a row that had placed a node before, the row must clear
+  // `placedNodeId` so it stops referencing an orphan. The node itself
+  // is intentionally NOT deleted (operator removes via the UI).
+  it('reclassify → skip clears placedNodeId on a previously-placed row', async () => {
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip' as const,
+      parentNodeId: undefined,
+      reason: 'no longer relevant',
+      confidence: 92,
+    } as unknown as Awaited<ReturnType<typeof triageIssueMock>>);
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'orphan-node',
+      confidence: 80,
+      reviewed: true,
+      decidedBy: 'operator',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().decision).toBe('skip');
+    const row = triageRows.get('tr-1')!;
+    expect(row.decision).toBe('skip');
+    expect(row.placedNodeId).toBeNull();
+    expect(row.reviewed).toBe(false);
+    expect(row.decidedBy).toBe('auto');
+  });
+
+  it('reclassify → place keeps placedNodeId (only non-place clears it)', async () => {
+    // Default triageIssueMock returns decision='place' with parentNodeId='epic-1'.
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      placedNodeId: 'node-still-here',
+      confidence: 50,
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    // Reclassify doesn't auto-apply (no node created here) — but it
+    // also doesn't clear the previously-placed node id, since the new
+    // decision is still 'place'.
+    expect(row.placedNodeId).toBe('node-still-here');
   });
 });

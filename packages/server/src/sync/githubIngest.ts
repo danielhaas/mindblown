@@ -94,10 +94,15 @@ export interface IngestResult {
  * The `createdBy` here is the map's creator — used as the attribution
  * for nodes ingested for that map. Each map gets its own inbox node, so
  * the same issue can land in two maps if both opt in.
+ *
+ * `triageEnabled` is carried alongside so `ensureNodeForIssue` doesn't
+ * need to re-SELECT `maps.triage_enabled` per issue — for a 200-issue
+ * backfill that's 200 round-trips saved.
  */
 export interface MapTarget {
   mapId: string;
   createdBy: string;
+  triageEnabled: boolean;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -201,11 +206,13 @@ export async function findIngestTargetMaps(
 ): Promise<MapTarget[]> {
   const targets = new Map<string, MapTarget>();
 
-  // (1) App-bound maps with the flag on.
+  // (1) App-bound maps with the flag on. We pull triageEnabled in the
+  // same SELECT so callers don't have to re-query it per issue.
   const appMaps = await db
     .select({
       id: maps.id,
       createdBy: maps.createdBy,
+      triageEnabled: maps.triageEnabled,
     })
     .from(maps)
     .where(
@@ -216,7 +223,11 @@ export async function findIngestTargetMaps(
       ),
     );
   for (const m of appMaps) {
-    targets.set(m.id, { mapId: m.id, createdBy: m.createdBy as string });
+    targets.set(m.id, {
+      mapId: m.id,
+      createdBy: m.createdBy as string,
+      triageEnabled: m.triageEnabled === true,
+    });
   }
 
   // (2) PAT integrations whose (owner, repo) matches → every map in
@@ -229,7 +240,11 @@ export async function findIngestTargetMaps(
     const cfg = integ.config as { owner?: string; repo?: string } | null;
     if (cfg?.owner !== owner || cfg?.repo !== repo) continue;
     const wsMaps = await db
-      .select({ id: maps.id, createdBy: maps.createdBy })
+      .select({
+        id: maps.id,
+        createdBy: maps.createdBy,
+        triageEnabled: maps.triageEnabled,
+      })
       .from(maps)
       .where(
         and(
@@ -239,7 +254,11 @@ export async function findIngestTargetMaps(
       );
     for (const m of wsMaps) {
       if (targets.has(m.id)) continue;
-      targets.set(m.id, { mapId: m.id, createdBy: m.createdBy as string });
+      targets.set(m.id, {
+        mapId: m.id,
+        createdBy: m.createdBy as string,
+        triageEnabled: m.triageEnabled === true,
+      });
     }
   }
 
@@ -331,6 +350,15 @@ export interface EnsureNodeOpts {
    * is ever lost.
    */
   allowClosedWithinDays?: number;
+  /**
+   * Whether the map has triage opted in. When provided, the caller
+   * already knows the value (e.g. it was loaded as part of
+   * `findIngestTargetMaps`) and `ensureNodeForIssue` skips the
+   * per-issue `SELECT maps.triage_enabled` round-trip. When omitted
+   * (legacy callers / explicit single-map paths like backfill), the
+   * function falls back to reading the column itself.
+   */
+  triageEnabled?: boolean;
 }
 
 // ── Triage-mode ingest helper ────────────────────────────────────
@@ -376,19 +404,111 @@ async function ensureNodeForIssueViaTriage(
   ctx: IngestContext,
   externalId: string,
 ): Promise<IngestResult> {
-  // Precheck before the LLM call — a node may already exist if the
-  // issue was previously ingested (toggled off → on, or the operator
-  // already added it manually). No need to spend tokens re-triaging
-  // something we've already placed.
-  const existing = await db
-    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
-    .from(nodes)
-    .where(eq(nodes.mapId, mapId));
-  for (const row of existing) {
-    const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
-      return { status: 'skipped_exists', nodeId: row.id, mapId };
+  // ── Race-safety prelude (mindblown#99 fix 1) ────────────────────
+  // We do *two* things inside a transaction BEFORE paying for an LLM
+  // call:
+  //   a) `pg_advisory_xact_lock` keyed on the externalId, so two
+  //      concurrent webhook deliveries for the same issue serialize.
+  //   b) The existence precheck — both for "a node already references
+  //      this externalId" (operator added it manually, or an earlier
+  //      ingest landed it) AND for "an existing triage_decisions row
+  //      is operator-reviewed" (mindblown#99 fix 2 — never re-triage
+  //      an operator-curated row).
+  //
+  // If either precheck wins, we return early WITHOUT calling the LLM.
+  // That's the fast path; it also means the second of two racing
+  // webhook deliveries doesn't pay tokens. The fact-checks are also
+  // run inside the tx (sharing the lock) so a concurrent winner that
+  // commits in between sees its row visible from this tx as well.
+  type PrecheckResult =
+    | { kind: 'exists'; nodeId: string }
+    | { kind: 'operator_reviewed'; decisionId: string; nodeId: string | null;
+        decision: TriageDecision['decision']; confidence: number }
+    | { kind: 'proceed' };
+  const precheck: PrecheckResult = await db.transaction(async (tx) => {
+    await takeIngestLock(tx, externalId);
+
+    // (a) Node-existence precheck — uses the same tx-scoped helper as
+    // the non-triage path so it sees a concurrent winner's just-
+    // committed externalLink.
+    const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
+    if (existingNodeId) {
+      return { kind: 'exists', nodeId: existingNodeId };
     }
+
+    // (b) Operator-reviewed precheck. Once an operator has reviewed a
+    // triage decision, automatic re-triage doesn't overwrite it —
+    // explicit reclassify from the UI is required. This contract
+    // closes the regression where `issues.edited` webhook fired by an
+    // edit on GitHub would wipe a careful operator decision back to
+    // `reviewed=false, decidedBy='auto'` (mindblown#99 fix 2).
+    const [existingDecision] = await tx
+      .select({
+        id: triageDecisions.id,
+        reviewed: triageDecisions.reviewed,
+        decidedBy: triageDecisions.decidedBy,
+        decision: triageDecisions.decision,
+        confidence: triageDecisions.confidence,
+        placedNodeId: triageDecisions.placedNodeId,
+      })
+      .from(triageDecisions)
+      .where(
+        and(
+          eq(triageDecisions.mapId, mapId),
+          eq(triageDecisions.externalId, externalId),
+        ),
+      );
+    if (
+      existingDecision &&
+      existingDecision.reviewed === true &&
+      existingDecision.decidedBy === 'operator'
+    ) {
+      return {
+        kind: 'operator_reviewed',
+        decisionId: existingDecision.id as string,
+        nodeId: (existingDecision.placedNodeId as string | null) ?? null,
+        decision: existingDecision.decision as TriageDecision['decision'],
+        confidence: existingDecision.confidence as number,
+      };
+    }
+    return { kind: 'proceed' };
+  });
+
+  if (precheck.kind === 'exists') {
+    return { status: 'skipped_exists', nodeId: precheck.nodeId, mapId };
+  }
+  if (precheck.kind === 'operator_reviewed') {
+    // Treat operator-reviewed rows as authoritative. Map the persisted
+    // decision back to the appropriate IngestResult shape so callers
+    // (catchup / webhook) see the same status code as if Claude had
+    // just produced the same decision — minus the LLM call.
+    if (precheck.decision === 'place' && precheck.nodeId) {
+      return {
+        status: 'created',
+        nodeId: precheck.nodeId,
+        mapId,
+        triage: {
+          decisionId: precheck.decisionId,
+          decision: precheck.decision,
+          confidence: precheck.confidence,
+        },
+      };
+    }
+    const status: IngestResult['status'] =
+      precheck.decision === 'skip'
+        ? 'triaged_skip'
+        : precheck.decision === 'uncertain'
+          ? 'triaged_uncertain'
+          : 'triaged_low_confidence';
+    return {
+      status,
+      mapId,
+      triage: {
+        decisionId: precheck.decisionId,
+        decision: precheck.decision,
+        confidence: precheck.confidence,
+      },
+    };
   }
 
   // Build the map-context summary and call the LLM. `buildMapContext`
@@ -419,9 +539,12 @@ async function ensureNodeForIssueViaTriage(
     decision.parentNodeId != null;
 
   // Persist the decision first, then (if auto-apply) create the node
-  // and update placed_node_id. We do this in a single tx so a crash
-  // between the insert and the update can't leave a "place" row with
-  // no node.
+  // and update placed_node_id. We do this in a single tx (and re-take
+  // the advisory lock on the externalId for the duration of this tx)
+  // so a crash between the insert and the update can't leave a
+  // "place" row with no node, AND so a concurrent racing webhook
+  // delivery (rare since we already serialized on the precheck tx
+  // above) still serializes on this one.
   type TxResult =
     | {
         kind: 'auto_placed';
@@ -429,12 +552,80 @@ async function ensureNodeForIssueViaTriage(
         nodeId: string;
         node: Awaited<ReturnType<typeof nodeDb.getNode>>;
       }
-    | { kind: 'decision_only'; decisionId: string };
+    | { kind: 'decision_only'; decisionId: string }
+    | { kind: 'lost_race'; nodeId: string }
+    | {
+        kind: 'operator_reviewed_late';
+        decisionId: string;
+        nodeId: string | null;
+        decision: TriageDecision['decision'];
+        confidence: number;
+      };
 
   const result: TxResult = await db.transaction(async (tx) => {
+    await takeIngestLock(tx, externalId);
+
+    // Re-run the node-existence precheck inside this tx, in case a
+    // concurrent worker landed a node between the precheck tx above
+    // and this tx (window during which the lock was released).
+    // Cheap insurance; the happy path returns immediately.
+    const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
+    if (existingNodeId) {
+      return { kind: 'lost_race', nodeId: existingNodeId };
+    }
+
+    // Mirror the operator-reviewed precheck inside this tx (Ray's
+    // #100 Round 2 fix — lost-race operator-protect). The precheck tx
+    // above checks "node exists" AND "operator-reviewed row exists",
+    // but during the LLM-call window between Tx A and Tx B an
+    // operator can mark a row reviewed=true, decidedBy='operator'.
+    // Without this re-check, the upsert's SET clause below would
+    // overwrite that decision back to auto + unreviewed, wiping the
+    // operator's curation. The cost is one extra index lookup —
+    // cheaper than a wasted LLM round-trip, cheaper than losing the
+    // operator decision. We re-fetch (don't reuse the precheck row)
+    // because the precheck tx is long-since closed; the visibility
+    // we need is "what's committed NOW," and the advisory lock above
+    // means no other ingest tx can stomp before we exit this block.
+    const [existingDecisionInUpsertTx] = await tx
+      .select({
+        id: triageDecisions.id,
+        reviewed: triageDecisions.reviewed,
+        decidedBy: triageDecisions.decidedBy,
+        decision: triageDecisions.decision,
+        confidence: triageDecisions.confidence,
+        placedNodeId: triageDecisions.placedNodeId,
+      })
+      .from(triageDecisions)
+      .where(
+        and(
+          eq(triageDecisions.mapId, mapId),
+          eq(triageDecisions.externalId, externalId),
+        ),
+      );
+    if (
+      existingDecisionInUpsertTx &&
+      existingDecisionInUpsertTx.reviewed === true &&
+      existingDecisionInUpsertTx.decidedBy === 'operator'
+    ) {
+      return {
+        kind: 'operator_reviewed_late',
+        decisionId: existingDecisionInUpsertTx.id as string,
+        nodeId: (existingDecisionInUpsertTx.placedNodeId as string | null) ?? null,
+        decision: existingDecisionInUpsertTx.decision as TriageDecision['decision'],
+        confidence: existingDecisionInUpsertTx.confidence as number,
+      };
+    }
+
     // Upsert the decision row. ON CONFLICT updates the existing row in
     // place so re-triage (operator hits `POST .../reclassify`) doesn't
     // accumulate duplicates.
+    //
+    // The operator-reviewed precheck above already short-circuits when
+    // existingDecision.reviewed=true && decidedBy='operator', so by the
+    // time we reach this upsert we know the row (if any) is either
+    // auto-decided or operator-touched-but-not-reviewed. The SET clause
+    // therefore overwrites the auto fields freely.
     const [decisionRow] = await tx
       .insert(triageDecisions)
       .values({
@@ -504,6 +695,54 @@ async function ensureNodeForIssueViaTriage(
       node: updated ?? created,
     };
   });
+
+  if (result.kind === 'lost_race') {
+    // A concurrent worker landed the node between our precheck tx and
+    // the upsert tx (rare; happens only if we lost the lock window).
+    // No tokens wasted — we already paid above, but the concurrent
+    // winner persisted both the node AND its own decision row, so
+    // returning skipped_exists is the safe outcome.
+    return { status: 'skipped_exists', nodeId: result.nodeId, mapId };
+  }
+
+  if (result.kind === 'operator_reviewed_late') {
+    // Ray's #100 Round 2 fix — an operator marked the row reviewed
+    // during the LLM-call window between the precheck tx and the
+    // upsert tx. We did pay for the LLM call (sunk cost — the wider
+    // fix is to also short-circuit upstream once the lock can't
+    // observe the change, but that's a bigger rework), but the
+    // operator's decision wins. Mirror the precheck's mapping of
+    // operator_reviewed → matching IngestResult so downstream
+    // consumers see the operator's call, not the (now-discarded)
+    // LLM call.
+    if (result.decision === 'place' && result.nodeId) {
+      return {
+        status: 'created',
+        nodeId: result.nodeId,
+        mapId,
+        triage: {
+          decisionId: result.decisionId,
+          decision: result.decision,
+          confidence: result.confidence,
+        },
+      };
+    }
+    const lateStatus: IngestResult['status'] =
+      result.decision === 'skip'
+        ? 'triaged_skip'
+        : result.decision === 'uncertain'
+          ? 'triaged_uncertain'
+          : 'triaged_low_confidence';
+    return {
+      status: lateStatus,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: result.decision,
+        confidence: result.confidence,
+      },
+    };
+  }
 
   if (result.kind === 'auto_placed') {
     broadcast(mapId, {
@@ -586,11 +825,23 @@ export async function ensureNodeForIssue(
   //
   // Maps with `triage_enabled = false` fall through to the existing
   // flat-under-inbox path with zero behavioural change.
-  const [mapRow] = await db
-    .select({ triageEnabled: maps.triageEnabled })
-    .from(maps)
-    .where(eq(maps.id, mapId));
-  if (mapRow?.triageEnabled) {
+  //
+  // Perf: when the caller already knows the flag (the multi-map fan-out
+  // does, via `findIngestTargetMaps`), it passes it in opts so we skip
+  // the per-issue `SELECT maps.triage_enabled` round-trip. The backfill
+  // helper and any legacy direct caller omits the opt and we fall back
+  // to reading the column.
+  let triageEnabled: boolean;
+  if (typeof opts.triageEnabled === 'boolean') {
+    triageEnabled = opts.triageEnabled;
+  } else {
+    const [mapRow] = await db
+      .select({ triageEnabled: maps.triageEnabled })
+      .from(maps)
+      .where(eq(maps.id, mapId));
+    triageEnabled = mapRow?.triageEnabled === true;
+  }
+  if (triageEnabled) {
     return ensureNodeForIssueViaTriage(mapId, issue, ctx, externalId);
   }
 
@@ -747,7 +998,7 @@ export async function ingestNewIssuesForRepo(
           inboxId,
           issue,
           { owner: target.owner, repo: target.repo, createdBy: t.createdBy },
-          opts,
+          { ...opts, triageEnabled: t.triageEnabled },
         );
         if (result.status === 'created') {
           summary.created++;
@@ -851,12 +1102,14 @@ export async function backfillMap(
       githubInstallationId: maps.githubInstallationId,
       githubRepoOwner: maps.githubRepoOwner,
       githubRepoName: maps.githubRepoName,
+      triageEnabled: maps.triageEnabled,
     })
     .from(maps)
     .where(eq(maps.id, mapId));
   if (!mapRow) {
     throw new Error(`backfillMap: map ${mapId} not found`);
   }
+  const triageEnabled = mapRow.triageEnabled === true;
 
   // Resolve owner/repo + token. App-binding first, then workspace PAT.
   // This mirrors `getGitHubContextForMap` in routes/integrations.ts —
@@ -937,7 +1190,7 @@ export async function backfillMap(
         inboxId,
         item.issue,
         { owner, repo, createdBy },
-        { allowClosedWithinDays },
+        { allowClosedWithinDays, triageEnabled },
       );
       if (result.status === 'created') imported++;
     } catch (err) {

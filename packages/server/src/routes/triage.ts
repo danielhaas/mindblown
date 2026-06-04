@@ -1,7 +1,7 @@
 /**
  * Triage CRUD routes (#92, #93).
  *
- * Three endpoints, all map-scoped, all session-JWT-gated (API-key auth
+ * Four endpoints, all map-scoped, all session-JWT-gated (API-key auth
  * is rejected to match the audit-drift convention — triage exposes
  * cross-issue LLM reasoning that a leaked key shouldn't be able to fan
  * out across every workspace).
@@ -10,10 +10,22 @@
  *       Filterable list. Used by Phase 1's operator UI; for Phase 0
  *       the operator drives this via curl / MCP.
  *
+ *   - POST   /api/maps/:mapId/triage-decisions/:decisionId/confirm
+ *       Operator confirms the existing auto-decision (Ray's review on
+ *       #100 — split out from override to keep node parentage out of
+ *       the confirm flow). Marks the row reviewed=true + decidedBy=
+ *       'operator'. Does NOT touch node parentage. No parentNodeId
+ *       parameter. The dedicated route exists so the frontend cannot
+ *       accidentally pass `parentNodeId === placedNodeId` (which used
+ *       to flow through the override route's already-placed branch
+ *       and self-loop the node — #100 Round 2 fix).
+ *
  *   - POST   /api/maps/:mapId/triage-decisions/:decisionId/override
  *       Operator overrides the auto-decision. If the new decision is
- *       `place`, creates the node under the supplied parentNodeId.
- *       Marks the row reviewed + flips decidedBy to `operator`.
+ *       `place`, creates the node under the supplied parentNodeId
+ *       (or, when a node was already placed, calls `moveNode` to
+ *       reparent it). Marks the row reviewed + flips decidedBy to
+ *       `operator`.
  *
  *   - POST   /api/maps/:mapId/triage-decisions/:decisionId/reclassify
  *       Re-runs `triageIssue()` against the current map context, then
@@ -136,6 +148,76 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  // ── POST /api/maps/:mapId/triage-decisions/:decisionId/confirm ──
+  // Body: ignored (no parameters).
+  //
+  // Effect: mark the row reviewed=true, reviewedAt=now(),
+  // reviewedBy=req.userId, decidedBy='operator'. Does NOT touch node
+  // parentage, does NOT take a parentNodeId, does NOT mutate the
+  // decision/reason/confidence fields. The operator is saying "yes,
+  // accept what's already there" — same auth gate as override (edit).
+  //
+  // Why a separate route: Ray's #100 Round 2 review caught the
+  // frontend's `confirmTriageDecision` calling /override with
+  // `parentNodeId: decision.placedNodeId`. The override route's
+  // already-placed branch compared `placedNode.parentId !==
+  // submittedParent`, which is always true (a node isn't its own
+  // parent), so `moveNode(placedNodeId, placedNodeId)` ran — turning
+  // the node into its own parent. Splitting confirm into its own
+  // route closes that off at the API boundary: there is no
+  // parentNodeId parameter to misuse.
+  app.post<{
+    Params: { mapId: string; decisionId: string };
+  }>(
+    '/api/maps/:mapId/triage-decisions/:decisionId/confirm',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const userId = req.userId as string; // gate guarantees set
+
+      const [row] = await db
+        .select()
+        .from(triageDecisions)
+        .where(
+          and(
+            eq(triageDecisions.id, req.params.decisionId),
+            eq(triageDecisions.mapId, req.params.mapId),
+          ),
+        );
+      if (!row) {
+        return reply.status(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: `Triage decision ${req.params.decisionId} not found in map ${req.params.mapId}`,
+          },
+        });
+      }
+
+      // Stamp reviewed + operator. Intentionally NOT touching
+      // placedNodeId, decision, reason, or confidence — confirm means
+      // "accept the existing record as-is."
+      await db
+        .update(triageDecisions)
+        .set({
+          decidedBy: 'operator',
+          reviewed: true,
+          reviewedAt: new Date(),
+          reviewedBy: userId,
+        })
+        .where(eq(triageDecisions.id, row.id));
+
+      return reply.send({
+        decisionId: row.id,
+        status: 'confirmed',
+        nodeId: row.placedNodeId ?? null,
+      });
+    },
+  );
+
   // ── POST /api/maps/:mapId/triage-decisions/:decisionId/override ──
   // Body: { decision: 'place'|'skip'|'uncertain', parentNodeId?: uuid,
   //         reason: string }
@@ -209,10 +291,86 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // Defense-in-depth: even with the dedicated /confirm route in
+      // place, reject parentNodeId === placedNodeId at the server.
+      // The earlier bug (#100 Round 2) had the frontend's confirm flow
+      // calling override with `parentNodeId: decision.placedNodeId`,
+      // which fell through to the already-placed branch below and
+      // called `moveNode(placedNodeId, placedNodeId)` — a self-loop
+      // that orphaned the node under itself. The frontend fix routes
+      // confirms through /confirm now, but rejecting self-loops at the
+      // override route prevents a future caller (curl, MCP, alt UI)
+      // from re-triggering the same corruption.
+      if (
+        decision === 'place' &&
+        row.placedNodeId &&
+        body.parentNodeId === row.placedNodeId
+      ) {
+        return reply.status(400).send({
+          error: {
+            code: 'SELF_LOOP_BLOCKED',
+            message:
+              'parentNodeId must differ from the placed node — use /confirm to mark reviewed without reparenting',
+          },
+        });
+      }
+
       // If the operator wants a place but a node was already created
-      // by a prior auto-apply, short-circuit — we don't want to create
-      // a duplicate. Surface the existing node id.
+      // by a prior auto-apply, we DON'T create a second node — but if
+      // the submitted parentNodeId differs from where the node sits
+      // today, we DO call `moveNode` so the operator's intent isn't
+      // silently dropped (mindblown#99 fix 3). The previous behaviour
+      // returned the old node-id and let the operator wonder why
+      // their click didn't reparent.
       if (decision === 'place' && row.placedNodeId) {
+        // The operator MAY supply a parentNodeId that's a no-op (it
+        // matches the current parent). That's fine; moveNode is a
+        // safe identity in that case but we still don't bother
+        // calling it if parents already match.
+        const placedNodeId = row.placedNodeId as string;
+        const submittedParent = body.parentNodeId as string;
+
+        // Validate the submitted parent is in this map (same gate as
+        // the create-path below).
+        const [parent] = await db
+          .select({ id: nodes.id, mapId: nodes.mapId })
+          .from(nodes)
+          .where(eq(nodes.id, submittedParent));
+        if (!parent || parent.mapId !== req.params.mapId) {
+          return reply.status(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: 'parentNodeId must be a node in this map',
+            },
+          });
+        }
+
+        // Look up the placed node's current parent so we know whether
+        // we need to move it.
+        const [placedNode] = await db
+          .select({ id: nodes.id, parentId: nodes.parentId })
+          .from(nodes)
+          .where(eq(nodes.id, placedNodeId));
+
+        let moved = false;
+        if (placedNode && placedNode.parentId !== submittedParent) {
+          // moveNode runs outside the tx that updates the decision
+          // row — it has its own internal write fan-out (children
+          // ordering on both old + new parent, parentId on the node
+          // itself) that doesn't share the route's outer tx. The
+          // payoff is the operator's reparent intent is honored.
+          const movedNode = await nodeDb.moveNode(placedNodeId, submittedParent);
+          moved = movedNode != null;
+          if (moved) {
+            broadcast(req.params.mapId, {
+              type: 'node:moved',
+              nodeId: placedNodeId,
+              newParentId: submittedParent,
+              position: undefined,
+            });
+          }
+        }
+
         await db
           .update(triageDecisions)
           .set({
@@ -228,8 +386,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           .where(eq(triageDecisions.id, row.id));
         return reply.send({
           decisionId: row.id,
-          status: 'already_placed',
-          nodeId: row.placedNodeId,
+          status: moved ? 'moved' : 'already_placed',
+          nodeId: placedNodeId,
         });
       }
 
@@ -381,7 +539,19 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       // Synthesize a minimal GitHubIssue from what we have on the row.
       // The triage prompt mostly leans on title + state + map context,
       // so an empty body is acceptable degradation here.
-      const issueNumber = parseIssueNumber(row.externalId) ?? 0;
+      //
+      // Nit from Ray's #100 review: parseIssueNumber returning null
+      // collapses to 0, which is indistinguishable from a real #0.
+      // We log a warning so an operator chasing a `#0 <title>` in the
+      // UI can grep server logs for the malformed externalId rather
+      // than wondering whether GitHub ever issued a #0.
+      const parsedNumber = parseIssueNumber(row.externalId);
+      if (parsedNumber == null) {
+        console.warn(
+          `[triage] reclassify: could not parse issue number from externalId=${JSON.stringify(row.externalId)} on decision ${row.id} (map ${req.params.mapId}); falling back to 0`,
+        );
+      }
+      const issueNumber = parsedNumber ?? 0;
       const decision = await triageIssue({
         issue: {
           id: issueNumber,
@@ -399,6 +569,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         mapContext,
       });
 
+      // mindblown#99 fix 4: when reclassify produces a non-place
+      // decision and the row had a previous `placedNodeId`, the row
+      // is internally inconsistent ("decision says skip, but here's a
+      // node we placed earlier"). Clear placedNodeId so the row stops
+      // referencing the orphan. The original node is intentionally
+      // NOT auto-deleted on reclassify (Ray's spec: "operator can
+      // delete via UI") — only the decision-row reference is dropped.
+      const clearPlacedNode = decision.decision !== 'place' && row.placedNodeId != null;
+
       await db
         .update(triageDecisions)
         .set({
@@ -410,6 +589,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           reviewed: false,
           reviewedAt: null,
           reviewedBy: null,
+          ...(clearPlacedNode ? { placedNodeId: null } : {}),
         })
         .where(eq(triageDecisions.id, row.id));
 
@@ -419,6 +599,10 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         confidence: decision.confidence,
         reason: decision.reason,
         parentNodeId: decision.parentNodeId ?? null,
+        // Surface the (potentially-just-nulled) placedNodeId so the
+        // client doesn't need a refetch to learn the row no longer
+        // references the previously-placed node (Ray's #100 nit).
+        placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
       });
     },
   );
