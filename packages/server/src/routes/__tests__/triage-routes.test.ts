@@ -144,6 +144,8 @@ vi.mock('../../db/schema.js', () => {
       decision: col('decision'),
       reviewed: col('reviewed'),
       decidedAt: col('decidedAt'),
+      confidence: col('confidence'),
+      issueState: col('issueState'),
     },
   };
 });
@@ -159,6 +161,22 @@ vi.mock('drizzle-orm', async () => {
     and: (...preds: Predicate[]): Predicate => ({
       __pred: true,
       check: (row) => preds.every((p) => p.check(row)),
+    }),
+    gte: (column: { __col?: string }, value: unknown): Predicate => ({
+      __pred: true,
+      check: (row) => {
+        const v = row[column.__col ?? ''];
+        if (v instanceof Date && value instanceof Date) return v.getTime() >= value.getTime();
+        return (v as number) >= (value as number);
+      },
+    }),
+    lte: (column: { __col?: string }, value: unknown): Predicate => ({
+      __pred: true,
+      check: (row) => {
+        const v = row[column.__col ?? ''];
+        if (v instanceof Date && value instanceof Date) return v.getTime() <= value.getTime();
+        return (v as number) <= (value as number);
+      },
     }),
     desc: () => ({ __order: 'desc' }),
     sql: vi.fn(),
@@ -838,5 +856,434 @@ describe('POST .../reclassify', () => {
     // also doesn't clear the previously-placed node id, since the new
     // decision is still 'place'.
     expect(row.placedNodeId).toBe('node-still-here');
+  });
+});
+
+// ── GET filters — Phase 2 (#95) ──────────────────────────────────
+
+describe('GET /api/maps/:mapId/triage-decisions — Phase 2 filters', () => {
+  it('filters by minConfidence (inclusive)', async () => {
+    seedRow({ id: 't1', confidence: 30 });
+    seedRow({ id: 't2', confidence: 70 });
+    seedRow({ id: 't3', confidence: 95 });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?minConfidence=70',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().total).toBe(2);
+    const ids = (res.json().decisions as Array<{ id: string }>).map((d) => d.id).sort();
+    expect(ids).toEqual(['t2', 't3']);
+  });
+
+  it('filters by maxConfidence (inclusive)', async () => {
+    seedRow({ id: 't1', confidence: 30 });
+    seedRow({ id: 't2', confidence: 70 });
+    seedRow({ id: 't3', confidence: 95 });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?maxConfidence=70',
+    });
+    await app.close();
+    expect(res.json().total).toBe(2);
+  });
+
+  it('combines minConfidence + maxConfidence to bracket a range', async () => {
+    seedRow({ id: 't1', confidence: 30 });
+    seedRow({ id: 't2', confidence: 50 });
+    seedRow({ id: 't3', confidence: 80 });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?minConfidence=40&maxConfidence=70',
+    });
+    await app.close();
+    expect(res.json().total).toBe(1);
+    expect((res.json().decisions as Array<{ id: string }>)[0].id).toBe('t2');
+  });
+
+  it('filters by issueState=open', async () => {
+    seedRow({ id: 't1', issueState: 'open' });
+    seedRow({ id: 't2', issueState: 'closed' });
+    seedRow({ id: 't3', issueState: 'open' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?issueState=open',
+    });
+    await app.close();
+    expect(res.json().total).toBe(2);
+  });
+
+  it('filters by since (decidedAt >= ISO)', async () => {
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const lastWeek = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+    seedRow({ id: 't-old', decidedAt: lastWeek });
+    seedRow({ id: 't-recent', decidedAt: yesterday });
+    seedRow({ id: 't-now', decidedAt: now });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const since = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/maps/map-1/triage-decisions?since=${encodeURIComponent(since)}`,
+    });
+    await app.close();
+    expect(res.json().total).toBe(2);
+  });
+
+  it('malformed minConfidence is silently ignored (no filter applied)', async () => {
+    seedRow({ id: 't1', confidence: 30 });
+    seedRow({ id: 't2', confidence: 70 });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?minConfidence=banana',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().total).toBe(2);
+  });
+});
+
+// ── Bulk routes — Phase 2 (#95) ──────────────────────────────────
+
+describe('POST .../bulk-confirm', () => {
+  it('marks every supplied row reviewed=true, returns per-item ok', async () => {
+    seedRow({ id: 'a', reviewed: false, decidedBy: 'auto' });
+    seedRow({ id: 'b', reviewed: false, decidedBy: 'auto' });
+    seedRow({ id: 'c', reviewed: false, decidedBy: 'auto' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a', 'b', 'c'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.results).toHaveLength(3);
+    expect(body.results.every((r: { status?: string }) => r.status === 'confirmed')).toBe(true);
+    for (const id of ['a', 'b', 'c']) {
+      const row = triageRows.get(id)!;
+      expect(row.reviewed).toBe(true);
+      expect(row.decidedBy).toBe('operator');
+    }
+  });
+
+  it('1 valid + 1 missing id → response is array with one ok + one error (HTTP 200)', async () => {
+    seedRow({ id: 'a', reviewed: false, decidedBy: 'auto' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a', 'ghost'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; status?: string; error?: { code: string } }>;
+    expect(results).toHaveLength(2);
+    const ok = results.find((r) => r.id === 'a')!;
+    const err = results.find((r) => r.id === 'ghost')!;
+    expect(ok.status).toBe('confirmed');
+    expect(err.error?.code).toBe('NOT_FOUND');
+    // The valid row was still committed — per-item idempotency.
+    expect(triageRows.get('a')!.reviewed).toBe(true);
+  });
+
+  it('dedupes repeated ids (UI double-tap)', async () => {
+    seedRow({ id: 'a', reviewed: false, decidedBy: 'auto' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a', 'a', 'a'] },
+    });
+    await app.close();
+    expect(res.json().results).toHaveLength(1);
+  });
+
+  it('400 on empty decisionIds', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: [] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error?.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('400 on missing decisionIds', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: {},
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('400 when batch exceeds 200', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const ids = Array.from({ length: 201 }, (_, i) => `t${i}`);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ids },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    seedRow({ id: 'a' });
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('403 for JWT with view-only', async () => {
+    permissionLevel = 'view';
+    seedRow({ id: 'a' });
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('POST .../bulk-override', () => {
+  it('mixed `place` + `skip` rows → places are moved, skips are 400-per-item', async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: 'placed-1' });
+    seedRow({ id: 's1', decision: 'skip' });
+    nodes.set('placed-1', { id: 'placed-1', mapId: 'map-1', parentId: 'epic-A' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1', 's1'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; status?: string; error?: { code: string } }>;
+    const place = results.find((r) => r.id === 'p1')!;
+    const skip = results.find((r) => r.id === 's1')!;
+    expect(place.status).toBe('moved');
+    expect(skip.error?.code).toBe('BULK_NOT_PLACE');
+    // The place row was reparented; the skip row was untouched.
+    expect(moveNodeMock).toHaveBeenCalledOnce();
+    expect(triageRows.get('p1')!.reviewed).toBe(true);
+    expect(triageRows.get('s1')!.reviewed).toBe(false);
+  });
+
+  it('SELF_LOOP_BLOCKED: parentNodeId === placedNodeId rejects per-item, moveNode not called', async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: 'loop-target' });
+    nodes.set('loop-target', { id: 'loop-target', mapId: 'map-1', parentId: 'epic-A' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'loop-target' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; error?: { code: string } }>;
+    expect(results[0].error?.code).toBe('SELF_LOOP_BLOCKED');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    expect(triageRows.get('p1')!.reviewed).toBe(false);
+  });
+
+  it('all rows already-placed under different parents → moves each + broadcasts per move', async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: 'node-1' });
+    seedRow({ id: 'p2', decision: 'place', placedNodeId: 'node-2' });
+    nodes.set('node-1', { id: 'node-1', mapId: 'map-1', parentId: 'epic-A' });
+    nodes.set('node-2', { id: 'node-2', mapId: 'map-1', parentId: 'epic-A' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1', 'p2'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    const results = res.json().results as Array<{ id: string; status?: string }>;
+    expect(results.every((r) => r.status === 'moved')).toBe(true);
+    expect(moveNodeMock).toHaveBeenCalledTimes(2);
+    // 2 node:moved broadcasts.
+    const movedCalls = broadcastMock.mock.calls.filter(
+      (call) => (call[1] as { type?: string }).type === 'node:moved',
+    );
+    expect(movedCalls).toHaveLength(2);
+  });
+
+  it('place rows with no placedNodeId → creates new nodes under parent', async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: null, externalId: 'o/r#1', issueTitle: 'A' });
+    seedRow({ id: 'p2', decision: 'place', placedNodeId: null, externalId: 'o/r#2', issueTitle: 'B' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1', 'p2'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    const results = res.json().results as Array<{ id: string; status?: string; nodeId?: string }>;
+    expect(results.every((r) => r.status === 'placed')).toBe(true);
+    expect(results.every((r) => r.nodeId === 'created-node')).toBe(true);
+    expect(createNodeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('400 when parentNodeId is not in this map', async () => {
+    seedRow({ id: 'p1', decision: 'place' });
+    nodes.set('outside', { id: 'outside', mapId: 'other-map', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'outside' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('400 when parentNodeId is missing', async () => {
+    seedRow({ id: 'p1', decision: 'place' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    seedRow({ id: 'p1', decision: 'place' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+});
+
+describe('POST .../bulk-reclassify', () => {
+  it('runs triageIssue per row and updates each in place', async () => {
+    seedRow({ id: 'a', decision: 'uncertain', confidence: 20, reviewed: true, decidedBy: 'operator' });
+    seedRow({ id: 'b', decision: 'uncertain', confidence: 30, reviewed: true, decidedBy: 'operator' });
+    seedRow({ id: 'c', decision: 'uncertain', confidence: 40, reviewed: true, decidedBy: 'operator' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a', 'b', 'c'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(triageIssueMock).toHaveBeenCalledTimes(3);
+    const results = res.json().results as Array<{ id: string; status?: string; decision?: string }>;
+    expect(results.every((r) => r.status === 'reclassified')).toBe(true);
+    for (const id of ['a', 'b', 'c']) {
+      const row = triageRows.get(id)!;
+      // Default mock returns place + confidence 88.
+      expect(row.decision).toBe('place');
+      expect(row.confidence).toBe(88);
+      expect(row.decidedBy).toBe('auto');
+      expect(row.reviewed).toBe(false);
+    }
+  });
+
+  it('1 missing id → per-item NOT_FOUND, other rows still reclassified', async () => {
+    seedRow({ id: 'a' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a', 'ghost'] },
+    });
+    await app.close();
+    const results = res.json().results as Array<{ id: string; status?: string; error?: { code: string } }>;
+    expect(results.find((r) => r.id === 'a')?.status).toBe('reclassified');
+    expect(results.find((r) => r.id === 'ghost')?.error?.code).toBe('NOT_FOUND');
+    expect(triageIssueMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('non-place result clears placedNodeId on a previously-placed row', async () => {
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip' as const,
+      parentNodeId: undefined,
+      reason: 'no longer relevant',
+      confidence: 92,
+    } as unknown as Awaited<ReturnType<typeof triageIssueMock>>);
+    seedRow({ id: 'a', decision: 'place', placedNodeId: 'orphan' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(triageRows.get('a')!.placedNodeId).toBeNull();
+  });
+
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    seedRow({ id: 'a' });
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
   });
 });

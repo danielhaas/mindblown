@@ -1020,6 +1020,14 @@ export interface ListTriageDecisionsFilters {
   reviewed?: boolean;
   decision?: TriageDecisionKind;
   limit?: number;
+  /** Phase 2 (#95): inclusive lower bound on confidence (0–100). */
+  minConfidence?: number;
+  /** Phase 2 (#95): inclusive upper bound on confidence (0–100). */
+  maxConfidence?: number;
+  /** Phase 2 (#95): exact-match on the GH state captured at decision time. */
+  issueState?: 'open' | 'closed';
+  /** Phase 2 (#95): only rows decided at or after this ISO timestamp. */
+  since?: string;
 }
 
 export interface ListTriageDecisionsResponse {
@@ -1036,6 +1044,10 @@ export function listTriageDecisions(
   if (filters.reviewed !== undefined) qs.set('reviewed', String(filters.reviewed));
   if (filters.decision) qs.set('decision', filters.decision);
   if (filters.limit) qs.set('limit', String(filters.limit));
+  if (filters.minConfidence !== undefined) qs.set('minConfidence', String(filters.minConfidence));
+  if (filters.maxConfidence !== undefined) qs.set('maxConfidence', String(filters.maxConfidence));
+  if (filters.issueState) qs.set('issueState', filters.issueState);
+  if (filters.since) qs.set('since', filters.since);
   const q = qs.toString();
   return request<ListTriageDecisionsResponse>(
     `/api/maps/${mapId}/triage-decisions${q ? `?${q}` : ''}`,
@@ -1116,5 +1128,76 @@ export function confirmTriageDecision(
   return request<ConfirmTriageResponse>(
     `/api/maps/${mapId}/triage-decisions/${decision.id}/confirm`,
     { method: 'POST' },
+  );
+}
+
+// ── Bulk variants (#95 Phase 2) ──────────────────────────────────
+//
+// Each variant accepts `{ decisionIds: string[] }` and returns
+// `{ mapId, results: BulkTriageItem[] }` where each item is either
+// `{ id, status, ... }` (success) or `{ id, error: { code, message } }`
+// (per-item failure). HTTP is always 200 unless the whole batch is
+// rejected (bad auth, malformed body) — a single bad row in an
+// otherwise-valid batch is reported per-item, not as a batch-level error.
+
+export interface BulkTriageItemOk {
+  id: string;
+  status: string;
+  nodeId?: string | null;
+  decision?: TriageDecisionKind;
+  confidence?: number;
+  reason?: string;
+  placedNodeId?: string | null;
+}
+
+export interface BulkTriageItemErr {
+  id: string;
+  error: { code: string; message: string };
+}
+
+export type BulkTriageItem = BulkTriageItemOk | BulkTriageItemErr;
+
+export interface BulkTriageResponse {
+  mapId: string;
+  results: BulkTriageItem[];
+}
+
+export function bulkConfirmTriageDecisions(
+  mapId: string,
+  decisionIds: string[],
+): Promise<BulkTriageResponse> {
+  return request<BulkTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/bulk-confirm`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ decisionIds }),
+    },
+  );
+}
+
+export function bulkOverrideTriageDecisions(
+  mapId: string,
+  decisionIds: string[],
+  parentNodeId: string,
+): Promise<BulkTriageResponse> {
+  return request<BulkTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/bulk-override`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ decisionIds, parentNodeId }),
+    },
+  );
+}
+
+export function bulkReclassifyTriageDecisions(
+  mapId: string,
+  decisionIds: string[],
+): Promise<BulkTriageResponse> {
+  return request<BulkTriageResponse>(
+    `/api/maps/${mapId}/triage-decisions/bulk-reclassify`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ decisionIds }),
+    },
   );
 }

@@ -1,14 +1,17 @@
 /**
- * Triage CRUD routes (#92, #93).
+ * Triage CRUD routes (#92, #93, #95).
  *
- * Four endpoints, all map-scoped, all session-JWT-gated (API-key auth
- * is rejected to match the audit-drift convention — triage exposes
+ * Endpoints, all map-scoped, all session-JWT-gated (API-key auth is
+ * rejected to match the audit-drift convention — triage exposes
  * cross-issue LLM reasoning that a leaked key shouldn't be able to fan
  * out across every workspace).
  *
  *   - GET    /api/maps/:mapId/triage-decisions
- *       Filterable list. Used by Phase 1's operator UI; for Phase 0
- *       the operator drives this via curl / MCP.
+ *       Filterable list. Used by the Phase 1+2 operator UI; for Phase 0
+ *       the operator drives this via curl / MCP. Phase 2 added the
+ *       confidence-range + issueState + since query params so the
+ *       client doesn't have to re-fetch + filter when the operator
+ *       slides the confidence slider.
  *
  *   - POST   /api/maps/:mapId/triage-decisions/:decisionId/confirm
  *       Operator confirms the existing auto-decision (Ray's review on
@@ -33,13 +36,25 @@
  *       here — reclassify just refreshes the decision; the operator
  *       follows up with `override` to apply.
  *
- * Phase 0 explicitly does NOT include any frontend; the routes are
- * here so the operator can drive Phase 0 by curl while Phase 1 builds
- * the UI on top.
+ *   - POST   /api/maps/:mapId/triage-decisions/bulk-confirm
+ *   - POST   /api/maps/:mapId/triage-decisions/bulk-override
+ *   - POST   /api/maps/:mapId/triage-decisions/bulk-reclassify
+ *       Phase 2 (#95). Bulk variants of the three actions, designed for
+ *       the 290-Fulcrum-Roadmap-orphans workflow where the operator
+ *       wants to confirm a select-all of high-confidence decisions in
+ *       a single click. Each is per-item idempotent — one row failing
+ *       (e.g. deleted between submit and execute, validation failure)
+ *       doesn't fail the batch; the response carries
+ *       `{id, status|error}` per submitted id so the client can show
+ *       per-row outcomes.
+ *
+ * Phase 0 explicitly did NOT include any frontend; Phase 1 built the
+ * single-item UI on top; Phase 2 layers bulk operations + the
+ * lifecycle/reopened webhook hook (which lives in routes/integrations).
  */
 
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, gte, lte } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { maps, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -98,15 +113,36 @@ async function gateMapAccess(
 
 export async function triageRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:mapId/triage-decisions ─────────────────────
-  // Filter params:
-  //   reviewed=true|false       — exact-match on the boolean column.
+  // Filter params (Phase 0 baseline + Phase 2 additions):
+  //   reviewed=true|false           — exact-match on the boolean.
   //   decision=skip|place|uncertain — exact-match.
-  //   limit=N                   — default 50, hard-capped at 200.
+  //   limit=N                       — default 50, hard-capped at 200.
+  //   minConfidence=0..100          — Phase 2; lower bound, inclusive.
+  //   maxConfidence=0..100          — Phase 2; upper bound, inclusive.
+  //   issueState=open|closed        — Phase 2; exact-match on the
+  //                                   GH state captured at decision-
+  //                                   time (refreshed by webhooks).
+  //   since=ISO8601                 — Phase 2; only rows with
+  //                                   decided_at >= since.
   // Results ordered newest decided_at first so the operator review
   // queue surfaces the latest unreviewed rows.
+  //
+  // Phase 2 (#95): the slider/time-window/state filters are exposed
+  // server-side so the bulk-workflow case (290 Fulcrum roadmap orphans
+  // → operator picks the top-confidence band) doesn't have to fetch
+  // every row then filter client-side, AND so a select-all-and-confirm
+  // operates only on the rows the operator's filter actually surfaced.
   app.get<{
     Params: { mapId: string };
-    Querystring: { reviewed?: string; decision?: string; limit?: string };
+    Querystring: {
+      reviewed?: string;
+      decision?: string;
+      limit?: string;
+      minConfidence?: string;
+      maxConfidence?: string;
+      issueState?: string;
+      since?: string;
+    };
   }>('/api/maps/:mapId/triage-decisions', async (req, reply) => {
     const gate = await gateMapAccess(req, req.params.mapId, 'view');
     if (gate) {
@@ -127,6 +163,31 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       req.query.decision === 'uncertain'
     ) {
       filters.push(eq(triageDecisions.decision, req.query.decision));
+    }
+    // Phase 2 filters — silently ignore malformed values rather than
+    // 400-erroring so a typo in the URL doesn't blank the panel; the
+    // client always re-derives params from the slider/dropdowns so
+    // there's no UI affordance for sending invalid values.
+    if (req.query.minConfidence != null) {
+      const n = parseInt(req.query.minConfidence, 10);
+      if (Number.isFinite(n)) {
+        filters.push(gte(triageDecisions.confidence, Math.max(0, Math.min(100, n))));
+      }
+    }
+    if (req.query.maxConfidence != null) {
+      const n = parseInt(req.query.maxConfidence, 10);
+      if (Number.isFinite(n)) {
+        filters.push(lte(triageDecisions.confidence, Math.max(0, Math.min(100, n))));
+      }
+    }
+    if (req.query.issueState === 'open' || req.query.issueState === 'closed') {
+      filters.push(eq(triageDecisions.issueState, req.query.issueState));
+    }
+    if (req.query.since) {
+      const t = Date.parse(req.query.since);
+      if (Number.isFinite(t)) {
+        filters.push(gte(triageDecisions.decidedAt, new Date(t)));
+      }
     }
 
     const limitRaw = req.query.limit ? parseInt(req.query.limit, 10) : 50;
@@ -604,6 +665,499 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         // references the previously-placed node (Ray's #100 nit).
         placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
       });
+    },
+  );
+
+  // ── Phase 2 bulk routes (#95) ─────────────────────────────────
+  //
+  // Design notes:
+  //   - All three bulk routes accept `{ decisionIds: string[] }` and
+  //     iterate per-item. Per-item failures (404, validation, race)
+  //     don't fail the batch — the response shape is always
+  //     `{ results: [{ id, status: 'ok', ... } | { id, error: { code, message } }, ... ] }`
+  //     with HTTP 200, so the client can render per-row outcomes.
+  //   - The single-item routes above remain the source of truth for
+  //     semantics: bulk handlers call into the same DB primitives and
+  //     guards (notably the SELF_LOOP_BLOCKED check on
+  //     bulk-override). We do NOT internally re-route through HTTP —
+  //     that would double the round-trip cost and lose the per-item
+  //     error context.
+  //   - We don't wrap the batch in a single DB transaction. If one
+  //     item fails, the others have already committed; an all-or-
+  //     nothing wrapper would mean "the operator selected 30 rows,
+  //     the 27th was deleted by a concurrent operator, the other 29
+  //     successful confirms get rolled back" — much worse UX than
+  //     per-item idempotency for the bulk-confirm/orphan-cleanup use
+  //     case. Per-item failures are surfaced for the operator to
+  //     inspect.
+  //   - All three require `edit` permission (same as their single-
+  //     item counterparts) and reject API-key auth (the #69 / #100
+  //     hardening — leaked keys must not fan out across all rows).
+  //   - Body validation: `decisionIds` must be a non-empty array of
+  //     strings, hard-capped at 200 (matches the GET limit so the UI
+  //     can never assemble a bulk request larger than the page it's
+  //     looking at).
+
+  const BULK_DECISION_CAP = 200;
+
+  function validateBulkBody(
+    body: unknown,
+  ): { ok: true; ids: string[] } | { ok: false; reply: { status: number; code: string; message: string } } {
+    const b = body as { decisionIds?: unknown } | null | undefined;
+    const ids = b?.decisionIds;
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return {
+        ok: false,
+        reply: {
+          status: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'decisionIds must be a non-empty array',
+        },
+      };
+    }
+    if (ids.length > BULK_DECISION_CAP) {
+      return {
+        ok: false,
+        reply: {
+          status: 400,
+          code: 'VALIDATION_ERROR',
+          message: `decisionIds is capped at ${BULK_DECISION_CAP} per request`,
+        },
+      };
+    }
+    const onlyStrings = ids.every((x) => typeof x === 'string' && x.length > 0);
+    if (!onlyStrings) {
+      return {
+        ok: false,
+        reply: {
+          status: 400,
+          code: 'VALIDATION_ERROR',
+          message: 'decisionIds must contain non-empty strings',
+        },
+      };
+    }
+    // Dedupe — silently. A double-tap in the UI shouldn't cause two
+    // confirm writes; the second would be a no-op against the new
+    // reviewed=true state but might surprise the operator with a
+    // duplicate row in `results`.
+    return { ok: true, ids: Array.from(new Set(ids as string[])) };
+  }
+
+  interface BulkItemOk {
+    id: string;
+    status: string;
+    nodeId?: string | null;
+    decision?: 'place' | 'skip' | 'uncertain';
+    confidence?: number;
+    reason?: string;
+    placedNodeId?: string | null;
+  }
+  interface BulkItemErr {
+    id: string;
+    error: { code: string; message: string };
+  }
+  type BulkItem = BulkItemOk | BulkItemErr;
+
+  // ── POST /api/maps/:mapId/triage-decisions/bulk-confirm ──────
+  // Body: { decisionIds: string[] }
+  // Per-item: marks reviewed=true, decidedBy='operator', stamps
+  // reviewedAt/By. Does NOT touch parentage. Mirrors single
+  // /confirm semantics.
+  app.post<{
+    Params: { mapId: string };
+    Body: { decisionIds?: unknown };
+  }>(
+    '/api/maps/:mapId/triage-decisions/bulk-confirm',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const userId = req.userId as string;
+      const validation = validateBulkBody(req.body);
+      if (!validation.ok) {
+        return reply.status(validation.reply.status).send({
+          error: { code: validation.reply.code, message: validation.reply.message },
+        });
+      }
+
+      const results: BulkItem[] = [];
+      for (const id of validation.ids) {
+        const [row] = await db
+          .select()
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.id, id),
+              eq(triageDecisions.mapId, req.params.mapId),
+            ),
+          );
+        if (!row) {
+          results.push({
+            id,
+            error: {
+              code: 'NOT_FOUND',
+              message: `Triage decision ${id} not found in map ${req.params.mapId}`,
+            },
+          });
+          continue;
+        }
+        try {
+          await db
+            .update(triageDecisions)
+            .set({
+              decidedBy: 'operator',
+              reviewed: true,
+              reviewedAt: new Date(),
+              reviewedBy: userId,
+            })
+            .where(eq(triageDecisions.id, row.id));
+          results.push({
+            id,
+            status: 'confirmed',
+            nodeId: row.placedNodeId ?? null,
+          });
+        } catch (err) {
+          results.push({
+            id,
+            error: {
+              code: 'INTERNAL_ERROR',
+              message: err instanceof Error ? err.message : 'confirm failed',
+            },
+          });
+        }
+      }
+      return reply.send({ mapId: req.params.mapId, results });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/triage-decisions/bulk-override ─────
+  // Body: { decisionIds: string[], parentNodeId: string }
+  //
+  // Per-item: applies the operator's chosen parent. Only valid for
+  // rows whose CURRENT decision is `place` — per-item rejects rows
+  // with `decision !== 'place'` (VALIDATION_ERROR, code
+  // BULK_NOT_PLACE) so the operator can't accidentally move a
+  // batch that mixed skips in. The single /override route accepts
+  // a decision-change inside the body; this bulk route is
+  // forced-move only, by design (the spec calls out "bulk override
+  // is only valid for place decisions — gated client-side").
+  //
+  // Honors the SELF_LOOP_BLOCKED guard from Phase 1: a row whose
+  // placedNodeId === supplied parentNodeId is rejected per-item.
+  // Validates parentNodeId is in the map ONCE up front (cheaper
+  // than re-validating per item; the operator can't shift the
+  // parent mid-batch anyway).
+  app.post<{
+    Params: { mapId: string };
+    Body: { decisionIds?: unknown; parentNodeId?: unknown };
+  }>(
+    '/api/maps/:mapId/triage-decisions/bulk-override',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const userId = req.userId as string;
+      const validation = validateBulkBody(req.body);
+      if (!validation.ok) {
+        return reply.status(validation.reply.status).send({
+          error: { code: validation.reply.code, message: validation.reply.message },
+        });
+      }
+      const parentNodeId = (req.body as { parentNodeId?: unknown })?.parentNodeId;
+      if (typeof parentNodeId !== 'string' || parentNodeId.length === 0) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'parentNodeId is required',
+          },
+        });
+      }
+      // Up-front parent validation: must exist in this map.
+      const [parent] = await db
+        .select({ id: nodes.id, mapId: nodes.mapId })
+        .from(nodes)
+        .where(eq(nodes.id, parentNodeId));
+      if (!parent || parent.mapId !== req.params.mapId) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'parentNodeId must be a node in this map',
+          },
+        });
+      }
+
+      const results: BulkItem[] = [];
+      for (const id of validation.ids) {
+        const [row] = await db
+          .select()
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.id, id),
+              eq(triageDecisions.mapId, req.params.mapId),
+            ),
+          );
+        if (!row) {
+          results.push({
+            id,
+            error: {
+              code: 'NOT_FOUND',
+              message: `Triage decision ${id} not found in map ${req.params.mapId}`,
+            },
+          });
+          continue;
+        }
+        if (row.decision !== 'place') {
+          // Per spec: forced-move is `place`-only. A row currently
+          // marked skip/uncertain must be sent through the single
+          // /override route (which accepts decision-change), not
+          // this bulk one. The client-side gate already filters this,
+          // but defense-in-depth at the server.
+          results.push({
+            id,
+            error: {
+              code: 'BULK_NOT_PLACE',
+              message: `decision must be 'place' for bulk-override (got '${row.decision}')`,
+            },
+          });
+          continue;
+        }
+        // SELF_LOOP_BLOCKED (mirrors single /override).
+        if (row.placedNodeId && row.placedNodeId === parentNodeId) {
+          results.push({
+            id,
+            error: {
+              code: 'SELF_LOOP_BLOCKED',
+              message:
+                'parentNodeId must differ from the placed node — use /confirm to mark reviewed without reparenting',
+            },
+          });
+          continue;
+        }
+        try {
+          let nodeId: string | null = null;
+          let status: string;
+          if (row.placedNodeId) {
+            // Reparent the already-placed node.
+            const placedNodeId = row.placedNodeId as string;
+            const [placedNode] = await db
+              .select({ id: nodes.id, parentId: nodes.parentId })
+              .from(nodes)
+              .where(eq(nodes.id, placedNodeId));
+            let moved = false;
+            if (placedNode && placedNode.parentId !== parentNodeId) {
+              const movedNode = await nodeDb.moveNode(placedNodeId, parentNodeId);
+              moved = movedNode != null;
+              if (moved) {
+                broadcast(req.params.mapId, {
+                  type: 'node:moved',
+                  nodeId: placedNodeId,
+                  newParentId: parentNodeId,
+                  position: undefined,
+                });
+              }
+            }
+            await db
+              .update(triageDecisions)
+              .set({
+                decision: 'place',
+                confidence: 100,
+                decidedBy: 'operator',
+                decidedAt: new Date(),
+                reviewed: true,
+                reviewedAt: new Date(),
+                reviewedBy: userId,
+              })
+              .where(eq(triageDecisions.id, row.id));
+            nodeId = placedNodeId;
+            status = moved ? 'moved' : 'already_placed';
+          } else {
+            // Create a node under parentNodeId. Same shape as the
+            // single /override place path — single tx so a crash
+            // doesn't leave a triage row with a half-attached node.
+            const isClosed = row.issueState === 'closed';
+            const created = await db.transaction(async (tx) => {
+              const node = await nodeDb.createNode(
+                {
+                  mapId: req.params.mapId,
+                  parentId: parentNodeId,
+                  text: `#${parseIssueNumber(row.externalId)} ${row.issueTitle}`,
+                  createdBy: userId,
+                  percentComplete: isClosed ? 100 : 0,
+                  status: isClosed ? 'done' : 'todo',
+                },
+                tx,
+              );
+              const link: ExternalLink = {
+                provider: 'github',
+                externalId: row.externalId,
+                url: buildIssueUrlFromExternalId(row.externalId),
+                syncEnabled: true,
+                lastSyncedAt: new Date().toISOString(),
+              };
+              const updated = await nodeDb.updateNode(
+                node.id,
+                { externalLinks: [link] },
+                undefined,
+                tx,
+              );
+              await tx
+                .update(triageDecisions)
+                .set({
+                  decision: 'place',
+                  confidence: 100,
+                  decidedBy: 'operator',
+                  decidedAt: new Date(),
+                  placedNodeId: node.id,
+                  reviewed: true,
+                  reviewedAt: new Date(),
+                  reviewedBy: userId,
+                })
+                .where(eq(triageDecisions.id, row.id));
+              return updated ?? node;
+            });
+            if (created) {
+              broadcast(req.params.mapId, {
+                type: 'node:created',
+                node: created,
+                source: 'triage_bulk_override',
+              });
+            }
+            nodeId = created?.id ?? null;
+            status = 'placed';
+          }
+          results.push({ id, status, nodeId });
+        } catch (err) {
+          results.push({
+            id,
+            error: {
+              code: 'INTERNAL_ERROR',
+              message: err instanceof Error ? err.message : 'override failed',
+            },
+          });
+        }
+      }
+      return reply.send({ mapId: req.params.mapId, results });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/triage-decisions/bulk-reclassify ───
+  // Body: { decisionIds: string[] }
+  //
+  // Per-item: re-runs `triageIssue` against the current map
+  // context and updates the row in place. Each row pays one LLM
+  // call. The client should show a per-item progress counter; the
+  // response includes per-id results so the UI can render
+  // success/error inline. Building the map context once (outside
+  // the loop) keeps the per-item cost to just the LLM call.
+  //
+  // Mirrors single /reclassify semantics: decidedBy='auto',
+  // reviewed=false, and a non-place outcome clears a previously-
+  // set placedNodeId (mindblown#99 fix 4).
+  app.post<{
+    Params: { mapId: string };
+    Body: { decisionIds?: unknown };
+  }>(
+    '/api/maps/:mapId/triage-decisions/bulk-reclassify',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const validation = validateBulkBody(req.body);
+      if (!validation.ok) {
+        return reply.status(validation.reply.status).send({
+          error: { code: validation.reply.code, message: validation.reply.message },
+        });
+      }
+
+      // One map context pull serves all rows in the batch — the
+      // context is the same regardless of which row we're re-
+      // evaluating, and `buildMapContext` is the heavy call.
+      const mapContext = await buildMapContext(req.params.mapId);
+
+      const results: BulkItem[] = [];
+      for (const id of validation.ids) {
+        const [row] = await db
+          .select()
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.id, id),
+              eq(triageDecisions.mapId, req.params.mapId),
+            ),
+          );
+        if (!row) {
+          results.push({
+            id,
+            error: {
+              code: 'NOT_FOUND',
+              message: `Triage decision ${id} not found in map ${req.params.mapId}`,
+            },
+          });
+          continue;
+        }
+        try {
+          const issueNumber = parseIssueNumber(row.externalId) ?? 0;
+          const decision = await triageIssue({
+            issue: {
+              id: issueNumber,
+              number: issueNumber,
+              title: row.issueTitle,
+              body: null,
+              state: row.issueState === 'closed' ? 'closed' : 'open',
+              labels: [],
+              assignees: [],
+              milestone: null,
+              html_url: buildIssueUrlFromExternalId(row.externalId),
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString(),
+            },
+            mapContext,
+          });
+          const clearPlacedNode =
+            decision.decision !== 'place' && row.placedNodeId != null;
+          await db
+            .update(triageDecisions)
+            .set({
+              decision: decision.decision,
+              reason: decision.reason,
+              confidence: decision.confidence,
+              decidedBy: 'auto',
+              decidedAt: new Date(),
+              reviewed: false,
+              reviewedAt: null,
+              reviewedBy: null,
+              ...(clearPlacedNode ? { placedNodeId: null } : {}),
+            })
+            .where(eq(triageDecisions.id, row.id));
+          results.push({
+            id,
+            status: 'reclassified',
+            decision: decision.decision,
+            confidence: decision.confidence,
+            reason: decision.reason,
+            placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
+          });
+        } catch (err) {
+          results.push({
+            id,
+            error: {
+              code: 'INTERNAL_ERROR',
+              message: err instanceof Error ? err.message : 'reclassify failed',
+            },
+          });
+        }
+      }
+      return reply.send({ mapId: req.params.mapId, results });
     },
   );
 }

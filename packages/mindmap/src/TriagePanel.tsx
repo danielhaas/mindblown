@@ -1,5 +1,5 @@
 /**
- * Triage review panel (#94 — Phase 1 frontend).
+ * Triage review panel (#94 Phase 1 + #95 Phase 2).
  *
  * Three sub-views (Pending / Skipped / Placed) showing AI triage
  * decisions for the current map. Operator actions per row:
@@ -9,10 +9,23 @@
  *                  optionally change decision (skip / uncertain).
  *   - Re-classify — re-run the LLM against the current map context.
  *
+ * Phase 2 (#95) adds:
+ *
+ *   - Bulk-action toolbar at the top of each sub-view: checkbox column,
+ *     select-all, and "Confirm All Selected" / "Override All Selected"
+ *     / "Re-classify All Selected" buttons. Each calls the matching
+ *     bulk-* API; the response carries per-item results so the operator
+ *     sees per-row outcomes when (for example) one row was deleted
+ *     between submit and execute.
+ *   - Confidence-range slider (0-100) above the list — server-side
+ *     filter via the GET endpoint's minConfidence/maxConfidence.
+ *   - issue-state filter (open / closed / all).
+ *   - time-window filter (24h / 7d / 30d / all). Default 7d — most
+ *     common operator triage cadence per the spec.
+ *
  * Lives alongside BlockedPanel / SprintPanel — same right-docked
- * 380px width, same close-button pattern. The map header's
- * TriageIndicator button toggles it. Phase 0's backend exposes the
- * three routes; Phase 2 adds bulk operations.
+ * 420px width, same close-button pattern. The map header's
+ * TriageIndicator button toggles it.
  *
  * Frontend tests are deferred until `@mindblown/mindmap` has a test
  * runner (see #78 follow-ups). Every interactive element carries a
@@ -24,16 +37,50 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import {
   ApiError,
+  bulkConfirmTriageDecisions,
+  bulkOverrideTriageDecisions,
+  bulkReclassifyTriageDecisions,
   confirmTriageDecision,
   listTriageDecisions,
   overrideTriageDecision,
   reclassifyTriageDecision,
+  type BulkTriageItem,
   type TriageDecision,
   type TriageDecisionKind,
 } from './api.js';
 import { NodePickerModal } from './NodePickerModal.js';
 
 const PANEL_WIDTH = 420;
+type IssueStateFilter = 'all' | 'open' | 'closed';
+type TimeWindowFilter = 'all' | '24h' | '7d' | '30d';
+
+// Map the time-window dropdown to an ISO `since` value. `all` returns
+// null so we don't send the param. We compute on every render of the
+// effect (cheap, < 1 µs); keeps the dropdown values reactive.
+function timeWindowToSince(w: TimeWindowFilter): string | null {
+  if (w === 'all') return null;
+  const ms =
+    w === '24h' ? 24 * 60 * 60 * 1000 : w === '7d' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
+  return new Date(Date.now() - ms).toISOString();
+}
+
+// Count successful items + collect first per-item error from a
+// bulk-response so we can show a single inline banner without
+// hijacking the whole panel with a modal.
+function summarizeBulk(results: BulkTriageItem[]): { ok: number; err: number; firstError: string | null } {
+  let ok = 0;
+  let err = 0;
+  let firstError: string | null = null;
+  for (const r of results) {
+    if ('error' in r) {
+      err++;
+      if (!firstError) firstError = `${r.id.slice(0, 8)}…: ${r.error.message}`;
+    } else {
+      ok++;
+    }
+  }
+  return { ok, err, firstError };
+}
 
 type SubView = 'pending' | 'placed' | 'skipped';
 
@@ -48,27 +95,62 @@ export function TriagePanel({
   const [decisions, setDecisions] = useState<TriageDecision[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const [busyDecisionId, setBusyDecisionId] = useState<string | null>(null);
   const [pickerForDecision, setPickerForDecision] = useState<TriageDecision | null>(null);
+  // Two picker modes:
+  //   - 'single' → single-item Place/Move (existing Phase 1 flow).
+  //   - 'bulk'   → "Override All Selected" — applies the picked parent
+  //     to every checked decisionId via bulkOverrideTriageDecisions.
+  // `pickerForDecision` is null in bulk mode (the panel uses
+  // `bulkPickerOpen` instead).
+  const [bulkPickerOpen, setBulkPickerOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
+  // Selection state — checked decision ids in the current view. Reset
+  // on view-switch and after every bulk action.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  // Bulk-in-flight indicator so the toolbar can show a counter.
+  const [bulkBusy, setBulkBusy] = useState<null | { kind: 'confirm' | 'override' | 'reclassify'; total: number }>(null);
+
+  // Phase 2 filter state — slider + dropdowns above the list.
+  const [minConfidence, setMinConfidence] = useState(0);
+  const [maxConfidence, setMaxConfidence] = useState(100);
+  const [issueStateFilter, setIssueStateFilter] = useState<IssueStateFilter>('all');
+  const [timeWindow, setTimeWindow] = useState<TimeWindowFilter>('7d');
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  // Clear selection when the view changes or after a bulk action.
+  // Clearing on filter-change isn't necessary — filtered-out rows just
+  // stay selected silently and the next bulk action operates on the
+  // intersection of selected ∩ currently-shown.
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [view]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    // Server-side filter for the active sub-view. Pending = unreviewed;
-    // Placed = decision=place AND (reviewed OR placedNodeId set); Skipped
-    // = decision=skip AND reviewed. We pull each view fresh because the
-    // server count is authoritative — Phase 2 will switch to a single
-    // "all decisions" pull + client-side bucketing if perf demands it.
-    const filters =
-      view === 'pending'
-        ? { reviewed: false, limit: 200 }
+    // Server-side filter for the active sub-view + Phase 2 filters.
+    //   Pending  = unreviewed
+    //   Placed   = decision=place AND reviewed
+    //   Skipped  = decision=skip AND reviewed
+    // Confidence/issueState/since are sent as separate query params
+    // (server clamps to valid ranges, silently ignores malformed).
+    const since = timeWindowToSince(timeWindow);
+    const filters = {
+      ...(view === 'pending'
+        ? { reviewed: false }
         : view === 'placed'
-          ? { decision: 'place' as TriageDecisionKind, reviewed: true, limit: 200 }
-          : { decision: 'skip' as TriageDecisionKind, reviewed: true, limit: 200 };
+          ? { decision: 'place' as TriageDecisionKind, reviewed: true }
+          : { decision: 'skip' as TriageDecisionKind, reviewed: true }),
+      limit: 200,
+      minConfidence,
+      maxConfidence,
+      ...(issueStateFilter !== 'all' ? { issueState: issueStateFilter } : {}),
+      ...(since ? { since } : {}),
+    };
     listTriageDecisions(mapId, filters)
       .then((res) => {
         if (cancelled) return;
@@ -86,7 +168,7 @@ export function TriagePanel({
     return () => {
       cancelled = true;
     };
-  }, [mapId, view, refreshTick]);
+  }, [mapId, view, refreshTick, minConfidence, maxConfidence, issueStateFilter, timeWindow]);
 
   const handleConfirm = useCallback(
     async (decision: TriageDecision) => {
@@ -161,6 +243,110 @@ export function TriagePanel({
     },
     [mapId, pickerForDecision, refresh],
   );
+
+  // ── Bulk handlers (#95 Phase 2) ───────────────────────────────
+  //
+  // All three share the same shape: pull the selected ids, hit the
+  // bulk endpoint, summarize results into an info/error banner, clear
+  // the selection, and refresh. We pass the array of ids — the server
+  // handles per-item idempotency, so a deleted-mid-batch row shows up
+  // as a per-item error in the banner instead of failing the batch.
+  const selectedArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
+  const selectedDecisions = useMemo(
+    () => decisions.filter((d) => selectedIds.has(d.id)),
+    [decisions, selectedIds],
+  );
+
+  const finishBulk = useCallback((results: BulkTriageItem[], label: string) => {
+    const { ok, err, firstError } = summarizeBulk(results);
+    if (err > 0) {
+      setError(
+        `${label}: ${ok} ok / ${err} failed${firstError ? ` — ${firstError}` : ''}`,
+      );
+      setInfo(null);
+    } else {
+      setInfo(`${label}: ${ok} ok`);
+      setError(null);
+    }
+    setSelectedIds(new Set());
+    refresh();
+  }, [refresh]);
+
+  const handleBulkConfirm = useCallback(async () => {
+    if (selectedArray.length === 0) return;
+    setBulkBusy({ kind: 'confirm', total: selectedArray.length });
+    try {
+      const res = await bulkConfirmTriageDecisions(mapId, selectedArray);
+      finishBulk(res.results, `Confirm ${selectedArray.length}`);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Bulk confirm failed';
+      setError(msg);
+    } finally {
+      setBulkBusy(null);
+    }
+  }, [mapId, selectedArray, finishBulk]);
+
+  const handleBulkReclassify = useCallback(async () => {
+    if (selectedArray.length === 0) return;
+    setBulkBusy({ kind: 'reclassify', total: selectedArray.length });
+    try {
+      const res = await bulkReclassifyTriageDecisions(mapId, selectedArray);
+      finishBulk(res.results, `Re-classify ${selectedArray.length}`);
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : 'Bulk reclassify failed';
+      setError(msg);
+    } finally {
+      setBulkBusy(null);
+    }
+  }, [mapId, selectedArray, finishBulk]);
+
+  const handleBulkOverridePickParent = useCallback(
+    async (parentNodeId: string) => {
+      setBulkPickerOpen(false);
+      if (selectedArray.length === 0) return;
+      setBulkBusy({ kind: 'override', total: selectedArray.length });
+      try {
+        const res = await bulkOverrideTriageDecisions(mapId, selectedArray, parentNodeId);
+        finishBulk(res.results, `Override ${selectedArray.length}`);
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : 'Bulk override failed';
+        setError(msg);
+      } finally {
+        setBulkBusy(null);
+      }
+    },
+    [mapId, selectedArray, finishBulk],
+  );
+
+  // "Override All Selected" is only valid when every selected row is a
+  // place decision (spec: "only valid for `place` decisions — gated
+  // client-side"). The button is disabled otherwise; the server also
+  // rejects per-item.
+  const canBulkOverride =
+    selectedDecisions.length > 0 &&
+    selectedDecisions.every((d) => d.decision === 'place');
+
+  // Select-all behavior — toggle between (select all visible) and
+  // (clear).
+  const allSelected =
+    decisions.length > 0 && decisions.every((d) => selectedIds.has(d.id));
+  const someSelected = selectedIds.size > 0 && !allSelected;
+  const toggleSelectAll = useCallback(() => {
+    if (allSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(decisions.map((d) => d.id)));
+    }
+  }, [allSelected, decisions]);
+
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   return (
     <div
@@ -239,6 +425,64 @@ export function TriagePanel({
         </TabButton>
       </div>
 
+      {/* Filter row (#95 Phase 2) — confidence slider + state + window */}
+      <FilterBar
+        minConfidence={minConfidence}
+        maxConfidence={maxConfidence}
+        onMinChange={setMinConfidence}
+        onMaxChange={setMaxConfidence}
+        issueState={issueStateFilter}
+        onIssueStateChange={setIssueStateFilter}
+        timeWindow={timeWindow}
+        onTimeWindowChange={setTimeWindow}
+      />
+
+      {/* Bulk-action toolbar (#95 Phase 2) — select-all + actions */}
+      <BulkToolbar
+        view={view}
+        totalVisible={decisions.length}
+        selectedCount={selectedIds.size}
+        allSelected={allSelected}
+        someSelected={someSelected}
+        onToggleSelectAll={toggleSelectAll}
+        canBulkOverride={canBulkOverride}
+        bulkBusy={bulkBusy}
+        onBulkConfirm={handleBulkConfirm}
+        onBulkOverride={() => setBulkPickerOpen(true)}
+        onBulkReclassify={handleBulkReclassify}
+      />
+
+      {/* Info banner (bulk success) */}
+      {info && !error && (
+        <div
+          data-testid="triage-info"
+          style={{
+            padding: '8px 16px',
+            background: '#dcfce7',
+            color: '#166534',
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>{info}</span>
+          <button
+            onClick={() => setInfo(null)}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#166534',
+              fontFamily: 'inherit',
+              fontSize: 12,
+            }}
+          >
+            x
+          </button>
+        </div>
+      )}
+
       {/* Error banner */}
       {error && (
         <div
@@ -291,6 +535,8 @@ export function TriagePanel({
               decision={d}
               view={view}
               busy={busyDecisionId === d.id}
+              selected={selectedIds.has(d.id)}
+              onToggleSelect={() => toggleSelect(d.id)}
               onConfirm={() => handleConfirm(d)}
               onPlace={() => setPickerForDecision(d)}
               onReclassify={() => handleReclassify(d)}
@@ -312,10 +558,11 @@ export function TriagePanel({
         }}
       >
         Pending = unreviewed AI decisions. Confirm to accept, Override
-        to reparent, Re-classify to re-run.
+        to reparent, Re-classify to re-run. Check rows + use the
+        toolbar for bulk actions.
       </div>
 
-      {/* Node picker modal */}
+      {/* Single-item node picker modal */}
       {pickerForDecision && (
         <NodePickerModal
           title={`Pick a parent for "${pickerForDecision.issueTitle}"`}
@@ -324,6 +571,240 @@ export function TriagePanel({
           onClose={() => setPickerForDecision(null)}
         />
       )}
+
+      {/* Bulk-override node picker modal */}
+      {bulkPickerOpen && (
+        <NodePickerModal
+          title={`Pick a parent for ${selectedArray.length} decision${selectedArray.length === 1 ? '' : 's'}`}
+          // Exclude every selected row's placedNodeId — picking one of
+          // them would self-loop and be rejected per-item with
+          // SELF_LOOP_BLOCKED. Better to disable up front.
+          excludeNodeIds={selectedDecisions
+            .map((d) => d.placedNodeId)
+            .filter((x): x is string => typeof x === 'string')}
+          onPick={handleBulkOverridePickParent}
+          onClose={() => setBulkPickerOpen(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Filter bar (#95 Phase 2) ──────────────────────────────────────
+
+function FilterBar({
+  minConfidence,
+  maxConfidence,
+  onMinChange,
+  onMaxChange,
+  issueState,
+  onIssueStateChange,
+  timeWindow,
+  onTimeWindowChange,
+}: {
+  minConfidence: number;
+  maxConfidence: number;
+  onMinChange: (n: number) => void;
+  onMaxChange: (n: number) => void;
+  issueState: IssueStateFilter;
+  onIssueStateChange: (s: IssueStateFilter) => void;
+  timeWindow: TimeWindowFilter;
+  onTimeWindowChange: (w: TimeWindowFilter) => void;
+}) {
+  return (
+    <div
+      data-testid="triage-filterbar"
+      style={{
+        padding: '8px 12px',
+        borderBottom: '1px solid #e2e8f0',
+        background: '#f8fafc',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 6,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 10, color: '#64748b', minWidth: 70 }}>
+          Confidence
+        </span>
+        <input
+          data-testid="triage-filter-min-confidence"
+          type="range"
+          min={0}
+          max={100}
+          value={minConfidence}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            // Clamp: min can't exceed max.
+            onMinChange(Math.min(n, maxConfidence));
+          }}
+          style={{ flex: 1 }}
+        />
+        <input
+          data-testid="triage-filter-max-confidence"
+          type="range"
+          min={0}
+          max={100}
+          value={maxConfidence}
+          onChange={(e) => {
+            const n = parseInt(e.target.value, 10);
+            onMaxChange(Math.max(n, minConfidence));
+          }}
+          style={{ flex: 1 }}
+        />
+        <span
+          style={{ fontSize: 10, color: '#64748b', minWidth: 48, textAlign: 'right' }}
+          data-testid="triage-filter-confidence-label"
+        >
+          {minConfidence}–{maxConfidence}
+        </span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 10, color: '#64748b', minWidth: 70 }}>State</span>
+        <select
+          data-testid="triage-filter-issue-state"
+          value={issueState}
+          onChange={(e) => onIssueStateChange(e.target.value as IssueStateFilter)}
+          style={{
+            flex: 1,
+            fontSize: 11,
+            padding: '2px 4px',
+            border: '1px solid #e2e8f0',
+            borderRadius: 4,
+            background: '#fff',
+            fontFamily: 'inherit',
+          }}
+        >
+          <option value="all">All</option>
+          <option value="open">Open</option>
+          <option value="closed">Closed</option>
+        </select>
+        <span style={{ fontSize: 10, color: '#64748b', minWidth: 40 }}>Window</span>
+        <select
+          data-testid="triage-filter-time-window"
+          value={timeWindow}
+          onChange={(e) => onTimeWindowChange(e.target.value as TimeWindowFilter)}
+          style={{
+            flex: 1,
+            fontSize: 11,
+            padding: '2px 4px',
+            border: '1px solid #e2e8f0',
+            borderRadius: 4,
+            background: '#fff',
+            fontFamily: 'inherit',
+          }}
+        >
+          <option value="24h">24 h</option>
+          <option value="7d">7 d</option>
+          <option value="30d">30 d</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+    </div>
+  );
+}
+
+// ── Bulk-action toolbar (#95 Phase 2) ─────────────────────────────
+
+function BulkToolbar({
+  view,
+  totalVisible,
+  selectedCount,
+  allSelected,
+  someSelected,
+  onToggleSelectAll,
+  canBulkOverride,
+  bulkBusy,
+  onBulkConfirm,
+  onBulkOverride,
+  onBulkReclassify,
+}: {
+  view: SubView;
+  totalVisible: number;
+  selectedCount: number;
+  allSelected: boolean;
+  someSelected: boolean;
+  onToggleSelectAll: () => void;
+  canBulkOverride: boolean;
+  bulkBusy: null | { kind: 'confirm' | 'override' | 'reclassify'; total: number };
+  onBulkConfirm: () => void;
+  onBulkOverride: () => void;
+  onBulkReclassify: () => void;
+}) {
+  const noSelection = selectedCount === 0;
+  const busy = bulkBusy != null;
+  return (
+    <div
+      data-testid="triage-bulk-toolbar"
+      style={{
+        padding: '6px 10px',
+        borderBottom: '1px solid #e2e8f0',
+        background: '#f1f5f9',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        flexWrap: 'wrap',
+      }}
+    >
+      <label
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 4,
+          fontSize: 11,
+          color: '#475569',
+          cursor: totalVisible === 0 ? 'not-allowed' : 'pointer',
+        }}
+      >
+        <input
+          data-testid="triage-bulk-select-all"
+          type="checkbox"
+          // Tri-state visual: indeterminate when some-but-not-all are
+          // selected; React doesn't have a JSX prop for `indeterminate`
+          // so we set it via a ref callback.
+          ref={(el) => {
+            if (el) el.indeterminate = someSelected;
+          }}
+          checked={allSelected}
+          disabled={totalVisible === 0 || busy}
+          onChange={onToggleSelectAll}
+        />
+        <span data-testid="triage-bulk-selected-count">
+          {selectedCount} / {totalVisible}
+        </span>
+      </label>
+      <div style={{ flex: 1 }} />
+      {view === 'pending' && (
+        <ActionBtn
+          testId="triage-bulk-confirm"
+          label={
+            bulkBusy?.kind === 'confirm' ? `Confirming ${bulkBusy.total}…` : 'Confirm All'
+          }
+          kind="primary"
+          disabled={noSelection || busy}
+          onClick={onBulkConfirm}
+        />
+      )}
+      <ActionBtn
+        testId="triage-bulk-override"
+        label={
+          bulkBusy?.kind === 'override' ? `Moving ${bulkBusy.total}…` : 'Override All'
+        }
+        kind="default"
+        disabled={noSelection || !canBulkOverride || busy}
+        onClick={onBulkOverride}
+      />
+      <ActionBtn
+        testId="triage-bulk-reclassify"
+        label={
+          bulkBusy?.kind === 'reclassify'
+            ? `Re-classifying ${bulkBusy.total}…`
+            : 'Re-classify All'
+        }
+        kind="ghost"
+        disabled={noSelection || busy}
+        onClick={onBulkReclassify}
+      />
     </div>
   );
 }
@@ -366,6 +847,8 @@ function TriageCard({
   decision,
   view,
   busy,
+  selected,
+  onToggleSelect,
   onConfirm,
   onPlace,
   onReclassify,
@@ -375,6 +858,8 @@ function TriageCard({
   decision: TriageDecision;
   view: SubView;
   busy: boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
   onConfirm: () => void;
   onPlace: () => void;
   onReclassify: () => void;
@@ -415,10 +900,20 @@ function TriageCard({
         display: 'flex',
         flexDirection: 'column',
         gap: 8,
+        background: selected ? '#eff6ff' : 'transparent',
       }}
     >
       {/* Title row */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <input
+          data-testid="triage-card-select"
+          type="checkbox"
+          checked={selected}
+          onChange={onToggleSelect}
+          disabled={busy}
+          style={{ marginTop: 2 }}
+          aria-label={`Select ${decision.issueTitle}`}
+        />
         <span style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', flex: 1 }}>
           {decision.issueTitle}
         </span>
