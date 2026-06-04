@@ -965,18 +965,17 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [currentMapId]);
 
-  // Mouse "back" button (XButton1) — pop one focus level when drilled in.
-  // When not focused, the browser's default back navigation is preserved.
+  // Mouse "back" button (XButton1) — pop one entry off the focus
+  // navigation history. When no history is available, the browser's
+  // default back navigation is preserved.
   useEffect(() => {
     if (!currentMapId) return;
     const handler = (e: MouseEvent) => {
       if (e.button !== 3) return;
-      const { focusNodeId, nodes, rootNodeId, setFocusNode } = useMindmapStore.getState();
-      if (!focusNodeId) return;
+      const { focusHistory, popFocusHistory } = useMindmapStore.getState();
+      if (focusHistory.length === 0) return;
       e.preventDefault();
-      const focusNode = nodes[focusNodeId];
-      const parentId = focusNode?.parentId;
-      setFocusNode(parentId && parentId !== rootNodeId ? parentId : null);
+      popFocusHistory();
     };
     window.addEventListener('mousedown', handler);
     return () => window.removeEventListener('mousedown', handler);

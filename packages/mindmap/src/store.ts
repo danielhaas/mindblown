@@ -64,6 +64,7 @@ export interface MindmapState {
 
   // Drill-down navigation
   focusNodeId: string | null;
+  focusHistory: (string | null)[];
   maxDepth: number;
 
   // Cycle / sprint state
@@ -137,6 +138,7 @@ export interface MindmapState {
 
   // Drill-down actions
   setFocusNode: (nodeId: string | null) => void;
+  popFocusHistory: () => void;
   setMaxDepth: (depth: number) => void;
 
   // Presence / follow mode actions
@@ -173,6 +175,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   computed: new Map(),
   layoutType: 'tree-lr' as const,
   focusNodeId: null,
+  focusHistory: [],
   maxDepth: 1,
   cycles: [],
   activeCycleFilter: null,
@@ -289,6 +292,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         editingNodeId: null,
         computed: recomputeValues(nodesMap),
         focusNodeId: null,
+        focusHistory: [],
         maxDepth: 1,
         loading: false,
         error: null,
@@ -336,6 +340,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       editingNodeId: null,
       computed: new Map(),
       focusNodeId: null,
+      focusHistory: [],
       maxDepth: 1,
       versions: [],
       activeVersionFilter: null,
@@ -542,7 +547,25 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     const state = get();
     // Validate node exists (or null for root)
     if (nodeId !== null && !state.nodes[nodeId]) return;
-    set({ focusNodeId: nodeId });
+    if (nodeId === state.focusNodeId) return;
+    const history = state.focusHistory.concat(state.focusNodeId);
+    // Cap history to avoid unbounded growth
+    const trimmed = history.length > 50 ? history.slice(-50) : history;
+    set({ focusNodeId: nodeId, focusHistory: trimmed });
+  },
+
+  popFocusHistory: () => {
+    const { focusHistory, nodes } = get();
+    if (focusHistory.length === 0) return;
+    const next = focusHistory[focusHistory.length - 1];
+    const newHistory = focusHistory.slice(0, -1);
+    // If the historical node no longer exists, skip it
+    if (next !== null && !nodes[next]) {
+      set({ focusHistory: newHistory });
+      get().popFocusHistory();
+      return;
+    }
+    set({ focusNodeId: next, focusHistory: newHistory });
   },
 
   setMaxDepth: (depth) => set({ maxDepth: depth }),
