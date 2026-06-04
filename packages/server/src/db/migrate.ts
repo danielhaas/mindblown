@@ -553,6 +553,46 @@ export async function runMigrations(): Promise<void> {
     ON triage_decisions(map_id) WHERE reviewed = false
   `);
 
+  // ── Phase 3 (#96) — opt-in GitHub label write-back per map ────
+  // When true, finalized triage decisions write `triage:placed` /
+  // `triage:skipped` labels back to the source GitHub issue. Default
+  // false so existing maps don't suddenly mutate their bound repos.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS triage_label_writeback BOOLEAN NOT NULL DEFAULT false
+  `);
+
+  // ── Phase 3 (#96) — triage decision history (audit log) ───────
+  // Append-only history of every mutation on a triage_decisions row.
+  // ON DELETE CASCADE: when a decision row is removed (cascade from
+  // map delete, manual cleanup), its history rides along.
+  // changed_by is TEXT (not a users FK) so the 'auto' sentinel doesn't
+  // need a synthetic user row, and so dropping an operator user
+  // doesn't truncate their audit trail.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS triage_decision_history (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      decision_id UUID NOT NULL REFERENCES triage_decisions(id) ON DELETE CASCADE,
+      changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      changed_by TEXT NOT NULL,
+      change_type TEXT NOT NULL,
+      previous_decision TEXT,
+      new_decision TEXT NOT NULL,
+      previous_confidence INTEGER,
+      new_confidence INTEGER,
+      previous_parent_node_id UUID,
+      new_parent_node_id UUID,
+      reason TEXT
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS triage_decision_history_decision_idx
+    ON triage_decision_history(decision_id)
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS triage_decision_history_changed_at_idx
+    ON triage_decision_history(changed_at DESC)
+  `);
+
   // ── Drop Milestone entity (collapsed into Version) ────────────
   // Historical: milestones were a first-class entity and nodes carried
   // both milestone_id and an is_milestone boolean checkpoint flag.

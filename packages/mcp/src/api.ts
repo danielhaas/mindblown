@@ -723,3 +723,94 @@ export function aiStandup(mapId: string, sinceHours?: number): Promise<AiStandup
     body: JSON.stringify({ mapId, sinceHours }),
   });
 }
+
+// ── Triage (#96 Phase 3) ──────────────────────────────────────
+
+export type TriageDecisionKindApi = 'place' | 'skip' | 'uncertain';
+
+export interface TriageDecisionRowApi {
+  id: string;
+  mapId: string;
+  externalId: string;
+  issueTitle: string;
+  issueState: 'open' | 'closed';
+  decision: TriageDecisionKindApi;
+  reason: string;
+  confidence: number;
+  placedNodeId: string | null;
+  decidedAt: string;
+  decidedBy: 'auto' | 'operator';
+  reviewed: boolean;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+}
+
+export interface TriageListFiltersApi {
+  reviewed?: boolean;
+  decision?: TriageDecisionKindApi;
+  minConfidence?: number;
+  maxConfidence?: number;
+  issueState?: 'open' | 'closed';
+  since?: string;
+  limit?: number;
+}
+
+export interface TriageActionResultApi {
+  decisionId: string;
+  status: string;
+  nodeId?: string | null;
+  decision?: TriageDecisionKindApi;
+  confidence?: number;
+  reason?: string;
+  parentNodeId?: string | null;
+  placedNodeId?: string | null;
+}
+
+export function listTriageDecisions(
+  mapId: string,
+  filters: TriageListFiltersApi,
+): Promise<{ mapId: string; total: number; decisions: TriageDecisionRowApi[] }> {
+  const params = new URLSearchParams();
+  if (filters.reviewed != null) params.set('reviewed', String(filters.reviewed));
+  if (filters.decision) params.set('decision', filters.decision);
+  if (filters.minConfidence != null) params.set('minConfidence', String(filters.minConfidence));
+  if (filters.maxConfidence != null) params.set('maxConfidence', String(filters.maxConfidence));
+  if (filters.issueState) params.set('issueState', filters.issueState);
+  if (filters.since) params.set('since', filters.since);
+  if (filters.limit != null) params.set('limit', String(filters.limit));
+  const qs = params.toString();
+  return request<{ mapId: string; total: number; decisions: TriageDecisionRowApi[] }>(
+    `/api/maps/${mapId}/triage-decisions${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export function overrideTriage(
+  mapId: string,
+  decisionId: string,
+  body: { decision: TriageDecisionKindApi; parentNodeId?: string; reason?: string },
+): Promise<TriageActionResultApi> {
+  return request<TriageActionResultApi>(
+    `/api/maps/${mapId}/triage-decisions/${decisionId}/override`,
+    { method: 'POST', body: JSON.stringify(body) },
+  );
+}
+
+export function reclassifyTriage(
+  mapId: string,
+  decisionId: string,
+): Promise<TriageActionResultApi> {
+  return request<TriageActionResultApi>(
+    `/api/maps/${mapId}/triage-decisions/${decisionId}/reclassify`,
+    { method: 'POST' },
+  );
+}
+
+export function confirmTriage(
+  mapId: string,
+  decisionId: string,
+): Promise<TriageActionResultApi> {
+  return request<TriageActionResultApi>(
+    `/api/maps/${mapId}/triage-decisions/${decisionId}/confirm`,
+    { method: 'POST' },
+  );
+}

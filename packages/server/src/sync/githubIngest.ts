@@ -49,6 +49,8 @@ import { integrations, maps, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from './mapContext.js';
+import { recordTriageHistory } from './triageHistory.js';
+import { applyTriageLabel } from './triageLabelWriteback.js';
 import {
   triageIssue,
   TRIAGE_AUTO_APPLY_CONFIDENCE,
@@ -551,8 +553,13 @@ async function ensureNodeForIssueViaTriage(
         decisionId: string;
         nodeId: string;
         node: Awaited<ReturnType<typeof nodeDb.getNode>>;
+        previous: PriorDecisionSnapshot | null;
       }
-    | { kind: 'decision_only'; decisionId: string }
+    | {
+        kind: 'decision_only';
+        decisionId: string;
+        previous: PriorDecisionSnapshot | null;
+      }
     | { kind: 'lost_race'; nodeId: string }
     | {
         kind: 'operator_reviewed_late';
@@ -561,6 +568,16 @@ async function ensureNodeForIssueViaTriage(
         decision: TriageDecision['decision'];
         confidence: number;
       };
+
+  // Captured for the audit-history write (#96 Phase 3). When the upsert
+  // tx finds no existing row, previous is null → history records 'created'.
+  // Otherwise we keep the prior decision/confidence/placedNode so the
+  // history row carries a proper before/after delta.
+  interface PriorDecisionSnapshot {
+    decision: string;
+    confidence: number;
+    placedNodeId: string | null;
+  }
 
   const result: TxResult = await db.transaction(async (tx) => {
     await takeIngestLock(tx, externalId);
@@ -617,6 +634,20 @@ async function ensureNodeForIssueViaTriage(
       };
     }
 
+    // Snapshot the prior decision (if any) so the post-tx history write
+    // can record a proper before/after delta. When no row existed, the
+    // snapshot is null → history records 'created' rather than
+    // 'overridden'. Captured here while we already hold the row in memory.
+    const priorSnapshot: PriorDecisionSnapshot | null =
+      existingDecisionInUpsertTx
+        ? {
+            decision: existingDecisionInUpsertTx.decision as string,
+            confidence: existingDecisionInUpsertTx.confidence as number,
+            placedNodeId:
+              (existingDecisionInUpsertTx.placedNodeId as string | null) ?? null,
+          }
+        : null;
+
     // Upsert the decision row. ON CONFLICT updates the existing row in
     // place so re-triage (operator hits `POST .../reclassify`) doesn't
     // accumulate duplicates.
@@ -660,7 +691,11 @@ async function ensureNodeForIssueViaTriage(
       .returning({ id: triageDecisions.id });
 
     if (!shouldAutoApply || !decision.parentNodeId) {
-      return { kind: 'decision_only', decisionId: decisionRow.id };
+      return {
+        kind: 'decision_only',
+        decisionId: decisionRow.id,
+        previous: priorSnapshot,
+      };
     }
 
     // Auto-apply: create the node under the LLM-chosen parent.
@@ -693,6 +728,7 @@ async function ensureNodeForIssueViaTriage(
       decisionId: decisionRow.id,
       nodeId: created.id,
       node: updated ?? created,
+      previous: priorSnapshot,
     };
   });
 
@@ -750,6 +786,28 @@ async function ensureNodeForIssueViaTriage(
       node: result.node,
       source: 'github_ingest_triage',
     });
+    // Phase 3 (#96) audit-history record. previous=null → 'created';
+    // any prior row (auto-revisit) → 'overridden'. The helper swallows
+    // its own errors so a logging failure can't block ingest.
+    await recordTriageHistory({
+      decisionId: result.decisionId,
+      changedBy: 'auto',
+      changeType: result.previous ? 'overridden' : 'created',
+      previousDecision: result.previous?.decision ?? null,
+      newDecision: decision.decision,
+      previousConfidence: result.previous?.confidence ?? null,
+      newConfidence: decision.confidence,
+      previousParentNodeId: result.previous?.placedNodeId ?? null,
+      newParentNodeId: result.nodeId,
+      reason: decision.reason,
+    });
+    // Phase 3 (#96) opt-in label writeback. Best-effort; helper internally
+    // gates on map's writeback flag + GH token availability.
+    await applyTriageLabel({
+      mapId,
+      externalId,
+      decision: decision.decision,
+    });
     return {
       status: 'created',
       nodeId: result.nodeId,
@@ -771,6 +829,23 @@ async function ensureNodeForIssueViaTriage(
       : decision.decision === 'uncertain'
         ? 'triaged_uncertain'
         : 'triaged_low_confidence';
+  await recordTriageHistory({
+    decisionId: result.decisionId,
+    changedBy: 'auto',
+    changeType: result.previous ? 'overridden' : 'created',
+    previousDecision: result.previous?.decision ?? null,
+    newDecision: decision.decision,
+    previousConfidence: result.previous?.confidence ?? null,
+    newConfidence: decision.confidence,
+    previousParentNodeId: result.previous?.placedNodeId ?? null,
+    newParentNodeId: null,
+    reason: decision.reason,
+  });
+  await applyTriageLabel({
+    mapId,
+    externalId,
+    decision: decision.decision,
+  });
   return {
     status,
     mapId,
