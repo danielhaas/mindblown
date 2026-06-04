@@ -52,7 +52,7 @@ function makeRecorder(): Recorder {
     lastOverride: null,
     lastReclassify: null,
     lastConfirm: null,
-    listResult: { mapId: 'm1', total: 0, decisions: [] },
+    listResult: { mapId: 'm1', total: 0, returned: 0, decisions: [] },
     overrideResult: { decisionId: 'd1', status: 'placed', nodeId: 'n1' },
     reclassifyResult: {
       decisionId: 'd1',
@@ -167,6 +167,7 @@ describe('list_triage_decisions tool', () => {
     rec.listResult = {
       mapId: 'm1',
       total: 2,
+      returned: 2,
       decisions: [
         fakeDecision({ id: 't1', decision: 'place', confidence: 92, reviewed: false }),
         fakeDecision({ id: 't2', decision: 'skip', confidence: 70, reviewed: true, decidedBy: 'operator' }),
@@ -189,9 +190,31 @@ describe('list_triage_decisions tool', () => {
         limit: undefined,
       },
     });
-    expect(out).toContain('Found 2 triage decision(s) in map m1');
+    // Phase 3 follow-up (#104 item 12): "Showing N" wording (not "Found N").
+    expect(out).toContain('Showing 2 triage decision(s) in map m1');
     expect(out).toContain('t1');
     expect(out).toContain('t2');
+  });
+
+  // Phase 3 follow-up (#104 item 12): when the page is clipped by the
+  // limit (`returned < total`), the summary surfaces both numbers as
+  // "Showing N of M".
+  it('renders "Showing N of M" when the limit clips the result set', async () => {
+    const rec = makeRecorder();
+    rec.listResult = {
+      mapId: 'm1',
+      total: 47,
+      returned: 10,
+      decisions: Array.from({ length: 10 }, (_, i) =>
+        fakeDecision({ id: `t${i}` }),
+      ),
+    };
+    const out = await listTriageDecisionsTool.handler(rec.backend, {
+      mapId: 'm1',
+      limit: 10,
+    } as never);
+    expect(out).toContain('Showing 10 of 47 triage decision(s) in map m1');
+    expect(out).toContain('raise `limit`');
   });
 
   it('reports zero results in a human-readable way (no thrown error)', async () => {

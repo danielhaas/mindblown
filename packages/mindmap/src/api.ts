@@ -1157,6 +1157,18 @@ export interface BulkTriageItemErr {
 
 export type BulkTriageItem = BulkTriageItemOk | BulkTriageItemErr;
 
+/**
+ * Phase 3 follow-up (#102 item 8): `results` preserves the order of the
+ * submitted `decisionIds` array AFTER dedupe — the server strips repeated
+ * ids (UI double-tap) before iterating, so a request with
+ * `decisionIds=['a', 'b', 'a']` yields a 2-item `results` array `[a, b]`,
+ * not 3 items. Callers that need to correlate `results[i]` to a specific
+ * input id should match on `results[i].id` rather than relying on
+ * positional alignment with the raw submitted array.
+ *
+ * `mapId` echoes the path parameter so a client that received the response
+ * via a fan-out (multiple maps) can route results.
+ */
 export interface BulkTriageResponse {
   mapId: string;
   results: BulkTriageItem[];

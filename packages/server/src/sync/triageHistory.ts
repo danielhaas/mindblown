@@ -32,6 +32,21 @@ export type TriageChangeType =
   | 'confirmed'
   | 'state_synced';
 
+/*
+ * Phase 3 follow-up (#104 item 14): for `changeType='confirmed'`, the
+ * recorder is intentionally called with `previousDecision === newDecision`,
+ * `previousConfidence === newConfidence`, and
+ * `previousParentNodeId === newParentNodeId` — confirm doesn't change the
+ * decision body, only flips `reviewed=true` + `decidedBy='operator'`.
+ * The row exists for audit completeness ("who confirmed this decision,
+ * and when") rather than to capture a value transition. The same logic
+ * applies to `changeType='state_synced'` on reopen: the GH state column
+ * mirrors the upstream issue, no decision-body change happens, and the
+ * row exists so the audit trail captures "we re-synced state at T". Tests
+ * that assert on the (previous_, new_) tuple should treat a no-delta row
+ * as expected for these two change types.
+ */
+
 export interface TriageHistoryInput {
   decisionId: string;
   /** 'auto' for pipeline writes, a stringified userId for operator writes. */

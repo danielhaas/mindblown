@@ -103,7 +103,18 @@ export const listTriageDecisionsTool = defineTool({
       return `No triage decisions found in map ${mapId} matching the supplied filters.`;
     }
     const lines = result.decisions.map(renderDecisionLine);
-    return `Found ${result.total} triage decision(s) in map ${mapId}:\n${lines.join('\n')}`;
+    // Phase 3 follow-up (#104 item 12): "Showing N of M" wording so the
+    // operator (or Eve) can see at a glance whether the page was clipped
+    // by the limit. Older single-line "Found N" was misleading when the
+    // limit clipped the result set — the operator might assume N rows
+    // matched the filter when in reality only N rows fit the page.
+    const returned = result.returned;
+    const total = result.total;
+    const summary =
+      total > returned
+        ? `Showing ${returned} of ${total} triage decision(s) in map ${mapId} (raise \`limit\` to see more, max 200)`
+        : `Showing ${returned} triage decision(s) in map ${mapId}`;
+    return `${summary}:\n${lines.join('\n')}`;
   },
 });
 

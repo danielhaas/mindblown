@@ -128,6 +128,31 @@ export function TriagePanel({
     setSelectedIds(new Set());
   }, [view]);
 
+  // Phase 3 follow-up (#102 item 7): listen for triage:updated WS events
+  // broadcast by the server when any operator (this one or another tab /
+  // user with edit perms) mutates a triage row. We bump `refreshTick` to
+  // trigger the data-fetch effect — same path the user's own actions
+  // already drive, so we don't need a merge-into-local-state code path.
+  // The handler ignores events for other maps as defense-in-depth; the
+  // server already scopes broadcasts to the room, but a stale ws
+  // connection sticking around across map switches could deliver a
+  // foreign event.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        mapId?: string;
+        decisionIds?: string[];
+      } | undefined;
+      if (!detail || detail.mapId !== mapId) return;
+      // Refresh-only: we don't try to surgically update the row in
+      // local state. The triage list is small (capped at 200) and the
+      // refetch is cheap; correctness > savings.
+      setRefreshTick((t) => t + 1);
+    };
+    window.addEventListener('ws:triage', handler);
+    return () => window.removeEventListener('ws:triage', handler);
+  }, [mapId]);
+
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -252,6 +277,15 @@ export function TriagePanel({
   // handles per-item idempotency, so a deleted-mid-batch row shows up
   // as a per-item error in the banner instead of failing the batch.
   const selectedArray = useMemo(() => Array.from(selectedIds), [selectedIds]);
+  // Phase 3 follow-up (#102 item 6): `selectedDecisions` is the
+  // intersection of `selectedIds` with the rows currently rendered (the
+  // filter set may have changed since the operator ticked the checkboxes).
+  // We intentionally do NOT clear `selectedIds` when the filter changes —
+  // this lets the operator narrow the view, tick more rows, then broaden
+  // again to confirm all of them. The trade-off is that the toolbar's
+  // `selectedCount` may briefly exceed `visibleCount` (e.g. 30 / 12) when
+  // a filter hides some ticked rows; the toolbar renders both numbers so
+  // the operator can see the discrepancy.
   const selectedDecisions = useMemo(
     () => decisions.filter((d) => selectedIds.has(d.id)),
     [decisions, selectedIds],
@@ -770,8 +804,28 @@ function BulkToolbar({
           onChange={onToggleSelectAll}
         />
         <span data-testid="triage-bulk-selected-count">
-          {selectedCount} / {totalVisible}
+          {selectedCount} selected / {totalVisible} visible
         </span>
+        {selectedCount > totalVisible && (
+          // Phase 3 follow-up (#102 item 6): a hidden-from-view selection
+          // means the operator filtered after ticking, and some checked
+          // rows are no longer rendered. The bulk action still operates
+          // on the full selection set — call that out so the operator
+          // isn't surprised when "Confirm All" affects more rows than
+          // appear in the list.
+          <span
+            data-testid="triage-bulk-offscreen-hint"
+            title={`${selectedCount - totalVisible} selected row(s) are hidden by the current filter — bulk actions will still operate on them.`}
+            style={{
+              fontSize: 10,
+              color: '#b45309',
+              fontWeight: 600,
+              marginLeft: 4,
+            }}
+          >
+            ({selectedCount - totalVisible} hidden)
+          </span>
+        )}
       </label>
       <div style={{ flex: 1 }} />
       {view === 'pending' && (

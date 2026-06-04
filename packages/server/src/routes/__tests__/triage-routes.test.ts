@@ -89,8 +89,17 @@ function applyPred(rows: Record<string, unknown>[], pred: unknown): Record<strin
   return rows.filter((r) => p.check!(r));
 }
 
-function buildSelectChain() {
+function buildSelectChain(fields?: Record<string, unknown>) {
   const step: { table?: string; pred?: unknown; limit?: number; ordered?: boolean } = {};
+  // Detect count-aggregate selects: `db.select({ count: sql<number>... })`.
+  // The Phase 3 follow-up (#104 item 12) adds a true COUNT pass to the
+  // list route, which the production code shapes as a `[{ count }]`
+  // single-row result. We sniff for the `count` field by name and
+  // return a count-shaped row.
+  const isCountSelect =
+    fields != null &&
+    Object.keys(fields).length === 1 &&
+    Object.prototype.hasOwnProperty.call(fields, 'count');
   const resolve = async (): Promise<Record<string, unknown>[]> => {
     let rows: Record<string, unknown>[] = [];
     if (step.table === 'triageDecisions') {
@@ -105,6 +114,11 @@ function buildSelectChain() {
         );
     }
     const filtered = applyPred(rows, step.pred);
+    if (isCountSelect) {
+      // Count selects ignore the limit — they're a separate pass over
+      // the same predicate, returning a single-row count.
+      return [{ count: filtered.length }];
+    }
     return step.limit ? filtered.slice(0, step.limit) : filtered;
   };
   const thenable = {
@@ -131,7 +145,7 @@ function buildSelectChain() {
 
 vi.mock('../../db/connection.js', () => {
   const db = {
-    select: () => buildSelectChain(),
+    select: (fields?: Record<string, unknown>) => buildSelectChain(fields),
     update: (table: { __name?: string }) => ({
       set: (vals: Record<string, unknown>) => ({
         where: async (pred: unknown) => {
@@ -290,6 +304,14 @@ vi.mock('../../db/permissions.js', () => ({
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
+// Phase 3 follow-up (#104 item 11): mock applyTriageLabel so a route
+// test can assert when label writes happen (and whether bulk routes
+// fire them in parallel after the DB loop, not serially inside it).
+const applyTriageLabelMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../sync/triageLabelWriteback.js', () => ({
+  applyTriageLabel: applyTriageLabelMock,
+}));
+
 vi.mock('../../sync/triage.js', () => ({
   triageIssue: mocks.triageIssueMock,
 }));
@@ -327,6 +349,8 @@ beforeEach(() => {
   updateNodeMock.mockClear();
   moveNodeMock.mockClear();
   triageIssueMock.mockClear();
+  applyTriageLabelMock.mockReset();
+  applyTriageLabelMock.mockImplementation(async () => undefined);
 });
 
 // ── Auth gate ────────────────────────────────────────────────────
@@ -468,7 +492,11 @@ describe('GET /api/maps/:mapId/triage-decisions', () => {
       url: '/api/maps/map-1/triage-decisions?limit=3',
     });
     await app.close();
-    expect(res.json().total).toBe(3);
+    // Phase 3 follow-up (#104 item 12): `total` is the true match count,
+    // `returned` reflects the page size after the limit clip.
+    expect(res.json().total).toBe(10);
+    expect(res.json().returned).toBe(3);
+    expect(res.json().decisions).toHaveLength(3);
   });
 });
 
@@ -1011,6 +1039,26 @@ describe('GET /api/maps/:mapId/triage-decisions — Phase 2 filters', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().total).toBe(2);
   });
+
+  // Phase 3 follow-up (#102 item 3): the `since` filter parses via
+  // `Date.parse`, which yields NaN for non-ISO strings. The route is
+  // documented to silently ignore malformed filter inputs (same posture
+  // as `minConfidence=banana` above) so a URL typo doesn't blank the
+  // panel. This test pins that contract — a 200 with all rows, not a
+  // 400.
+  it('malformed since is silently ignored (returns 200 with all rows, not 400)', async () => {
+    seedRow({ id: 't1' });
+    seedRow({ id: 't2' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions?since=not-a-date',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().total).toBe(2);
+  });
 });
 
 // ── Bulk routes — Phase 2 (#95) ──────────────────────────────────
@@ -1098,10 +1146,13 @@ describe('POST .../bulk-confirm', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('400 when batch exceeds 200', async () => {
+  // Phase 3 follow-up (#102 item 1): bulk cap lowered from 200 → 20 so
+  // a long-poll on bulk-reclassify doesn't tie up the request connection
+  // for 6-10 min. 21 is the first over-limit batch.
+  it('400 when batch exceeds 20', async () => {
     permissionLevel = 'edit';
     const app = await buildApp('jwt');
-    const ids = Array.from({ length: 201 }, (_, i) => `t${i}`);
+    const ids = Array.from({ length: 21 }, (_, i) => `t${i}`);
     const res = await app.inject({
       method: 'POST',
       url: '/api/maps/map-1/triage-decisions/bulk-confirm',
@@ -1109,6 +1160,22 @@ describe('POST .../bulk-confirm', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(400);
+    expect(res.json().error?.message).toContain('20');
+  });
+
+  it('accepts the boundary batch of exactly 20 ids', async () => {
+    for (let i = 0; i < 20; i++) seedRow({ id: `t${i}`, reviewed: false, decidedBy: 'auto' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const ids = Array.from({ length: 20 }, (_, i) => `t${i}`);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ids },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results).toHaveLength(20);
   });
 
   it('403 for API-key auth', async () => {
@@ -1267,6 +1334,55 @@ describe('POST .../bulk-override', () => {
     await app.close();
     expect(res.statusCode).toBe(403);
   });
+
+  // Phase 3 follow-up (#102 item 5): bulk-override per-item status enum
+  // distinguishes 'moved' (node existed, parent differed, move ran) from
+  // 'already_correct' (no-op move — parent already matches) from
+  // 'orphaned' (placedNodeId set but the node row is gone). The earlier
+  // 'already_placed' bucket conflated the last two.
+  it("status='already_correct' when the placed node already lives under the target parent", async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: 'already-there' });
+    // Node lives under epic-B already; the operator picks epic-B again.
+    nodes.set('already-there', { id: 'already-there', mapId: 'map-1', parentId: 'epic-B' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; status?: string }>;
+    expect(results[0].status).toBe('already_correct');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    // Row still gets stamped reviewed=true — the operator confirmed.
+    expect(triageRows.get('p1')!.reviewed).toBe(true);
+    expect(triageRows.get('p1')!.decidedBy).toBe('operator');
+  });
+
+  it("status='orphaned' when the placed node has been deleted (no node row)", async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: 'ghost-node' });
+    // No `nodes` entry for ghost-node — the node was deleted between
+    // auto-apply and this bulk action.
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; status?: string }>;
+    expect(results[0].status).toBe('orphaned');
+    expect(moveNodeMock).not.toHaveBeenCalled();
+    // Row still updated to reviewed+operator; the operator's intent was
+    // recorded even though the move was a no-op.
+    expect(triageRows.get('p1')!.reviewed).toBe(true);
+  });
 });
 
 describe('POST .../bulk-reclassify', () => {
@@ -1343,6 +1459,175 @@ describe('POST .../bulk-reclassify', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(403);
+  });
+
+  // Phase 3 follow-up (#102 item 2): per-row LLM failure inside a bulk
+  // batch must NOT fail the whole batch — the route's per-item
+  // try/catch surfaces the failure as `{ error }` for row N while row
+  // N+1 still reclassifies. The single-route equivalent was already
+  // covered by the syncTriageRowsForReopen test; this is the bulk
+  // route-level analogue.
+  it('LLM throws on row 1 → row 1 has error, row 2 has status=ok', async () => {
+    seedRow({ id: 'a', decision: 'uncertain' });
+    seedRow({ id: 'b', decision: 'uncertain' });
+    triageIssueMock.mockRejectedValueOnce(new Error('LLM down'));
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a', 'b'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const results = res.json().results as Array<{ id: string; status?: string; error?: { code: string; message: string } }>;
+    const rowA = results.find((r) => r.id === 'a')!;
+    const rowB = results.find((r) => r.id === 'b')!;
+    expect(rowA.error?.code).toBe('INTERNAL_ERROR');
+    expect(rowA.error?.message).toContain('LLM down');
+    expect(rowB.status).toBe('reclassified');
+    // Row A is untouched (the LLM threw before the DB write).
+    expect(triageRows.get('a')!.decision).toBe('uncertain');
+    // Row B has the default-mock result.
+    expect(triageRows.get('b')!.decision).toBe('place');
+  });
+});
+
+// ── Phase 3 follow-up #104 item 11: parallel label writes ───────
+
+describe('bulk routes — label writes fire in parallel after the DB loop', () => {
+  // The contract: per-row label-write calls are not awaited inside the
+  // per-row loop; instead they're collected and Promise.allSettled'd
+  // after. We pin this by making each applyTriageLabel call hang on a
+  // controlled promise, then verifying that all N calls happen before
+  // any resolves — i.e. they're all in flight simultaneously, not
+  // sequential.
+  async function pinParallel(routePath: string, payload: Record<string, unknown>, seed: () => void): Promise<void> {
+    seed();
+    permissionLevel = 'edit';
+    let activeCalls = 0;
+    let peakActive = 0;
+    const resolvers: Array<() => void> = [];
+    applyTriageLabelMock.mockImplementation(async () => {
+      activeCalls++;
+      peakActive = Math.max(peakActive, activeCalls);
+      await new Promise<void>((resolve) => resolvers.push(resolve));
+      activeCalls--;
+    });
+    const app = await buildApp('jwt');
+    const inFlight = app.inject({
+      method: 'POST',
+      url: routePath,
+      payload,
+    });
+    // Yield to the event loop several times so the bulk route's DB
+    // loop drains and queues every label write before we resolve any.
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    // All label writes should be in flight simultaneously. The
+    // peakActive is at least 2 — the sequential code path peaked at 1.
+    expect(peakActive).toBeGreaterThanOrEqual(2);
+    // Release them all so the route can finish.
+    for (const r of resolvers) r();
+    const res = await inFlight;
+    await app.close();
+    expect(res.statusCode).toBe(200);
+  }
+
+  it('bulk-confirm: 2 rows → peakActive ≥ 2 (parallel, not sequential)', async () => {
+    await pinParallel(
+      '/api/maps/map-1/triage-decisions/bulk-confirm',
+      { decisionIds: ['a', 'b'] },
+      () => {
+        seedRow({ id: 'a', reviewed: false, decidedBy: 'auto' });
+        seedRow({ id: 'b', reviewed: false, decidedBy: 'auto' });
+      },
+    );
+  });
+
+  it('bulk-reclassify: 2 rows → peakActive ≥ 2', async () => {
+    await pinParallel(
+      '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      { decisionIds: ['a', 'b'] },
+      () => {
+        seedRow({ id: 'a', decision: 'uncertain' });
+        seedRow({ id: 'b', decision: 'uncertain' });
+      },
+    );
+  });
+});
+
+// ── WS triage:updated broadcast (Phase 3 follow-up #102 item 7) ──
+
+describe('triage:updated WS broadcast', () => {
+  it('confirm route broadcasts triage:updated with mutation=confirmed and the decisionId', async () => {
+    seedRow({ id: 'tr-1' });
+    permissionLevel = 'edit';
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+    const app = await buildApp('jwt');
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.close();
+    const triageEvents = broadcastMock.mock.calls.filter(
+      (c) => (c[1] as { type?: string }).type === 'triage:updated',
+    );
+    expect(triageEvents).toHaveLength(1);
+    expect(triageEvents[0][1]).toMatchObject({
+      type: 'triage:updated',
+      mapId: 'map-1',
+      mutation: 'confirmed',
+      decisionIds: ['tr-1'],
+    });
+  });
+
+  it('reclassify route broadcasts triage:updated with mutation=reclassified', async () => {
+    seedRow({ id: 'tr-1' });
+    permissionLevel = 'edit';
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+    const app = await buildApp('jwt');
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    const triageEvents = broadcastMock.mock.calls.filter(
+      (c) => (c[1] as { type?: string }).type === 'triage:updated',
+    );
+    expect(triageEvents).toHaveLength(1);
+    expect(triageEvents[0][1]).toMatchObject({
+      mutation: 'reclassified',
+      decisionIds: ['tr-1'],
+    });
+  });
+
+  it('bulk-confirm broadcasts a single triage:updated with all confirmed ids (skips errored rows)', async () => {
+    seedRow({ id: 'a', reviewed: false, decidedBy: 'auto' });
+    seedRow({ id: 'b', reviewed: false, decidedBy: 'auto' });
+    permissionLevel = 'edit';
+    const wsMod = await import('../../ws.js');
+    const broadcastMock = wsMod.broadcast as unknown as ReturnType<typeof vi.fn>;
+    broadcastMock.mockClear();
+    const app = await buildApp('jwt');
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a', 'b', 'ghost'] },
+    });
+    await app.close();
+    const triageEvents = broadcastMock.mock.calls.filter(
+      (c) => (c[1] as { type?: string }).type === 'triage:updated',
+    );
+    expect(triageEvents).toHaveLength(1);
+    const payload = triageEvents[0][1] as { decisionIds: string[]; mutation: string };
+    expect(payload.mutation).toBe('confirmed');
+    // 'ghost' errored (NOT_FOUND); only 'a' and 'b' are included.
+    expect([...payload.decisionIds].sort()).toEqual(['a', 'b']);
   });
 });
 
