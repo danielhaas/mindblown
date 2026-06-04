@@ -1,10 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useMindmapStore } from './store.js';
 import type { ActiveView } from './store.js';
 import type { LayoutType } from './layout.js';
 import * as api from './api.js';
 
 // ── Fuzzy match ──────────────────────────────────────────────
+
+function highlightMatch(label: string, query: string): ReactNode {
+  const q = query.trim();
+  if (!q) return label;
+  const lower = label.toLowerCase();
+  const needle = q.toLowerCase();
+  const parts: ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < label.length) {
+    const idx = lower.indexOf(needle, i);
+    if (idx === -1) {
+      parts.push(label.slice(i));
+      break;
+    }
+    if (idx > i) parts.push(label.slice(i, idx));
+    parts.push(
+      <strong key={key++} style={{ fontWeight: 700, color: '#4f46e5' }}>
+        {label.slice(idx, idx + needle.length)}
+      </strong>,
+    );
+    i = idx + needle.length;
+  }
+  return parts;
+}
 
 function fuzzyMatch(query: string, text: string): boolean {
   const q = query.toLowerCase();
@@ -440,7 +465,7 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
                   }}
                 >
                   <span style={{ fontSize: 13, color: '#1e293b', fontWeight: 500 }}>
-                    {cmd.label}
+                    {highlightMatch(cmd.label, query)}
                   </span>
                   {cmd.shortcut && (
                     <span
