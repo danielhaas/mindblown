@@ -949,6 +949,16 @@ export function App() {
         setCommandPaletteOpen(false);
         return;
       }
+
+      // / -> search nodes (open command palette)
+      if (e.key === '/') {
+        const editingNodeId = useMindmapStore.getState().editingNodeId;
+        if (editingNodeId) return;
+        e.preventDefault();
+        setCommandPaletteOpen(true);
+        setQuickAddOpen(false);
+        return;
+      }
     };
 
     window.addEventListener('keydown', handler);
@@ -1182,6 +1192,58 @@ export function App() {
 
         {/* Right: sprint indicator + stats */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {/* Search button */}
+          <button
+            onClick={() => setCommandPaletteOpen(true)}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#64748b',
+              transition: 'all 0.15s',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+            }}
+            onMouseOver={(e) => {
+              e.currentTarget.style.background = '#eef2ff';
+              e.currentTarget.style.borderColor = '#c7d2fe';
+              e.currentTarget.style.color = '#4f46e5';
+            }}
+            onMouseOut={(e) => {
+              e.currentTarget.style.background = '#fff';
+              e.currentTarget.style.borderColor = '#e2e8f0';
+              e.currentTarget.style.color = '#64748b';
+            }}
+            title="Search nodes  ( /  or  Ctrl+K )"
+          >
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.5" />
+              <path d="M10.5 10.5l3 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            Search
+            <span
+              style={{
+                marginLeft: 4,
+                padding: '0 4px',
+                borderRadius: 3,
+                background: '#f1f5f9',
+                color: '#94a3b8',
+                fontFamily: 'monospace',
+                fontSize: 10,
+                fontWeight: 600,
+                border: '1px solid #e2e8f0',
+              }}
+            >
+              /
+            </span>
+          </button>
+
           {/* Import/Export button */}
           <button
             onClick={() => setImportExportOpen(true)}
