@@ -10,13 +10,16 @@ import type {
 /**
  * Compute the effort rollup for a node.
  *
- * Leaf nodes return their effortEstimate (or 0 if unestimated).
+ * Leaf nodes return their effortEstimate, or 1 if unestimated so that every
+ * leaf participates in the parent's weighted-progress rollup. Without this
+ * default, a subtree of all-unestimated leaves contributes weight 0 and is
+ * invisible to the parent's % complete — so a partly-done parent next to
+ * fully-done estimated siblings reads as 100% even though work remains.
  * Parent nodes return the sum of all descendant leaf efforts.
  */
 export function computeEffort(node: Node, nodeMap: NodeMap): number {
   if (node.childrenIds.length === 0) {
-    // Leaf node: return stored estimate, or 0 if unestimated
-    return node.effortEstimate ?? 0;
+    return node.effortEstimate ?? 1;
   }
 
   let total = 0;

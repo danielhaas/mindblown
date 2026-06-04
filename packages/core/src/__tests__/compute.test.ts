@@ -136,10 +136,10 @@ describe('computeEffort', () => {
     expect(computeEffort(apiEndpoints, nodeMap)).toBe(7);
   });
 
-  it('returns 0 for unestimated leaf nodes', () => {
+  it('returns 1 for unestimated leaf nodes (default weight)', () => {
     const node = makeNode({ id: 'leaf', effortEstimate: null });
     const nm = toMap([node]);
-    expect(computeEffort(node, nm)).toBe(0);
+    expect(computeEffort(node, nm)).toBe(1);
   });
 
   it('sums children effort for parent nodes', () => {
@@ -189,12 +189,20 @@ describe('computeProgress', () => {
     expect(progress).toBeCloseTo(33.33, 1);
   });
 
-  it('returns 0 when all children have 0 effort', () => {
+  it('returns 0 when all children have explicit 0 effort', () => {
     const c1 = makeNode({ id: 'c1', parentId: 'p', effortEstimate: 0, percentComplete: 50 });
-    const c2 = makeNode({ id: 'c2', parentId: 'p', effortEstimate: null, percentComplete: 80 });
+    const c2 = makeNode({ id: 'c2', parentId: 'p', effortEstimate: 0, percentComplete: 80 });
     const parent = makeNode({ id: 'p', childrenIds: ['c1', 'c2'] });
     const nm = toMap([parent, c1, c2]);
     expect(computeProgress(parent, nm)).toBe(0);
+  });
+
+  it('weights unestimated leaves with default 1 instead of dropping them', () => {
+    const c1 = makeNode({ id: 'c1', parentId: 'p', effortEstimate: null, percentComplete: 0 });
+    const c2 = makeNode({ id: 'c2', parentId: 'p', effortEstimate: null, percentComplete: 100 });
+    const parent = makeNode({ id: 'p', childrenIds: ['c1', 'c2'] });
+    const nm = toMap([parent, c1, c2]);
+    expect(computeProgress(parent, nm)).toBe(50);
   });
 });
 
