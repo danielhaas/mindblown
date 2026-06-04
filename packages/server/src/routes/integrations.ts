@@ -27,6 +27,7 @@ import {
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
+import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
@@ -287,6 +288,18 @@ export async function syncTriageRowsForReopen(
         previousParentNodeId: row.placedNodeId ?? null,
         newParentNodeId: reopenNewParent,
         reason: decision.reason,
+      });
+      // Phase 3 follow-up (#104 item 9): when a reopen-driven re-triage
+      // flips the decision (place ↔ skip), the corresponding GitHub
+      // label must follow. The earlier impl wrote the history row but
+      // never called applyTriageLabel here, so a reclassify on reopen
+      // could leave the previously-set `triage:placed` / `triage:skipped`
+      // label stale. Best-effort, internally gated on the per-map
+      // `triage_label_writeback` flag, mirrors the call in routes/triage.ts.
+      await applyTriageLabel({
+        mapId: row.mapId,
+        externalId,
+        decision: decision.decision,
       });
     } catch (err) {
       console.warn(

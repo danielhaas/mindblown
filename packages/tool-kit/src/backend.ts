@@ -45,7 +45,20 @@ export interface TriageListFilters {
 
 export interface TriageListResult {
   mapId: string;
+  /**
+   * Total number of rows matching the filter set, BEFORE the limit is
+   * applied. Phase 3 follow-up (#104 item 12) — surfaces the true match
+   * count so the MCP tool can render "Showing N of M". Prior to this
+   * change `total` reflected the returned page size, which was useless
+   * when the limit clipped the result set.
+   */
   total: number;
+  /**
+   * Number of rows in `decisions` (after the server-side limit clip).
+   * `returned <= total`; when they differ the MCP tool renders the
+   * "of M total" suffix on its summary line.
+   */
+  returned: number;
   decisions: TriageDecisionRow[];
 }
 

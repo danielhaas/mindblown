@@ -1150,6 +1150,16 @@ function handleWsMessage(
     return;
   }
 
+  // Phase 3 follow-up (#102 item 7): dispatch triage events to window
+  // for the TriagePanel component. Triage mutations on the server
+  // (confirm/override/reclassify single + bulk) broadcast
+  // `triage:updated`; the panel listens and refreshes its data without
+  // a poll. Mirrors the `ws:comment` pattern above.
+  if (msg.type === 'triage:updated') {
+    window.dispatchEvent(new CustomEvent('ws:triage', { detail: msg }));
+    return;
+  }
+
   // Viewport / focus presence (follow mode)
   if (msg.type === 'presence:viewport' && msg.userId) {
     const cur = get().presence;

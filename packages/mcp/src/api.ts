@@ -769,7 +769,7 @@ export interface TriageActionResultApi {
 export function listTriageDecisions(
   mapId: string,
   filters: TriageListFiltersApi,
-): Promise<{ mapId: string; total: number; decisions: TriageDecisionRowApi[] }> {
+): Promise<{ mapId: string; total: number; returned: number; decisions: TriageDecisionRowApi[] }> {
   const params = new URLSearchParams();
   if (filters.reviewed != null) params.set('reviewed', String(filters.reviewed));
   if (filters.decision) params.set('decision', filters.decision);
@@ -779,7 +779,12 @@ export function listTriageDecisions(
   if (filters.since) params.set('since', filters.since);
   if (filters.limit != null) params.set('limit', String(filters.limit));
   const qs = params.toString();
-  return request<{ mapId: string; total: number; decisions: TriageDecisionRowApi[] }>(
+  // Phase 3 follow-up (#104 item 12): server returns both `total`
+  // (full match count) and `returned` (page size after limit). Older
+  // server responses that didn't have `returned` will still satisfy
+  // the type with `undefined`; the MCP tool falls back to
+  // `decisions.length` if needed.
+  return request<{ mapId: string; total: number; returned: number; decisions: TriageDecisionRowApi[] }>(
     `/api/maps/${mapId}/triage-decisions${qs ? `?${qs}` : ''}`,
   );
 }

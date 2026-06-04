@@ -225,6 +225,15 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: vi.fn(),
   updateNode: vi.fn(),
 }));
+// Phase 3 follow-up (#104 item 9): syncTriageRowsForReopen now calls
+// applyTriageLabel on the post-reclassify decision. Stub it so the
+// reopen test can assert on the call without standing up the GH context
+// + per-map writeback flag machinery (covered separately in
+// triage-label-writeback.test.ts).
+const applyTriageLabelMock = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('../../sync/triageLabelWriteback.js', () => ({
+  applyTriageLabel: applyTriageLabelMock,
+}));
 
 import { syncTriageRowsForReopen } from '../integrations.js';
 
@@ -257,6 +266,7 @@ beforeEach(() => {
     reason: 'reclassified, matches Frontend',
     confidence: 90,
   });
+  applyTriageLabelMock.mockClear();
 });
 
 // ── Scenarios ─────────────────────────────────────────────────────
@@ -403,6 +413,73 @@ describe('syncTriageRowsForReopen', () => {
     const row = triageRows.get('tr-1')!;
     expect(row.decision).toBe('skip');
     expect(row.placedNodeId).toBeNull();
+  });
+
+  // Phase 3 follow-up (#104 item 9): reopen-driven re-triage that flips
+  // place ↔ skip must call applyTriageLabel so the GH label doesn't go
+  // stale. The label helper is internally gated on the per-map
+  // `triage_label_writeback` flag — the call must happen unconditionally
+  // (the helper decides whether to fire); this test confirms the call
+  // shape is correct (mapId + externalId + new decision).
+  it("reopen + re-triage flips decision → applyTriageLabel called with the new decision", async () => {
+    mapRows.set('m1', { id: 'm1', triageEnabled: true });
+    seedRow({
+      id: 'tr-1',
+      mapId: 'm1',
+      externalId: 'o/r#42',
+      issueState: 'closed',
+      decision: 'place',
+      confidence: 70,
+      placedNodeId: 'node-x',
+      reviewed: false,
+      decidedBy: 'auto',
+    });
+    // The re-triage flips the decision to 'skip'.
+    triageMock.mockResolvedValueOnce({
+      decision: 'skip' as const,
+      parentNodeId: undefined,
+      reason: 'no longer relevant after reopen',
+      confidence: 92,
+    } as unknown as Awaited<ReturnType<typeof triageMock>>);
+
+    await syncTriageRowsForReopen('o/r#42', reopenedIssue(42));
+
+    expect(applyTriageLabelMock).toHaveBeenCalledOnce();
+    expect(applyTriageLabelMock).toHaveBeenCalledWith({
+      mapId: 'm1',
+      externalId: 'o/r#42',
+      decision: 'skip',
+    });
+  });
+
+  it("reopen on a triage-disabled map → no applyTriageLabel call (no re-triage means no label change)", async () => {
+    mapRows.set('m1', { id: 'm1', triageEnabled: false });
+    seedRow({
+      id: 'tr-1',
+      mapId: 'm1',
+      externalId: 'o/r#42',
+      issueState: 'closed',
+      decision: 'place',
+      reviewed: false,
+      decidedBy: 'auto',
+    });
+    await syncTriageRowsForReopen('o/r#42', reopenedIssue(42));
+    expect(applyTriageLabelMock).not.toHaveBeenCalled();
+  });
+
+  it("reopen on operator-reviewed row → no applyTriageLabel call (decision is immutable here)", async () => {
+    mapRows.set('m1', { id: 'm1', triageEnabled: true });
+    seedRow({
+      id: 'tr-1',
+      mapId: 'm1',
+      externalId: 'o/r#42',
+      issueState: 'closed',
+      decision: 'skip',
+      reviewed: true,
+      decidedBy: 'operator',
+    });
+    await syncTriageRowsForReopen('o/r#42', reopenedIssue(42));
+    expect(applyTriageLabelMock).not.toHaveBeenCalled();
   });
 
   it('LLM throws on one row → continues with the next row, issue_state still flipped', async () => {

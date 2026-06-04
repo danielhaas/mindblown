@@ -54,7 +54,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { and, desc, eq, gte, lte } from 'drizzle-orm';
+import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { maps, nodes, triageDecisions, triageDecisionHistory } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -109,6 +109,39 @@ async function gateMapAccess(
     };
   }
   return null;
+}
+
+// ── WS event constants (Phase 3 follow-up #102 item 7) ───────────
+//
+// Triage mutations (confirm/override/reclassify, single + bulk) broadcast
+// `triage:updated` so connected operators see refreshed counts and rows
+// without a poll. Mirrors the existing `node:created`/`node:moved`
+// pattern used elsewhere in the routes. The frontend handler (Phase 3
+// follow-up) listens for the event and bumps the panel's `refreshTick`
+// — that triggers the same `useEffect` data fetch that the user's own
+// actions already drive, so we don't have to merge a partial payload
+// into local state. Payload carries:
+//   - `decisionIds`: array of mutated rows so a single-row UI can decide
+//                    whether to refresh (it intersects with what it's
+//                    showing). For bulk-confirm/override the array is
+//                    the full submitted set after dedupe.
+//   - `mutation`: one of 'confirmed' | 'overridden' | 'reclassified'.
+//                 Lets the UI render a toast or differentiate inbound
+//                 events from its own optimistic updates.
+export const WS_TRIAGE_UPDATED = 'triage:updated';
+type TriageMutationKind = 'confirmed' | 'overridden' | 'reclassified';
+function broadcastTriageUpdated(
+  mapId: string,
+  mutation: TriageMutationKind,
+  decisionIds: string[],
+): void {
+  if (decisionIds.length === 0) return;
+  broadcast(mapId, {
+    type: WS_TRIAGE_UPDATED,
+    mapId,
+    mutation,
+    decisionIds,
+  });
 }
 
 // ── Routes ────────────────────────────────────────────────────────
@@ -204,9 +237,23 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       .orderBy(desc(triageDecisions.decidedAt))
       .limit(limit);
 
+    // Phase 3 follow-up (#104 item 12): surface the true matching count
+    // alongside the page-sized `returned`, so the MCP tool and UI can
+    // render "showing N of M" when the limit clips the result set.
+    // `total` keeps its original meaning (matching-row count for the
+    // filter set) so the field name stays consistent with the previous
+    // response shape; `returned` is added as the number of rows in the
+    // page. Old clients that read `total` as "page size" get the more
+    // useful number — a small but safe semantic improvement.
+    const [{ count: total }] = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(triageDecisions)
+      .where(and(...filters));
+
     return reply.send({
       mapId: req.params.mapId,
-      total: rows.length,
+      total,
+      returned: rows.length,
       decisions: rows,
     });
   });
@@ -354,6 +401,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         externalId: row.externalId,
         decision: row.decision as 'place' | 'skip' | 'uncertain',
       });
+
+      // Phase 3 follow-up (#102 item 7): notify connected clients.
+      broadcastTriageUpdated(req.params.mapId, 'confirmed', [row.id]);
 
       return reply.send({
         decisionId: row.id,
@@ -548,6 +598,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           decision: 'place',
         });
 
+        // Phase 3 follow-up (#102 item 7): notify connected clients.
+        broadcastTriageUpdated(req.params.mapId, 'overridden', [row.id]);
+
         return reply.send({
           decisionId: row.id,
           status: moved ? 'moved' : 'already_placed',
@@ -670,6 +723,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         externalId: row.externalId,
         decision,
       });
+
+      // Phase 3 follow-up (#102 item 7): notify connected clients.
+      broadcastTriageUpdated(req.params.mapId, 'overridden', [row.id]);
 
       return reply.send({
         decisionId: row.id,
@@ -810,6 +866,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         decision: decision.decision,
       });
 
+      // Phase 3 follow-up (#102 item 7): notify connected clients.
+      broadcastTriageUpdated(req.params.mapId, 'reclassified', [row.id]);
+
       return reply.send({
         decisionId: row.id,
         decision: decision.decision,
@@ -850,11 +909,19 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
   //     item counterparts) and reject API-key auth (the #69 / #100
   //     hardening — leaked keys must not fan out across all rows).
   //   - Body validation: `decisionIds` must be a non-empty array of
-  //     strings, hard-capped at 200 (matches the GET limit so the UI
-  //     can never assemble a bulk request larger than the page it's
-  //     looking at).
+  //     strings, hard-capped at 20 (Phase 3 follow-up #102 item 1 —
+  //     lowered from 200). Bulk routes iterate per-item, so a batch
+  //     of 200 LLM calls on `bulk-reclassify` blocks a single HTTP
+  //     connection for 6-10 min. The 20-cap keeps round-trips short
+  //     enough that the operator gets feedback per click; for an
+  //     orphan-cleanup that touches a few hundred rows, the client
+  //     submits a few batches instead. Bulk-confirm + bulk-override
+  //     pay the same cap even though they're cheaper than reclassify
+  //     — uniform limits across the three bulk routes keep the
+  //     client-side gating simple ("if selectedCount > 20, hide the
+  //     bulk button").
 
-  const BULK_DECISION_CAP = 200;
+  const BULK_DECISION_CAP = 20;
 
   function validateBulkBody(
     body: unknown,
@@ -940,6 +1007,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const results: BulkItem[] = [];
+      // Phase 3 follow-up (#104 item 11): collect per-row label-write
+      // promises and settle them in parallel after the DB loop. The
+      // single-row applyTriageLabel call is two sequential GH API hits
+      // (POST add + DELETE remove). With N=20 rows that's 40 sequential
+      // round-trips ≈ 8-12 s; parallelizing across rows drops to
+      // ~max(per-row) ≈ 200-500 ms while keeping the per-row label
+      // writes themselves sequential (the in-helper add-then-remove
+      // order matters so the issue never has both labels at once).
+      const labelWrites: Array<Promise<void>> = [];
       for (const id of validation.ids) {
         const [row] = await db
           .select()
@@ -982,11 +1058,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             newParentNodeId: row.placedNodeId ?? null,
             reason: row.reason,
           });
-          await applyTriageLabel({
-            mapId: req.params.mapId,
-            externalId: row.externalId,
-            decision: row.decision as 'place' | 'skip' | 'uncertain',
-          });
+          labelWrites.push(
+            applyTriageLabel({
+              mapId: req.params.mapId,
+              externalId: row.externalId,
+              decision: row.decision as 'place' | 'skip' | 'uncertain',
+            }),
+          );
           results.push({
             id,
             status: 'confirmed',
@@ -1002,6 +1080,20 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           });
         }
       }
+      // applyTriageLabel never throws (best-effort contract), but use
+      // allSettled defensively so a future change can't accidentally
+      // turn a label-write failure into a bulk-confirm failure.
+      await Promise.allSettled(labelWrites);
+      // Phase 3 follow-up (#102 item 7): notify on the rows that landed
+      // in 'confirmed' status (skip per-row errors so the UI doesn't
+      // refresh on no-ops).
+      const confirmedIds = results
+        .filter(
+          (r): r is BulkItemOk =>
+            (r as BulkItemOk).status === 'confirmed',
+        )
+        .map((r) => r.id);
+      broadcastTriageUpdated(req.params.mapId, 'confirmed', confirmedIds);
       return reply.send({ mapId: req.params.mapId, results });
     },
   );
@@ -1066,6 +1158,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const results: BulkItem[] = [];
+      // Phase 3 follow-up (#104 item 11): collect label-write promises
+      // and settle in parallel after the DB loop (see bulk-confirm note).
+      const labelWrites: Array<Promise<void>> = [];
       for (const id of validation.ids) {
         const [row] = await db
           .select()
@@ -1086,6 +1181,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           });
           continue;
         }
+        // Per-item guard ordering (Phase 3 follow-up #102 item 4):
+        // BULK_NOT_PLACE is checked BEFORE SELF_LOOP_BLOCKED. Both
+        // codes are precise enough to be useful on their own, but
+        // BULK_NOT_PLACE is more informative to the operator —
+        // "this row was skip, not place, you didn't mean to move it"
+        // is more actionable than "your parent equals the placed
+        // node, which can't happen anyway because the row isn't
+        // place." Reversing the order would surface SELF_LOOP_BLOCKED
+        // on rows that aren't even place-eligible, which is misleading.
         if (row.decision !== 'place') {
           // Per spec: forced-move is `place`-only. A row currently
           // marked skip/uncertain must be sent through the single
@@ -1117,23 +1221,47 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           let nodeId: string | null = null;
           let status: string;
           if (row.placedNodeId) {
-            // Reparent the already-placed node.
+            // Reparent the already-placed node. Phase 3 follow-up
+            // (#102 item 5) distinguishes three sub-states for the
+            // bulk-override response:
+            //   - 'orphaned'       — row.placedNodeId set, but the node
+            //                        was deleted between auto-apply and
+            //                        the operator's bulk action; nothing
+            //                        to move.
+            //   - 'already_correct' — node exists, parent already matches
+            //                         the operator's pick; nothing to
+            //                         move (previously 'already_placed').
+            //   - 'moved'          — node existed, parent differed, move
+            //                        succeeded.
+            // The split is a strict refinement of the previous
+            // `already_placed` bucket — distinguishing "we couldn't
+            // move because the node is gone" from "we didn't need to
+            // move" lets the operator decide whether to chase the
+            // orphan (delete the dangling row or re-place a new node).
             const placedNodeId = row.placedNodeId as string;
             const [placedNode] = await db
               .select({ id: nodes.id, parentId: nodes.parentId })
               .from(nodes)
               .where(eq(nodes.id, placedNodeId));
-            let moved = false;
-            if (placedNode && placedNode.parentId !== parentNodeId) {
+            let subStatus: 'moved' | 'already_correct' | 'orphaned';
+            if (!placedNode) {
+              subStatus = 'orphaned';
+            } else if (placedNode.parentId === parentNodeId) {
+              subStatus = 'already_correct';
+            } else {
               const movedNode = await nodeDb.moveNode(placedNodeId, parentNodeId);
-              moved = movedNode != null;
-              if (moved) {
+              if (movedNode != null) {
+                subStatus = 'moved';
                 broadcast(req.params.mapId, {
                   type: 'node:moved',
                   nodeId: placedNodeId,
                   newParentId: parentNodeId,
                   position: undefined,
                 });
+              } else {
+                // moveNode returned null — treat as orphaned (the node
+                // disappeared between the select and the move).
+                subStatus = 'orphaned';
               }
             }
             await db
@@ -1160,13 +1288,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               newParentNodeId: parentNodeId,
               reason: row.reason,
             });
-            await applyTriageLabel({
-              mapId: req.params.mapId,
-              externalId: row.externalId,
-              decision: 'place',
-            });
+            labelWrites.push(
+              applyTriageLabel({
+                mapId: req.params.mapId,
+                externalId: row.externalId,
+                decision: 'place',
+              }),
+            );
             nodeId = placedNodeId;
-            status = moved ? 'moved' : 'already_placed';
+            status = subStatus;
           } else {
             // Create a node under parentNodeId. Same shape as the
             // single /override place path — single tx so a crash
@@ -1233,11 +1363,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               newParentNodeId: nodeId,
               reason: row.reason,
             });
-            await applyTriageLabel({
-              mapId: req.params.mapId,
-              externalId: row.externalId,
-              decision: 'place',
-            });
+            labelWrites.push(
+              applyTriageLabel({
+                mapId: req.params.mapId,
+                externalId: row.externalId,
+                decision: 'place',
+              }),
+            );
           }
           results.push({ id, status, nodeId });
         } catch (err) {
@@ -1250,6 +1382,14 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           });
         }
       }
+      await Promise.allSettled(labelWrites);
+      // Phase 3 follow-up (#102 item 7): notify on rows that actually
+      // mutated state (moved + placed + already_correct + orphaned all
+      // imply a row was reviewed/updated; only per-row errors are excluded).
+      const mutatedIds = results
+        .filter((r): r is BulkItemOk => 'status' in r)
+        .map((r) => r.id);
+      broadcastTriageUpdated(req.params.mapId, 'overridden', mutatedIds);
       return reply.send({ mapId: req.params.mapId, results });
     },
   );
@@ -1292,6 +1432,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const mapContext = await buildMapContext(req.params.mapId);
 
       const results: BulkItem[] = [];
+      // Phase 3 follow-up (#104 item 11): parallel label writes (see
+      // bulk-confirm note).
+      const labelWrites: Array<Promise<void>> = [];
       for (const id of validation.ids) {
         const [row] = await db
           .select()
@@ -1363,11 +1506,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             newParentNodeId: newParent,
             reason: decision.reason,
           });
-          await applyTriageLabel({
-            mapId: req.params.mapId,
-            externalId: row.externalId,
-            decision: decision.decision,
-          });
+          labelWrites.push(
+            applyTriageLabel({
+              mapId: req.params.mapId,
+              externalId: row.externalId,
+              decision: decision.decision,
+            }),
+          );
           results.push({
             id,
             status: 'reclassified',
@@ -1386,6 +1531,16 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           });
         }
       }
+      await Promise.allSettled(labelWrites);
+      // Phase 3 follow-up (#102 item 7): notify on the rows that
+      // landed in 'reclassified' status; per-row errors don't refresh.
+      const reclassifiedIds = results
+        .filter(
+          (r): r is BulkItemOk =>
+            (r as BulkItemOk).status === 'reclassified',
+        )
+        .map((r) => r.id);
+      broadcastTriageUpdated(req.params.mapId, 'reclassified', reclassifiedIds);
       return reply.send({ mapId: req.params.mapId, results });
     },
   );

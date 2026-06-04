@@ -288,3 +288,93 @@ describe('applyTriageLabel — active', () => {
     expect(capturedAuth).toBe('Bearer t_test');
   });
 });
+
+// ── Phase 3 follow-up #104 item 10: timeout, item 13: regex ─────
+
+describe('applyTriageLabel — timeout (#104 item 10)', () => {
+  // The fetchImpl test surface bypasses the AbortController-wrapped
+  // production `fetch()` path. To pin the contract that a timed-out
+  // request resolves without throwing to the caller, simulate the
+  // post-AbortError state: the impl throws an AbortError-like instance.
+  it('fetch throws AbortError → flow completes without rethrowing to the caller', async () => {
+    labelWritebackEnabled = true;
+    const impl: NonNullable<Parameters<typeof applyTriageLabel>[0]['fetchImpl']> = async () => {
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    };
+    await expect(
+      applyTriageLabel({
+        mapId: 'm1',
+        externalId: 'octocat/demo#42',
+        decision: 'place',
+        fetchImpl: impl,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it('a slow add followed by a fast remove still attempts both calls', async () => {
+    labelWritebackEnabled = true;
+    const calls: string[] = [];
+    const impl: NonNullable<Parameters<typeof applyTriageLabel>[0]['fetchImpl']> = async (
+      _url,
+      init,
+    ) => {
+      calls.push(init.method);
+      // Resolves quickly — production controller is on the real fetch,
+      // not the impl path.
+      return { status: 200, text: async () => '' };
+    };
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/demo#42',
+      decision: 'place',
+      fetchImpl: impl,
+    });
+    expect(calls).toEqual(['POST', 'DELETE']);
+  });
+});
+
+describe('parseExternalId regex (#104 item 13)', () => {
+  // The regex tightened from `(.+?)\/(.+?)#(\d+)` to `^([^/]+)\/([^/#]+)#(\d+)$`.
+  // Direct unit-test the parse via the public surface — a malformed id
+  // silently skips with no GH call (logged at warn level).
+  it('rejects an externalId with a slash in the repo segment (silent skip)', async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([]);
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octo/cat/demo#42',
+      decision: 'place',
+      fetchImpl: shim.impl,
+    });
+    expect(shim.calls).toHaveLength(0);
+  });
+
+  it('rejects an externalId with a stray # before the issue number (silent skip)', async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([]);
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/de#mo#42',
+      decision: 'place',
+      fetchImpl: shim.impl,
+    });
+    expect(shim.calls).toHaveLength(0);
+  });
+
+  it('accepts a well-formed externalId', async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([
+      { urlContains: '/labels', method: 'POST', status: 200 },
+      { urlContains: '/labels/triage', method: 'DELETE', status: 200 },
+    ]);
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/demo#42',
+      decision: 'place',
+      fetchImpl: shim.impl,
+    });
+    expect(shim.calls).toHaveLength(2);
+  });
+});

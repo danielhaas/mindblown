@@ -49,10 +49,23 @@ interface WriteLabelOpts {
 
 const GITHUB_API = 'https://api.github.com';
 
+// Phase 3 follow-up (#104 item 10): GitHub API per-request timeout for
+// label writeback. The write-back is best-effort, so a hung GH request
+// must NEVER block the parent triage flow. 8 s is generous for GH's p99
+// (~1 s) but short enough that a wedged connection clears before the
+// operator's own request returns. AbortError is treated identically to
+// any other error in the try/catch below (warn + continue).
+const LABEL_WRITEBACK_TIMEOUT_MS = 8_000;
+
+// Phase 3 follow-up (#104 item 13): tighter regex than the previous
+// `(.+?)\/(.+?)#(\d+)` form, which allowed `/` or `#` inside the
+// owner/repo capture and could parse "ow/ner/repo#1" or "owner/re#po#1"
+// in confusing ways. The new pattern rejects nested `/` in the repo
+// segment and a stray `#` anywhere left of the issue number.
 function parseExternalId(
   externalId: string,
 ): { owner: string; repo: string; issueNumber: number } | null {
-  const match = externalId.match(/^(.+?)\/(.+?)#(\d+)$/);
+  const match = externalId.match(/^([^/]+)\/([^/#]+)#(\d+)$/);
   if (!match) return null;
   return {
     owner: match[1],
@@ -75,6 +88,8 @@ async function ghRequest(
     'Content-Type': 'application/json',
   };
   if (fetchImpl) {
+    // Tests inject their own response shim — they're synchronous in
+    // practice (no real network) so no timeout is needed.
     const res = await fetchImpl(url, {
       method,
       headers,
@@ -83,13 +98,23 @@ async function ghRequest(
     const text = await res.text();
     return { status: res.status, bodyText: text };
   }
-  const res = await fetch(url, {
-    method,
-    headers,
-    body: body == null ? undefined : JSON.stringify(body),
-  });
-  const text = await res.text();
-  return { status: res.status, bodyText: text };
+  // Phase 3 follow-up (#104 item 10): 8 s AbortController-backed
+  // timeout. AbortError thrown here propagates to the caller's try/catch
+  // and lands in the standard "best-effort, warn and continue" branch.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), LABEL_WRITEBACK_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      method,
+      headers,
+      body: body == null ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    return { status: res.status, bodyText: text };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
