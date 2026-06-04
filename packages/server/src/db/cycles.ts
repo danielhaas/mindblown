@@ -2,6 +2,7 @@ import { eq, asc, and, isNull } from 'drizzle-orm';
 import { db } from './connection.js';
 import { cycles, nodes, versions, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
+import { notDeleted } from './nodes.js';
 import type { Cycle, Node as CoreNode } from '@mindblown/core';
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -154,7 +155,7 @@ export async function deleteCycle(id: string): Promise<boolean> {
 export async function getCycleNodes(cycleId: string): Promise<CoreNode[]> {
   const rows = await db.select()
     .from(nodes)
-    .where(eq(nodes.cycleId, cycleId));
+    .where(and(eq(nodes.cycleId, cycleId), notDeleted));
 
   return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }
@@ -164,7 +165,10 @@ export async function getCycleNodes(cycleId: string): Promise<CoreNode[]> {
 export async function assignNodeToCycle(nodeId: string, cycleId: string): Promise<CoreNode | null> {
   // Cross-map assignment is forbidden — versions/cycles are per-map now.
   const [cycle] = await db.select({ status: cycles.status, mapId: cycles.mapId }).from(cycles).where(eq(cycles.id, cycleId));
-  const [current] = await db.select({ status: nodes.status, mapId: nodes.mapId }).from(nodes).where(eq(nodes.id, nodeId));
+  const [current] = await db
+    .select({ status: nodes.status, mapId: nodes.mapId })
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
 
   if (!cycle || !current) return null;
   if (cycle.mapId !== current.mapId) {
@@ -214,7 +218,7 @@ export async function autoRollover(
   // Get all nodes in the source cycle
   const sourceNodes = await db.select()
     .from(nodes)
-    .where(eq(nodes.cycleId, fromCycleId));
+    .where(and(eq(nodes.cycleId, fromCycleId), notDeleted));
 
   // Filter incomplete nodes (percentComplete < 100 or null)
   const incomplete = sourceNodes.filter((n) => {

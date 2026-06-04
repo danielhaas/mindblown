@@ -150,7 +150,10 @@ export async function createNode(
   }).returning();
 
   // Add to parent's children_order
-  const [parent] = await handle.select().from(nodes).where(eq(nodes.id, input.parentId));
+  const [parent] = await handle
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, input.parentId), notDeleted));
   if (parent) {
     const order = (parent.childrenOrder as string[]) ?? [];
     const idx = input.position;
@@ -176,7 +179,10 @@ export async function createNode(
 // ── Get ────────────────────────────────────────────────────────────
 
 export async function getNode(nodeId: string): Promise<CoreNode | null> {
-  const [row] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+  const [row] = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
   if (!row) return null;
   return dbNodeToCore(row as unknown as Record<string, unknown>);
 }
@@ -232,7 +238,7 @@ export async function updateNode(
     const [current] = await handle
       .select({ status: nodes.status, mapId: nodes.mapId })
       .from(nodes)
-      .where(eq(nodes.id, nodeId));
+      .where(and(eq(nodes.id, nodeId), notDeleted));
     if (current) {
       const derived = await deriveAutoStatus(
         current.mapId as string,
@@ -277,8 +283,8 @@ export async function updateNode(
   // raise RevisionConflictError accordingly.
   const where =
     expectedRevision === undefined
-      ? eq(nodes.id, nodeId)
-      : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision));
+      ? and(eq(nodes.id, nodeId), notDeleted)
+      : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision), notDeleted);
 
   const [row] = await handle.update(nodes).set(updates).where(where).returning();
   if (row) {
@@ -654,14 +660,20 @@ export async function moveNode(
   newParentId: string,
   position?: number,
 ): Promise<CoreNode | null> {
-  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+  const [node] = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
   if (!node) return null;
 
   const now = new Date();
 
   // Remove from old parent's children_order
   if (node.parentId) {
-    const [oldParent] = await db.select().from(nodes).where(eq(nodes.id, node.parentId));
+    const [oldParent] = await db
+      .select()
+      .from(nodes)
+      .where(and(eq(nodes.id, node.parentId), notDeleted));
     if (oldParent) {
       const order = (oldParent.childrenOrder as string[]).filter((id: string) => id !== nodeId);
       await db.update(nodes)
@@ -671,7 +683,10 @@ export async function moveNode(
   }
 
   // Add to new parent's children_order
-  const [newParent] = await db.select().from(nodes).where(eq(nodes.id, newParentId));
+  const [newParent] = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, newParentId), notDeleted));
   if (!newParent) return null;
 
   // Remove any existing reference first to prevent duplicates
@@ -707,7 +722,10 @@ export async function reorderChildren(
   parentId: string,
   newChildrenIds: string[],
 ): Promise<boolean> {
-  const [parent] = await db.select().from(nodes).where(eq(nodes.id, parentId));
+  const [parent] = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, parentId), notDeleted));
   if (!parent) return false;
 
   const existing = new Set((parent.childrenOrder as string[]) ?? []);
@@ -736,11 +754,17 @@ async function buildNodeMapForNode(
   nodeId: string,
   handle: DbHandle = db,
 ): Promise<{ mapId: string; nodeMap: NodeMap }> {
-  const [node] = await handle.select().from(nodes).where(eq(nodes.id, nodeId));
+  const [node] = await handle
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
   if (!node) throw new DependencyValidationError(`Node ${nodeId} not found`);
 
   const mapId = node.mapId as string;
-  const allNodes = await handle.select().from(nodes).where(eq(nodes.mapId, mapId));
+  const allNodes = await handle
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapId), notDeleted));
   const nodeMap: NodeMap = new Map();
   for (const n of allNodes) {
     const coreNode = dbNodeToCore(n as unknown as Record<string, unknown>);

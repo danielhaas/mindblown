@@ -151,7 +151,7 @@ async function findNodeInMapByExternalId(
   const rows = await tx
     .select({ id: nodes.id, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(eq(nodes.mapId, mapId));
+    .where(and(eq(nodes.mapId, mapId), nodeDb.notDeleted));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
@@ -175,7 +175,8 @@ export async function findNodesByExternalIds(
 
   const rows = await db
     .select({ externalLinks: nodes.externalLinks })
-    .from(nodes);
+    .from(nodes)
+    .where(nodeDb.notDeleted);
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {

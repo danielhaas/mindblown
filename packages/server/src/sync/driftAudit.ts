@@ -32,6 +32,7 @@
 import { eq, and, isNotNull } from 'drizzle-orm';
 import type { ExternalLink } from '@mindblown/core';
 import { importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
+import { notDeleted } from '../db/nodes.js';
 
 import { db } from '../db/connection.js';
 import { maps, nodes, integrations } from '../db/schema.js';
@@ -204,7 +205,7 @@ async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
   const mapNodes = await db
     .select({ externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(eq(nodes.mapId, t.mapId));
+    .where(and(eq(nodes.mapId, t.mapId), notDeleted));
 
   const linkedExternalIds = new Set<string>();
   for (const n of mapNodes) {

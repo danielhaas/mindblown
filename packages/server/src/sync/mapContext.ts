@@ -31,9 +31,10 @@
  * invalidation never clobbers other maps' entries.
  */
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { maps, nodes } from '../db/schema.js';
+import { notDeleted } from '../db/nodes.js';
 
 // ── Public types ──────────────────────────────────────────────────
 
@@ -163,7 +164,7 @@ export async function buildMapContext(mapId: string): Promise<MapContext> {
       childrenOrder: nodes.childrenOrder,
     })
     .from(nodes)
-    .where(eq(nodes.id, mapRow.rootNodeId));
+    .where(and(eq(nodes.id, mapRow.rootNodeId), notDeleted));
 
   const childrenOrder = (rootRow?.childrenOrder as string[]) ?? [];
 
@@ -180,7 +181,7 @@ export async function buildMapContext(mapId: string): Promise<MapContext> {
         parentId: nodes.parentId,
       })
       .from(nodes)
-      .where(eq(nodes.parentId, mapRow.rootNodeId));
+      .where(and(eq(nodes.parentId, mapRow.rootNodeId), notDeleted));
     const byId = new Map(childRows.map((r) => [r.id, r]));
     epics = childrenOrder
       .map((id) => byId.get(id))

@@ -58,6 +58,7 @@ import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { maps, nodes, triageDecisions, triageDecisionHistory } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
+import { notDeleted } from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from '../sync/mapContext.js';
@@ -530,7 +531,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         const [parent] = await db
           .select({ id: nodes.id, mapId: nodes.mapId })
           .from(nodes)
-          .where(eq(nodes.id, submittedParent));
+          .where(and(eq(nodes.id, submittedParent), notDeleted));
         if (!parent || parent.mapId !== req.params.mapId) {
           return reply.status(400).send({
             error: {
@@ -545,7 +546,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         const [placedNode] = await db
           .select({ id: nodes.id, parentId: nodes.parentId })
           .from(nodes)
-          .where(eq(nodes.id, placedNodeId));
+          .where(and(eq(nodes.id, placedNodeId), notDeleted));
 
         let moved = false;
         if (placedNode && placedNode.parentId !== submittedParent) {
@@ -616,7 +617,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         const [parent] = await db
           .select({ id: nodes.id, mapId: nodes.mapId })
           .from(nodes)
-          .where(eq(nodes.id, parentNodeId));
+          .where(and(eq(nodes.id, parentNodeId), notDeleted));
         if (!parent || parent.mapId !== req.params.mapId) {
           return reply.status(400).send({
             error: {
@@ -1147,7 +1148,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const [parent] = await db
         .select({ id: nodes.id, mapId: nodes.mapId })
         .from(nodes)
-        .where(eq(nodes.id, parentNodeId));
+        .where(and(eq(nodes.id, parentNodeId), notDeleted));
       if (!parent || parent.mapId !== req.params.mapId) {
         return reply.status(400).send({
           error: {
@@ -1242,7 +1243,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             const [placedNode] = await db
               .select({ id: nodes.id, parentId: nodes.parentId })
               .from(nodes)
-              .where(eq(nodes.id, placedNodeId));
+              .where(and(eq(nodes.id, placedNodeId), notDeleted));
             let subStatus: 'moved' | 'already_correct' | 'orphaned';
             if (!placedNode) {
               subStatus = 'orphaned';

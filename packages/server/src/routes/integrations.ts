@@ -3,6 +3,7 @@ import { eq, and } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
+import { notDeleted } from '../db/nodes.js';
 import {
   createGitHubIssue,
   getGitHubIssue,
@@ -126,7 +127,10 @@ async function getGitHubContextForRepo(
 
 async function findNodeByExternalId(externalId: string): Promise<string | null> {
   // Search all nodes for matching externalLink
-  const allNodes = await db.select({ id: nodes.id, externalLinks: nodes.externalLinks }).from(nodes);
+  const allNodes = await db
+    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(notDeleted);
   for (const node of allNodes) {
     const links = (node.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
@@ -478,7 +482,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           externalLinks: nodes.externalLinks,
         })
         .from(nodes)
-        .where(eq(nodes.mapId, req.params.mapId));
+        .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
 
       // Identify parents so we can separate leaves from structural branches.
       const parentIdSet = new Set<string>();
@@ -678,7 +682,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const existingNodes = await db
         .select({ id: nodes.id, text: nodes.text, externalLinks: nodes.externalLinks })
         .from(nodes)
-        .where(eq(nodes.mapId, req.params.mapId));
+        .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
 
       const normalizeText = (s: string) => s.trim().toLowerCase();
       const existingByExternalId = new Map<string, string>();
@@ -777,7 +781,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           const [row] = await db
             .select({ externalLinks: nodes.externalLinks })
             .from(nodes)
-            .where(eq(nodes.id, textMatchId));
+            .where(and(eq(nodes.id, textMatchId), notDeleted));
           const existingLinks = (row?.externalLinks as ExternalLink[]) ?? [];
           await nodeDb.updateNode(textMatchId, {
             externalLinks: [...existingLinks, item.externalLink],

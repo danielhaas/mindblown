@@ -7,6 +7,7 @@
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
+import { notDeleted } from '../db/nodes.js';
 import { embed, aiEnabled } from './client.js';
 
 // ── Pure helpers ───────────────────────────────────────────────
@@ -82,7 +83,7 @@ export async function embedNodeById(nodeId: string): Promise<void> {
         embeddingText: nodes.embeddingText,
       })
       .from(nodes)
-      .where(eq(nodes.id, nodeId));
+      .where(and(eq(nodes.id, nodeId), notDeleted));
     if (!row) return;
     const source = embeddingSourceText({ text: row.text, description: row.description });
     if (!source) return;
@@ -143,7 +144,7 @@ export async function semanticSearch(
       embedding: nodes.embedding,
     })
     .from(nodes)
-    .where(and(eq(nodes.mapId, mapId), isNotNull(nodes.embedding)));
+    .where(and(eq(nodes.mapId, mapId), isNotNull(nodes.embedding), notDeleted));
 
   const scored: SemanticMatch[] = [];
   for (const r of rows) {
@@ -171,7 +172,7 @@ export async function backfillMapEmbeddings(
       embeddingText: nodes.embeddingText,
     })
     .from(nodes)
-    .where(eq(nodes.mapId, mapId));
+    .where(and(eq(nodes.mapId, mapId), notDeleted));
 
   let embedded = 0;
   let skipped = 0;
