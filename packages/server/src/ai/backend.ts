@@ -185,6 +185,28 @@ export function createChatBackend(userId: string): ToolBackend {
       return toNodeWithComputed(moved, undefined);
     },
 
+    // ── Soft-delete + restore (#107) ────────────────────────────
+    async restoreNode(mapId, nodeId, opts) {
+      const result = await nodeDb.restoreNode(nodeId, {
+        recursive: opts?.recursive === true,
+      });
+      const node = await nodeDb.getNode(nodeId);
+      broadcast(mapId, {
+        type: 'node:restored',
+        nodeId,
+        restoredIds: result.restoredIds,
+        affectedParentIds: result.affectedParentIds,
+      });
+      return {
+        restoredIds: result.restoredIds,
+        node: node ? toNodeWithComputed(node, undefined) : null,
+      };
+    },
+
+    async listDeleted(mapId, opts) {
+      return nodeDb.listDeleted(mapId, opts ?? {});
+    },
+
     // ── Triage (#96 Phase 3) ────────────────────────────────────
     // The in-app chat backend doesn't expose the triage surface — the
     // routes enforce a session-JWT-only gate (API-key auth is 403'd) for

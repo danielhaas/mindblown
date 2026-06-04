@@ -16,6 +16,9 @@ export const httpBackend: ToolBackend = {
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),
   deleteNode: (mapId, nodeId) => api.deleteNode(mapId, nodeId),
   moveNode: (mapId, nodeId, newParentId, position) => api.moveNode(mapId, nodeId, newParentId, position),
+  // ── Soft-delete + restore (#107) ────────────────────────────────
+  restoreNode: (mapId, nodeId, opts) => api.restoreNode(mapId, nodeId, opts),
+  listDeleted: (mapId, opts) => api.listDeleted(mapId, opts),
   // ── Triage (#96 Phase 3) ────────────────────────────────────────
   listTriageDecisions: (mapId, filters) => api.listTriageDecisions(mapId, filters),
   overrideTriage: (mapId, decisionId, body) => api.overrideTriage(mapId, decisionId, body),

@@ -10,6 +10,7 @@ import { resolveDriftAuditIntervalMs } from './sync/driftAuditInterval.js';
 import { parsePositiveIntMs } from './sync/parseInterval.js';
 import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
+import { runTrashGc } from './sync/trashGc.js';
 import { sdNotifyReady } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
@@ -279,6 +280,32 @@ async function main(): Promise<void> {
   // Deliberately no startup invocation — the counter is empty at
   // boot, so the first tick would always be a `received==0` no-op.
   setInterval(webhookAuthCheckTick, WEBHOOK_AUTH_CHECK_INTERVAL_MS);
+
+  // ── Trash garbage collection (#107) ────────────────────────────
+  // Soft-deleted nodes get hard-deleted after the retention window. Also
+  // closes their linked GitHub issues as not_planned (the closure was
+  // deferred from the soft-delete code path so undo is side-effect-free).
+  // Once a day is plenty: the retention window is measured in days, so
+  // sub-daily ticks just spread work without changing the visible result.
+  const TRASH_RETENTION_DAYS = Number(process.env.TRASH_RETENTION_DAYS ?? 30);
+  const TRASH_GC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24h
+  const trashGcTick = async (): Promise<void> => {
+    try {
+      const result = await runTrashGc(TRASH_RETENTION_DAYS);
+      if (result.inspected > 0) {
+        console.log(
+          `[trash-gc] inspected=${result.inspected} hardDeleted=${result.hardDeleted} ghClosed=${result.githubClosed} ghFailed=${result.githubFailed}`,
+        );
+      }
+      for (const err of result.errors.slice(0, 5)) {
+        console.warn(`[trash-gc] ${err}`);
+      }
+    } catch (err) {
+      console.error('[trash-gc] tick caught unexpected error:', err);
+    }
+  };
+  trashGcTick();
+  setInterval(trashGcTick, TRASH_GC_INTERVAL_MS);
 }
 
 main();

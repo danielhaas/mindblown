@@ -132,6 +132,10 @@ export interface MindmapState {
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
   reorderChildren: (parentId: string, childrenIds: string[]) => void;
   toggleCollapse: (id: string) => void;
+
+  // Soft-delete / Trash (#107)
+  listDeletedNodes: (sinceDays?: number) => Promise<api.DeletedNodeSummary[]>;
+  restoreNode: (nodeId: string, opts?: { recursive?: boolean }) => Promise<void>;
   expandAll: () => void;
   collapseAll: () => void;
   recompute: () => void;
@@ -1027,6 +1031,24 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
   },
 
+  // ── Soft-delete / Trash (#107) ──────────────────────────────
+  listDeletedNodes: async (sinceDays) => {
+    const state = get();
+    if (!state.currentMapId) return [];
+    const res = await api.listDeleted(state.currentMapId, { sinceDays });
+    return res.deleted;
+  },
+
+  restoreNode: async (nodeId, opts) => {
+    const state = get();
+    if (!state.currentMapId) return;
+    await api.restoreNode(state.currentMapId, nodeId, opts);
+    // The route broadcasts node:restored, which triggers a loadMap on this
+    // tab. We also load eagerly so the caller (Trash modal) sees the result
+    // without waiting for the round-trip WS echo.
+    await get().loadMap(state.currentMapId);
+  },
+
   moveNode: (nodeId, newParentId, index) => {
     const state = get();
     const node = state.nodes[nodeId];
@@ -1272,6 +1294,17 @@ function handleWsMessage(
     case 'node:moved': {
       // Reload map to get fresh state (moves are complex)
       get().loadMap(state.currentMapId!);
+      break;
+    }
+
+    case 'node:restored': {
+      // A restore re-introduces nodes that aren't in our local state and
+      // re-splices the root into its parent's children_order. Easiest +
+      // correct reaction is a full reload — restore is rare and the round
+      // trip is small relative to the alternative of replaying the splice.
+      if (state.currentMapId) {
+        get().loadMap(state.currentMapId);
+      }
       break;
     }
 

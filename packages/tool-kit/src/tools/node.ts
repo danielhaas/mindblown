@@ -73,14 +73,61 @@ export const updateNodeTool = defineTool({
 
 export const deleteNodeTool = defineTool({
   name: 'delete_node',
-  description: 'Delete a node and all its descendants',
+  description:
+    'Soft-delete a node and all its descendants. The subtree moves to the Trash and stops appearing in get_map / search_nodes / triage. Use restore_node to undo within the retention window; the GC job hard-deletes Trash older than 30 days and only then closes linked GitHub issues as not_planned.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to delete'),
   },
   handler: async (backend, { mapId, nodeId }) => {
     await backend.deleteNode(mapId, nodeId);
-    return `Deleted node ${nodeId} and its descendants.`;
+    return `Deleted node ${nodeId} and its descendants (moved to Trash; use restore_node to undo).`;
+  },
+});
+
+export const restoreNodeTool = defineTool({
+  name: 'restore_node',
+  description:
+    'Undelete a node from the Trash. Splices the subtree back into its parent\'s children_order at the original position. Fails if the parent is itself in the Trash unless `recursive: true` is passed, in which case the whole trashed ancestor chain is restored. Use list_recently_deleted to find candidates.',
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to restore (a subtree root in the Trash)'),
+    recursive: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, also restore any soft-deleted ancestors of this node (the parent chain that was in the Trash). When false or omitted, the call fails if the parent is still in the Trash.',
+      ),
+  },
+  handler: async (backend, { mapId, nodeId, recursive }) => {
+    const result = await backend.restoreNode(mapId, nodeId, { recursive: recursive === true });
+    return `Restored ${result.restoredIds.length} node(s) including ${nodeId}.`;
+  },
+});
+
+export const listRecentlyDeletedTool = defineTool({
+  name: 'list_recently_deleted',
+  description:
+    'List subtree roots currently in the Trash for a map, newest deletion first. Returns one row per delete operation — internal descendants of trashed subtrees are filtered out. Used to find undelete candidates for restore_node.',
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    sinceDays: z
+      .number()
+      .int()
+      .min(1)
+      .max(365)
+      .optional()
+      .describe('Only deletions in the last N days. Default: all in retention window.'),
+    limit: z.number().int().min(1).max(1000).optional().describe('Max rows (default 500).'),
+  },
+  handler: async (backend, { mapId, sinceDays, limit }) => {
+    const rows = await backend.listDeleted(mapId, { sinceDays, limit });
+    if (rows.length === 0) return 'No nodes in the Trash for this map.';
+    const lines = rows.map(
+      (r) =>
+        `- ${r.text} (id: ${r.id}, deleted: ${r.deletedAt}, parent: ${r.parentId ?? '<none>'})`,
+    );
+    return `${rows.length} node(s) in Trash:\n${lines.join('\n')}`;
   },
 });
 
@@ -153,4 +200,12 @@ export const searchNodesTool = defineTool({
   },
 });
 
-export const nodeTools = [createNodeTool, updateNodeTool, deleteNodeTool, moveNodeTool, searchNodesTool];
+export const nodeTools = [
+  createNodeTool,
+  updateNodeTool,
+  deleteNodeTool,
+  restoreNodeTool,
+  listRecentlyDeletedTool,
+  moveNodeTool,
+  searchNodesTool,
+];

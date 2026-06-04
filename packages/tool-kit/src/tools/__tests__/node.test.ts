@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
 import type { NodeWithComputed } from '../../types.js';
 
@@ -77,6 +77,8 @@ function makeRecordingBackend(): {
     },
     deleteNode: async () => { throw new Error('not implemented'); },
     moveNode: async () => { throw new Error('not implemented'); },
+    restoreNode: async () => { throw new Error('not implemented'); },
+    listDeleted: async () => { throw new Error('not implemented'); },
     listTriageDecisions: async () => { throw new Error('not implemented'); },
     overrideTriage: async () => { throw new Error('not implemented'); },
     reclassifyTriage: async () => { throw new Error('not implemented'); },
@@ -162,5 +164,97 @@ describe('create_node tool', () => {
       autoProgress: 'children',
     } as never);
     expect(recorder.lastCreate?.fields).toMatchObject({ autoProgress: 'children' });
+  });
+});
+
+// ── Soft-delete / restore (#107) ────────────────────────────────
+
+describe('restore_node tool', () => {
+  it('forwards recursive: true through to the backend', async () => {
+    const calls: Array<{ mapId: string; nodeId: string; opts?: { recursive?: boolean } }> = [];
+    const recorder = makeRecordingBackend();
+    recorder.backend.restoreNode = async (mapId, nodeId, opts) => {
+      calls.push({ mapId, nodeId, opts });
+      return { restoredIds: [nodeId, 'child1', 'child2'], node: null };
+    };
+    const out = await restoreNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      recursive: true,
+    } as never);
+    expect(calls).toEqual([{ mapId: 'm1', nodeId: 'n1', opts: { recursive: true } }]);
+    expect(out).toContain('Restored 3');
+  });
+
+  it('defaults recursive to false when omitted', async () => {
+    const seen: Array<{ recursive?: boolean }> = [];
+    const recorder = makeRecordingBackend();
+    recorder.backend.restoreNode = async (_m, _n, opts) => {
+      seen.push(opts ?? {});
+      return { restoredIds: ['n1'], node: null };
+    };
+    await restoreNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+    } as never);
+    expect(seen[0]).toEqual({ recursive: false });
+  });
+});
+
+describe('list_recently_deleted tool', () => {
+  it('returns "No nodes" when the Trash is empty', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.listDeleted = async () => [];
+    const out = await listRecentlyDeletedTool.handler(recorder.backend, {
+      mapId: 'm1',
+    } as never);
+    expect(out).toContain('No nodes in the Trash');
+  });
+
+  it('formats one line per trashed root', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.listDeleted = async () => [
+      {
+        id: 'n1',
+        mapId: 'm1',
+        parentId: 'root',
+        text: 'Backlog',
+        deletedAt: '2026-06-04T13:04:22Z',
+        effortEstimate: null,
+        percentComplete: 0,
+      },
+      {
+        id: 'n2',
+        mapId: 'm1',
+        parentId: 'root',
+        text: 'GitHub Inbox',
+        deletedAt: '2026-06-04T13:04:18Z',
+        effortEstimate: null,
+        percentComplete: null,
+      },
+    ];
+    const out = await listRecentlyDeletedTool.handler(recorder.backend, {
+      mapId: 'm1',
+    } as never);
+    expect(out).toMatch(/^2 node\(s\) in Trash:/);
+    expect(out).toContain('Backlog');
+    expect(out).toContain('GitHub Inbox');
+    expect(out).toContain('id: n1');
+    expect(out).toContain('id: n2');
+  });
+
+  it('forwards sinceDays + limit to the backend', async () => {
+    const seen: Array<{ mapId: string; opts?: { sinceDays?: number; limit?: number } }> = [];
+    const recorder = makeRecordingBackend();
+    recorder.backend.listDeleted = async (mapId, opts) => {
+      seen.push({ mapId, opts });
+      return [];
+    };
+    await listRecentlyDeletedTool.handler(recorder.backend, {
+      mapId: 'm1',
+      sinceDays: 7,
+      limit: 100,
+    } as never);
+    expect(seen[0]).toEqual({ mapId: 'm1', opts: { sinceDays: 7, limit: 100 } });
   });
 });

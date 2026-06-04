@@ -109,6 +109,27 @@ export interface ToolBackend {
     position?: number,
   ): Promise<NodeWithComputed>;
 
+  // ── Soft-delete + restore (#107) ───────────────────────────────
+  restoreNode(
+    mapId: string,
+    nodeId: string,
+    opts?: { recursive?: boolean },
+  ): Promise<{ restoredIds: string[]; node: NodeWithComputed | null }>;
+  listDeleted(
+    mapId: string,
+    opts?: { sinceDays?: number; limit?: number },
+  ): Promise<
+    Array<{
+      id: string;
+      mapId: string;
+      parentId: string | null;
+      text: string;
+      deletedAt: string;
+      effortEstimate: number | null;
+      percentComplete: number | null;
+    }>
+  >;
+
   // ── Triage (#96 Phase 3) ────────────────────────────────────────
   listTriageDecisions(mapId: string, filters: TriageListFilters): Promise<TriageListResult>;
   overrideTriage(

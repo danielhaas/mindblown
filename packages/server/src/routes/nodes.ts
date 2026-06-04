@@ -496,6 +496,72 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── POST /api/maps/:id/nodes/:nodeId/restore — Undelete (#107) ────
+  app.post<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/restore',
+    async (req, reply) => {
+      const body = (req.body ?? {}) as { recursive?: boolean };
+      try {
+        const result = await nodeDb.restoreNode(req.params.nodeId, {
+          recursive: body.recursive === true,
+        });
+
+        // Pull the now-live root so the response carries the same shape as
+        // POST /nodes (the optimistic UI replaces its placeholder with this).
+        const restoredRoot = await nodeDb.getNode(req.params.nodeId);
+
+        broadcast(req.params.id, {
+          type: 'node:restored',
+          nodeId: req.params.nodeId,
+          restoredIds: result.restoredIds,
+          affectedParentIds: result.affectedParentIds,
+        });
+
+        events
+          .recordEvent({
+            mapId: req.params.id,
+            nodeId: req.params.nodeId,
+            userId: req.userId ?? null,
+            eventType: 'node.restored',
+            newValue: {
+              restoredCount: result.restoredIds.length,
+              recursive: body.recursive === true,
+            },
+          })
+          .catch(() => {});
+
+        return reply.status(200).send({
+          restoredIds: result.restoredIds,
+          affectedParentIds: result.affectedParentIds,
+          node: restoredRoot,
+        });
+      } catch (err) {
+        if (err instanceof nodeDb.RestoreError) {
+          const status = err.code === 'NOT_FOUND' ? 404 : 409;
+          return reply.status(status).send({
+            error: { code: err.code, message: err.message },
+          });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // ── GET /api/maps/:id/trash — List soft-deleted subtree roots ────
+  app.get<{
+    Params: { id: string };
+    Querystring: { sinceDays?: string; limit?: string };
+  }>('/api/maps/:id/trash', async (req, reply) => {
+    const sinceDays = req.query.sinceDays
+      ? Math.max(1, Math.min(365, Number(req.query.sinceDays)))
+      : undefined;
+    const limit = req.query.limit
+      ? Math.max(1, Math.min(1000, Number(req.query.limit)))
+      : undefined;
+    const rows = await nodeDb.listDeleted(req.params.id, { sinceDays, limit });
+    return reply.send({ deleted: rows });
+  });
+
   // ── GET /api/maps/:mapId/changes — Query the change log ─────
   app.get<{
     Params: { id: string };
