@@ -184,5 +184,33 @@ export function createChatBackend(userId: string): ToolBackend {
       broadcast(mapId, { type: 'node:moved', nodeId, newParentId });
       return toNodeWithComputed(moved, undefined);
     },
+
+    // ── Triage (#96 Phase 3) ────────────────────────────────────
+    // The in-app chat backend doesn't expose the triage surface — the
+    // routes enforce a session-JWT-only gate (API-key auth is 403'd) for
+    // blast-radius reasons (#69 / #100), which doesn't map cleanly to the
+    // chat's in-process backend. Operators use the MCP HTTP backend
+    // (Eve, claude code) for triage; the chat refuses the same call with
+    // a clear directive rather than half-applying it.
+    async listTriageDecisions(_mapId, _filters) {
+      throw new Error(
+        'list_triage_decisions is not available through the in-app chat — call it via the MCP HTTP endpoint.',
+      );
+    },
+    async overrideTriage(_mapId, _decisionId, _body) {
+      throw new Error(
+        'override_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
+      );
+    },
+    async reclassifyTriage(_mapId, _decisionId) {
+      throw new Error(
+        'reclassify_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
+      );
+    },
+    async confirmTriage(_mapId, _decisionId) {
+      throw new Error(
+        'confirm_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
+      );
+    },
   };
 }

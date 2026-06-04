@@ -106,6 +106,13 @@ export const maps = pgTable('maps', {
   // suggested parent. Default false → ingest behaves exactly like
   // before (flat under the GitHub Inbox).
   triageEnabled: boolean('triage_enabled').notNull().default(false),
+  // Per-map opt-in for Phase 3 GitHub label write-back (#96). When true,
+  // finalized triage decisions write `triage:placed` / `triage:skipped`
+  // labels back to the source GitHub issue. Default false so existing
+  // maps don't suddenly mutate their bound repos. Best-effort: a label
+  // write failure never blocks the triage flow. Uncertain decisions do
+  // NOT write labels — intermediate state would just noise up GitHub.
+  triageLabelWriteback: boolean('triage_label_writeback').notNull().default(false),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -319,6 +326,34 @@ export const triageDecisions = pgTable('triage_decisions', {
   reviewed: boolean('reviewed').notNull().default(false),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   reviewedBy: uuid('reviewed_by').references(() => users.id),
+});
+
+// ── Triage Decision History (#96, Phase 3) ────────────────────────
+// Append-only audit log for every mutation of a `triage_decisions` row.
+// Written by `recordTriageHistory()` from each call site that mutates a
+// triage row (auto-ingest, override, reclassify, confirm, reopen-sync,
+// bulk variants). Cascades on `triage_decisions` delete because the
+// decision row is the natural lifecycle anchor — if the operator deletes
+// a triage row, its history rides along.
+//
+// `changed_by` is either the literal string 'auto' (the pipeline) or a
+// stringified userId. It's text rather than a nullable users(id) FK so
+// the 'auto' sentinel doesn't need a synthetic user row, and so deleting
+// an operator user doesn't drop their audit trail.
+
+export const triageDecisionHistory = pgTable('triage_decision_history', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  decisionId: uuid('decision_id').notNull().references(() => triageDecisions.id, { onDelete: 'cascade' }),
+  changedAt: timestamp('changed_at', { withTimezone: true }).notNull().defaultNow(),
+  changedBy: text('changed_by').notNull(), // 'auto' | userId
+  changeType: text('change_type').notNull(), // 'created' | 'overridden' | 'reclassified' | 'confirmed' | 'state_synced'
+  previousDecision: text('previous_decision'), // null on 'created'
+  newDecision: text('new_decision').notNull(),
+  previousConfidence: integer('previous_confidence'),
+  newConfidence: integer('new_confidence'),
+  previousParentNodeId: uuid('previous_parent_node_id'),
+  newParentNodeId: uuid('new_parent_node_id'),
+  reason: text('reason'), // snapshot of the new decision's reason
 });
 
 // ── Cycles ─────────────────────────────────────────────────────────

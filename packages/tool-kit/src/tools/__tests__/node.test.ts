@@ -77,6 +77,10 @@ function makeRecordingBackend(): {
     },
     deleteNode: async () => { throw new Error('not implemented'); },
     moveNode: async () => { throw new Error('not implemented'); },
+    listTriageDecisions: async () => { throw new Error('not implemented'); },
+    overrideTriage: async () => { throw new Error('not implemented'); },
+    reclassifyTriage: async () => { throw new Error('not implemented'); },
+    confirmTriage: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

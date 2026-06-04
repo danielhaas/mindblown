@@ -56,12 +56,14 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, gte, lte } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { maps, nodes, triageDecisions } from '../db/schema.js';
+import { maps, nodes, triageDecisions, triageDecisionHistory } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from '../sync/mapContext.js';
 import { triageIssue } from '../sync/triage.js';
+import { recordTriageHistory } from '../sync/triageHistory.js';
+import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { ExternalLink } from '@mindblown/core';
 
 // ── Auth helpers ──────────────────────────────────────────────────
@@ -209,6 +211,63 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  // ── GET /api/maps/:mapId/triage-decisions/:decisionId/history ─
+  // Phase 3 (#96). Returns the append-only audit log for a single
+  // decision, ordered newest-first. Auth mirrors the single-decision
+  // list route: session JWT + 'view' permission (API-key auth 403s,
+  // same blast-radius reasoning as the rest of triage).
+  //
+  // The history rows are written by `recordTriageHistory` from every
+  // mutation site (override, reclassify, confirm, ingest auto-apply,
+  // reopened-state sync, bulk variants). On `triage_decisions` delete
+  // the history rows cascade away.
+  app.get<{
+    Params: { mapId: string; decisionId: string };
+  }>(
+    '/api/maps/:mapId/triage-decisions/:decisionId/history',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'view');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+
+      // Confirm the decision exists in this map before returning rows
+      // — prevents cross-map information leakage if a future operator
+      // pastes a decisionId from another tenant into the URL.
+      const [row] = await db
+        .select({ id: triageDecisions.id })
+        .from(triageDecisions)
+        .where(
+          and(
+            eq(triageDecisions.id, req.params.decisionId),
+            eq(triageDecisions.mapId, req.params.mapId),
+          ),
+        );
+      if (!row) {
+        return reply.status(404).send({
+          error: {
+            code: 'NOT_FOUND',
+            message: `Triage decision ${req.params.decisionId} not found in map ${req.params.mapId}`,
+          },
+        });
+      }
+
+      const rows = await db
+        .select()
+        .from(triageDecisionHistory)
+        .where(eq(triageDecisionHistory.decisionId, req.params.decisionId))
+        .orderBy(desc(triageDecisionHistory.changedAt));
+
+      return reply.send({
+        decisionId: req.params.decisionId,
+        total: rows.length,
+        history: rows,
+      });
+    },
+  );
+
   // ── POST /api/maps/:mapId/triage-decisions/:decisionId/confirm ──
   // Body: ignored (no parameters).
   //
@@ -270,6 +329,31 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           reviewedBy: userId,
         })
         .where(eq(triageDecisions.id, row.id));
+
+      // Phase 3 audit log — confirm doesn't change the decision so
+      // previous_/new_ fields all reflect the same values; the row
+      // documents WHO confirmed and WHEN.
+      await recordTriageHistory({
+        decisionId: row.id,
+        changedBy: userId,
+        changeType: 'confirmed',
+        previousDecision: row.decision,
+        newDecision: row.decision,
+        previousConfidence: row.confidence,
+        newConfidence: row.confidence,
+        previousParentNodeId: row.placedNodeId ?? null,
+        newParentNodeId: row.placedNodeId ?? null,
+        reason: row.reason,
+      });
+
+      // Phase 3 opt-in label writeback — fire-and-forget, best-effort
+      // (helper internally checks the per-map flag and silently no-ops
+      // on uncertain / disabled / GH errors).
+      await applyTriageLabel({
+        mapId: req.params.mapId,
+        externalId: row.externalId,
+        decision: row.decision as 'place' | 'skip' | 'uncertain',
+      });
 
       return reply.send({
         decisionId: row.id,
@@ -445,6 +529,25 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             reviewedBy: userId,
           })
           .where(eq(triageDecisions.id, row.id));
+
+        await recordTriageHistory({
+          decisionId: row.id,
+          changedBy: userId,
+          changeType: 'overridden',
+          previousDecision: row.decision,
+          newDecision: 'place',
+          previousConfidence: row.confidence,
+          newConfidence: 100,
+          previousParentNodeId: row.placedNodeId ?? null,
+          newParentNodeId: submittedParent,
+          reason: body.reason ?? row.reason,
+        });
+        await applyTriageLabel({
+          mapId: req.params.mapId,
+          externalId: row.externalId,
+          decision: 'place',
+        });
+
         return reply.send({
           decisionId: row.id,
           status: moved ? 'moved' : 'already_placed',
@@ -545,6 +648,28 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           source: 'triage_override',
         });
       }
+
+      // Phase 3 audit log — record the override with full before/after
+      // snapshots. For 'place' the new parent is the freshly-created
+      // node; for skip/uncertain we leave parent null on both sides.
+      await recordTriageHistory({
+        decisionId: row.id,
+        changedBy: userId,
+        changeType: 'overridden',
+        previousDecision: row.decision,
+        newDecision: decision,
+        previousConfidence: row.confidence,
+        newConfidence: 100,
+        previousParentNodeId: row.placedNodeId ?? null,
+        newParentNodeId:
+          decision === 'place' ? (createdNodeId ?? null) : null,
+        reason: body.reason ?? row.reason,
+      });
+      await applyTriageLabel({
+        mapId: req.params.mapId,
+        externalId: row.externalId,
+        decision,
+      });
 
       return reply.send({
         decisionId: row.id,
@@ -653,6 +778,37 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           ...(clearPlacedNode ? { placedNodeId: null } : {}),
         })
         .where(eq(triageDecisions.id, row.id));
+
+      // Phase 3 audit log — reclassify is recorded as 'auto' since the
+      // LLM is the actor here, even though an operator triggered the
+      // re-run. Mirroring decidedBy/decidedAt semantics on the row.
+      const newParent = clearPlacedNode
+        ? null
+        : decision.decision === 'place'
+          ? (decision.parentNodeId ?? row.placedNodeId ?? null)
+          : (row.placedNodeId ?? null);
+      await recordTriageHistory({
+        decisionId: row.id,
+        changedBy: 'auto',
+        changeType: 'reclassified',
+        previousDecision: row.decision,
+        newDecision: decision.decision,
+        previousConfidence: row.confidence,
+        newConfidence: decision.confidence,
+        previousParentNodeId: row.placedNodeId ?? null,
+        newParentNodeId: newParent,
+        reason: decision.reason,
+      });
+      // Phase 3 label writeback: reclassify resets reviewed=false, so
+      // the new decision is auto and intermediate. We still write the
+      // label (the spec calls out reclassify-to-skip should flip the
+      // label) — uncertain decisions are silently no-op'd inside
+      // applyTriageLabel.
+      await applyTriageLabel({
+        mapId: req.params.mapId,
+        externalId: row.externalId,
+        decision: decision.decision,
+      });
 
       return reply.send({
         decisionId: row.id,
@@ -814,6 +970,23 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               reviewedBy: userId,
             })
             .where(eq(triageDecisions.id, row.id));
+          await recordTriageHistory({
+            decisionId: row.id,
+            changedBy: userId,
+            changeType: 'confirmed',
+            previousDecision: row.decision,
+            newDecision: row.decision,
+            previousConfidence: row.confidence,
+            newConfidence: row.confidence,
+            previousParentNodeId: row.placedNodeId ?? null,
+            newParentNodeId: row.placedNodeId ?? null,
+            reason: row.reason,
+          });
+          await applyTriageLabel({
+            mapId: req.params.mapId,
+            externalId: row.externalId,
+            decision: row.decision as 'place' | 'skip' | 'uncertain',
+          });
           results.push({
             id,
             status: 'confirmed',
@@ -975,6 +1148,23 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 reviewedBy: userId,
               })
               .where(eq(triageDecisions.id, row.id));
+            await recordTriageHistory({
+              decisionId: row.id,
+              changedBy: userId,
+              changeType: 'overridden',
+              previousDecision: row.decision,
+              newDecision: 'place',
+              previousConfidence: row.confidence,
+              newConfidence: 100,
+              previousParentNodeId: row.placedNodeId ?? null,
+              newParentNodeId: parentNodeId,
+              reason: row.reason,
+            });
+            await applyTriageLabel({
+              mapId: req.params.mapId,
+              externalId: row.externalId,
+              decision: 'place',
+            });
             nodeId = placedNodeId;
             status = moved ? 'moved' : 'already_placed';
           } else {
@@ -1031,6 +1221,23 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             }
             nodeId = created?.id ?? null;
             status = 'placed';
+            await recordTriageHistory({
+              decisionId: row.id,
+              changedBy: userId,
+              changeType: 'overridden',
+              previousDecision: row.decision,
+              newDecision: 'place',
+              previousConfidence: row.confidence,
+              newConfidence: 100,
+              previousParentNodeId: row.placedNodeId ?? null,
+              newParentNodeId: nodeId,
+              reason: row.reason,
+            });
+            await applyTriageLabel({
+              mapId: req.params.mapId,
+              externalId: row.externalId,
+              decision: 'place',
+            });
           }
           results.push({ id, status, nodeId });
         } catch (err) {
@@ -1139,6 +1346,28 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               ...(clearPlacedNode ? { placedNodeId: null } : {}),
             })
             .where(eq(triageDecisions.id, row.id));
+          const newParent = clearPlacedNode
+            ? null
+            : decision.decision === 'place'
+              ? (decision.parentNodeId ?? row.placedNodeId ?? null)
+              : (row.placedNodeId ?? null);
+          await recordTriageHistory({
+            decisionId: row.id,
+            changedBy: 'auto',
+            changeType: 'reclassified',
+            previousDecision: row.decision,
+            newDecision: decision.decision,
+            previousConfidence: row.confidence,
+            newConfidence: decision.confidence,
+            previousParentNodeId: row.placedNodeId ?? null,
+            newParentNodeId: newParent,
+            reason: decision.reason,
+          });
+          await applyTriageLabel({
+            mapId: req.params.mapId,
+            externalId: row.externalId,
+            decision: decision.decision,
+          });
           results.push({
             id,
             status: 'reclassified',

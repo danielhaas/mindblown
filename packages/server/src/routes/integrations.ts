@@ -26,10 +26,15 @@ import {
 } from '../sync/githubIngest.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
+import { recordTriageHistory } from '../sync/triageHistory.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
+import {
+  getGitHubContextForMap as getGitHubContextForMapImpl,
+  type GitHubMapContext as GitHubMapContextImpl,
+} from '../lib/githubContext.js';
 
 // ── Helper: find integration config for a workspace (legacy PAT) ──
 
@@ -51,43 +56,14 @@ async function getGitHubIntegration(workspaceId: string): Promise<{ id: string; 
 }
 
 // ── Helper: resolve GitHub token + repo for a map ─────────────────
-// Tries the map's own GitHub App binding first, falls back to the
-// workspace PAT integration.
+// Canonical impl lives in `lib/githubContext.ts` so non-route consumers
+// (the Phase 3 triage label writeback in `sync/triageLabelWriteback.ts`)
+// can import it without creating a routes ↔ sync cycle. The named
+// exports below are kept for back-compat with `routes/nodes.ts` and any
+// other site that already imports them from this file.
 
-export interface GitHubMapContext {
-  owner: string;
-  repo: string;
-  token: string;
-}
-
-export async function getGitHubContextForMap(mapId: string): Promise<GitHubMapContext | null> {
-  const [map] = await db.select({
-    githubInstallationId: maps.githubInstallationId,
-    githubRepoOwner: maps.githubRepoOwner,
-    githubRepoName: maps.githubRepoName,
-    workspaceId: maps.workspaceId,
-  }).from(maps).where(eq(maps.id, mapId));
-
-  if (!map) return null;
-
-  // Try App installation binding first
-  if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
-    try {
-      const token = await mintInstallationToken(map.githubInstallationId);
-      return { owner: map.githubRepoOwner, repo: map.githubRepoName, token };
-    } catch (err) {
-      console.warn('[github] Failed to mint installation token, falling back to PAT:', err);
-    }
-  }
-
-  // Fallback: workspace PAT integration
-  const integration = await getGitHubIntegration(map.workspaceId);
-  if (integration) {
-    return { owner: integration.config.owner, repo: integration.config.repo, token: integration.config.token };
-  }
-
-  return null;
-}
+export type GitHubMapContext = GitHubMapContextImpl;
+export const getGitHubContextForMap = getGitHubContextForMapImpl;
 
 /**
  * Resolve a GitHub token + repo for a given `owner/repo`, scanning every
@@ -191,15 +167,11 @@ export async function syncTriageRowsForReopen(
   externalId: string,
   issue: GitHubIssue | undefined,
 ): Promise<void> {
-  // (1) Refresh issue_state on every matching row.
-  await db
-    .update(triageDecisions)
-    .set({ issueState: 'open' })
-    .where(eq(triageDecisions.externalId, externalId));
-
-  // (2) Re-triage every (map, externalId) where the map is still
-  // triage_enabled AND the row is not operator-reviewed.
-  const candidates = await db
+  // Snapshot every row matching this externalId BEFORE we update — we
+  // need the prior decision/confidence/placedNode for the history rows
+  // we'll write for the issue_state refresh, AND for any subsequent
+  // re-triage. One select reused for both passes.
+  const matchingRows = await db
     .select({
       id: triageDecisions.id,
       mapId: triageDecisions.mapId,
@@ -207,9 +179,39 @@ export async function syncTriageRowsForReopen(
       placedNodeId: triageDecisions.placedNodeId,
       reviewed: triageDecisions.reviewed,
       decidedBy: triageDecisions.decidedBy,
+      decision: triageDecisions.decision,
+      confidence: triageDecisions.confidence,
+      reason: triageDecisions.reason,
     })
     .from(triageDecisions)
     .where(eq(triageDecisions.externalId, externalId));
+
+  // (1) Refresh issue_state on every matching row.
+  await db
+    .update(triageDecisions)
+    .set({ issueState: 'open' })
+    .where(eq(triageDecisions.externalId, externalId));
+
+  // Phase 3 audit log — one 'state_synced' row per touched decision.
+  // Decision/confidence/parent don't change here, so previous_ == new_.
+  for (const row of matchingRows) {
+    await recordTriageHistory({
+      decisionId: row.id,
+      changedBy: 'auto',
+      changeType: 'state_synced',
+      previousDecision: row.decision,
+      newDecision: row.decision,
+      previousConfidence: row.confidence,
+      newConfidence: row.confidence,
+      previousParentNodeId: row.placedNodeId ?? null,
+      newParentNodeId: row.placedNodeId ?? null,
+      reason: row.reason,
+    });
+  }
+
+  // (2) Re-triage every (map, externalId) where the map is still
+  // triage_enabled AND the row is not operator-reviewed.
+  const candidates = matchingRows;
 
   for (const row of candidates) {
     // Operator-reviewed guard.
@@ -267,6 +269,25 @@ export async function syncTriageRowsForReopen(
           ...(clearPlacedNode ? { placedNodeId: null } : {}),
         })
         .where(eq(triageDecisions.id, row.id));
+      // Phase 3 audit log — re-triage on reopen is recorded as 'auto'
+      // since the LLM produced the new call.
+      const reopenNewParent = clearPlacedNode
+        ? null
+        : decision.decision === 'place'
+          ? (decision.parentNodeId ?? row.placedNodeId ?? null)
+          : (row.placedNodeId ?? null);
+      await recordTriageHistory({
+        decisionId: row.id,
+        changedBy: 'auto',
+        changeType: 'reclassified',
+        previousDecision: row.decision,
+        newDecision: decision.decision,
+        previousConfidence: row.confidence,
+        newConfidence: decision.confidence,
+        previousParentNodeId: row.placedNodeId ?? null,
+        newParentNodeId: reopenNewParent,
+        reason: decision.reason,
+      });
     } catch (err) {
       console.warn(
         `[triage-reopen] re-triage failed for row ${row.id} (map ${row.mapId}):`,

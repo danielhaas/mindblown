@@ -35,6 +35,25 @@ interface TriageRow {
 
 const triageRows = new Map<string, TriageRow>();
 const nodes = new Map<string, { id: string; mapId: string; parentId: string | null }>();
+// Phase 3 (#96) — history insert recorder for the GET .../history route
+// test. Inserts from the mutation routes also land here so a test can
+// assert "the override route wrote a history row" without spinning up
+// the dedicated triage-history test infra.
+interface HistoryRow {
+  id: string;
+  decisionId: string;
+  changedAt: Date;
+  changedBy: string;
+  changeType: string;
+  previousDecision: string | null;
+  newDecision: string;
+  previousConfidence: number | null;
+  newConfidence: number | null;
+  previousParentNodeId: string | null;
+  newParentNodeId: string | null;
+  reason: string | null;
+}
+const historyRows = new Map<string, HistoryRow>();
 let permissionLevel: 'view' | 'edit' | 'admin' | null = 'edit';
 
 function seedRow(overrides: Partial<TriageRow> = {}): TriageRow {
@@ -71,13 +90,19 @@ function applyPred(rows: Record<string, unknown>[], pred: unknown): Record<strin
 }
 
 function buildSelectChain() {
-  const step: { table?: string; pred?: unknown; limit?: number } = {};
+  const step: { table?: string; pred?: unknown; limit?: number; ordered?: boolean } = {};
   const resolve = async (): Promise<Record<string, unknown>[]> => {
     let rows: Record<string, unknown>[] = [];
     if (step.table === 'triageDecisions') {
       rows = [...triageRows.values()].map((r) => ({ ...r }));
     } else if (step.table === 'nodes') {
       rows = [...nodes.values()].map((n) => ({ ...n }));
+    } else if (step.table === 'triageDecisionHistory') {
+      rows = [...historyRows.values()]
+        .map((r) => ({ ...r }))
+        .sort((a, b) =>
+          (b.changedAt as Date).getTime() - (a.changedAt as Date).getTime(),
+        );
     }
     const filtered = applyPred(rows, step.pred);
     return step.limit ? filtered.slice(0, step.limit) : filtered;
@@ -120,7 +145,29 @@ vi.mock('../../db/connection.js', () => {
         },
       }),
     }),
-    insert: () => ({ values: () => ({ returning: async () => [] }) }),
+    insert: (table: { __name?: string }) => ({
+      values: async (vals: Record<string, unknown>) => {
+        if (table?.__name === 'triageDecisionHistory') {
+          const id = `h${historyRows.size + 1}`;
+          historyRows.set(id, {
+            id,
+            decisionId: vals.decisionId as string,
+            changedAt: new Date(Date.now() + historyRows.size), // stable ordering
+            changedBy: vals.changedBy as string,
+            changeType: vals.changeType as string,
+            previousDecision: (vals.previousDecision as string | null) ?? null,
+            newDecision: vals.newDecision as string,
+            previousConfidence: (vals.previousConfidence as number | null) ?? null,
+            newConfidence: (vals.newConfidence as number | null) ?? null,
+            previousParentNodeId:
+              (vals.previousParentNodeId as string | null) ?? null,
+            newParentNodeId: (vals.newParentNodeId as string | null) ?? null,
+            reason: (vals.reason as string | null) ?? null,
+          });
+        }
+        return { returning: async () => [] };
+      },
+    }),
     transaction: async <T>(cb: (tx: unknown) => Promise<T>): Promise<T> => cb(db),
   };
   return { db };
@@ -146,6 +193,16 @@ vi.mock('../../db/schema.js', () => {
       decidedAt: col('decidedAt'),
       confidence: col('confidence'),
       issueState: col('issueState'),
+    },
+    // Phase 3 (#96) — recordTriageHistory inserts into this table from
+    // every mutation route. The route tests don't assert on the history
+    // rows (covered separately in triage-history.test.ts), but the symbol
+    // must exist on the mock or drizzle throws on import resolution.
+    triageDecisionHistory: {
+      __name: 'triageDecisionHistory',
+      id: col('id'),
+      decisionId: col('decisionId'),
+      changedAt: col('changedAt'),
     },
   };
 });
@@ -264,6 +321,7 @@ async function buildApp(authSource: 'jwt' | 'api-key' | 'none'): Promise<Fastify
 beforeEach(() => {
   triageRows.clear();
   nodes.clear();
+  historyRows.clear();
   permissionLevel = 'edit';
   createNodeMock.mockClear();
   updateNodeMock.mockClear();
@@ -1285,5 +1343,102 @@ describe('POST .../bulk-reclassify', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(403);
+  });
+});
+
+// ── GET .../history (Phase 3 #96) ────────────────────────────────
+
+describe('GET .../triage-decisions/:decisionId/history', () => {
+  it('returns history rows newest-first for the supplied decision', async () => {
+    seedRow({ id: 'tr-1' });
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+
+    // Seed three mutations on the same decision (confirm → confirm again
+    // → override) by issuing real route calls so the history-write path
+    // matches production.
+    const app = await buildApp('jwt');
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/confirm',
+    });
+    await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'place', parentNodeId: 'epic-1', reason: 'I know better' },
+    });
+
+    permissionLevel = 'view';
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/tr-1/history',
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { total: number; history: Array<{ changeType: string }> };
+    expect(body.total).toBe(3);
+    // The recorder writes them in insert order; the route sorts desc
+    // by changedAt. With our deterministic timestamps the override is
+    // last-written → first-returned.
+    expect(body.history[0].changeType).toBe('overridden');
+  });
+
+  it('404 when the decision is not in this map (cross-map id leak guard)', async () => {
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/ghost/history',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error?.code).toBe('NOT_FOUND');
+  });
+
+  it('403 for API-key auth (same gate as other triage reads)', async () => {
+    seedRow({ id: 'tr-1' });
+    permissionLevel = 'admin';
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/tr-1/history',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
+  it("403 for a JWT session without view permission", async () => {
+    seedRow({ id: 'tr-1' });
+    permissionLevel = null;
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/tr-1/history',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('returns empty history for a row that has never been mutated through the routes', async () => {
+    // History rows are written by the mutation routes / ingest path.
+    // A bare seeded row (no mutations through this app instance) has
+    // no rows in the history table — the route returns total=0 cleanly.
+    seedRow({ id: 'tr-1' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/tr-1/history',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().total).toBe(0);
+    expect(res.json().history).toEqual([]);
   });
 });

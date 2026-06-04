@@ -145,6 +145,16 @@ vi.mock('../../db/schema.js', () => {
       decidedBy: col('decidedBy'),
       issueState: col('issueState'),
     },
+    // Phase 3 (#96) — recordTriageHistory writes into this table. The
+    // test doesn't assert on the contents but the recorder still
+    // attempts an insert, so the symbol must exist or the import
+    // resolves to undefined and drizzle throws.
+    triageDecisionHistory: {
+      __name: 'triageDecisionHistory',
+      id: col('id'),
+      decisionId: col('decisionId'),
+      changedAt: col('changedAt'),
+    },
   };
 });
 

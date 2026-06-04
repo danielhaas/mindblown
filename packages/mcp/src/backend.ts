@@ -16,4 +16,9 @@ export const httpBackend: ToolBackend = {
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),
   deleteNode: (mapId, nodeId) => api.deleteNode(mapId, nodeId),
   moveNode: (mapId, nodeId, newParentId, position) => api.moveNode(mapId, nodeId, newParentId, position),
+  // ── Triage (#96 Phase 3) ────────────────────────────────────────
+  listTriageDecisions: (mapId, filters) => api.listTriageDecisions(mapId, filters),
+  overrideTriage: (mapId, decisionId, body) => api.overrideTriage(mapId, decisionId, body),
+  reclassifyTriage: (mapId, decisionId) => api.reclassifyTriage(mapId, decisionId),
+  confirmTriage: (mapId, decisionId) => api.confirmTriage(mapId, decisionId),
 };
