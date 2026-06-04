@@ -837,6 +837,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',
       revision: 1,
+      deletedAt: null,
     };
 
     // Optimistic local update

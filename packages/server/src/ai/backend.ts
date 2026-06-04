@@ -173,7 +173,7 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     async deleteNode(mapId, nodeId) {
-      const deletedIds = await nodeDb.deleteNode(nodeId);
+      const { deletedIds } = await nodeDb.deleteNode(nodeId);
       if (deletedIds.length === 0) throw new Error(`Node ${nodeId} not found`);
       broadcast(mapId, { type: 'node:deleted', nodeId, deletedIds });
     },

@@ -5,7 +5,7 @@ import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from '../ai/embeddings.js';
-import { updateGitHubIssue, closeGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
+import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
 
@@ -392,15 +392,13 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   app.delete<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId',
     async (req, reply) => {
-      // Pre-collect GitHub links in the subtree BEFORE deleting, so we can
-      // close them on GitHub after the DB delete succeeds. Deletion is the
-      // "dropped, won't do" signal → close as not_planned, not completed.
-      const linksToClose = await nodeDb.collectGitHubLinksInSubtree(req.params.nodeId);
-
-      // Snapshot the node text for the change log before it's gone.
+      // Snapshot the node text for the change log before it's soft-deleted
+      // (still accessible via getNode since soft-delete preserves the row,
+      // but reading it before the mutation keeps the snapshot path stable
+      // even if we tighten getNode to filter deleted_at later).
       const deletedBefore = await nodeDb.getNode(req.params.nodeId);
 
-      const deletedIds = await nodeDb.deleteNode(req.params.nodeId);
+      const { deletedIds, parentChildIndex } = await nodeDb.deleteNode(req.params.nodeId);
       if (deletedIds.length === 0) {
         return reply.status(404).send({
           error: { code: 'NODE_NOT_FOUND', message: `Node ${req.params.nodeId} not found` },
@@ -413,11 +411,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         deletedIds,
       });
 
-      // Change history (fire-and-forget): one event per deleted node id.
-      // Snapshot enough state on the primary (root of deleted subtree) so
-      // burnup can reconstruct scope/completed: text, parentId, estimate,
-      // progress. Secondary deletions are logged without state — they're
-      // only used for audit, not scope math.
+      // Change history: one event per deleted node id. Snapshot enough state
+      // on the primary (root of deleted subtree) so burnup can reconstruct
+      // scope/completed AND restoreNode can splice the subtree back at the
+      // original children_order index. Secondary deletions are logged
+      // without state — they're only used for audit, not restore.
       for (const id of deletedIds) {
         events
           .recordEvent({
@@ -433,31 +431,17 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
                     effortEstimate: deletedBefore.effortEstimate ?? null,
                     percentComplete: deletedBefore.percentComplete ?? null,
                     isLeaf: (deletedBefore.childrenIds?.length ?? 0) === 0,
+                    parentChildIndex,
                   }
                 : null,
           })
           .catch(() => {});
       }
 
-      // Fire-and-forget close of linked GitHub issues. Best-effort — if
-      // GitHub is down or the integration isn't configured, the delete in
-      // MindBlown still stands.
-      if (linksToClose.length > 0) {
-        (async () => {
-          const ghCtx = await getGitHubContextForMap(req.params.id);
-          if (!ghCtx) return;
-          for (const link of linksToClose) {
-            try {
-              await closeGitHubIssue(link, ghCtx.token, 'not_planned');
-            } catch (err) {
-              console.error(
-                `[github-sync] Failed to close ${link.externalId} after node delete:`,
-                err,
-              );
-            }
-          }
-        })().catch(() => {});
-      }
+      // Soft-delete intentionally does NOT close linked GitHub issues — the
+      // delete is reversible from the Trash. The GC job that hard-deletes
+      // rows after the retention window is where we close the linked GH
+      // issues as not_planned (see closes #107, open question 1).
 
       return reply.status(204).send();
     },

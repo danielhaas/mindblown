@@ -1,10 +1,15 @@
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import { db } from './connection.js';
-import { nodes, maps } from './schema.js';
+import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
+
+// Soft-delete filter shared by every read that returns user-visible nodes.
+// Audit / pre-delete-snapshot paths in routes/nodes.ts deliberately bypass
+// this and read the row regardless of deleted_at.
+export const notDeleted = isNull(nodes.deletedAt);
 
 /**
  * A handle that can issue queries — either the global `db` or a transaction
@@ -324,12 +329,28 @@ export async function collectGitHubLinksInSubtree(
   return collected;
 }
 
-export async function deleteNode(nodeId: string): Promise<string[]> {
-  // Get the node to find its parent
-  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
-  if (!node) return [];
+/**
+ * Result of a soft-delete: the set of node IDs that moved to the Trash, and
+ * the index the root occupied in its parent's children_order at the moment
+ * of delete (so restoreNode can splice it back into the same position).
+ * parentChildIndex is null when the deleted node was the map root (which
+ * deleteNode refuses) or when its parent_id was null.
+ */
+export interface DeleteResult {
+  deletedIds: string[];
+  parentChildIndex: number | null;
+}
 
-  // Collect all descendant IDs via BFS
+export async function deleteNode(nodeId: string): Promise<DeleteResult> {
+  // Get the node — read the row whether or not it's already soft-deleted.
+  // Idempotent re-deletes are a no-op (return empty).
+  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+  if (!node) return { deletedIds: [], parentChildIndex: null };
+  if (node.deletedAt) return { deletedIds: [], parentChildIndex: null };
+
+  // BFS the subtree — include any nodes still live (deletedAt IS NULL) under
+  // this root. Trash items underneath stay in the trash without bumping
+  // their deleted_at.
   const toDelete: string[] = [];
   const queue: string[] = [nodeId];
 
@@ -339,26 +360,41 @@ export async function deleteNode(nodeId: string): Promise<string[]> {
 
     const children = await db.select({ id: nodes.id })
       .from(nodes)
-      .where(eq(nodes.parentId, currentId));
+      .where(and(eq(nodes.parentId, currentId), notDeleted));
 
     for (const child of children) {
       queue.push(child.id);
     }
   }
 
-  // Remove from parent's children_order
+  // Capture the root's original position in its parent's children_order
+  // BEFORE removing it. Used by restoreNode to splice the subtree back at
+  // the same index. null when the deleted node had no parent.
+  let parentChildIndex: number | null = null;
   if (node.parentId) {
-    const [parent] = await db.select().from(nodes).where(eq(nodes.id, node.parentId));
+    const [parent] = await db
+      .select()
+      .from(nodes)
+      .where(and(eq(nodes.id, node.parentId), notDeleted));
     if (parent) {
-      const order = (parent.childrenOrder as string[]).filter((id: string) => id !== nodeId);
+      const order = (parent.childrenOrder as string[]) ?? [];
+      const idx = order.indexOf(nodeId);
+      parentChildIndex = idx >= 0 ? idx : null;
+      const filteredOrder = order.filter((id: string) => id !== nodeId);
       await db.update(nodes)
-        .set({ childrenOrder: order, updatedAt: new Date() })
+        .set({ childrenOrder: filteredOrder, updatedAt: new Date() })
         .where(eq(nodes.id, node.parentId));
     }
   }
 
-  // Remove dependency edges pointing to deleted nodes from surviving nodes
-  const allMapNodes = await db.select().from(nodes).where(eq(nodes.mapId, node.mapId as string));
+  // Remove dependency edges pointing into the trashed subtree from surviving
+  // nodes. We don't clean these up on restore — restoring a node doesn't
+  // automatically reinstate other nodes' dependency edges to it. Users who
+  // need that re-link it manually.
+  const allMapNodes = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.mapId, node.mapId as string), notDeleted));
   const deleteSet = new Set(toDelete);
 
   for (const n of allMapNodes) {
@@ -372,17 +408,243 @@ export async function deleteNode(nodeId: string): Promise<string[]> {
     }
   }
 
-  // Delete all collected nodes
+  // Soft-delete: flip deleted_at on the subtree instead of dropping rows.
+  // The row stays so restoreNode (or a pg backup) can recover it; the GC
+  // job hard-deletes after the retention window.
   if (toDelete.length > 0) {
-    await db.delete(nodes).where(inArray(nodes.id, toDelete));
+    await db.update(nodes)
+      .set({ deletedAt: new Date() })
+      .where(inArray(nodes.id, toDelete));
   }
 
-  // Triage cache invalidation (#92, #93). A depth-1 node (epic) may
-  // have just disappeared, so the next triage call must rebuild the
-  // epics list from the DB.
   invalidateMapContext(node.mapId as string);
 
-  return toDelete;
+  return { deletedIds: toDelete, parentChildIndex };
+}
+
+// ── Restore (undelete) ────────────────────────────────────────────
+
+export class RestoreError extends Error {
+  constructor(public code: 'NOT_DELETED' | 'PARENT_IN_TRASH' | 'NOT_FOUND', message: string) {
+    super(message);
+    this.name = 'RestoreError';
+  }
+}
+
+export interface RestoreResult {
+  restoredIds: string[];
+  /** The node IDs whose children_order changed (the restored root's parent). */
+  affectedParentIds: string[];
+}
+
+/**
+ * Restore a soft-deleted node and its trashed descendants.
+ *
+ * Requires the root's parent to itself be live (not in the trash) — restoring
+ * a node whose parent is gone has no obvious home. Callers can either restore
+ * the parent first, or pass `{ recursive: true }` to walk up and restore the
+ * whole chain of trashed ancestors.
+ *
+ * Position-preserving: reads the most-recent `node.deleted` event for this
+ * node and splices into the parent at its original index (clamped to the
+ * current children_order length).
+ */
+export async function restoreNode(
+  nodeId: string,
+  opts: { recursive?: boolean } = {},
+): Promise<RestoreResult> {
+  const [node] = await db.select().from(nodes).where(eq(nodes.id, nodeId));
+  if (!node) {
+    throw new RestoreError('NOT_FOUND', `Node ${nodeId} not found`);
+  }
+  if (!node.deletedAt) {
+    throw new RestoreError('NOT_DELETED', `Node ${nodeId} is not in the Trash`);
+  }
+
+  // Build the chain of ancestors that also need to be restored. We climb
+  // parent_id while the parent itself is in the trash. If we reach a live
+  // parent → fine. If we reach a null parent (root) without finding a live
+  // one → fine. If non-recursive and the immediate parent is in the trash
+  // → error.
+  const ancestorChainToRestore: string[] = [];
+  let p = node.parentId;
+  while (p) {
+    const [parentRow] = await db.select().from(nodes).where(eq(nodes.id, p));
+    if (!parentRow) break;
+    if (!parentRow.deletedAt) break;
+    if (!opts.recursive) {
+      throw new RestoreError(
+        'PARENT_IN_TRASH',
+        `Parent ${p} is in the Trash. Restore it first, or pass recursive: true.`,
+      );
+    }
+    ancestorChainToRestore.unshift(p);
+    p = parentRow.parentId;
+  }
+
+  // BFS the subtree of trashed descendants under each restored root.
+  // For each restored root we'll also splice it back into its parent's
+  // children_order at the original index (from the most-recent delete event).
+  const rootsToRestore = [...ancestorChainToRestore, nodeId];
+  const allToRestore = new Set<string>();
+  for (const rootId of rootsToRestore) {
+    const queue: string[] = [rootId];
+    while (queue.length > 0) {
+      const currentId = queue.shift()!;
+      allToRestore.add(currentId);
+      const children = await db
+        .select({ id: nodes.id })
+        .from(nodes)
+        .where(and(eq(nodes.parentId, currentId), isNotNull(nodes.deletedAt)));
+      for (const child of children) queue.push(child.id);
+    }
+  }
+
+  const affectedParentIds: string[] = [];
+  for (const rootId of rootsToRestore) {
+    const [rootRow] = await db.select().from(nodes).where(eq(nodes.id, rootId));
+    if (!rootRow?.parentId) continue;
+
+    // Look up the most-recent delete event for this root to find the
+    // original children_order index. Fall back to "append" when the event
+    // wasn't recorded with an index (older events, or roots that lost their
+    // parent).
+    const [evt] = await db
+      .select()
+      .from(changeEvents)
+      .where(
+        and(
+          eq(changeEvents.nodeId, rootId),
+          eq(changeEvents.eventType, 'node.deleted'),
+        ),
+      )
+      .orderBy(desc(changeEvents.createdAt))
+      .limit(1);
+    const stored = (evt?.oldValue ?? null) as
+      | { parentChildIndex?: number | null }
+      | null;
+    const originalIndex =
+      stored && typeof stored.parentChildIndex === 'number'
+        ? stored.parentChildIndex
+        : null;
+
+    const [parent] = await db.select().from(nodes).where(eq(nodes.id, rootRow.parentId));
+    if (!parent) continue;
+    const order = ((parent.childrenOrder as string[]) ?? []).filter(
+      (id) => id !== rootId,
+    );
+    const insertAt =
+      originalIndex == null
+        ? order.length
+        : Math.min(Math.max(0, originalIndex), order.length);
+    order.splice(insertAt, 0, rootId);
+    await db
+      .update(nodes)
+      .set({ childrenOrder: order, updatedAt: new Date() })
+      .where(eq(nodes.id, rootRow.parentId));
+    affectedParentIds.push(rootRow.parentId);
+  }
+
+  // Flip deleted_at = null on every restored row.
+  const restoredIds = [...allToRestore];
+  if (restoredIds.length > 0) {
+    await db
+      .update(nodes)
+      .set({ deletedAt: null, updatedAt: new Date() })
+      .where(inArray(nodes.id, restoredIds));
+  }
+
+  invalidateMapContext(node.mapId as string);
+
+  return { restoredIds, affectedParentIds };
+}
+
+// ── List recently deleted (Trash view) ────────────────────────────
+
+export interface DeletedNodeSummary {
+  id: string;
+  mapId: string;
+  parentId: string | null;
+  text: string;
+  deletedAt: string;
+  effortEstimate: number | null;
+  percentComplete: number | null;
+}
+
+/**
+ * List soft-deleted subtree roots in a map, newest first. A "subtree root"
+ * is a trashed node whose parent isn't itself trashed — i.e. the actual
+ * entry-point the user clicked Delete on. Internal descendants are excluded
+ * so the Trash UI lists one row per deletion, not 99.
+ */
+export async function listDeleted(
+  mapId: string,
+  opts: { sinceDays?: number; limit?: number } = {},
+): Promise<DeletedNodeSummary[]> {
+  const conditions = [eq(nodes.mapId, mapId), isNotNull(nodes.deletedAt)];
+  if (opts.sinceDays !== undefined) {
+    const since = new Date(Date.now() - opts.sinceDays * 86_400_000);
+    conditions.push(gte(nodes.deletedAt, since));
+  }
+
+  const rows = await db
+    .select()
+    .from(nodes)
+    .where(and(...conditions))
+    .orderBy(desc(nodes.deletedAt))
+    .limit(opts.limit ?? 500);
+
+  // Filter to subtree roots: the row's parent isn't itself in the trash.
+  // (A null parent is a root by definition.) We resolve parents from the
+  // same `rows` set first; for parents outside the result we fall back to a
+  // single follow-up SELECT.
+  const trashed = new Set(rows.map((r) => r.id));
+  const unknownParentIds = new Set<string>();
+  for (const r of rows) {
+    if (r.parentId && !trashed.has(r.parentId)) unknownParentIds.add(r.parentId);
+  }
+  let liveParents = new Set<string>();
+  if (unknownParentIds.size > 0) {
+    const parentRows = await db
+      .select({ id: nodes.id, deletedAt: nodes.deletedAt })
+      .from(nodes)
+      .where(inArray(nodes.id, [...unknownParentIds]));
+    for (const p of parentRows) {
+      if (!p.deletedAt) liveParents.add(p.id);
+    }
+  }
+
+  return rows
+    .filter((r) => !r.parentId || liveParents.has(r.parentId))
+    .map((r) => ({
+      id: r.id,
+      mapId: r.mapId as string,
+      parentId: (r.parentId as string | null) ?? null,
+      text: r.text as string,
+      deletedAt: (r.deletedAt as Date).toISOString(),
+      effortEstimate: (r.effortEstimate as number | null) ?? null,
+      percentComplete: (r.percentComplete as number | null) ?? null,
+    }));
+}
+
+// ── GC (hard-delete after retention window) ──────────────────────
+
+/**
+ * Permanently DROP rows that have been in the Trash longer than
+ * retentionDays. Returns the IDs of rows actually deleted. Idempotent and
+ * safe to run as a cron — picks up only rows whose deleted_at is past the
+ * window, regardless of how many GC runs have happened since.
+ */
+export async function purgeExpiredTrash(retentionDays: number): Promise<string[]> {
+  const cutoff = new Date(Date.now() - retentionDays * 86_400_000);
+  const rows = await db
+    .select({ id: nodes.id })
+    .from(nodes)
+    .where(and(isNotNull(nodes.deletedAt), sql`${nodes.deletedAt} < ${cutoff}`));
+  if (rows.length === 0) return [];
+  const ids = rows.map((r) => r.id);
+  await db.delete(nodes).where(inArray(nodes.id, ids));
+  return ids;
 }
 
 // ── Move ───────────────────────────────────────────────────────────
