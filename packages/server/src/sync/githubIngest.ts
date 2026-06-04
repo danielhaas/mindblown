@@ -45,9 +45,15 @@ import { importGitHubIssues, mintInstallationToken } from '@mindblown/integratio
 import type { ExternalLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
-import { integrations, maps, nodes } from '../db/schema.js';
+import { integrations, maps, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import { buildMapContext } from './mapContext.js';
+import {
+  triageIssue,
+  TRIAGE_AUTO_APPLY_CONFIDENCE,
+  type TriageDecision,
+} from './triage.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -64,9 +70,23 @@ export interface IngestResult {
     | 'skipped_exists'
     | 'skipped_disabled'
     | 'skipped_pr'
-    | 'skipped_closed_outside_window';
+    | 'skipped_closed_outside_window'
+    | 'triaged_skip'
+    | 'triaged_uncertain'
+    | 'triaged_low_confidence';
   nodeId?: string;
   mapId: string;
+  /**
+   * Set when the triage pipeline ran for this issue (i.e. the map has
+   * `triage_enabled = true`). Carries the LLM's decision + the id of
+   * the persisted triage_decisions row. Useful for callers that want
+   * to render a "what just happened?" line in the operator UI.
+   */
+  triage?: {
+    decisionId: string;
+    decision: TriageDecision['decision'];
+    confidence: number;
+  };
 }
 
 /**
@@ -313,6 +333,216 @@ export interface EnsureNodeOpts {
   allowClosedWithinDays?: number;
 }
 
+// ── Triage-mode ingest helper ────────────────────────────────────
+
+/**
+ * Build the create-input for a triaged node. Same defaults as the
+ * non-triage path (status from open/closed, percentComplete 0/100,
+ * `#NNNN <title>` text so existing webhook handlers still find it via
+ * the parsed issue number), but with a configurable parent so place-
+ * decisions can land directly under an epic rather than the inbox.
+ */
+function buildTriagedCreateInput(
+  mapId: string,
+  parentId: string,
+  issue: GitHubIssue,
+  ctx: IngestContext,
+): Parameters<typeof nodeDb.createNode>[0] {
+  const isClosed = issue.state === 'closed';
+  return {
+    mapId,
+    parentId,
+    text: `#${issue.number} ${issue.title}`,
+    createdBy: ctx.createdBy,
+    percentComplete: isClosed ? 100 : 0,
+    status: isClosed ? 'done' : 'todo',
+  };
+}
+
+/**
+ * Triage-enabled fork of `ensureNodeForIssue`. Runs the LLM, persists
+ * the decision in `triage_decisions` (upserting on the unique key so
+ * re-triage is idempotent), then either creates a node (high-confidence
+ * place) or returns the decision-only result for the caller to surface.
+ *
+ * The decision row is persisted in ALL cases — even on triage_error.
+ * That's deliberate: an operator looking at the unreviewed-decisions
+ * queue should see "Claude couldn't decide" as a first-class entry,
+ * not a silent gap.
+ */
+async function ensureNodeForIssueViaTriage(
+  mapId: string,
+  issue: GitHubIssue,
+  ctx: IngestContext,
+  externalId: string,
+): Promise<IngestResult> {
+  // Precheck before the LLM call — a node may already exist if the
+  // issue was previously ingested (toggled off → on, or the operator
+  // already added it manually). No need to spend tokens re-triaging
+  // something we've already placed.
+  const existing = await db
+    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(eq(nodes.mapId, mapId));
+  for (const row of existing) {
+    const links = (row.externalLinks as ExternalLink[]) ?? [];
+    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+      return { status: 'skipped_exists', nodeId: row.id, mapId };
+    }
+  }
+
+  // Build the map-context summary and call the LLM. `buildMapContext`
+  // is cached (5-min TTL) so back-to-back ingests don't re-fetch the
+  // same depth-1 nodes.
+  const mapContext = await buildMapContext(mapId);
+  const decision = await triageIssue({ issue, mapContext });
+
+  // Validate the proposed parentNodeId one more time before we trust
+  // it for a create. `triageIssue` already filters hallucinations
+  // against the offered epic list, but the cache might be stale so a
+  // belt-and-braces re-check costs nothing.
+  const validEpicIds = new Set(mapContext.epics.map((e) => e.nodeId));
+  if (
+    decision.decision === 'place' &&
+    (!decision.parentNodeId || !validEpicIds.has(decision.parentNodeId))
+  ) {
+    decision.decision = 'uncertain';
+    decision.parentNodeId = undefined;
+    if (!decision.reason.startsWith('triage_error')) {
+      decision.reason = `parent node no longer exists; ${decision.reason}`;
+    }
+  }
+
+  const shouldAutoApply =
+    decision.decision === 'place' &&
+    decision.confidence >= TRIAGE_AUTO_APPLY_CONFIDENCE &&
+    decision.parentNodeId != null;
+
+  // Persist the decision first, then (if auto-apply) create the node
+  // and update placed_node_id. We do this in a single tx so a crash
+  // between the insert and the update can't leave a "place" row with
+  // no node.
+  type TxResult =
+    | {
+        kind: 'auto_placed';
+        decisionId: string;
+        nodeId: string;
+        node: Awaited<ReturnType<typeof nodeDb.getNode>>;
+      }
+    | { kind: 'decision_only'; decisionId: string };
+
+  const result: TxResult = await db.transaction(async (tx) => {
+    // Upsert the decision row. ON CONFLICT updates the existing row in
+    // place so re-triage (operator hits `POST .../reclassify`) doesn't
+    // accumulate duplicates.
+    const [decisionRow] = await tx
+      .insert(triageDecisions)
+      .values({
+        mapId,
+        externalId,
+        issueTitle: issue.title,
+        issueState: issue.state,
+        decision: decision.decision,
+        reason: decision.reason,
+        confidence: decision.confidence,
+        placedNodeId: null,
+        decidedBy: 'auto',
+        reviewed: false,
+      })
+      .onConflictDoUpdate({
+        target: [triageDecisions.mapId, triageDecisions.externalId],
+        set: {
+          issueTitle: issue.title,
+          issueState: issue.state,
+          decision: decision.decision,
+          reason: decision.reason,
+          confidence: decision.confidence,
+          // Don't clobber a prior auto-placed node if an operator
+          // re-triages — placed_node_id stays whatever it was unless
+          // the new decision is also auto-apply, in which case the
+          // INSERT-branch fields below run.
+          decidedAt: new Date(),
+          decidedBy: 'auto',
+          reviewed: false,
+        },
+      })
+      .returning({ id: triageDecisions.id });
+
+    if (!shouldAutoApply || !decision.parentNodeId) {
+      return { kind: 'decision_only', decisionId: decisionRow.id };
+    }
+
+    // Auto-apply: create the node under the LLM-chosen parent.
+    const created = await nodeDb.createNode(
+      buildTriagedCreateInput(mapId, decision.parentNodeId, issue, ctx),
+      tx,
+    );
+    const link: ExternalLink = {
+      provider: 'github',
+      externalId,
+      url: issue.html_url,
+      syncEnabled: true,
+      lastSyncedAt: new Date().toISOString(),
+    };
+    const updated = await nodeDb.updateNode(
+      created.id,
+      {
+        externalLinks: [link],
+        description: issue.body ?? null,
+      },
+      undefined,
+      tx,
+    );
+    await tx
+      .update(triageDecisions)
+      .set({ placedNodeId: created.id })
+      .where(eq(triageDecisions.id, decisionRow.id));
+    return {
+      kind: 'auto_placed',
+      decisionId: decisionRow.id,
+      nodeId: created.id,
+      node: updated ?? created,
+    };
+  });
+
+  if (result.kind === 'auto_placed') {
+    broadcast(mapId, {
+      type: 'node:created',
+      node: result.node,
+      source: 'github_ingest_triage',
+    });
+    return {
+      status: 'created',
+      nodeId: result.nodeId,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+      },
+    };
+  }
+
+  // Decision-only outcomes: no node created. Map the decision to a
+  // dedicated status code so callers can distinguish "intentionally
+  // not created" from "skipped because already exists".
+  const status: IngestResult['status'] =
+    decision.decision === 'skip'
+      ? 'triaged_skip'
+      : decision.decision === 'uncertain'
+        ? 'triaged_uncertain'
+        : 'triaged_low_confidence';
+  return {
+    status,
+    mapId,
+    triage: {
+      decisionId: result.decisionId,
+      decision: decision.decision,
+      confidence: decision.confidence,
+    },
+  };
+}
+
 /**
  * Create a node for the given issue under the inbox, unless one already
  * exists or one of the skip conditions fires.
@@ -344,6 +574,24 @@ export async function ensureNodeForIssue(
     if (window <= 0 || !isClosedWithinWindow(issue, window)) {
       return { status: 'skipped_closed_outside_window', mapId };
     }
+  }
+
+  // (2.5) AI triage fork (#92, #93). Maps that have opted in run every
+  // new issue through `triageIssue()` before any node is created. The
+  // decision is persisted in `triage_decisions` regardless of outcome
+  // (audit trail + later operator review), but only HIGH-confidence
+  // place-decisions actually create a node. Skip / uncertain / low-
+  // confidence place all persist the decision and return early — the
+  // map structure stays untouched until the operator reviews.
+  //
+  // Maps with `triage_enabled = false` fall through to the existing
+  // flat-under-inbox path with zero behavioural change.
+  const [mapRow] = await db
+    .select({ triageEnabled: maps.triageEnabled })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (mapRow?.triageEnabled) {
+    return ensureNodeForIssueViaTriage(mapId, issue, ctx, externalId);
   }
 
   // (3) Wrap lock + precheck + create + link-update in a Postgres

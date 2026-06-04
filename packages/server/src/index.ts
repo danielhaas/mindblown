@@ -21,6 +21,7 @@ import { versionRoutes } from './routes/versions.js';
 import { commentRoutes } from './routes/comments.js';
 import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
+import { triageRoutes } from './routes/triage.js';
 import { githubAuthRoutes } from './routes/auth-github.js';
 import { aiRoutes } from './routes/ai.js';
 import { feedbackRoutes } from './routes/feedback.js';
@@ -80,6 +81,7 @@ async function main(): Promise<void> {
   await app.register(commentRoutes);
   await app.register(permissionRoutes);
   await app.register(integrationRoutes);
+  await app.register(triageRoutes);
   await app.register(githubAuthRoutes);
   await app.register(aiRoutes);
   await app.register(feedbackRoutes);

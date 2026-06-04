@@ -4,6 +4,7 @@ import { nodes, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import { invalidateMapContext } from '../sync/mapContext.js';
 
 /**
  * A handle that can issue queries — either the global `db` or a transaction
@@ -158,6 +159,12 @@ export async function createNode(
       .where(eq(nodes.id, input.parentId));
   }
 
+  // Triage map-context cache invalidation (#92, #93). A new node may
+  // be a depth-1 epic the next triage call should see. Cheap to call
+  // unconditionally — the cache key is mapId, so a wasted invalidation
+  // only forces one extra DB round-trip on the next triage.
+  invalidateMapContext(input.mapId);
+
   return dbNodeToCore(row as unknown as Record<string, unknown>);
 }
 
@@ -269,7 +276,13 @@ export async function updateNode(
       : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision));
 
   const [row] = await handle.update(nodes).set(updates).where(where).returning();
-  if (row) return dbNodeToCore(row as unknown as Record<string, unknown>);
+  if (row) {
+    // Triage cache invalidation (#92, #93). Same rationale as createNode —
+    // a depth-1 node's title/description may have just changed, which
+    // changes the prompt the next triage call sends to Claude.
+    invalidateMapContext(row.mapId as string);
+    return dbNodeToCore(row as unknown as Record<string, unknown>);
+  }
 
   // No row affected — either the node doesn't exist, or the revision was stale.
   if (expectedRevision !== undefined) {
@@ -364,6 +377,11 @@ export async function deleteNode(nodeId: string): Promise<string[]> {
     await db.delete(nodes).where(inArray(nodes.id, toDelete));
   }
 
+  // Triage cache invalidation (#92, #93). A depth-1 node (epic) may
+  // have just disappeared, so the next triage call must rebuild the
+  // epics list from the DB.
+  invalidateMapContext(node.mapId as string);
+
   return toDelete;
 }
 
@@ -411,6 +429,12 @@ export async function moveNode(
     .set({ parentId: newParentId, updatedAt: now })
     .where(eq(nodes.id, nodeId))
     .returning();
+
+  // Triage cache invalidation (#92, #93). A move can change whether a
+  // node is depth-1 (epic-level) — either by promoting a child to be a
+  // root-direct child or vice versa. Invalidate to force the next
+  // triage call to rebuild from the DB.
+  invalidateMapContext(node.mapId as string);
 
   return dbNodeToCore(updated as unknown as Record<string, unknown>);
 }

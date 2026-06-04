@@ -518,6 +518,41 @@ export async function runMigrations(): Promise<void> {
     ON api_keys(key_prefix)
   `);
 
+  // ── AI Triage (#92, #93) ──────────────────────────────────────
+  // Per-map opt-in flag + per-issue decision table. Default false so
+  // existing maps keep their flat-under-inbox behavior when this column
+  // lands. The decisions table is keyed on (map_id, external_id) so
+  // re-triage upserts cleanly. `placed_node_id` is FK-less on purpose —
+  // when the auto-created node is later deleted, the decision row stays
+  // as audit trail (matches release_snapshots.version_id convention).
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS triage_enabled BOOLEAN NOT NULL DEFAULT false
+  `);
+
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS triage_decisions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      external_id TEXT NOT NULL,
+      issue_title TEXT NOT NULL,
+      issue_state TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      confidence INTEGER NOT NULL,
+      placed_node_id UUID,
+      decided_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      decided_by TEXT NOT NULL,
+      reviewed BOOLEAN NOT NULL DEFAULT false,
+      reviewed_at TIMESTAMPTZ,
+      reviewed_by UUID REFERENCES users(id),
+      UNIQUE (map_id, external_id)
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS triage_decisions_map_unreviewed_idx
+    ON triage_decisions(map_id) WHERE reviewed = false
+  `);
+
   // ── Drop Milestone entity (collapsed into Version) ────────────
   // Historical: milestones were a first-class entity and nodes carried
   // both milestone_id and an is_milestone boolean checkpoint flag.
