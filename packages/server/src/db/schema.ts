@@ -155,6 +155,10 @@ export const nodes = pgTable('nodes', {
   embedding: jsonb('embedding'),
   embeddingText: text('embedding_text'),
   embeddingUpdatedAt: timestamp('embedding_updated_at', { withTimezone: true }),
+  // Soft delete — non-null = in the Trash. Reads must filter `WHERE
+  // deleted_at IS NULL` unless they're an audit/snapshot path. GC hard-deletes
+  // rows after the retention window. See packages/server/src/db/nodes.ts.
+  deletedAt: timestamp('deleted_at', { withTimezone: true }),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────

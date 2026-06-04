@@ -223,7 +223,8 @@ async function findNodesByExternalIds(
 
   const rows = await db
     .select({ id: nodes.id, mapId: nodes.mapId, externalLinks: nodes.externalLinks })
-    .from(nodes);
+    .from(nodes)
+    .where(nodeDb.notDeleted);
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {

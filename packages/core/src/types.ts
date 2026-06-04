@@ -133,6 +133,13 @@ export interface Node {
   // Bumps on every successful update. Clients send their last-seen value
   // as expectedRevision so concurrent edits don't silently clobber.
   revision: number;
+
+  // ── Soft delete ───────────────────────────────────────────
+  // Non-null = node is in the trash. Set by deleteNode, cleared by
+  // restoreNode. GC hard-deletes rows after the retention window.
+  // Reads must filter `WHERE deletedAt IS NULL` unless they're an
+  // audit/snapshot path.
+  deletedAt: string | null;
 }
 
 // ── Computed values (returned alongside nodes, never stored) ────

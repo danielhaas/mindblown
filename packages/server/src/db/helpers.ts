@@ -42,6 +42,9 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
       : (get('updatedAt', 'updated_at') as string)),
     createdBy: get('createdBy', 'created_by') as string,
     revision: (get('revision', 'revision') as number) ?? 1,
+    deletedAt: (get('deletedAt', 'deleted_at') instanceof Date
+      ? (get('deletedAt', 'deleted_at') as Date).toISOString()
+      : (get('deletedAt', 'deleted_at') as string)) ?? null,
   };
 }
 

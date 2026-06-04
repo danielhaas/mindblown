@@ -77,6 +77,12 @@ vi.mock('drizzle-orm', async () => {
       __pred: true,
       check: (row) => row[column.__col ?? ''] != null,
     }),
+    // Soft-delete filter relies on this. Test rows don't carry deletedAt
+    // so IS NULL holds (returns true).
+    isNull: (column: { __col?: string }): Pred => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] == null,
+    }),
   };
 });
 
@@ -98,6 +104,7 @@ vi.mock('../../db/schema.js', () => {
       id: col('id'),
       mapId: col('mapId'),
       externalLinks: col('externalLinks'),
+      deletedAt: col('deletedAt'),
     },
     integrations: {
       __name: 'integrations',

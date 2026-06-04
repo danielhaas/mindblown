@@ -290,6 +290,9 @@ vi.mock('../../db/nodes.js', () => ({
   createNode: mocks.createNodeMock,
   updateNode: mocks.updateNodeMock,
   moveNode: mocks.moveNodeMock,
+  // Soft-delete filter — shaped as the Pred this file's drizzle-orm mock
+  // expects. Always matches: test dbState rows don't carry deletedAt.
+  notDeleted: { __pred: true, check: () => true },
 }));
 
 // Permission stub — the test toggles `permissionLevel` to drive the gate.

@@ -606,5 +606,17 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`ALTER TABLE nodes DROP COLUMN IF EXISTS is_milestone`);
   await db.execute(sql`DROP TABLE IF EXISTS milestones CASCADE`);
 
+  // ── Soft delete (#107) ────────────────────────────────────────
+  // Non-null = in Trash. Partial index keeps the hot WHERE deleted_at
+  // IS NULL path index-free (most rows) while making Trash queries
+  // fast and small.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_nodes_deleted_at
+    ON nodes(deleted_at) WHERE deleted_at IS NOT NULL
+  `);
+
   console.log('[db] Migrations complete.');
 }

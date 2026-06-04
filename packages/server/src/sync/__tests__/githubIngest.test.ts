@@ -531,6 +531,10 @@ vi.mock('../../db/nodes.js', () => ({
       externalLinks: input.externalLinks ?? [],
     };
   },
+  // Soft-delete filter. Shaped as the Pred this file's drizzle-orm mock
+  // produces so `and(eq(...), notDeleted)` works. Always true — the mock
+  // dbState rows don't carry a deletedAt field, so "deletedAt IS NULL" holds.
+  notDeleted: { __pred: true, check: () => true },
 }));
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));

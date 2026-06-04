@@ -3,7 +3,12 @@ import { db } from './connection.js';
 import { changeEvents } from './schema.js';
 import type { Node as CoreNode } from '@mindblown/core';
 
-export type EventType = 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed';
+export type EventType =
+  | 'node.created'
+  | 'node.deleted'
+  | 'node.restored'
+  | 'node.moved'
+  | 'node.field_changed';
 
 export interface ChangeEvent {
   id: string;

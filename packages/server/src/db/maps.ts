@@ -1,7 +1,8 @@
-import { eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or } from 'drizzle-orm';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
+import { notDeleted } from './nodes.js';
 import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -63,7 +64,10 @@ export async function getMap(mapId: string): Promise<{ map: MindMap; nodes: Core
   const [mapRow] = await db.select().from(maps).where(eq(maps.id, mapId));
   if (!mapRow) return null;
 
-  const nodeRows = await db.select().from(nodes).where(eq(nodes.mapId, mapId));
+  const nodeRows = await db
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapId), notDeleted));
 
   return {
     map: dbMapToCore(mapRow as unknown as Record<string, unknown>),

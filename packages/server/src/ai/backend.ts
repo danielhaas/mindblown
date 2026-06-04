@@ -173,7 +173,7 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     async deleteNode(mapId, nodeId) {
-      const deletedIds = await nodeDb.deleteNode(nodeId);
+      const { deletedIds } = await nodeDb.deleteNode(nodeId);
       if (deletedIds.length === 0) throw new Error(`Node ${nodeId} not found`);
       broadcast(mapId, { type: 'node:deleted', nodeId, deletedIds });
     },
@@ -183,6 +183,28 @@ export function createChatBackend(userId: string): ToolBackend {
       if (!moved) throw new Error(`Node ${nodeId} not found`);
       broadcast(mapId, { type: 'node:moved', nodeId, newParentId });
       return toNodeWithComputed(moved, undefined);
+    },
+
+    // ── Soft-delete + restore (#107) ────────────────────────────
+    async restoreNode(mapId, nodeId, opts) {
+      const result = await nodeDb.restoreNode(nodeId, {
+        recursive: opts?.recursive === true,
+      });
+      const node = await nodeDb.getNode(nodeId);
+      broadcast(mapId, {
+        type: 'node:restored',
+        nodeId,
+        restoredIds: result.restoredIds,
+        affectedParentIds: result.affectedParentIds,
+      });
+      return {
+        restoredIds: result.restoredIds,
+        node: node ? toNodeWithComputed(node, undefined) : null,
+      };
+    },
+
+    async listDeleted(mapId, opts) {
+      return nodeDb.listDeleted(mapId, opts ?? {});
     },
 
     // ── Triage (#96 Phase 3) ────────────────────────────────────

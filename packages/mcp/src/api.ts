@@ -371,6 +371,48 @@ export function moveNode(
   });
 }
 
+// ── Soft-delete + restore (#107) ────────────────────────────────
+
+export interface DeletedNodeSummary {
+  id: string;
+  mapId: string;
+  parentId: string | null;
+  text: string;
+  deletedAt: string;
+  effortEstimate: number | null;
+  percentComplete: number | null;
+}
+
+export async function restoreNode(
+  mapId: string,
+  nodeId: string,
+  opts?: { recursive?: boolean },
+): Promise<{ restoredIds: string[]; node: NodeWithComputed | null }> {
+  const res = await request<{
+    restoredIds: string[];
+    affectedParentIds: string[];
+    node: NodeWithComputed | null;
+  }>(`/api/maps/${mapId}/nodes/${nodeId}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ recursive: opts?.recursive === true }),
+  });
+  return { restoredIds: res.restoredIds, node: res.node };
+}
+
+export async function listDeleted(
+  mapId: string,
+  opts?: { sinceDays?: number; limit?: number },
+): Promise<DeletedNodeSummary[]> {
+  const params = new URLSearchParams();
+  if (opts?.sinceDays != null) params.set('sinceDays', String(opts.sinceDays));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  const res = await request<{ deleted: DeletedNodeSummary[] }>(
+    `/api/maps/${mapId}/trash${qs ? `?${qs}` : ''}`,
+  );
+  return res.deleted;
+}
+
 // ── Cycles / Sprints ────────────────────────────────────────────
 
 export function listCycles(mapId: string): Promise<CycleInfo[]> {

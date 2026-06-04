@@ -28,6 +28,7 @@ import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
 import { TicketButton } from './TicketButton.js';
 import { HealthListDialog } from './HealthListDialog.js';
+import { TrashDialog } from './TrashDialog.js';
 import type { HealthSignal } from '@mindblown/core';
 import type { MapSummary } from './api.js';
 
@@ -944,6 +945,7 @@ export function App() {
   const [quickAddOpen, setQuickAddOpen] = useState(false);
   const [importExportOpen, setImportExportOpen] = useState(false);
   const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
   const [aiChatMinimised, setAiChatMinimised] = useState(false);
@@ -1586,6 +1588,26 @@ export function App() {
             Share
           </button>
 
+          {/* Trash button (#107) */}
+          <button
+            onClick={() => setTrashDialogOpen(true)}
+            title="Recently deleted nodes (Trash)"
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: '#fff',
+              color: '#4f46e5',
+              transition: 'all 0.15s',
+            }}
+          >
+            Trash
+          </button>
+
           {/* AI Chat toggle */}
           <button
             onClick={() => {
@@ -1894,6 +1916,11 @@ export function App() {
           mapId={currentMapId}
           onClose={() => setShareDialogOpen(false)}
         />
+      )}
+
+      {/* Trash Dialog (#107) */}
+      {trashDialogOpen && currentMapId && (
+        <TrashDialog onClose={() => setTrashDialogOpen(false)} />
       )}
 
       {/* GitHub Settings Dialog (legacy per-map) */}

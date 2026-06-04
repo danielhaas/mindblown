@@ -592,6 +592,42 @@ export function reorderChildren(
   });
 }
 
+// ── Soft-delete + restore (#107) ────────────────────────────────
+
+export interface DeletedNodeSummary {
+  id: string;
+  mapId: string;
+  parentId: string | null;
+  text: string;
+  deletedAt: string;
+  effortEstimate: number | null;
+  percentComplete: number | null;
+}
+
+export function listDeleted(
+  mapId: string,
+  opts?: { sinceDays?: number; limit?: number },
+): Promise<{ deleted: DeletedNodeSummary[] }> {
+  const params = new URLSearchParams();
+  if (opts?.sinceDays != null) params.set('sinceDays', String(opts.sinceDays));
+  if (opts?.limit != null) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<{ deleted: DeletedNodeSummary[] }>(
+    `/api/maps/${mapId}/trash${qs ? `?${qs}` : ''}`,
+  );
+}
+
+export function restoreNode(
+  mapId: string,
+  nodeId: string,
+  opts?: { recursive?: boolean },
+): Promise<{ restoredIds: string[]; affectedParentIds: string[]; node: Node | null }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/restore`, {
+    method: 'POST',
+    body: JSON.stringify({ recursive: opts?.recursive === true }),
+  });
+}
+
 // ── Schedule ─────────────────────────────────────────────────────
 
 export function fetchSchedule(mapId: string): Promise<unknown> {

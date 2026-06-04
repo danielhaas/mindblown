@@ -194,7 +194,7 @@ export function updateChildPrsTailLine(
  * autoProgress without re-fetching.
  */
 async function findNodesByExternalId(externalId: string): Promise<Node[]> {
-  const rows = await db.select().from(nodes);
+  const rows = await db.select().from(nodes).where(nodeDb.notDeleted);
   const out: Node[] = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
