@@ -618,28 +618,19 @@ export async function runMigrations(): Promise<void> {
     ON nodes(deleted_at) WHERE deleted_at IS NOT NULL
   `);
 
-  // ── Gantt slice 1 (#109): implicit sibling ordering + scheduling mode ──
-  // priority_rank: fractional ranking for drag-to-reorder within a sibling
-  //   group. REAL (float) for midpoint insertion. null = no explicit rank.
-  // children_scheduling: 'sequential' (default, implicit FS chain in resolved
-  //   sibling order) or 'parallel' (legacy — siblings stack at the same start).
-  //   Default flipped from 'parallel' to 'sequential' so the Gantt actually
-  //   spreads out without requiring a per-parent toggle.
+  // ── Gantt slice 1 (#109): priorityRank ──────────────────────────
+  // Fractional ranking for drag-to-reorder within a sibling group.
+  // REAL (float) for midpoint insertion. null = no explicit rank.
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS priority_rank REAL
   `);
+  // children_scheduling (#109) was DROPPED in v0.17.0 — the priority-
+  // inheritance scheduler doesn't need a per-parent sequential/parallel
+  // flag. Children are scheduled by global priority, with inheritance
+  // ensuring blockers run before their dependents.
   await db.execute(sql`
-    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'sequential'
+    ALTER TABLE nodes DROP COLUMN IF EXISTS children_scheduling
   `);
-  // On installs that pre-date this default flip, the column was created
-  // with DEFAULT 'parallel' and existing rows are stuck at 'parallel'.
-  // Repoint the column default and one-shot-flip historical rows.
-  await db.execute(sql`
-    ALTER TABLE nodes ALTER COLUMN children_scheduling SET DEFAULT 'sequential'
-  `);
-  // Root-level scheduling mode is governed by the root node's own
-  // childrenScheduling field — the map record itself has no separate
-  // setting (the root Node is just a normal Node).
 
   // ── Orchestration substrate (#111): work-queue + soft-conflict detection ──
   // claimed_by_session: session ID that has claimed this node for active work.
@@ -687,21 +678,9 @@ export async function runMigrations(): Promise<void> {
     )
   `);
 
-  // Flip historical 'parallel' rows to 'sequential'. The column default
-  // changed in this release, but rows created BEFORE this release carry
-  // the old 'parallel' value. The marker row in data_migrations ensures
-  // we only run the UPDATE on first boot of this version, so a user who
-  // later explicitly sets a parent back to 'parallel' won't get clobbered
-  // by subsequent restarts.
-  await db.execute(sql`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'flip_children_scheduling_default_v1') THEN
-        UPDATE nodes SET children_scheduling = 'sequential' WHERE children_scheduling = 'parallel';
-        INSERT INTO data_migrations (id) VALUES ('flip_children_scheduling_default_v1');
-      END IF;
-    END $$;
-  `);
+  // (The 'flip_children_scheduling_default_v1' data migration from
+  // v0.16.1 is a no-op now that the column has been dropped; the marker
+  // row stays in data_migrations as historical record.)
 
   console.log('[db] Migrations complete.');
 }

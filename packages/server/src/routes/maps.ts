@@ -386,7 +386,6 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           externalLinks: [],
           autoProgress: 'off',
           priorityRank: null,
-          childrenScheduling: 'sequential' as const,
           // Orchestration substrate (#111)
           claimedBySession: null,
           claimedAt: null,

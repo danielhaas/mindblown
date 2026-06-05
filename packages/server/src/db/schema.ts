@@ -171,12 +171,6 @@ export const nodes = pgTable('nodes', {
   // Fractional ranking for drag-to-reorder within a sibling group.
   // null = no explicit rank (sorts after ranked siblings in resolved order).
   priorityRank: real('priority_rank'),
-  // How children of this node are scheduled relative to each other.
-  // 'sequential' (default) = implicit FS chain in resolved sibling order;
-  // 'parallel' = legacy behavior where siblings stack at the same start.
-  // Default flipped from 'parallel' to 'sequential' so the Gantt actually
-  // spreads out without requiring a per-parent toggle.
-  childrenScheduling: text('children_scheduling').notNull().default('sequential'),
 
   // ── Orchestration substrate (#111) ───────────────────────────
   // claimed_by_session: session ID that owns this node for active work.

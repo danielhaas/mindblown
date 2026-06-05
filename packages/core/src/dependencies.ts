@@ -225,152 +225,78 @@ export interface ScheduleContext {
   hoursPerDay?: number;
 }
 
-// Priority enum ordering for resolved sibling sort. Lower index = higher priority.
-const PRIORITY_ORDER: Record<string, number> = {
+// Priority enum ordering. Lower number = higher priority.
+// P0 = 0 (highest), P1 = 1, P2 = 2, P3 = 3, null = 4 (lowest).
+const PRIORITY_ENUM_ORDER: Record<string, number> = {
   P0: 0,
   P1: 1,
   P2: 2,
   P3: 3,
 };
 
+function priorityEnumNum(p: Node['priority']): number {
+  if (!p) return 4;
+  return PRIORITY_ENUM_ORDER[p] ?? 4;
+}
+
 /**
- * Return the resolved sibling order for the children of `parent`.
+ * Sort a list of nodes (typically siblings under a single parent) by
+ * priorityRank ASC NULLS LAST → priority enum (P0 < P1 < P2 < P3) → createdAt ASC.
  *
- * Sort key: priorityRank ASC NULLS LAST → priority enum (P0 < P1 < P2 < P3) → createdAt ASC.
- *
- * Exported (as a named export + re-exported from index) so the orchestration
- * substrate's `ready_nodes` handler can reuse it for ordering results.
+ * Used by the orchestration substrate (`ready_nodes`) to order what to
+ * dispatch next; not used by the scheduler itself, which uses effective
+ * priority via inheritance instead.
  */
 export function resolvedSiblingOrder(children: Node[]): Node[] {
   return [...children].sort((a, b) => {
-    // 1. priorityRank ASC NULLS LAST
     const ra = a.priorityRank;
     const rb = b.priorityRank;
     if (ra !== null && rb !== null) {
       if (ra !== rb) return ra - rb;
     } else if (ra !== null) {
-      return -1; // a has rank, b doesn't → a first
+      return -1;
     } else if (rb !== null) {
-      return 1; // b has rank, a doesn't → b first
+      return 1;
     }
-
-    // 2. priority enum (P0 < P1 < P2 < P3), null last
-    const pa = a.priority ? (PRIORITY_ORDER[a.priority] ?? 99) : 99;
-    const pb = b.priority ? (PRIORITY_ORDER[b.priority] ?? 99) : 99;
+    const pa = priorityEnumNum(a.priority);
+    const pb = priorityEnumNum(b.priority);
     if (pa !== pb) return pa - pb;
-
-    // 3. createdAt ASC
     return a.createdAt.localeCompare(b.createdAt);
   });
 }
 
 /**
- * For nodes whose parent has `childrenScheduling = 'sequential'`, inject
- * synthetic FS dependency edges so the scheduler chains them in resolved
- * sibling order. Explicit dependency edges are left untouched and continue
- * to take precedence (the topo sort enforces explicit deps first).
+ * Priority-inheritance scheduler.
  *
- * Returns a new nodes array; original nodes are not mutated.
- */
-function injectSequentialDeps(nodes: Node[]): Node[] {
-  // Greedy per-edge verification. The pop-LIFO approach in #125 fell short
-  // when MULTIPLE edges in one chain would cycle: popping LIFO can keep
-  // dropping non-problematic tail edges before reaching the culprit, and
-  // sometimes empties the whole chain. The Roadmap's root has 8
-  // cross-section explicit deps each potentially closing a different
-  // cycle, so the LIFO path dropped the whole 27-edge root chain.
-  //
-  // Greedy: push each edge ONE AT A TIME and run topologicalSort to
-  // verify. If acyclic, keep the edge. If cyclic, drop just THIS edge
-  // and continue with the next pair. Each rejected edge leaves a "gap"
-  // in the chain but the chain continues past it.
-  //
-  // Cost: O(E × (N + E)) per schedule(), where E = candidate chain edges.
-  // For a ~2500-node map with a few hundred sequential parents, ~50 ms.
-  const workingNodes: Node[] = nodes.map((n) => ({
-    ...n,
-    dependencies: [...n.dependencies],
-  }));
-  const workingMap = new Map<NodeId, Node>(workingNodes.map((n) => [n.id, n]));
-
-  // Iterate parents shallowest-first. With greedy per-edge verification,
-  // edges added EARLIER survive when later additions would cycle — so
-  // processing the root first means top-level chain edges are evaluated
-  // against an emptier working graph and have the best chance of being
-  // accepted. By the time deep-level chains are evaluated, their cycles
-  // (typically caused by cross-subtree leaf deps interacting with the
-  // already-accepted top-level chain) cost only the deep chain, not the
-  // user-visible top-level structure.
-  const depth = new Map<NodeId, number>();
-  for (const n of workingNodes) {
-    let d = 0;
-    let cur: Node | undefined = n;
-    while (cur && cur.parentId) {
-      d++;
-      cur = workingMap.get(cur.parentId);
-      if (d > 100) break; // pathological structure guard
-    }
-    depth.set(n.id, d);
-  }
-  const orderedParents = [...nodes].sort(
-    (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0),
-  );
-
-  for (const originalParent of orderedParents) {
-    if (originalParent.childrenScheduling !== 'sequential') continue;
-    if (originalParent.childrenIds.length < 2) continue;
-
-    const presentChildren = originalParent.childrenIds
-      .map((cid) => workingMap.get(cid))
-      .filter((n): n is Node => n !== undefined);
-
-    if (presentChildren.length < 2) continue;
-
-    const ordered = resolvedSiblingOrder(presentChildren);
-
-    for (let i = 1; i < ordered.length; i++) {
-      const predecessor = ordered[i - 1];
-      const follower = ordered[i];
-
-      const alreadyHas = follower.dependencies.some(
-        (d) => d.targetNodeId === predecessor.id && d.type === 'FS',
-      );
-      if (alreadyHas) continue;
-
-      const synthetic = {
-        targetNodeId: predecessor.id,
-        type: 'FS' as const,
-        lag: 0,
-      };
-      follower.dependencies.push(synthetic);
-
-      try {
-        topologicalSort(workingNodes);
-        // acyclic — keep
-      } catch (err) {
-        if (!(err instanceof Error && /Cycle detected/.test(err.message))) {
-          throw err;
-        }
-        // Cycle introduced by this edge — drop it and move on
-        const idx = follower.dependencies.indexOf(synthetic);
-        if (idx >= 0) follower.dependencies.splice(idx, 1);
-      }
-    }
-  }
-
-  return workingNodes;
-}
-
-/**
- * Forward-pass scheduling.
+ * Model: every node has a priority. The Gantt is a single linear queue
+ * sorted by priority — item 1 starts at the project start, item 2 starts
+ * when item 1 ends, item 3 when item 2 ends, and so on. Tree structure is
+ * for visual grouping only; scheduling operates on leaf nodes (work items).
  *
- * Given nodes with effort estimates and dependencies, compute the earliest
- * possible start and end for each node.
+ * Two mechanisms keep the queue honest:
  *
- * `projectStartDay` is day 0. All dates are in the map's effort unit (days/hours/points).
- * Optional `constraints` pin individual nodes in place (manually-set dates).
- * Optional `context` enables business-day unit conversion (hours → business days).
- * Returns a ScheduledNode for every input node.
+ * 1. **Priority inheritance.** If A (priority P1) depends on B (priority P5),
+ *    the queue can't put A before B — A is blocked by B. Instead of pushing A
+ *    to the back, B inherits A's priority: B's *effective* priority becomes
+ *    `min(B.own, A.effective)` = P1. So both A and B land near the front,
+ *    with B right before A. Chains propagate: A → B → C all converge to A's
+ *    priority. Diamonds merge: if A and E both depend on B, B inherits
+ *    `min(A.effective, E.effective)`.
+ *
+ * 2. **Dep constraints in the forward pass.** Once the leaf queue is sorted,
+ *    each leaf's start is `max(cursor, max(dep.target.end + lag))`. The
+ *    cursor advances after each placement; deps add extra constraints that
+ *    can push the start later (but never earlier).
+ *
+ * What this replaces: the synthetic-FS-chain machinery from #109/#121–#129.
+ * The old model invented edges to mimic sequential ordering at each level,
+ * and those invented edges fought with user explicit deps, creating cycles
+ * the topo sort couldn't resolve. Priority inheritance achieves the same
+ * "high-priority first" ordering with zero invented edges, so cycles are
+ * impossible unless the user explicitly created a circular dep.
+ *
+ * Returns a ScheduledNode for every input node. Parents derive their
+ * start/end from a bottom-up rollup of their children's positions.
  */
 export function schedule(
   nodes: Node[],
@@ -378,49 +304,63 @@ export function schedule(
   constraints?: Map<NodeId, ScheduleConstraint>,
   context?: ScheduleContext,
 ): ScheduledNode[] {
-  // Order matters: expand parent-level deps to leaves FIRST, then inject
-  // implicit sequential FS chains. With expansion-first, the injection's
-  // hasCycle guard sees the cartesian-product edges that expansion adds
-  // (a parent-level dep becomes N×M leaf edges), so it correctly skips
-  // synthetic edges that would close cycles via the expanded leaf edges.
-  //
-  // The original order (inject → expand → sort) blinded the cycle guard
-  // to edges that only exist after expansion, and topological sort
-  // crashed downstream once expansion added the missing leg of the cycle.
-  //
-  // The try/catch is defense in depth: if a cycle still slips through
-  // (e.g. the pre-existing graph itself is cyclic), fall back to running
-  // the topo sort without sequential injection. API returns a partial
-  // schedule instead of a 500; Gantt stays usable.
-  let sorted: Node[];
-  let expanded: Node[];
-  try {
-    expanded = expandParentDependencies(nodes);
-    expanded = injectSequentialDeps(expanded);
-    sorted = topologicalSort(expanded);
-  } catch (err) {
-    if (err instanceof Error && /Cycle detected/.test(err.message)) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        '[scheduler] cycle detected after sequential injection; falling back to no implicit chains for this run',
-      );
-      expanded = expandParentDependencies(nodes);
-      sorted = topologicalSort(expanded);
-    } else {
-      throw err;
+  // Step 1: Expand any parent-level user deps to leaves (handles the rare
+  // case where someone wrote "Section A depends on Section B" at the parent
+  // level — that becomes leaf-cascade deps).
+  const expanded = expandParentDependencies(nodes);
+
+  // Step 2: Build the forward dep graph (who depends on me) for priority
+  // inheritance propagation.
+  const dependents = new Map<NodeId, NodeId[]>();
+  for (const n of expanded) {
+    for (const dep of n.dependencies) {
+      if (!dependents.has(dep.targetNodeId)) dependents.set(dep.targetNodeId, []);
+      dependents.get(dep.targetNodeId)!.push(n.id);
     }
   }
 
-  const nodeMap = new Map<NodeId, Node>();
-  for (const node of expanded) {
-    nodeMap.set(node.id, node);
+  // Step 3: Topological sort. Will throw if the user has circular explicit
+  // deps — that's a real data error, not something to paper over.
+  const sorted = topologicalSort(expanded);
+
+  // Step 4: Compute effective priority by walking in REVERSE topological
+  // order. Reverse topo means dependents are processed BEFORE the nodes
+  // they depend on, so by the time we visit a node N, every node that
+  // depends on N has its effective priority already set. We propagate
+  // `min(N.own, all dependent.effective)` to N.
+  const effective = new Map<NodeId, number>();
+  for (const n of expanded) effective.set(n.id, priorityEnumNum(n.priority));
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    const node = sorted[i];
+    let eff = effective.get(node.id)!;
+    for (const dependentId of dependents.get(node.id) ?? []) {
+      const depEff = effective.get(dependentId);
+      if (depEff !== undefined && depEff < eff) eff = depEff;
+    }
+    effective.set(node.id, eff);
   }
 
-  const scheduled = new Map<NodeId, ScheduledNode>();
+  // Step 5: Build the global ordered queue. Sort starting from the
+  // topo-sorted list (so equal-priority deps stay in dep order, since
+  // Array.sort is stable). Within an effective-priority tier, use
+  // priorityRank ASC NULLS LAST → createdAt ASC as the tiebreaker.
+  const queue = [...sorted].sort((a, b) => {
+    const ea = effective.get(a.id)!;
+    const eb = effective.get(b.id)!;
+    if (ea !== eb) return ea - eb;
+    const ra = a.priorityRank;
+    const rb = b.priorityRank;
+    if (ra !== null && rb !== null) {
+      if (ra !== rb) return ra - rb;
+    } else if (ra !== null) {
+      return -1;
+    } else if (rb !== null) {
+      return 1;
+    }
+    return a.createdAt.localeCompare(b.createdAt);
+  });
 
-  // Business-day conversion: when effortUnit is 'hours', convert leaf effort
-  // to business days using ceil(hours / hoursPerDay). This makes a 12h estimate
-  // with an 8h day render as 2 business-day bars instead of 12 unit-bars.
+  // Step 6: Schedule the leaves linearly. Parents derive from rollup.
   const useHoursConversion =
     context?.effortUnit === 'hours' &&
     context.hoursPerDay !== undefined &&
@@ -434,18 +374,22 @@ export function schedule(
     return raw;
   }
 
-  for (const node of sorted) {
-    let duration =
-      node.childrenIds.length === 0
-        ? leafDuration(node.effortEstimate)
-        : 0;
+  const scheduled = new Map<NodeId, ScheduledNode>();
+  let cursor = projectStartDay;
 
-    let earliestStart = projectStartDay;
+  for (const node of queue) {
+    // Parents are skipped here; they get derived in the rollup pass.
+    if (node.childrenIds.length > 0) continue;
 
+    let duration = leafDuration(node.effortEstimate);
+    let earliestStart = cursor;
+
+    // Honor explicit dep constraints. Targets are guaranteed scheduled
+    // already because we walk in queue order, which is topo-sorted with
+    // priority inheritance preserving dep order for ties.
     for (const dep of node.dependencies) {
       const target = scheduled.get(dep.targetNodeId);
-      if (!target) continue; // dependency not in this set
-
+      if (!target) continue;
       let constraint: number;
       switch (dep.type) {
         case 'FS':
@@ -461,53 +405,92 @@ export function schedule(
           constraint = target.computedStart + dep.lag - duration;
           break;
       }
-
-      earliestStart = Math.max(earliestStart, constraint);
+      if (constraint > earliestStart) earliestStart = constraint;
     }
 
-    // Apply per-node pinning constraints. minStart pushes the start forward;
-    // maxEnd stretches duration to force end alignment (a manual due date
-    // acts as a hard deadline the bar must reach).
+    // Apply per-node pinning constraints.
     const pin = constraints?.get(node.id);
     if (pin) {
-      if (pin.minStart !== undefined) {
-        earliestStart = Math.max(earliestStart, pin.minStart);
+      if (pin.minStart !== undefined && pin.minStart > earliestStart) {
+        earliestStart = pin.minStart;
       }
-      if (pin.maxEnd !== undefined && node.childrenIds.length === 0) {
+      if (pin.maxEnd !== undefined) {
         const requiredDuration = pin.maxEnd - earliestStart;
         if (requiredDuration > duration) duration = requiredDuration;
       }
     }
 
+    const start = earliestStart;
+    const end = start + duration;
     scheduled.set(node.id, {
       nodeId: node.id,
-      computedStart: earliestStart,
-      computedEnd: earliestStart + duration,
+      computedStart: start,
+      computedEnd: end,
       duration,
     });
+
+    // Advance the cursor so the next leaf starts after this one. Single-
+    // worker model: one item at a time.
+    cursor = end;
   }
 
-  // For parent nodes, compute start/end from children
-  for (const node of expanded) {
-    if (node.childrenIds.length === 0) continue;
-    const s = scheduled.get(node.id)!;
+  // Step 7: Roll up parents bottom-up (deepest first) so each parent
+  // reads its children's already-rolled-up values.
+  const treeDepth = new Map<NodeId, number>();
+  const expandedMap = new Map<NodeId, Node>();
+  for (const n of expanded) expandedMap.set(n.id, n);
+  for (const n of expanded) {
+    let d = 0;
+    let cur: Node | undefined = n;
+    while (cur && cur.parentId) {
+      d++;
+      cur = expandedMap.get(cur.parentId);
+      if (d > 100) break;
+    }
+    treeDepth.set(n.id, d);
+  }
+  const parentsBottomUp = expanded
+    .filter((n) => n.childrenIds.length > 0)
+    .sort((a, b) => (treeDepth.get(b.id) ?? 0) - (treeDepth.get(a.id) ?? 0));
+
+  for (const parent of parentsBottomUp) {
     let minStart = Infinity;
-    let maxEnd = 0;
-    for (const childId of node.childrenIds) {
+    let maxEnd = -Infinity;
+    for (const childId of parent.childrenIds) {
       const child = scheduled.get(childId);
       if (!child) continue;
-      minStart = Math.min(minStart, child.computedStart);
-      maxEnd = Math.max(maxEnd, child.computedEnd);
+      if (child.computedStart < minStart) minStart = child.computedStart;
+      if (child.computedEnd > maxEnd) maxEnd = child.computedEnd;
     }
     if (minStart !== Infinity) {
-      s.computedStart = minStart;
-      s.computedEnd = maxEnd;
-      s.duration = maxEnd - minStart;
+      scheduled.set(parent.id, {
+        nodeId: parent.id,
+        computedStart: minStart,
+        computedEnd: maxEnd,
+        duration: maxEnd - minStart,
+      });
+    } else {
+      // Parent with no scheduled children: collapse to project start.
+      scheduled.set(parent.id, {
+        nodeId: parent.id,
+        computedStart: projectStartDay,
+        computedEnd: projectStartDay,
+        duration: 0,
+      });
     }
   }
 
-  // Return in original node order (using original IDs)
-  return nodes.map((n) => scheduled.get(n.id)!);
+  // Default for any node that didn't land in scheduled (shouldn't happen
+  // but defensive).
+  return nodes.map(
+    (n) =>
+      scheduled.get(n.id) ?? {
+        nodeId: n.id,
+        computedStart: projectStartDay,
+        computedEnd: projectStartDay,
+        duration: 0,
+      },
+  );
 }
 
 /**
