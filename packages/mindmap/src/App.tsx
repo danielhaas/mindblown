@@ -313,11 +313,19 @@ function HealthRow({ label, value }: { label: string; value: string }) {
 
 function UserMenu({
   user,
+  onShare,
   onImportExport,
+  onTrash,
+  onGitHub,
+  onSettings,
   onLogout,
 }: {
   user: { name?: string | null; email?: string | null } | null;
+  onShare: () => void;
   onImportExport: () => void;
+  onTrash: () => void;
+  onGitHub: () => void;
+  onSettings: () => void;
   onLogout: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -419,12 +427,42 @@ function UserMenu({
             </div>
           )}
           <MenuItem
+            label="Share map…"
+            onClick={() => {
+              setOpen(false);
+              onShare();
+            }}
+          />
+          <MenuItem
             label="Import / Export…"
             onClick={() => {
               setOpen(false);
               onImportExport();
             }}
           />
+          <MenuItem
+            label="Trash"
+            onClick={() => {
+              setOpen(false);
+              onTrash();
+            }}
+          />
+          <MenuDivider />
+          <MenuItem
+            label="GitHub integration…"
+            onClick={() => {
+              setOpen(false);
+              onGitHub();
+            }}
+          />
+          <MenuItem
+            label="Workspace settings…"
+            onClick={() => {
+              setOpen(false);
+              onSettings();
+            }}
+          />
+          <MenuDivider />
           <MenuItem
             label="Sign out"
             onClick={() => {
@@ -459,6 +497,10 @@ function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
       {label}
     </button>
   );
+}
+
+function MenuDivider() {
+  return <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />;
 }
 
 // ── Map List / Landing ──────────────────────────────────────────
@@ -1890,45 +1932,6 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* Share button */}
-          <button
-            onClick={() => setShareDialogOpen(true)}
-            style={{
-              padding: '3px 10px',
-              borderRadius: 4,
-              border: '1px solid #e2e8f0',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              background: '#fff',
-              color: '#4f46e5',
-              transition: 'all 0.15s',
-            }}
-          >
-            Share
-          </button>
-
-          {/* Trash button (#107) */}
-          <button
-            onClick={() => setTrashDialogOpen(true)}
-            title="Recently deleted nodes (Trash)"
-            style={{
-              padding: '3px 10px',
-              borderRadius: 4,
-              border: '1px solid #e2e8f0',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              background: '#fff',
-              color: '#4f46e5',
-              transition: 'all 0.15s',
-            }}
-          >
-            Trash
-          </button>
-
           {/* AI Chat toggle */}
           <button
             onClick={() => {
@@ -2021,63 +2024,16 @@ export function App() {
             )}
           </button>
 
-          {/* GitHub settings */}
-          <button
-            onClick={() => setGithubSettingsOpen(true)}
-            title="GitHub Integration"
-            style={{
-              padding: '3px 8px',
-              borderRadius: 4,
-              border: '1px solid #e2e8f0',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              background: '#fff',
-              color: '#64748b',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              transition: 'all 0.15s',
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path fillRule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z" />
-            </svg>
-          </button>
-
-          {/* Settings */}
-          <button
-            onClick={() => setWorkspaceSettingsOpen(true)}
-            title="Workspace Settings"
-            style={{
-              padding: '3px 8px',
-              borderRadius: 4,
-              border: '1px solid #e2e8f0',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              background: '#fff',
-              color: '#64748b',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              transition: 'all 0.15s',
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="8" cy="8" r="2.5" />
-              <path d="M13.5 8a5.5 5.5 0 01-.3 1.6l1.3.8-.8 1.4-1.4-.5a5.5 5.5 0 01-1.4.8l-.2 1.5H9l-.2-1.5a5.5 5.5 0 01-1.4-.8l-1.4.5-.8-1.4 1.3-.8A5.5 5.5 0 016.2 8a5.5 5.5 0 01.3-1.6l-1.3-.8.8-1.4 1.4.5a5.5 5.5 0 011.4-.8L9 2.4h1.6l.2 1.5a5.5 5.5 0 011.4.8l1.4-.5.8 1.4-1.3.8a5.5 5.5 0 01.3 1.6z" />
-            </svg>
-          </button>
-
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* User avatar dropdown — absorbs Import/Export and Sign out */}
+          {/* User avatar dropdown — absorbs Share, Import/Export, Trash, GitHub, Settings, Sign out */}
           <UserMenu
             user={user}
+            onShare={() => setShareDialogOpen(true)}
             onImportExport={() => setImportExportOpen(true)}
+            onTrash={() => setTrashDialogOpen(true)}
+            onGitHub={() => setGithubSettingsOpen(true)}
+            onSettings={() => setWorkspaceSettingsOpen(true)}
             onLogout={logout}
           />
         </div>
