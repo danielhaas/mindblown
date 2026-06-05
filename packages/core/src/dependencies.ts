@@ -435,8 +435,19 @@ export function schedule(
   let sorted: Node[];
   let expanded: Node[];
   try {
+    // 1. Expand user explicit parent-level deps to leaves.
     expanded = expandParentDependencies(nodes);
+    // 2. Inject synthetic FS chains at PARENT level. Cycle guard sees the
+    //    leaf-cascade edges added in step 1.
     expanded = injectSequentialDeps(expanded);
+    // 3. Re-expand to cascade the NEW synthetic parent-level edges down
+    //    to leaves. Without this, the forward pass treats parent durations
+    //    as 0 and the parent-level synthetic FS edges produce no time
+    //    offset — sections at the root chain all end up at start=0
+    //    despite the topo sort respecting their order. Re-expand dedupes
+    //    against existing leaf-level edges so explicit deps don't
+    //    double-cascade.
+    expanded = expandParentDependencies(expanded);
     sorted = topologicalSort(expanded);
   } catch (err) {
     if (err instanceof Error && /Cycle detected/.test(err.message)) {
