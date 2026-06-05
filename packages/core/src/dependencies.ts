@@ -538,30 +538,9 @@ export function schedule(
     });
   }
 
-  // For parent nodes, compute start/end from children. Process bottom-up
-  // (deepest parents first) so each parent reads its children's ROLLED-UP
-  // values. Iterating in arbitrary array order would let an outer parent
-  // pick up an inner intermediate's pre-rollup `start=0` and peg its own
-  // start to 0 — exactly what was happening on the Roadmap before the
-  // depth sort was added.
-  const treeDepth = new Map<NodeId, number>();
-  const expandedMap = new Map<NodeId, Node>();
-  for (const n of expanded) expandedMap.set(n.id, n);
-  for (const n of expanded) {
-    let d = 0;
-    let cur: Node | undefined = n;
-    while (cur && cur.parentId) {
-      d++;
-      cur = expandedMap.get(cur.parentId);
-      if (d > 100) break;
-    }
-    treeDepth.set(n.id, d);
-  }
-  const parentsBottomUp = expanded
-    .filter((n) => n.childrenIds.length > 0)
-    .sort((a, b) => (treeDepth.get(b.id) ?? 0) - (treeDepth.get(a.id) ?? 0));
-
-  for (const node of parentsBottomUp) {
+  // For parent nodes, compute start/end from children
+  for (const node of expanded) {
+    if (node.childrenIds.length === 0) continue;
     const s = scheduled.get(node.id)!;
     let minStart = Infinity;
     let maxEnd = 0;
