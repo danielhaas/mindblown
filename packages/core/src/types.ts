@@ -24,6 +24,17 @@ export type EffortUnit = 'hours' | 'days' | 'points';
 export type LayoutMode = 'radial' | 'tree_lr' | 'tree_td' | 'org_chart' | 'freeform';
 
 /**
+ * How a parent's children are scheduled relative to each other.
+ *
+ * - `'parallel'` (default) — each child starts as early as its own explicit
+ *   dependencies allow. Siblings are independent. Preserves existing behavior.
+ * - `'sequential'` — the scheduler implicitly treats children as an FS chain
+ *   in their resolved sibling order. Explicit dep edges still win over the
+ *   implicit chain; this flag is purely additive.
+ */
+export type ChildrenScheduling = 'parallel' | 'sequential';
+
+/**
  * A custom field value. The shape depends on the field definition
  * on the Map (see MapSchema.customFieldDefs).
  */
@@ -115,6 +126,22 @@ export interface Node {
 
   // ── Integrations ──────────────────────────────────────────
   externalLinks: ExternalLink[];
+
+  // ── Sibling ordering (Gantt slice 1) ─────────────────────────
+  /**
+   * Fractional ranking for sibling reordering (Linear-style).
+   * Resolved sibling order = priorityRank ASC NULLS LAST → priority enum
+   * (P0 < P1 < P2 < P3) → createdAt ASC.
+   * null = no explicit rank (sorts after ranked siblings).
+   */
+  priorityRank: number | null;
+
+  /**
+   * How this node's children are scheduled relative to each other.
+   * `'parallel'` (default) = existing behavior; `'sequential'` = implicit
+   * FS chain in resolved sibling order. Explicit dep edges still win.
+   */
+  childrenScheduling: ChildrenScheduling;
 
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**

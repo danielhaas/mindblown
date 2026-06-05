@@ -385,6 +385,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           cycleId: null,
           externalLinks: [],
           autoProgress: 'off',
+          priorityRank: null,
+          childrenScheduling: 'parallel' as const,
           createdAt: now,
           updatedAt: now,
           createdBy: parent.createdBy,

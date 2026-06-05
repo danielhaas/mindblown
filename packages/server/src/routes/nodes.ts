@@ -167,6 +167,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       startDate?: string;
       dueDate?: string;
       autoProgress?: 'off' | 'children';
+      priorityRank?: number | null;
+      childrenScheduling?: 'parallel' | 'sequential';
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`
        * auto-link backstop (#58). Useful when the leading `#NNNN` is

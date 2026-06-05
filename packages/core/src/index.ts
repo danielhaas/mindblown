@@ -10,6 +10,7 @@ export type {
   Priority,
   EffortUnit,
   LayoutMode,
+  ChildrenScheduling,
   CustomFieldValue,
   Dependency,
   ExternalLink,
@@ -61,4 +62,11 @@ export {
   schedule,
   criticalPath,
 } from './dependencies.js';
-export type { ScheduleConstraint } from './dependencies.js';
+export type { ScheduleConstraint, ScheduleContext } from './dependencies.js';
+
+// Business-day calendar helpers
+export {
+  addBusinessDays,
+  businessDaysBetween,
+  hoursToBusinessDays,
+} from './calendar.js';

@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef, ChildrenScheduling } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
@@ -108,6 +108,8 @@ export interface CreateNodeInput {
   startDate?: string;
   dueDate?: string;
   autoProgress?: 'off' | 'children';
+  priorityRank?: number | null;
+  childrenScheduling?: ChildrenScheduling;
 }
 
 export async function createNode(
@@ -139,6 +141,8 @@ export async function createNode(
     startDate: input.startDate ?? null,
     dueDate: input.dueDate ?? null,
     autoProgress: input.autoProgress ?? 'off',
+    priorityRank: input.priorityRank ?? null,
+    childrenScheduling: input.childrenScheduling ?? 'parallel',
     assigneeIds: [],
     tags: [],
     customFields: {},
@@ -211,6 +215,8 @@ export interface UpdateNodeInput {
   cycleId?: string | null;
   externalLinks?: ExternalLink[];
   autoProgress?: 'off' | 'children';
+  priorityRank?: number | null;
+  childrenScheduling?: ChildrenScheduling;
 }
 
 export async function updateNode(
@@ -276,6 +282,8 @@ export async function updateNode(
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
   if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
+  if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
+  if (input.childrenScheduling !== undefined) updates.childrenScheduling = input.childrenScheduling;
 
   // Conditional update: when expectedRevision is provided, the WHERE clause
   // also matches on revision so a stale write affects 0 rows. We then look
