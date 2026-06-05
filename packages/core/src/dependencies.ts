@@ -316,11 +316,6 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
     (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0),
   );
 
-  // Debug: track accept/reject per parent for one-off diagnosis (#127 follow-up).
-  // Logged at end so we see exactly where chains are surviving vs being rejected.
-  const DEBUG_INJECT = process.env.DEBUG_INJECT === '1';
-  const debugStats: Array<{ parentId: NodeId; depth: number; childCount: number; accepted: number; rejected: number }> = [];
-
   for (const originalParent of orderedParents) {
     if (originalParent.childrenScheduling !== 'sequential') continue;
     if (originalParent.childrenIds.length < 2) continue;
@@ -332,8 +327,6 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
     if (presentChildren.length < 2) continue;
 
     const ordered = resolvedSiblingOrder(presentChildren);
-    let accepted = 0;
-    let rejected = 0;
 
     for (let i = 1; i < ordered.length; i++) {
       const predecessor = ordered[i - 1];
@@ -353,7 +346,7 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
 
       try {
         topologicalSort(workingNodes);
-        accepted++;
+        // acyclic — keep
       } catch (err) {
         if (!(err instanceof Error && /Cycle detected/.test(err.message))) {
           throw err;
@@ -361,41 +354,8 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
         // Cycle introduced by this edge — drop it and move on
         const idx = follower.dependencies.indexOf(synthetic);
         if (idx >= 0) follower.dependencies.splice(idx, 1);
-        rejected++;
       }
     }
-
-    if (DEBUG_INJECT && (accepted > 0 || rejected > 0)) {
-      debugStats.push({
-        parentId: originalParent.id,
-        depth: depth.get(originalParent.id) ?? -1,
-        childCount: ordered.length,
-        accepted,
-        rejected,
-      });
-    }
-  }
-
-  if (DEBUG_INJECT && debugStats.length > 0) {
-    // eslint-disable-next-line no-console
-    console.warn('[injectSequentialDeps] parent stats (first 30 shallow):');
-    debugStats
-      .sort((a, b) => a.depth - b.depth)
-      .slice(0, 30)
-      .forEach((s) => {
-        // eslint-disable-next-line no-console
-        console.warn(
-          `  depth=${s.depth} parent=${s.parentId.slice(0, 8)} children=${s.childCount} accepted=${s.accepted} rejected=${s.rejected}`,
-        );
-      });
-    const totals = debugStats.reduce(
-      (acc, s) => ({ accepted: acc.accepted + s.accepted, rejected: acc.rejected + s.rejected }),
-      { accepted: 0, rejected: 0 },
-    );
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[injectSequentialDeps] total accepted=${totals.accepted} rejected=${totals.rejected} parents=${debugStats.length}`,
-    );
   }
 
   return workingNodes;
@@ -435,19 +395,8 @@ export function schedule(
   let sorted: Node[];
   let expanded: Node[];
   try {
-    // 1. Expand user explicit parent-level deps to leaves.
     expanded = expandParentDependencies(nodes);
-    // 2. Inject synthetic FS chains at PARENT level. Cycle guard sees the
-    //    leaf-cascade edges added in step 1.
     expanded = injectSequentialDeps(expanded);
-    // 3. Re-expand to cascade the NEW synthetic parent-level edges down
-    //    to leaves. Without this, the forward pass treats parent durations
-    //    as 0 and the parent-level synthetic FS edges produce no time
-    //    offset — sections at the root chain all end up at start=0
-    //    despite the topo sort respecting their order. Re-expand dedupes
-    //    against existing leaf-level edges so explicit deps don't
-    //    double-cascade.
-    expanded = expandParentDependencies(expanded);
     sorted = topologicalSort(expanded);
   } catch (err) {
     if (err instanceof Error && /Cycle detected/.test(err.message)) {
@@ -538,30 +487,9 @@ export function schedule(
     });
   }
 
-  // For parent nodes, compute start/end from children. Process bottom-up
-  // (deepest parents first) so each parent reads its children's ROLLED-UP
-  // values. Iterating in arbitrary array order would let an outer parent
-  // pick up an inner intermediate's pre-rollup `start=0` and peg its own
-  // start to 0 — exactly what was happening on the Roadmap before the
-  // depth sort was added.
-  const treeDepth = new Map<NodeId, number>();
-  const expandedMap = new Map<NodeId, Node>();
-  for (const n of expanded) expandedMap.set(n.id, n);
-  for (const n of expanded) {
-    let d = 0;
-    let cur: Node | undefined = n;
-    while (cur && cur.parentId) {
-      d++;
-      cur = expandedMap.get(cur.parentId);
-      if (d > 100) break;
-    }
-    treeDepth.set(n.id, d);
-  }
-  const parentsBottomUp = expanded
-    .filter((n) => n.childrenIds.length > 0)
-    .sort((a, b) => (treeDepth.get(b.id) ?? 0) - (treeDepth.get(a.id) ?? 0));
-
-  for (const node of parentsBottomUp) {
+  // For parent nodes, compute start/end from children
+  for (const node of expanded) {
+    if (node.childrenIds.length === 0) continue;
     const s = scheduled.get(node.id)!;
     let minStart = Infinity;
     let maxEnd = 0;
