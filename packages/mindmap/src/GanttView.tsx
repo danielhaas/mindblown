@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, CriticalPathResult, ScheduledNode, ScheduleConstraint } from '@mindblown/core';
-import { schedule as computeSchedule, criticalPath as computeCriticalPath } from '@mindblown/core';
+import {
+  schedule as computeSchedule,
+  criticalPath as computeCriticalPath,
+  addBusinessDays,
+  businessDaysBetween,
+} from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { fetchSchedule } from './api.js';
 
@@ -64,44 +69,10 @@ function addDays(d: Date, n: number): Date {
   return r;
 }
 
-// ── Working-day helpers ──
-//
-// Sequential mode treats each scheduler "unit" as one working day
-// (Mon-Fri). Public holidays can be layered on top later via a set
-// passed to these helpers; for now we skip Saturdays and Sundays.
-
-function isWeekend(d: Date): boolean {
-  const dow = d.getUTCDay();
-  return dow === 0 || dow === 6;
-}
-
-/** The Nth working day ON or AFTER anchor. Anchor must be UTC-midnight. */
-function nthWorkingDayFrom(anchor: Date, n: number): Date {
-  const r = new Date(anchor);
-  // If anchor lands on a weekend, snap forward to the next working day
-  // before counting.
-  while (isWeekend(r)) {
-    r.setUTCDate(r.getUTCDate() + 1);
-  }
-  let count = 0;
-  while (count < n) {
-    r.setUTCDate(r.getUTCDate() + 1);
-    if (!isWeekend(r)) count++;
-  }
-  return r;
-}
-
-/** How many working days from `anchor` to `target` (both UTC-midnight). */
-function workingDaysBetween(anchor: Date, target: Date): number {
-  if (target <= anchor) return 0;
-  const cur = new Date(anchor);
-  let count = 0;
-  while (cur < target) {
-    cur.setUTCDate(cur.getUTCDate() + 1);
-    if (!isWeekend(cur)) count++;
-  }
-  return count;
-}
+// Working-day helpers live in @mindblown/core (addBusinessDays,
+// businessDaysBetween) so the scheduler and the Gantt renderer share one
+// implementation. Public holidays will be threaded through their optional
+// `holidays?: Set<string>` parameter when #110 lands.
 
 function formatDate(d: Date, scale: TimeScale): string {
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -704,7 +675,7 @@ export function GanttView() {
     const isoToUnits = (isoDate: string): number => {
       const d = new Date(isoDate);
       d.setUTCHours(0, 0, 0, 0);
-      return workingDaysBetween(anchor, d) * unitsPerDay;
+      return businessDaysBetween(anchor, d) * unitsPerDay;
     };
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
@@ -914,8 +885,8 @@ export function GanttView() {
         // collapse to a point.
         const startWD = Math.floor(startDays);
         const endWD = Math.max(Math.ceil(endDays), startWD + 1);
-        start = nthWorkingDayFrom(anchorUTC, startWD);
-        end = nthWorkingDayFrom(anchorUTC, endWD);
+        start = addBusinessDays(anchorUTC, startWD);
+        end = addBusinessDays(anchorUTC, endWD);
       } else {
         const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
         start = new Date(anchorLocal);
