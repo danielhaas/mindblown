@@ -61,6 +61,10 @@ export {
   topologicalSort,
   schedule,
   criticalPath,
+  // Orchestration substrate (#111)
+  resolvedSiblingOrder,
+  isReady,
+  scopeOverlap,
 } from './dependencies.js';
 export type { ScheduleConstraint, ScheduleContext } from './dependencies.js';
 

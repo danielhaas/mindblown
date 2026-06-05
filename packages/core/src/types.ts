@@ -143,6 +143,31 @@ export interface Node {
    */
   childrenScheduling: ChildrenScheduling;
 
+  // ── Orchestration substrate (#111) ────────────────────────────
+
+  /**
+   * The session ID that has claimed this node for active work.
+   * null = unclaimed / available for dispatch.
+   * Set by `claim_node`, cleared by `release_node` or `set_status('done')`.
+   */
+  claimedBySession: string | null;
+
+  /**
+   * ISO 8601 timestamp when the current claim was set.
+   * null when `claimedBySession` is null.
+   * Used by the stale-claim sweeper to auto-release claims older than N hours.
+   */
+  claimedAt: string | null;
+
+  /**
+   * Free-form scope tags declaring what work this node touches.
+   * Examples: `apps/workflows`, `model:Mandate`, `migration:workflows`,
+   * `frontend:contacts`. Used by `conflict_scan` to surface in-flight
+   * nodes that might conflict with a candidate being dispatched.
+   * Empty array = no scopes declared (no conflict-detection).
+   */
+  scopes: string[];
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this

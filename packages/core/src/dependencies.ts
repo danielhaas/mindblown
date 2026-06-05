@@ -237,8 +237,11 @@ const PRIORITY_ORDER: Record<string, number> = {
  * Return the resolved sibling order for the children of `parent`.
  *
  * Sort key: priorityRank ASC NULLS LAST → priority enum (P0 < P1 < P2 < P3) → createdAt ASC.
+ *
+ * Exported (as a named export + re-exported from index) so the orchestration
+ * substrate's `ready_nodes` handler can reuse it for ordering results.
  */
-function resolvedSiblingOrder(children: Node[]): Node[] {
+export function resolvedSiblingOrder(children: Node[]): Node[] {
   return [...children].sort((a, b) => {
     // 1. priorityRank ASC NULLS LAST
     const ra = a.priorityRank;
@@ -591,4 +594,65 @@ export function criticalPath(nodes: Node[]): CriticalPathResult {
     totalDuration: projectEnd,
     float: floatMap,
   };
+}
+
+// ── Orchestration substrate (#111) ──────────────────────────────
+
+/**
+ * Check whether `node` is "ready" to start given the current state of the
+ * node map and its dependency edges.
+ *
+ * A node is ready when ALL of the following hold:
+ *   1. Its status category is NOT 'done' and NOT 'in_progress'
+ *      (callers use status strings; this predicate treats any non-null
+ *       status mapping to a 'done' statusDef category as satisfied).
+ *      Since the predicate itself doesn't know the map's statusWorkflow,
+ *      callers supply a `isDone(status)` predicate for the "is predecessor
+ *      done" check. A node whose own status is done is NOT returned
+ *      (callers should filter by status='todo' before calling).
+ *   2. `claimedBySession` is null (not currently claimed by any session).
+ *   3. Every predecessor (per dependency edges, all 4 types) is done.
+ *      "Done" is determined purely by `status`: a predecessor is satisfied
+ *      if `isDone(predecessor.status)` returns true. Start/end semantics
+ *      of FS/SS/FF/SF are not interpreted for ready-checking; we only
+ *      ask "did the predecessor complete?".
+ *
+ * @param node - Candidate node to test.
+ * @param nodeMap - All nodes in the map (for predecessor lookup).
+ * @param isDone - Callback that returns true when a status string maps to a
+ *   'done' category in the map's workflow. Returns false for null status.
+ */
+export function isReady(
+  node: Node,
+  nodeMap: NodeMap,
+  isDone: (status: string | null) => boolean,
+): boolean {
+  // Claimed nodes are not available
+  if (node.claimedBySession !== null) return false;
+
+  // All direct dependency predecessors must be done.
+  // We check all 4 dep types — the ready-check semantics are uniform:
+  // "was the predecessor completed?" regardless of FS/SS/FF/SF.
+  for (const dep of node.dependencies) {
+    const predecessor = nodeMap.get(dep.targetNodeId);
+    if (!predecessor) continue; // predecessor not in this map — skip
+    if (!isDone(predecessor.status)) return false;
+  }
+
+  return true;
+}
+
+/**
+ * Compute the scope overlap between two sets of scope tags.
+ *
+ * Returns the set of tags that appear in both `a` and `b`.
+ * An empty result means no overlap.
+ * If either set is empty, there is no overlap (empty-vs-anything = no conflict).
+ *
+ * Symmetry: scopeOverlap(a, b) produces the same elements as scopeOverlap(b, a).
+ */
+export function scopeOverlap(a: string[], b: string[]): string[] {
+  if (a.length === 0 || b.length === 0) return [];
+  const setA = new Set(a);
+  return b.filter((tag) => setA.has(tag));
 }

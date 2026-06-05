@@ -37,6 +37,10 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     autoProgress: 'off',
     priorityRank: null,
     childrenScheduling: 'parallel',
+    // Orchestration substrate (#111)
+    claimedBySession: null,
+    claimedAt: null,
+    scopes: [],
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     createdBy: 'user-1',
