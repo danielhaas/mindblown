@@ -106,6 +106,117 @@ function AvatarCircle({ userId, index }: { userId: string; index: number }) {
   );
 }
 
+// ── Claim Badge ────────────────────────────────────────────────
+
+/**
+ * Renders a small colored pill showing the claiming session ID.
+ * Positioned at the top-right corner of the node rect.
+ */
+function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth }: {
+  sessionId: string;
+  nodeX: number;
+  nodeY: number;
+  nodeWidth: number;
+}) {
+  // Truncate to last 8 chars so it stays readable at small sizes
+  const label = sessionId.length > 8 ? '…' + sessionId.slice(-8) : sessionId;
+  const badgeWidth = label.length * 6 + 12;
+  const badgeX = nodeX + nodeWidth - badgeWidth - 2;
+  const badgeY = nodeY - 14;
+
+  return (
+    <g>
+      <title>Claimed by session: {sessionId}</title>
+      <rect
+        x={badgeX}
+        y={badgeY}
+        width={badgeWidth}
+        height={13}
+        rx={6}
+        fill="#f59e0b"
+        opacity={0.92}
+      />
+      <text
+        x={badgeX + badgeWidth / 2}
+        y={badgeY + 6.5}
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontSize={8}
+        fontWeight={600}
+        fill="#fff"
+        style={{ pointerEvents: 'none', userSelect: 'none' }}
+      >
+        {label}
+      </text>
+    </g>
+  );
+}
+
+// ── Scope Chips ────────────────────────────────────────────────
+
+/**
+ * Renders small grey chips for each scope tag below the node.
+ * Chips are placed horizontally, wrapping isn't attempted — only the
+ * first N chips that fit within nodeWidth are shown.
+ */
+function ScopeChips({ scopes, nodeX, nodeY, nodeWidth }: {
+  scopes: string[];
+  nodeX: number;
+  nodeY: number;
+  nodeWidth: number;
+}) {
+  if (scopes.length === 0) return null;
+
+  const CHIP_HEIGHT = 12;
+  const CHIP_PAD_X = 5;
+  const CHIP_GAP = 4;
+  const CHIP_Y = nodeY - 16 - CHIP_HEIGHT; // place above claim badge row
+
+  let xCursor = nodeX;
+  const chips: Array<{ label: string; x: number; width: number }> = [];
+
+  for (const scope of scopes) {
+    const chipWidth = scope.length * 5.5 + CHIP_PAD_X * 2;
+    if (xCursor + chipWidth > nodeX + nodeWidth) break; // overflow → stop
+    chips.push({ label: scope, x: xCursor, width: chipWidth });
+    xCursor += chipWidth + CHIP_GAP;
+  }
+
+  if (chips.length === 0) return null;
+
+  return (
+    <g>
+      {chips.map((chip) => (
+        <g key={chip.label}>
+          <title>Scope: {chip.label}</title>
+          <rect
+            x={chip.x}
+            y={CHIP_Y}
+            width={chip.width}
+            height={CHIP_HEIGHT}
+            rx={5}
+            fill="#e0e7ff"
+            stroke="#a5b4fc"
+            strokeWidth={0.5}
+          />
+          <text
+            x={chip.x + chip.width / 2}
+            y={CHIP_Y + CHIP_HEIGHT / 2}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={7.5}
+            fontWeight={500}
+            fill="#3730a3"
+            style={{ pointerEvents: 'none', userSelect: 'none' }}
+          >
+            {chip.label}
+          </text>
+        </g>
+      ))}
+    </g>
+  );
+}
+
 // ── Main Node Component ────────────────────────────────────────
 
 interface MindmapNodeProps {
@@ -124,6 +235,12 @@ interface MindmapNodeProps {
    * Set from the editor when `node.id === map.githubInboxNodeId`.
    */
   isGithubInbox?: boolean;
+  /**
+   * When true, render an orange conflict-warning border.
+   * Set by the editor when this todo node's scopes overlap with an
+   * in-flight (claimed / in_progress) node's scopes (#111).
+   */
+  hasConflict?: boolean;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -144,6 +261,7 @@ export function MindmapNode({
   hasHiddenChildren = false,
   hiddenDescendantCount = 0,
   isGithubInbox = false,
+  hasConflict = false,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -169,10 +287,16 @@ export function MindmapNode({
       ? '#3b82f6'
       : isSelected
         ? '#4f46e5'
-        : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
+        : hasConflict
+          ? '#f59e0b'
+          : healthBorderColor || (depth === 0 ? '#4f46e5' : '#e2e8f0');
   const strokeWidth = isDragTarget || isDragInvalid
     ? 2.5
-    : isSelected ? 2.5 : depth === 0 ? 0 : 1.5;
+    : isSelected
+      ? 2.5
+      : hasConflict
+        ? 2
+        : depth === 0 ? 0 : 1.5;
 
   // Computed values
   const progress = computedValues?.computedProgress ?? 0;
@@ -469,6 +593,28 @@ export function MindmapNode({
             </tspan>
           )}
         </text>
+      )}
+
+      {/* Orchestration substrate (#111) ─────────────────────── */}
+
+      {/* Scope chips — rendered above the node */}
+      {node.scopes && node.scopes.length > 0 && (
+        <ScopeChips
+          scopes={node.scopes}
+          nodeX={x}
+          nodeY={y}
+          nodeWidth={width}
+        />
+      )}
+
+      {/* Claim badge — amber pill in the top-right corner */}
+      {node.claimedBySession && (
+        <ClaimBadge
+          sessionId={node.claimedBySession}
+          nodeX={x}
+          nodeY={y}
+          nodeWidth={width}
+        />
       )}
     </g>
   );
