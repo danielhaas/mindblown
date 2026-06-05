@@ -13,6 +13,8 @@ const VALID_NODE_FIELDS = new Set([
   'startDate',
   'tags',
   'assigneeIds',
+  'priorityRank',
+  'childrenScheduling',
 ]);
 
 /**

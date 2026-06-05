@@ -20,6 +20,19 @@ export const createNodeTool = defineTool({
       .describe(
         "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
+    priorityRank: z
+      .number()
+      .nullable()
+      .optional()
+      .describe(
+        'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear earlier. Use (A.rank + B.rank) / 2 for midpoint insertion. null = no explicit rank (sorts after ranked siblings).',
+      ),
+    childrenScheduling: z
+      .enum(['parallel', 'sequential'])
+      .optional()
+      .describe(
+        "How this node's children are scheduled relative to each other. 'parallel' (default) = existing behavior. 'sequential' = implicit FS chain in resolved sibling order.",
+      ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -58,6 +71,19 @@ export const updateNodeTool = defineTool({
       .optional()
       .describe(
         "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+      ),
+    priorityRank: z
+      .number()
+      .nullable()
+      .optional()
+      .describe(
+        'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear first. Use (A.rank + B.rank) / 2 to insert between two nodes. null clears the rank.',
+      ),
+    childrenScheduling: z
+      .enum(['parallel', 'sequential'])
+      .optional()
+      .describe(
+        "How this node's children are scheduled relative to each other. 'parallel' (default) = existing behavior, each child starts as early as its own deps allow. 'sequential' = implicit FS chain in resolved sibling order (priorityRank ASC NULLS LAST → priority enum → createdAt ASC). Explicit dep edges still win over the implicit chain.",
       ),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
@@ -200,6 +226,36 @@ export const searchNodesTool = defineTool({
   },
 });
 
+/**
+ * set_priority_rank — single-node convenience for drag-to-reorder.
+ *
+ * Updates only the `priorityRank` field. Drop between sibling A (rank=a) and
+ * sibling B (rank=b) by passing `rank: (a + b) / 2`. When ranks collide
+ * within epsilon the caller should trigger a full renumber of the sibling
+ * group (outside this tool's scope — UI handles renumber on its side).
+ */
+export const setPriorityRankTool = defineTool({
+  name: 'set_priority_rank',
+  description:
+    'Update the priorityRank of a single node for drag-to-reorder within its sibling group. Drop a node between sibling A (rankA) and sibling B (rankB) by passing rank = (rankA + rankB) / 2. Pass null to clear the rank (node will sort after all ranked siblings). Use this on the dragged node after the user drops it into its new position in the Gantt task list.',
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to rerank'),
+    rank: z
+      .number()
+      .nullable()
+      .describe(
+        'New fractional rank. (A.rank + B.rank) / 2 to insert between A and B. null to clear.',
+      ),
+  },
+  handler: async (backend, { mapId, nodeId, rank }) => {
+    await backend.updateNode(mapId, nodeId, { priorityRank: rank });
+    return rank === null
+      ? `Cleared priorityRank on node ${nodeId}.`
+      : `Set priorityRank = ${rank} on node ${nodeId}.`;
+  },
+});
+
 export const nodeTools = [
   createNodeTool,
   updateNodeTool,
@@ -208,4 +264,5 @@ export const nodeTools = [
   listRecentlyDeletedTool,
   moveNodeTool,
   searchNodesTool,
+  setPriorityRankTool,
 ];
