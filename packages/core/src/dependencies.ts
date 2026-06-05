@@ -293,7 +293,30 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
   }));
   const workingMap = new Map<NodeId, Node>(workingNodes.map((n) => [n.id, n]));
 
-  for (const originalParent of nodes) {
+  // Iterate parents shallowest-first. With greedy per-edge verification,
+  // edges added EARLIER survive when later additions would cycle — so
+  // processing the root first means top-level chain edges are evaluated
+  // against an emptier working graph and have the best chance of being
+  // accepted. By the time deep-level chains are evaluated, their cycles
+  // (typically caused by cross-subtree leaf deps interacting with the
+  // already-accepted top-level chain) cost only the deep chain, not the
+  // user-visible top-level structure.
+  const depth = new Map<NodeId, number>();
+  for (const n of workingNodes) {
+    let d = 0;
+    let cur: Node | undefined = n;
+    while (cur && cur.parentId) {
+      d++;
+      cur = workingMap.get(cur.parentId);
+      if (d > 100) break; // pathological structure guard
+    }
+    depth.set(n.id, d);
+  }
+  const orderedParents = [...nodes].sort(
+    (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0),
+  );
+
+  for (const originalParent of orderedParents) {
     if (originalParent.childrenScheduling !== 'sequential') continue;
     if (originalParent.childrenIds.length < 2) continue;
 
