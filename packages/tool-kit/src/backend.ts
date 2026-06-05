@@ -86,7 +86,6 @@ export interface ToolBackend {
       projectStartDate?: string | null;
       hoursPerDay?: number;
       autoImportNewIssues?: boolean;
-      childrenScheduling?: 'parallel' | 'sequential';
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;

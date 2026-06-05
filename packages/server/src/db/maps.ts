@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
-import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ChildrenScheduling } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -120,7 +120,6 @@ export interface UpdateMapInput {
   githubRepoName?: string | null;
   autoImportNewIssues?: boolean;
   githubInboxNodeId?: string | null;
-  childrenScheduling?: ChildrenScheduling;
 }
 
 export async function updateMap(mapId: string, input: UpdateMapInput): Promise<MindMap | null> {
@@ -141,7 +140,6 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;
   if (input.autoImportNewIssues !== undefined) updates.autoImportNewIssues = input.autoImportNewIssues;
   if (input.githubInboxNodeId !== undefined) updates.githubInboxNodeId = input.githubInboxNodeId;
-  if (input.childrenScheduling !== undefined) updates.childrenScheduling = input.childrenScheduling;
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

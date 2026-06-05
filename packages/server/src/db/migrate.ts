@@ -629,11 +629,9 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'parallel'
   `);
-  // Root-level scheduling mode on maps (same semantics as on nodes but
-  // applies to the top-level children of the map's root node).
-  await db.execute(sql`
-    ALTER TABLE maps ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'parallel'
-  `);
+  // Root-level scheduling mode is governed by the root node's own
+  // childrenScheduling field — the map record itself has no separate
+  // setting (the root Node is just a normal Node).
 
   console.log('[db] Migrations complete.');
 }

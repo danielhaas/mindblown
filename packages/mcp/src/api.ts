@@ -309,7 +309,6 @@ export function updateMap(
     projectStartDate?: string | null;
     hoursPerDay?: number;
     autoImportNewIssues?: boolean;
-    childrenScheduling?: 'parallel' | 'sequential';
   },
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {

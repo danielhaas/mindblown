@@ -87,14 +87,8 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe('When true, new GitHub issues on the bound repo are auto-imported into this map\'s GitHub Inbox.'),
-    childrenScheduling: z
-      .enum(['parallel', 'sequential'])
-      .optional()
-      .describe(
-        "Root-level scheduling mode for the map. 'parallel' (default) = existing behavior. 'sequential' = root-level children are chained in resolved sibling order. Individual nodes may override with their own childrenScheduling field.",
-      ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, autoImportNewIssues, childrenScheduling }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, autoImportNewIssues }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -102,7 +96,6 @@ export const updateMapTool = defineTool({
       projectStartDate?: string | null;
       hoursPerDay?: number;
       autoImportNewIssues?: boolean;
-      childrenScheduling?: 'parallel' | 'sequential';
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
@@ -110,7 +103,6 @@ export const updateMapTool = defineTool({
     if (projectStartDate !== undefined) fields.projectStartDate = projectStartDate;
     if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
-    if (childrenScheduling !== undefined) fields.childrenScheduling = childrenScheduling;
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
     return `Updated map "${updated.name}" (id: ${updated.id})`;

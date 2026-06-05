@@ -276,13 +276,6 @@ export interface MindMap {
    */
   hoursPerDay: number;
 
-  /**
-   * Default childrenScheduling for the root level of this map.
-   * Individual nodes may override with their own childrenScheduling field.
-   * Default `'parallel'` preserves existing behavior.
-   */
-  childrenScheduling: ChildrenScheduling;
-
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;

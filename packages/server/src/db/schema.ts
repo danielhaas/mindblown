@@ -113,12 +113,6 @@ export const maps = pgTable('maps', {
   // write failure never blocks the triage flow. Uncertain decisions do
   // NOT write labels — intermediate state would just noise up GitHub.
   triageLabelWriteback: boolean('triage_label_writeback').notNull().default(false),
-
-  // ── Gantt slice 1 (#109) ─────────────────────────────────────────
-  // Root-level scheduling mode: how the map's top-level children are
-  // scheduled. Individual nodes override with their own childrenScheduling.
-  // Default 'parallel' preserves existing behavior.
-  childrenScheduling: text('children_scheduling').notNull().default('parallel'),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

@@ -71,7 +71,6 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     wipLimit: (get('wipLimit', 'wip_limit') as number) ?? null,
     projectStartDate: (get('projectStartDate', 'project_start_date') as string) ?? null,
     hoursPerDay: (get('hoursPerDay', 'hours_per_day') as number) ?? 8,
-    childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'parallel'),
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
