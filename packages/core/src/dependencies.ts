@@ -273,77 +273,89 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
  * Returns a new nodes array; original nodes are not mutated.
  */
 function injectSequentialDeps(nodes: Node[]): Node[] {
-  // Build a WORKING nodeMap whose dep arrays are mutable copies. As each
-  // synthetic edge is added we mutate the working node's `dependencies`,
-  // so subsequent hasCycle checks (for OTHER parents in the same pass)
-  // see the synthetic edges added by earlier parents. Without this, the
-  // cycle guard only catches cycles formed by EXISTING edges; cycles
-  // formed by combining synthetic chains from sibling parents slip
-  // through and crash topologicalSort downstream.
-  const nodeMap = new Map<NodeId, Node>();
-  for (const n of nodes) {
-    nodeMap.set(n.id, { ...n, dependencies: [...n.dependencies] });
-  }
+  // Per-parent commit-or-rollback. The earlier hasCycle-only guard caught
+  // some cycles but missed the case where injection happens on INTERMEDIATE
+  // parent nodes (parents-of-parents): the cycle guard walks `parent.dependencies`
+  // which only carries parent-level edges, not the leaf-cascade edges
+  // produced by expandParentDependencies. Cycles forming through the
+  // cascade slip through.
+  //
+  // The robust fix: for each sequential parent, tentatively add its
+  // synthetic FS chain, run topologicalSort on the working graph, and
+  // ROLL BACK that parent's edges if the sort throws. Other parents'
+  // chains are unaffected. Final graph is guaranteed acyclic.
+  //
+  // Cost: O(P × (N + E)) per schedule() where P = sequential-parent count
+  // and N + E is the topological sort. For a ~2500-node map with a few
+  // hundred sequential parents this is well under 10ms.
+  const workingNodes: Node[] = nodes.map((n) => ({
+    ...n,
+    dependencies: [...n.dependencies],
+  }));
+  const workingMap = new Map<NodeId, Node>(workingNodes.map((n) => [n.id, n]));
 
-  // Map from child id → extra synthetic deps to prepend
-  const extras = new Map<NodeId, Node['dependencies']>();
+  for (const originalParent of nodes) {
+    if (originalParent.childrenScheduling !== 'sequential') continue;
+    if (originalParent.childrenIds.length < 2) continue;
 
-  for (const parent of nodes) {
-    if (parent.childrenScheduling !== 'sequential') continue;
-    if (parent.childrenIds.length < 2) continue;
-
-    // Resolve only children that are actually in our node set
-    const presentChildren = parent.childrenIds
-      .map((cid) => nodeMap.get(cid))
+    const presentChildren = originalParent.childrenIds
+      .map((cid) => workingMap.get(cid))
       .filter((n): n is Node => n !== undefined);
 
     if (presentChildren.length < 2) continue;
 
     const ordered = resolvedSiblingOrder(presentChildren);
 
+    // Compute the synthetic edges this parent wants to add
+    type EdgeRef = { follower: Node; edge: Node['dependencies'][0] };
+    const candidateEdges: EdgeRef[] = [];
+
     for (let i = 1; i < ordered.length; i++) {
       const predecessor = ordered[i - 1];
       const follower = ordered[i];
 
-      // Only inject if the follower doesn't already have an explicit FS dep
-      // on this predecessor (to avoid duplicates).
+      // Skip dup explicit edge
       const alreadyHas = follower.dependencies.some(
         (d) => d.targetNodeId === predecessor.id && d.type === 'FS',
       );
       if (alreadyHas) continue;
-
-      // Skip if predecessor already (transitively) depends on follower —
-      // injecting FS(follower → predecessor) would close a cycle and crash
-      // topologicalSort. The user's explicit edge wins; siblings stay
-      // parallel for this pair. Uses the working nodeMap so it sees
-      // synthetic edges added by earlier parents in this same pass.
-      if (hasCycle(follower.id, predecessor.id, nodeMap)) continue;
 
       const synthetic = {
         targetNodeId: predecessor.id,
         type: 'FS' as const,
         lag: 0,
       };
+      candidateEdges.push({ follower, edge: synthetic });
+    }
 
-      if (!extras.has(follower.id)) extras.set(follower.id, []);
-      extras.get(follower.id)!.push(synthetic);
+    if (candidateEdges.length === 0) continue;
 
-      // CRITICAL: mutate the working nodeMap so subsequent hasCycle calls
-      // see this edge. Without this, cross-parent cycles slip through.
-      nodeMap.get(follower.id)!.dependencies.push(synthetic);
+    // Tentatively add all candidate edges for THIS parent
+    for (const { follower, edge } of candidateEdges) {
+      follower.dependencies.push(edge);
+    }
+
+    // Verify the resulting graph is still acyclic. If injection on this
+    // parent would close a cycle (anywhere — via leaf-cascade edges from
+    // expandParentDependencies, via cross-parent synthetic chains, or via
+    // user-provided explicit edges), the topo sort throws. Roll back this
+    // parent's edges and continue with the next parent. Other parents'
+    // accepted chains stay in place.
+    try {
+      topologicalSort(workingNodes);
+    } catch (err) {
+      if (err instanceof Error && /Cycle detected/.test(err.message)) {
+        for (const { follower, edge } of candidateEdges) {
+          const idx = follower.dependencies.indexOf(edge);
+          if (idx >= 0) follower.dependencies.splice(idx, 1);
+        }
+        continue;
+      }
+      throw err;
     }
   }
 
-  if (extras.size === 0) return nodes;
-
-  return nodes.map((n) => {
-    const extra = extras.get(n.id);
-    if (!extra) return n;
-    return {
-      ...n,
-      dependencies: [...extra, ...n.dependencies],
-    };
-  });
+  return workingNodes;
 }
 
 /**
