@@ -633,5 +633,42 @@ export async function runMigrations(): Promise<void> {
   // childrenScheduling field — the map record itself has no separate
   // setting (the root Node is just a normal Node).
 
+  // ── Orchestration substrate (#111): work-queue + soft-conflict detection ──
+  // claimed_by_session: session ID that has claimed this node for active work.
+  //   null = unclaimed (available for dispatch). TEXT to accommodate arbitrary
+  //   session-ID formats (UUID, human-readable handles, etc.).
+  // claimed_at: ISO timestamp when the current claim was set. Used by the
+  //   stale-claim sweeper to auto-release claims with no progress updates
+  //   after N hours (default 4h, configurable per map via staleClaimHours).
+  // scopes: JSONB text[] of free-form scope tags for conflict detection.
+  //   Examples: 'apps/workflows', 'model:Mandate', 'migration:workflows'.
+  //   Empty array = no declared scopes (no conflict-detection for this node).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS claimed_by_session TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS scopes JSONB NOT NULL DEFAULT '[]'
+  `);
+  // Partial index on claimed_by_session: the stale-claim sweeper and
+  // conflict_scan only care about claimed rows; the partial index keeps
+  // those scans fast and bounded without touching the large unclaimed
+  // majority.
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS idx_nodes_claimed_by_session
+    ON nodes(claimed_by_session) WHERE claimed_by_session IS NOT NULL
+  `);
+
+  // ── stale_claim_hours per map (#111) ────────────────────────────
+  // Each map can configure how long a claim may sit idle before the
+  // sweeper auto-clears it. Default 4 hours. Stored as a REAL (fractional
+  // hours allowed) on the maps table so operators can fine-tune per
+  // project without a global env-var.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS stale_claim_hours REAL NOT NULL DEFAULT 4
+  `);
+
   console.log('[db] Migrations complete.');
 }

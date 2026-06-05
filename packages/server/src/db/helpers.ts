@@ -36,6 +36,12 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     autoProgress: ((get('autoProgress', 'auto_progress') as CoreNode['autoProgress']) ?? 'off'),
     priorityRank: (get('priorityRank', 'priority_rank') as number) ?? null,
     childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'parallel'),
+    // Orchestration substrate (#111)
+    claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
+    claimedAt: (get('claimedAt', 'claimed_at') instanceof Date
+      ? (get('claimedAt', 'claimed_at') as Date).toISOString()
+      : (get('claimedAt', 'claimed_at') as string)) ?? null,
+    scopes: (get('scopes', 'scopes') as string[]) ?? [],
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

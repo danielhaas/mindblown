@@ -5,13 +5,20 @@
  * mutation so connected map viewers update in real time.
  */
 
-import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
+import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed, ReadyNodesResult, ClaimNodeResult, ReleaseNodeResult, ConflictScanResult } from '@mindblown/tool-kit';
 import { computeTree } from '@mindblown/core';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
+import { eq, and, isNotNull } from 'drizzle-orm';
+import { db } from '../db/connection.js';
+import { nodes, maps } from '../db/schema.js';
+import { dbNodeToCore } from '../db/helpers.js';
+import { notDeleted } from '../db/nodes.js';
+import { resolvedSiblingOrder, isReady, scopeOverlap } from '@mindblown/core';
+import type { StatusDef, NodeMap } from '@mindblown/core';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -233,6 +240,143 @@ export function createChatBackend(userId: string): ToolBackend {
       throw new Error(
         'confirm_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
       );
+    },
+
+    // ── Orchestration substrate (#111) ──────────────────────────
+    async readyNodes(mapId: string, opts?: { limit?: number; scopeFilter?: string[] }): Promise<ReadyNodesResult> {
+      const limit = Math.min(100, Math.max(1, opts?.limit ?? 10));
+      const scopeFilter = opts?.scopeFilter ?? null;
+
+      const [mapRow] = await db.select().from(maps).where(eq(maps.id, mapId));
+      if (!mapRow) throw new Error(`Map ${mapId} not found`);
+
+      const workflow = ((mapRow.statusWorkflow as StatusDef[]) ?? []);
+      const doneIds = new Set(workflow.filter((s) => s.category === 'done').map((s) => s.id));
+      const isDone = (status: string | null) => status !== null && doneIds.has(status);
+
+      const todoIds = new Set(workflow.filter((s) => s.category === 'todo').map((s) => s.id));
+      const isTodo = (status: string | null) => status === null || todoIds.has(status);
+
+      const allRows = await db.select().from(nodes).where(and(eq(nodes.mapId, mapId), notDeleted));
+      const allNodes = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+      const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+      const candidates = allNodes.filter((n) => isTodo(n.status) && n.claimedBySession === null);
+      const readyNodes = candidates.filter((n) => isReady(n, nodeMap, isDone));
+
+      const filtered = scopeFilter
+        ? readyNodes.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
+        : readyNodes;
+
+      const byParent = new Map<string | null, typeof filtered>();
+      for (const n of filtered) {
+        const key = n.parentId;
+        if (!byParent.has(key)) byParent.set(key, []);
+        byParent.get(key)!.push(n);
+      }
+      const sorted: typeof filtered = [];
+      for (const [, siblings] of byParent) {
+        sorted.push(...resolvedSiblingOrder(siblings));
+      }
+
+      const page = sorted.slice(0, limit);
+      return {
+        mapId,
+        ready: page.map((n) => ({
+          id: n.id,
+          text: n.text,
+          status: n.status,
+          priority: n.priority,
+          priorityRank: n.priorityRank,
+          scopes: n.scopes,
+          claimedBySession: n.claimedBySession,
+          claimedAt: n.claimedAt,
+          parentId: n.parentId,
+        })),
+        total: sorted.length,
+        returned: page.length,
+      };
+    },
+
+    async claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult> {
+      const [row] = await db.select().from(nodes).where(and(eq(nodes.id, nodeId), notDeleted));
+      if (!row) throw new Error(`Node ${nodeId} not found`);
+
+      const node = dbNodeToCore(row as unknown as Record<string, unknown>);
+      const warned = node.claimedBySession !== null && node.claimedBySession !== sessionId;
+      const now = new Date();
+
+      const [updated] = await db
+        .update(nodes)
+        .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+        .where(and(eq(nodes.id, nodeId), notDeleted))
+        .returning();
+      if (!updated) throw new Error(`Node ${nodeId} not found`);
+
+      const updatedNode = dbNodeToCore(updated as unknown as Record<string, unknown>);
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: ['claimedBySession', 'claimedAt'], node: updatedNode });
+
+      return {
+        node: { id: updatedNode.id, text: updatedNode.text, claimedBySession: updatedNode.claimedBySession, claimedAt: updatedNode.claimedAt },
+        claimed: true,
+        warned,
+        warning: warned ? `Node ${nodeId} was already claimed by session "${node.claimedBySession}". Claim transferred.` : undefined,
+      };
+    },
+
+    async releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult> {
+      const [row] = await db.select().from(nodes).where(and(eq(nodes.id, nodeId), notDeleted));
+      if (!row) throw new Error(`Node ${nodeId} not found`);
+
+      const node = dbNodeToCore(row as unknown as Record<string, unknown>);
+      if (node.claimedBySession !== null && node.claimedBySession !== sessionId) {
+        throw new Error(
+          `Node ${nodeId} is claimed by session "${node.claimedBySession}", not "${sessionId}". Release rejected.`,
+        );
+      }
+
+      const now = new Date();
+      const [updated] = await db
+        .update(nodes)
+        .set({ claimedBySession: null, claimedAt: null, updatedAt: now })
+        .where(and(eq(nodes.id, nodeId), notDeleted))
+        .returning();
+      if (!updated) throw new Error(`Node ${nodeId} not found`);
+
+      const updatedNode = dbNodeToCore(updated as unknown as Record<string, unknown>);
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: ['claimedBySession', 'claimedAt'], node: updatedNode });
+
+      return { node: { id: updatedNode.id, text: updatedNode.text }, released: true };
+    },
+
+    async conflictScan(mapId: string, candidateNodeId: string): Promise<ConflictScanResult> {
+      const [candidateRow] = await db.select().from(nodes).where(and(eq(nodes.id, candidateNodeId), notDeleted));
+      if (!candidateRow) throw new Error(`Node ${candidateNodeId} not found`);
+
+      const candidate = dbNodeToCore(candidateRow as unknown as Record<string, unknown>);
+      if (candidate.scopes.length === 0) {
+        return { candidateId: candidateNodeId, candidateScopes: [], conflicts: [] };
+      }
+
+      const [mapRow] = await db.select({ statusWorkflow: maps.statusWorkflow }).from(maps).where(eq(maps.id, mapId));
+      const workflow = ((mapRow?.statusWorkflow as StatusDef[]) ?? []);
+      const inProgressIds = new Set(workflow.filter((s) => s.category === 'in_progress').map((s) => s.id));
+
+      const allRows = await db.select().from(nodes).where(and(eq(nodes.mapId, mapId), notDeleted));
+      const conflicts = [];
+
+      for (const row of allRows) {
+        if ((row.id as string) === candidateNodeId) continue;
+        const n = dbNodeToCore(row as unknown as Record<string, unknown>);
+        const isInProgress = n.status !== null && inProgressIds.has(n.status);
+        const isClaimed = n.claimedBySession !== null;
+        if (!isInProgress && !isClaimed) continue;
+        const overlap = scopeOverlap(candidate.scopes, n.scopes);
+        if (overlap.length === 0) continue;
+        conflicts.push({ id: n.id, text: n.text, status: n.status, claimedBySession: n.claimedBySession, overlappingScopes: overlap });
+      }
+
+      return { candidateId: candidateNodeId, candidateScopes: candidate.scopes, conflicts };
     },
   };
 }

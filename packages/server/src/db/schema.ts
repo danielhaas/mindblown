@@ -113,6 +113,13 @@ export const maps = pgTable('maps', {
   // write failure never blocks the triage flow. Uncertain decisions do
   // NOT write labels — intermediate state would just noise up GitHub.
   triageLabelWriteback: boolean('triage_label_writeback').notNull().default(false),
+
+  // ── Orchestration substrate (#111) ───────────────────────────
+  // How long (in hours) a claim may sit without a progress update before the
+  // stale-claim sweeper auto-releases it. Default 4 h. REAL so operators can
+  // set fractional hours (e.g. 0.5 for 30-minute stale threshold during
+  // short sessions).
+  staleClaimHours: real('stale_claim_hours').notNull().default(4),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -167,6 +174,16 @@ export const nodes = pgTable('nodes', {
   // How children of this node are scheduled relative to each other.
   // 'parallel' (default) = existing behavior; 'sequential' = implicit FS chain.
   childrenScheduling: text('children_scheduling').notNull().default('parallel'),
+
+  // ── Orchestration substrate (#111) ───────────────────────────
+  // claimed_by_session: session ID that owns this node for active work.
+  //   null = unclaimed / available.
+  // claimed_at: when the current claim was set; used by stale-claim sweeper.
+  // scopes: free-form tags for conflict detection (e.g. 'apps/workflows',
+  //   'model:Mandate'). Stored as JSONB text[]. Empty = no declared scopes.
+  claimedBySession: text('claimed_by_session'),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  scopes: jsonb('scopes').notNull().default([]),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────
