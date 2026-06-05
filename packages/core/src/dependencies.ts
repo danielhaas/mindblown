@@ -273,8 +273,17 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
  * Returns a new nodes array; original nodes are not mutated.
  */
 function injectSequentialDeps(nodes: Node[]): Node[] {
+  // Build a WORKING nodeMap whose dep arrays are mutable copies. As each
+  // synthetic edge is added we mutate the working node's `dependencies`,
+  // so subsequent hasCycle checks (for OTHER parents in the same pass)
+  // see the synthetic edges added by earlier parents. Without this, the
+  // cycle guard only catches cycles formed by EXISTING edges; cycles
+  // formed by combining synthetic chains from sibling parents slip
+  // through and crash topologicalSort downstream.
   const nodeMap = new Map<NodeId, Node>();
-  for (const n of nodes) nodeMap.set(n.id, n);
+  for (const n of nodes) {
+    nodeMap.set(n.id, { ...n, dependencies: [...n.dependencies] });
+  }
 
   // Map from child id → extra synthetic deps to prepend
   const extras = new Map<NodeId, Node['dependencies']>();
@@ -306,15 +315,22 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
       // Skip if predecessor already (transitively) depends on follower —
       // injecting FS(follower → predecessor) would close a cycle and crash
       // topologicalSort. The user's explicit edge wins; siblings stay
-      // parallel for this pair.
+      // parallel for this pair. Uses the working nodeMap so it sees
+      // synthetic edges added by earlier parents in this same pass.
       if (hasCycle(follower.id, predecessor.id, nodeMap)) continue;
 
-      if (!extras.has(follower.id)) extras.set(follower.id, []);
-      extras.get(follower.id)!.push({
+      const synthetic = {
         targetNodeId: predecessor.id,
-        type: 'FS',
+        type: 'FS' as const,
         lag: 0,
-      });
+      };
+
+      if (!extras.has(follower.id)) extras.set(follower.id, []);
+      extras.get(follower.id)!.push(synthetic);
+
+      // CRITICAL: mutate the working nodeMap so subsequent hasCycle calls
+      // see this edge. Without this, cross-parent cycles slip through.
+      nodeMap.get(follower.id)!.dependencies.push(synthetic);
     }
   }
 
@@ -347,13 +363,29 @@ export function schedule(
   constraints?: Map<NodeId, ScheduleConstraint>,
   context?: ScheduleContext,
 ): ScheduledNode[] {
-  // Inject implicit FS chains for sequential parents before topo sort
-  const sequenced = injectSequentialDeps(nodes);
-
-  // Expand parent-node dependencies to leaf-node dependencies
-  const expanded = expandParentDependencies(sequenced);
-
-  const sorted = topologicalSort(expanded);
+  // Inject implicit FS chains for sequential parents before topo sort.
+  // If injection somehow produces a cyclic graph (defense in depth — the
+  // injection function's own cycle guard should prevent this), fall back
+  // to the original nodes so the API returns a partial schedule instead
+  // of a 500. This keeps the Gantt usable even with adversarial data.
+  let sorted: Node[];
+  let expanded: Node[];
+  try {
+    const sequenced = injectSequentialDeps(nodes);
+    expanded = expandParentDependencies(sequenced);
+    sorted = topologicalSort(expanded);
+  } catch (err) {
+    if (err instanceof Error && /Cycle detected/.test(err.message)) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[scheduler] cycle detected after sequential injection; falling back to no implicit chains for this run',
+      );
+      expanded = expandParentDependencies(nodes);
+      sorted = topologicalSort(expanded);
+    } else {
+      throw err;
+    }
+  }
 
   const nodeMap = new Map<NodeId, Node>();
   for (const node of expanded) {
