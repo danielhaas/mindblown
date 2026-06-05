@@ -35,7 +35,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     externalLinks: (get('externalLinks', 'external_links') as CoreNode['externalLinks']) ?? [],
     autoProgress: ((get('autoProgress', 'auto_progress') as CoreNode['autoProgress']) ?? 'off'),
     priorityRank: (get('priorityRank', 'priority_rank') as number) ?? null,
-    childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'parallel'),
+    childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'sequential'),
     // Orchestration substrate (#111)
     claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
     claimedAt: (get('claimedAt', 'claimed_at') instanceof Date

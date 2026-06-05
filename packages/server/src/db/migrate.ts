@@ -621,13 +621,21 @@ export async function runMigrations(): Promise<void> {
   // ── Gantt slice 1 (#109): implicit sibling ordering + scheduling mode ──
   // priority_rank: fractional ranking for drag-to-reorder within a sibling
   //   group. REAL (float) for midpoint insertion. null = no explicit rank.
-  // children_scheduling: 'parallel' (default, existing behavior) or
-  //   'sequential' (implicit FS chain in resolved sibling order).
+  // children_scheduling: 'sequential' (default, implicit FS chain in resolved
+  //   sibling order) or 'parallel' (legacy — siblings stack at the same start).
+  //   Default flipped from 'parallel' to 'sequential' so the Gantt actually
+  //   spreads out without requiring a per-parent toggle.
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS priority_rank REAL
   `);
   await db.execute(sql`
-    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'parallel'
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'sequential'
+  `);
+  // On installs that pre-date this default flip, the column was created
+  // with DEFAULT 'parallel' and existing rows are stuck at 'parallel'.
+  // Repoint the column default and one-shot-flip historical rows.
+  await db.execute(sql`
+    ALTER TABLE nodes ALTER COLUMN children_scheduling SET DEFAULT 'sequential'
   `);
   // Root-level scheduling mode is governed by the root node's own
   // childrenScheduling field — the map record itself has no separate
@@ -668,6 +676,31 @@ export async function runMigrations(): Promise<void> {
   // project without a global env-var.
   await db.execute(sql`
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS stale_claim_hours REAL NOT NULL DEFAULT 4
+  `);
+
+  // ── One-shot data migrations ───────────────────────────────────
+  // Tracks data flips that should run exactly once per database.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS data_migrations (
+      id TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  // Flip historical 'parallel' rows to 'sequential'. The column default
+  // changed in this release, but rows created BEFORE this release carry
+  // the old 'parallel' value. The marker row in data_migrations ensures
+  // we only run the UPDATE on first boot of this version, so a user who
+  // later explicitly sets a parent back to 'parallel' won't get clobbered
+  // by subsequent restarts.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'flip_children_scheduling_default_v1') THEN
+        UPDATE nodes SET children_scheduling = 'sequential' WHERE children_scheduling = 'parallel';
+        INSERT INTO data_migrations (id) VALUES ('flip_children_scheduling_default_v1');
+      END IF;
+    END $$;
   `);
 
   console.log('[db] Migrations complete.');

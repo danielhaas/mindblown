@@ -142,7 +142,7 @@ export async function createNode(
     dueDate: input.dueDate ?? null,
     autoProgress: input.autoProgress ?? 'off',
     priorityRank: input.priorityRank ?? null,
-    childrenScheduling: input.childrenScheduling ?? 'parallel',
+    childrenScheduling: input.childrenScheduling ?? 'sequential',
     assigneeIds: [],
     tags: [],
     customFields: {},
