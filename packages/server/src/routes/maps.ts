@@ -76,7 +76,8 @@ function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
         constraints.set(n.id, pin);
       }
     }
-    const scheduled = schedule(nodes, 0, constraints);
+    const workers = Math.max(1, Math.min(100, Math.floor(map.workerCount ?? 1)));
+    const scheduled = schedule(nodes, 0, constraints, undefined, workers);
     const maxEnd = scheduled.reduce((m, s) => Math.max(m, s.computedEnd), 0);
     plannedFinishOffsetDays = maxEnd / unitsPerDay;
     const finish = new Date(projectStartDate.getTime());
@@ -419,7 +420,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // (via ancestor inheritance — same pattern as remaining_work and friends).
   // Cross-version dependencies are dropped from the scheduler input and
   // reported back as `crossVersionDependencies` so callers can spot them.
-  app.get<{ Params: { id: string }; Querystring: { versionId?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { versionId?: string; workers?: string } }>(
     '/api/maps/:id/schedule',
     async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
@@ -516,7 +517,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const scheduled = schedule(scopedNodes, 0, constraints);
+    // Resolve effective worker count: query param overrides map setting.
+    // Floor at 1, cap at 100 to keep accidental ?workers=999999 from being
+    // weird.
+    const queryWorkers = req.query.workers ? Number(req.query.workers) : NaN;
+    const effectiveWorkers = Number.isFinite(queryWorkers) && queryWorkers >= 1
+      ? Math.min(100, Math.floor(queryWorkers))
+      : Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
+
+    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers);
     const cp = criticalPath(scopedNodes);
 
     return reply.send({
@@ -525,6 +534,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       projectStartDate: projectStartDate.toISOString().slice(0, 10),
       effortUnit: data.map.effortUnit,
       unitsPerDay,
+      workerCount: effectiveWorkers,
       versionId: versionId ?? null,
       crossVersionDependencies: versionId ? crossVersionDependencies : [],
     });
@@ -647,7 +657,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let velocityAdjustedFinishDate: string | null = null;
     let maxScopedEnd = 0;
     try {
-      const scheduled = schedule(data.nodes, 0, constraints);
+      const workers = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
+      const scheduled = schedule(data.nodes, 0, constraints, undefined, workers);
       const scopedIds = new Set(leaves.map((l) => l.id));
       maxScopedEnd = scheduled
         .filter((s) => scopedIds.has(s.nodeId))

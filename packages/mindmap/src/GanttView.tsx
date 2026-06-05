@@ -7,7 +7,7 @@ import {
   businessDaysBetween,
 } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
-import { fetchSchedule } from './api.js';
+import { fetchSchedule, updateMap as updateMapApi } from './api.js';
 
 // ── Schedule response shape (from GET /api/maps/:id/schedule) ────
 
@@ -17,6 +17,7 @@ interface ScheduleResponse {
   projectStartDate: string; // ISO YYYY-MM-DD
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
+  workerCount: number;
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -273,10 +274,12 @@ export function GanttView() {
   const [collapsedSet, setCollapsedSet] = useState<Set<string>>(() => new Set());
   const [serverScheduleData, setServerScheduleData] = useState<ScheduleResponse | null>(null);
   const [selectedBaseline, setSelectedBaseline] = useState<string | null>(null);
-  const [sequentialMode, setSequentialMode] = useState(false);
-  const [parallelism, setParallelism] = useState(1);
-  const [savingPlan, setSavingPlan] = useState(false);
   const [savedFlash, setSavedFlash] = useState<string | null>(null);
+  // Workers value the user is editing in the toolbar. Defaults to the
+  // server-returned schedule's workerCount; on change we call
+  // updateMap({workerCount}) and the schedule refetches.
+  const [workersInput, setWorkersInput] = useState<number>(1);
+  const [savingWorkers, setSavingWorkers] = useState(false);
   const [showBehindOnly, setShowBehindOnly] = useState(false);
   const [taskListWidth, setTaskListWidth] = useState<number>(() => {
     const raw = typeof window !== 'undefined' ? window.localStorage.getItem(TASK_WIDTH_STORAGE_KEY) : null;
@@ -326,532 +329,15 @@ export function GanttView() {
       });
   }, [currentMapId, nodes]);
 
-  // ── Sequential what-if schedule ────────────────────────────────
-  //
-  // When sequential mode is on, we re-run the scheduler client-side with
-  // synthetic FS dependencies between siblings so the Gantt can answer
-  // "what if I did these one after another?" without mutating the map.
-  // `parallelism = N` means N parallel tracks — sibling[i] gets an extra
-  // FS dep on sibling[i - N]. N=1 is fully sequential.
-  //
-  // Manual startDate/dueDate pins are still honored via constraints, using
-  // the same ISO→unit math as the backend schedule route.
-  const sequentialResult = useMemo<{
-    data: ScheduleResponse;
-    edges: number;
-    skipped: number;
-    fills: number;
-    pinnedLeaves: number;
-    doneLeaves: number;
-    activeLeaves: number;
-    error: string | null;
-  } | null>(() => {
-    if (!serverScheduleData || !sequentialMode) return null;
-
-    const unitsPerDay = serverScheduleData.unitsPerDay || 1;
-    const anchor = new Date(serverScheduleData.projectStartDate);
-    anchor.setUTCHours(0, 0, 0, 0);
-
-    // Scope nodeList to the active version/cycle filter — same rule
-    // the `rows` memo uses. Without this, sequential mode would chain
-    // in out-of-scope leaves whose pins/deps drag the visible bars
-    // around when the user expects the filter to be authoritative.
-    // Nodes inherit their parent's version/cycle unless they have
-    // their own, and a subtree is in scope iff the inherited value
-    // matches the filter; children's childrenIds are pruned to only
-    // in-scope children so parent rollup stays consistent.
-    const allNodes = Object.values(nodes);
-    let nodeList: Node[] = allNodes;
-    if ((activeVersionFilter || activeCycleFilter) && rootNodeId && nodes[rootNodeId]) {
-      const inScope = new Set<string>();
-      const walkScope = (
-        nodeId: string,
-        inheritedVersion: string | null,
-        inheritedCycle: string | null,
-      ) => {
-        const node = nodes[nodeId];
-        if (!node) return;
-        const effVersion = node.versionId ?? inheritedVersion;
-        const effCycle = node.cycleId ?? inheritedCycle;
-        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
-        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
-        if (matchesVersion && matchesCycle) inScope.add(nodeId);
-        for (const cid of node.childrenIds) walkScope(cid, effVersion, effCycle);
-      };
-      walkScope(rootNodeId, null, null);
-
-      // Ancestors of any in-scope node need to be kept so the rollup
-      // has a tree to roll up into (otherwise scheduled parents would
-      // vanish even though they have visible children).
-      const withAncestors = new Set(inScope);
-      for (const id of inScope) {
-        let cur: string | undefined = nodes[id]?.parentId ?? undefined;
-        while (cur) {
-          if (withAncestors.has(cur)) break;
-          withAncestors.add(cur);
-          cur = nodes[cur]?.parentId ?? undefined;
-        }
-      }
-
-      nodeList = allNodes
-        .filter((n) => withAncestors.has(n.id))
-        .map((n) => {
-          const keptChildren = n.childrenIds.filter((cid) => withAncestors.has(cid));
-          if (keptChildren.length === n.childrenIds.length) return n;
-          return { ...n, childrenIds: keptChildren };
-        });
-    }
-
-    if (nodeList.length === 0) {
-      return {
-        data: serverScheduleData,
-        edges: 0,
-        skipped: 0,
-        fills: 0,
-        pinnedLeaves: 0,
-        doneLeaves: 0,
-        activeLeaves: 0,
-        error: 'no nodes',
-      };
-    }
-
-    const p = Math.max(1, parallelism);
-
-    // Sibling chain order = tree order (childrenIds). Users control
-    // sequencing by reordering nodes in the mindmap / Gantt task list,
-    // not by whatever the scheduler happened to produce. The cycle
-    // filter further down still drops any edge that would reverse an
-    // existing dependency, so "drag this one first" can't silently
-    // break explicit FS links.
-
-    const nodeById = new Map<string, Node>();
-    for (const n of nodeList) nodeById.set(n.id, n);
-
-    // ── Leaf-level reachability precompute ────────────────────────
-    // Cycle-safe sequencing of parent siblings requires knowing, for
-    // every leaf L, which leaves L transitively depends on via the
-    // expanded dep graph — own dependencies plus every ancestor's,
-    // with each dep target resolved to the target's leaf descendants.
-    // We precompute this once and use it as the oracle for candidate
-    // parent-to-parent synthetic edges: a candidate is dropped iff any
-    // leaf in the follower subtree already reaches any leaf in the
-    // predecessor subtree (that would close a loop after the scheduler
-    // expands parent deps internally).
-    const leavesOfCache = new Map<string, string[]>();
-    const computeLeavesOf = (id: string): string[] => {
-      const cached = leavesOfCache.get(id);
-      if (cached) return cached;
-      const nd = nodeById.get(id);
-      if (!nd) {
-        leavesOfCache.set(id, []);
-        return [];
-      }
-      let result: string[];
-      if (nd.childrenIds.length === 0) {
-        result = [id];
-      } else {
-        result = [];
-        for (const c of nd.childrenIds) result.push(...computeLeavesOf(c));
-      }
-      leavesOfCache.set(id, result);
-      return result;
-    };
-    for (const n of nodeList) computeLeavesOf(n.id);
-
-    const parentOfNode = new Map<string, string>();
-    for (const n of nodeList) {
-      for (const c of n.childrenIds) parentOfNode.set(c, n.id);
-    }
-
-    const allLeafIds = nodeList.filter((n) => n.childrenIds.length === 0).map((n) => n.id);
-
-    const leafDirectDeps = new Map<string, Set<string>>();
-    for (const leafId of allLeafIds) {
-      const set = new Set<string>();
-      let cur: string | undefined = leafId;
-      while (cur) {
-        const nd = nodeById.get(cur);
-        if (!nd) break;
-        for (const dep of nd.dependencies) {
-          for (const tl of computeLeavesOf(dep.targetNodeId)) {
-            if (tl !== leafId) set.add(tl);
-          }
-        }
-        cur = parentOfNode.get(cur);
-      }
-      leafDirectDeps.set(leafId, set);
-    }
-
-    const leafReach = new Map<string, Set<string>>();
-    for (const leafId of allLeafIds) {
-      const reach = new Set<string>();
-      const stack = [...(leafDirectDeps.get(leafId) ?? [])];
-      while (stack.length) {
-        const curId = stack.pop()!;
-        if (reach.has(curId)) continue;
-        reach.add(curId);
-        for (const next of leafDirectDeps.get(curId) ?? []) stack.push(next);
-      }
-      leafReach.set(leafId, reach);
-    }
-
-    const wouldCycle = (followerId: string, predId: string): boolean => {
-      const fLeaves = computeLeavesOf(followerId);
-      const pLeaves = computeLeavesOf(predId);
-      for (const pl of pLeaves) {
-        const reach = leafReach.get(pl);
-        if (!reach || reach.size === 0) continue;
-        for (const fl of fLeaves) {
-          if (reach.has(fl)) return true;
-        }
-      }
-      return false;
-    };
-
-    // Extend leafReach with the effect of adding "follower depends on
-    // pred" — i.e. every leaf in follower's subtree now transitively
-    // reaches every leaf in pred's subtree (and everything pred's
-    // leaves already reached). Also fold into any leaf that previously
-    // reached a follower leaf, so chains stay consistent.
-    const extendReach = (followerId: string, predId: string) => {
-      const fLeaves = computeLeavesOf(followerId);
-      const pLeaves = computeLeavesOf(predId);
-      const addedReach = new Set<string>();
-      for (const pl of pLeaves) {
-        addedReach.add(pl);
-        const plReach = leafReach.get(pl);
-        if (plReach) for (const x of plReach) addedReach.add(x);
-      }
-      for (const fl of fLeaves) {
-        let flReach = leafReach.get(fl);
-        if (!flReach) {
-          flReach = new Set();
-          leafReach.set(fl, flReach);
-        }
-        for (const x of addedReach) flReach.add(x);
-      }
-      // Propagate upstream: any leaf X whose reach included any fl now
-      // also reaches addedReach.
-      for (const [xId, xReach] of leafReach) {
-        if (xId === followerId) continue;
-        let touchesFollower = false;
-        for (const fl of fLeaves) {
-          if (xReach.has(fl)) {
-            touchesFollower = true;
-            break;
-          }
-        }
-        if (touchesFollower) {
-          for (const y of addedReach) xReach.add(y);
-        }
-      }
-    };
-
-    // A subtree is "fully done" iff every leaf under it has pct >= 100.
-    // Done subtrees are pinned in the past and must not participate in
-    // the forward chain — otherwise an FS edge where they're either
-    // predecessor or follower would make the scheduler respect the
-    // later of (past pin, chain position), landing the done bar in
-    // the future chain instead of the past.
-    const isFullyDone = (id: string): boolean => {
-      const leaves = computeLeavesOf(id);
-      if (leaves.length === 0) return false;
-      for (const lid of leaves) {
-        const l = nodeById.get(lid);
-        if (!l) return false;
-        if ((l.percentComplete ?? 0) < 100) return false;
-      }
-      return true;
-    };
-
-    const extraDeps = new Map<string, { targetNodeId: string; type: 'FS'; lag: number }[]>();
-    let edges = 0;
-    let skipped = 0;
-
-    for (const n of nodeList) {
-      if (n.childrenIds.length < 2) continue;
-      // Top-level epics (direct children of the tree root) run in
-      // parallel — sequencing them would force "finish epic A before
-      // starting epic B" which isn't usually what users want. Within
-      // each epic we still chain siblings; that's the useful part.
-      if (n.id === rootNodeId) continue;
-
-      // Chain in tree order, but drop fully-done children. Their bars
-      // live in the past via explicit pins; including them in the chain
-      // would let an FS predecessor push them forward into the future.
-      const orderedChildren = n.childrenIds.filter((cid) => !isFullyDone(cid));
-      if (orderedChildren.length < 2) continue;
-
-      for (let i = p; i < orderedChildren.length; i++) {
-        const follower = orderedChildren[i];
-        const predecessor = orderedChildren[i - p];
-
-        // In-progress leaf as follower: position is pinned at today,
-        // so don't make it wait on a tree-order predecessor.
-        // (Followers of the in-progress leaf still get the chain edge
-        // pointing at it, so the cascade anchors there correctly.)
-        const followerNode = nodeById.get(follower);
-        if (followerNode && followerNode.childrenIds.length === 0) {
-          const fpct = followerNode.percentComplete ?? 0;
-          if (fpct > 0 && fpct < 100) continue;
-        }
-
-        if (wouldCycle(follower, predecessor)) {
-          skipped++;
-          continue;
-        }
-
-        const list = extraDeps.get(follower) ?? [];
-        list.push({ targetNodeId: predecessor, type: 'FS', lag: 0 });
-        extraDeps.set(follower, list);
-        extendReach(follower, predecessor);
-        edges++;
-      }
-    }
-
-    // Patch leaf durations and dependencies for sequential mode.
-    //  - Unestimated leaves get a 1-day placeholder.
-    //  - In-progress leaves use REMAINING work as duration AND clear
-    //    their own dependencies (both real and synthetic), so nothing
-    //    can push them past "today". They still act as predecessors
-    //    for followers (the FS edges live on the follower side).
-    //  - Done leaves: duration stays at original effort, dependencies
-    //    cleared so the past-pin can't be overridden by a real or
-    //    chain dep on a future task.
-    //  - Todo leaves: real deps + synthetic FS merged as usual.
-    const minLeafEffort = unitsPerDay;
-    let fills = 0;
-    const patched: Node[] = nodeList.map((n) => {
-      const extra = extraDeps.get(n.id);
-      const isLeaf = n.childrenIds.length === 0;
-
-      let effortEstimate: number | null | undefined = n.effortEstimate;
-      let dependencies = n.dependencies;
-
-      if (isLeaf) {
-        const pct = n.percentComplete ?? 0;
-        const baseEffort = (n.effortEstimate ?? 0) > 0 ? (n.effortEstimate as number) : minLeafEffort;
-        if ((n.effortEstimate ?? 0) <= 0) fills++;
-
-        if (pct >= 100) {
-          effortEstimate = baseEffort;
-          dependencies = [];
-        } else if (pct > 0) {
-          effortEstimate = Math.max(baseEffort * (1 - pct / 100), minLeafEffort);
-          dependencies = [];
-        } else {
-          effortEstimate = baseEffort;
-          dependencies = extra ? [...n.dependencies, ...extra] : n.dependencies;
-        }
-      } else if (extra) {
-        dependencies = [...n.dependencies, ...extra];
-      }
-
-      if (dependencies === n.dependencies && effortEstimate === n.effortEstimate) {
-        return n;
-      }
-      return { ...n, dependencies, effortEstimate };
-    });
-
-    // Constraint building. Only pin LEAVES (parent start/end rolls up
-    // from children, so a parent pin is a no-op at best and a subtree
-    // clamp at worst).
-    //
-    // Per-node pinning rules:
-    //  - Done (percentComplete === 100): pin to the recent past so the
-    //    bar visibly shows when it was done instead of sitting in the
-    //    middle of the upcoming chain. We anchor the END at today and
-    //    work backward by effort.
-    //  - In progress (0 < pct < 100): pin start to today; the remaining
-    //    duration extends from there. This anchors "what you're working
-    //    on now" at today so downstream cascade chains from here.
-    //  - Todo (0 or null pct): respect manual startDate/dueDate pins
-    //    if present, otherwise let the synthetic FS cascade decide.
-    // In sequential mode, one scheduler unit = one working day (Mon-Fri).
-    // Converting dates to units counts only weekdays from the anchor, and
-    // converting unit positions back to dates uses the same working-day
-    // walk — so an FS chain of "predecessor.end + 0 = follower.start"
-    // naturally skips weekends.
-    const isoToUnits = (isoDate: string): number => {
-      const d = new Date(isoDate);
-      d.setUTCHours(0, 0, 0, 0);
-      return businessDaysBetween(anchor, d) * unitsPerDay;
-    };
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const todayUnits = isoToUnits(today.toISOString().slice(0, 10));
-
-    const constraints = new Map<NodeId, ScheduleConstraint>();
-    let pinnedLeaves = 0;
-    let doneLeaves = 0;
-    let activeLeaves = 0;
-    for (const n of patched) {
-      if (n.childrenIds.length > 0) continue;
-      const pct = n.percentComplete ?? 0;
-      const effortUnits = (n.effortEstimate ?? minLeafEffort) || minLeafEffort;
-
-      if (pct >= 100) {
-        // Done → end at today, bar occupies (today - effort, today)
-        constraints.set(n.id, {
-          minStart: todayUnits - effortUnits,
-          maxEnd: todayUnits,
-        });
-        doneLeaves++;
-        pinnedLeaves++;
-      } else if (pct > 0) {
-        // In progress → start at today, remaining effort extends forward.
-        // effortEstimate on the patched node was already reduced to
-        // remaining, so we just pin the start and let duration do the
-        // rest (pin.maxEnd = today + remaining keeps the scheduler
-        // honest if its own math slightly drifts).
-        constraints.set(n.id, {
-          minStart: todayUnits,
-          maxEnd: todayUnits + effortUnits,
-        });
-        activeLeaves++;
-        pinnedLeaves++;
-      } else {
-        // Todo → honor manual pins only
-        const pin: ScheduleConstraint = {};
-        if (n.startDate) pin.minStart = isoToUnits(n.startDate);
-        if (n.dueDate) pin.maxEnd = isoToUnits(n.dueDate);
-        if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
-          constraints.set(n.id, pin);
-          pinnedLeaves++;
-        }
-      }
-    }
-
-    try {
-      const scheduled = computeSchedule(patched, 0, constraints);
-      const cp = computeCriticalPath(patched);
-
-      // ── Forcibly overwrite done/in-progress leaf positions ──
-      //
-      // The scheduler calls expandParentDependencies internally, which
-      // pushes any ancestor's real deps down to every leaf in that
-      // subtree. So even after we clear a leaf's own dependencies, it
-      // can still inherit a future-dated parent dep and end up ahead
-      // of its past-pin (which is just a lower bound). We post-process:
-      // walk the schedule, override done/in-progress leaves to their
-      // desired pinned positions, then re-roll-up parents bottom-up so
-      // their computedStart/End reflect the overridden leaves.
-      const scheduledIdx = new Map<string, number>();
-      scheduled.forEach((s, i) => scheduledIdx.set(s.nodeId, i));
-
-      const patchedById = new Map<string, Node>();
-      for (const n of patched) patchedById.set(n.id, n);
-
-      for (let i = 0; i < scheduled.length; i++) {
-        const s = scheduled[i];
-        const node = patchedById.get(s.nodeId);
-        if (!node || node.childrenIds.length > 0) continue;
-        const pct = node.percentComplete ?? 0;
-        if (pct >= 100) {
-          const effortUnits =
-            (node.effortEstimate ?? minLeafEffort) || minLeafEffort;
-          scheduled[i] = {
-            nodeId: s.nodeId,
-            computedStart: todayUnits - effortUnits,
-            computedEnd: todayUnits,
-            duration: effortUnits,
-          };
-        } else if (pct > 0) {
-          const effortUnits =
-            (node.effortEstimate ?? minLeafEffort) || minLeafEffort;
-          scheduled[i] = {
-            nodeId: s.nodeId,
-            computedStart: todayUnits,
-            computedEnd: todayUnits + effortUnits,
-            duration: effortUnits,
-          };
-        }
-      }
-
-      // Bottom-up parent rollup. Post-order DFS from root so every
-      // child has its final values before its parent is computed.
-      const rollup = (nodeId: string): { start: number; end: number } | null => {
-        const node = patchedById.get(nodeId);
-        if (!node) return null;
-        const idx = scheduledIdx.get(nodeId);
-        if (idx == null) return null;
-        if (node.childrenIds.length === 0) {
-          const s = scheduled[idx];
-          return { start: s.computedStart, end: s.computedEnd };
-        }
-        let minStart = Infinity;
-        let maxEnd = -Infinity;
-        for (const cid of node.childrenIds) {
-          const c = rollup(cid);
-          if (!c) continue;
-          if (c.start < minStart) minStart = c.start;
-          if (c.end > maxEnd) maxEnd = c.end;
-        }
-        if (minStart === Infinity) return null;
-        scheduled[idx] = {
-          nodeId,
-          computedStart: minStart,
-          computedEnd: maxEnd,
-          duration: maxEnd - minStart,
-        };
-        return { start: minStart, end: maxEnd };
-      };
-      if (rootNodeId) rollup(rootNodeId);
-
-      return {
-        data: {
-          schedule: scheduled,
-          criticalPath: cp,
-          projectStartDate: serverScheduleData.projectStartDate,
-          effortUnit: serverScheduleData.effortUnit,
-          unitsPerDay,
-        },
-        edges,
-        skipped,
-        fills,
-        pinnedLeaves,
-        doneLeaves,
-        activeLeaves,
-        error: null,
-      };
-    } catch (e) {
-      return {
-        data: serverScheduleData,
-        edges,
-        skipped,
-        fills,
-        pinnedLeaves,
-        doneLeaves,
-        activeLeaves,
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
-  }, [
-    serverScheduleData,
-    sequentialMode,
-    parallelism,
-    nodes,
-    rootNodeId,
-    activeVersionFilter,
-    activeCycleFilter,
-  ]);
-
-  // Recompute tick — bumps every time the sequential schedule runs.
-  // Lets us verify from the toolbar badge whether the memo actually
-  // fires on a drag.
-  const recomputeCountRef = useRef(0);
-  const [recomputeCount, setRecomputeCount] = useState(0);
-  useEffect(() => {
-    if (!sequentialMode) return;
-    recomputeCountRef.current += 1;
-    setRecomputeCount(recomputeCountRef.current);
-  }, [sequentialResult, sequentialMode]);
-
-  const scheduleData: ScheduleResponse | null = sequentialMode
-    ? sequentialResult?.data ?? serverScheduleData
-    : serverScheduleData;
-
+  const scheduleData: ScheduleResponse | null = serverScheduleData;
   const criticalPath = scheduleData?.criticalPath ?? null;
+
+  // Sync the visible Workers input to whatever the server says.
+  useEffect(() => {
+    if (scheduleData?.workerCount !== undefined) {
+      setWorkersInput(Math.max(1, Math.floor(scheduleData.workerCount)));
+    }
+  }, [scheduleData?.workerCount]);
 
   // ── Map computed offsets → calendar dates ──────────────────────
   //
@@ -863,41 +349,23 @@ export function GanttView() {
     const map = new Map<string, { start: Date; end: Date }>();
     if (!scheduleData) return map;
 
-    const anchorUTC = new Date(scheduleData.projectStartDate);
-    anchorUTC.setUTCHours(0, 0, 0, 0);
     const anchorLocal = new Date(scheduleData.projectStartDate);
     anchorLocal.setHours(0, 0, 0, 0);
     const unitsPerDay = scheduleData.unitsPerDay || 1;
 
-    // In sequential mode the scheduler's units are working days; we
-    // need to walk Mon–Fri only to convert them back to calendar
-    // dates. Outside sequential mode we use the server's schedule
-    // which is in straight calendar days.
+    // Server schedule is in straight calendar days from the project anchor.
     for (const s of scheduleData.schedule) {
       const startDays = s.computedStart / unitsPerDay;
       const endDays = s.computedEnd / unitsPerDay;
-
-      let start: Date;
-      let end: Date;
-      if (sequentialMode) {
-        // Floor start, ceil end, and enforce at least a 1-working-day
-        // visible span so 0.5-day bars and zero-duration markers don't
-        // collapse to a point.
-        const startWD = Math.floor(startDays);
-        const endWD = Math.max(Math.ceil(endDays), startWD + 1);
-        start = addBusinessDays(anchorUTC, startWD);
-        end = addBusinessDays(anchorUTC, endWD);
-      } else {
-        const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
-        start = new Date(anchorLocal);
-        start.setDate(start.getDate() + Math.round(startDays));
-        end = new Date(anchorLocal);
-        end.setDate(end.getDate() + Math.round(visibleEndDays));
-      }
+      const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
+      const start = new Date(anchorLocal);
+      start.setDate(start.getDate() + Math.round(startDays));
+      const end = new Date(anchorLocal);
+      end.setDate(end.getDate() + Math.round(visibleEndDays));
       map.set(s.nodeId, { start, end });
     }
     return map;
-  }, [scheduleData, sequentialMode]);
+  }, [scheduleData]);
 
   // ── Flatten nodes into rows ────────────────────────────────────
   //
@@ -1042,7 +510,7 @@ export function GanttView() {
   // Reset auto-scroll flag when scale or the active schedule changes
   useEffect(() => {
     hasAutoScrolled.current = false;
-  }, [scale, sequentialMode, parallelism]);
+  }, [scale]);
 
   // ── Synchronized scrolling ──────────────────────────────────────
 
@@ -1362,35 +830,6 @@ export function GanttView() {
     window.setTimeout(() => setSavedFlash(null), 3000);
   }, [rows, computed, updateNode]);
 
-  const handleSavePlan = useCallback(async () => {
-    if (savingPlan) return;
-    setSavingPlan(true);
-    setSavedFlash(null);
-    try {
-      const toIso = (d: Date) => d.toISOString().slice(0, 10);
-      const tasks: Promise<void>[] = [];
-      let count = 0;
-      for (const row of rows) {
-        const node = row.node;
-        if (node.childrenIds.length > 0) continue; // parents roll up
-        const pct = node.percentComplete ?? 0;
-        if (pct !== 0) continue; // skip done + in-progress
-        const dates = scheduleDates.get(node.id);
-        if (!dates) continue;
-        const startIso = toIso(dates.start);
-        const dueIso = toIso(dates.end);
-        if (node.startDate === startIso && node.dueDate === dueIso) continue;
-        updateNode(node.id, { startDate: startIso, dueDate: dueIso });
-        count++;
-      }
-      await Promise.all(tasks);
-      setSavedFlash(`Saved ${count} task${count === 1 ? '' : 's'}`);
-      window.setTimeout(() => setSavedFlash(null), 3000);
-    } finally {
-      setSavingPlan(false);
-    }
-  }, [rows, scheduleDates, updateNode, savingPlan]);
-
   // ── Drag-resize the task-list / timeline split ────────────────
   const splitRootRef = useRef<HTMLDivElement>(null);
   const handleSplitMouseDown = useCallback((e: React.MouseEvent) => {
@@ -1577,86 +1016,56 @@ export function GanttView() {
           Push overdue
         </button>
 
-        {/* Sequential what-if toggle */}
+        {/* Workers: how many parallel tracks the schedule projects onto */}
         <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
-        <button
-          onClick={() => setSequentialMode((v) => !v)}
-          title="Preview what happens if siblings are done one after another. Doesn't mutate the map."
-          style={{
-            padding: '3px 10px',
-            borderRadius: 4,
-            border: '1px solid #e2e8f0',
-            fontSize: 11,
-            fontWeight: 600,
-            fontFamily: 'inherit',
-            cursor: 'pointer',
-            background: sequentialMode ? '#4f46e5' : '#fff',
-            color: sequentialMode ? '#fff' : '#475569',
+        <span style={{ fontWeight: 600, color: '#64748b' }}>Workers:</span>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          value={workersInput}
+          disabled={savingWorkers}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (!isNaN(v) && v >= 1) setWorkersInput(Math.min(100, v));
           }}
-        >
-          Sequential
-        </button>
-        {sequentialMode && (
-          <>
-            <span style={{ fontWeight: 600, color: '#64748b' }}>People:</span>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={parallelism}
-              onChange={(e) => {
-                const v = parseInt(e.target.value, 10);
-                if (!isNaN(v) && v >= 1) setParallelism(Math.min(20, v));
-              }}
-              style={{
-                width: 48,
-                fontSize: 11,
-                fontFamily: 'inherit',
-                border: '1px solid #e2e8f0',
-                borderRadius: 4,
-                padding: '2px 6px',
-                color: '#475569',
-                background: '#fff',
-              }}
-            />
-            <button
-              onClick={handleSavePlan}
-              disabled={savingPlan}
-              title="Write the current sequential schedule back to each visible todo leaf as startDate/dueDate. Done and in-progress leaves are left alone."
-              style={{
-                padding: '3px 10px',
-                borderRadius: 4,
-                border: '1px solid #16a34a',
-                fontSize: 11,
-                fontWeight: 600,
-                fontFamily: 'inherit',
-                cursor: savingPlan ? 'wait' : 'pointer',
-                background: savingPlan ? '#dcfce7' : '#16a34a',
-                color: savingPlan ? '#15803d' : '#fff',
-              }}
-            >
-              {savingPlan ? 'Saving…' : 'Save plan'}
-            </button>
-            {savedFlash && (
-              <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>
-                ✓ {savedFlash}
-              </span>
-            )}
-            {sequentialResult && (
-              <span
-                style={{
-                  fontSize: 11,
-                  color: sequentialResult.error ? '#dc2626' : '#64748b',
-                  fontStyle: 'italic',
-                }}
-                title={sequentialResult.error ?? 'Synthetic FS edges added between siblings. Unestimated leaves get a 1-day placeholder.'}
-              >
-                {sequentialResult.error
-                  ? `error: ${sequentialResult.error}`
-                  : `${sequentialResult.edges} edges, ${sequentialResult.doneLeaves} done, ${sequentialResult.activeLeaves} active, ${sequentialResult.skipped} skipped · recomputes: ${recomputeCount}`}
-              </span>
-            )}
-          </>
+          onBlur={async () => {
+            if (!currentMapId) return;
+            const current = scheduleData?.workerCount ?? 1;
+            if (workersInput === current) return;
+            setSavingWorkers(true);
+            try {
+              await updateMapApi(currentMapId, { workerCount: workersInput });
+              // Refetch the schedule with the new worker count.
+              const refreshed = (await fetchSchedule(currentMapId)) as ScheduleResponse;
+              setServerScheduleData(refreshed);
+              setSavedFlash(`Workers: ${workersInput}`);
+              window.setTimeout(() => setSavedFlash(null), 2000);
+            } catch (err) {
+              // eslint-disable-next-line no-console
+              console.warn('[gantt] failed to update workerCount:', err);
+              // Revert the visible input to the server's current value.
+              setWorkersInput(current);
+            } finally {
+              setSavingWorkers(false);
+            }
+          }}
+          title="Number of parallel work tracks. View knob — the underlying plan (priorities + estimates + deps) is unchanged. Higher = more parallelism shrinks the timeline."
+          style={{
+            width: 48,
+            fontSize: 11,
+            fontFamily: 'inherit',
+            border: '1px solid #e2e8f0',
+            borderRadius: 4,
+            padding: '2px 6px',
+            color: '#475569',
+            background: savingWorkers ? '#f1f5f9' : '#fff',
+          }}
+        />
+        {savedFlash && (
+          <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>
+            ✓ {savedFlash}
+          </span>
         )}
 
         {/* Baseline selector */}

@@ -469,6 +469,60 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('a')!.computedStart).toBe(1);
   });
 
+  it('workerCount=2: two independent leaves run in parallel on different tracks', () => {
+    const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 3 });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 2 });
+    const result = schedule([a, b], 0, undefined, undefined, 2);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // A on track 0 at 0..3, B on track 1 at 0..2 (both start at day 0).
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(3);
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(2);
+  });
+
+  it('workerCount=2: dep forces serial even with capacity', () => {
+    const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 3 });
+    const b = makeNode({
+      id: 'b',
+      priority: 'P1',
+      effortEstimate: 2,
+      dependencies: [{ targetNodeId: 'a', type: 'FS', lag: 0 }],
+    });
+    const result = schedule([a, b], 0, undefined, undefined, 2);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // A at 0..3 on track 0. B depends on A so must start at 3 — picks
+    // track 1 (cursor 0) but constraint pushes start to 3.
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(3);
+    expect(byId.get('b')!.computedStart).toBe(3);
+    expect(byId.get('b')!.computedEnd).toBe(5);
+  });
+
+  it('workerCount=2: three items, two parallel then third on first free track', () => {
+    const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 4 });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 2 });
+    const c = makeNode({ id: 'c', priority: 'P2', effortEstimate: 3 });
+    const result = schedule([a, b, c], 0, undefined, undefined, 2);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // A on track 0 at 0..4. B on track 1 at 0..2. C picks track 1
+    // (cursor 2 < track 0's cursor 4) and runs at 2..5.
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(4);
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(2);
+    expect(byId.get('c')!.computedStart).toBe(2);
+    expect(byId.get('c')!.computedEnd).toBe(5);
+  });
+
+  it('workerCount=1 is identical to default (serial regression)', () => {
+    const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 2 });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 3 });
+    const expected = schedule([a, b]); // default workerCount=1
+    const explicit = schedule([a, b], 0, undefined, undefined, 1);
+    expect(explicit).toEqual(expected);
+  });
+
   it('hours → business-day conversion via context', () => {
     const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 12 });
     const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 8 });

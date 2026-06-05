@@ -67,7 +67,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -83,18 +83,25 @@ export const updateMapTool = defineTool({
       .min(0.1)
       .optional()
       .describe('Working hours per day for Gantt conversion when effortUnit is "hours" (default 8)'),
+    workerCount: z
+      .number()
+      .min(1)
+      .max(100)
+      .optional()
+      .describe('Number of parallel work tracks the schedule projects onto (view knob, default 1 = strict serial single-worker view; higher = more parallelism).'),
     autoImportNewIssues: z
       .boolean()
       .optional()
       .describe('When true, new GitHub issues on the bound repo are auto-imported into this map\'s GitHub Inbox.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, autoImportNewIssues }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, autoImportNewIssues }) => {
     const fields: {
       name?: string;
       description?: string | null;
       wipLimit?: number | null;
       projectStartDate?: string | null;
       hoursPerDay?: number;
+      workerCount?: number;
       autoImportNewIssues?: boolean;
     } = {};
     if (name !== undefined) fields.name = name;
@@ -102,6 +109,7 @@ export const updateMapTool = defineTool({
     if (wipLimit !== undefined) fields.wipLimit = wipLimit;
     if (projectStartDate !== undefined) fields.projectStartDate = projectStartDate;
     if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
+    if (workerCount !== undefined) fields.workerCount = workerCount;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
