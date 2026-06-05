@@ -70,32 +70,394 @@ function Spinner({ size = 20 }: { size?: number }) {
   );
 }
 
-// ── Connection indicator ───────────────────────────────────────
+// ── Health chip (combined status readout) ─────────────────────
 
-function ConnectionDot({ connected }: { connected: boolean }) {
+const HEALTH_DOT: Record<string, string> = {
+  on_track: '#059669',
+  at_risk: '#d97706',
+  behind: '#dc2626',
+};
+
+function HealthChip({
+  nodeCount,
+  progress,
+  effort,
+  health,
+  connected,
+  onShowHealthList,
+}: {
+  nodeCount: number;
+  progress: number;
+  effort: number;
+  health: HealthSignal;
+  connected: boolean;
+  onShowHealthList: (h: HealthSignal) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const healthInfo = HEALTH_LABEL[health];
+  const dotColor = HEALTH_DOT[health] ?? '#94a3b8';
+  const pct = Math.round(progress);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   return (
-    <div
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 4,
-      }}
-      title={connected ? 'Connected' : 'Disconnected'}
-    >
-      <div
+    <div ref={wrapRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
+      {/* Steady-state Live is noise; only surface the connection state when it's actually degraded. */}
+      {!connected && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 6px',
+            borderRadius: 4,
+            background: '#fee2e2',
+            color: '#991b1b',
+          }}
+          title="Realtime connection lost"
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: '50%',
+              background: '#dc2626',
+              boxShadow: '0 0 6px rgba(220,38,38,0.4)',
+            }}
+          />
+          Offline
+        </span>
+      )}
+
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Map health — click for details"
         style={{
-          width: 7,
-          height: 7,
-          borderRadius: '50%',
-          background: connected ? '#059669' : '#dc2626',
-          boxShadow: connected ? '0 0 6px rgba(5,150,105,0.4)' : '0 0 6px rgba(220,38,38,0.4)',
-          transition: 'background 0.3s, box-shadow 0.3s',
+          padding: '3px 10px',
+          borderRadius: 4,
+          border: open ? '1px solid #c7d2fe' : '1px solid #e2e8f0',
+          fontSize: 11,
+          fontWeight: 600,
+          fontFamily: 'inherit',
+          cursor: 'pointer',
+          background: open ? '#eef2ff' : '#fff',
+          color: '#0f172a',
+          transition: 'all 0.15s',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 6,
         }}
-      />
-      <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
-        {connected ? 'Live' : 'Offline'}
-      </span>
+      >
+        <span
+          style={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            background: dotColor,
+            boxShadow: `0 0 6px ${dotColor}55`,
+            flexShrink: 0,
+          }}
+        />
+        <span>{pct}%</span>
+        {healthInfo && (
+          <span style={{ color: '#64748b', fontWeight: 500 }}>· {healthInfo.text}</span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            zIndex: 20,
+            minWidth: 220,
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(15, 23, 42, 0.12)',
+            padding: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            fontSize: 11,
+            fontFamily: 'inherit',
+          }}
+        >
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Progress
+            </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <div
+                style={{
+                  flex: 1,
+                  height: 6,
+                  borderRadius: 3,
+                  background: '#e2e8f0',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    width: `${pct}%`,
+                    height: '100%',
+                    borderRadius: 3,
+                    background: pct >= 100 ? '#059669' : '#4f46e5',
+                    transition: 'width 0.3s ease',
+                  }}
+                />
+              </div>
+              <span style={{ fontSize: 12, fontWeight: 700, color: '#0f172a', minWidth: 32, textAlign: 'right' }}>
+                {pct}%
+              </span>
+            </div>
+          </div>
+
+          <HealthRow label="Effort" value={`${effort}d`} />
+          <HealthRow label="Nodes" value={`${nodeCount}`} />
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Health
+            </span>
+            {healthInfo &&
+              (health === 'on_track' ? (
+                <span
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    background: healthInfo.bg,
+                    color: healthInfo.fg,
+                  }}
+                >
+                  {healthInfo.text}
+                </span>
+              ) : (
+                <button
+                  onClick={() => {
+                    setOpen(false);
+                    onShowHealthList(health);
+                  }}
+                  title={`Show ${healthInfo.text.toLowerCase()} tasks`}
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 600,
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    background: healthInfo.bg,
+                    color: healthInfo.fg,
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {healthInfo.text} →
+                </button>
+              ))}
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid #f1f5f9', paddingTop: 8 }}>
+            <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Realtime
+            </span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: connected ? '#059669' : '#991b1b', fontWeight: 600 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: connected ? '#059669' : '#dc2626',
+                }}
+              />
+              {connected ? 'Live' : 'Offline'}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
+  );
+}
+
+function HealthRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+        {label}
+      </span>
+      <span style={{ color: '#0f172a', fontWeight: 600, fontSize: 12 }}>{value}</span>
+    </div>
+  );
+}
+
+// ── User menu (avatar dropdown) ───────────────────────────────
+
+function UserMenu({
+  user,
+  onImportExport,
+  onLogout,
+}: {
+  user: { name?: string | null; email?: string | null } | null;
+  onImportExport: () => void;
+  onLogout: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
+  const display = user?.name ?? user?.email ?? '';
+  const initial = (display || '?')[0].toUpperCase();
+
+  return (
+    <div ref={wrapRef} style={{ position: 'relative' }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Account menu"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 6,
+          padding: '2px 6px 2px 2px',
+          borderRadius: 14,
+          border: open ? '1px solid #c7d2fe' : '1px solid transparent',
+          background: open ? '#eef2ff' : 'transparent',
+          cursor: 'pointer',
+          fontFamily: 'inherit',
+          transition: 'all 0.15s',
+        }}
+      >
+        <span
+          style={{
+            width: 24,
+            height: 24,
+            borderRadius: '50%',
+            background: '#eef2ff',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            fontSize: 11,
+            fontWeight: 700,
+            color: '#4f46e5',
+            flexShrink: 0,
+          }}
+        >
+          {initial}
+        </span>
+        <span style={{ fontSize: 11, fontWeight: 500, color: '#475569', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {display}
+        </span>
+        <span style={{ fontSize: 9, color: '#94a3b8' }}>▾</span>
+      </button>
+
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            right: 0,
+            zIndex: 20,
+            minWidth: 200,
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(15, 23, 42, 0.12)',
+            padding: 4,
+            display: 'flex',
+            flexDirection: 'column',
+            fontFamily: 'inherit',
+          }}
+        >
+          {user?.email && (
+            <div
+              style={{
+                padding: '8px 10px 6px',
+                fontSize: 11,
+                color: '#94a3b8',
+                borderBottom: '1px solid #f1f5f9',
+                marginBottom: 4,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+              title={user.email}
+            >
+              {user.email}
+            </div>
+          )}
+          <MenuItem
+            label="Import / Export…"
+            onClick={() => {
+              setOpen(false);
+              onImportExport();
+            }}
+          />
+          <MenuItem
+            label="Sign out"
+            onClick={() => {
+              setOpen(false);
+              onLogout();
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MenuItem({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        textAlign: 'left',
+        padding: '6px 10px',
+        borderRadius: 4,
+        border: 'none',
+        background: 'transparent',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontSize: 12,
+        color: '#0f172a',
+      }}
+      onMouseOver={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+      onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -595,15 +957,8 @@ function FiltersPopover({
           gap: 4,
         }}
       >
-        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-          <path
-            d="M2 3h12l-4.5 6V14l-3-1.5V9L2 3z"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinejoin="round"
-          />
-        </svg>
         <span>Filters</span>
+        <span style={{ fontSize: 9, opacity: 0.7 }}>▾</span>
       </button>
 
       {/* Active-filter chips shown inline so state is glanceable without opening the popover */}
@@ -1279,7 +1634,6 @@ export function App() {
   const progress = rootComputed?.computedProgress ?? 0;
   const effort = rootComputed?.computedEffort ?? 0;
   const health = rootComputed?.healthSignal ?? 'on_track';
-  const healthInfo = HEALTH_LABEL[health];
   const nodeCount = Object.keys(nodes).length;
   let blockedLeafCount = 0;
   for (const n of Object.values(nodes)) {
@@ -1418,43 +1772,6 @@ export function App() {
             </span>
           </button>
 
-          {/* Import/Export button */}
-          <button
-            onClick={() => setImportExportOpen(true)}
-            style={{
-              padding: '3px 10px',
-              borderRadius: 4,
-              border: '1px solid #e2e8f0',
-              fontSize: 11,
-              fontWeight: 600,
-              fontFamily: 'inherit',
-              cursor: 'pointer',
-              background: '#fff',
-              color: '#64748b',
-              transition: 'all 0.15s',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-            }}
-            onMouseOver={(e) => {
-              e.currentTarget.style.background = '#eef2ff';
-              e.currentTarget.style.borderColor = '#c7d2fe';
-              e.currentTarget.style.color = '#4f46e5';
-            }}
-            onMouseOut={(e) => {
-              e.currentTarget.style.background = '#fff';
-              e.currentTarget.style.borderColor = '#e2e8f0';
-              e.currentTarget.style.color = '#64748b';
-            }}
-            title="Import / Export"
-          >
-            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-              <path d="M2 10v3a1 1 0 001 1h10a1 1 0 001-1v-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-              <path d="M8 2v8m0 0l-3-3m3 3l3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Import/Export
-          </button>
-
           <button
             onClick={() => setHelpOpen(true)}
             title="Help / User Guide"
@@ -1561,80 +1878,15 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* Node count */}
-          <span style={{ fontSize: 11, color: '#94a3b8', fontWeight: 500 }}>
-            {nodeCount} nodes
-          </span>
-
-          {/* Progress */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div
-              style={{
-                width: 80,
-                height: 6,
-                borderRadius: 3,
-                background: '#e2e8f0',
-                overflow: 'hidden',
-              }}
-            >
-              <div
-                style={{
-                  width: `${Math.round(progress)}%`,
-                  height: '100%',
-                  borderRadius: 3,
-                  background: progress >= 100 ? '#059669' : '#4f46e5',
-                  transition: 'width 0.3s ease',
-                }}
-              />
-            </div>
-            <span style={{ fontSize: 12, fontWeight: 600, color: '#64748b' }}>
-              {Math.round(progress)}%
-            </span>
-          </div>
-
-          {/* Effort */}
-          <span style={{ fontSize: 12, color: '#94a3b8', fontWeight: 500 }}>
-            {effort}d effort
-          </span>
-
-          {/* Health badge */}
-          {healthInfo && (
-            health === 'on_track' ? (
-              <span
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  background: healthInfo.bg,
-                  color: healthInfo.fg,
-                }}
-              >
-                {healthInfo.text}
-              </span>
-            ) : (
-              <button
-                onClick={() => setHealthListHealth(health)}
-                title={`Show ${healthInfo.text.toLowerCase()} tasks`}
-                style={{
-                  fontSize: 11,
-                  fontWeight: 600,
-                  padding: '2px 8px',
-                  borderRadius: 4,
-                  background: healthInfo.bg,
-                  color: healthInfo.fg,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                }}
-              >
-                {healthInfo.text}
-              </button>
-            )
-          )}
-
-          {/* Connection status */}
-          <ConnectionDot connected={wsConnected} />
+          {/* Combined status readout: nodes / progress / effort / health / connection */}
+          <HealthChip
+            nodeCount={nodeCount}
+            progress={progress}
+            effort={effort}
+            health={health}
+            connected={wsConnected}
+            onShowHealthList={setHealthListHealth}
+          />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
@@ -1822,46 +2074,12 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* User avatar + name + logout */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-            <div
-              style={{
-                width: 24,
-                height: 24,
-                borderRadius: '50%',
-                background: '#eef2ff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: 11,
-                fontWeight: 700,
-                color: '#4f46e5',
-                flexShrink: 0,
-              }}
-            >
-              {(user?.name ?? user?.email ?? '?')[0].toUpperCase()}
-            </div>
-            <span style={{ fontSize: 11, fontWeight: 500, color: '#475569', maxWidth: 80, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-              {user?.name ?? user?.email}
-            </span>
-            <button
-              onClick={logout}
-              title="Sign out"
-              style={{
-                background: 'none',
-                border: 'none',
-                cursor: 'pointer',
-                padding: '2px 4px',
-                fontSize: 11,
-                color: '#94a3b8',
-                fontFamily: 'inherit',
-              }}
-            >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
-                <path d="M6 14H3a1 1 0 01-1-1V3a1 1 0 011-1h3M11 11l3-3-3-3M14 8H6" />
-              </svg>
-            </button>
-          </div>
+          {/* User avatar dropdown — absorbs Import/Export and Sign out */}
+          <UserMenu
+            user={user}
+            onImportExport={() => setImportExportOpen(true)}
+            onLogout={logout}
+          />
         </div>
       </div>
 
