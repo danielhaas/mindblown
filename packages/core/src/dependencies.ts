@@ -363,17 +363,28 @@ export function schedule(
   constraints?: Map<NodeId, ScheduleConstraint>,
   context?: ScheduleContext,
 ): ScheduledNode[] {
-  // Inject implicit FS chains for sequential parents before topo sort.
-  // If injection somehow produces a cyclic graph (defense in depth — the
-  // injection function's own cycle guard should prevent this), fall back
-  // to the original nodes so the API returns a partial schedule instead
-  // of a 500. This keeps the Gantt usable even with adversarial data.
+  // Order matters: expand parent-level deps to leaves FIRST, then inject
+  // implicit sequential FS chains. With expansion-first, the injection's
+  // hasCycle guard sees the cartesian-product edges that expansion adds
+  // (a parent-level dep becomes N×M leaf edges, one per leaf in source ×
+  // each leaf in target), so it correctly skips synthetic edges that
+  // would close cycles formed via those expanded edges.
+  //
+  // Doing it the other way around (inject → expand) made the cycle guard
+  // blind to edges that only exist after expansion, and topological sort
+  // crashed downstream once expansion added the missing leg of the cycle.
+  //
+  // The try/catch is defense in depth: if a cycle still slips through
+  // (e.g. the pre-existing graph itself is cyclic), fall back to running
+  // the topo sort without sequential injection. The API returns a partial
+  // schedule instead of a 500, and the Gantt stays usable.
   let sorted: Node[];
   let expanded: Node[];
   try {
-    const sequenced = injectSequentialDeps(nodes);
-    expanded = expandParentDependencies(sequenced);
-    sorted = topologicalSort(expanded);
+    expanded = expandParentDependencies(nodes);
+    const sequenced = injectSequentialDeps(expanded);
+    sorted = topologicalSort(sequenced);
+    expanded = sequenced; // downstream uses `expanded` for the duration map
   } catch (err) {
     if (err instanceof Error && /Cycle detected/.test(err.message)) {
       // eslint-disable-next-line no-console
