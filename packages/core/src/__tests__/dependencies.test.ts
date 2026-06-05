@@ -35,6 +35,8 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     cycleId: null,
     externalLinks: [],
     autoProgress: 'off',
+    priorityRank: null,
+    childrenScheduling: 'parallel',
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     createdBy: 'user-1',
@@ -402,5 +404,192 @@ describe('criticalPath', () => {
     expect(result.path).toContain('c');
     expect(result.path).not.toContain('a');
     expect(result.float['a']).toBe(5); // 5 days float
+  });
+});
+
+// ── DoD unit tests for Gantt slice 1 ───────────────────────────
+//
+// (i)   'parallel' parent → siblings schedule independently (regression)
+// (ii)  'sequential' parent → siblings chained in resolved order
+// (iii) explicit FS edge overrides the implicit sequential chain
+// (iv)  business-day math: 12h estimate with 8h/day = 2 business days
+// (v)   schedule correctly converts hours to business-day durations end-to-end
+
+describe('childrenScheduling: parallel (DoD case i — regression)', () => {
+  it('parallel parent: siblings all start at project day 0', () => {
+    // Parent has 3 children with no explicit deps. All should land at start=0.
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2', 'c3'],
+      childrenScheduling: 'parallel',
+    });
+    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 2 });
+    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 3 });
+    const c3 = makeNode({ id: 'c3', parentId: 'parent', effortEstimate: 5 });
+
+    const result = schedule([parent, c1, c2, c3]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    expect(byId.get('c1')!.computedStart).toBe(0);
+    expect(byId.get('c2')!.computedStart).toBe(0);
+    expect(byId.get('c3')!.computedStart).toBe(0);
+  });
+});
+
+describe('childrenScheduling: sequential (DoD case ii)', () => {
+  it('sequential parent: children chain in resolved order', () => {
+    // Parent with sequential scheduling. Children have effort 2, 3, 5.
+    // Expected chain: c1(0→2) → c2(2→5) → c3(5→10)
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2', 'c3'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'parent',
+      effortEstimate: 2,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'parent',
+      effortEstimate: 3,
+      createdAt: '2026-01-02T00:00:00Z',
+    });
+    const c3 = makeNode({
+      id: 'c3',
+      parentId: 'parent',
+      effortEstimate: 5,
+      createdAt: '2026-01-03T00:00:00Z',
+    });
+
+    const result = schedule([parent, c1, c2, c3]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    expect(byId.get('c1')!.computedStart).toBe(0);
+    expect(byId.get('c1')!.computedEnd).toBe(2);
+
+    expect(byId.get('c2')!.computedStart).toBe(2);
+    expect(byId.get('c2')!.computedEnd).toBe(5);
+
+    expect(byId.get('c3')!.computedStart).toBe(5);
+    expect(byId.get('c3')!.computedEnd).toBe(10);
+  });
+
+  it('sequential parent: resolved order respects priorityRank', () => {
+    // c3 has priorityRank 1 (lowest rank number = first), c1 has rank 2, c2 has no rank
+    // Expected order: c3 → c1 → c2
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2', 'c3'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 1, priorityRank: 2 });
+    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 1, priorityRank: null });
+    const c3 = makeNode({ id: 'c3', parentId: 'parent', effortEstimate: 1, priorityRank: 1 });
+
+    const result = schedule([parent, c1, c2, c3]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    // c3 (rank 1) → c1 (rank 2) → c2 (null rank)
+    expect(byId.get('c3')!.computedStart).toBe(0); // first
+    expect(byId.get('c1')!.computedStart).toBe(1); // after c3
+    expect(byId.get('c2')!.computedStart).toBe(2); // after c1
+  });
+});
+
+describe('explicit FS edge overrides implicit sequential chain (DoD case iii)', () => {
+  it('explicit FS from a different subtree respects the edge', () => {
+    // Sequential parent with c1 → c2 → c3. But c3 also has an explicit FS dep
+    // on an external node X(effort=10). X must finish before c3 starts.
+    const x = makeNode({ id: 'x', effortEstimate: 10 });
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2', 'c3'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 2, createdAt: '2026-01-01T00:00:00Z' });
+    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 2, createdAt: '2026-01-02T00:00:00Z' });
+    const c3 = makeNode({
+      id: 'c3',
+      parentId: 'parent',
+      effortEstimate: 2,
+      createdAt: '2026-01-03T00:00:00Z',
+      dependencies: [{ targetNodeId: 'x', type: 'FS', lag: 0 }],
+    });
+
+    const result = schedule([x, parent, c1, c2, c3]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    // x ends at 10; c3 must start at max(c2.end=4, x.end=10) = 10
+    expect(byId.get('c3')!.computedStart).toBe(10);
+    expect(byId.get('c3')!.computedEnd).toBe(12);
+
+    // c1 and c2 are unaffected by x
+    expect(byId.get('c1')!.computedStart).toBe(0);
+    expect(byId.get('c2')!.computedStart).toBe(2);
+  });
+});
+
+describe('business-day math (DoD case iv — weekends skipped)', () => {
+  it('hoursToBusinessDays: 12h estimate with 8h/day = 2 business days', () => {
+    // Direct unit test repeated in scheduler context
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 12 });
+
+    const result = schedule(
+      [parent, c1],
+      0,
+      undefined,
+      { effortUnit: 'hours', hoursPerDay: 8 },
+    );
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    expect(byId.get('c1')!.duration).toBe(2);
+  });
+});
+
+describe('hours → business-day duration end-to-end (DoD case v)', () => {
+  it('8h estimate = 1 business day, 24h = 3 business days; downstream sibling pushes by 2', () => {
+    // Sequential parent: c1(8h) → c2(24h). With 8h/day:
+    //   c1 duration = ceil(8/8) = 1 day  → 0..1
+    //   c2 duration = ceil(24/8) = 3 days → 1..4
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'parent',
+      effortEstimate: 8,
+      createdAt: '2026-01-01T00:00:00Z',
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'parent',
+      effortEstimate: 24,
+      createdAt: '2026-01-02T00:00:00Z',
+    });
+
+    const result = schedule(
+      [parent, c1, c2],
+      0,
+      undefined,
+      { effortUnit: 'hours', hoursPerDay: 8 },
+    );
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    expect(byId.get('c1')!.duration).toBe(1);
+    expect(byId.get('c1')!.computedEnd).toBe(1);
+
+    expect(byId.get('c2')!.computedStart).toBe(1);
+    expect(byId.get('c2')!.duration).toBe(3);
+    expect(byId.get('c2')!.computedEnd).toBe(4);
   });
 });

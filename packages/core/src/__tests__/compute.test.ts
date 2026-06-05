@@ -37,6 +37,8 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     cycleId: null,
     externalLinks: [],
     autoProgress: 'off',
+    priorityRank: null,
+    childrenScheduling: 'parallel' as const,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     createdBy: 'user-1',

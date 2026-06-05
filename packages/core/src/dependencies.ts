@@ -4,7 +4,9 @@ import type {
   NodeMap,
   ScheduledNode,
   CriticalPathResult,
+  EffortUnit,
 } from './types.js';
+import { hoursToBusinessDays } from './calendar.js';
 
 /**
  * Check whether adding a dependency from `fromNodeId` -> `toNodeId` would
@@ -211,6 +213,115 @@ export interface ScheduleConstraint {
 }
 
 /**
+ * Optional context for the scheduler.
+ *
+ * - `effortUnit` / `hoursPerDay`: when the map stores effort in hours,
+ *   leaf durations are converted to business days via
+ *   `ceil(effortEstimate / hoursPerDay)` before scheduling. Ignored when
+ *   `effortUnit` is `'days'` or `'points'`.
+ */
+export interface ScheduleContext {
+  effortUnit?: EffortUnit;
+  hoursPerDay?: number;
+}
+
+// Priority enum ordering for resolved sibling sort. Lower index = higher priority.
+const PRIORITY_ORDER: Record<string, number> = {
+  P0: 0,
+  P1: 1,
+  P2: 2,
+  P3: 3,
+};
+
+/**
+ * Return the resolved sibling order for the children of `parent`.
+ *
+ * Sort key: priorityRank ASC NULLS LAST → priority enum (P0 < P1 < P2 < P3) → createdAt ASC.
+ */
+function resolvedSiblingOrder(children: Node[]): Node[] {
+  return [...children].sort((a, b) => {
+    // 1. priorityRank ASC NULLS LAST
+    const ra = a.priorityRank;
+    const rb = b.priorityRank;
+    if (ra !== null && rb !== null) {
+      if (ra !== rb) return ra - rb;
+    } else if (ra !== null) {
+      return -1; // a has rank, b doesn't → a first
+    } else if (rb !== null) {
+      return 1; // b has rank, a doesn't → b first
+    }
+
+    // 2. priority enum (P0 < P1 < P2 < P3), null last
+    const pa = a.priority ? (PRIORITY_ORDER[a.priority] ?? 99) : 99;
+    const pb = b.priority ? (PRIORITY_ORDER[b.priority] ?? 99) : 99;
+    if (pa !== pb) return pa - pb;
+
+    // 3. createdAt ASC
+    return a.createdAt.localeCompare(b.createdAt);
+  });
+}
+
+/**
+ * For nodes whose parent has `childrenScheduling = 'sequential'`, inject
+ * synthetic FS dependency edges so the scheduler chains them in resolved
+ * sibling order. Explicit dependency edges are left untouched and continue
+ * to take precedence (the topo sort enforces explicit deps first).
+ *
+ * Returns a new nodes array; original nodes are not mutated.
+ */
+function injectSequentialDeps(nodes: Node[]): Node[] {
+  const nodeMap = new Map<NodeId, Node>();
+  for (const n of nodes) nodeMap.set(n.id, n);
+
+  // Map from child id → extra synthetic deps to prepend
+  const extras = new Map<NodeId, Node['dependencies']>();
+
+  for (const parent of nodes) {
+    if (parent.childrenScheduling !== 'sequential') continue;
+    if (parent.childrenIds.length < 2) continue;
+
+    // Resolve only children that are actually in our node set
+    const presentChildren = parent.childrenIds
+      .map((cid) => nodeMap.get(cid))
+      .filter((n): n is Node => n !== undefined);
+
+    if (presentChildren.length < 2) continue;
+
+    const ordered = resolvedSiblingOrder(presentChildren);
+
+    for (let i = 1; i < ordered.length; i++) {
+      const predecessor = ordered[i - 1];
+      const follower = ordered[i];
+
+      // Only inject if the follower doesn't already have an explicit FS dep
+      // on this predecessor (to avoid duplicates).
+      const alreadyHas = follower.dependencies.some(
+        (d) => d.targetNodeId === predecessor.id && d.type === 'FS',
+      );
+      if (alreadyHas) continue;
+
+      if (!extras.has(follower.id)) extras.set(follower.id, []);
+      extras.get(follower.id)!.push({
+        targetNodeId: predecessor.id,
+        type: 'FS',
+        lag: 0,
+      });
+    }
+  }
+
+  if (extras.size === 0) return nodes;
+
+  return nodes.map((n) => {
+    const extra = extras.get(n.id);
+    if (!extra) return n;
+    return {
+      ...n,
+      dependencies: [...extra, ...n.dependencies],
+    };
+  });
+}
+
+/**
  * Forward-pass scheduling.
  *
  * Given nodes with effort estimates and dependencies, compute the earliest
@@ -218,15 +329,20 @@ export interface ScheduleConstraint {
  *
  * `projectStartDay` is day 0. All dates are in the map's effort unit (days/hours/points).
  * Optional `constraints` pin individual nodes in place (manually-set dates).
+ * Optional `context` enables business-day unit conversion (hours → business days).
  * Returns a ScheduledNode for every input node.
  */
 export function schedule(
   nodes: Node[],
   projectStartDay: number = 0,
   constraints?: Map<NodeId, ScheduleConstraint>,
+  context?: ScheduleContext,
 ): ScheduledNode[] {
+  // Inject implicit FS chains for sequential parents before topo sort
+  const sequenced = injectSequentialDeps(nodes);
+
   // Expand parent-node dependencies to leaf-node dependencies
-  const expanded = expandParentDependencies(nodes);
+  const expanded = expandParentDependencies(sequenced);
 
   const sorted = topologicalSort(expanded);
 
@@ -237,10 +353,26 @@ export function schedule(
 
   const scheduled = new Map<NodeId, ScheduledNode>();
 
+  // Business-day conversion: when effortUnit is 'hours', convert leaf effort
+  // to business days using ceil(hours / hoursPerDay). This makes a 12h estimate
+  // with an 8h day render as 2 business-day bars instead of 12 unit-bars.
+  const useHoursConversion =
+    context?.effortUnit === 'hours' &&
+    context.hoursPerDay !== undefined &&
+    context.hoursPerDay > 0;
+
+  function leafDuration(effortEstimate: number | null): number {
+    const raw = effortEstimate ?? 0;
+    if (useHoursConversion) {
+      return hoursToBusinessDays(raw, context!.hoursPerDay!);
+    }
+    return raw;
+  }
+
   for (const node of sorted) {
     let duration =
       node.childrenIds.length === 0
-        ? (node.effortEstimate ?? 0)
+        ? leafDuration(node.effortEstimate)
         : 0;
 
     let earliestStart = projectStartDay;
