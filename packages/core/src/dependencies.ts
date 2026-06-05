@@ -316,6 +316,11 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
     (a, b) => (depth.get(a.id) ?? 0) - (depth.get(b.id) ?? 0),
   );
 
+  // Debug: track accept/reject per parent for one-off diagnosis (#127 follow-up).
+  // Logged at end so we see exactly where chains are surviving vs being rejected.
+  const DEBUG_INJECT = process.env.DEBUG_INJECT === '1';
+  const debugStats: Array<{ parentId: NodeId; depth: number; childCount: number; accepted: number; rejected: number }> = [];
+
   for (const originalParent of orderedParents) {
     if (originalParent.childrenScheduling !== 'sequential') continue;
     if (originalParent.childrenIds.length < 2) continue;
@@ -327,6 +332,8 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
     if (presentChildren.length < 2) continue;
 
     const ordered = resolvedSiblingOrder(presentChildren);
+    let accepted = 0;
+    let rejected = 0;
 
     for (let i = 1; i < ordered.length; i++) {
       const predecessor = ordered[i - 1];
@@ -346,7 +353,7 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
 
       try {
         topologicalSort(workingNodes);
-        // acyclic — keep
+        accepted++;
       } catch (err) {
         if (!(err instanceof Error && /Cycle detected/.test(err.message))) {
           throw err;
@@ -354,8 +361,41 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
         // Cycle introduced by this edge — drop it and move on
         const idx = follower.dependencies.indexOf(synthetic);
         if (idx >= 0) follower.dependencies.splice(idx, 1);
+        rejected++;
       }
     }
+
+    if (DEBUG_INJECT && (accepted > 0 || rejected > 0)) {
+      debugStats.push({
+        parentId: originalParent.id,
+        depth: depth.get(originalParent.id) ?? -1,
+        childCount: ordered.length,
+        accepted,
+        rejected,
+      });
+    }
+  }
+
+  if (DEBUG_INJECT && debugStats.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[injectSequentialDeps] parent stats (first 30 shallow):');
+    debugStats
+      .sort((a, b) => a.depth - b.depth)
+      .slice(0, 30)
+      .forEach((s) => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `  depth=${s.depth} parent=${s.parentId.slice(0, 8)} children=${s.childCount} accepted=${s.accepted} rejected=${s.rejected}`,
+        );
+      });
+    const totals = debugStats.reduce(
+      (acc, s) => ({ accepted: acc.accepted + s.accepted, rejected: acc.rejected + s.rejected }),
+      { accepted: 0, rejected: 0 },
+    );
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[injectSequentialDeps] total accepted=${totals.accepted} rejected=${totals.rejected} parents=${debugStats.length}`,
+    );
   }
 
   return workingNodes;
