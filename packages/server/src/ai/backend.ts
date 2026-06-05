@@ -12,6 +12,7 @@ import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
+import * as orchestrationService from '../services/orchestration.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -234,5 +235,13 @@ export function createChatBackend(userId: string): ToolBackend {
         'confirm_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
       );
     },
+
+    // ── Orchestration substrate (#111) ──────────────────────────
+    // Delegates to packages/server/src/services/orchestration.ts so the
+    // chat backend and the HTTP routes share one implementation.
+    readyNodes: (mapId, opts) => orchestrationService.readyNodes(mapId, opts),
+    claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
+    releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
+    conflictScan: (mapId, candidateNodeId) => orchestrationService.conflictScan(mapId, candidateNodeId),
   };
 }

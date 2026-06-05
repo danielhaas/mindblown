@@ -12,6 +12,7 @@ import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { exportPNG } from './ImportExport.js';
 import type { LayoutNode } from './layout.js';
 import type { Node, Priority } from '@mindblown/core';
+import { scopeOverlap } from '@mindblown/core';
 
 // ── Pan & Zoom state ───────────────────────────────────────────
 
@@ -372,6 +373,32 @@ export function MindmapEditor() {
     currentClientY: number;
     isDragging: boolean;
   } | null>(null);
+
+  // ── Orchestration conflict detection (#111) ──────────────────
+  // When hovering a todo node, compute which OTHER todo nodes have scope
+  // overlap with any in-flight (claimed or in_progress) node. These are
+  // flagged with an amber border so the operator can spot contention.
+  const conflictNodeIds = useMemo<Set<string>>(() => {
+    if (!hoveredNodeId) return new Set();
+    const hoveredNode = nodes[hoveredNodeId];
+    if (!hoveredNode || hoveredNode.status !== null || !hoveredNode.scopes?.length) {
+      return new Set();
+    }
+    // Collect in-flight scopes: any node that is claimed OR in_progress
+    const inFlightScopes: string[] = [];
+    for (const n of Object.values(nodes)) {
+      if (n.id === hoveredNodeId) continue;
+      const isInFlight = n.claimedBySession !== null || n.status === 'in_progress';
+      if (isInFlight && n.scopes?.length) {
+        for (const s of n.scopes) inFlightScopes.push(s);
+      }
+    }
+    if (inFlightScopes.length === 0) return new Set();
+    const overlap = scopeOverlap(hoveredNode.scopes, inFlightScopes);
+    if (overlap.length === 0) return new Set();
+    // Mark the hovered node itself as conflicted
+    return new Set([hoveredNodeId]);
+  }, [hoveredNodeId, nodes]);
 
   // ── Visible nodes computation ───────────────────────────────
 
@@ -1405,6 +1432,7 @@ export function MindmapEditor() {
                   hasHiddenChildren={meta?.hasHiddenChildren ?? false}
                   hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
                   isGithubInbox={ln.id === currentMap?.githubInboxNodeId}
+                  hasConflict={conflictNodeIds.has(ln.id)}
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
@@ -1732,6 +1760,77 @@ export function MindmapEditor() {
           onClose={() => setAiBraindump(null)}
         />
       )}
+
+      {/* Orchestration conflict warning tooltip (#111)
+          Appears when hovering a todo node whose scopes overlap with
+          an in-flight (claimed / in_progress) node. */}
+      {conflictNodeIds.size > 0 && hoveredNodeId && (() => {
+        const hoveredNode = nodes[hoveredNodeId];
+        const hoveredLayout = layoutMap.get(hoveredNodeId);
+        if (!hoveredNode || !hoveredLayout) return null;
+
+        // Collect the overlapping scopes and who's holding them
+        const conflicts: Array<{ sessionId: string; overlap: string[] }> = [];
+        for (const n of Object.values(nodes)) {
+          if (n.id === hoveredNodeId) continue;
+          const isInFlight = n.claimedBySession !== null || n.status === 'in_progress';
+          if (!isInFlight || !n.scopes?.length) continue;
+          const overlap = scopeOverlap(hoveredNode.scopes ?? [], n.scopes);
+          if (overlap.length > 0) {
+            conflicts.push({
+              sessionId: n.claimedBySession ?? n.status ?? 'in_progress',
+              overlap,
+            });
+          }
+        }
+        if (conflicts.length === 0) return null;
+
+        // Position tooltip just above the hovered node in screen space
+        const svgEl = svgRef.current;
+        if (!svgEl) return null;
+        const svgRect = svgEl.getBoundingClientRect();
+        const screenX = hoveredLayout.x * view.zoom + view.panX + svgRect.left;
+        const screenY = hoveredLayout.y * view.zoom + view.panY + svgRect.top - 8;
+
+        return (
+          <div
+            key="conflict-tooltip"
+            style={{
+              position: 'fixed',
+              left: screenX,
+              top: screenY - 60,
+              zIndex: 2000,
+              background: '#fffbeb',
+              border: '1px solid #fbbf24',
+              borderRadius: 8,
+              padding: '6px 10px',
+              fontSize: 11,
+              color: '#92400e',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.12)',
+              pointerEvents: 'none',
+              maxWidth: 260,
+            }}
+          >
+            <div style={{ fontWeight: 700, marginBottom: 3 }}>
+              Scope conflict
+            </div>
+            {conflicts.slice(0, 3).map((c, i) => (
+              <div key={i} style={{ marginBottom: 2 }}>
+                <span style={{ color: '#d97706', fontWeight: 600 }}>
+                  {c.sessionId.length > 12 ? '…' + c.sessionId.slice(-12) : c.sessionId}
+                </span>
+                {' holds: '}
+                <span style={{ color: '#b45309' }}>{c.overlap.join(', ')}</span>
+              </div>
+            ))}
+            {conflicts.length > 3 && (
+              <div style={{ color: '#92400e', opacity: 0.7 }}>
+                +{conflicts.length - 3} more
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }

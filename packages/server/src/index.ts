@@ -28,6 +28,8 @@ import { aiRoutes } from './routes/ai.js';
 import { feedbackRoutes } from './routes/feedback.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpRoutes } from './routes/mcp.js';
+import { orchestrationRoutes } from './routes/orchestration.js';
+import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -88,6 +90,7 @@ async function main(): Promise<void> {
   await app.register(feedbackRoutes);
   await app.register(apiKeyRoutes);
   await app.register(mcpRoutes);
+  await app.register(orchestrationRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 
@@ -280,6 +283,36 @@ async function main(): Promise<void> {
   // Deliberately no startup invocation — the counter is empty at
   // boot, so the first tick would always be a `received==0` no-op.
   setInterval(webhookAuthCheckTick, WEBHOOK_AUTH_CHECK_INTERVAL_MS);
+
+  // ── Stale-claim sweeper (#111) ─────────────────────────────────
+  // Clears claims on nodes where the session has gone silent (no progress
+  // update since claimedAt > stale_claim_hours). Runs every 15 minutes;
+  // the per-map threshold is typically 4h so sub-threshold checks are cheap
+  // (zero writes) and the 15-minute cadence caps worst-case delay at 15 min
+  // past the stale threshold. Configurable via STALE_CLAIM_SWEEP_MS env var.
+  const STALE_CLAIM_SWEEP_MS =
+    parseInt(process.env.STALE_CLAIM_SWEEP_MS ?? '0', 10) > 0
+      ? parseInt(process.env.STALE_CLAIM_SWEEP_MS!, 10)
+      : 15 * 60 * 1000; // 15 minutes
+
+  const staleClaimTick = async (): Promise<void> => {
+    try {
+      const result = await runStaleClaimSweep();
+      if (result.cleared > 0) {
+        console.log(
+          `[stale-claim] inspected=${result.inspected} cleared=${result.cleared} errors=${result.errors.length}`,
+        );
+      }
+      for (const err of result.errors.slice(0, 5)) {
+        console.warn(`[stale-claim] ${err}`);
+      }
+    } catch (err) {
+      console.error('[stale-claim] sweep tick caught unexpected error:', err);
+    }
+  };
+  // Startup run: clear any stale claims from before the last restart.
+  staleClaimTick();
+  setInterval(staleClaimTick, STALE_CLAIM_SWEEP_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

@@ -839,6 +839,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       autoProgress: 'off',
       priorityRank: null,
       childrenScheduling: 'parallel',
+      // Orchestration substrate (#111)
+      claimedBySession: null,
+      claimedAt: null,
+      scopes: [],
       createdAt: now,
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',

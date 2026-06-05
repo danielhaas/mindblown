@@ -861,3 +861,94 @@ export function confirmTriage(
     { method: 'POST' },
   );
 }
+
+// ── Orchestration substrate (#111) ────────────────────────────
+
+export interface ReadyNodeApi {
+  id: string;
+  text: string;
+  status: string | null;
+  priority: string | null;
+  priorityRank: number | null;
+  scopes: string[];
+  claimedBySession: string | null;
+  claimedAt: string | null;
+  parentId: string | null;
+}
+
+export interface ReadyNodesResultApi {
+  mapId: string;
+  ready: ReadyNodeApi[];
+  total: number;
+  returned: number;
+}
+
+export interface ClaimNodeResultApi {
+  node: { id: string; text: string; claimedBySession: string | null; claimedAt: string | null };
+  claimed: boolean;
+  warned: boolean;
+  warning?: string;
+}
+
+export interface ReleaseNodeResultApi {
+  node: { id: string; text: string };
+  released: boolean;
+}
+
+export interface ConflictEntryApi {
+  id: string;
+  text: string;
+  status: string | null;
+  claimedBySession: string | null;
+  overlappingScopes: string[];
+}
+
+export interface ConflictScanResultApi {
+  candidateId: string;
+  candidateScopes: string[];
+  conflicts: ConflictEntryApi[];
+}
+
+export function readyNodes(
+  mapId: string,
+  opts: { limit?: number; scopeFilter?: string[] } = {},
+): Promise<ReadyNodesResultApi> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.scopeFilter && opts.scopeFilter.length > 0) {
+    params.set('scope', opts.scopeFilter.join(','));
+  }
+  const qs = params.toString();
+  return request<ReadyNodesResultApi>(`/api/maps/${mapId}/nodes/ready${qs ? `?${qs}` : ''}`);
+}
+
+export function claimNode(
+  mapId: string,
+  nodeId: string,
+  sessionId: string,
+): Promise<ClaimNodeResultApi> {
+  return request<ClaimNodeResultApi>(
+    `/api/maps/${mapId}/nodes/${nodeId}/claim`,
+    { method: 'POST', body: JSON.stringify({ sessionId }) },
+  );
+}
+
+export function releaseNode(
+  mapId: string,
+  nodeId: string,
+  sessionId: string,
+): Promise<ReleaseNodeResultApi> {
+  return request<ReleaseNodeResultApi>(
+    `/api/maps/${mapId}/nodes/${nodeId}/release`,
+    { method: 'POST', body: JSON.stringify({ sessionId }) },
+  );
+}
+
+export function conflictScan(
+  mapId: string,
+  candidateNodeId: string,
+): Promise<ConflictScanResultApi> {
+  return request<ConflictScanResultApi>(
+    `/api/maps/${mapId}/nodes/${candidateNodeId}/conflict-scan`,
+  );
+}

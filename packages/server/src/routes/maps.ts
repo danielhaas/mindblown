@@ -387,6 +387,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           autoProgress: 'off',
           priorityRank: null,
           childrenScheduling: 'parallel' as const,
+          // Orchestration substrate (#111)
+          claimedBySession: null,
+          claimedAt: null,
+          scopes: [],
           createdAt: now,
           updatedAt: now,
           createdBy: parent.createdBy,

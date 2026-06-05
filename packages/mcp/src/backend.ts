@@ -24,4 +24,9 @@ export const httpBackend: ToolBackend = {
   overrideTriage: (mapId, decisionId, body) => api.overrideTriage(mapId, decisionId, body),
   reclassifyTriage: (mapId, decisionId) => api.reclassifyTriage(mapId, decisionId),
   confirmTriage: (mapId, decisionId) => api.confirmTriage(mapId, decisionId),
+  // ── Orchestration substrate (#111) ──────────────────────────────
+  readyNodes: (mapId, opts) => api.readyNodes(mapId, opts),
+  claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
+  releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
+  conflictScan: (mapId, candidateNodeId) => api.conflictScan(mapId, candidateNodeId),
 };

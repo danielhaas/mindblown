@@ -85,6 +85,13 @@ export const updateNodeTool = defineTool({
       .describe(
         "How this node's children are scheduled relative to each other. 'parallel' (default) = existing behavior, each child starts as early as its own deps allow. 'sequential' = implicit FS chain in resolved sibling order (priorityRank ASC NULLS LAST → priority enum → createdAt ASC). Explicit dep edges still win over the implicit chain.",
       ),
+    // Orchestration substrate (#111)
+    scopes: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Free-form scope tags declaring what work this node touches. Used by conflict_scan to surface in-flight nodes that might conflict with this node when it's dispatched. Examples: 'apps/workflows', 'model:Mandate', 'migration:workflows', 'frontend:contacts'. Empty array clears all scopes.",
+      ),
   },
   handler: async (backend, { mapId, nodeId, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};

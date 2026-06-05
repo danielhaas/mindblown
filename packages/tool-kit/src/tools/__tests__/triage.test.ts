@@ -101,6 +101,11 @@ function makeRecorder(): Recorder {
       state.lastConfirm = { mapId, decisionId };
       return state.confirmResult;
     },
+    // Orchestration substrate (#111)
+    readyNodes: async () => { throw new Error('not used'); },
+    claimNode: async () => { throw new Error('not used'); },
+    releaseNode: async () => { throw new Error('not used'); },
+    conflictScan: async () => { throw new Error('not used'); },
   };
   return state;
 }

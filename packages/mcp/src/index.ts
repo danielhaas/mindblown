@@ -1674,6 +1674,9 @@ server.tool(
   },
 );
 
+// Note: ready_nodes, claim_node, release_node, conflict_scan are registered
+// via the sharedTools loop above (they live in packages/tool-kit allTools).
+
 server.tool(
   'set_priority',
   'Set priority on a node',

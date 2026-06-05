@@ -217,6 +217,10 @@ export interface UpdateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   childrenScheduling?: ChildrenScheduling;
+  // Orchestration substrate (#111)
+  claimedBySession?: string | null;
+  claimedAt?: string | null;
+  scopes?: string[];
 }
 
 export async function updateNode(
@@ -284,6 +288,38 @@ export async function updateNode(
   if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
   if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
   if (input.childrenScheduling !== undefined) updates.childrenScheduling = input.childrenScheduling;
+  // Orchestration substrate (#111)
+  if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
+  if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
+  if (input.scopes !== undefined) updates.scopes = input.scopes;
+
+  // Auto-release claim when status transitions to a 'done' category (#111).
+  // We only need to act when `input.status` is being set AND neither
+  // `claimedBySession` nor `claimedAt` is already being cleared by the
+  // same call (to avoid clobbering explicit claim manipulation).
+  if (input.status !== undefined && input.status !== null
+      && input.claimedBySession === undefined && input.claimedAt === undefined) {
+    // Resolve the map's status workflow to check whether the target status
+    // maps to the 'done' category. We need the node's mapId for this.
+    const [nodeForMap] = await handle
+      .select({ mapId: nodes.mapId })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    if (nodeForMap) {
+      const [mapRow] = await handle
+        .select({ statusWorkflow: maps.statusWorkflow })
+        .from(maps)
+        .where(eq(maps.id, nodeForMap.mapId as string));
+      const workflow = ((mapRow?.statusWorkflow as StatusDef[]) ?? []);
+      const targetDef = workflow.find(
+        (s) => s.id === input.status || s.name.toLowerCase() === (input.status as string).toLowerCase(),
+      );
+      if (targetDef?.category === 'done') {
+        updates.claimedBySession = null;
+        updates.claimedAt = null;
+      }
+    }
+  }
 
   // Conditional update: when expectedRevision is provided, the WHERE clause
   // also matches on revision so a stale write affects 0 rows. We then look
