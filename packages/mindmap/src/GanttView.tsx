@@ -1200,6 +1200,8 @@ export function GanttView() {
   nodesRef.current = nodes;
   const reorderChildrenRef = useRef(reorderChildren);
   reorderChildrenRef.current = reorderChildren;
+  const updateNodeRef2 = useRef(updateNode);
+  updateNodeRef2.current = updateNode;
 
   const handleRowMouseDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     const target = e.target as HTMLElement;
@@ -1272,6 +1274,57 @@ export function GanttView() {
       next.splice(srcIdx, 1);
       next.splice(target, 0, drag.sourceId);
       reorderChildrenRef.current(drag.sourceParentId, next);
+
+      // ── Write priorityRank for the dropped node ─────────────────
+      // Use midpoint insertion: new rank = (predecessor.rank + successor.rank) / 2.
+      // If dropping at the start/end, use successor.rank - 1 / predecessor.rank + 1.
+      // Fallback: assign sequential integers if siblings lack ranks.
+      const siblings = next
+        .filter((cid) => cid !== drag.sourceId)
+        .map((cid) => nodesRef.current[cid]);
+      const dropInFinal = next.indexOf(drag.sourceId);
+      const before = dropInFinal > 0 ? nodesRef.current[next[dropInFinal - 1]] : null;
+      const after = dropInFinal < next.length - 1 ? nodesRef.current[next[dropInFinal + 1]] : null;
+
+      let newRank: number;
+      const RANK_STEP = 65536; // initial gap between ranks for new lists
+
+      if (before === undefined && after === undefined) {
+        // Only node — use 0
+        newRank = 0;
+      } else if (before == null && after != null) {
+        // Dropped at start
+        const afterRank = after.priorityRank ?? (siblings.indexOf(after) + 1) * RANK_STEP;
+        newRank = afterRank - RANK_STEP;
+      } else if (before != null && after == null) {
+        // Dropped at end
+        const beforeRank = before.priorityRank ?? (siblings.indexOf(before) + 1) * RANK_STEP;
+        newRank = beforeRank + RANK_STEP;
+      } else if (before != null && after != null) {
+        // Dropped between two nodes — midpoint
+        const br = before.priorityRank ?? (siblings.indexOf(before) + 1) * RANK_STEP;
+        const ar = after.priorityRank ?? (siblings.indexOf(after) + 1) * RANK_STEP;
+        newRank = (br + ar) / 2;
+      } else {
+        newRank = 0;
+      }
+
+      // Renumber if midpoint collapsed within epsilon (float precision guard)
+      const EPSILON = 1e-9;
+      const beforeRankFinal = before?.priorityRank ?? null;
+      const afterRankFinal = after?.priorityRank ?? null;
+      const collapsed =
+        (beforeRankFinal !== null && Math.abs(newRank - beforeRankFinal) < EPSILON) ||
+        (afterRankFinal !== null && Math.abs(newRank - afterRankFinal) < EPSILON);
+
+      if (collapsed) {
+        // Renumber all siblings with fresh sequential ranks
+        next.forEach((cid, idx) => {
+          updateNodeRef2.current(cid, { priorityRank: (idx + 1) * RANK_STEP });
+        });
+      } else {
+        updateNodeRef2.current(drag.sourceId, { priorityRank: newRank });
+      }
     };
 
     window.addEventListener('mousemove', handleMouseMove);
@@ -1946,6 +1999,48 @@ export function GanttView() {
                         title={health.replace('_', ' ')}
                       />
                     </div>
+
+                    {/* childrenScheduling toggle (parent nodes only) */}
+                    {row.hasChildren && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const next = row.node.childrenScheduling === 'sequential'
+                            ? 'parallel'
+                            : 'sequential';
+                          updateNode(row.node.id, { childrenScheduling: next } as Partial<Node>);
+                        }}
+                        title={
+                          row.node.childrenScheduling === 'sequential'
+                            ? 'Children: Sequential (click to switch to Parallel)'
+                            : 'Children: Parallel (click to switch to Sequential)'
+                        }
+                        style={{
+                          width: 24,
+                          height: 24,
+                          border: '1px solid',
+                          borderColor:
+                            row.node.childrenScheduling === 'sequential' ? '#4f46e5' : '#e2e8f0',
+                          borderRadius: 4,
+                          background:
+                            row.node.childrenScheduling === 'sequential' ? '#eef2ff' : 'transparent',
+                          color:
+                            row.node.childrenScheduling === 'sequential' ? '#4f46e5' : '#94a3b8',
+                          cursor: 'pointer',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          padding: 0,
+                          flexShrink: 0,
+                          fontSize: 9,
+                          fontWeight: 700,
+                          fontFamily: 'inherit',
+                          lineHeight: 1,
+                        }}
+                      >
+                        {row.node.childrenScheduling === 'sequential' ? 'SEQ' : 'PAR'}
+                      </button>
+                    )}
                   </div>
                 );
               })}
