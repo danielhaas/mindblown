@@ -593,3 +593,41 @@ describe('hours → business-day duration end-to-end (DoD case v)', () => {
     expect(byId.get('c2')!.computedEnd).toBe(4);
   });
 });
+
+describe('sequential parent: cycle-safe synthetic injection', () => {
+  it('skips synthetic FS when explicit reverse edge would close a cycle', () => {
+    // Sequential parent with default order c1 → c2 (by createdAt).
+    // But c1 has an EXPLICIT FS dep on c2 (c1 depends on c2 finishing first).
+    // The synthetic FS(c2 → c1) would combine with the explicit FS(c1 → c2)
+    // to form a cycle. Injection must skip this pair and let the explicit
+    // edge win; topologicalSort must not throw.
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'parent',
+      effortEstimate: 2,
+      createdAt: '2026-01-01T00:00:00Z',
+      dependencies: [{ targetNodeId: 'c2', type: 'FS', lag: 0 }],
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'parent',
+      effortEstimate: 3,
+      createdAt: '2026-01-02T00:00:00Z',
+    });
+
+    // Should not throw despite the would-be cycle.
+    const result = schedule([parent, c1, c2]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    // Explicit FS wins: c2 runs first (0..3), c1 depends on c2 (3..5).
+    expect(byId.get('c2')!.computedStart).toBe(0);
+    expect(byId.get('c2')!.computedEnd).toBe(3);
+    expect(byId.get('c1')!.computedStart).toBe(3);
+    expect(byId.get('c1')!.computedEnd).toBe(5);
+  });
+});

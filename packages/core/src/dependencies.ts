@@ -300,6 +300,12 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
       );
       if (alreadyHas) continue;
 
+      // Skip if predecessor already (transitively) depends on follower —
+      // injecting FS(follower → predecessor) would close a cycle and crash
+      // topologicalSort. The user's explicit edge wins; siblings stay
+      // parallel for this pair.
+      if (hasCycle(follower.id, predecessor.id, nodeMap)) continue;
+
       if (!extras.has(follower.id)) extras.set(follower.id, []);
       extras.get(follower.id)!.push({
         targetNodeId: predecessor.id,
