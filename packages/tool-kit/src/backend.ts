@@ -73,6 +73,53 @@ export interface TriageActionResult {
   placedNodeId?: string | null;
 }
 
+// ── Orchestration substrate (#111) ─────────────────────────────────
+
+export interface ReadyNode {
+  id: string;
+  text: string;
+  status: string | null;
+  priority: string | null;
+  priorityRank: number | null;
+  scopes: string[];
+  claimedBySession: string | null;
+  claimedAt: string | null;
+  parentId: string | null;
+}
+
+export interface ReadyNodesResult {
+  mapId: string;
+  ready: ReadyNode[];
+  total: number;
+  returned: number;
+}
+
+export interface ClaimNodeResult {
+  node: { id: string; text: string; claimedBySession: string | null; claimedAt: string | null };
+  claimed: boolean;
+  warned: boolean;
+  warning?: string;
+}
+
+export interface ReleaseNodeResult {
+  node: { id: string; text: string };
+  released: boolean;
+}
+
+export interface ConflictEntry {
+  id: string;
+  text: string;
+  status: string | null;
+  claimedBySession: string | null;
+  overlappingScopes: string[];
+}
+
+export interface ConflictScanResult {
+  candidateId: string;
+  candidateScopes: string[];
+  conflicts: ConflictEntry[];
+}
+
 export interface ToolBackend {
   listMaps(): Promise<MapSummary[]>;
   getMap(mapId: string): Promise<MapDetail>;
@@ -143,4 +190,13 @@ export interface ToolBackend {
   ): Promise<TriageActionResult>;
   reclassifyTriage(mapId: string, decisionId: string): Promise<TriageActionResult>;
   confirmTriage(mapId: string, decisionId: string): Promise<TriageActionResult>;
+
+  // ── Orchestration substrate (#111) ──────────────────────────────
+  readyNodes(
+    mapId: string,
+    opts?: { limit?: number; scopeFilter?: string[] },
+  ): Promise<ReadyNodesResult>;
+  claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
+  releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
+  conflictScan(mapId: string, candidateNodeId: string): Promise<ConflictScanResult>;
 }

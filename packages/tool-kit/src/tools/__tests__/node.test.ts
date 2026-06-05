@@ -83,6 +83,11 @@ function makeRecordingBackend(): {
     overrideTriage: async () => { throw new Error('not implemented'); },
     reclassifyTriage: async () => { throw new Error('not implemented'); },
     confirmTriage: async () => { throw new Error('not implemented'); },
+    // Orchestration substrate (#111)
+    readyNodes: async () => { throw new Error('not implemented'); },
+    claimNode: async () => { throw new Error('not implemented'); },
+    releaseNode: async () => { throw new Error('not implemented'); },
+    conflictScan: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

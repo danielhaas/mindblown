@@ -5,6 +5,13 @@ export type {
   TriageListFilters,
   TriageListResult,
   TriageActionResult,
+  // Orchestration substrate (#111)
+  ReadyNode,
+  ReadyNodesResult,
+  ClaimNodeResult,
+  ReleaseNodeResult,
+  ConflictEntry,
+  ConflictScanResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
@@ -17,6 +24,7 @@ import { mapTools } from './tools/map.js';
 import { nodeTools } from './tools/node.js';
 import { bulkTools } from './tools/bulk.js';
 import { triageTools } from './tools/triage.js';
-export { mapTools, nodeTools, bulkTools, triageTools };
+import { orchestrationTools } from './tools/orchestration.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools };
 
-export const allTools = [...mapTools, ...nodeTools, ...bulkTools, ...triageTools];
+export const allTools = [...mapTools, ...nodeTools, ...bulkTools, ...triageTools, ...orchestrationTools];
