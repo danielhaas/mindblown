@@ -1,4 +1,4 @@
-import type { Node as CoreNode, MindMap, CustomFieldValue } from '@mindblown/core';
+import type { Node as CoreNode, MindMap, CustomFieldValue, ChildrenScheduling } from '@mindblown/core';
 
 /**
  * Convert a database node row to the core Node type.
@@ -34,6 +34,8 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     cycleId: (get('cycleId', 'cycle_id') as string) ?? null,
     externalLinks: (get('externalLinks', 'external_links') as CoreNode['externalLinks']) ?? [],
     autoProgress: ((get('autoProgress', 'auto_progress') as CoreNode['autoProgress']) ?? 'off'),
+    priorityRank: (get('priorityRank', 'priority_rank') as number) ?? null,
+    childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'parallel'),
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
@@ -69,6 +71,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     wipLimit: (get('wipLimit', 'wip_limit') as number) ?? null,
     projectStartDate: (get('projectStartDate', 'project_start_date') as string) ?? null,
     hoursPerDay: (get('hoursPerDay', 'hours_per_day') as number) ?? 8,
+    childrenScheduling: ((get('childrenScheduling', 'children_scheduling') as ChildrenScheduling) ?? 'parallel'),
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

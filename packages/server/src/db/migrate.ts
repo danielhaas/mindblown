@@ -618,5 +618,22 @@ export async function runMigrations(): Promise<void> {
     ON nodes(deleted_at) WHERE deleted_at IS NOT NULL
   `);
 
+  // ── Gantt slice 1 (#109): implicit sibling ordering + scheduling mode ──
+  // priority_rank: fractional ranking for drag-to-reorder within a sibling
+  //   group. REAL (float) for midpoint insertion. null = no explicit rank.
+  // children_scheduling: 'parallel' (default, existing behavior) or
+  //   'sequential' (implicit FS chain in resolved sibling order).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS priority_rank REAL
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'parallel'
+  `);
+  // Root-level scheduling mode on maps (same semantics as on nodes but
+  // applies to the top-level children of the map's root node).
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS children_scheduling TEXT NOT NULL DEFAULT 'parallel'
+  `);
+
   console.log('[db] Migrations complete.');
 }

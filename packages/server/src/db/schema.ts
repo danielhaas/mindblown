@@ -113,6 +113,12 @@ export const maps = pgTable('maps', {
   // write failure never blocks the triage flow. Uncertain decisions do
   // NOT write labels — intermediate state would just noise up GitHub.
   triageLabelWriteback: boolean('triage_label_writeback').notNull().default(false),
+
+  // ── Gantt slice 1 (#109) ─────────────────────────────────────────
+  // Root-level scheduling mode: how the map's top-level children are
+  // scheduled. Individual nodes override with their own childrenScheduling.
+  // Default 'parallel' preserves existing behavior.
+  childrenScheduling: text('children_scheduling').notNull().default('parallel'),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
@@ -159,6 +165,14 @@ export const nodes = pgTable('nodes', {
   // deleted_at IS NULL` unless they're an audit/snapshot path. GC hard-deletes
   // rows after the retention window. See packages/server/src/db/nodes.ts.
   deletedAt: timestamp('deleted_at', { withTimezone: true }),
+
+  // ── Gantt slice 1 (#109) ──────────────────────────────────────
+  // Fractional ranking for drag-to-reorder within a sibling group.
+  // null = no explicit rank (sorts after ranked siblings in resolved order).
+  priorityRank: real('priority_rank'),
+  // How children of this node are scheduled relative to each other.
+  // 'parallel' (default) = existing behavior; 'sequential' = implicit FS chain.
+  childrenScheduling: text('children_scheduling').notNull().default('parallel'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────
