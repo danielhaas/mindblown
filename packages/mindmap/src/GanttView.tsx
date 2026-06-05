@@ -1969,47 +1969,6 @@ export function GanttView() {
                       />
                     </div>
 
-                    {/* childrenScheduling toggle (parent nodes only) */}
-                    {row.hasChildren && (
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const next = row.node.childrenScheduling === 'sequential'
-                            ? 'parallel'
-                            : 'sequential';
-                          updateNode(row.node.id, { childrenScheduling: next } as Partial<Node>);
-                        }}
-                        title={
-                          row.node.childrenScheduling === 'sequential'
-                            ? 'Children: Sequential (click to switch to Parallel)'
-                            : 'Children: Parallel (click to switch to Sequential)'
-                        }
-                        style={{
-                          width: 24,
-                          height: 24,
-                          border: '1px solid',
-                          borderColor:
-                            row.node.childrenScheduling === 'sequential' ? '#4f46e5' : '#e2e8f0',
-                          borderRadius: 4,
-                          background:
-                            row.node.childrenScheduling === 'sequential' ? '#eef2ff' : 'transparent',
-                          color:
-                            row.node.childrenScheduling === 'sequential' ? '#4f46e5' : '#94a3b8',
-                          cursor: 'pointer',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          padding: 0,
-                          flexShrink: 0,
-                          fontSize: 9,
-                          fontWeight: 700,
-                          fontFamily: 'inherit',
-                          lineHeight: 1,
-                        }}
-                      >
-                        {row.node.childrenScheduling === 'sequential' ? 'SEQ' : 'PAR'}
-                      </button>
-                    )}
                   </div>
                 );
               })}

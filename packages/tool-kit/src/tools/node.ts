@@ -27,12 +27,6 @@ export const createNodeTool = defineTool({
       .describe(
         'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear earlier. Use (A.rank + B.rank) / 2 for midpoint insertion. null = no explicit rank (sorts after ranked siblings).',
       ),
-    childrenScheduling: z
-      .enum(['parallel', 'sequential'])
-      .optional()
-      .describe(
-        "How this node's children are scheduled relative to each other. 'parallel' (default) = existing behavior. 'sequential' = implicit FS chain in resolved sibling order.",
-      ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -78,12 +72,6 @@ export const updateNodeTool = defineTool({
       .optional()
       .describe(
         'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear first. Use (A.rank + B.rank) / 2 to insert between two nodes. null clears the rank.',
-      ),
-    childrenScheduling: z
-      .enum(['parallel', 'sequential'])
-      .optional()
-      .describe(
-        "How this node's children are scheduled relative to each other. 'parallel' (default) = existing behavior, each child starts as early as its own deps allow. 'sequential' = implicit FS chain in resolved sibling order (priorityRank ASC NULLS LAST → priority enum → createdAt ASC). Explicit dep edges still win over the implicit chain.",
       ),
     // Orchestration substrate (#111)
     scopes: z

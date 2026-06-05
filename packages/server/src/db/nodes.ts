@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef, ChildrenScheduling } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
@@ -109,7 +109,6 @@ export interface CreateNodeInput {
   dueDate?: string;
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
-  childrenScheduling?: ChildrenScheduling;
 }
 
 export async function createNode(
@@ -142,7 +141,6 @@ export async function createNode(
     dueDate: input.dueDate ?? null,
     autoProgress: input.autoProgress ?? 'off',
     priorityRank: input.priorityRank ?? null,
-    childrenScheduling: input.childrenScheduling ?? 'sequential',
     assigneeIds: [],
     tags: [],
     customFields: {},
@@ -216,7 +214,6 @@ export interface UpdateNodeInput {
   externalLinks?: ExternalLink[];
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
-  childrenScheduling?: ChildrenScheduling;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -287,7 +284,6 @@ export async function updateNode(
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
   if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
   if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
-  if (input.childrenScheduling !== undefined) updates.childrenScheduling = input.childrenScheduling;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

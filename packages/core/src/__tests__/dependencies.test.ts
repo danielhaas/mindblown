@@ -36,7 +36,6 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     externalLinks: [],
     autoProgress: 'off',
     priorityRank: null,
-    childrenScheduling: 'parallel',
     // Orchestration substrate (#111)
     claimedBySession: null,
     claimedAt: null,
@@ -197,96 +196,9 @@ describe('topologicalSort', () => {
   });
 });
 
-// ── Scheduling (forward pass) ───────────────────────────────────
+// ── Scheduling (forward pass — single-worker, priority-driven) ─────
 
-describe('schedule', () => {
-  it('schedules the doc example correctly', () => {
-    const { allNodes } = buildScheduleExample();
-    const result = schedule(allNodes);
-
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // Design: start=0, end=3
-    expect(byId.get('design')!.computedStart).toBe(0);
-    expect(byId.get('design')!.computedEnd).toBe(3);
-
-    // Frontend: start=3 (after design), end=11
-    expect(byId.get('frontend')!.computedStart).toBe(3);
-    expect(byId.get('frontend')!.computedEnd).toBe(11);
-
-    // Backend: start=3 (after design), end=10
-    expect(byId.get('backend')!.computedStart).toBe(3);
-    expect(byId.get('backend')!.computedEnd).toBe(10);
-
-    // Integration: starts after max(frontend=11, backend=10) = 11, end=14
-    expect(byId.get('integration')!.computedStart).toBe(11);
-    expect(byId.get('integration')!.computedEnd).toBe(14);
-
-    // Launch: starts at 14, end=14 (milestone, 0 duration)
-    expect(byId.get('launch')!.computedStart).toBe(14);
-    expect(byId.get('launch')!.computedEnd).toBe(14);
-  });
-
-  it('handles lag on dependencies', () => {
-    const a = makeNode({ id: 'a', effortEstimate: 3 });
-    const b = makeNode({
-      id: 'b',
-      effortEstimate: 5,
-      dependencies: [{ targetNodeId: 'a', type: 'FS', lag: 2 }],
-    });
-    const result = schedule([a, b]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // B starts at A.end + lag = 3 + 2 = 5
-    expect(byId.get('b')!.computedStart).toBe(5);
-    expect(byId.get('b')!.computedEnd).toBe(10);
-  });
-
-  it('handles SS dependency type', () => {
-    const a = makeNode({ id: 'a', effortEstimate: 5 });
-    const b = makeNode({
-      id: 'b',
-      effortEstimate: 3,
-      dependencies: [{ targetNodeId: 'a', type: 'SS', lag: 1 }],
-    });
-    const result = schedule([a, b]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // SS: B can start when A starts + lag = 0 + 1 = 1
-    expect(byId.get('b')!.computedStart).toBe(1);
-    expect(byId.get('b')!.computedEnd).toBe(4);
-  });
-
-  it('handles FF dependency type', () => {
-    const a = makeNode({ id: 'a', effortEstimate: 5 });
-    const b = makeNode({
-      id: 'b',
-      effortEstimate: 3,
-      dependencies: [{ targetNodeId: 'a', type: 'FF', lag: 0 }],
-    });
-    const result = schedule([a, b]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // FF: B.end >= A.end + lag → B.start >= A.end + lag - B.duration = 5 + 0 - 3 = 2
-    expect(byId.get('b')!.computedStart).toBe(2);
-    expect(byId.get('b')!.computedEnd).toBe(5);
-  });
-
-  it('handles SF dependency type', () => {
-    const a = makeNode({ id: 'a', effortEstimate: 5 });
-    const b = makeNode({
-      id: 'b',
-      effortEstimate: 3,
-      dependencies: [{ targetNodeId: 'a', type: 'SF', lag: 0 }],
-    });
-    const result = schedule([a, b]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // SF: B.end >= A.start + lag → B.start >= A.start + lag - B.duration = 0 + 0 - 3 = -3 → clamped to 0
-    expect(byId.get('b')!.computedStart).toBe(0);
-    expect(byId.get('b')!.computedEnd).toBe(3);
-  });
-
+describe('schedule — pins and dep constraints', () => {
   it('honours a minStart pin that pushes the node forward', () => {
     const a = makeNode({ id: 'a', effortEstimate: 3 });
     const constraints = new Map([['a', { minStart: 5 }]]);
@@ -317,7 +229,6 @@ describe('schedule', () => {
     const constraints = new Map([['a', { maxEnd: 10 }]]);
     const result = schedule([a], 0, constraints);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    // start=0, required duration = 10-0 = 10 > estimate 3 → stretched
     expect(byId.get('a')!.computedStart).toBe(0);
     expect(byId.get('a')!.computedEnd).toBe(10);
     expect(byId.get('a')!.duration).toBe(10);
@@ -328,9 +239,23 @@ describe('schedule', () => {
     const constraints = new Map([['a', { maxEnd: 3 }]]);
     const result = schedule([a], 0, constraints);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    // Required duration 3 < estimate 5 → keep the larger estimate
     expect(byId.get('a')!.duration).toBe(5);
     expect(byId.get('a')!.computedEnd).toBe(5);
+  });
+
+  it('FS lag pushes a follower past the cursor', () => {
+    // A=3, B depends on A FS lag=5. Single-worker cursor would put B
+    // at A.end=3, but FS lag pushes it to A.end + 5 = 8.
+    const a = makeNode({ id: 'a', effortEstimate: 3 });
+    const b = makeNode({
+      id: 'b',
+      effortEstimate: 2,
+      dependencies: [{ targetNodeId: 'a', type: 'FS', lag: 5 }],
+    });
+    const result = schedule([a, b]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('b')!.computedStart).toBe(8);
+    expect(byId.get('b')!.computedEnd).toBe(10);
   });
 });
 
@@ -411,337 +336,152 @@ describe('criticalPath', () => {
   });
 });
 
-// ── DoD unit tests for Gantt slice 1 ───────────────────────────
-//
-// (i)   'parallel' parent → siblings schedule independently (regression)
-// (ii)  'sequential' parent → siblings chained in resolved order
-// (iii) explicit FS edge overrides the implicit sequential chain
-// (iv)  business-day math: 12h estimate with 8h/day = 2 business days
-// (v)   schedule correctly converts hours to business-day durations end-to-end
+// ── Priority-inheritance scheduler tests (v0.17.0) ──────────────
 
-describe('childrenScheduling: parallel (DoD case i — regression)', () => {
-  it('parallel parent: siblings all start at project day 0', () => {
-    // Parent has 3 children with no explicit deps. All should land at start=0.
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2', 'c3'],
-      childrenScheduling: 'parallel',
-    });
-    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 2 });
-    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 3 });
-    const c3 = makeNode({ id: 'c3', parentId: 'parent', effortEstimate: 5 });
-
-    const result = schedule([parent, c1, c2, c3]);
+describe('priority-inheritance schedule', () => {
+  it('orders leaves by priority — high priority first', () => {
+    const a = makeNode({ id: 'a', priority: 'P2', effortEstimate: 2 });
+    const b = makeNode({ id: 'b', priority: 'P0', effortEstimate: 1 });
+    const c = makeNode({ id: 'c', priority: 'P1', effortEstimate: 3 });
+    const result = schedule([a, b, c]);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    expect(byId.get('c1')!.computedStart).toBe(0);
-    expect(byId.get('c2')!.computedStart).toBe(0);
-    expect(byId.get('c3')!.computedStart).toBe(0);
-  });
-});
-
-describe('childrenScheduling: sequential (DoD case ii)', () => {
-  it('sequential parent: children chain in resolved order', () => {
-    // Parent with sequential scheduling. Children have effort 2, 3, 5.
-    // Expected chain: c1(0→2) → c2(2→5) → c3(5→10)
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2', 'c3'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({
-      id: 'c1',
-      parentId: 'parent',
-      effortEstimate: 2,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-    const c2 = makeNode({
-      id: 'c2',
-      parentId: 'parent',
-      effortEstimate: 3,
-      createdAt: '2026-01-02T00:00:00Z',
-    });
-    const c3 = makeNode({
-      id: 'c3',
-      parentId: 'parent',
-      effortEstimate: 5,
-      createdAt: '2026-01-03T00:00:00Z',
-    });
-
-    const result = schedule([parent, c1, c2, c3]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    expect(byId.get('c1')!.computedStart).toBe(0);
-    expect(byId.get('c1')!.computedEnd).toBe(2);
-
-    expect(byId.get('c2')!.computedStart).toBe(2);
-    expect(byId.get('c2')!.computedEnd).toBe(5);
-
-    expect(byId.get('c3')!.computedStart).toBe(5);
-    expect(byId.get('c3')!.computedEnd).toBe(10);
+    // Order: b (P0) at 0..1, c (P1) at 1..4, a (P2) at 4..6
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(1);
+    expect(byId.get('c')!.computedStart).toBe(1);
+    expect(byId.get('c')!.computedEnd).toBe(4);
+    expect(byId.get('a')!.computedStart).toBe(4);
+    expect(byId.get('a')!.computedEnd).toBe(6);
   });
 
-  it('sequential parent: resolved order respects priorityRank', () => {
-    // c3 has priorityRank 1 (lowest rank number = first), c1 has rank 2, c2 has no rank
-    // Expected order: c3 → c1 → c2
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2', 'c3'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 1, priorityRank: 2 });
-    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 1, priorityRank: null });
-    const c3 = makeNode({ id: 'c3', parentId: 'parent', effortEstimate: 1, priorityRank: 1 });
-
-    const result = schedule([parent, c1, c2, c3]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // c3 (rank 1) → c1 (rank 2) → c2 (null rank)
-    expect(byId.get('c3')!.computedStart).toBe(0); // first
-    expect(byId.get('c1')!.computedStart).toBe(1); // after c3
-    expect(byId.get('c2')!.computedStart).toBe(2); // after c1
-  });
-});
-
-describe('explicit FS edge overrides implicit sequential chain (DoD case iii)', () => {
-  it('explicit FS from a different subtree respects the edge', () => {
-    // Sequential parent with c1 → c2 → c3. But c3 also has an explicit FS dep
-    // on an external node X(effort=10). X must finish before c3 starts.
-    const x = makeNode({ id: 'x', effortEstimate: 10 });
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2', 'c3'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 2, createdAt: '2026-01-01T00:00:00Z' });
-    const c2 = makeNode({ id: 'c2', parentId: 'parent', effortEstimate: 2, createdAt: '2026-01-02T00:00:00Z' });
-    const c3 = makeNode({
-      id: 'c3',
-      parentId: 'parent',
-      effortEstimate: 2,
-      createdAt: '2026-01-03T00:00:00Z',
-      dependencies: [{ targetNodeId: 'x', type: 'FS', lag: 0 }],
-    });
-
-    const result = schedule([x, parent, c1, c2, c3]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // x ends at 10; c3 must start at max(c2.end=4, x.end=10) = 10
-    expect(byId.get('c3')!.computedStart).toBe(10);
-    expect(byId.get('c3')!.computedEnd).toBe(12);
-
-    // c1 and c2 are unaffected by x
-    expect(byId.get('c1')!.computedStart).toBe(0);
-    expect(byId.get('c2')!.computedStart).toBe(2);
-  });
-});
-
-describe('business-day math (DoD case iv — weekends skipped)', () => {
-  it('hoursToBusinessDays: 12h estimate with 8h/day = 2 business days', () => {
-    // Direct unit test repeated in scheduler context
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({ id: 'c1', parentId: 'parent', effortEstimate: 12 });
-
-    const result = schedule(
-      [parent, c1],
-      0,
-      undefined,
-      { effortUnit: 'hours', hoursPerDay: 8 },
-    );
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    expect(byId.get('c1')!.duration).toBe(2);
-  });
-});
-
-describe('hours → business-day duration end-to-end (DoD case v)', () => {
-  it('8h estimate = 1 business day, 24h = 3 business days; downstream sibling pushes by 2', () => {
-    // Sequential parent: c1(8h) → c2(24h). With 8h/day:
-    //   c1 duration = ceil(8/8) = 1 day  → 0..1
-    //   c2 duration = ceil(24/8) = 3 days → 1..4
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({
-      id: 'c1',
-      parentId: 'parent',
-      effortEstimate: 8,
-      createdAt: '2026-01-01T00:00:00Z',
-    });
-    const c2 = makeNode({
-      id: 'c2',
-      parentId: 'parent',
-      effortEstimate: 24,
-      createdAt: '2026-01-02T00:00:00Z',
-    });
-
-    const result = schedule(
-      [parent, c1, c2],
-      0,
-      undefined,
-      { effortUnit: 'hours', hoursPerDay: 8 },
-    );
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    expect(byId.get('c1')!.duration).toBe(1);
-    expect(byId.get('c1')!.computedEnd).toBe(1);
-
-    expect(byId.get('c2')!.computedStart).toBe(1);
-    expect(byId.get('c2')!.duration).toBe(3);
-    expect(byId.get('c2')!.computedEnd).toBe(4);
-  });
-});
-
-describe('sequential parent: priority-enum tiebreaker', () => {
-  it('orders by Priority enum (P0 < P1 < P2 < P3) when priorityRank is null', () => {
-    // All siblings have priorityRank=null, distinct priority enum values.
-    // Resolved order should be P0 → P1 → P2 → P3, regardless of createdAt.
-    // (createdAt is set in reverse order to prove enum wins over createdAt.)
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2', 'c3', 'c4'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({
-      id: 'c1',
-      parentId: 'parent',
-      effortEstimate: 1,
-      priority: 'P3',
-      createdAt: '2026-01-01T00:00:00Z', // earliest createdAt → would be first
-    });
-    const c2 = makeNode({
-      id: 'c2',
-      parentId: 'parent',
-      effortEstimate: 1,
-      priority: 'P0',
-      createdAt: '2026-01-04T00:00:00Z',
-    });
-    const c3 = makeNode({
-      id: 'c3',
-      parentId: 'parent',
-      effortEstimate: 1,
-      priority: 'P2',
-      createdAt: '2026-01-02T00:00:00Z',
-    });
-    const c4 = makeNode({
-      id: 'c4',
-      parentId: 'parent',
-      effortEstimate: 1,
-      priority: 'P1',
-      createdAt: '2026-01-03T00:00:00Z',
-    });
-
-    const result = schedule([parent, c1, c2, c3, c4]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // Order: c2 (P0) → c4 (P1) → c3 (P2) → c1 (P3)
-    expect(byId.get('c2')!.computedStart).toBe(0);
-    expect(byId.get('c4')!.computedStart).toBe(1);
-    expect(byId.get('c3')!.computedStart).toBe(2);
-    expect(byId.get('c1')!.computedStart).toBe(3);
-  });
-});
-
-describe('sequential parent: cycle-safe synthetic injection', () => {
-  it('skips synthetic FS when explicit reverse edge would close a cycle', () => {
-    // Sequential parent with default order c1 → c2 (by createdAt).
-    // But c1 has an EXPLICIT FS dep on c2 (c1 depends on c2 finishing first).
-    // The synthetic FS(c2 → c1) would combine with the explicit FS(c1 → c2)
-    // to form a cycle. Injection must skip this pair and let the explicit
-    // edge win; topologicalSort must not throw.
-    const parent = makeNode({
-      id: 'parent',
-      childrenIds: ['c1', 'c2'],
-      childrenScheduling: 'sequential',
-    });
-    const c1 = makeNode({
-      id: 'c1',
-      parentId: 'parent',
-      effortEstimate: 2,
-      createdAt: '2026-01-01T00:00:00Z',
-      dependencies: [{ targetNodeId: 'c2', type: 'FS', lag: 0 }],
-    });
-    const c2 = makeNode({
-      id: 'c2',
-      parentId: 'parent',
-      effortEstimate: 3,
-      createdAt: '2026-01-02T00:00:00Z',
-    });
-
-    // Should not throw despite the would-be cycle.
-    const result = schedule([parent, c1, c2]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-
-    // Explicit FS wins: c2 runs first (0..3), c1 depends on c2 (3..5).
-    expect(byId.get('c2')!.computedStart).toBe(0);
-    expect(byId.get('c2')!.computedEnd).toBe(3);
-    expect(byId.get('c1')!.computedStart).toBe(3);
-    expect(byId.get('c1')!.computedEnd).toBe(5);
-  });
-
-  it('cross-parent cycle: synthetic edges across two sequential parents do not create cycles', () => {
-    // Two sequential parents:
-    //   P1 has children A, B (resolved order A → B)
-    //   P2 has children C, D (resolved order C → D)
-    // Explicit edges already in the graph:
-    //   C depends on B (FS)
-    //   A depends on D (FS)
-    //
-    // Without the cross-parent-aware cycle guard, both synthetic edges
-    // (FS(B → A) and FS(D → C)) would be injected because each look-up
-    // sees only the pre-injection graph. Combined they form a cycle:
-    //   A → D → C → B → A
-    // and topologicalSort throws.
-    //
-    // With the working-nodeMap fix, the second injection's hasCycle check
-    // sees the synthetic FS(B → A) added by the first injection and skips
-    // the FS(D → C) injection. P2's chain is partially honored (D doesn't
-    // chain) but the schedule resolves without throwing.
-    const p1 = makeNode({
-      id: 'P1',
-      childrenIds: ['A', 'B'],
-      childrenScheduling: 'sequential',
-    });
-    const p2 = makeNode({
-      id: 'P2',
-      childrenIds: ['C', 'D'],
-      childrenScheduling: 'sequential',
-    });
+  it('high-priority item with low-priority blocker: blocker inherits and runs first', () => {
+    // A=P0 depends on B=P3. B inherits P0 → runs at 0, then A.
+    // C=P1 has no deps → runs after A (queue: B@P0, A@P0, C@P1).
     const a = makeNode({
-      id: 'A',
-      parentId: 'P1',
+      id: 'a',
+      priority: 'P0',
       effortEstimate: 1,
-      createdAt: '2026-01-01T00:00:00Z',
-      dependencies: [{ targetNodeId: 'D', type: 'FS', lag: 0 }],
+      dependencies: [{ targetNodeId: 'b', type: 'FS', lag: 0 }],
+    });
+    const b = makeNode({ id: 'b', priority: 'P3', effortEstimate: 2 });
+    const c = makeNode({ id: 'c', priority: 'P1', effortEstimate: 1 });
+    const result = schedule([a, b, c]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(2);
+    expect(byId.get('a')!.computedStart).toBe(2);
+    expect(byId.get('a')!.computedEnd).toBe(3);
+    expect(byId.get('c')!.computedStart).toBe(3);
+    expect(byId.get('c')!.computedEnd).toBe(4);
+  });
+
+  it('chain inheritance: A → B → C all converge to A.priority', () => {
+    // A=P0 depends on B. B=P2 depends on C. C=P3.
+    // After inheritance: A=P0, B=P0, C=P0.
+    // Topological order forces C before B before A.
+    // Queue: C, B, A (all P0).
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: 1,
+      dependencies: [{ targetNodeId: 'b', type: 'FS', lag: 0 }],
     });
     const b = makeNode({
-      id: 'B',
-      parentId: 'P1',
+      id: 'b',
+      priority: 'P2',
       effortEstimate: 1,
-      createdAt: '2026-01-02T00:00:00Z',
+      dependencies: [{ targetNodeId: 'c', type: 'FS', lag: 0 }],
     });
-    const c = makeNode({
-      id: 'C',
-      parentId: 'P2',
-      effortEstimate: 1,
-      createdAt: '2026-01-03T00:00:00Z',
-      dependencies: [{ targetNodeId: 'B', type: 'FS', lag: 0 }],
-    });
-    const d = makeNode({
-      id: 'D',
-      parentId: 'P2',
-      effortEstimate: 1,
-      createdAt: '2026-01-04T00:00:00Z',
-    });
+    const c = makeNode({ id: 'c', priority: 'P3', effortEstimate: 1 });
+    const result = schedule([a, b, c]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('c')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedStart).toBe(1);
+    expect(byId.get('a')!.computedStart).toBe(2);
+  });
 
-    // Must not throw "Cycle detected".
-    const result = schedule([p1, p2, a, b, c, d]);
-    expect(result.length).toBe(6);
+  it('diamond: B blocks both A and E, inherits min priority', () => {
+    // A=P0 deps on B, E=P2 deps on B, B=P3.
+    // B inherits min(P0, P2) = P0.
+    // After inheritance: A=P0, B=P0, E=P2.
+    // Queue: B (P0), A (P0), E (P2). [B before A by topo, A and B share P0]
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: 1,
+      dependencies: [{ targetNodeId: 'b', type: 'FS', lag: 0 }],
+    });
+    const b = makeNode({ id: 'b', priority: 'P3', effortEstimate: 1 });
+    const e = makeNode({
+      id: 'e',
+      priority: 'P2',
+      effortEstimate: 1,
+      dependencies: [{ targetNodeId: 'b', type: 'FS', lag: 0 }],
+    });
+    const result = schedule([a, b, e]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedStart).toBe(1);
+    expect(byId.get('e')!.computedStart).toBe(2);
+  });
+
+  it('parent rollup: parent.start = min(child.start), parent.end = max(child.end)', () => {
+    const parent = makeNode({
+      id: 'p',
+      childrenIds: ['c1', 'c2'],
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'p',
+      priority: 'P0',
+      effortEstimate: 2,
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'p',
+      priority: 'P1',
+      effortEstimate: 3,
+    });
+    const result = schedule([parent, c1, c2]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // c1 at 0..2, c2 at 2..5. Parent at 0..5.
+    expect(byId.get('p')!.computedStart).toBe(0);
+    expect(byId.get('p')!.computedEnd).toBe(5);
+  });
+
+  it('priorityRank tiebreaks within same priority enum', () => {
+    const a = makeNode({ id: 'a', priority: 'P1', priorityRank: 3, effortEstimate: 1 });
+    const b = makeNode({ id: 'b', priority: 'P1', priorityRank: 1, effortEstimate: 1 });
+    const c = makeNode({ id: 'c', priority: 'P1', priorityRank: 2, effortEstimate: 1 });
+    const result = schedule([a, b, c]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('b')!.computedStart).toBe(0); // rank 1
+    expect(byId.get('c')!.computedStart).toBe(1); // rank 2
+    expect(byId.get('a')!.computedStart).toBe(2); // rank 3
+  });
+
+  it('null priority sorts last (lowest)', () => {
+    const a = makeNode({ id: 'a', priority: null, effortEstimate: 1 });
+    const b = makeNode({ id: 'b', priority: 'P3', effortEstimate: 1 });
+    const result = schedule([a, b]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedStart).toBe(1);
+  });
+
+  it('hours → business-day conversion via context', () => {
+    const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 12 });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 8 });
+    const result = schedule([a, b], 0, undefined, {
+      effortUnit: 'hours',
+      hoursPerDay: 8,
+    });
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // 12h → ceil(12/8) = 2 days. 8h → 1 day.
+    expect(byId.get('a')!.duration).toBe(2);
+    expect(byId.get('b')!.duration).toBe(1);
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedStart).toBe(2);
   });
 });
+

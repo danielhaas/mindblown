@@ -10,7 +10,6 @@ export type {
   Priority,
   EffortUnit,
   LayoutMode,
-  ChildrenScheduling,
   CustomFieldValue,
   Dependency,
   ExternalLink,
