@@ -499,84 +499,276 @@ function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: 
   );
 }
 
-// ── Version Indicator ─────────────────────────────────────────
+// ── Filters Popover (Version + Sprint) ───────────────────────
 
-function VersionIndicator({
+function FiltersPopover({
   versions,
   activeVersionFilter,
-  onFilterChange,
+  onVersionFilterChange,
+  cycles,
+  activeCycleFilter,
+  onCycleFilterChange,
 }: {
   versions: { id: string; name: string; status: string }[];
   activeVersionFilter: string | null;
-  onFilterChange: (id: string | null) => void;
+  onVersionFilterChange: (id: string | null) => void;
+  cycles: { id: string; name: string; status: string; startDate: string; endDate: string }[];
+  activeCycleFilter: string | null;
+  onCycleFilterChange: (id: string | null) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // Click outside / Escape closes the popover.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+
   const filterVersion = activeVersionFilter
     ? versions.find((v) => v.id === activeVersionFilter)
     : null;
+  const filterCycle = activeCycleFilter
+    ? cycles.find((c) => c.id === activeCycleFilter)
+    : null;
+  const activeSprint = cycles.find((c) => c.status === 'active');
+  const hasAnyFilter = !!(filterVersion || filterCycle);
+
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function fmtShort(iso: string): string {
+    const d = new Date(iso);
+    return `${months[d.getMonth()]} ${d.getDate()}`;
+  }
+
+  const chipCloseBtn = (onClick: () => void, title: string) => (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{
+        background: 'none',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '0 0 0 4px',
+        color: '#94a3b8',
+        fontSize: 12,
+        fontFamily: 'inherit',
+        lineHeight: 1,
+      }}
+      title={title}
+    >
+      ×
+    </button>
+  );
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {/* Filter indicator */}
+    <div ref={wrapRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Filter the mindmap by version or sprint"
+        style={{
+          padding: '3px 10px',
+          borderRadius: 4,
+          border:
+            hasAnyFilter || open ? '1px solid #c7d2fe' : '1px solid #e2e8f0',
+          fontSize: 11,
+          fontWeight: 600,
+          fontFamily: 'inherit',
+          cursor: 'pointer',
+          background: open ? '#eef2ff' : '#fff',
+          color: hasAnyFilter || open ? '#4f46e5' : '#64748b',
+          transition: 'all 0.15s',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+        }}
+      >
+        <svg width="11" height="11" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path
+            d="M2 3h12l-4.5 6V14l-3-1.5V9L2 3z"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinejoin="round"
+          />
+        </svg>
+        <span>Filters</span>
+      </button>
+
+      {/* Active-filter chips shown inline so state is glanceable without opening the popover */}
       {filterVersion && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              padding: '2px 8px',
-              borderRadius: 4,
-              background: '#f0fdf4',
-              color: '#059669',
-            }}
-          >
-            {filterVersion.name}
-          </span>
-          <button
-            onClick={() => onFilterChange(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '0 2px',
-              color: '#94a3b8',
-              fontSize: 12,
-              fontFamily: 'inherit',
-            }}
-            title="Clear version filter"
-          >
-            x
-          </button>
-        </div>
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 4px 2px 8px',
+            borderRadius: 4,
+            background: '#f0fdf4',
+            color: '#059669',
+          }}
+        >
+          {filterVersion.name}
+          {chipCloseBtn(() => onVersionFilterChange(null), 'Clear version filter')}
+        </span>
+      )}
+      {filterCycle && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 4px 2px 8px',
+            borderRadius: 4,
+            background: '#eef2ff',
+            color: '#4f46e5',
+          }}
+        >
+          {filterCycle.name}
+          {chipCloseBtn(() => onCycleFilterChange(null), 'Clear sprint filter')}
+        </span>
       )}
 
-      {/* Version filter dropdown */}
-      <select
-        value={activeVersionFilter ?? ''}
-        onChange={(e) => onFilterChange(e.target.value || null)}
-        onKeyDown={(e) => e.stopPropagation()}
-        style={{
-          fontSize: 10,
-          fontFamily: 'inherit',
-          border: '1px solid #e2e8f0',
-          borderRadius: 4,
-          padding: '2px 18px 2px 6px',
-          color: '#475569',
-          background: '#fff',
-          appearance: 'none' as const,
-          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2394a3b8' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E")`,
-          backgroundRepeat: 'no-repeat',
-          backgroundPosition: 'right 4px center',
-          cursor: 'pointer',
-        }}
-        title="Filter by version"
-      >
-        <option value="">All versions</option>
-        {versions.map((v) => (
-          <option key={v.id} value={v.id}>
-            {v.name} ({v.status})
-          </option>
-        ))}
-      </select>
+      {open && (
+        <div
+          style={{
+            position: 'absolute',
+            top: 'calc(100% + 6px)',
+            left: 0,
+            zIndex: 20,
+            minWidth: 240,
+            background: '#fff',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            boxShadow: '0 6px 20px rgba(15, 23, 42, 0.12)',
+            padding: 12,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            fontSize: 11,
+            fontFamily: 'inherit',
+          }}
+        >
+          {activeSprint && !filterCycle && (
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '6px 8px',
+                background: '#eef2ff',
+                borderRadius: 4,
+                color: '#4f46e5',
+                fontWeight: 600,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <rect x="1" y="3" width="14" height="11" rx="2" stroke="#4f46e5" strokeWidth="1.5" />
+                <line x1="4" y1="1" x2="4" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
+                <line x1="12" y1="1" x2="12" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+              <span>{activeSprint.name}</span>
+              <span style={{ color: '#6366f1', fontWeight: 500 }}>
+                {fmtShort(activeSprint.startDate)}–{fmtShort(activeSprint.endDate)}
+              </span>
+            </div>
+          )}
+
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+              Version
+            </span>
+            <select
+              value={activeVersionFilter ?? ''}
+              onChange={(e) => onVersionFilterChange(e.target.value || null)}
+              onKeyDown={(e) => e.stopPropagation()}
+              style={{
+                fontSize: 12,
+                fontFamily: 'inherit',
+                border: '1px solid #e2e8f0',
+                borderRadius: 4,
+                padding: '5px 8px',
+                color: '#0f172a',
+                background: '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <option value="">All versions</option>
+              {versions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name} ({v.status})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {cycles.length > 0 && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Sprint
+              </span>
+              <select
+                value={activeCycleFilter ?? ''}
+                onChange={(e) => onCycleFilterChange(e.target.value || null)}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={{
+                  fontSize: 12,
+                  fontFamily: 'inherit',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 4,
+                  padding: '5px 8px',
+                  color: '#0f172a',
+                  background: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="">All sprints</option>
+                {cycles.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.status})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {hasAnyFilter && (
+            <button
+              onClick={() => {
+                onVersionFilterChange(null);
+                onCycleFilterChange(null);
+              }}
+              style={{
+                marginTop: 2,
+                alignSelf: 'flex-start',
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                color: '#4f46e5',
+                fontSize: 11,
+                fontFamily: 'inherit',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Clear all filters
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -694,137 +886,6 @@ function TriageIndicator({
         </span>
       )}
     </button>
-  );
-}
-
-// ── Sprint Indicator ──────────────────────────────────────────
-
-function SprintIndicator({
-  cycles,
-  activeCycleFilter,
-  onFilterChange,
-  onOpenPanel,
-  panelOpen,
-}: {
-  cycles: { id: string; name: string; status: string; startDate: string; endDate: string }[];
-  activeCycleFilter: string | null;
-  onFilterChange: (id: string | null) => void;
-  onOpenPanel: () => void;
-  panelOpen: boolean;
-}) {
-  const activeSprint = cycles.find((c) => c.status === 'active');
-  const filterSprint = activeCycleFilter
-    ? cycles.find((c) => c.id === activeCycleFilter)
-    : null;
-
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  function fmtShort(iso: string): string {
-    const d = new Date(iso);
-    return `${months[d.getMonth()]} ${d.getDate()}`;
-  }
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      {/* Active sprint info */}
-      {activeSprint && !filterSprint && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
-            <rect x="1" y="3" width="14" height="11" rx="2" stroke="#4f46e5" strokeWidth="1.5" />
-            <line x1="4" y1="1" x2="4" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
-            <line x1="12" y1="1" x2="12" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
-          </svg>
-          <span style={{ fontSize: 11, fontWeight: 600, color: '#4f46e5' }}>
-            {activeSprint.name}
-          </span>
-          <span style={{ fontSize: 10, color: '#94a3b8' }}>
-            {fmtShort(activeSprint.startDate)}-{fmtShort(activeSprint.endDate)}
-          </span>
-        </div>
-      )}
-
-      {/* Filter indicator */}
-      {filterSprint && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <span
-            style={{
-              fontSize: 10,
-              fontWeight: 600,
-              padding: '2px 8px',
-              borderRadius: 4,
-              background: '#eef2ff',
-              color: '#4f46e5',
-            }}
-          >
-            Showing: {filterSprint.name}
-          </span>
-          <button
-            onClick={() => onFilterChange(null)}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: '0 2px',
-              color: '#94a3b8',
-              fontSize: 12,
-              fontFamily: 'inherit',
-            }}
-            title="Clear sprint filter"
-          >
-            x
-          </button>
-        </div>
-      )}
-
-      {/* Sprint filter dropdown */}
-      {cycles.length > 0 && (
-        <select
-          value={activeCycleFilter ?? ''}
-          onChange={(e) => onFilterChange(e.target.value || null)}
-          onKeyDown={(e) => e.stopPropagation()}
-          style={{
-            fontSize: 10,
-            fontFamily: 'inherit',
-            border: '1px solid #e2e8f0',
-            borderRadius: 4,
-            padding: '2px 18px 2px 6px',
-            color: '#475569',
-            background: '#fff',
-            appearance: 'none' as const,
-            backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 10 10'%3E%3Cpath fill='%2394a3b8' d='M2 3.5L5 7l3-3.5H2z'/%3E%3C/svg%3E")`,
-            backgroundRepeat: 'no-repeat',
-            backgroundPosition: 'right 4px center',
-            cursor: 'pointer',
-          }}
-          title="Filter by sprint"
-        >
-          <option value="">All sprints</option>
-          {cycles.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} ({c.status})
-            </option>
-          ))}
-        </select>
-      )}
-
-      {/* Sprints panel button */}
-      <button
-        onClick={onOpenPanel}
-        style={{
-          padding: '3px 10px',
-          borderRadius: 4,
-          border: panelOpen ? '1px solid #4f46e5' : '1px solid #e2e8f0',
-          fontSize: 11,
-          fontWeight: 600,
-          fontFamily: 'inherit',
-          cursor: 'pointer',
-          background: panelOpen ? '#eef2ff' : '#fff',
-          color: panelOpen ? '#4f46e5' : '#64748b',
-          transition: 'all 0.15s',
-        }}
-      >
-        Sprints
-      </button>
-    </div>
   );
 }
 
@@ -1430,35 +1491,43 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* Version filter */}
-          <VersionIndicator
+          {/* Combined Version + Sprint filters */}
+          <FiltersPopover
             versions={versions}
             activeVersionFilter={activeVersionFilter}
-            onFilterChange={setActiveVersionFilter}
-          />
-
-          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
-
-          {/* Sprint indicator and filter */}
-          <SprintIndicator
+            onVersionFilterChange={setActiveVersionFilter}
             cycles={cycles}
             activeCycleFilter={activeCycleFilter}
-            onFilterChange={setActiveCycleFilter}
-            onOpenPanel={() => {
+            onCycleFilterChange={setActiveCycleFilter}
+          />
+
+          {/* Sprints panel toggle (opens the right-dock panel — distinct from the sprint filter) */}
+          <button
+            onClick={() => {
               setSprintPanelOpen(!sprintPanelOpen);
               if (!sprintPanelOpen) {
                 setBlockedPanelOpen(false);
-                // Mutual-exclusion fix from Ray's #100 review: the
-                // Blocked + Triage handlers below close Sprint when
-                // they open, but Sprint wasn't symmetrically closing
-                // Triage. Result: the Triage indicator stayed
-                // highlighted while Sprint rendered (panel precedence
-                // chain at the right-dock favours Sprint).
+                // Mutual-exclusion fix from Ray's #100 review: Sprint must
+                // close Triage on open (symmetric with the Blocked/Triage
+                // handlers below).
                 setTriagePanelOpen(false);
               }
             }}
-            panelOpen={sprintPanelOpen}
-          />
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: sprintPanelOpen ? '1px solid #4f46e5' : '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: sprintPanelOpen ? '#eef2ff' : '#fff',
+              color: sprintPanelOpen ? '#4f46e5' : '#64748b',
+              transition: 'all 0.15s',
+            }}
+          >
+            Sprints
+          </button>
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
