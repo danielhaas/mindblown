@@ -1171,8 +1171,6 @@ export function GanttView() {
   nodesRef.current = nodes;
   const reorderChildrenRef = useRef(reorderChildren);
   reorderChildrenRef.current = reorderChildren;
-  const updateNodeRef2 = useRef(updateNode);
-  updateNodeRef2.current = updateNode;
 
   const handleRowMouseDown = useCallback((e: React.MouseEvent, nodeId: string) => {
     const target = e.target as HTMLElement;
@@ -1291,10 +1289,10 @@ export function GanttView() {
       if (collapsed) {
         // Renumber all siblings with fresh sequential ranks
         next.forEach((cid, idx) => {
-          updateNodeRef2.current(cid, { priorityRank: (idx + 1) * RANK_STEP });
+          updateNodeRef.current(cid, { priorityRank: (idx + 1) * RANK_STEP });
         });
       } else {
-        updateNodeRef2.current(drag.sourceId, { priorityRank: newRank });
+        updateNodeRef.current(drag.sourceId, { priorityRank: newRank });
       }
     };
 
