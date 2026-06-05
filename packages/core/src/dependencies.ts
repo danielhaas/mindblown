@@ -273,24 +273,25 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
  * Returns a new nodes array; original nodes are not mutated.
  */
 function injectSequentialDeps(nodes: Node[]): Node[] {
-  // Granular commit-or-rollback. The per-parent rollback in #124 dropped
-  // a whole parent's chain when ANY edge in the chain cycled — losing all
-  // safe edges in that chain too. This version tentatively adds all the
-  // chain edges, then on cycle pops the LAST edge and re-checks, repeating
-  // until the graph is acyclic. So a 5-child parent whose 4th edge would
-  // cycle keeps the first 3 (c1 → c2 → c3 → c4 stays, c5 stays parallel).
+  // Greedy per-edge verification. The pop-LIFO approach in #125 fell short
+  // when MULTIPLE edges in one chain would cycle: popping LIFO can keep
+  // dropping non-problematic tail edges before reaching the culprit, and
+  // sometimes empties the whole chain. The Roadmap's root has 8
+  // cross-section explicit deps each potentially closing a different
+  // cycle, so the LIFO path dropped the whole 27-edge root chain.
   //
-  // Cost: amortized close to one topologicalSort per parent (average case
-  // has no cycles to roll back), worst case P × max_chain_length. For a
-  // ~2500-node map with a few hundred sequential parents and avg chain
-  // length ~3, this is well under 100 ms.
+  // Greedy: push each edge ONE AT A TIME and run topologicalSort to
+  // verify. If acyclic, keep the edge. If cyclic, drop just THIS edge
+  // and continue with the next pair. Each rejected edge leaves a "gap"
+  // in the chain but the chain continues past it.
+  //
+  // Cost: O(E × (N + E)) per schedule(), where E = candidate chain edges.
+  // For a ~2500-node map with a few hundred sequential parents, ~50 ms.
   const workingNodes: Node[] = nodes.map((n) => ({
     ...n,
     dependencies: [...n.dependencies],
   }));
   const workingMap = new Map<NodeId, Node>(workingNodes.map((n) => [n.id, n]));
-
-  type EdgeRef = { follower: Node; edge: Node['dependencies'][0] };
 
   for (const originalParent of nodes) {
     if (originalParent.childrenScheduling !== 'sequential') continue;
@@ -304,8 +305,6 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
 
     const ordered = resolvedSiblingOrder(presentChildren);
 
-    // Push the chain's synthetic edges tentatively (in order: c1→c2, c2→c3, ...)
-    const pushed: EdgeRef[] = [];
     for (let i = 1; i < ordered.length; i++) {
       const predecessor = ordered[i - 1];
       const follower = ordered[i];
@@ -321,26 +320,17 @@ function injectSequentialDeps(nodes: Node[]): Node[] {
         lag: 0,
       };
       follower.dependencies.push(synthetic);
-      pushed.push({ follower, edge: synthetic });
-    }
 
-    if (pushed.length === 0) continue;
-
-    // Verify; if cycle, pop the last edge and retry. Latest edge is most
-    // likely to be the culprit (the chain grew through it).
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
       try {
         topologicalSort(workingNodes);
-        break; // acyclic — accept what's left
+        // acyclic — keep
       } catch (err) {
         if (!(err instanceof Error && /Cycle detected/.test(err.message))) {
           throw err;
         }
-        if (pushed.length === 0) break; // nothing left to roll back
-        const last = pushed.pop()!;
-        const idx = last.follower.dependencies.indexOf(last.edge);
-        if (idx >= 0) last.follower.dependencies.splice(idx, 1);
+        // Cycle introduced by this edge — drop it and move on
+        const idx = follower.dependencies.indexOf(synthetic);
+        if (idx >= 0) follower.dependencies.splice(idx, 1);
       }
     }
   }
