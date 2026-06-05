@@ -594,6 +594,56 @@ describe('hours → business-day duration end-to-end (DoD case v)', () => {
   });
 });
 
+describe('sequential parent: priority-enum tiebreaker', () => {
+  it('orders by Priority enum (P0 < P1 < P2 < P3) when priorityRank is null', () => {
+    // All siblings have priorityRank=null, distinct priority enum values.
+    // Resolved order should be P0 → P1 → P2 → P3, regardless of createdAt.
+    // (createdAt is set in reverse order to prove enum wins over createdAt.)
+    const parent = makeNode({
+      id: 'parent',
+      childrenIds: ['c1', 'c2', 'c3', 'c4'],
+      childrenScheduling: 'sequential',
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'parent',
+      effortEstimate: 1,
+      priority: 'P3',
+      createdAt: '2026-01-01T00:00:00Z', // earliest createdAt → would be first
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'parent',
+      effortEstimate: 1,
+      priority: 'P0',
+      createdAt: '2026-01-04T00:00:00Z',
+    });
+    const c3 = makeNode({
+      id: 'c3',
+      parentId: 'parent',
+      effortEstimate: 1,
+      priority: 'P2',
+      createdAt: '2026-01-02T00:00:00Z',
+    });
+    const c4 = makeNode({
+      id: 'c4',
+      parentId: 'parent',
+      effortEstimate: 1,
+      priority: 'P1',
+      createdAt: '2026-01-03T00:00:00Z',
+    });
+
+    const result = schedule([parent, c1, c2, c3, c4]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+
+    // Order: c2 (P0) → c4 (P1) → c3 (P2) → c1 (P3)
+    expect(byId.get('c2')!.computedStart).toBe(0);
+    expect(byId.get('c4')!.computedStart).toBe(1);
+    expect(byId.get('c3')!.computedStart).toBe(2);
+    expect(byId.get('c1')!.computedStart).toBe(3);
+  });
+});
+
 describe('sequential parent: cycle-safe synthetic injection', () => {
   it('skips synthetic FS when explicit reverse edge would close a cycle', () => {
     // Sequential parent with default order c1 → c2 (by createdAt).
