@@ -684,4 +684,64 @@ describe('sequential parent: cycle-safe synthetic injection', () => {
     expect(byId.get('c1')!.computedStart).toBe(3);
     expect(byId.get('c1')!.computedEnd).toBe(5);
   });
+
+  it('cross-parent cycle: synthetic edges across two sequential parents do not create cycles', () => {
+    // Two sequential parents:
+    //   P1 has children A, B (resolved order A → B)
+    //   P2 has children C, D (resolved order C → D)
+    // Explicit edges already in the graph:
+    //   C depends on B (FS)
+    //   A depends on D (FS)
+    //
+    // Without the cross-parent-aware cycle guard, both synthetic edges
+    // (FS(B → A) and FS(D → C)) would be injected because each look-up
+    // sees only the pre-injection graph. Combined they form a cycle:
+    //   A → D → C → B → A
+    // and topologicalSort throws.
+    //
+    // With the working-nodeMap fix, the second injection's hasCycle check
+    // sees the synthetic FS(B → A) added by the first injection and skips
+    // the FS(D → C) injection. P2's chain is partially honored (D doesn't
+    // chain) but the schedule resolves without throwing.
+    const p1 = makeNode({
+      id: 'P1',
+      childrenIds: ['A', 'B'],
+      childrenScheduling: 'sequential',
+    });
+    const p2 = makeNode({
+      id: 'P2',
+      childrenIds: ['C', 'D'],
+      childrenScheduling: 'sequential',
+    });
+    const a = makeNode({
+      id: 'A',
+      parentId: 'P1',
+      effortEstimate: 1,
+      createdAt: '2026-01-01T00:00:00Z',
+      dependencies: [{ targetNodeId: 'D', type: 'FS', lag: 0 }],
+    });
+    const b = makeNode({
+      id: 'B',
+      parentId: 'P1',
+      effortEstimate: 1,
+      createdAt: '2026-01-02T00:00:00Z',
+    });
+    const c = makeNode({
+      id: 'C',
+      parentId: 'P2',
+      effortEstimate: 1,
+      createdAt: '2026-01-03T00:00:00Z',
+      dependencies: [{ targetNodeId: 'B', type: 'FS', lag: 0 }],
+    });
+    const d = makeNode({
+      id: 'D',
+      parentId: 'P2',
+      effortEstimate: 1,
+      createdAt: '2026-01-04T00:00:00Z',
+    });
+
+    // Must not throw "Cycle detected".
+    const result = schedule([p1, p2, a, b, c, d]);
+    expect(result.length).toBe(6);
+  });
 });
