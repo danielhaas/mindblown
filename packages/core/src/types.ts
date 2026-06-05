@@ -283,6 +283,13 @@ export interface MindMap {
    */
   hoursPerDay: number;
 
+  /**
+   * Number of parallel work tracks the scheduler projects onto.
+   * View-only knob — the underlying plan (priorities + estimates + deps)
+   * doesn't change. 1 = strict serial single-worker view. Default 1.
+   */
+  workerCount: number;
+
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;

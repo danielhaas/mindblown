@@ -284,9 +284,15 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
  *    `min(A.effective, E.effective)`.
  *
  * 2. **Dep constraints in the forward pass.** Once the leaf queue is sorted,
- *    each leaf's start is `max(cursor, max(dep.target.end + lag))`. The
- *    cursor advances after each placement; deps add extra constraints that
+ *    each leaf's start is `max(track.cursor, max(dep.target.end + lag))`.
+ *    The chosen track's cursor advances; deps add extra constraints that
  *    can push the start later (but never earlier).
+ *
+ * 3. **Multi-worker projection.** `workerCount=N` keeps N tracks each with
+ *    its own cursor. Each leaf goes onto whichever track is currently
+ *    earliest. N is a view knob — same priorities + estimates + deps
+ *    produce different timelines depending on assumed parallelism, but
+ *    the plan itself never changes.
  *
  * What this replaces: the synthetic-FS-chain machinery from #109/#121–#129.
  * The old model invented edges to mimic sequential ordering at each level,
@@ -303,6 +309,7 @@ export function schedule(
   projectStartDay: number = 0,
   constraints?: Map<NodeId, ScheduleConstraint>,
   context?: ScheduleContext,
+  workerCount: number = 1,
 ): ScheduledNode[] {
   // Step 1: Expand any parent-level user deps to leaves (handles the rare
   // case where someone wrote "Section A depends on Section B" at the parent
@@ -375,18 +382,21 @@ export function schedule(
   }
 
   const scheduled = new Map<NodeId, ScheduledNode>();
-  let cursor = projectStartDay;
+
+  // Multi-worker list scheduling. N "tracks" each carry their own cursor
+  // (initially projectStartDay). Each leaf in priority order is placed on
+  // the track with the earliest cursor that satisfies the dep constraints.
+  // workerCount=1 reduces to the single-cursor model exactly.
+  const workers = Math.max(1, Math.floor(workerCount));
+  const trackCursors: number[] = new Array(workers).fill(projectStartDay);
 
   for (const node of queue) {
-    // Parents are skipped here; they get derived in the rollup pass.
     if (node.childrenIds.length > 0) continue;
 
     let duration = leafDuration(node.effortEstimate);
-    let earliestStart = cursor;
+    let earliestStart = projectStartDay;
 
-    // Honor explicit dep constraints. Targets are guaranteed scheduled
-    // already because we walk in queue order, which is topo-sorted with
-    // priority inheritance preserving dep order for ties.
+    // Dep constraints first — these don't depend on which track we pick.
     for (const dep of node.dependencies) {
       const target = scheduled.get(dep.targetNodeId);
       if (!target) continue;
@@ -408,7 +418,7 @@ export function schedule(
       if (constraint > earliestStart) earliestStart = constraint;
     }
 
-    // Apply per-node pinning constraints.
+    // Pin constraints next.
     const pin = constraints?.get(node.id);
     if (pin) {
       if (pin.minStart !== undefined && pin.minStart > earliestStart) {
@@ -420,8 +430,18 @@ export function schedule(
       }
     }
 
-    const start = earliestStart;
+    // Pick the track whose cursor is earliest (greedy list scheduling).
+    // Ties broken by lowest index — deterministic and gives leaf 0 to
+    // track 0 when all cursors are tied (clean visual order on day 0).
+    let bestTrack = 0;
+    for (let t = 1; t < workers; t++) {
+      if (trackCursors[t] < trackCursors[bestTrack]) bestTrack = t;
+    }
+
+    // Start = max(track cursor, dep/pin constraints).
+    const start = Math.max(trackCursors[bestTrack], earliestStart);
     const end = start + duration;
+
     scheduled.set(node.id, {
       nodeId: node.id,
       computedStart: start,
@@ -429,9 +449,7 @@ export function schedule(
       duration,
     });
 
-    // Advance the cursor so the next leaf starts after this one. Single-
-    // worker model: one item at a time.
-    cursor = end;
+    trackCursors[bestTrack] = end;
   }
 
   // Step 7: Roll up parents bottom-up (deepest first) so each parent

@@ -669,6 +669,14 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS stale_claim_hours REAL NOT NULL DEFAULT 4
   `);
 
+  // ── Scheduler view knob: workerCount (v0.17.1) ──────────────────
+  // Per-map number of parallel work tracks. View-only projection knob —
+  // the underlying priorities + estimates + deps are unchanged. Default
+  // 1 = strict serial single-worker view.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS worker_count REAL NOT NULL DEFAULT 1
+  `);
+
   // ── One-shot data migrations ───────────────────────────────────
   // Tracks data flips that should run exactly once per database.
   await db.execute(sql`

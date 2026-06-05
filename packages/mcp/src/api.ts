@@ -308,6 +308,7 @@ export function updateMap(
     wipLimit?: number | null;
     projectStartDate?: string | null;
     hoursPerDay?: number;
+    workerCount?: number;
     autoImportNewIssues?: boolean;
   },
 ): Promise<MapSummary> {

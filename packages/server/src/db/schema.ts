@@ -120,6 +120,14 @@ export const maps = pgTable('maps', {
   // set fractional hours (e.g. 0.5 for 30-minute stale threshold during
   // short sessions).
   staleClaimHours: real('stale_claim_hours').notNull().default(4),
+
+  // ── Scheduler view knob (v0.17.1) ──────────────────────────────
+  // Number of parallel work tracks the schedule projects onto. View
+  // knob only — the underlying plan (priorities + estimates + deps)
+  // doesn't change. workerCount=1 = strict serial single-worker view;
+  // higher = more parallelism. Stored as REAL to allow fractional
+  // values later if useful.
+  workerCount: real('worker_count').notNull().default(1),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

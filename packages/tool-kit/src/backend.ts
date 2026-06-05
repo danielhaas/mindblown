@@ -132,6 +132,7 @@ export interface ToolBackend {
       wipLimit?: number | null;
       projectStartDate?: string | null;
       hoursPerDay?: number;
+      workerCount?: number;
       autoImportNewIssues?: boolean;
     },
   ): Promise<MapSummary>;
