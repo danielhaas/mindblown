@@ -393,6 +393,22 @@ export function schedule(
   for (const node of queue) {
     if (node.childrenIds.length > 0) continue;
 
+    // Done leaves are completed work — they've already happened. Emit a
+    // zero-width marker at the project anchor so parent rollup still has
+    // data, but DON'T advance any track cursor. Otherwise done items
+    // would consume capacity in the future-projected timeline, which is
+    // wrong: completed work doesn't compete with future work for tracks.
+    const isDone = (node.percentComplete ?? 0) >= 100;
+    if (isDone) {
+      scheduled.set(node.id, {
+        nodeId: node.id,
+        computedStart: projectStartDay,
+        computedEnd: projectStartDay,
+        duration: 0,
+      });
+      continue;
+    }
+
     let duration = leafDuration(node.effortEstimate);
     let earliestStart = projectStartDay;
 
