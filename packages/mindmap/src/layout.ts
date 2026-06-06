@@ -29,6 +29,28 @@ const CHAR_WIDTH = 7.5; // approximate px per character
 const MIN_NODE_WIDTH = 100;
 const MAX_NODE_WIDTH = 260;
 
+// Wrap wide leaf-fans into multiple columns/rows. Only triggers when a node
+// has > WRAP_THRESHOLD children AND all of those children are leaves —
+// keeps the algorithm cascade-free since wrapped slots have no descendants.
+const WRAP_THRESHOLD = 7;
+const WRAP_COLUMN_GAP = HORIZONTAL_GAP;
+const WRAP_ROW_GAP = VERTICAL_GAP * 3;
+
+function shouldWrapChildren(tree: TreeNode): boolean {
+  return (
+    tree.children.length > WRAP_THRESHOLD &&
+    tree.children.every((c) => c.children.length === 0)
+  );
+}
+
+function computeWrapGrid(n: number): { major: number; minor: number } {
+  // `major` is the long axis (columns for LR, rows for TB);
+  // `minor` is how many items fit along the long axis before wrapping.
+  const major = Math.ceil(n / WRAP_THRESHOLD);
+  const minor = Math.ceil(n / major);
+  return { major, minor };
+}
+
 // ── Measure node width ─────────────────────────────────────────
 
 function measureNodeWidth(text: string, hasChildren: boolean): number {
@@ -122,9 +144,18 @@ function computeSubtreeHeightLR(tree: TreeNode): number {
     return tree.subtreeHeight;
   }
 
+  for (const c of tree.children) computeSubtreeHeightLR(c);
+
+  if (shouldWrapChildren(tree)) {
+    const { minor } = computeWrapGrid(tree.children.length);
+    const colHeight = minor * NODE_HEIGHT + (minor - 1) * VERTICAL_GAP;
+    tree.subtreeHeight = Math.max(tree.height, colHeight);
+    return tree.subtreeHeight;
+  }
+
   let totalChildrenHeight = 0;
   for (let i = 0; i < tree.children.length; i++) {
-    totalChildrenHeight += computeSubtreeHeightLR(tree.children[i]);
+    totalChildrenHeight += tree.children[i].subtreeHeight;
     if (i < tree.children.length - 1) {
       totalChildrenHeight += VERTICAL_GAP;
     }
@@ -139,6 +170,26 @@ function assignPositionsLR(tree: TreeNode, x: number, yStart: number): void {
   tree.y = yStart + tree.subtreeHeight / 2 - tree.height / 2;
 
   if (tree.children.length === 0) return;
+
+  if (shouldWrapChildren(tree)) {
+    const { major, minor } = computeWrapGrid(tree.children.length);
+    const colWidth = Math.max(...tree.children.map((c) => c.width));
+    const firstColX = x + tree.width + HORIZONTAL_GAP;
+
+    for (let i = 0; i < tree.children.length; i++) {
+      const colIdx = Math.floor(i / minor);
+      const rowIdx = i % minor;
+      const child = tree.children[i];
+      const itemsInCol = colIdx === major - 1 ? tree.children.length - colIdx * minor : minor;
+      const thisColHeight = itemsInCol * NODE_HEIGHT + (itemsInCol - 1) * VERTICAL_GAP;
+      // Center each column vertically inside the parent's subtreeHeight so
+      // the trailing (shorter) column doesn't look stuck to the top.
+      const colYTop = yStart + (tree.subtreeHeight - thisColHeight) / 2;
+      child.x = firstColX + colIdx * (colWidth + WRAP_COLUMN_GAP) + (colWidth - child.width) / 2;
+      child.y = colYTop + rowIdx * (NODE_HEIGHT + VERTICAL_GAP);
+    }
+    return;
+  }
 
   let totalChildrenHeight = 0;
   for (let i = 0; i < tree.children.length; i++) {
@@ -175,9 +226,19 @@ function computeSubtreeWidthTB(tree: TreeNode): number {
     return tree.subtreeWidth;
   }
 
+  for (const c of tree.children) computeSubtreeWidthTB(c);
+
+  if (shouldWrapChildren(tree)) {
+    const { minor } = computeWrapGrid(tree.children.length);
+    const childWidth = Math.max(...tree.children.map((c) => c.width));
+    const rowWidth = minor * childWidth + (minor - 1) * (HORIZONTAL_GAP / 2);
+    tree.subtreeWidth = Math.max(tree.width, rowWidth);
+    return tree.subtreeWidth;
+  }
+
   let totalChildrenWidth = 0;
   for (let i = 0; i < tree.children.length; i++) {
-    totalChildrenWidth += computeSubtreeWidthTB(tree.children[i]);
+    totalChildrenWidth += tree.children[i].subtreeWidth;
     if (i < tree.children.length - 1) {
       totalChildrenWidth += HORIZONTAL_GAP / 2;
     }
@@ -192,6 +253,25 @@ function assignPositionsTB(tree: TreeNode, xStart: number, y: number): void {
   tree.y = y;
 
   if (tree.children.length === 0) return;
+
+  if (shouldWrapChildren(tree)) {
+    const { major, minor } = computeWrapGrid(tree.children.length);
+    const childWidth = Math.max(...tree.children.map((c) => c.width));
+    const firstRowY = y + tree.height + WRAP_ROW_GAP;
+    const rowStep = NODE_HEIGHT + WRAP_ROW_GAP;
+
+    for (let i = 0; i < tree.children.length; i++) {
+      const rowIdx = Math.floor(i / minor);
+      const colIdx = i % minor;
+      const child = tree.children[i];
+      const itemsInRow = rowIdx === major - 1 ? tree.children.length - rowIdx * minor : minor;
+      const thisRowWidth = itemsInRow * childWidth + (itemsInRow - 1) * (HORIZONTAL_GAP / 2);
+      const rowXStart = xStart + (tree.subtreeWidth - thisRowWidth) / 2;
+      child.x = rowXStart + colIdx * (childWidth + HORIZONTAL_GAP / 2) + (childWidth - child.width) / 2;
+      child.y = firstRowY + rowIdx * rowStep;
+    }
+    return;
+  }
 
   let totalChildrenWidth = 0;
   for (let i = 0; i < tree.children.length; i++) {
