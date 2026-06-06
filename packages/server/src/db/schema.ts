@@ -180,6 +180,13 @@ export const nodes = pgTable('nodes', {
   // null = no explicit rank (sorts after ranked siblings in resolved order).
   priorityRank: real('priority_rank'),
 
+  // ── Completion timestamp (v0.17.6) ────────────────────────────
+  // Set when status transitions into a 'done' workflow category OR
+  // percentComplete hits 100; cleared when either un-dones. Used by
+  // the Gantt to position done bars at their actual close date in
+  // the past instead of piling them on the today line.
+  completedAt: timestamp('completed_at', { withTimezone: true }),
+
   // ── Orchestration substrate (#111) ───────────────────────────
   // claimed_by_session: session ID that owns this node for active work.
   //   null = unclaimed / available.

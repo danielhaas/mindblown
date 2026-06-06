@@ -387,6 +387,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           externalLinks: [],
           autoProgress: 'off',
           priorityRank: null,
+          completedAt: null,
           // Orchestration substrate (#111)
           claimedBySession: null,
           claimedAt: null,
@@ -534,7 +535,19 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     todayDate.setUTCHours(0, 0, 0, 0);
     const todayDay = toDayOffset(todayDate.toISOString().slice(0, 10));
 
-    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay);
+    // Build per-node completedAt offsets so done bars sit at their actual
+    // close dates instead of all piling on `todayDay`. Backfill populated
+    // these via the migration; new completions write them on each status
+    // transition. Nodes without a completedAt fall back to today in the
+    // scheduler.
+    const completedAtByNodeId = new Map<NodeId, number>();
+    for (const n of scopedNodes) {
+      if (n.completedAt) {
+        completedAtByNodeId.set(n.id, toDayOffset(n.completedAt.slice(0, 10)));
+      }
+    }
+
+    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId);
     const cp = criticalPath(scopedNodes);
 
     return reply.send({

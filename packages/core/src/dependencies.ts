@@ -294,6 +294,11 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
  *    produce different timelines depending on assumed parallelism, but
  *    the plan itself never changes.
  *
+ * 4. **Done leaves keep their close date.** When the optional
+ *    `completedAtByNodeId` map carries an entry for a done leaf, the bar
+ *    ENDS at that scheduler-unit offset (real close date), with effort
+ *    as width. Without an entry, falls back to ending at `todayDay`.
+ *
  * What this replaces: the synthetic-FS-chain machinery from #109/#121–#129.
  * The old model invented edges to mimic sequential ordering at each level,
  * and those invented edges fought with user explicit deps, creating cycles
@@ -311,6 +316,7 @@ export function schedule(
   context?: ScheduleContext,
   workerCount: number = 1,
   todayDay: number = projectStartDay,
+  completedAtByNodeId?: Map<NodeId, number>,
 ): ScheduledNode[] {
   // Step 1: Expand any parent-level user deps to leaves (handles the rare
   // case where someone wrote "Section A depends on Section B" at the parent
@@ -411,10 +417,13 @@ export function schedule(
     const isDone = (node.percentComplete ?? 0) >= 100;
     if (isDone) {
       const doneDuration = leafDuration(node.effortEstimate);
+      // Position the bar so it ENDS at the node's actual close date if we
+      // have one, otherwise fall back to ending at today. Width = effort.
+      const endAt = completedAtByNodeId?.get(node.id) ?? todayDay;
       scheduled.set(node.id, {
         nodeId: node.id,
-        computedStart: todayDay - doneDuration,
-        computedEnd: todayDay,
+        computedStart: endAt - doneDuration,
+        computedEnd: endAt,
         duration: doneDuration,
       });
       doneMarkers.add(node.id);

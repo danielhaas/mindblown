@@ -109,6 +109,7 @@ export interface CreateNodeInput {
   dueDate?: string;
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
+  completedAt?: string | null;
 }
 
 export async function createNode(
@@ -141,6 +142,7 @@ export async function createNode(
     dueDate: input.dueDate ?? null,
     autoProgress: input.autoProgress ?? 'off',
     priorityRank: input.priorityRank ?? null,
+    completedAt: input.completedAt ? new Date(input.completedAt) : null,
     assigneeIds: [],
     tags: [],
     customFields: {},
@@ -214,6 +216,7 @@ export interface UpdateNodeInput {
   externalLinks?: ExternalLink[];
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
+  completedAt?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -289,14 +292,18 @@ export async function updateNode(
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
   if (input.scopes !== undefined) updates.scopes = input.scopes;
 
-  // Auto-release claim when status transitions to a 'done' category (#111).
-  // We only need to act when `input.status` is being set AND neither
-  // `claimedBySession` nor `claimedAt` is already being cleared by the
-  // same call (to avoid clobbering explicit claim manipulation).
-  if (input.status !== undefined && input.status !== null
-      && input.claimedBySession === undefined && input.claimedAt === undefined) {
-    // Resolve the map's status workflow to check whether the target status
-    // maps to the 'done' category. We need the node's mapId for this.
+  // Auto-release claim when status transitions to a 'done' category (#111)
+  // + write completedAt timestamp for the Gantt scheduler (v0.17.6).
+  // Both behaviors hinge on the same workflow lookup, so we do them
+  // together. We only act when the caller doesn't already manipulate
+  // those fields explicitly in this same call.
+  const statusChanging = input.status !== undefined;
+  const pctChanging = input.percentComplete !== undefined;
+  const completedAtTouched = input.completedAt !== undefined;
+  const claimTouched =
+    input.claimedBySession !== undefined || input.claimedAt !== undefined;
+
+  if ((statusChanging || pctChanging) && (!claimTouched || !completedAtTouched)) {
     const [nodeForMap] = await handle
       .select({ mapId: nodes.mapId })
       .from(nodes)
@@ -307,14 +314,47 @@ export async function updateNode(
         .from(maps)
         .where(eq(maps.id, nodeForMap.mapId as string));
       const workflow = ((mapRow?.statusWorkflow as StatusDef[]) ?? []);
-      const targetDef = workflow.find(
-        (s) => s.id === input.status || s.name.toLowerCase() === (input.status as string).toLowerCase(),
-      );
-      if (targetDef?.category === 'done') {
+
+      // Resolve whether the post-update node is "done":
+      //   - status (if changing) → check its category in the workflow
+      //   - percentComplete >= 100 (if changing) → done
+      let movingToDone = false;
+      let movingFromDone = false;
+      if (statusChanging && input.status !== null) {
+        const targetDef = workflow.find(
+          (s) =>
+            s.id === input.status ||
+            s.name.toLowerCase() === (input.status as string).toLowerCase(),
+        );
+        if (targetDef?.category === 'done') movingToDone = true;
+        else movingFromDone = true;
+      } else if (statusChanging && input.status === null) {
+        // Status cleared → no longer done.
+        movingFromDone = true;
+      }
+      if (pctChanging && input.percentComplete !== null && input.percentComplete !== undefined) {
+        if (input.percentComplete >= 100) movingToDone = true;
+        else movingFromDone = true;
+      } else if (pctChanging && input.percentComplete === null) {
+        movingFromDone = true;
+      }
+
+      if (movingToDone && !claimTouched) {
         updates.claimedBySession = null;
         updates.claimedAt = null;
       }
+      if (movingToDone && !completedAtTouched) {
+        updates.completedAt = new Date();
+      } else if (movingFromDone && !completedAtTouched && !movingToDone) {
+        // Transitioning OUT of done with no overriding move-to-done in
+        // the same call → clear the timestamp.
+        updates.completedAt = null;
+      }
     }
+  }
+
+  if (input.completedAt !== undefined) {
+    updates.completedAt = input.completedAt ? new Date(input.completedAt) : null;
   }
 
   // Conditional update: when expectedRevision is provided, the WHERE clause
