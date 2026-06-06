@@ -525,7 +525,16 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       ? Math.min(100, Math.floor(queryWorkers))
       : Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
 
-    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers);
+    // Compute "today" in scheduler units. Used by the scheduler to pin
+    // done leaves so they end at the today line (and don't all stack at
+    // projectStartDay). If today is before the project anchor, the value
+    // is negative — done items render to the left of the anchor, which
+    // is the right semantic.
+    const todayDate = new Date(new Date().toISOString().slice(0, 10));
+    todayDate.setUTCHours(0, 0, 0, 0);
+    const todayDay = toDayOffset(todayDate.toISOString().slice(0, 10));
+
+    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay);
     const cp = criticalPath(scopedNodes);
 
     return reply.send({
