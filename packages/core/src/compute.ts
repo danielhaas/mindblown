@@ -8,18 +8,20 @@ import type {
 } from './types.js';
 
 /**
- * Compute the effort rollup for a node.
+ * Compute the effort rollup for a node — the user-facing total.
  *
- * Leaf nodes return their effortEstimate, or 1 if unestimated so that every
- * leaf participates in the parent's weighted-progress rollup. Without this
- * default, a subtree of all-unestimated leaves contributes weight 0 and is
- * invisible to the parent's % complete — so a partly-done parent next to
- * fully-done estimated siblings reads as 100% even though work remains.
+ * Leaf nodes return their stored `effortEstimate`, or 0 if unestimated.
  * Parent nodes return the sum of all descendant leaf efforts.
+ *
+ * NOTE: This is the *truthful* effort total. It is intentionally distinct
+ * from `effortWeight()` (below), which substitutes 1 for null leaves so
+ * unestimated work still counts toward parent % complete. Consumers of
+ * `computedEffort` (forecasts, "smallest ready node", capacity math) need
+ * the truth — a leaf with no estimate has 0 known effort, not 1.
  */
 export function computeEffort(node: Node, nodeMap: NodeMap): number {
   if (node.childrenIds.length === 0) {
-    return node.effortEstimate ?? 1;
+    return node.effortEstimate ?? 0;
   }
 
   let total = 0;
@@ -33,11 +35,35 @@ export function computeEffort(node: Node, nodeMap: NodeMap): number {
 }
 
 /**
+ * Internal rollup weight: like `computeEffort` but substitutes 1 for
+ * unestimated leaves. Used only as the weighting denominator inside
+ * `computeProgress` so a subtree of all-unestimated leaves still
+ * participates in the parent's weighted % complete (without this, a
+ * partly-done parent next to fully-done estimated siblings reads as
+ * 100% even though work remains).
+ */
+function effortWeight(node: Node, nodeMap: NodeMap): number {
+  if (node.childrenIds.length === 0) {
+    return node.effortEstimate ?? 1;
+  }
+
+  let total = 0;
+  for (const childId of node.childrenIds) {
+    const child = nodeMap.get(childId);
+    if (child) {
+      total += effortWeight(child, nodeMap);
+    }
+  }
+  return total;
+}
+
+/**
  * Compute the weighted progress rollup for a node.
  *
  * Leaf nodes return their percentComplete (or 0 if unset).
- * Parent nodes return the effort-weighted average of descendant leaf progress.
- * If total effort is 0, returns 0 (no estimates = 0% progress).
+ * Parent nodes return the effort-weighted average of descendant leaf progress,
+ * where unestimated leaves count as weight 1 (see `effortWeight`).
+ * If total weight is 0, returns 0.
  */
 export function computeProgress(node: Node, nodeMap: NodeMap): number {
   if (node.childrenIds.length === 0) {
@@ -45,21 +71,21 @@ export function computeProgress(node: Node, nodeMap: NodeMap): number {
     return node.percentComplete ?? 0;
   }
 
-  let totalEffort = 0;
+  let totalWeight = 0;
   let weightedProgress = 0;
 
   for (const childId of node.childrenIds) {
     const child = nodeMap.get(childId);
     if (!child) continue;
 
-    const childEffort = computeEffort(child, nodeMap);
+    const childWeight = effortWeight(child, nodeMap);
     const childProgress = computeProgress(child, nodeMap);
-    totalEffort += childEffort;
-    weightedProgress += childEffort * childProgress;
+    totalWeight += childWeight;
+    weightedProgress += childWeight * childProgress;
   }
 
-  if (totalEffort === 0) return 0;
-  return Math.max(0, Math.min(100, weightedProgress / totalEffort));
+  if (totalWeight === 0) return 0;
+  return Math.max(0, Math.min(100, weightedProgress / totalWeight));
 }
 
 /**

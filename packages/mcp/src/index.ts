@@ -681,14 +681,25 @@ server.tool(
 
 server.tool(
   'risk_scan',
-  'Surface project risks across a map/subtree/version: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early.',
+  'Surface project risks across a map/subtree/version: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early. Pass `category` to drill into one bucket; pass `limit` (default 20, max 1000) to see more than the top of each list.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version'),
     stalledDays: z.number().int().min(1).default(7).describe('Days since last update before in-progress work is flagged as stalled (default 7)'),
+    category: z
+      .enum(['stalled', 'no_estimate', 'overruns', 'unassigned_high_prio', 'fragile_cp'])
+      .optional()
+      .describe('Show only one risk category instead of all five — useful for paging through a long list.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(1000)
+      .default(20)
+      .describe('Max items shown per category before the "… and N more" truncation footer (default 20, max 1000).'),
   },
-  async ({ mapId, nodeId, versionId, stalledDays }) => {
+  async ({ mapId, nodeId, versionId, stalledDays, category, limit }) => {
     try {
       const data = await api.getMap(mapId);
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
@@ -815,68 +826,81 @@ server.tool(
       lines.push(`Risk scan — ${scopeLabel}`);
       lines.push(`Incomplete leaves: ${leaves.filter((l) => (l.percentComplete ?? 0) < 100).length} / ${leaves.length}`);
       lines.push(`Total risk flags:  ${totalRisks}`);
+      if (category) lines.push(`Filtered to category: ${category}`);
       lines.push('');
 
-      lines.push(`## Stalled WIP (in-progress, no update in ${stalledDays}+ days): ${stalled.length}`);
-      if (stalled.length === 0) {
-        lines.push('  ✓ None');
-      } else {
-        for (const n of stalled.slice(0, 20)) {
-          const daysSince = Math.floor((Date.now() - new Date(n.updatedAt).getTime()) / 86_400_000);
-          lines.push(`  - ${fmtNode(n)} — ${daysSince}d since update`);
+      const shows = (c: typeof category | string) => !category || category === c;
+
+      if (shows('stalled')) {
+        lines.push(`## Stalled WIP (in-progress, no update in ${stalledDays}+ days): ${stalled.length}`);
+        if (stalled.length === 0) {
+          lines.push('  ✓ None');
+        } else {
+          for (const n of stalled.slice(0, limit)) {
+            const daysSince = Math.floor((Date.now() - new Date(n.updatedAt).getTime()) / 86_400_000);
+            lines.push(`  - ${fmtNode(n)} — ${daysSince}d since update`);
+          }
+          if (stalled.length > limit) lines.push(`  … and ${stalled.length - limit} more (raise \`limit\` or pass \`category: "stalled"\` to see them)`);
         }
-        if (stalled.length > 20) lines.push(`  … and ${stalled.length - 20} more`);
+        lines.push('');
       }
-      lines.push('');
 
-      lines.push(`## No-estimate leaves: ${noEstimate.length}`);
-      if (noEstimate.length === 0) {
-        lines.push('  ✓ None');
-      } else {
-        for (const n of noEstimate.slice(0, 20)) {
-          lines.push(`  - ${fmtNode(n)}`);
+      if (shows('no_estimate')) {
+        lines.push(`## No-estimate leaves: ${noEstimate.length}`);
+        if (noEstimate.length === 0) {
+          lines.push('  ✓ None');
+        } else {
+          for (const n of noEstimate.slice(0, limit)) {
+            lines.push(`  - ${fmtNode(n)}`);
+          }
+          if (noEstimate.length > limit) lines.push(`  … and ${noEstimate.length - limit} more (raise \`limit\` or pass \`category: "no_estimate"\` to see them)`);
         }
-        if (noEstimate.length > 20) lines.push(`  … and ${noEstimate.length - 20} more`);
+        lines.push('');
       }
-      lines.push('');
 
-      lines.push(`## Overruns (actual > 1.2× estimate, still incomplete): ${overruns.length}`);
-      if (overruns.length === 0) {
-        lines.push('  ✓ None');
-      } else {
-        const sorted = [...overruns].sort((a, b) => b.ratio - a.ratio);
-        for (const { node, ratio } of sorted.slice(0, 20)) {
+      if (shows('overruns')) {
+        lines.push(`## Overruns (actual > 1.2× estimate, still incomplete): ${overruns.length}`);
+        if (overruns.length === 0) {
+          lines.push('  ✓ None');
+        } else {
+          const sorted = [...overruns].sort((a, b) => b.ratio - a.ratio);
+          for (const { node, ratio } of sorted.slice(0, limit)) {
+            lines.push(
+              `  - ${fmtNode(node)} — est ${node.effortEstimate} ${unit}, actual ${node.actualEffort} ${unit} (${ratio.toFixed(2)}x)`,
+            );
+          }
+          if (sorted.length > limit) lines.push(`  … and ${sorted.length - limit} more (raise \`limit\` or pass \`category: "overruns"\` to see them)`);
+        }
+        lines.push('');
+      }
+
+      if (shows('unassigned_high_prio')) {
+        lines.push(`## Unassigned P0/P1 leaves: ${unassignedHighPrio.length}`);
+        if (unassignedHighPrio.length === 0) {
+          lines.push('  ✓ None');
+        } else {
+          for (const n of unassignedHighPrio.slice(0, limit)) {
+            lines.push(`  - ${fmtNode(n)}`);
+          }
+          if (unassignedHighPrio.length > limit) lines.push(`  … and ${unassignedHighPrio.length - limit} more (raise \`limit\` or pass \`category: "unassigned_high_prio"\` to see them)`);
+        }
+        lines.push('');
+      }
+
+      if (shows('fragile_cp')) {
+        lines.push(`## Fragile critical path (CP leaves with risks or poor health): ${fragileCP.length}`);
+        if (fragileCP.length === 0) {
           lines.push(
-            `  - ${fmtNode(node)} — est ${node.effortEstimate} ${unit}, actual ${node.actualEffort} ${unit} (${ratio.toFixed(2)}x)`,
+            cpIds.size === 0
+              ? '  (scheduler returned no critical path)'
+              : '  ✓ None',
           );
+        } else {
+          for (const n of fragileCP.slice(0, limit)) {
+            lines.push(`  - ${fmtNode(n)} — health ${n.healthSignal}`);
+          }
+          if (fragileCP.length > limit) lines.push(`  … and ${fragileCP.length - limit} more (raise \`limit\` or pass \`category: "fragile_cp"\` to see them)`);
         }
-        if (sorted.length > 20) lines.push(`  … and ${sorted.length - 20} more`);
-      }
-      lines.push('');
-
-      lines.push(`## Unassigned P0/P1 leaves: ${unassignedHighPrio.length}`);
-      if (unassignedHighPrio.length === 0) {
-        lines.push('  ✓ None');
-      } else {
-        for (const n of unassignedHighPrio.slice(0, 20)) {
-          lines.push(`  - ${fmtNode(n)}`);
-        }
-        if (unassignedHighPrio.length > 20) lines.push(`  … and ${unassignedHighPrio.length - 20} more`);
-      }
-      lines.push('');
-
-      lines.push(`## Fragile critical path (CP leaves with risks or poor health): ${fragileCP.length}`);
-      if (fragileCP.length === 0) {
-        lines.push(
-          cpIds.size === 0
-            ? '  (scheduler returned no critical path)'
-            : '  ✓ None',
-        );
-      } else {
-        for (const n of fragileCP.slice(0, 20)) {
-          lines.push(`  - ${fmtNode(n)} — health ${n.healthSignal}`);
-        }
-        if (fragileCP.length > 20) lines.push(`  … and ${fragileCP.length - 20} more`);
       }
 
       return toolResult(lines.join('\n'));

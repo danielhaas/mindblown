@@ -167,10 +167,42 @@ export const moveNodeTool = defineTool({
   },
 });
 
+export const flagBlockerTool = defineTool({
+  name: 'flag_blocker',
+  description:
+    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). Use clear_blocker (or set blockedReason via update_node) to unblock.',
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to flag as blocked'),
+    reason: z
+      .string()
+      .min(1)
+      .describe('Short human-readable reason for the block (e.g. "waiting on legal review", "vendor SLA pending"). This is what surfaces in digests.'),
+  },
+  handler: async (backend, { mapId, nodeId, reason }) => {
+    await backend.updateNode(mapId, nodeId, { blockedReason: reason });
+    return `Flagged ${nodeId} as blocked: "${reason}".`;
+  },
+});
+
+export const clearBlockerTool = defineTool({
+  name: 'clear_blocker',
+  description:
+    'Clear the blocker on a node — removes `blockedReason` so the node stops surfacing in blocked_digest and ancestor blocked rollups. Use when the external thing that was holding the work back has resolved.',
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to unblock'),
+  },
+  handler: async (backend, { mapId, nodeId }) => {
+    await backend.updateNode(mapId, nodeId, { blockedReason: null });
+    return `Cleared blocker on ${nodeId}.`;
+  },
+});
+
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
-    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag only.',
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId only. Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
   schema: {
     mapId: z.string().describe('The map ID'),
     query: z
@@ -179,8 +211,20 @@ export const searchNodesTool = defineTool({
     status: z.string().optional().describe('Filter by status (exact match)'),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Filter by priority'),
     tag: z.string().optional().describe('Filter by tag (nodes must include this tag)'),
+    unestimated: z
+      .boolean()
+      .optional()
+      .describe('When true, only nodes whose effortEstimate is null. Combine with leavesOnly:true and versionId to answer "do all V1 leaves have estimates?". When false, only nodes whose effortEstimate is set.'),
+    leavesOnly: z
+      .boolean()
+      .optional()
+      .describe('When true, only leaf nodes (no children) are returned. Useful with `unestimated` since estimates apply to leaves.'),
+    versionId: z
+      .string()
+      .optional()
+      .describe('Filter by version. Matches nodes whose own versionId is this OR any ancestor on the path inherits it.'),
   },
-  handler: async (backend, { mapId, query, status, priority, tag }) => {
+  handler: async (backend, { mapId, query, status, priority, tag, unestimated, leavesOnly, versionId }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
@@ -195,12 +239,30 @@ export const searchNodesTool = defineTool({
     if (status) matches = matches.filter((n) => n.status === status);
     if (priority) matches = matches.filter((n) => n.priority === priority);
     if (tag) matches = matches.filter((n) => n.tags.includes(tag));
+    if (leavesOnly) matches = matches.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+    if (unestimated === true) matches = matches.filter((n) => n.effortEstimate == null);
+    else if (unestimated === false) matches = matches.filter((n) => n.effortEstimate != null);
+    if (versionId) {
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      const inVersion = (id: string): boolean => {
+        let cur = nodeById.get(id);
+        while (cur) {
+          if (cur.versionId === versionId) return true;
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return false;
+      };
+      matches = matches.filter((n) => inVersion(n.id));
+    }
 
     if (matches.length === 0) {
       const filters = [
         status && `status=${status}`,
         priority && `priority=${priority}`,
         tag && `tag=${tag}`,
+        unestimated !== undefined && `unestimated=${unestimated}`,
+        leavesOnly && `leavesOnly=true`,
+        versionId && `versionId=${versionId}`,
       ].filter(Boolean);
       const filterStr = filters.length > 0 ? ` (filters: ${filters.join(', ')})` : '';
       const subject = matchAll ? 'nodes' : `nodes matching "${query}"`;
@@ -258,6 +320,8 @@ export const nodeTools = [
   restoreNodeTool,
   listRecentlyDeletedTool,
   moveNodeTool,
+  flagBlockerTool,
+  clearBlockerTool,
   searchNodesTool,
   setPriorityRankTool,
 ];

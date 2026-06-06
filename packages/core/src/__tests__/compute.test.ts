@@ -142,10 +142,24 @@ describe('computeEffort', () => {
     expect(computeEffort(apiEndpoints, nodeMap)).toBe(7);
   });
 
-  it('returns 1 for unestimated leaf nodes (default weight)', () => {
+  it('returns 0 for unestimated leaf nodes (truthful effort, not weight)', () => {
+    // computeEffort is the user-facing total — null estimate means 0 known
+    // effort. The internal weighting that lets unestimated leaves still
+    // participate in % complete lives in computeProgress (see test below).
     const node = makeNode({ id: 'leaf', effortEstimate: null });
     const nm = toMap([node]);
-    expect(computeEffort(node, nm)).toBe(1);
+    expect(computeEffort(node, nm)).toBe(0);
+  });
+
+  it('parent effort ignores unestimated leaves', () => {
+    // A subtree of mixed estimated / unestimated leaves rolls up only the
+    // known effort. Parents do not silently inflate by 1-per-null leaf.
+    const c1 = makeNode({ id: 'c1', parentId: 'p', effortEstimate: 4 });
+    const c2 = makeNode({ id: 'c2', parentId: 'p', effortEstimate: null });
+    const c3 = makeNode({ id: 'c3', parentId: 'p', effortEstimate: null });
+    const parent = makeNode({ id: 'p', childrenIds: ['c1', 'c2', 'c3'] });
+    const nm = toMap([parent, c1, c2, c3]);
+    expect(computeEffort(parent, nm)).toBe(4);
   });
 
   it('sums children effort for parent nodes', () => {

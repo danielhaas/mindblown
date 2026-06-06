@@ -19,6 +19,49 @@ const AI_EMBED_MODEL = process.env.AI_EMBED_MODEL ?? 'nomic-embed-text';
 /** True when AI_BASE_URL is configured — gates all AI features. */
 export const aiEnabled = AI_BASE_URL.length > 0;
 
+// ── Concurrency guard ──────────────────────────────────────────
+//
+// Ollama serves one request per loaded model at a time; piling parallel
+// requests on it deadlocks the host and surfaces here as 502s from the
+// route handlers. We gate every chat/embed call through a small semaphore
+// so concurrent callers queue instead of fan out. Default 1 (strict
+// serialization); override with AI_MAX_CONCURRENCY for a beefier backend.
+const AI_MAX_CONCURRENCY = Math.max(
+  1,
+  Number.parseInt(process.env.AI_MAX_CONCURRENCY ?? '1', 10) || 1,
+);
+
+let _inFlight = 0;
+const _waiters: Array<() => void> = [];
+
+function acquire(): Promise<void> {
+  if (_inFlight < AI_MAX_CONCURRENCY) {
+    _inFlight += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    _waiters.push(() => {
+      _inFlight += 1;
+      resolve();
+    });
+  });
+}
+
+function release(): void {
+  _inFlight -= 1;
+  const next = _waiters.shift();
+  if (next) next();
+}
+
+async function withAiSlot<T>(fn: () => Promise<T>): Promise<T> {
+  await acquire();
+  try {
+    return await fn();
+  } finally {
+    release();
+  }
+}
+
 // ── Client singleton ───────────────────────────────────────────
 
 let _client: OpenAI | null = null;
@@ -68,8 +111,10 @@ export async function chatCompletion(opts: ChatOptions): Promise<string> {
     params.response_format = { type: 'json_object' };
   }
 
-  const res = await client.chat.completions.create(params);
-  return res.choices[0]?.message?.content ?? '';
+  return withAiSlot(async () => {
+    const res = await client.chat.completions.create(params);
+    return res.choices[0]?.message?.content ?? '';
+  });
 }
 
 /**
@@ -107,14 +152,16 @@ export async function chatCompletionStream(
 export async function embed(texts: string[]): Promise<number[][]> {
   const client = getClient();
 
-  const res = await client.embeddings.create({
-    model: AI_EMBED_MODEL,
-    input: texts,
-  });
+  return withAiSlot(async () => {
+    const res = await client.embeddings.create({
+      model: AI_EMBED_MODEL,
+      input: texts,
+    });
 
-  return res.data
-    .sort((a, b) => a.index - b.index)
-    .map((d) => d.embedding);
+    return res.data
+      .sort((a, b) => a.index - b.index)
+      .map((d) => d.embedding);
+  });
 }
 
 // ── Helpers ────────────────────────────────────────────────────
