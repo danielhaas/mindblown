@@ -48,6 +48,10 @@ function siblingTexts(node: CoreNode, nodes: CoreNode[]): string[] {
 interface BreakdownSuggestion {
   text: string;
   estimate: number | null;
+  /** Optional grouped children. When present, the parent is a category and
+   * its estimate should be ignored — only leaves carry estimates. Capped at
+   * depth 2 (categories → leaves) by the sanitizer. */
+  children?: BreakdownSuggestion[];
 }
 
 interface BraindumpNode {
@@ -71,6 +75,26 @@ function sanitizeBraindumpTree(value: unknown, depth = 0, maxDepth = 3): Braindu
       return { text, estimate, children };
     })
     .filter((n): n is BraindumpNode => n !== null);
+}
+
+/** Like sanitizeBraindumpTree but for the breakdown shape (children optional). */
+function sanitizeBreakdownTree(value: unknown, depth = 0, maxDepth = 2): BreakdownSuggestion[] {
+  if (!Array.isArray(value)) return [];
+  if (depth >= maxDepth) return [];
+  return value
+    .map((raw): BreakdownSuggestion | null => {
+      if (!raw || typeof raw !== 'object') return null;
+      const r = raw as Record<string, unknown>;
+      const text = typeof r.text === 'string' ? r.text.trim() : '';
+      if (!text) return null;
+      const estimate =
+        typeof r.estimate === 'number' && r.estimate > 0 ? r.estimate : null;
+      const childList = sanitizeBreakdownTree(r.children, depth + 1, maxDepth);
+      const node: BreakdownSuggestion = { text, estimate };
+      if (childList.length > 0) node.children = childList;
+      return node;
+    })
+    .filter((n): n is BreakdownSuggestion => n !== null);
 }
 
 // ── Routes ───────────────────────────────────────────────────────
@@ -183,14 +207,22 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     const siblings = siblingTexts(targetNode, mapDetail.nodes);
     const effortUnit = mapDetail.map.effortUnit ?? 'days';
 
-    // Build prompt
+    // Build prompt — supports either a flat list (≤6 tasks) or a 2-level
+    // tree (categories → tasks) when the breakdown would otherwise produce
+    // too many siblings to read at a glance.
     const systemPrompt = `You are a project planning assistant. You help break down work items into smaller, actionable subtasks.
 
 Rules:
-- Return ONLY a JSON object: {"tasks": [{"text": "...", "estimate": <number or null>}]}
-- Each task text should be a concise, actionable work item (imperative mood, no numbering)
+- Return ONLY a JSON object: {"tasks": [{"text": "...", "estimate": <number or null>, "children": [...]}]}
+- Each "text" should be a concise, actionable work item (imperative mood, no numbering)
 - Estimates are in ${effortUnit}. Use null if you can't estimate confidently.
-- Tasks should be roughly equal-sized — each small enough to complete in 1-3 ${effortUnit}
+- Leaf tasks should be small enough to complete in 1-3 ${effortUnit}
+- **Grouping:** if the breakdown would produce more than 6 sibling tasks, group
+  them under 2-4 category nodes. A category has descriptive text (e.g.
+  "Backend", "Frontend"), no estimate (use null), and a non-empty "children"
+  array of leaf tasks. Categories are at most one level deep — leaves under
+  a category must NOT have their own "children".
+- If 6 or fewer tasks would result, return them flat — no "children" arrays.
 - Don't duplicate existing children or siblings
 - No preamble, no markdown, no explanation — just the JSON`;
 
@@ -226,24 +258,33 @@ Node to break down: "${targetNode.text}"`;
 
       // Parse — handle models that wrap JSON in markdown fences
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
-      const parsed = JSON.parse(cleaned) as { tasks: BreakdownSuggestion[] };
+      const parsed = JSON.parse(cleaned) as { tasks: unknown };
 
-      if (!Array.isArray(parsed.tasks)) {
+      const suggestions = sanitizeBreakdownTree(parsed.tasks, 0, 2);
+      if (suggestions.length === 0) {
         return reply.status(502).send({
           error: { code: 'AI_BAD_RESPONSE', message: 'Model did not return a valid tasks array' },
         });
       }
 
-      // Sanitize: clamp estimates, enforce string text
-      const suggestions: BreakdownSuggestion[] = parsed.tasks
-        .slice(0, count)
-        .map((t) => ({
-          text: String(t.text).trim(),
-          estimate: typeof t.estimate === 'number' && t.estimate > 0 ? t.estimate : null,
-        }))
-        .filter((t) => t.text.length > 0);
+      // Honor the requested `count` as a total-leaf budget rather than a
+      // top-level cap: with grouping enabled, "count = 10" means up to 10
+      // leaf tasks across the categories, not 10 categories.
+      let leafBudget = count;
+      const trimmed: BreakdownSuggestion[] = [];
+      for (const node of suggestions) {
+        if (leafBudget <= 0) break;
+        if (node.children && node.children.length > 0) {
+          const room = Math.min(node.children.length, leafBudget);
+          trimmed.push({ ...node, children: node.children.slice(0, room) });
+          leafBudget -= room;
+        } else {
+          trimmed.push(node);
+          leafBudget -= 1;
+        }
+      }
 
-      return { suggestions };
+      return { suggestions: trimmed };
     } catch (err: any) {
       if (err instanceof SyntaxError) {
         return reply.status(502).send({
@@ -277,20 +318,36 @@ Node to break down: "${targetNode.text}"`;
     const userId = (req as any).userId ?? 'system';
     const created: CoreNode[] = [];
 
-    for (const task of body.tasks) {
-      const node = await nodeDb.createNode({
-        mapId: body.mapId,
-        parentId: body.parentId,
-        text: task.text,
-        createdBy: userId,
-        effortEstimate: task.estimate ?? undefined,
-      });
-      created.push(node);
-      broadcast(body.mapId, { type: 'node:created', node });
-      scheduleEmbedNode(node.id);
+    // Recursively create — categories first, then their leaves. Categories
+    // get no estimate (parents auto-compute from children's rollup).
+    async function createBranch(
+      parentId: string,
+      items: BreakdownSuggestion[],
+    ): Promise<void> {
+      for (const item of items) {
+        const hasChildren = !!item.children && item.children.length > 0;
+        const node = await nodeDb.createNode({
+          mapId: body.mapId,
+          parentId,
+          text: item.text,
+          createdBy: userId,
+          effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
+        });
+        created.push(node);
+        broadcast(body.mapId, { type: 'node:created', node });
+        scheduleEmbedNode(node.id);
+        if (hasChildren) await createBranch(node.id, item.children!);
+      }
     }
 
-    return reply.status(201).send({ created });
+    try {
+      await createBranch(body.parentId, body.tasks);
+      return reply.status(201).send({ created });
+    } catch (err: any) {
+      return reply.status(500).send({
+        error: { code: 'CREATE_FAILED', message: err.message },
+      });
+    }
   });
 
   // ── POST /api/ai/chat — conversational chat with tool use ──────
@@ -928,6 +985,224 @@ Title: "${targetText}"`;
     } catch (err: any) {
       return reply.status(500).send({
         error: { code: 'CREATE_FAILED', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/refine_structure — critique a subtree's grouping ──
+  //
+  // Request:  { mapId, nodeId }
+  // Response: { proposals: GroupProposal[], summary: string }
+  //
+  // Returns *proposals* (group-related siblings under a new category) for
+  // an existing subtree. No mutations happen here — the client previews
+  // the diff and re-uses bulk_create_nodes + bulk_update_nodes to apply.
+  //
+  // MVP: only `group` proposals. `move` / `rename` / `split` can layer on
+  // later without changing the wire shape (proposals[].kind discriminator).
+
+  app.post('/api/ai/refine_structure', async (req, reply) => {
+    if (!requireOllama(reply)) return;
+    const body = req.body as { mapId: string; nodeId: string };
+
+    if (!body.mapId || !body.nodeId) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and nodeId are required' },
+      });
+    }
+
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` },
+      });
+    }
+
+    const targetNode = mapDetail.nodes.find((n) => n.id === body.nodeId);
+    if (!targetNode) {
+      return reply.status(404).send({
+        error: { code: 'NODE_NOT_FOUND', message: `Node ${body.nodeId} not found` },
+      });
+    }
+
+    const children = mapDetail.nodes.filter((n) => n.parentId === body.nodeId);
+    if (children.length < 4) {
+      // Not worth refining a small subtree — return an empty result so the
+      // frontend can show "structure looks fine" without an extra LLM call.
+      return { proposals: [], summary: 'Subtree is small enough to read at a glance — no grouping suggested.' };
+    }
+
+    // Tag each child with a short numeric index — far fewer tokens than
+    // UUIDs and easier for the LLM to quote back accurately.
+    const tags = new Map<string, number>();
+    const idByTag = new Map<number, string>();
+    children.forEach((c, i) => {
+      const tag = i + 1;
+      tags.set(c.id, tag);
+      idByTag.set(tag, c.id);
+    });
+
+    const childrenList = children
+      .map((c) => `  [${tags.get(c.id)}] ${c.text}`)
+      .join('\n');
+
+    const systemPrompt = `You are a project structure reviewer. You look at a parent node and its direct children, and you propose groupings when the children would be easier to read with intermediate category nodes.
+
+Rules:
+- Return ONLY a JSON object: {"groups": [{"members": [<int tags>], "label": "...", "reason": "..."}], "summary": "..."}
+- "members" is a list of integer tags identifying which existing children should be grouped together. Use the [N] tags from the input — do not invent new tags.
+- "label" is the proposed category name (concise, descriptive: "Backend", "UX polish", etc.)
+- "reason" is one short sentence justifying the grouping
+- "summary" is one sentence on the overall structure (e.g. "Looks well-organized" or "Five children are clearly Backend tasks; the rest are unrelated")
+- Only propose a group if ≥3 children share an obvious theme — small groups add noise
+- A child must not appear in more than one group
+- Do NOT propose any groups if the children are already balanced (≤6 total, or each clearly distinct)
+- No preamble, no markdown fences, no explanation outside the JSON`;
+
+    const userPrompt = `Project: ${mapDetail.map.name}
+Parent: "${targetNode.text}"
+Direct children (${children.length}):
+${childrenList}
+
+Review the children and propose groupings.`;
+
+    try {
+      const raw = await chatCompletion({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.3,
+        maxTokens: 1024,
+        jsonSchema: { name: 'refine_structure' },
+      });
+
+      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      const parsed = JSON.parse(cleaned) as {
+        groups?: unknown;
+        summary?: unknown;
+      };
+
+      const summary = typeof parsed.summary === 'string' ? parsed.summary.trim() : '';
+      const proposals: Array<{
+        kind: 'group';
+        memberIds: string[];
+        suggestedLabel: string;
+        reason: string;
+      }> = [];
+
+      if (Array.isArray(parsed.groups)) {
+        const seenMembers = new Set<string>();
+        for (const raw of parsed.groups) {
+          if (!raw || typeof raw !== 'object') continue;
+          const g = raw as Record<string, unknown>;
+          const label = typeof g.label === 'string' ? g.label.trim() : '';
+          const reason = typeof g.reason === 'string' ? g.reason.trim() : '';
+          const memberTags = Array.isArray(g.members) ? g.members : [];
+          const memberIds: string[] = [];
+          for (const t of memberTags) {
+            const tag = typeof t === 'number' ? t : Number(t);
+            if (!Number.isInteger(tag)) continue;
+            const id = idByTag.get(tag);
+            if (!id || seenMembers.has(id)) continue;
+            memberIds.push(id);
+            seenMembers.add(id);
+          }
+          // Skip "groups" of fewer than 3 — that's not a meaningful regrouping.
+          if (!label || memberIds.length < 3) continue;
+          proposals.push({ kind: 'group', memberIds, suggestedLabel: label, reason });
+        }
+      }
+
+      return { proposals, summary };
+    } catch (err: any) {
+      if (err instanceof SyntaxError) {
+        return reply.status(502).send({
+          error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
+        });
+      }
+      return reply.status(502).send({
+        error: { code: 'AI_ERROR', message: err.message },
+      });
+    }
+  });
+
+  // ── POST /api/ai/refine_structure/apply — apply accepted proposals ──
+  //
+  // Request:  { mapId, parentId, proposals: GroupProposal[] }
+  // Response: { createdCount, movedCount }
+  //
+  // For each group proposal: create a new category node under parentId,
+  // then reparent each member under the new category. Skips proposals
+  // whose members reference unknown nodes (defensive against stale UI
+  // state). No rollback — failures abort partway and return what landed.
+
+  app.post('/api/ai/refine_structure/apply', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      parentId: string;
+      proposals: Array<{
+        kind: 'group';
+        memberIds: string[];
+        suggestedLabel: string;
+      }>;
+    };
+
+    if (
+      !body.mapId ||
+      !body.parentId ||
+      !Array.isArray(body.proposals) ||
+      body.proposals.length === 0
+    ) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'mapId, parentId, and non-empty proposals array required',
+        },
+      });
+    }
+
+    const userId = (req as any).userId ?? 'system';
+    let createdCount = 0;
+    let movedCount = 0;
+
+    try {
+      for (const proposal of body.proposals) {
+        if (proposal.kind !== 'group') continue;
+        if (!proposal.suggestedLabel || proposal.memberIds.length < 2) continue;
+
+        // 1. Create the category node under parentId.
+        const category = await nodeDb.createNode({
+          mapId: body.mapId,
+          parentId: body.parentId,
+          text: proposal.suggestedLabel,
+          createdBy: userId,
+        });
+        createdCount++;
+        broadcast(body.mapId, { type: 'node:created', node: category });
+        scheduleEmbedNode(category.id);
+
+        // 2. Reparent each member under the new category. moveNode handles
+        //    the parent's children_order on both sides — plain updateNode
+        //    leaves the old parent dangling.
+        for (const memberId of proposal.memberIds) {
+          const updated = await nodeDb.moveNode(memberId, category.id);
+          if (updated) {
+            movedCount++;
+            broadcast(body.mapId, {
+              type: 'node:updated',
+              nodeId: memberId,
+              fields: ['parentId'],
+              node: updated,
+            });
+          }
+        }
+      }
+
+      return reply.status(200).send({ createdCount, movedCount });
+    } catch (err: any) {
+      return reply.status(500).send({
+        error: { code: 'APPLY_FAILED', message: err.message, createdCount, movedCount },
       });
     }
   });

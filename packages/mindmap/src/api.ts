@@ -812,6 +812,9 @@ export function fetchCalendarSubscribeUrl(mapId: string): Promise<CalendarSubscr
 export interface BreakdownSuggestion {
   text: string;
   estimate: number | null;
+  /** Optional grouped children — when present, this entry is a category and
+   * its estimate field should be ignored (parent auto-computes from leaves). */
+  children?: BreakdownSuggestion[];
 }
 
 export function aiBreakdown(
@@ -843,6 +846,38 @@ export interface BraindumpNode {
   children: BraindumpNode[];
 }
 
+export interface ReadyNode {
+  id: string;
+  text: string;
+  status: string | null;
+  priority: string | null;
+  priorityRank: number | null;
+  scopes: string[];
+  claimedBySession: string | null;
+  claimedAt: string | null;
+  parentId: string | null;
+}
+
+export interface ReadyNodesResponse {
+  mapId: string;
+  ready: ReadyNode[];
+  total: number;
+  returned: number;
+}
+
+export function fetchReadyNodes(
+  mapId: string,
+  opts: { limit?: number; scope?: string[] } = {},
+): Promise<ReadyNodesResponse> {
+  const params = new URLSearchParams();
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.scope && opts.scope.length > 0) params.set('scope', opts.scope.join(','));
+  const qs = params.toString();
+  return request<ReadyNodesResponse>(
+    `/api/maps/${encodeURIComponent(mapId)}/nodes/ready${qs ? `?${qs}` : ''}`,
+  );
+}
+
 export function aiBraindump(
   mapId: string,
   parentId: string,
@@ -863,6 +898,34 @@ export function aiBraindumpAccept(
   return request('/api/ai/braindump/accept', {
     method: 'POST',
     body: JSON.stringify({ mapId, parentId, tree }),
+  });
+}
+
+export interface GroupProposal {
+  kind: 'group';
+  memberIds: string[];
+  suggestedLabel: string;
+  reason: string;
+}
+
+export function aiRefineStructure(
+  mapId: string,
+  nodeId: string,
+): Promise<{ proposals: GroupProposal[]; summary: string }> {
+  return request('/api/ai/refine_structure', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, nodeId }),
+  });
+}
+
+export function aiRefineStructureApply(
+  mapId: string,
+  parentId: string,
+  proposals: Array<Pick<GroupProposal, 'kind' | 'memberIds' | 'suggestedLabel'>>,
+): Promise<{ createdCount: number; movedCount: number }> {
+  return request('/api/ai/refine_structure/apply', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, parentId, proposals }),
   });
 }
 

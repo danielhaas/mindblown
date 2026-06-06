@@ -662,6 +662,8 @@ export function updateVersion(
 export interface BreakdownSuggestion {
   text: string;
   estimate: number | null;
+  /** Optional grouped children — categories with leaf descendants. */
+  children?: BreakdownSuggestion[];
 }
 
 export interface BraindumpNode {

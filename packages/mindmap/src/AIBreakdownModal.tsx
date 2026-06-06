@@ -10,6 +10,71 @@ interface Props {
   onClose: () => void;
 }
 
+type Path = string; // dot-separated index path, e.g. "0", "1.0", "1.2"
+
+function pathOf(parent: Path, idx: number): Path {
+  return parent === '' ? String(idx) : `${parent}.${idx}`;
+}
+
+/** Walk a tree by index path and apply a transform; returns a new tree. */
+function updateAtPath(
+  tree: BreakdownSuggestion[],
+  target: Path,
+  fn: (node: BreakdownSuggestion) => BreakdownSuggestion,
+  cursor: Path = '',
+): BreakdownSuggestion[] {
+  return tree.map((node, i) => {
+    const here = pathOf(cursor, i);
+    if (here === target) return fn(node);
+    if (target.startsWith(here + '.')) {
+      return { ...node, children: updateAtPath(node.children ?? [], target, fn, here) };
+    }
+    return node;
+  });
+}
+
+/** Total leaf count after applying the `removed` mask. */
+function countLeaves(
+  tree: BreakdownSuggestion[],
+  removed: Set<Path>,
+  cursor: Path = '',
+): number {
+  let n = 0;
+  for (let i = 0; i < tree.length; i++) {
+    const here = pathOf(cursor, i);
+    if (removed.has(here)) continue;
+    const node = tree[i];
+    if (node.children && node.children.length > 0) {
+      n += countLeaves(node.children, removed, here);
+    } else {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/** Strip removed nodes and drop empty categories before sending to the server. */
+function pruneRemoved(
+  tree: BreakdownSuggestion[],
+  removed: Set<Path>,
+  cursor: Path = '',
+): BreakdownSuggestion[] {
+  const out: BreakdownSuggestion[] = [];
+  for (let i = 0; i < tree.length; i++) {
+    const here = pathOf(cursor, i);
+    if (removed.has(here)) continue;
+    const node = tree[i];
+    if (node.children && node.children.length > 0) {
+      const kept = pruneRemoved(node.children, removed, here);
+      if (kept.length === 0) continue; // drop empty category
+      out.push({ ...node, children: kept });
+    } else {
+      out.push(node);
+    }
+  }
+  return out;
+}
+
 export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
   const [suggestions, setSuggestions] = useState<BreakdownSuggestion[]>([]);
   const [loading, setLoading] = useState(false);
@@ -18,12 +83,14 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
   const [hint, setHint] = useState('');
   const [count, setCount] = useState(5);
   const [generated, setGenerated] = useState(false);
+  const [removed, setRemoved] = useState<Set<Path>>(new Set());
 
   const loadMap = useMindmapStore((s) => s.loadMap);
 
   const generate = useCallback(async () => {
     setLoading(true);
     setError(null);
+    setRemoved(new Set());
     try {
       const res = await api.aiBreakdown(mapId, nodeId, count, hint || undefined);
       setSuggestions(res.suggestions);
@@ -36,57 +103,115 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
   }, [mapId, nodeId, count, hint]);
 
   const accept = useCallback(async () => {
-    const selected = suggestions.filter((_, i) => !removed.has(i));
+    const selected = pruneRemoved(suggestions, removed);
     if (selected.length === 0) return;
 
     setAccepting(true);
     setError(null);
     try {
       await api.aiBreakdownAccept(mapId, nodeId, selected);
-      // Reload the map to pick up new nodes from the server
       await loadMap(mapId);
       onClose();
     } catch (err: any) {
       setError(err.message || 'Failed to create nodes');
       setAccepting(false);
     }
-  }, [suggestions, mapId, nodeId, loadMap, onClose]);
+  }, [suggestions, removed, mapId, nodeId, loadMap, onClose]);
 
-  // Track which suggestions have been removed from the preview
-  const [removed, setRemoved] = useState<Set<number>>(new Set());
-
-  const toggleRemove = (idx: number) => {
+  const toggleRemove = (path: Path) => {
     setRemoved((prev) => {
       const next = new Set(prev);
-      if (next.has(idx)) next.delete(idx);
-      else next.add(idx);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
       return next;
     });
   };
 
-  const updateSuggestion = (idx: number, field: 'text' | 'estimate', value: string) => {
+  const updateField = (
+    path: Path,
+    field: 'text' | 'estimate',
+    value: string,
+  ) => {
     setSuggestions((prev) =>
-      prev.map((s, i) =>
-        i === idx
-          ? {
-              ...s,
-              [field]: field === 'estimate' ? (value === '' ? null : parseFloat(value)) : value,
-            }
-          : s,
-      ),
+      updateAtPath(prev, path, (node) => ({
+        ...node,
+        [field]: field === 'estimate' ? (value === '' ? null : parseFloat(value)) : value,
+      })),
     );
   };
 
-  const activeCount = suggestions.length - removed.size;
+  const activeCount = countLeaves(suggestions, removed);
+
+  // Recursively render. Categories (children.length > 0) get a slightly
+  // different row: bolder text, no estimate input, and a small badge.
+  const renderRow = (node: BreakdownSuggestion, path: Path, depth: number) => {
+    const isRemoved = removed.has(path);
+    const isCategory = !!node.children && node.children.length > 0;
+    return (
+      <div key={path}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 0',
+            paddingLeft: depth * 20,
+            opacity: isRemoved ? 0.4 : 1,
+            borderBottom: '1px solid #f1f5f9',
+          }}
+        >
+          <button
+            onClick={() => toggleRemove(path)}
+            style={{
+              ...smallBtnStyle,
+              color: isRemoved ? '#16a34a' : '#dc2626',
+              fontSize: 16,
+              width: 24,
+              flexShrink: 0,
+            }}
+            title={isRemoved ? 'Restore' : 'Remove'}
+          >
+            {isRemoved ? '+' : '×'}
+          </button>
+          <input
+            type="text"
+            value={node.text}
+            onChange={(e) => updateField(path, 'text', e.target.value)}
+            disabled={isRemoved}
+            style={{
+              ...inputStyle,
+              flex: 1,
+              fontSize: 13,
+              fontWeight: isCategory ? 600 : 400,
+              color: isCategory ? '#0f172a' : '#334155',
+            }}
+          />
+          {isCategory ? (
+            <span style={badgeStyle}>group</span>
+          ) : (
+            <input
+              type="number"
+              value={node.estimate ?? ''}
+              onChange={(e) => updateField(path, 'estimate', e.target.value)}
+              disabled={isRemoved}
+              placeholder="est"
+              style={{ ...inputStyle, width: 56, textAlign: 'right', fontSize: 13 }}
+              min={0}
+              step={0.5}
+            />
+          )}
+        </div>
+        {isCategory &&
+          !isRemoved &&
+          node.children!.map((c, i) => renderRow(c, pathOf(path, i), depth + 1))}
+      </div>
+    );
+  };
 
   return (
     <>
-      {/* Backdrop */}
       <div style={backdropStyle} onClick={onClose} />
-
-      {/* Modal */}
       <div style={modalStyle}>
-        {/* Header */}
         <div style={headerStyle}>
           <div>
             <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>
@@ -99,12 +224,11 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
           <button onClick={onClose} style={closeBtnStyle}>&times;</button>
         </div>
 
-        {/* Body */}
         <div style={bodyStyle}>
           {!generated ? (
             <>
               <div style={{ marginBottom: 12 }}>
-                <label style={labelStyle}>Number of subtasks</label>
+                <label style={labelStyle}>Number of subtasks (max)</label>
                 <input
                   type="number"
                   min={2}
@@ -113,6 +237,9 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
                   onChange={(e) => setCount(parseInt(e.target.value) || 5)}
                   style={inputStyle}
                 />
+                <div style={hintStyle}>
+                  More than 6 → the AI will group them under category nodes.
+                </div>
               </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>Additional context (optional)</label>
@@ -127,50 +254,7 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
             </>
           ) : (
             <div>
-              {suggestions.map((s, i) => (
-                <div
-                  key={i}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 8,
-                    padding: '6px 0',
-                    opacity: removed.has(i) ? 0.4 : 1,
-                    borderBottom: '1px solid #f1f5f9',
-                  }}
-                >
-                  <button
-                    onClick={() => toggleRemove(i)}
-                    style={{
-                      ...smallBtnStyle,
-                      color: removed.has(i) ? '#16a34a' : '#dc2626',
-                      fontSize: 16,
-                      width: 24,
-                      flexShrink: 0,
-                    }}
-                    title={removed.has(i) ? 'Restore' : 'Remove'}
-                  >
-                    {removed.has(i) ? '+' : '\u00d7'}
-                  </button>
-                  <input
-                    type="text"
-                    value={s.text}
-                    onChange={(e) => updateSuggestion(i, 'text', e.target.value)}
-                    disabled={removed.has(i)}
-                    style={{ ...inputStyle, flex: 1, fontSize: 13 }}
-                  />
-                  <input
-                    type="number"
-                    value={s.estimate ?? ''}
-                    onChange={(e) => updateSuggestion(i, 'estimate', e.target.value)}
-                    disabled={removed.has(i)}
-                    placeholder="est"
-                    style={{ ...inputStyle, width: 56, textAlign: 'right', fontSize: 13 }}
-                    min={0}
-                    step={0.5}
-                  />
-                </div>
-              ))}
+              {suggestions.map((s, i) => renderRow(s, String(i), 0))}
             </div>
           )}
 
@@ -179,10 +263,16 @@ export function AIBreakdownModal({ mapId, nodeId, nodeText, onClose }: Props) {
           )}
         </div>
 
-        {/* Footer */}
         <div style={footerStyle}>
           {generated && (
-            <button onClick={() => { setGenerated(false); setSuggestions([]); setRemoved(new Set()); }} style={secondaryBtnStyle}>
+            <button
+              onClick={() => {
+                setGenerated(false);
+                setSuggestions([]);
+                setRemoved(new Set());
+              }}
+              style={secondaryBtnStyle}
+            >
               Regenerate
             </button>
           )}
@@ -225,7 +315,7 @@ const modalStyle: React.CSSProperties = {
   background: '#fff',
   borderRadius: 12,
   boxShadow: '0 8px 32px rgba(0,0,0,0.2)',
-  width: 520,
+  width: 560,
   maxHeight: '80vh',
   display: 'flex',
   flexDirection: 'column',
@@ -260,6 +350,12 @@ const labelStyle: React.CSSProperties = {
   marginBottom: 4,
 };
 
+const hintStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#94a3b8',
+  marginTop: 4,
+};
+
 const inputStyle: React.CSSProperties = {
   padding: '6px 8px',
   border: '1px solid #cbd5e1',
@@ -267,6 +363,21 @@ const inputStyle: React.CSSProperties = {
   fontSize: 13,
   outline: 'none',
   background: '#fff',
+};
+
+const badgeStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  color: '#6366f1',
+  background: '#eef2ff',
+  border: '1px solid #c7d2fe',
+  padding: '2px 6px',
+  borderRadius: 4,
+  textTransform: 'uppercase',
+  letterSpacing: 0.5,
+  width: 56,
+  textAlign: 'center',
+  boxSizing: 'border-box',
 };
 
 const primaryBtnStyle: React.CSSProperties = {

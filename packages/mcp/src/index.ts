@@ -2348,18 +2348,41 @@ server.tool(
       if (suggestions.length === 0) {
         return toolResult('Model returned no suggestions.');
       }
-      const previewLines = suggestions.map(
-        (s, i) => `  ${i + 1}. ${s.text}${s.estimate != null ? ` (est ${s.estimate})` : ''}`,
-      );
+      // Suggestions can be nested when the model groups (>6 tasks). Render
+      // as an indented tree so the structure is visible in the tool result.
+      const renderBreakdown = (
+        items: api.BreakdownSuggestion[],
+        depth: number,
+      ): string[] => {
+        const out: string[] = [];
+        for (const s of items) {
+          const indent = '  '.repeat(depth);
+          const isCategory = !!s.children && s.children.length > 0;
+          const suffix = isCategory
+            ? ' (group)'
+            : s.estimate != null ? ` (est ${s.estimate})` : '';
+          out.push(`${indent}- ${s.text}${suffix}`);
+          if (isCategory) out.push(...renderBreakdown(s.children!, depth + 1));
+        }
+        return out;
+      };
+      const previewLines = renderBreakdown(suggestions, 0);
+      const countLeaves = (items: api.BreakdownSuggestion[]): number =>
+        items.reduce(
+          (n, s) =>
+            n + (s.children && s.children.length > 0 ? countLeaves(s.children) : 1),
+          0,
+        );
+      const leafCount = countLeaves(suggestions);
 
       const shouldApply = apply !== false;
       if (!shouldApply) {
-        return toolResult(`Suggested ${suggestions.length} subtasks (preview only — pass apply=true to create):\n${previewLines.join('\n')}`);
+        return toolResult(`Suggested ${leafCount} subtask(s) (preview only — pass apply=true to create):\n${previewLines.join('\n')}`);
       }
 
       const { created } = await api.aiBreakdownAccept(mapId, nodeId, suggestions);
       const createdLines = created.map((n, i) => `  ${i + 1}. [${n.id}] ${n.text}`);
-      return toolResult(`Created ${created.length} child node(s) under ${nodeId}:\n${createdLines.join('\n')}`);
+      return toolResult(`Created ${created.length} node(s) under ${nodeId}:\n${createdLines.join('\n')}`);
     } catch (err) {
       return toolError(err);
     }
