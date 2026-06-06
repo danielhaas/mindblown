@@ -339,6 +339,34 @@ export function GanttView() {
     }
   }, [scheduleData?.workerCount]);
 
+  // Auto-save the Workers value on change with a small debounce — fires
+  // ~300ms after the user stops typing, so a single quick edit "3 → 30"
+  // doesn't kick off two competing requests, but the user doesn't have to
+  // blur the input to see the timeline rescale.
+  useEffect(() => {
+    if (!currentMapId) return;
+    const current = scheduleData?.workerCount ?? 1;
+    if (workersInput === current) return;
+    if (savingWorkers) return; // a save is already in flight
+    const timer = window.setTimeout(async () => {
+      setSavingWorkers(true);
+      try {
+        await updateMapApi(currentMapId, { workerCount: workersInput });
+        const refreshed = (await fetchSchedule(currentMapId)) as ScheduleResponse;
+        setServerScheduleData(refreshed);
+        setSavedFlash(`Workers: ${workersInput}`);
+        window.setTimeout(() => setSavedFlash(null), 2000);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn('[gantt] failed to update workerCount:', err);
+        setWorkersInput(current); // revert the visible value
+      } finally {
+        setSavingWorkers(false);
+      }
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [workersInput, currentMapId, scheduleData?.workerCount, savingWorkers]);
+
   // ── Map computed offsets → calendar dates ──────────────────────
   //
   // The backend returns schedule entries in effort-unit space relative to
@@ -1028,27 +1056,6 @@ export function GanttView() {
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
             if (!isNaN(v) && v >= 1) setWorkersInput(Math.min(100, v));
-          }}
-          onBlur={async () => {
-            if (!currentMapId) return;
-            const current = scheduleData?.workerCount ?? 1;
-            if (workersInput === current) return;
-            setSavingWorkers(true);
-            try {
-              await updateMapApi(currentMapId, { workerCount: workersInput });
-              // Refetch the schedule with the new worker count.
-              const refreshed = (await fetchSchedule(currentMapId)) as ScheduleResponse;
-              setServerScheduleData(refreshed);
-              setSavedFlash(`Workers: ${workersInput}`);
-              window.setTimeout(() => setSavedFlash(null), 2000);
-            } catch (err) {
-              // eslint-disable-next-line no-console
-              console.warn('[gantt] failed to update workerCount:', err);
-              // Revert the visible input to the server's current value.
-              setWorkersInput(current);
-            } finally {
-              setSavingWorkers(false);
-            }
           }}
           title="Number of parallel work tracks. View knob — the underlying plan (priorities + estimates + deps) is unchanged. Higher = more parallelism shrinks the timeline."
           style={{
