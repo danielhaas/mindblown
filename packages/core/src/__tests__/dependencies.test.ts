@@ -515,10 +515,47 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('c')!.computedEnd).toBe(5);
   });
 
-  it('done leaves are pinned at projectStartDay and do not consume cursor', () => {
-    // A is done with effort 3. B is todo with effort 2.
-    // A should pin to 0..0 (zero-width marker), B should still start at 0
-    // (cursor wasn't advanced by A).
+  it('done leaves end at today with effort as bar width; do not consume cursor', () => {
+    // A is done with effort 3 → bar spans [today-3, today].
+    // B is todo with effort 2 → starts at 0 (cursor wasn't moved by A).
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: 3,
+      percentComplete: 100,
+    });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 2 });
+    // todayDay = 10 (well past projectStartDay = 0)
+    const result = schedule([a, b], 0, undefined, undefined, 1, 10);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(7); // today - 3
+    expect(byId.get('a')!.computedEnd).toBe(10);  // today
+    expect(byId.get('a')!.duration).toBe(3);
+    expect(byId.get('b')!.computedStart).toBe(0); // cursor still at start
+    expect(byId.get('b')!.computedEnd).toBe(2);
+  });
+
+  it('done leaf with null effort collapses to a zero-width marker at today', () => {
+    // The #213-followup / #132-PR case: done + no estimate. They get
+    // zero width but END AT TODAY, not at the project anchor.
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: null,
+      percentComplete: 100,
+    });
+    const c = makeNode({ id: 'c', priority: 'P1', effortEstimate: 1 });
+    const result = schedule([a, c], 0, undefined, undefined, 1, 10);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(10); // today
+    expect(byId.get('a')!.computedEnd).toBe(10);   // today
+    expect(byId.get('a')!.duration).toBe(0);
+    expect(byId.get('c')!.computedStart).toBe(0);
+    expect(byId.get('c')!.computedEnd).toBe(1);
+  });
+
+  it('todayDay defaults to projectStartDay (back-compat for callers that omit it)', () => {
+    // Old call signature (no todayDay) still works: done items pin at 0.
     const a = makeNode({
       id: 'a',
       priority: 'P0',
@@ -528,42 +565,15 @@ describe('priority-inheritance schedule', () => {
     const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 2 });
     const result = schedule([a, b]);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedStart).toBe(-3); // 0 - 3
     expect(byId.get('a')!.computedEnd).toBe(0);
-    expect(byId.get('a')!.duration).toBe(0);
     expect(byId.get('b')!.computedStart).toBe(0);
     expect(byId.get('b')!.computedEnd).toBe(2);
   });
 
-  it('done leaf with null effort also collapses to zero-width at start', () => {
-    // The #213-followup / #132-PR case: done + no estimate. Used to
-    // pile up at whatever cursor position they hit; now they collapse.
-    const a = makeNode({
-      id: 'a',
-      priority: 'P0',
-      effortEstimate: null,
-      percentComplete: 100,
-    });
-    const b = makeNode({
-      id: 'b',
-      priority: 'P0',
-      effortEstimate: null,
-      percentComplete: 100,
-    });
-    const c = makeNode({ id: 'c', priority: 'P1', effortEstimate: 1 });
-    const result = schedule([a, b, c]);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-    expect(byId.get('a')!.computedStart).toBe(0);
-    expect(byId.get('a')!.computedEnd).toBe(0);
-    expect(byId.get('b')!.computedStart).toBe(0);
-    expect(byId.get('b')!.computedEnd).toBe(0);
-    expect(byId.get('c')!.computedStart).toBe(0);
-    expect(byId.get('c')!.computedEnd).toBe(1);
-  });
-
   it('mixed parent rollup skips done children, reflects only outstanding work', () => {
     // Parent with one done child + one todo child. The bar should reflect
-    // the TODO work's span, not "starts at 0 because some child is done."
+    // the TODO work's span only — done child is excluded from rollup.
     const parent = makeNode({ id: 'p', childrenIds: ['done_c', 'todo_c'] });
     const doneChild = makeNode({
       id: 'done_c',
@@ -578,25 +588,20 @@ describe('priority-inheritance schedule', () => {
       priority: 'P1',
       effortEstimate: 3,
     });
-    const result = schedule([parent, doneChild, todoChild]);
+    const result = schedule([parent, doneChild, todoChild], 0, undefined, undefined, 1, 10);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    // Done child is marker at 0..0; todo child runs at 0..3.
-    expect(byId.get('done_c')!.computedStart).toBe(0);
-    expect(byId.get('done_c')!.computedEnd).toBe(0);
+    // done_c at [5, 10] (today-5..today); todo_c at [0, 3].
+    expect(byId.get('done_c')!.computedStart).toBe(5);
+    expect(byId.get('done_c')!.computedEnd).toBe(10);
     expect(byId.get('todo_c')!.computedStart).toBe(0);
     expect(byId.get('todo_c')!.computedEnd).toBe(3);
-    // Parent rollup: ignore the done child, use only the todo child →
-    // span 0..3 (NOT 0..3 because of "min(0, 0) = 0" coincidence; what
-    // matters is the SOURCE of the rollup, verified by the next test).
+    // Parent rollup uses ONLY todo_c → span 0..3. If we'd included
+    // done_c (5..10), the parent would have spanned 0..10 — wrong.
     expect(byId.get('p')!.computedStart).toBe(0);
     expect(byId.get('p')!.computedEnd).toBe(3);
   });
 
   it('mixed parent with done child + LATE todo child: parent.start follows the todo', () => {
-    // Parent's todo child is pushed forward by an external blocker.
-    // Without the done-skip rollup, parent.start would be 0 (from the
-    // done child). With the skip, parent.start matches the todo child's
-    // actual start.
     const blocker = makeNode({ id: 'blocker', priority: 'P0', effortEstimate: 5 });
     const parent = makeNode({ id: 'p', childrenIds: ['done_c', 'todo_c'] });
     const doneChild = makeNode({
@@ -613,22 +618,20 @@ describe('priority-inheritance schedule', () => {
       effortEstimate: 2,
       dependencies: [{ targetNodeId: 'blocker', type: 'FS', lag: 0 }],
     });
-    const result = schedule([blocker, parent, doneChild, todoChild]);
+    const result = schedule([blocker, parent, doneChild, todoChild], 0, undefined, undefined, 1, 10);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    // blocker at 0..5, done_c marker at 0..0, todo_c at 5..7.
+    // blocker at 0..5, done_c at 9..10, todo_c at 5..7.
     expect(byId.get('todo_c')!.computedStart).toBe(5);
     expect(byId.get('todo_c')!.computedEnd).toBe(7);
-    // Parent rollup ignores done_c (would have pulled start to 0),
-    // uses only todo_c → 5..7. Pre-fix this would have been 0..7.
+    // Parent rollup uses ONLY todo_c.
     expect(byId.get('p')!.computedStart).toBe(5);
     expect(byId.get('p')!.computedEnd).toBe(7);
   });
 
-  it('parent whose ALL children are done collapses to marker AND propagates up', () => {
-    // Grandparent → parent → 2 done children. Parent has no active work,
-    // so it becomes a marker too. Grandparent should treat parent as done
-    // (skip it in its own rollup) — if grandparent ALSO has no other
-    // active children, it likewise collapses.
+  it('parent whose ALL children are done spans the past work and ends at today', () => {
+    // Grandparent → parent → 2 done children, each 1d. Parent has no
+    // active work — its bar should span the past work (c1 + c2 are both
+    // at [9, 10] since they both have 1d effort and end at today=10).
     const gp = makeNode({ id: 'gp', childrenIds: ['p'] });
     const parent = makeNode({
       id: 'p',
@@ -647,12 +650,16 @@ describe('priority-inheritance schedule', () => {
       effortEstimate: 1,
       percentComplete: 100,
     });
-    const result = schedule([gp, parent, c1, c2]);
+    const result = schedule([gp, parent, c1, c2], 0, undefined, undefined, 1, 10);
     const byId = new Map(result.map((s) => [s.nodeId, s]));
-    expect(byId.get('p')!.computedStart).toBe(0);
-    expect(byId.get('p')!.computedEnd).toBe(0);
-    expect(byId.get('gp')!.computedStart).toBe(0);
-    expect(byId.get('gp')!.computedEnd).toBe(0);
+    // Both children at [9, 10]. Parent rolls up to [9, 10] (their span).
+    expect(byId.get('c1')!.computedStart).toBe(9);
+    expect(byId.get('c1')!.computedEnd).toBe(10);
+    expect(byId.get('p')!.computedStart).toBe(9);
+    expect(byId.get('p')!.computedEnd).toBe(10);
+    // Grandparent rolls up from its sole (done) child — same past span.
+    expect(byId.get('gp')!.computedStart).toBe(9);
+    expect(byId.get('gp')!.computedEnd).toBe(10);
   });
 
   it('workerCount=1 is identical to default (serial regression)', () => {

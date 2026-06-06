@@ -310,6 +310,7 @@ export function schedule(
   constraints?: Map<NodeId, ScheduleConstraint>,
   context?: ScheduleContext,
   workerCount: number = 1,
+  todayDay: number = projectStartDay,
 ): ScheduledNode[] {
   // Step 1: Expand any parent-level user deps to leaves (handles the rare
   // case where someone wrote "Section A depends on Section B" at the parent
@@ -402,18 +403,19 @@ export function schedule(
   for (const node of queue) {
     if (node.childrenIds.length > 0) continue;
 
-    // Done leaves are completed work — they've already happened. Emit a
-    // zero-width marker at the project anchor so parent rollup still has
-    // data, but DON'T advance any track cursor. Otherwise done items
-    // would consume capacity in the future-projected timeline, which is
-    // wrong: completed work doesn't compete with future work for tracks.
+    // Done leaves are completed work — they've already happened. Pin
+    // them ENDING at today (`todayDay`) with their effort estimate as
+    // width, so they appear as a "this was N days of work, finished"
+    // bar to the left of the today line. Don't advance any worker
+    // cursor — completed work doesn't compete with future work.
     const isDone = (node.percentComplete ?? 0) >= 100;
     if (isDone) {
+      const doneDuration = leafDuration(node.effortEstimate);
       scheduled.set(node.id, {
         nodeId: node.id,
-        computedStart: projectStartDay,
-        computedEnd: projectStartDay,
-        duration: 0,
+        computedStart: todayDay - doneDuration,
+        computedEnd: todayDay,
+        duration: doneDuration,
       });
       doneMarkers.add(node.id);
       continue;
@@ -498,35 +500,59 @@ export function schedule(
     .sort((a, b) => (treeDepth.get(b.id) ?? 0) - (treeDepth.get(a.id) ?? 0));
 
   for (const parent of parentsBottomUp) {
-    let minStart = Infinity;
-    let maxEnd = -Infinity;
+    // Track active children (the parent's future work) and done children
+    // (the parent's past work) separately. If there's any active work,
+    // the parent's bar reflects ONLY that — its past is hidden under
+    // the assumption that the user cares about "what remains" when
+    // looking at a non-completed parent. If everything is done, the
+    // parent's bar spans the union of its done children's past
+    // positions so the user can see "this whole subtree finished
+    // sometime before today."
+    let activeMinStart = Infinity;
+    let activeMaxEnd = -Infinity;
+    let doneMinStart = Infinity;
+    let doneMaxEnd = -Infinity;
     let hasActiveChild = false;
+    let hasDoneChild = false;
     for (const childId of parent.childrenIds) {
       const child = scheduled.get(childId);
       if (!child) continue;
-      // Skip done-marker children — completed work shouldn't pull the
-      // parent's bar back to the project anchor. If a parent has any
-      // todo/in-progress children, its bar should reflect THEIR span.
-      if (doneMarkers.has(childId)) continue;
-      hasActiveChild = true;
-      if (child.computedStart < minStart) minStart = child.computedStart;
-      if (child.computedEnd > maxEnd) maxEnd = child.computedEnd;
+      if (doneMarkers.has(childId)) {
+        hasDoneChild = true;
+        if (child.computedStart < doneMinStart) doneMinStart = child.computedStart;
+        if (child.computedEnd > doneMaxEnd) doneMaxEnd = child.computedEnd;
+      } else {
+        hasActiveChild = true;
+        if (child.computedStart < activeMinStart) activeMinStart = child.computedStart;
+        if (child.computedEnd > activeMaxEnd) activeMaxEnd = child.computedEnd;
+      }
     }
-    if (hasActiveChild && minStart !== Infinity) {
+    if (hasActiveChild && activeMinStart !== Infinity) {
+      // Parent has remaining work — bar reflects future span only.
       scheduled.set(parent.id, {
         nodeId: parent.id,
-        computedStart: minStart,
-        computedEnd: maxEnd,
-        duration: maxEnd - minStart,
+        computedStart: activeMinStart,
+        computedEnd: activeMaxEnd,
+        duration: activeMaxEnd - activeMinStart,
       });
-    } else {
-      // All children are done (or this parent has no scheduled children
-      // at all) — collapse to project start AND propagate marker status
-      // up the tree so a grandparent treats THIS parent as done too.
+    } else if (hasDoneChild && doneMinStart !== Infinity) {
+      // Whole subtree done — bar spans the past work and ends at today
+      // (or wherever the done children's max-end landed). Treat parent
+      // as a done marker so its OWN parent skips it in rollup too.
       scheduled.set(parent.id, {
         nodeId: parent.id,
-        computedStart: projectStartDay,
-        computedEnd: projectStartDay,
+        computedStart: doneMinStart,
+        computedEnd: doneMaxEnd,
+        duration: doneMaxEnd - doneMinStart,
+      });
+      doneMarkers.add(parent.id);
+    } else {
+      // No scheduled children at all — collapse to a zero-width marker
+      // at today.
+      scheduled.set(parent.id, {
+        nodeId: parent.id,
+        computedStart: todayDay,
+        computedEnd: todayDay,
         duration: 0,
       });
       doneMarkers.add(parent.id);
