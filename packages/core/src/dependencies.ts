@@ -390,6 +390,15 @@ export function schedule(
   const workers = Math.max(1, Math.floor(workerCount));
   const trackCursors: number[] = new Array(workers).fill(projectStartDay);
 
+  // Track which nodes are "done markers" — done leaves pinned at the
+  // project anchor, and parents whose subtree is entirely done. These
+  // are EXCLUDED from parent rollup so a mixed parent (some done + some
+  // todo children) rolls up only over its remaining work, not its
+  // already-finished work. Without this skip, the done children's
+  // start=0 would pull the parent's start back to 0 and the bar would
+  // visually span the entire timeline.
+  const doneMarkers = new Set<NodeId>();
+
   for (const node of queue) {
     if (node.childrenIds.length > 0) continue;
 
@@ -406,6 +415,7 @@ export function schedule(
         computedEnd: projectStartDay,
         duration: 0,
       });
+      doneMarkers.add(node.id);
       continue;
     }
 
@@ -490,13 +500,19 @@ export function schedule(
   for (const parent of parentsBottomUp) {
     let minStart = Infinity;
     let maxEnd = -Infinity;
+    let hasActiveChild = false;
     for (const childId of parent.childrenIds) {
       const child = scheduled.get(childId);
       if (!child) continue;
+      // Skip done-marker children — completed work shouldn't pull the
+      // parent's bar back to the project anchor. If a parent has any
+      // todo/in-progress children, its bar should reflect THEIR span.
+      if (doneMarkers.has(childId)) continue;
+      hasActiveChild = true;
       if (child.computedStart < minStart) minStart = child.computedStart;
       if (child.computedEnd > maxEnd) maxEnd = child.computedEnd;
     }
-    if (minStart !== Infinity) {
+    if (hasActiveChild && minStart !== Infinity) {
       scheduled.set(parent.id, {
         nodeId: parent.id,
         computedStart: minStart,
@@ -504,13 +520,16 @@ export function schedule(
         duration: maxEnd - minStart,
       });
     } else {
-      // Parent with no scheduled children: collapse to project start.
+      // All children are done (or this parent has no scheduled children
+      // at all) — collapse to project start AND propagate marker status
+      // up the tree so a grandparent treats THIS parent as done too.
       scheduled.set(parent.id, {
         nodeId: parent.id,
         computedStart: projectStartDay,
         computedEnd: projectStartDay,
         duration: 0,
       });
+      doneMarkers.add(parent.id);
     }
   }
 

@@ -561,6 +561,100 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('c')!.computedEnd).toBe(1);
   });
 
+  it('mixed parent rollup skips done children, reflects only outstanding work', () => {
+    // Parent with one done child + one todo child. The bar should reflect
+    // the TODO work's span, not "starts at 0 because some child is done."
+    const parent = makeNode({ id: 'p', childrenIds: ['done_c', 'todo_c'] });
+    const doneChild = makeNode({
+      id: 'done_c',
+      parentId: 'p',
+      priority: 'P0',
+      effortEstimate: 5,
+      percentComplete: 100,
+    });
+    const todoChild = makeNode({
+      id: 'todo_c',
+      parentId: 'p',
+      priority: 'P1',
+      effortEstimate: 3,
+    });
+    const result = schedule([parent, doneChild, todoChild]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // Done child is marker at 0..0; todo child runs at 0..3.
+    expect(byId.get('done_c')!.computedStart).toBe(0);
+    expect(byId.get('done_c')!.computedEnd).toBe(0);
+    expect(byId.get('todo_c')!.computedStart).toBe(0);
+    expect(byId.get('todo_c')!.computedEnd).toBe(3);
+    // Parent rollup: ignore the done child, use only the todo child →
+    // span 0..3 (NOT 0..3 because of "min(0, 0) = 0" coincidence; what
+    // matters is the SOURCE of the rollup, verified by the next test).
+    expect(byId.get('p')!.computedStart).toBe(0);
+    expect(byId.get('p')!.computedEnd).toBe(3);
+  });
+
+  it('mixed parent with done child + LATE todo child: parent.start follows the todo', () => {
+    // Parent's todo child is pushed forward by an external blocker.
+    // Without the done-skip rollup, parent.start would be 0 (from the
+    // done child). With the skip, parent.start matches the todo child's
+    // actual start.
+    const blocker = makeNode({ id: 'blocker', priority: 'P0', effortEstimate: 5 });
+    const parent = makeNode({ id: 'p', childrenIds: ['done_c', 'todo_c'] });
+    const doneChild = makeNode({
+      id: 'done_c',
+      parentId: 'p',
+      priority: 'P0',
+      effortEstimate: 1,
+      percentComplete: 100,
+    });
+    const todoChild = makeNode({
+      id: 'todo_c',
+      parentId: 'p',
+      priority: 'P1',
+      effortEstimate: 2,
+      dependencies: [{ targetNodeId: 'blocker', type: 'FS', lag: 0 }],
+    });
+    const result = schedule([blocker, parent, doneChild, todoChild]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    // blocker at 0..5, done_c marker at 0..0, todo_c at 5..7.
+    expect(byId.get('todo_c')!.computedStart).toBe(5);
+    expect(byId.get('todo_c')!.computedEnd).toBe(7);
+    // Parent rollup ignores done_c (would have pulled start to 0),
+    // uses only todo_c → 5..7. Pre-fix this would have been 0..7.
+    expect(byId.get('p')!.computedStart).toBe(5);
+    expect(byId.get('p')!.computedEnd).toBe(7);
+  });
+
+  it('parent whose ALL children are done collapses to marker AND propagates up', () => {
+    // Grandparent → parent → 2 done children. Parent has no active work,
+    // so it becomes a marker too. Grandparent should treat parent as done
+    // (skip it in its own rollup) — if grandparent ALSO has no other
+    // active children, it likewise collapses.
+    const gp = makeNode({ id: 'gp', childrenIds: ['p'] });
+    const parent = makeNode({
+      id: 'p',
+      parentId: 'gp',
+      childrenIds: ['c1', 'c2'],
+    });
+    const c1 = makeNode({
+      id: 'c1',
+      parentId: 'p',
+      effortEstimate: 1,
+      percentComplete: 100,
+    });
+    const c2 = makeNode({
+      id: 'c2',
+      parentId: 'p',
+      effortEstimate: 1,
+      percentComplete: 100,
+    });
+    const result = schedule([gp, parent, c1, c2]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('p')!.computedStart).toBe(0);
+    expect(byId.get('p')!.computedEnd).toBe(0);
+    expect(byId.get('gp')!.computedStart).toBe(0);
+    expect(byId.get('gp')!.computedEnd).toBe(0);
+  });
+
   it('workerCount=1 is identical to default (serial regression)', () => {
     const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 2 });
     const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 3 });
