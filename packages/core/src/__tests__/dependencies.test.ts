@@ -515,6 +515,52 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('c')!.computedEnd).toBe(5);
   });
 
+  it('done leaves are pinned at projectStartDay and do not consume cursor', () => {
+    // A is done with effort 3. B is todo with effort 2.
+    // A should pin to 0..0 (zero-width marker), B should still start at 0
+    // (cursor wasn't advanced by A).
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: 3,
+      percentComplete: 100,
+    });
+    const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 2 });
+    const result = schedule([a, b]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(0);
+    expect(byId.get('a')!.duration).toBe(0);
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(2);
+  });
+
+  it('done leaf with null effort also collapses to zero-width at start', () => {
+    // The #213-followup / #132-PR case: done + no estimate. Used to
+    // pile up at whatever cursor position they hit; now they collapse.
+    const a = makeNode({
+      id: 'a',
+      priority: 'P0',
+      effortEstimate: null,
+      percentComplete: 100,
+    });
+    const b = makeNode({
+      id: 'b',
+      priority: 'P0',
+      effortEstimate: null,
+      percentComplete: 100,
+    });
+    const c = makeNode({ id: 'c', priority: 'P1', effortEstimate: 1 });
+    const result = schedule([a, b, c]);
+    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedStart).toBe(0);
+    expect(byId.get('a')!.computedEnd).toBe(0);
+    expect(byId.get('b')!.computedStart).toBe(0);
+    expect(byId.get('b')!.computedEnd).toBe(0);
+    expect(byId.get('c')!.computedStart).toBe(0);
+    expect(byId.get('c')!.computedEnd).toBe(1);
+  });
+
   it('workerCount=1 is identical to default (serial regression)', () => {
     const a = makeNode({ id: 'a', priority: 'P0', effortEstimate: 2 });
     const b = makeNode({ id: 'b', priority: 'P1', effortEstimate: 3 });
