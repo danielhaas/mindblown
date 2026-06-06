@@ -281,6 +281,16 @@ export function GanttView() {
   const [workersInput, setWorkersInput] = useState<number>(1);
   const [savingWorkers, setSavingWorkers] = useState(false);
   const [showBehindOnly, setShowBehindOnly] = useState(false);
+  // Hide done items from the Gantt — persisted per-user in localStorage so
+  // the choice survives page refresh and tab switches.
+  const [hideDone, setHideDone] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem('mindblown_gantt_hide_done') === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('mindblown_gantt_hide_done', hideDone ? '1' : '0');
+  }, [hideDone]);
   const [taskListWidth, setTaskListWidth] = useState<number>(() => {
     const raw = typeof window !== 'undefined' ? window.localStorage.getItem(TASK_WIDTH_STORAGE_KEY) : null;
     const n = raw ? parseInt(raw, 10) : NaN;
@@ -459,6 +469,11 @@ export function GanttView() {
         for (const cid of node.childrenIds) walk(cid, depth);
         return;
       }
+      // Hide done items — both done leaves AND parents whose subtree is
+      // entirely done (percentComplete >= 100 propagates via rollup).
+      if (hideDone && (node.percentComplete ?? 0) >= 100) {
+        return;
+      }
       const hasChildren = node.childrenIds.length > 0;
       const isExpanded = !collapsedSet.has(nodeId);
       result.push({
@@ -480,6 +495,7 @@ export function GanttView() {
     activeVersionFilter,
     activeCycleFilter,
     showBehindOnly,
+    hideDone,
     computed,
   ]);
 
@@ -1074,6 +1090,30 @@ export function GanttView() {
             ✓ {savedFlash}
           </span>
         )}
+
+        {/* Hide done toggle */}
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+        <button
+          onClick={() => setHideDone((v) => !v)}
+          title={
+            hideDone
+              ? 'Showing only active work. Click to include done items.'
+              : 'Showing all rows. Click to hide done items.'
+          }
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #e2e8f0',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: 'pointer',
+            background: hideDone ? '#4f46e5' : '#fff',
+            color: hideDone ? '#fff' : '#475569',
+          }}
+        >
+          {hideDone ? 'Hide done ✓' : 'Hide done'}
+        </button>
 
         {/* Baseline selector */}
         {baselines.length > 0 && (

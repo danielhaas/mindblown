@@ -125,6 +125,15 @@ export interface Node {
    */
   priorityRank: number | null;
 
+  /**
+   * ISO 8601 timestamp of when this node was marked done. Set when status
+   * transitions into a 'done' workflow category OR percentComplete hits 100;
+   * cleared when either un-dones. Used by the Gantt scheduler to position
+   * done bars at their actual close date in the past.
+   * null = either not done, or done before the column existed (no history).
+   */
+  completedAt: string | null;
+
   // ── Orchestration substrate (#111) ────────────────────────────
 
   /**

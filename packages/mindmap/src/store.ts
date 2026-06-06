@@ -838,6 +838,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       externalLinks: [],
       autoProgress: 'off',
       priorityRank: null,
+    completedAt: null,
       // Orchestration substrate (#111)
       claimedBySession: null,
       claimedAt: null,

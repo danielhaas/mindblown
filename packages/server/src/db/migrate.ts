@@ -690,5 +690,42 @@ export async function runMigrations(): Promise<void> {
   // v0.16.1 is a no-op now that the column has been dropped; the marker
   // row stays in data_migrations as historical record.)
 
+  // ── nodes.completed_at (v0.17.6) ───────────────────────────────
+  // Timestamp of when a node was marked done. Written by updateNode on
+  // status→done category or percentComplete→100 transitions; cleared on
+  // un-done. Used by the Gantt to position done bars at real close dates.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ
+  `);
+
+  // One-shot backfill: for every currently-done node without a
+  // completedAt, derive a best-effort timestamp from history. Priority:
+  //   1. Latest change_event where field_name in ('status','percentComplete')
+  //   2. Fallback: the node's updated_at
+  // Items completed before the change_events table started getting
+  // populated (or by bulk imports that bypass updateNode) land at
+  // updated_at — imperfect but past, which is the point.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'backfill_completed_at_v1') THEN
+        UPDATE nodes n
+        SET completed_at = COALESCE(
+          (
+            SELECT MAX(ce.created_at) FROM change_events ce
+            WHERE ce.node_id = n.id
+              AND ce.event_type = 'node.field_changed'
+              AND ce.field_name IN ('status', 'percentComplete')
+          ),
+          n.updated_at
+        )
+        WHERE n.percent_complete >= 100
+          AND n.completed_at IS NULL
+          AND n.deleted_at IS NULL;
+        INSERT INTO data_migrations (id) VALUES ('backfill_completed_at_v1');
+      END IF;
+    END $$;
+  `);
+
   console.log('[db] Migrations complete.');
 }

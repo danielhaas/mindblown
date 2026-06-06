@@ -36,6 +36,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     externalLinks: [],
     autoProgress: 'off',
     priorityRank: null,
+    completedAt: null,
     // Orchestration substrate (#111)
     claimedBySession: null,
     claimedAt: null,
