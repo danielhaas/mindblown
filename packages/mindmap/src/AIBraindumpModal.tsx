@@ -2,53 +2,13 @@ import { useState, useCallback } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { BraindumpNode } from './api.js';
+import { flatten, updateAt, removeAt, countNodes } from './mobile/braindumpTree.js';
 
 interface Props {
   mapId: string;
   parentId: string;
   parentText: string;
   onClose: () => void;
-}
-
-type FlatRow = {
-  path: number[]; // indices from the root of `tree` down to this node
-  depth: number;
-  node: BraindumpNode;
-};
-
-function flatten(tree: BraindumpNode[], parentPath: number[] = []): FlatRow[] {
-  const rows: FlatRow[] = [];
-  tree.forEach((node, i) => {
-    const path = [...parentPath, i];
-    rows.push({ path, depth: parentPath.length, node });
-    if (node.children.length > 0) rows.push(...flatten(node.children, path));
-  });
-  return rows;
-}
-
-/** Immutably update a node at `path` within `tree` using `updater`. */
-function updateAt(
-  tree: BraindumpNode[],
-  path: number[],
-  updater: (n: BraindumpNode) => BraindumpNode,
-): BraindumpNode[] {
-  return tree.map((n, i) => {
-    if (i !== path[0]) return n;
-    if (path.length === 1) return updater(n);
-    return { ...n, children: updateAt(n.children, path.slice(1), updater) };
-  });
-}
-
-/** Remove the node at `path` from `tree`. */
-function removeAt(tree: BraindumpNode[], path: number[]): BraindumpNode[] {
-  if (path.length === 1) return tree.filter((_, i) => i !== path[0]);
-  return tree.map((n, i) =>
-    i === path[0] ? { ...n, children: removeAt(n.children, path.slice(1)) } : n,
-  );
-}
-
-function countNodes(tree: BraindumpNode[]): number {
-  return tree.reduce((acc, n) => acc + 1 + countNodes(n.children), 0);
 }
 
 export function AIBraindumpModal({ mapId, parentId, parentText, onClose }: Props) {

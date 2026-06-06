@@ -2,11 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#4f46e5" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icon-180.png" />
     <title>MindBlown</title>
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body, #root { width: 100%; height: 100%; overflow: hidden; }
+      html, body, #root { width: 100%; height: 100%; }
+      body:not(.mobile) { overflow: hidden; }
+      body:not(.mobile) #root { overflow: hidden; }
+      body.mobile, body.mobile #root {
+        overflow: auto;
+        min-height: 100dvh;
+        height: auto;
+      }
       body {
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
           'Helvetica Neue', Arial, sans-serif;
