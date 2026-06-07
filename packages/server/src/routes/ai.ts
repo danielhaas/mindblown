@@ -1046,6 +1046,14 @@ Title: "${targetText}"`;
       .map((c) => `  [${tags.get(c.id)}] ${c.text}`)
       .join('\n');
 
+    // When the fanout is wide, the model has a tendency to propose 2-3
+    // small "safe" groups and leave the rest. The "Prefer fewer, bigger
+    // groups" rule below pushes it to actually consolidate.
+    const aggressiveHint =
+      children.length >= 20
+        ? `\n- This subtree has ${children.length} children — prefer FEWER, LARGER groups (5–8 members each) over many small ones, and aim to cover as many siblings as possible across all groups.`
+        : '';
+
     const systemPrompt = `You are a project structure reviewer. You look at a parent node and its direct children, and you propose groupings when the children would be easier to read with intermediate category nodes.
 
 Rules:
@@ -1056,7 +1064,7 @@ Rules:
 - "summary" is one sentence on the overall structure (e.g. "Looks well-organized" or "Five children are clearly Backend tasks; the rest are unrelated")
 - Only propose a group if ≥3 children share an obvious theme — small groups add noise
 - A child must not appear in more than one group
-- Do NOT propose any groups if the children are already balanced (≤6 total, or each clearly distinct)
+- Do NOT propose any groups if the children are already balanced (≤6 total, or each clearly distinct)${aggressiveHint}
 - No preamble, no markdown fences, no explanation outside the JSON`;
 
     const userPrompt = `Project: ${mapDetail.map.name}

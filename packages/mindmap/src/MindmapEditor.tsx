@@ -1435,6 +1435,19 @@ export function MindmapEditor() {
                   hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
                   isGithubInbox={ln.id === currentMap?.githubInboxNodeId}
                   hasConflict={conflictNodeIds.has(ln.id)}
+                  wideFanoutCount={
+                    // Offer grouping help once the fanout is past the wrap
+                    // threshold (>7). Lower than the refine endpoint's hard
+                    // floor (≥4) on purpose — the endpoint is conservative
+                    // about tiny subtrees, but the warning earns its place
+                    // as soon as the layout starts column-wrapping.
+                    nodeData.childrenIds.length >= 8 && !nodeData.collapsed
+                      ? nodeData.childrenIds.length
+                      : undefined
+                  }
+                  onRefineClick={() =>
+                    setRefine({ parentId: ln.id, parentText: nodeData.text })
+                  }
                   onContextMenu={(e) => {
                     e.preventDefault();
                     e.stopPropagation();

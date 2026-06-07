@@ -241,6 +241,15 @@ interface MindmapNodeProps {
    * in-flight (claimed / in_progress) node's scopes (#111).
    */
   hasConflict?: boolean;
+  /**
+   * When set, render a small indigo badge on the top-left signalling
+   * that the node has more children than is comfortable to read at a
+   * glance, and clicking it should offer an AI grouping pass.
+   * Editor sets this from `nodeData.childrenIds.length` once it's past
+   * the threshold; the click handler opens RefineModal.
+   */
+  wideFanoutCount?: number;
+  onRefineClick?: () => void;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
   onTextChange: (text: string) => void;
@@ -262,6 +271,8 @@ export function MindmapNode({
   hiddenDescendantCount = 0,
   isGithubInbox = false,
   hasConflict = false,
+  wideFanoutCount,
+  onRefineClick,
   onSelect,
   onDoubleClick,
   onTextChange,
@@ -506,6 +517,44 @@ export function MindmapNode({
             size={11}
             color={githubLink.syncEnabled ? '#1f2937' : '#9ca3af'}
           />
+        </g>
+      )}
+
+      {/* Wide-fanout warning — small clickable badge on the top-left
+          that opens the Refine Structure modal. Only renders when the
+          editor explicitly sets wideFanoutCount past the threshold. */}
+      {wideFanoutCount != null && wideFanoutCount > 0 && (
+        <g
+          style={{ cursor: 'pointer' }}
+          onMouseDown={(e) => e.stopPropagation()}
+          onClick={(e) => {
+            e.stopPropagation();
+            onRefineClick?.();
+          }}
+        >
+          <title>
+            {wideFanoutCount} children — click for grouping suggestions
+          </title>
+          <circle
+            cx={x + 8}
+            cy={y + 8}
+            r={7}
+            fill="#eef2ff"
+            stroke="#6366f1"
+            strokeWidth={1}
+          />
+          <text
+            x={x + 8}
+            y={y + 8}
+            textAnchor="middle"
+            dominantBaseline="central"
+            fontSize={9}
+            fontWeight={700}
+            fill="#4338ca"
+            style={{ pointerEvents: 'none', userSelect: 'none' }}
+          >
+            ⋯
+          </text>
         </g>
       )}
 
