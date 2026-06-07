@@ -9,6 +9,7 @@ import { CursorPresence } from './CursorPresence.js';
 import { PresenceBar } from './PresenceBar.js';
 import { AIBreakdownModal } from './AIBreakdownModal.js';
 import { RefineModal } from './RefineModal.js';
+import { DeepRefineModal } from './DeepRefineModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { exportPNG } from './ImportExport.js';
 import type { LayoutNode } from './layout.js';
@@ -294,6 +295,7 @@ export function MindmapEditor() {
   const [aiBreakdown, setAiBreakdown] = useState<{ nodeId: string; nodeText: string } | null>(null);
   const [aiBraindump, setAiBraindump] = useState<{ parentId: string; parentText: string } | null>(null);
   const [refine, setRefine] = useState<{ parentId: string; parentText: string } | null>(null);
+  const [deepRefine, setDeepRefine] = useState<{ rootId: string; rootText: string } | null>(null);
 
   // ── Cursor presence: throttled send ──────────────────────────
   const lastCursorSend = useRef(0);
@@ -1741,6 +1743,20 @@ export function MindmapEditor() {
                 Review structure…
               </button>
             )}
+            {(nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
+              <button
+                style={{ ...ctxMenuItemStyle, color: '#6366f1' }}
+                onMouseEnter={(e) => (e.currentTarget.style.background = '#eef2ff')}
+                onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                onClick={() => {
+                  const node = nodes[contextMenu.nodeId];
+                  setDeepRefine({ rootId: contextMenu.nodeId, rootText: node?.text ?? '' });
+                  setContextMenu(null);
+                }}
+              >
+                Deep refine subtree…
+              </button>
+            )}
             <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
             <button
               style={ctxMenuItemStyle}
@@ -1797,6 +1813,16 @@ export function MindmapEditor() {
           parentId={refine.parentId}
           parentText={refine.parentText}
           onClose={() => setRefine(null)}
+        />
+      )}
+
+      {/* Deep refine modal (whole subtree) */}
+      {deepRefine && currentMapId && (
+        <DeepRefineModal
+          mapId={currentMapId}
+          rootId={deepRefine.rootId}
+          rootText={deepRefine.rootText}
+          onClose={() => setDeepRefine(null)}
         />
       )}
 
