@@ -1,7 +1,7 @@
 {
   "name": "MindBlown",
   "short_name": "MindBlown",
-  "description": "Mindmap-based project management. Capture ideas, let AI turn them into trees of tasks.",
+  "description": "Mindmap-based project management — read-only mobile companion to the desktop app.",
   "start_url": "/?m=1",
   "scope": "/",
   "display": "standalone",
@@ -11,15 +11,5 @@
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
-  ],
-  "share_target": {
-    "action": "/?m=1",
-    "method": "GET",
-    "enctype": "application/x-www-form-urlencoded",
-    "params": {
-      "title": "title",
-      "text": "text",
-      "url": "url"
-    }
-  }
+  ]
 }

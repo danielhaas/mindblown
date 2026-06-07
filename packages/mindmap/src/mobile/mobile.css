@@ -286,6 +286,369 @@ body.mobile {
   flex-shrink: 0;
 }
 
+/* ── View tabs ─────────────────────────────────────────────── */
+
+.mb-view-tabs {
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.mb-view-tab {
+  flex: 1;
+  background: none;
+  border: none;
+  padding: 12px 8px;
+  font-size: 13px;
+  color: #64748b;
+  border-bottom: 2px solid transparent;
+  min-height: 44px;
+  white-space: nowrap;
+}
+
+.mb-view-tab[aria-selected='true'] {
+  color: #4f46e5;
+  border-bottom-color: #4f46e5;
+  font-weight: 600;
+}
+
+.mb-view-refresh {
+  background: none;
+  border: none;
+  color: #4f46e5;
+  font-size: 18px;
+  padding: 0 14px;
+  min-height: 44px;
+}
+
+/* ── Filter chips ──────────────────────────────────────────── */
+
+.mb-filter-row {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 6px;
+}
+
+.mb-filter-chip {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 13px;
+  color: #475569;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.mb-filter-chip[aria-pressed='true'] {
+  background: #eef2ff;
+  border-color: #c7d2fe;
+  color: #4338ca;
+  font-weight: 600;
+}
+
+.mb-filter-count {
+  background: #e2e8f0;
+  color: #475569;
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 11px;
+  line-height: 18px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.mb-filter-chip[aria-pressed='true'] .mb-filter-count {
+  background: #c7d2fe;
+  color: #3730a3;
+}
+
+/* ── List rows ─────────────────────────────────────────────── */
+
+.mb-list-row {
+  display: flex;
+  align-items: stretch;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px 12px;
+  text-align: left;
+  width: 100%;
+  gap: 10px;
+}
+
+.mb-list-priority {
+  width: 4px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  align-self: stretch;
+}
+
+.mb-list-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mb-list-text {
+  font-size: 14px;
+  color: #0f172a;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mb-list-meta {
+  font-size: 12px;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* ── Status pills ──────────────────────────────────────────── */
+
+.mb-status-pill {
+  display: inline-block;
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  line-height: 1.4;
+}
+
+.mb-status-pill-empty {
+  background: #f1f5f9;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+
+/* ── Detail sheet ──────────────────────────────────────────── */
+
+.mb-sheet-tall {
+  max-height: 92dvh;
+}
+
+.mb-detail-breadcrumb {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.mb-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 16px;
+}
+
+.mb-detail-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mb-detail-label {
+  font-size: 11px;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.mb-detail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.mb-detail-row-soft {
+  background: #f8fafc;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.mb-detail-chip {
+  background: #f1f5f9;
+  color: #475569;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+/* ── Kanban ────────────────────────────────────────────────── */
+
+.mb-kanban-cols {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  padding: 0 12px 12px;
+  overscroll-behavior-x: contain;
+}
+
+.mb-kanban-col {
+  flex: 0 0 85vw;
+  scroll-snap-align: start;
+  max-width: 360px;
+  background: #f1f5f9;
+  border-radius: 10px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 75dvh;
+}
+
+.mb-kanban-col-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  padding: 0 4px;
+}
+
+.mb-kanban-col-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.mb-kanban-card {
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 10px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* ── Gantt ─────────────────────────────────────────────────── */
+
+.mb-gantt-wrap {
+  display: flex;
+  overflow: hidden;
+  border-top: 1px solid #e2e8f0;
+}
+
+.mb-gantt-rows-col {
+  width: 38%;
+  min-width: 130px;
+  max-width: 200px;
+  flex-shrink: 0;
+  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  overflow-y: hidden;
+}
+
+.mb-gantt-timeline-col {
+  flex: 1;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.mb-gantt-scroll {
+  display: flex;
+  flex-direction: column;
+}
+
+.mb-gantt-row-label {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  font-size: 13px;
+  border-bottom: 1px solid #f1f5f9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mb-gantt-row-track {
+  height: 36px;
+  border-bottom: 1px solid #f1f5f9;
+  position: relative;
+}
+
+.mb-gantt-bar {
+  position: absolute;
+  top: 8px;
+  height: 20px;
+  border-radius: 4px;
+  background: #c7d2fe;
+  cursor: pointer;
+}
+
+.mb-gantt-bar-fill {
+  background: #4f46e5;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.mb-gantt-today {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #ef4444;
+}
+
+.mb-gantt-month {
+  position: absolute;
+  top: 0;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: #64748b;
+  padding-left: 6px;
+  border-left: 1px solid #f1f5f9;
+}
+
+/* ── Mindmap ───────────────────────────────────────────────── */
+
+.mb-mindmap-wrap {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #f8fafc;
+  touch-action: none;
+  user-select: none;
+}
+
+.mb-mindmap-hint {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  background: rgba(15, 23, 42, 0.7);
+  color: #fff;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  z-index: 5;
+  pointer-events: none;
+}
+
 @media (max-width: 400px) {
   .mb-preview-row {
     flex-wrap: wrap;

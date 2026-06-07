@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
-import { MobileCreateMapSheet } from './MobileCreateMapSheet.js';
 
 interface Props {
   onPick: (m: MapSummary) => void;
@@ -23,7 +22,6 @@ function healthClass(h: string | null | undefined): string {
 export function MobileMapList({ onPick }: Props) {
   const [maps, setMaps] = useState<MapSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,21 +38,10 @@ export function MobileMapList({ onPick }: Props) {
     };
   }, []);
 
-  const createSheet = creating && (
-    <MobileCreateMapSheet
-      onClose={() => setCreating(false)}
-      onCreated={(m) => {
-        setCreating(false);
-        onPick(m);
-      }}
-    />
-  );
-
   if (error) {
     return (
       <div className="mb-body">
         <div className="mb-error">{error}</div>
-        {createSheet}
       </div>
     );
   }
@@ -73,12 +60,8 @@ export function MobileMapList({ onPick }: Props) {
     return (
       <div className="mb-body">
         <div style={{ color: '#64748b', textAlign: 'center', padding: 24 }}>
-          No maps yet. Start one to capture into.
+          No maps yet. Create one from the desktop app to view it here.
         </div>
-        <button className="mb-btn-primary" onClick={() => setCreating(true)}>
-          Create your first map
-        </button>
-        {createSheet}
       </div>
     );
   }
@@ -86,7 +69,7 @@ export function MobileMapList({ onPick }: Props) {
   return (
     <div className="mb-body">
       <div style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.04 }}>
-        Pick a map to capture into
+        Pick a map to view
       </div>
       {maps.map((m) => {
         const pct = Math.round((m.computedProgress ?? 0) * 100);
@@ -102,14 +85,6 @@ export function MobileMapList({ onPick }: Props) {
           </button>
         );
       })}
-      <button
-        className="mb-btn-secondary"
-        onClick={() => setCreating(true)}
-        style={{ marginTop: 4 }}
-      >
-        + New map
-      </button>
-      {createSheet}
     </div>
   );
 }
