@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { GroupProposal } from './api.js';
@@ -55,12 +55,23 @@ function collectWideSubtrees(
 }
 
 export function DeepRefineModal({ mapId, rootId, rootText, onClose }: Props) {
+  // Display-only subscription — used to render member names. Re-renders
+  // from this don't trigger refine calls (those are gated by the once-
+  // computed wideSubtrees below).
   const allNodes = useMindmapStore((s) => s.nodes);
   const loadMap = useMindmapStore((s) => s.loadMap);
 
-  const wideSubtrees = useMemo(
-    () => collectWideSubtrees(rootId, allNodes, WIDE_FANOUT_THRESHOLD),
-    [rootId, allNodes],
+  // CRITICAL: capture the wide-subtree list ONCE on mount. If we recompute
+  // on every store change, every WS broadcast during apply (each move
+  // mutates the nodes record) re-fires the effect below and queues
+  // duplicate refine_structure calls. That cascade swamps Ollama and
+  // blocks the apply endpoint behind a 100+-deep queue.
+  const [wideSubtrees] = useState(() =>
+    collectWideSubtrees(
+      rootId,
+      useMindmapStore.getState().nodes,
+      WIDE_FANOUT_THRESHOLD,
+    ),
   );
 
   const [subtrees, setSubtrees] = useState<SubtreeState[]>(() =>
@@ -143,7 +154,11 @@ export function DeepRefineModal({ mapId, rootId, rootText, onClose }: Props) {
     return () => {
       cancelledRef.current = true;
     };
-  }, [mapId, wideSubtrees]);
+    // wideSubtrees is intentionally stable (captured once on mount) — see
+    // the comment where it's declared. Including it in deps would be
+    // harmless given the stability but masks the intent.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapId]);
 
   const toggleAccepted = (parentId: string, idx: number) => {
     setAccepted((prev) => {
