@@ -18,20 +18,27 @@ export function RefineModal({ mapId, parentId, parentText, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [accepted, setAccepted] = useState<Set<number>>(new Set());
   const [labelOverrides, setLabelOverrides] = useState<Record<number, string>>({});
+  // After a successful apply we stash the totals so we can show what
+  // landed before kicking off the next round.
+  const [appliedToast, setAppliedToast] = useState<{ groups: number; moved: number } | null>(null);
 
   const nodes = useMindmapStore((s) => s.nodes);
   const loadMap = useMindmapStore((s) => s.loadMap);
 
-  useEffect(() => {
+  // Fetch (or re-fetch) proposals. Same body used on first open and after
+  // each apply so multi-round refinement just re-runs against the new
+  // state of the parent's children.
+  const fetchProposals = useCallback(() => {
     let cancelled = false;
     setLoading(true);
+    setError(null);
     api
       .aiRefineStructure(mapId, parentId)
       .then((res) => {
         if (cancelled) return;
         setProposals(res.proposals);
         setSummary(res.summary);
-        // Accept all by default — users skim and uncheck rather than tick-by-tick.
+        setLabelOverrides({});
         setAccepted(new Set(res.proposals.map((_, i) => i)));
       })
       .catch((err) => {
@@ -45,6 +52,10 @@ export function RefineModal({ mapId, parentId, parentText, onClose }: Props) {
       cancelled = true;
     };
   }, [mapId, parentId]);
+
+  useEffect(() => {
+    return fetchProposals();
+  }, [fetchProposals]);
 
   const toggle = (idx: number) => {
     setAccepted((prev) => {
@@ -74,14 +85,20 @@ export function RefineModal({ mapId, parentId, parentText, onClose }: Props) {
     setApplying(true);
     setError(null);
     try {
-      await api.aiRefineStructureApply(mapId, parentId, selected);
+      const result = await api.aiRefineStructureApply(mapId, parentId, selected);
+      // Surface what landed *before* the next round so the user sees the
+      // delta. The toast clears the next time fetchProposals resolves.
+      setAppliedToast({ groups: result.createdCount, moved: result.movedCount });
+      // Refresh the local map so wideFanoutCount on the parent updates,
+      // then kick off another round of refinement against the new state.
       await loadMap(mapId);
-      onClose();
+      fetchProposals();
     } catch (err: any) {
       setError(err.message || 'Failed to apply changes');
+    } finally {
       setApplying(false);
     }
-  }, [proposals, accepted, labelOverrides, mapId, parentId, loadMap, onClose]);
+  }, [proposals, accepted, labelOverrides, mapId, parentId, loadMap, fetchProposals]);
 
   const memberText = (id: string): string => {
     const n = nodes[id];
@@ -105,19 +122,27 @@ export function RefineModal({ mapId, parentId, parentText, onClose }: Props) {
         </div>
 
         <div style={bodyStyle}>
-          {loading && (
+          {appliedToast && (
+            <div style={toastStyle}>
+              ✓ Applied {appliedToast.groups} group{appliedToast.groups !== 1 ? 's' : ''} ({appliedToast.moved} moved). {loading ? 'Looking for more…' : ''}
+            </div>
+          )}
+
+          {loading && !appliedToast && (
             <div style={{ color: '#64748b', fontSize: 13, padding: '12px 0' }}>
               Analyzing children…
             </div>
           )}
 
-          {!loading && summary && (
+          {!loading && summary && proposals.length > 0 && (
             <div style={summaryStyle}>{summary}</div>
           )}
 
           {!loading && proposals.length === 0 && !error && (
             <div style={{ color: '#475569', fontSize: 13, padding: '8px 0' }}>
-              No grouping suggestions — the current structure looks fine.
+              {appliedToast
+                ? 'No further suggestions — structure looks balanced now.'
+                : 'No grouping suggestions — the current structure looks fine.'}
             </div>
           )}
 
@@ -175,7 +200,9 @@ export function RefineModal({ mapId, parentId, parentText, onClose }: Props) {
 
         <div style={footerStyle}>
           <div style={{ flex: 1 }} />
-          <button onClick={onClose} style={secondaryBtnStyle}>Cancel</button>
+          <button onClick={onClose} style={secondaryBtnStyle}>
+            {proposals.length === 0 && !loading ? 'Done' : 'Close'}
+          </button>
           {proposals.length > 0 && (
             <button
               onClick={apply}
@@ -246,6 +273,17 @@ const summaryStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: '8px 10px',
   marginBottom: 12,
+};
+
+const toastStyle: React.CSSProperties = {
+  fontSize: 12,
+  color: '#065f46',
+  background: '#d1fae5',
+  border: '1px solid #6ee7b7',
+  borderRadius: 6,
+  padding: '8px 10px',
+  marginBottom: 12,
+  fontWeight: 500,
 };
 
 const proposalStyle: React.CSSProperties = {

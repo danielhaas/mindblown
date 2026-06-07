@@ -1047,11 +1047,13 @@ Title: "${targetText}"`;
       .join('\n');
 
     // When the fanout is wide, the model has a tendency to propose 2-3
-    // small "safe" groups and leave the rest. The "Prefer fewer, bigger
-    // groups" rule below pushes it to actually consolidate.
+    // small "safe" groups and leave the rest. Two layered rules push it
+    // to consolidate more on the first pass: (1) prefer larger groups,
+    // (2) aim to cover ALL siblings, leaving items ungrouped only when
+    // they truly don't share a theme with anything else.
     const aggressiveHint =
-      children.length >= 20
-        ? `\n- This subtree has ${children.length} children — prefer FEWER, LARGER groups (5–8 members each) over many small ones, and aim to cover as many siblings as possible across all groups.`
+      children.length >= 15
+        ? `\n- This subtree has ${children.length} children — prefer FEWER, LARGER groups (5–8 members each) over many small ones.\n- Try to assign EVERY sibling to a group. Leave an item ungrouped only when it's genuinely standalone (no other sibling shares its theme). Producing 4-6 groups that cover 80%+ of the siblings is the target.`
         : '';
 
     const systemPrompt = `You are a project structure reviewer. You look at a parent node and its direct children, and you propose groupings when the children would be easier to read with intermediate category nodes.
@@ -1080,7 +1082,7 @@ Review the children and propose groupings.`;
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.3,
+        temperature: 0.2,
         maxTokens: 1024,
         jsonSchema: { name: 'refine_structure' },
       });
