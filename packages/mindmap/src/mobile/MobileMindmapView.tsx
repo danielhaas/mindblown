@@ -72,11 +72,15 @@ export function MobileMindmapView({ nodes, map, onSelect }: Props) {
     if (containerSize.w < 2 || containerSize.h < 2 || bounds.width === 0) {
       return { tx: 0, ty: 0, s: 1 };
     }
+    // Fit width with a legibility floor: even very deep trees stay readable
+    // by sacrificing horizontal fit (user can pan). Cap at 1 so small maps
+    // aren't upscaled awkwardly.
     const sx = (containerSize.w - PADDING * 2) / bounds.width;
-    const sy = (containerSize.h - PADDING * 2) / bounds.height;
-    const s = Math.min(sx, sy, 1);
+    const s = Math.max(0.35, Math.min(sx, 1));
+    // Horizontally center; vertically top-align so the root is visible
+    // immediately. User pans down to explore children.
     const tx = (containerSize.w - bounds.width * s) / 2 - bounds.minX * s;
-    const ty = (containerSize.h - bounds.height * s) / 2 - bounds.minY * s;
+    const ty = PADDING - bounds.minY * s;
     return { tx, ty, s };
   }, [containerSize, bounds]);
 
