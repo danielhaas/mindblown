@@ -46,8 +46,10 @@ import {
   listTriageDecisions,
   overrideTriageDecision,
   reclassifyTriageDecision,
+  runDriftAuditForMap,
   skipOrphanIssue,
   type BulkTriageItem,
+  type DriftAuditRunResponse,
   type NotInMindBlownBucket,
   type NotInMindBlownItem,
   type TriageDecision,
@@ -145,7 +147,50 @@ export function TriagePanel({
   const [notInMindBlownPickerItem, setNotInMindBlownPickerItem] =
     useState<NotInMindBlownItem | null>(null);
 
+  // Drift-audit trigger (manual companion to the daily sweep). The
+  // modal opens with a slider defaulted to the current orphan count;
+  // operator drops it for a sample run, leaves it for "do them all".
+  // `driftBusy` blocks repeat clicks; `driftResult` shows the post-run
+  // summary in the panel until the operator dismisses it.
+  const [driftModalOpen, setDriftModalOpen] = useState(false);
+  const [driftBusy, setDriftBusy] = useState(false);
+  const [driftError, setDriftError] = useState<string | null>(null);
+  const [driftResult, setDriftResult] = useState<DriftAuditRunResponse | null>(null);
+
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
+
+  // Run the drift audit with the operator-chosen max. On success we
+  // close the modal, surface the summary in a dismissible banner, and
+  // refresh the not-in-mindblown list so the orphans-just-processed
+  // disappear from the orphan bucket and show up as Placed / Pending
+  // skipped / Skipped depending on what Claude decided.
+  const runDriftAudit = useCallback(
+    async (max: number | undefined) => {
+      setDriftBusy(true);
+      setDriftError(null);
+      try {
+        const res = await runDriftAuditForMap(mapId, { max });
+        setDriftResult(res);
+        setDriftModalOpen(false);
+        // Pull the not-in-mindblown list fresh so the operator sees
+        // immediate movement out of the orphan bucket. The main triage
+        // list (Pending tab) will also have new rows; refreshTick
+        // covers both.
+        setRefreshTick((t) => t + 1);
+      } catch (err: unknown) {
+        const msg =
+          err instanceof ApiError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : 'Drift audit failed';
+        setDriftError(msg);
+      } finally {
+        setDriftBusy(false);
+      }
+    },
+    [mapId],
+  );
 
   // Clear selection when the view changes or after a bulk action.
   // Clearing on filter-change isn't necessary — filtered-out rows just
@@ -753,6 +798,16 @@ export function TriagePanel({
             onOrphanSkip={handleOrphanSkip}
             onReclassify={handleNotInMindBlownReclassify}
             onConfirmSkip={handleNotInMindBlownConfirmSkip}
+            orphanCount={notInMindBlownItems.filter((i) => i.kind === 'orphan').length}
+            driftBusy={driftBusy}
+            driftResult={driftResult}
+            driftError={driftError}
+            onOpenDriftAudit={() => {
+              setDriftError(null);
+              setDriftModalOpen(true);
+            }}
+            onDismissDriftResult={() => setDriftResult(null)}
+            onDismissDriftError={() => setDriftError(null)}
           />
         ) : loading ? (
           <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
@@ -843,6 +898,20 @@ export function TriagePanel({
           excludeNodeIds={[]}
           onPick={handleNotInMindBlownPickParent}
           onClose={() => setNotInMindBlownPickerItem(null)}
+        />
+      )}
+
+      {/* Drift-audit trigger modal */}
+      {driftModalOpen && (
+        <DriftAuditModal
+          orphanCount={notInMindBlownItems.filter((i) => i.kind === 'orphan').length}
+          busy={driftBusy}
+          error={driftError}
+          onCancel={() => {
+            setDriftModalOpen(false);
+            setDriftError(null);
+          }}
+          onConfirm={runDriftAudit}
         />
       )}
     </div>
@@ -1562,6 +1631,13 @@ function NotInMindBlownView({
   onOrphanSkip,
   onReclassify,
   onConfirmSkip,
+  orphanCount,
+  driftBusy,
+  driftResult,
+  driftError,
+  onOpenDriftAudit,
+  onDismissDriftResult,
+  onDismissDriftError,
 }: {
   loading: boolean;
   items: NotInMindBlownItem[];
@@ -1574,6 +1650,13 @@ function NotInMindBlownView({
   onOrphanSkip: (item: NotInMindBlownItem) => void;
   onReclassify: (item: NotInMindBlownItem) => void;
   onConfirmSkip: (item: NotInMindBlownItem) => void;
+  orphanCount: number;
+  driftBusy: boolean;
+  driftResult: DriftAuditRunResponse | null;
+  driftError: string | null;
+  onOpenDriftAudit: () => void;
+  onDismissDriftResult: () => void;
+  onDismissDriftError: () => void;
 }) {
   const filterButtons: Array<{ key: NotInMindBlownFilter; label: string; testId: string }> = [
     { key: 'all', label: 'All', testId: 'not-in-mindblown-filter-all' },
@@ -1631,6 +1714,122 @@ function NotInMindBlownView({
           }}
         >
           Orphan bucket unavailable: {orphansError ?? 'GitHub fetch failed'}
+        </div>
+      )}
+
+      {/* Drift-audit trigger row (only shown when orphans are visible
+          and at least one exists) */}
+      {orphansAvailable && orphanCount > 0 && (filter === 'all' || filter === 'orphan') && (
+        <div
+          data-testid="drift-audit-trigger-row"
+          style={{
+            padding: '10px 12px',
+            background: '#eff6ff',
+            borderBottom: '1px solid #dbeafe',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            fontSize: 11,
+            color: '#1e3a8a',
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            <strong>{orphanCount}</strong>{' '}
+            orphan{orphanCount === 1 ? '' : 's'} waiting. Run Claude on them
+            now instead of waiting for the daily sweep.
+          </span>
+          <button
+            data-testid="drift-audit-trigger-btn"
+            disabled={driftBusy}
+            onClick={onOpenDriftAudit}
+            style={{
+              padding: '5px 10px',
+              borderRadius: 6,
+              border: 'none',
+              background: driftBusy ? '#94a3b8' : '#2563eb',
+              color: '#fff',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: driftBusy ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {driftBusy ? 'Running…' : 'Run drift audit'}
+          </button>
+        </div>
+      )}
+
+      {/* Drift-audit result banner */}
+      {driftResult && (
+        <div
+          data-testid="drift-audit-result"
+          style={{
+            padding: '8px 12px',
+            background: '#dcfce7',
+            color: '#166534',
+            fontSize: 11,
+            borderBottom: '1px solid #bbf7d0',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>
+            Drift audit done. Processed <strong>{driftResult.counts.driftedIssues}</strong>{' '}
+            orphan{driftResult.counts.driftedIssues === 1 ? '' : 's'}:{' '}
+            <strong>{driftResult.counts.imported}</strong> imported,{' '}
+            <strong>{driftResult.counts.manualPending}</strong> manual{' '}
+            ({Math.round(driftResult.counts.elapsedMs / 1000)}s).
+          </span>
+          <button
+            onClick={onDismissDriftResult}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#166534',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              padding: 0,
+            }}
+            title="Dismiss"
+          >
+            x
+          </button>
+        </div>
+      )}
+
+      {/* Drift-audit error banner */}
+      {driftError && (
+        <div
+          data-testid="drift-audit-error"
+          style={{
+            padding: '8px 12px',
+            background: '#fee2e2',
+            color: '#991b1b',
+            fontSize: 11,
+            borderBottom: '1px solid #fecaca',
+            display: 'flex',
+            alignItems: 'flex-start',
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>Drift audit failed: {driftError}</span>
+          <button
+            onClick={onDismissDriftError}
+            style={{
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              color: '#991b1b',
+              fontFamily: 'inherit',
+              fontSize: 12,
+              padding: 0,
+            }}
+            title="Dismiss"
+          >
+            x
+          </button>
         </div>
       )}
 
@@ -1840,6 +2039,205 @@ function NotInMindBlownCard({
             onClick={onConfirmSkip}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// Cost per triage call in USD. Opus pricing: ~1500 input tokens +
+// ~200 output tokens at $15/$75 per M = $0.0375 input + $0.015 output ≈ $0.015.
+// Conservative; actuals depend on map context size + reason length.
+const TRIAGE_COST_USD_PER_ISSUE = 0.015;
+
+// Wall-clock estimate per triage call — measured in production on
+// Opus 4.7: ~3s LLM round-trip + ~1s ingest. Round up to 5s headroom
+// so the operator's slider-as-progress-bar isn't optimistic.
+const TRIAGE_SECONDS_PER_ISSUE = 5;
+
+function DriftAuditModal({
+  orphanCount,
+  busy,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  orphanCount: number;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (max: number | undefined) => void;
+}) {
+  // Slider clamped to [1, orphanCount]; defaults to all-of-them so the
+  // common case ("clean up the backlog") is one click.
+  const [max, setMax] = useState(orphanCount);
+
+  // Belt-and-braces: if the prop changes (modal reopened after a
+  // partial run shrank the backlog), re-seed the slider so we never
+  // submit a max > current orphan count.
+  useEffect(() => {
+    setMax(orphanCount);
+  }, [orphanCount]);
+
+  const clampedMax = Math.max(1, Math.min(orphanCount, max));
+  const costUsd = clampedMax * TRIAGE_COST_USD_PER_ISSUE;
+  const etaSec = clampedMax * TRIAGE_SECONDS_PER_ISSUE;
+  const etaText =
+    etaSec < 60
+      ? `~${etaSec}s`
+      : etaSec < 3600
+        ? `~${Math.round(etaSec / 60)}min`
+        : `~${(etaSec / 3600).toFixed(1)}h`;
+
+  return (
+    <div
+      data-testid="drift-audit-modal"
+      onClick={onCancel}
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(15, 23, 42, 0.5)',
+        zIndex: 1000,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#ffffff',
+          borderRadius: 8,
+          width: 420,
+          maxWidth: '92vw',
+          padding: 20,
+          boxShadow: '0 20px 40px rgba(15, 23, 42, 0.3)',
+          fontFamily: 'inherit',
+        }}
+      >
+        <h3 style={{ margin: 0, fontSize: 15, color: '#1e293b', fontWeight: 700 }}>
+          Run drift audit
+        </h3>
+        <p style={{ margin: '8px 0 16px', fontSize: 12, color: '#475569', lineHeight: 1.5 }}>
+          Runs Claude on each orphan in this batch. High-confidence
+          places land in MindBlown automatically; lower-confidence rows
+          go to Pending review.
+        </p>
+
+        <label
+          htmlFor="drift-audit-max"
+          style={{ display: 'block', fontSize: 11, color: '#475569', marginBottom: 6 }}
+        >
+          Issues to process:{' '}
+          <strong style={{ color: '#1e293b' }}>{clampedMax}</strong>{' '}
+          <span style={{ color: '#94a3b8' }}>(of {orphanCount} available)</span>
+        </label>
+        <input
+          id="drift-audit-max"
+          data-testid="drift-audit-slider"
+          type="range"
+          min={1}
+          max={orphanCount}
+          step={1}
+          value={clampedMax}
+          onChange={(e) => setMax(Number(e.target.value))}
+          disabled={busy}
+          style={{ width: '100%', accentColor: '#2563eb' }}
+        />
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            fontSize: 10,
+            color: '#94a3b8',
+            marginTop: 2,
+          }}
+        >
+          <span>1 (sample)</span>
+          <span>{orphanCount} (all)</span>
+        </div>
+
+        <div
+          style={{
+            marginTop: 14,
+            padding: '10px 12px',
+            background: '#f8fafc',
+            border: '1px solid #e2e8f0',
+            borderRadius: 6,
+            fontSize: 11,
+            color: '#475569',
+            display: 'flex',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>
+            Estimated cost:{' '}
+            <strong style={{ color: '#1e293b' }}>${costUsd.toFixed(2)}</strong>{' '}
+            <span style={{ color: '#94a3b8' }}>(Opus, ~1.5k tok/issue)</span>
+          </span>
+          <span>
+            ETA: <strong style={{ color: '#1e293b' }}>{etaText}</strong>
+          </span>
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 12,
+              padding: '8px 10px',
+              background: '#fee2e2',
+              color: '#991b1b',
+              borderRadius: 6,
+              fontSize: 11,
+            }}
+          >
+            {error}
+          </div>
+        )}
+
+        <div
+          style={{
+            marginTop: 16,
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 8,
+          }}
+        >
+          <button
+            data-testid="drift-audit-cancel"
+            onClick={onCancel}
+            disabled={busy}
+            style={{
+              padding: '6px 14px',
+              borderRadius: 6,
+              border: '1px solid #cbd5e1',
+              background: '#ffffff',
+              color: '#475569',
+              fontSize: 12,
+              cursor: busy ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            data-testid="drift-audit-confirm"
+            onClick={() => onConfirm(clampedMax)}
+            disabled={busy || orphanCount === 0}
+            style={{
+              padding: '6px 14px',
+              borderRadius: 6,
+              border: 'none',
+              background: busy ? '#94a3b8' : '#2563eb',
+              color: '#ffffff',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: busy || orphanCount === 0 ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {busy ? 'Running…' : `Run on ${clampedMax}`}
+          </button>
+        </div>
       </div>
     </div>
   );
