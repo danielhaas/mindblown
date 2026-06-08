@@ -360,7 +360,7 @@ Node to break down: "${targetNode.text}"`;
   // them into SSE, executes tool calls, and feeds results back as the
   // next-turn input. MAX_STEPS bounds runaway loops.
 
-  const MAX_STEPS = 6;
+  const MAX_STEPS = 12;
   // No provider event for this long → assume upstream is wedged, abort.
   // Generous because qwen2.5:14b on Ollama can take ~90s for tool-heavy turns.
   const TURN_WATCHDOG_MS = 120_000;
