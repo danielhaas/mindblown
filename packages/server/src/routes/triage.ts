@@ -2142,6 +2142,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             decision.decision === 'place'
               ? (decision.parentNodeId ?? null)
               : null;
+          // Cost-opt #142 (Ray review on #143): mirror single
+          // /reclassify exactly — clear the input-hash AND the
+          // per-issue debounce key so the next real `issues.edited`
+          // webhook re-evaluates against fresh content instead of
+          // short-circuiting on a stale hash compare. Without this,
+          // bulk-reclassify leaves the row with the new decision
+          // but masks subsequent edits from being re-evaluated.
           await db
             .update(triageDecisions)
             .set({
@@ -2154,9 +2161,11 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               reviewed: false,
               reviewedAt: null,
               reviewedBy: null,
+              lastInputHash: null,
               ...(clearPlacedNode ? { placedNodeId: null } : {}),
             })
             .where(eq(triageDecisions.id, row.id));
+          clearTriageDebounce(req.params.mapId, row.externalId);
           const newParent = clearPlacedNode
             ? null
             : decision.decision === 'place'
