@@ -9,13 +9,21 @@ interface WS {
   readyState: number;
   send(data: string): void;
   on(event: string, cb: (...args: unknown[]) => void): void;
+  ping(): void;
+  terminate(): void;
 }
 
 interface ConnectedClient {
   ws: WS;
   userId: string | null;
   userName: string | null;
+  /** Set true on every pong; cleared by the sweeper before each ping. A
+   * client that doesn't pong within one HEARTBEAT_INTERVAL_MS window is
+   * declared dead and force-closed via terminate(). */
+  isAlive: boolean;
 }
+
+const HEARTBEAT_INTERVAL_MS = 30_000;
 
 /**
  * Map of mapId -> Set of connected clients.
@@ -74,7 +82,10 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
         }
       }
 
-      const client: ConnectedClient = { ws, userId, userName };
+      const client: ConnectedClient = { ws, userId, userName, isAlive: true };
+      ws.on('pong', () => {
+        client.isAlive = true;
+      });
 
       // Join the room
       if (!rooms.has(mapId)) {
@@ -177,4 +188,34 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
       });
     },
   );
+
+  // Heartbeat sweeper. Without this, half-open TCP connections (browser
+  // tab killed, NAT dropped the flow, network changed) never fire `close`
+  // on the server side, and rooms accumulate ghost clients monotonically.
+  // Each broadcast then iterates every ghost and tries to write — wasted
+  // work that blocks the event loop. Observed in prod 2026-06-08:
+  // 511 connects vs 2 disconnects in 18 min → 256 ghosts in a single map.
+  //
+  // Pattern: mark dead → ping → next tick checks if pong arrived; if not,
+  // terminate (forces RST → `close` listener runs → room cleanup).
+  const sweeper = setInterval(() => {
+    for (const clients of rooms.values()) {
+      for (const client of clients) {
+        if (!client.isAlive) {
+          client.ws.terminate();
+          continue;
+        }
+        client.isAlive = false;
+        try {
+          client.ws.ping();
+        } catch {
+          client.ws.terminate();
+        }
+      }
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+
+  app.addHook('onClose', async () => {
+    clearInterval(sweeper);
+  });
 }
