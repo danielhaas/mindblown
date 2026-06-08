@@ -46,7 +46,15 @@ interface ChatMessage {
   content: string;
   toolCalls?: ChatToolCall[];
   /** Non-bubble status notice (rendered as a banner under the message). */
-  statusBanner?: { kind: 'error' | 'info'; text: string };
+  statusBanner?: {
+    kind: 'error' | 'info';
+    text: string;
+    /** Optional inline action — when present, renders a button next to the
+     * banner text. Click sends `payload` as the next user message. Used
+     * today for "Continue" on step-limit banners; generic so other banners
+     * can adopt the pattern (e.g. "Retry" on errors) without a type bump. */
+    action?: { label: string; payload: string };
+  };
 }
 
 interface Props {
@@ -326,7 +334,8 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
           case 'step_limit':
             banner = {
               kind: 'info',
-              text: `Stopped after ${event.maxSteps ?? 6} tool steps — ask a follow-up to continue.`,
+              text: `Stopped after ${event.maxSteps ?? 6} tool steps.`,
+              action: { label: 'Continue', payload: 'continue' },
             };
             flush();
             break;
@@ -490,7 +499,16 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
                   msg.statusBanner.kind === 'error' ? errorBannerStyle : infoBannerStyle
                 }
               >
-                {msg.statusBanner.text}
+                <span>{msg.statusBanner.text}</span>
+                {msg.statusBanner.action && (
+                  <button
+                    onClick={() => sendMessage(msg.statusBanner!.action!.payload)}
+                    disabled={loading}
+                    style={bannerActionBtnStyle}
+                  >
+                    {msg.statusBanner.action.label}
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -823,6 +841,9 @@ const errorBannerStyle: React.CSSProperties = {
   borderRadius: 6,
   fontSize: 12,
   maxWidth: '85%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
 };
 
 const infoBannerStyle: React.CSSProperties = {
@@ -834,6 +855,21 @@ const infoBannerStyle: React.CSSProperties = {
   borderRadius: 6,
   fontSize: 12,
   maxWidth: '85%',
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+};
+
+const bannerActionBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  background: '#854d0e',
+  color: '#fef9c3',
+  border: 'none',
+  borderRadius: 4,
+  fontSize: 11,
+  fontWeight: 600,
+  cursor: 'pointer',
+  flexShrink: 0,
 };
 
 const workingIndicatorStyle: React.CSSProperties = {
