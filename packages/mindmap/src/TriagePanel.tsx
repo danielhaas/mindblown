@@ -1790,11 +1790,19 @@ function NotInMindBlownView({
           }}
         >
           <span style={{ flex: 1 }}>
-            Drift audit done. Processed <strong>{driftResult.counts.driftedIssues}</strong>{' '}
-            orphan{driftResult.counts.driftedIssues === 1 ? '' : 's'}:{' '}
-            <strong>{driftResult.counts.imported}</strong> imported,{' '}
-            <strong>{driftResult.counts.manualPending}</strong> manual{' '}
-            ({Math.round(driftResult.counts.elapsedMs / 1000)}s).
+            Drift audit done in{' '}
+            {Math.round(driftResult.counts.elapsedMs / 1000)}s. Triaged{' '}
+            <strong>{driftResult.counts.triaged}</strong> orphan
+            {driftResult.counts.triaged === 1 ? '' : 's'}:{' '}
+            <strong>{driftResult.counts.placed}</strong> placed,{' '}
+            <strong>{driftResult.counts.skipped}</strong> skipped,{' '}
+            <strong>{driftResult.counts.uncertain}</strong> uncertain
+            {driftResult.counts.errored > 0
+              ? `, ${driftResult.counts.errored} errored`
+              : ''}
+            {driftResult.counts.queuedForNextRun > 0
+              ? `. ${driftResult.counts.queuedForNextRun} above cap — run again to clear.`
+              : '.'}
           </span>
           <button
             onClick={onDismissDriftResult}
