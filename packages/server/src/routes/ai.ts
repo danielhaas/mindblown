@@ -486,9 +486,23 @@ Node to break down: "${targetNode.text}"`;
           ? `Keep calling tools until the user's request is fully done — only stop when there is nothing left to do or the next action is genuinely ambiguous. Do NOT pause after each call to confirm; the user does not want to type "continue" between every step. When the same action applies to many nodes, ALWAYS prefer the bulk_* tool (bulk_create_nodes, bulk_update_nodes, bulk_set_estimate, bulk_set_progress) over per-node calls — one bulk call handles N items in a single round trip. End with one short summary sentence after all the work is done, not before.`
           : `One tool call per message. Confirm what you did in one short English sentence.`;
 
+      // In-context demonstrations beat instructions: if the conversation
+      // contains earlier turns where the assistant stopped after each call,
+      // the model imitates that pattern even when the system prompt says
+      // otherwise. Issue an explicit "disregard the prior cadence" directive
+      // when there's history to disregard. Only relevant on Anthropic, since
+      // Ollama is still meant to single-step.
+      const priorAssistantTurns = body.messages.filter(
+        (m) => m.role === 'assistant',
+      ).length;
+      const historyOverride =
+        provider.name === 'anthropic' && priorAssistantTurns > 0
+          ? `\n\nIMPORTANT: Earlier turns in this conversation followed a one-step-then-confirm pattern. That constraint has been lifted — do not imitate it. Chain all needed tool calls in this turn and only summarize once at the very end.`
+          : '';
+
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
-${pacingRules}
+${pacingRules}${historyOverride}
 
 mapId = "${body.mapId}"
 
