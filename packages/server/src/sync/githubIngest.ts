@@ -54,6 +54,9 @@ import { applyTriageLabel } from './triageLabelWriteback.js';
 import {
   triageIssue,
   TRIAGE_AUTO_APPLY_CONFIDENCE,
+  computeInputHash,
+  isWithinDebounceWindow,
+  markTriageDebounce,
   type TriageDecision,
 } from './triage.js';
 
@@ -75,7 +78,13 @@ export interface IngestResult {
     | 'skipped_closed_outside_window'
     | 'triaged_skip'
     | 'triaged_uncertain'
-    | 'triaged_low_confidence';
+    | 'triaged_low_confidence'
+    // #142 cost-opt short-circuits — all three skip the LLM call but
+    // still update decided_at on the existing row (so dashboards can
+    // tell "we re-checked, same outcome" apart from "stale row").
+    | 'triaged_hash_match'
+    | 'triaged_debounced'
+    | 'metadata_only_skipped';
   nodeId?: string;
   mapId: string;
   /**
@@ -407,6 +416,31 @@ async function ensureNodeForIssueViaTriage(
   ctx: IngestContext,
   externalId: string,
 ): Promise<IngestResult> {
+  // ── Cost-opt #142 layer 2: per-issue debounce ─────────────────
+  // If the same (mapId, externalId) was triaged inside the debounce
+  // window (default 60 s), short-circuit BEFORE the precheck tx +
+  // LLM call. This catches burst webhook deliveries (the GitHub
+  // label-bot fires multiple `issues.edited` events in a second when
+  // multiple labels change at once) and is the cheapest layer to
+  // hit — no DB I/O at all. Hash-match (layer 3) still runs when
+  // the window expires; the two layers work together to keep
+  // long-running churn cheap.
+  //
+  // Debounced calls never touch the DB, so we don't bump decided_at
+  // here either — the LLM wasn't re-evaluated. The dashboard's "last
+  // re-checked at" remains the prior call's timestamp, which is the
+  // honest answer.
+  if (isWithinDebounceWindow(mapId, externalId)) {
+    return { status: 'triaged_debounced', mapId };
+  }
+
+  // Pre-compute the canonical input hash for cost-opt #142 layer 3
+  // (body-hash idempotency). We pass this into the precheck tx so the
+  // hash comparison shares the advisory lock — a concurrent winner
+  // whose hash equals this one (e.g. catchup re-running the same
+  // issue) will have committed last_input_hash before we read it.
+  const incomingHash = computeInputHash(issue);
+
   // ── Race-safety prelude (mindblown#99 fix 1) ────────────────────
   // We do *two* things inside a transaction BEFORE paying for an LLM
   // call:
@@ -426,6 +460,8 @@ async function ensureNodeForIssueViaTriage(
   type PrecheckResult =
     | { kind: 'exists'; nodeId: string }
     | { kind: 'operator_reviewed'; decisionId: string; nodeId: string | null;
+        decision: TriageDecision['decision']; confidence: number }
+    | { kind: 'hash_match'; decisionId: string; nodeId: string | null;
         decision: TriageDecision['decision']; confidence: number }
     | { kind: 'proceed' };
   const precheck: PrecheckResult = await db.transaction(async (tx) => {
@@ -453,6 +489,7 @@ async function ensureNodeForIssueViaTriage(
         decision: triageDecisions.decision,
         confidence: triageDecisions.confidence,
         placedNodeId: triageDecisions.placedNodeId,
+        lastInputHash: triageDecisions.lastInputHash,
       })
       .from(triageDecisions)
       .where(
@@ -474,11 +511,71 @@ async function ensureNodeForIssueViaTriage(
         confidence: existingDecision.confidence as number,
       };
     }
+
+    // (c) Body-hash idempotency (#142 layer 3). If a prior row exists
+    // for this (mapId, externalId) AND its stored hash matches the
+    // incoming one, the inputs that drive a triage decision haven't
+    // changed since last time — skip the LLM call, bump decided_at
+    // only (to record "we re-checked at T, same outcome"). First-
+    // time triage (no row) and rows with NULL hash (lazy-migrated
+    // legacy rows) fall through to the LLM call so the column
+    // populates on the next pass.
+    if (
+      existingDecision &&
+      typeof existingDecision.lastInputHash === 'string' &&
+      existingDecision.lastInputHash === incomingHash
+    ) {
+      const decisionId = existingDecision.id as string;
+      // Bump decided_at inside the same tx so the timestamp is
+      // visible to the next ingest under the lock. We don't touch
+      // decision/confidence/placedNodeId — the existing values are
+      // by definition still authoritative.
+      await tx
+        .update(triageDecisions)
+        .set({ decidedAt: new Date() })
+        .where(eq(triageDecisions.id, decisionId));
+      return {
+        kind: 'hash_match',
+        decisionId,
+        nodeId: (existingDecision.placedNodeId as string | null) ?? null,
+        decision: existingDecision.decision as TriageDecision['decision'],
+        confidence: existingDecision.confidence as number,
+      };
+    }
     return { kind: 'proceed' };
   });
 
   if (precheck.kind === 'exists') {
     return { status: 'skipped_exists', nodeId: precheck.nodeId, mapId };
+  }
+  if (precheck.kind === 'hash_match') {
+    // Hash-match short-circuit (#142 layer 3). Stamp the debounce so
+    // a burst of identical-payload webhooks rides on this single
+    // decision for the next debounce window. Map to the same
+    // status code the original decision would have produced; the
+    // dashboard treats hash-matches as "we re-checked, same answer".
+    markTriageDebounce(mapId, externalId);
+    if (precheck.decision === 'place' && precheck.nodeId) {
+      return {
+        status: 'triaged_hash_match',
+        nodeId: precheck.nodeId,
+        mapId,
+        triage: {
+          decisionId: precheck.decisionId,
+          decision: precheck.decision,
+          confidence: precheck.confidence,
+        },
+      };
+    }
+    return {
+      status: 'triaged_hash_match',
+      mapId,
+      triage: {
+        decisionId: precheck.decisionId,
+        decision: precheck.decision,
+        confidence: precheck.confidence,
+      },
+    };
   }
   if (precheck.kind === 'operator_reviewed') {
     // Treat operator-reviewed rows as authoritative. Map the persisted
@@ -668,6 +765,15 @@ async function ensureNodeForIssueViaTriage(
     const suggestedParentNodeId =
       decision.decision === 'place' ? (decision.parentNodeId ?? null) : null;
 
+    // Persist the canonical input hash so the next webhook can short-
+    // circuit via the hash-match precheck (#142 layer 3). We DON'T
+    // write the hash on triage_error so a transient LLM failure can
+    // be retried on the next webhook — locking in the hash would
+    // mean a 500 from Anthropic permanently muted re-triage for an
+    // unchanged issue, which is the opposite of what we want.
+    const isTriageError = decision.reason.startsWith('triage_error');
+    const nextInputHash: string | null = isTriageError ? null : incomingHash;
+
     const [decisionRow] = await tx
       .insert(triageDecisions)
       .values({
@@ -682,6 +788,7 @@ async function ensureNodeForIssueViaTriage(
         suggestedParentNodeId,
         decidedBy: 'auto',
         reviewed: false,
+        lastInputHash: nextInputHash,
       })
       .onConflictDoUpdate({
         target: [triageDecisions.mapId, triageDecisions.externalId],
@@ -699,6 +806,11 @@ async function ensureNodeForIssueViaTriage(
           decidedAt: new Date(),
           decidedBy: 'auto',
           reviewed: false,
+          // Refresh the input hash on every successful LLM call so
+          // the next webhook can short-circuit. On triage_error we
+          // pass `null` to clear a stale hash — better to re-call
+          // the LLM next time than to lock in an error-state hash.
+          lastInputHash: nextInputHash,
         },
       })
       .returning({ id: triageDecisions.id });
@@ -791,6 +903,15 @@ async function ensureNodeForIssueViaTriage(
         confidence: result.confidence,
       },
     };
+  }
+
+  // Stamp the debounce window for any LLM-paid path EXCEPT triage_error.
+  // The hash column above is also gated on non-error, so the two layers
+  // stay in sync: an error doesn't lock out re-evaluation either via
+  // debounce or via hash-match. Stamped before history/label writebacks
+  // so a downstream failure doesn't undo the debounce.
+  if (!decision.reason.startsWith('triage_error')) {
+    markTriageDebounce(mapId, externalId);
   }
 
   if (result.kind === 'auto_placed') {

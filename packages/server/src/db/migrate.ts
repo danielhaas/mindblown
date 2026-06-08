@@ -568,6 +568,17 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_parent_node_id UUID
   `);
 
+  // ── Triage cost opt (#142) — body-hash idempotency ────────────
+  // SHA-256 of the canonical (title + body + sorted labels + state)
+  // tuple used for the last successful auto-triage call. When a webhook
+  // arrives whose hash matches this column, the LLM call is skipped
+  // entirely. Existing rows keep `NULL` until their next auto-triage
+  // populates the column (lazy migration — no backfill). Operator
+  // reclassify accepts `force=true` to bypass the hash short-circuit.
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS last_input_hash TEXT
+  `);
+
   // ── Phase 3 (#96) — opt-in GitHub label write-back per map ────
   // When true, finalized triage decisions write `triage:placed` /
   // `triage:skipped` labels back to the source GitHub issue. Default

@@ -17,10 +17,19 @@
  *   - Reason and decision text are preserved verbatim.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { MapContext } from '../mapContext.js';
-import { triageIssue, type TriageProvider } from '../triage.js';
+import {
+  triageIssue,
+  computeInputHash,
+  isWithinDebounceWindow,
+  markTriageDebounce,
+  clearTriageDebounce,
+  _resetDebounceWindow,
+  _setDebounceWindowMs,
+  type TriageProvider,
+} from '../triage.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
 
@@ -379,5 +388,151 @@ describe('triageIssue — request construction', () => {
       { provider },
     );
     expect(result.decision).toBe('uncertain');
+  });
+});
+
+// ── #142 cost-opt — input-hash helper ────────────────────────────
+
+describe('computeInputHash', () => {
+  it('returns identical hashes for identical inputs', () => {
+    const a = computeInputHash({
+      title: 'A bug',
+      body: 'Something is broken',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'p1' }],
+    });
+    const b = computeInputHash({
+      title: 'A bug',
+      body: 'Something is broken',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'p1' }],
+    });
+    expect(a).toBe(b);
+  });
+
+  it('is insensitive to label ordering (labels are sorted before hashing)', () => {
+    const a = computeInputHash({
+      title: 't',
+      body: 'b',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'p1' }],
+    });
+    const b = computeInputHash({
+      title: 't',
+      body: 'b',
+      state: 'open',
+      labels: [{ name: 'p1' }, { name: 'bug' }],
+    });
+    expect(a).toBe(b);
+  });
+
+  it('changes when title changes', () => {
+    const a = computeInputHash({ title: 't1', body: '', state: 'open' });
+    const b = computeInputHash({ title: 't2', body: '', state: 'open' });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when body changes', () => {
+    const a = computeInputHash({ title: 't', body: 'b1', state: 'open' });
+    const b = computeInputHash({ title: 't', body: 'b2', state: 'open' });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when state changes (closed/open transition is a real signal)', () => {
+    const a = computeInputHash({ title: 't', body: 'b', state: 'open' });
+    const b = computeInputHash({ title: 't', body: 'b', state: 'closed' });
+    expect(a).not.toBe(b);
+  });
+
+  it('changes when a new label is added', () => {
+    const a = computeInputHash({
+      title: 't',
+      body: 'b',
+      state: 'open',
+      labels: [{ name: 'bug' }],
+    });
+    const b = computeInputHash({
+      title: 't',
+      body: 'b',
+      state: 'open',
+      labels: [{ name: 'bug' }, { name: 'critical' }],
+    });
+    expect(a).not.toBe(b);
+  });
+
+  it('treats null body and empty-string body as identical', () => {
+    const a = computeInputHash({ title: 't', body: null, state: 'open' });
+    const b = computeInputHash({ title: 't', body: '', state: 'open' });
+    expect(a).toBe(b);
+  });
+
+  it('treats missing labels and empty labels as identical', () => {
+    const a = computeInputHash({ title: 't', body: '', state: 'open' });
+    const b = computeInputHash({
+      title: 't',
+      body: '',
+      state: 'open',
+      labels: [],
+    });
+    expect(a).toBe(b);
+  });
+
+  it('returns a 64-char hex digest (sha256)', () => {
+    const h = computeInputHash({ title: 't', body: 'b', state: 'open' });
+    expect(h).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+// ── #142 cost-opt — per-issue debounce window ────────────────────
+
+describe('debounce window', () => {
+  beforeEach(() => {
+    _resetDebounceWindow();
+    _setDebounceWindowMs(60_000);
+  });
+
+  it('reports `not within window` for a never-stamped key', () => {
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(false);
+  });
+
+  it('reports `within window` immediately after marking', () => {
+    markTriageDebounce('m1', 'o/r#1');
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(true);
+  });
+
+  it('expires past the window length', () => {
+    const t0 = 1_000_000;
+    markTriageDebounce('m1', 'o/r#1', t0);
+    expect(isWithinDebounceWindow('m1', 'o/r#1', t0 + 30_000)).toBe(true);
+    expect(isWithinDebounceWindow('m1', 'o/r#1', t0 + 90_000)).toBe(false);
+  });
+
+  it('scopes by (mapId, externalId) — different keys are independent', () => {
+    markTriageDebounce('m1', 'o/r#1');
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(true);
+    expect(isWithinDebounceWindow('m2', 'o/r#1')).toBe(false);
+    expect(isWithinDebounceWindow('m1', 'o/r#2')).toBe(false);
+  });
+
+  it('clearTriageDebounce removes a single key without disturbing others', () => {
+    markTriageDebounce('m1', 'o/r#1');
+    markTriageDebounce('m1', 'o/r#2');
+    clearTriageDebounce('m1', 'o/r#1');
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(false);
+    expect(isWithinDebounceWindow('m1', 'o/r#2')).toBe(true);
+  });
+
+  it('window of 0 disables debounce entirely', () => {
+    _setDebounceWindowMs(0);
+    markTriageDebounce('m1', 'o/r#1');
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(false);
+  });
+
+  it('_resetDebounceWindow clears all keys', () => {
+    markTriageDebounce('m1', 'o/r#1');
+    markTriageDebounce('m1', 'o/r#2');
+    _resetDebounceWindow();
+    expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(false);
+    expect(isWithinDebounceWindow('m1', 'o/r#2')).toBe(false);
   });
 });

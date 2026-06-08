@@ -32,6 +32,11 @@ interface TriageRow {
   reviewed: boolean;
   reviewedAt: Date | null;
   reviewedBy: string | null;
+  // #142 cost-opt: webhook hash-idempotency column. Reclassify routes
+  // (single + bulk) MUST null this so the next real webhook delivery
+  // doesn't short-circuit on a stale hash compare against the new
+  // decision. Optional on the type because most tests don't care.
+  lastInputHash?: string | null;
 }
 
 const triageRows = new Map<string, TriageRow>();
@@ -285,6 +290,9 @@ vi.mock('../../db/schema.js', () => {
       confidence: col('confidence'),
       issueState: col('issueState'),
       suggestedParentNodeId: col('suggestedParentNodeId'),
+      // #142 — reclassify route writes lastInputHash:null to force the
+      // next webhook re-evaluation; column must exist on the schema mock.
+      lastInputHash: col('lastInputHash'),
     },
     // Phase 3 (#96) — recordTriageHistory inserts into this table from
     // every mutation route. The route tests don't assert on the history
@@ -393,8 +401,17 @@ vi.mock('../../sync/triageLabelWriteback.js', () => ({
   applyTriageLabel: applyTriageLabelMock,
 }));
 
+// #143 round-2 (Ray's review): reclassify routes (single + bulk) must
+// clear the debounce so a webhook within the 60s window isn't squashed
+// after operator action. Hoisted as a named mock so tests can assert
+// `(mapId, externalId)` was passed.
+const clearTriageDebounceMock = vi.hoisted(() => vi.fn());
 vi.mock('../../sync/triage.js', () => ({
   triageIssue: mocks.triageIssueMock,
+  clearTriageDebounce: clearTriageDebounceMock,
+  computeInputHash: vi.fn(() => 'mock-hash'),
+  markTriageDebounce: vi.fn(),
+  isWithinDebounceWindow: vi.fn(() => false),
 }));
 
 vi.mock('../../sync/mapContext.js', () => ({
@@ -472,6 +489,9 @@ beforeEach(() => {
   updateNodeMock.mockClear();
   moveNodeMock.mockClear();
   triageIssueMock.mockClear();
+  // #143 round-2: clear so a per-test assertion on (mapId, externalId)
+  // doesn't bleed across cases.
+  clearTriageDebounceMock.mockClear();
   applyTriageLabelMock.mockReset();
   applyTriageLabelMock.mockImplementation(async () => undefined);
   // #140 — reset the GitHub-context + import mocks so each test
@@ -1201,6 +1221,33 @@ describe('POST .../reclassify', () => {
     expect(row.suggestedParentNodeId).toBe('epic-1');
   });
 
+  // #143 round-2 (Ray's review): single-row reclassify MUST clear
+  // lastInputHash (so the next webhook delivery re-evaluates against
+  // fresh content) AND clear the per-issue debounce (so a webhook
+  // within the 60s window isn't squashed after the operator action).
+  // The same invariant must hold on the bulk-reclassify route — see the
+  // matching test in the bulk-reclassify describe block.
+  it('reclassify clears lastInputHash and calls clearTriageDebounce(mapId, externalId)', async () => {
+    seedRow({
+      id: 'tr-1',
+      externalId: 'o/r#42',
+      decision: 'uncertain',
+      confidence: 30,
+      lastInputHash: 'some-old-hash',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    expect(row.lastInputHash).toBeNull();
+    expect(clearTriageDebounceMock).toHaveBeenCalledWith('map-1', 'o/r#42');
+  });
+
   it('reclassify → skip nulls suggestedParentNodeId', async () => {
     triageIssueMock.mockResolvedValueOnce({
       decision: 'skip' as const,
@@ -1773,6 +1820,43 @@ describe('POST .../bulk-reclassify', () => {
     expect(triageRows.get('a')!.decision).toBe('uncertain');
     // Row B has the default-mock result.
     expect(triageRows.get('b')!.decision).toBe('place');
+  });
+
+  // #143 round-2 (Ray's review): bulk-reclassify must mirror the
+  // single-row /reclassify route's hash + debounce clearing. Without
+  // this, after a bulk re-run the rows keep their OLD lastInputHash and
+  // the next real `issues.edited` webhook short-circuits on a stale
+  // hash compare — leaving the row with the new decision but masking
+  // that subsequent edits aren't being re-evaluated.
+  it('bulk-reclassify clears lastInputHash + calls clearTriageDebounce per row', async () => {
+    seedRow({
+      id: 'a',
+      externalId: 'o/r#100',
+      decision: 'uncertain',
+      lastInputHash: 'stale-hash-a',
+    });
+    seedRow({
+      id: 'b',
+      externalId: 'o/r#200',
+      decision: 'uncertain',
+      lastInputHash: 'stale-hash-b',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-reclassify',
+      payload: { decisionIds: ['a', 'b'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    // Both rows had their hash nulled.
+    expect(triageRows.get('a')!.lastInputHash).toBeNull();
+    expect(triageRows.get('b')!.lastInputHash).toBeNull();
+    // Debounce cleared once per row, with the correct (mapId, externalId).
+    expect(clearTriageDebounceMock).toHaveBeenCalledTimes(2);
+    expect(clearTriageDebounceMock).toHaveBeenCalledWith('map-1', 'o/r#100');
+    expect(clearTriageDebounceMock).toHaveBeenCalledWith('map-1', 'o/r#200');
   });
 });
 

@@ -62,7 +62,7 @@ import { notDeleted } from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from '../sync/mapContext.js';
-import { triageIssue } from '../sync/triage.js';
+import { triageIssue, clearTriageDebounce } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
@@ -1360,8 +1360,27 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
   // Reclassify writes decidedBy='auto' (the LLM made the new call)
   // and resets reviewed=false (it's a fresh auto-decision that needs
   // re-review). No node is created.
+  //
+  // Cost-opt #142 — the operator reclassify route always force-bypasses
+  // the hash-match short-circuit and the per-issue debounce window:
+  //
+  //   - `force=true` query param is the explicit operator signal; we
+  //     accept it as documentation / parity with future automated
+  //     callers, but the *default* behaviour is also force (any
+  //     operator-initiated reclassify is by definition "I want a
+  //     fresh look"). Without `force`, the LLM still re-runs — the
+  //     hash check lives in the ingest path, not here.
+  //   - After the new decision is written, we clear `last_input_hash`
+  //     so the NEXT webhook delivery for this issue re-evaluates (we
+  //     just told the LLM to think again; we don't want the next
+  //     webhook to short-circuit on the now-stale synthesized-issue
+  //     hash that would have been written by this route).
+  //   - We also call `clearTriageDebounce` so a webhook fired in the
+  //     next 60 s doesn't get debounced — the operator is asking for
+  //     fresh evaluation.
   app.post<{
     Params: { mapId: string; decisionId: string };
+    Querystring: { force?: string };
   }>(
     '/api/maps/:mapId/triage-decisions/:decisionId/reclassify',
     async (req, reply) => {
@@ -1439,6 +1458,20 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const newSuggestedParentNodeId =
         decision.decision === 'place' ? (decision.parentNodeId ?? null) : null;
 
+      // Cost-opt #142: clear the input-hash on reclassify so the next
+      // webhook delivery for this issue re-evaluates against fresh
+      // content (the operator just told us "look again" — locking in
+      // the synthesized-body hash here would have the next real
+      // webhook short-circuit on a stale comparison, which is the
+      // opposite of what the operator asked for). Also clear the
+      // debounce key so a webhook within the next 60 s isn't squashed.
+      // The `force` query param is currently a no-op — operator
+      // reclassify is always force — but we accept it as a forward-
+      // compat hook for a future automated caller that needs to
+      // distinguish.
+      // (force is intentionally unused for now; documented in the
+      // route comment above.)
+      void req.query.force;
       await db
         .update(triageDecisions)
         .set({
@@ -1451,9 +1484,11 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           reviewed: false,
           reviewedAt: null,
           reviewedBy: null,
+          lastInputHash: null,
           ...(clearPlacedNode ? { placedNodeId: null } : {}),
         })
         .where(eq(triageDecisions.id, row.id));
+      clearTriageDebounce(req.params.mapId, row.externalId);
 
       // Phase 3 audit log — reclassify is recorded as 'auto' since the
       // LLM is the actor here, even though an operator triggered the
@@ -2107,6 +2142,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             decision.decision === 'place'
               ? (decision.parentNodeId ?? null)
               : null;
+          // Cost-opt #142 (Ray review on #143): mirror single
+          // /reclassify exactly — clear the input-hash AND the
+          // per-issue debounce key so the next real `issues.edited`
+          // webhook re-evaluates against fresh content instead of
+          // short-circuiting on a stale hash compare. Without this,
+          // bulk-reclassify leaves the row with the new decision
+          // but masks subsequent edits from being re-evaluated.
           await db
             .update(triageDecisions)
             .set({
@@ -2119,9 +2161,11 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               reviewed: false,
               reviewedAt: null,
               reviewedBy: null,
+              lastInputHash: null,
               ...(clearPlacedNode ? { placedNodeId: null } : {}),
             })
             .where(eq(triageDecisions.id, row.id));
+          clearTriageDebounce(req.params.mapId, row.externalId);
           const newParent = clearPlacedNode
             ? null
             : decision.decision === 'place'

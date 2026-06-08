@@ -34,6 +34,7 @@
  * material accuracy lift. Overridable via TRIAGE_MODEL env var.
  */
 
+import { createHash } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { MapContext } from './mapContext.js';
@@ -95,6 +96,163 @@ function parseConfidenceEnv(raw: string | undefined, fallback: number): number {
   const n = parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 0 || n > 100) return fallback;
   return n;
+}
+
+// ── Cost optimisation: body-hash idempotency + per-issue debounce ─
+//
+// Three layers stack at progressively coarser granularity (#142):
+//
+//   1. Diff-aware skip on `issues.edited` (webhook handler — outermost).
+//   2. Per-issue debounce window (this module — short-circuits the
+//      same-issue burst inside the LLM-call window).
+//   3. Body-hash idempotency (caller — short-circuits when the canonical
+//      input tuple matches the last persisted hash).
+//
+// Layers 2 + 3 live here because they share the `(mapId, externalId)`
+// keying and they both belong on the LLM-call boundary; the diff-aware
+// skip is webhook-shape-specific and lives next to the payload parsing.
+
+/**
+ * Canonical hash of the inputs that drive a triage decision. SHA-256 of
+ * a JSON-stringified tuple of `{title, body, labels (sorted), state}`.
+ *
+ * Labels are sorted by `name` so the order GitHub returns them in
+ * doesn't poison the hash (the GitHub API doesn't guarantee a stable
+ * label ordering across calls). `body` defaults to the empty string so
+ * a null/undefined body hashes identically across SDK shapes. `state`
+ * is folded in so a closed/reopened transition without a body change
+ * still re-triages — closing an issue is a real signal change.
+ *
+ * Persisted in `triage_decisions.last_input_hash`; compared against the
+ * freshly-computed hash on the next ingest. Identical → LLM call is
+ * skipped (#142 layer 3). Operator reclassify with `force=true`
+ * bypasses the comparison.
+ */
+export function computeInputHash(issue: {
+  title: string;
+  body?: string | null;
+  state: 'open' | 'closed';
+  labels?: Array<{ name: string }> | null;
+}): string {
+  const labels = (issue.labels ?? [])
+    .map((l) => l.name)
+    .filter((n): n is string => typeof n === 'string')
+    .slice()
+    .sort();
+  const payload = JSON.stringify({
+    title: issue.title,
+    body: issue.body ?? '',
+    labels,
+    state: issue.state,
+  });
+  return createHash('sha256').update(payload).digest('hex');
+}
+
+/**
+ * Per-issue debounce window, in milliseconds. A second `triageIssue`
+ * call for the same `(mapId, externalId)` within this window short-
+ * circuits without an LLM round-trip. Defaults to 60 s; override via
+ * the `TRIAGE_DEBOUNCE_WINDOW_MS` env var. Setting to `0` disables
+ * the debounce entirely (useful for tests / per-deploy disable).
+ */
+let _debounceWindowMs = parseDebounceMs(
+  process.env.TRIAGE_DEBOUNCE_WINDOW_MS,
+);
+
+function parseDebounceMs(raw: string | undefined): number {
+  if (!raw) return 60_000;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return 60_000;
+  return n;
+}
+
+/**
+ * In-memory map of last-triage timestamps per `(mapId, externalId)`.
+ * Same single-process precedent as #75's catchup counter — works
+ * because the server is a single Node process per deploy. A future
+ * multi-process deploy would need to lift this into Redis; the body-
+ * hash layer below keeps the worst-case cost bounded even without it.
+ */
+const _debounceMap = new Map<string, number>();
+
+function debounceKey(mapId: string, externalId: string): string {
+  return `${mapId}/${externalId}`;
+}
+
+/**
+ * Test-only: clear the debounce map between tests. Production code
+ * never calls this — the entries naturally fall out of the window.
+ */
+export function _resetDebounceWindow(): void {
+  _debounceMap.clear();
+}
+
+/**
+ * Test-only: override the debounce window length. Production code
+ * uses the env-var default; tests use this to drive both
+ * within-window and past-window paths without `setTimeout(60_000)`.
+ */
+export function _setDebounceWindowMs(ms: number): void {
+  _debounceWindowMs = ms;
+}
+
+/**
+ * Returns the current debounce window in milliseconds. Exposed for
+ * callers that want to log a "debounced for Ns" diagnostic. Mostly
+ * useful in tests.
+ */
+export function getDebounceWindowMs(): number {
+  return _debounceWindowMs;
+}
+
+/**
+ * Returns true if `(mapId, externalId)` was triaged within the
+ * debounce window. Caller MUST stamp `markTriageDebounce` after a
+ * successful LLM call — this read-only check is intentionally
+ * decoupled so a caller can fall back to the body-hash layer when
+ * the debounce window expires but the hash still matches.
+ */
+export function isWithinDebounceWindow(
+  mapId: string,
+  externalId: string,
+  now: number = Date.now(),
+): boolean {
+  if (_debounceWindowMs <= 0) return false;
+  const lastAt = _debounceMap.get(debounceKey(mapId, externalId));
+  if (lastAt === undefined) return false;
+  return now - lastAt < _debounceWindowMs;
+}
+
+/**
+ * Stamp the debounce timestamp for `(mapId, externalId)`. Called by
+ * the ingest path after a successful LLM round-trip OR after a
+ * hash-match short-circuit — both count as "we know the current
+ * decision, don't re-call for the next N seconds." Skip on
+ * triage_error so a transient LLM failure doesn't lock us out of
+ * retrying for 60 s.
+ */
+export function markTriageDebounce(
+  mapId: string,
+  externalId: string,
+  now: number = Date.now(),
+): void {
+  if (_debounceWindowMs <= 0) return;
+  _debounceMap.set(debounceKey(mapId, externalId), now);
+}
+
+/**
+ * Clear the debounce timestamp for a single `(mapId, externalId)`.
+ * Used by the operator reclassify route — when the operator forces a
+ * fresh classification, an immediately-following webhook delivery
+ * should NOT be debounced (the operator is explicitly soliciting a
+ * new LLM read). Scoped to the one key so other in-flight bursts
+ * aren't disrupted.
+ */
+export function clearTriageDebounce(
+  mapId: string,
+  externalId: string,
+): void {
+  _debounceMap.delete(debounceKey(mapId, externalId));
 }
 
 // ── Anthropic client (lazy) ───────────────────────────────────────
