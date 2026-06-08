@@ -73,6 +73,8 @@ function toNodeWithComputed(
     collapsed: node.collapsed,
     createdAt: toIsoString((node as unknown as { createdAt: unknown }).createdAt),
     updatedAt: toIsoString((node as unknown as { updatedAt: unknown }).updatedAt),
+    claimedBySession: node.claimedBySession,
+    claimedAt: node.claimedAt,
     computedEffort: computed?.computedEffort ?? 0,
     computedProgress: computed?.computedProgress ?? 0,
     healthSignal: computed?.healthSignal ?? 'on_track',

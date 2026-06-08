@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
+import { formatClaim } from '../formatters.js';
 
 export const createNodeTool = defineTool({
   name: 'create_node',
@@ -276,7 +277,8 @@ export const searchNodesTool = defineTool({
       const links = n.externalLinks?.length > 0
         ? ' ' + n.externalLinks.map((l) => `[${l.externalId}]`).join(' ')
         : '';
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${links}`;
+      const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${links}${claim}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;
