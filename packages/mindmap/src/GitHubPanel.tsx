@@ -455,6 +455,84 @@ export function GitHubSettingsDialog({
   const [autoImportSaving, setAutoImportSaving] = useState(false);
   const [ingestNotice, setIngestNotice] = useState<string | null>(null);
 
+  // ── AI triage toggle (per-map opt-in for the LLM classifier) ────
+  // Cascade: triage requires auto-import; label-writeback requires triage.
+  // Server defaults are false; we mirror that here so existing maps
+  // don't suddenly start classifying issues.
+  const [triageEnabled, setTriageEnabled] = useState<boolean>(
+    currentMap?.triageEnabled ?? false,
+  );
+  const [triageLabelWriteback, setTriageLabelWriteback] = useState<boolean>(
+    currentMap?.triageLabelWriteback ?? false,
+  );
+  useEffect(() => {
+    setTriageEnabled(currentMap?.triageEnabled ?? false);
+    setTriageLabelWriteback(currentMap?.triageLabelWriteback ?? false);
+  }, [currentMap?.id, currentMap?.triageEnabled, currentMap?.triageLabelWriteback]);
+  const [triageSaving, setTriageSaving] = useState(false);
+  const [labelWritebackSaving, setLabelWritebackSaving] = useState(false);
+  // When the operator toggles triage from ON → OFF we surface a confirm
+  // modal instead of firing the PATCH immediately. Enabling is low-stakes
+  // and skips the modal.
+  const [showTriageDisableConfirm, setShowTriageDisableConfirm] = useState(false);
+
+  const persistTriageDisable = async () => {
+    setShowTriageDisableConfirm(false);
+    setTriageSaving(true);
+    setError(null);
+    try {
+      // Disabling triage also disables label writeback in the same PATCH —
+      // keeps the DB consistent if the operator re-enables triage later
+      // and forgets the dependent flag.
+      const patch: Record<string, unknown> = { triageEnabled: false };
+      if (triageLabelWriteback) patch.triageLabelWriteback = false;
+      await api.updateMap(mapId, patch);
+      setTriageEnabled(false);
+      if (triageLabelWriteback) setTriageLabelWriteback(false);
+      await loadMap(mapId);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to update AI triage setting');
+    } finally {
+      setTriageSaving(false);
+    }
+  };
+
+  const handleToggleTriageEnabled = async (next: boolean) => {
+    if (!next) {
+      // Open the confirmation modal; the actual PATCH fires from there.
+      setShowTriageDisableConfirm(true);
+      return;
+    }
+    setTriageSaving(true);
+    setError(null);
+    try {
+      await api.updateMap(mapId, { triageEnabled: true });
+      setTriageEnabled(true);
+      await loadMap(mapId);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to update AI triage setting');
+    } finally {
+      setTriageSaving(false);
+    }
+  };
+
+  const handleToggleLabelWriteback = async (next: boolean) => {
+    setLabelWritebackSaving(true);
+    setError(null);
+    try {
+      await api.updateMap(mapId, { triageLabelWriteback: next });
+      setTriageLabelWriteback(next);
+      await loadMap(mapId);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to update label writeback setting');
+    } finally {
+      setLabelWritebackSaving(false);
+    }
+  };
+
+  const triageDisabledByAutoImport = !autoImport;
+  const labelWritebackDisabledByTriage = !triageEnabled;
+
   const handleToggleAutoImport = async (next: boolean) => {
     setAutoImportSaving(true);
     setError(null);
@@ -741,6 +819,134 @@ export function GitHubSettingsDialog({
               </label>
             </div>
 
+            {/* AI triage toggle — requires auto-import to be on. */}
+            <div
+              style={{
+                marginBottom: 12,
+                padding: '10px 14px',
+                borderRadius: 8,
+                background: triageDisabledByAutoImport ? '#f1f5f9' : '#f8fafc',
+                border: '1px solid #e2e8f0',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+                opacity: triageDisabledByAutoImport ? 0.55 : 1,
+              }}
+              title={
+                triageDisabledByAutoImport
+                  ? 'Triage only fires on imported issues.'
+                  : undefined
+              }
+            >
+              <input
+                id="github-triage-enabled"
+                data-testid="map-settings-triage-enabled"
+                type="checkbox"
+                checked={triageEnabled && !triageDisabledByAutoImport}
+                disabled={triageDisabledByAutoImport || triageSaving}
+                onChange={(e) => handleToggleTriageEnabled(e.target.checked)}
+                style={{ marginTop: 3 }}
+              />
+              <label
+                htmlFor="github-triage-enabled"
+                style={{
+                  cursor: triageDisabledByAutoImport ? 'not-allowed' : 'pointer',
+                  flex: 1,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
+                  AI triage incoming issues
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  Claude classifies new issues (skip/place/uncertain). High-confidence
+                  places auto-create nodes; low-confidence ones wait in the Triage panel.
+                </div>
+                {triageDisabledByAutoImport && (
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontStyle: 'italic' }}>
+                    Triage only fires on imported issues — enable auto-import first.
+                  </div>
+                )}
+              </label>
+            </div>
+
+            {/* Label writeback toggle — requires AI triage to be on. */}
+            <div
+              style={{
+                marginBottom: 16,
+                padding: '10px 14px',
+                borderRadius: 8,
+                background: labelWritebackDisabledByTriage ? '#f1f5f9' : '#f8fafc',
+                border: '1px solid #e2e8f0',
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 10,
+                opacity: labelWritebackDisabledByTriage ? 0.55 : 1,
+              }}
+              title={
+                labelWritebackDisabledByTriage
+                  ? 'Labels are written by the triage pipeline.'
+                  : undefined
+              }
+            >
+              <input
+                id="github-triage-label-writeback"
+                data-testid="map-settings-triage-label-writeback"
+                type="checkbox"
+                checked={triageLabelWriteback && !labelWritebackDisabledByTriage}
+                disabled={labelWritebackDisabledByTriage || labelWritebackSaving}
+                onChange={(e) => handleToggleLabelWriteback(e.target.checked)}
+                style={{ marginTop: 3 }}
+              />
+              <label
+                htmlFor="github-triage-label-writeback"
+                style={{
+                  cursor: labelWritebackDisabledByTriage ? 'not-allowed' : 'pointer',
+                  flex: 1,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
+                  Write triage labels back to GitHub
+                </div>
+                <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
+                  Writes <code>triage:placed</code> / <code>triage:skipped</code> labels to GitHub
+                  when decisions are reviewed. Requires labels to exist in the repo.
+                </div>
+                {labelWritebackDisabledByTriage && (
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontStyle: 'italic' }}>
+                    Labels are written by the triage pipeline — enable AI triage first.
+                  </div>
+                )}
+              </label>
+            </div>
+
+            {/* Status badge — shown when triage is fully active. */}
+            {triageEnabled && !triageDisabledByAutoImport && (
+              <div
+                data-testid="map-settings-triage-status-badge"
+                style={{
+                  marginBottom: 16,
+                  padding: '6px 10px',
+                  borderRadius: 6,
+                  background: '#dcfce7',
+                  border: '1px solid #bbf7d0',
+                  color: '#166534',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+              >
+                <span aria-hidden>✓</span>
+                AI triage active
+                {triageLabelWriteback && !labelWritebackDisabledByTriage && (
+                  <span style={{ fontWeight: 500, color: '#15803d' }}>
+                    · labels write back to GitHub
+                  </span>
+                )}
+              </div>
+            )}
+
             {ingestNotice && (
               <div
                 style={{
@@ -987,6 +1193,99 @@ export function GitHubSettingsDialog({
             </div>
           </div>
         )}
+      </div>
+
+      {showTriageDisableConfirm && (
+        <TriageDisableConfirmModal
+          onCancel={() => setShowTriageDisableConfirm(false)}
+          onConfirm={persistTriageDisable}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Triage disable confirmation modal ────────────────────────────
+// Surfaced when the operator flips `triageEnabled` from ON → OFF.
+// Enabling is low-stakes and skips this modal.
+
+function TriageDisableConfirmModal({
+  onCancel,
+  onConfirm,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      data-testid="map-settings-triage-disable-confirm"
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.4)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 120,
+      }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onCancel();
+      }}
+    >
+      <div
+        style={{
+          width: 400,
+          maxWidth: '90vw',
+          background: '#fff',
+          borderRadius: 12,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.16)',
+          padding: 24,
+        }}
+      >
+        <h3 style={{ margin: '0 0 12px', fontSize: 15, fontWeight: 700, color: '#1e293b' }}>
+          Disable AI triage?
+        </h3>
+        <p style={{ margin: '0 0 18px', fontSize: 12, lineHeight: 1.5, color: '#475569' }}>
+          Disabling AI triage stops automatic classification of new GitHub issues.
+          Existing decisions stay; new issues will land flat under "GitHub Inbox" again.
+          Continue?
+        </p>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button
+            onClick={onCancel}
+            data-testid="map-settings-triage-disable-confirm-cancel"
+            style={{
+              background: '#f1f5f9',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontSize: 12,
+              fontWeight: 600,
+              color: '#475569',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            data-testid="map-settings-triage-disable-confirm-ok"
+            style={{
+              background: '#dc2626',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 6,
+              padding: '8px 16px',
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            Disable triage
+          </button>
+        </div>
       </div>
     </div>
   );
