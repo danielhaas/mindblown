@@ -563,11 +563,15 @@ Rules:
         }
 
         // Append the assistant turn so the next provider call sees the history.
-        messages.push({
-          role: 'assistant',
-          content: assistantText,
-          toolCalls: firstToolCall ? [firstToolCall] : [],
-        });
+        // Skip turns with neither text nor a tool call — Anthropic rejects empty
+        // text blocks, and replaying a no-op turn next request would 400.
+        if (assistantText || firstToolCall) {
+          messages.push({
+            role: 'assistant',
+            content: assistantText,
+            toolCalls: firstToolCall ? [firstToolCall] : [],
+          });
+        }
 
         if (!firstToolCall) break;
 

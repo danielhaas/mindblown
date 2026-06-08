@@ -41,15 +41,19 @@ function toAnthropicMessages(messages: NormalizedMessage[]): Anthropic.MessagePa
   const out: Anthropic.MessageParam[] = [];
   for (const m of messages) {
     if (m.role === 'user') {
-      out.push({ role: 'user', content: m.content });
+      // Anthropic rejects empty text blocks ("text content blocks must be non-empty").
+      // A whitespace placeholder preserves user→assistant alternation when client
+      // history replays a no-op turn.
+      out.push({ role: 'user', content: m.content || ' ' });
     } else if (m.role === 'assistant') {
       const blocks: Anthropic.ContentBlockParam[] = [];
       if (m.content) blocks.push({ type: 'text', text: m.content });
       for (const tc of m.toolCalls) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
       }
-      // An assistant message must have at least one content block.
-      if (blocks.length === 0) blocks.push({ type: 'text', text: '' });
+      // Assistant messages need ≥1 content block AND each text block must be
+      // non-empty. A space satisfies both.
+      if (blocks.length === 0) blocks.push({ type: 'text', text: ' ' });
       out.push({ role: 'assistant', content: blocks });
     } else {
       out.push({
