@@ -545,40 +545,49 @@ body.mobile {
 
 /* ── Gantt ─────────────────────────────────────────────────── */
 
-.mb-gantt-wrap {
-  display: flex;
-  overflow: hidden;
+.mb-gantt-scroll-wrap {
+  overflow: auto;
   border-top: 1px solid #e2e8f0;
+  background: #fff;
+  -webkit-overflow-scrolling: touch;
 }
 
-.mb-gantt-rows-col {
-  width: 38%;
-  min-width: 130px;
-  max-width: 200px;
-  flex-shrink: 0;
+.mb-gantt-grid {
+  display: grid;
+  grid-template-columns: var(--mb-gantt-label-w, 140px) var(--mb-gantt-time-w, 800px);
+  grid-auto-rows: 36px;
+  position: relative;
+}
+
+.mb-gantt-month-header {
+  position: sticky;
+  top: 0;
+  background: #fff;
+  border-bottom: 1px solid #e2e8f0;
+  z-index: 3;
+}
+
+.mb-gantt-corner {
+  position: sticky;
+  left: 0;
+  z-index: 4;
   background: #fff;
   border-right: 1px solid #e2e8f0;
-  overflow-y: hidden;
-}
-
-.mb-gantt-timeline-col {
-  flex: 1;
-  overflow-x: auto;
-  overflow-y: hidden;
-}
-
-.mb-gantt-scroll {
-  display: flex;
-  flex-direction: column;
+  height: 22px;
 }
 
 .mb-gantt-row-label {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: #fff;
   height: 36px;
   display: flex;
   align-items: center;
   padding: 0 10px;
   font-size: 13px;
   border-bottom: 1px solid #f1f5f9;
+  border-right: 1px solid #e2e8f0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

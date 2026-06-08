@@ -1,4 +1,11 @@
-import type { Node, MindMap, Cycle, Version } from '@mindblown/core';
+import type {
+  Node,
+  MindMap,
+  Cycle,
+  Version,
+  ScheduledNode,
+  CriticalPathResult,
+} from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
 
@@ -630,8 +637,17 @@ export function restoreNode(
 
 // ── Schedule ─────────────────────────────────────────────────────
 
-export function fetchSchedule(mapId: string): Promise<unknown> {
-  return request(`/api/maps/${mapId}/schedule`);
+export interface ScheduleResponse {
+  schedule: ScheduledNode[];
+  criticalPath: CriticalPathResult;
+  projectStartDate: string;
+  effortUnit: 'hours' | 'days' | 'points';
+  unitsPerDay: number;
+  workerCount: number;
+}
+
+export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {
+  return request<ScheduleResponse>(`/api/maps/${mapId}/schedule`);
 }
 
 // ── Cycles / Sprints ────────────────────────────────────────────
