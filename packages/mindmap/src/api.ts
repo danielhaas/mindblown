@@ -1410,6 +1410,23 @@ export interface ListNotInMindBlownResponse {
   /** Set when orphansAvailable is false, explains why. */
   orphansError: string | null;
   items: NotInMindBlownItem[];
+  /**
+   * Pre-pagination per-bucket counts. Reflects the true backlog size
+   * even when `items` is short (default limit=50, hard cap 200). The
+   * "Not in MindBlown" view uses these to label the trigger banner +
+   * size the drift-audit slider correctly — without them the slider
+   * caps at min(orphanCount, items.length) which is wrong whenever
+   * the orphan tail is bigger than the page.
+   *
+   * Optional for compatibility with pre-2026-06-08 servers; UI falls
+   * back to counting `items` when the field is absent.
+   */
+  counts?: {
+    orphan: number;
+    skipped: number;
+    'pending-skipped': number;
+    uncertain: number;
+  };
 }
 
 export interface OrphanImportBody {

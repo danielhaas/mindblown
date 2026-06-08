@@ -520,6 +520,23 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const total = allItems.length;
       const paged = allItems.slice(0, limit);
 
+      // Per-bucket counts so the UI can show "N orphans waiting" + size
+      // the drift-audit slider correctly even when the paginated list
+      // is shorter than the true count (default limit=50, hard cap 200,
+      // but a fresh map can have 345+ orphans). All four counts are
+      // pre-pagination — they reflect the full bucket, not what fits
+      // in `items`.
+      let orphanCount = 0;
+      let skippedCount = 0;
+      let pendingSkippedCount = 0;
+      let uncertainCount = 0;
+      for (const di of decisionItems) {
+        if (di.kind === 'skipped') skippedCount++;
+        else if (di.kind === 'pending-skipped') pendingSkippedCount++;
+        else if (di.kind === 'uncertain') uncertainCount++;
+      }
+      orphanCount = orphanItems.length;
+
       return reply.send({
         mapId: req.params.mapId,
         bucket: requestedBucket,
@@ -528,6 +545,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         orphansAvailable,
         orphansError,
         items: paged,
+        counts: {
+          orphan: orphanCount,
+          skipped: skippedCount,
+          'pending-skipped': pendingSkippedCount,
+          uncertain: uncertainCount,
+        },
       });
     },
   );
