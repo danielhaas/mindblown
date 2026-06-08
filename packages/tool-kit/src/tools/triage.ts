@@ -29,6 +29,7 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
 import type {
+  NotInMindBlownItem,
   TriageDecisionKind,
   TriageDecisionRow,
 } from '../backend.js';
@@ -190,9 +191,94 @@ export const confirmTriageTool = defineTool({
   },
 });
 
+// ── Tool: list_not_in_mindblown (#140) ───────────────────────────
+
+const notInMindBlownBucketEnum = z.enum([
+  'all',
+  'skipped',
+  'pending-skipped',
+  'uncertain',
+  'orphans',
+]);
+
+function renderNotInMindBlownItem(it: NotInMindBlownItem): string {
+  const meta: string[] = [it.externalId, `state=${it.issueState}`];
+  if (it.confidence != null) meta.push(`${it.confidence}%`);
+  if (it.triageDecisionId) meta.push(`decisionId=${it.triageDecisionId}`);
+  const tail = it.kind === 'orphan'
+    ? '\n    not yet triaged'
+    : it.reason
+      ? `\n    reason: ${it.reason}`
+      : '';
+  return `- [${it.kind}] "${it.issueTitle}" (${meta.join(', ')})${tail}`;
+}
+
+export const listNotInMindBlownTool = defineTool({
+  name: 'list_not_in_mindblown',
+  description:
+    "List every GitHub ticket that is NOT currently a node in this map, across four buckets: 'skipped' (decision=skip + reviewed), 'pending-skipped' (decision=skip + unreviewed), 'uncertain' (decision=uncertain), and 'orphan' (no triage row + no node — same set as github_sync_overview.onlyInGitHub). Answers the operator's question 'what's in GitHub that's not on our roadmap?' in one call. The orphan bucket needs GitHub configured on the map; when it's unavailable the response still carries the decision-row buckets and surfaces the reason via orphansAvailable/orphansError. Default returns all four buckets; narrow with bucket=. Default limit 50, max 200.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    bucket: notInMindBlownBucketEnum
+      .optional()
+      .describe(
+        "Narrow to one bucket. Pass 'all' (or omit) for every bucket. 'orphans' returns only the GitHub-issue-with-no-decision-row set.",
+      ),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Max items to return (default 50, hard cap 200)'),
+    since: z
+      .string()
+      .optional()
+      .describe(
+        'ISO 8601 — only include decision-row buckets with decided_at >= this instant (orphans have no decided_at and are unaffected)',
+      ),
+  },
+  handler: async (backend, { mapId, bucket, limit, since }) => {
+    const result = await backend.listNotInMindBlown(mapId, {
+      bucket,
+      limit,
+      since,
+    });
+    if (result.total === 0) {
+      const orphanNote = result.orphansAvailable
+        ? ''
+        : ` (orphan bucket unavailable: ${result.orphansError ?? 'GitHub fetch failed'})`;
+      return `No issues found matching bucket='${result.bucket}' in map ${mapId}${orphanNote}.`;
+    }
+    // Per-kind breakdown — gives Eve a one-line "what's the shape" so
+    // she can decide whether to drill in further or summarize.
+    const breakdown: Record<string, number> = {
+      skipped: 0,
+      'pending-skipped': 0,
+      uncertain: 0,
+      orphan: 0,
+    };
+    for (const it of result.items) breakdown[it.kind]++;
+    const breakdownLine = Object.entries(breakdown)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}=${n}`)
+      .join(', ');
+    const summary =
+      result.total > result.returned
+        ? `Showing ${result.returned} of ${result.total} item(s) in map ${mapId} (raise \`limit\` for more, max 200)`
+        : `Showing ${result.returned} item(s) in map ${mapId}`;
+    const orphanWarning = result.orphansAvailable
+      ? ''
+      : `\n(Note: orphan bucket unavailable — ${result.orphansError ?? 'GitHub fetch failed'})`;
+    const lines = result.items.map(renderNotInMindBlownItem);
+    return `${summary} [${breakdownLine}]:${orphanWarning}\n${lines.join('\n')}`;
+  },
+});
+
 export const triageTools = [
   listTriageDecisionsTool,
   overrideTriageTool,
   reclassifyTriageTool,
   confirmTriageTool,
+  listNotInMindBlownTool,
 ];

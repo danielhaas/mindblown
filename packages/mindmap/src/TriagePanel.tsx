@@ -41,10 +41,15 @@ import {
   bulkOverrideTriageDecisions,
   bulkReclassifyTriageDecisions,
   confirmTriageDecision,
+  importOrphanIssue,
+  listNotInMindBlown,
   listTriageDecisions,
   overrideTriageDecision,
   reclassifyTriageDecision,
+  skipOrphanIssue,
   type BulkTriageItem,
+  type NotInMindBlownBucket,
+  type NotInMindBlownItem,
   type TriageDecision,
   type TriageDecisionKind,
 } from './api.js';
@@ -82,7 +87,11 @@ function summarizeBulk(results: BulkTriageItem[]): { ok: number; err: number; fi
   return { ok, err, firstError };
 }
 
-type SubView = 'pending' | 'placed' | 'skipped';
+type SubView = 'pending' | 'placed' | 'skipped' | 'not-in-mindblown';
+
+// Sub-filter inside the "Not in MindBlown" tab. 'all' shows every bucket;
+// the others narrow to a single bucket using the server's `bucket` param.
+type NotInMindBlownFilter = 'all' | NotInMindBlownBucket;
 
 export function TriagePanel({
   mapId,
@@ -117,6 +126,24 @@ export function TriagePanel({
   const [maxConfidence, setMaxConfidence] = useState(100);
   const [issueStateFilter, setIssueStateFilter] = useState<IssueStateFilter>('all');
   const [timeWindow, setTimeWindow] = useState<TimeWindowFilter>('7d');
+
+  // ── Not-in-MindBlown tab state (#140) ─────────────────────────
+  // Lives outside the main `decisions` state because the items have a
+  // different shape (no Phase 2 triage-row fields like reviewed/
+  // confidence on orphans). The decision-row buckets (skipped/pending-
+  // skipped/uncertain) still carry a triageDecisionId so per-card
+  // actions can reuse override/reclassify/confirm against the existing
+  // server routes; orphans render a smaller action set.
+  const [notInMindBlownItems, setNotInMindBlownItems] = useState<NotInMindBlownItem[]>([]);
+  const [notInMindBlownFilter, setNotInMindBlownFilter] = useState<NotInMindBlownFilter>('all');
+  const [orphansAvailable, setOrphansAvailable] = useState(true);
+  const [orphansError, setOrphansError] = useState<string | null>(null);
+  // Picker mode tracks which not-in-mindblown card opened the modal so
+  // the pick handler knows whether to call /override (decision-row
+  // buckets) or to create+attach a node from scratch (orphan bucket).
+  // Reuses NodePickerModal; cleared after pick or cancel.
+  const [notInMindBlownPickerItem, setNotInMindBlownPickerItem] =
+    useState<NotInMindBlownItem | null>(null);
 
   const refresh = useCallback(() => setRefreshTick((t) => t + 1), []);
 
@@ -154,6 +181,11 @@ export function TriagePanel({
   }, [mapId]);
 
   useEffect(() => {
+    // The not-in-mindblown view has its own data source — let its own
+    // effect handle the fetch. Skip the legacy decision-list path here
+    // so we don't wastefully hit GET /triage-decisions when the
+    // operator is looking at the unified view.
+    if (view === 'not-in-mindblown') return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -194,6 +226,48 @@ export function TriagePanel({
       cancelled = true;
     };
   }, [mapId, view, refreshTick, minConfidence, maxConfidence, issueStateFilter, timeWindow]);
+
+  // Not-in-MindBlown data fetch (#140). Runs on view-switch into the new
+  // tab, sub-filter change, or refresh tick (after an action like
+  // import / mark-as-skip). We send `bucket=all` when the sub-filter is
+  // 'all' so the server returns every bucket; otherwise we narrow with
+  // the server-side filter. The time-window filter still applies to the
+  // decision-row buckets (orphans don't carry a decidedAt — they're
+  // included regardless of the time-window setting).
+  useEffect(() => {
+    if (view !== 'not-in-mindblown') return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    // No `since` here — the time-window filter doesn't apply to this
+    // tab (the FilterBar is hidden for it). Orphans don't carry a
+    // decidedAt, so a since-filter would silently exclude them and
+    // confuse the operator.
+    const bucketParam: NotInMindBlownFilter | 'orphans' =
+      notInMindBlownFilter === 'orphan' ? 'orphans' : notInMindBlownFilter;
+    listNotInMindBlown(mapId, {
+      bucket: bucketParam,
+      limit: 200,
+    })
+      .then((res) => {
+        if (cancelled) return;
+        setNotInMindBlownItems(res.items);
+        setOrphansAvailable(res.orphansAvailable);
+        setOrphansError(res.orphansError);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const msg = err instanceof ApiError ? err.message : 'Failed to load unified view';
+        setError(msg);
+        setNotInMindBlownItems([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapId, view, refreshTick, notInMindBlownFilter]);
 
   const handleConfirm = useCallback(
     async (decision: TriageDecision) => {
@@ -267,6 +341,105 @@ export function TriagePanel({
       }
     },
     [mapId, pickerForDecision, refresh],
+  );
+
+  // ── Not-in-MindBlown action handlers (#140) ───────────────────
+  //
+  // Decision-row buckets (skipped/pending-skipped/uncertain) reuse the
+  // existing override/reclassify/confirm routes — the per-card actions
+  // dispatch by `triageDecisionId`. Orphans hit the new orphan-import /
+  // orphan-skip routes since no decision row exists yet.
+  const handleNotInMindBlownPickParent = useCallback(
+    async (parentNodeId: string) => {
+      const item = notInMindBlownPickerItem;
+      if (!item) return;
+      setNotInMindBlownPickerItem(null);
+      setBusyDecisionId(item.triageDecisionId ?? item.externalId);
+      try {
+        if (item.kind === 'orphan') {
+          await importOrphanIssue(mapId, {
+            externalId: item.externalId,
+            issueTitle: item.issueTitle,
+            issueState: item.issueState,
+            parentNodeId,
+            reason: 'Operator imported from "Not in MindBlown" view',
+          });
+        } else if (item.triageDecisionId) {
+          await overrideTriageDecision(mapId, item.triageDecisionId, {
+            decision: 'place',
+            parentNodeId,
+            reason: item.reason,
+          });
+        }
+        refresh();
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : 'Import failed';
+        setError(msg);
+      } finally {
+        setBusyDecisionId(null);
+      }
+    },
+    [mapId, notInMindBlownPickerItem, refresh],
+  );
+
+  const handleOrphanSkip = useCallback(
+    async (item: NotInMindBlownItem) => {
+      if (item.kind !== 'orphan') return;
+      setBusyDecisionId(item.externalId);
+      try {
+        await skipOrphanIssue(mapId, {
+          externalId: item.externalId,
+          issueTitle: item.issueTitle,
+          issueState: item.issueState,
+          reason: 'Operator marked orphan as skip from "Not in MindBlown" view',
+        });
+        refresh();
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : 'Mark as skip failed';
+        setError(msg);
+      } finally {
+        setBusyDecisionId(null);
+      }
+    },
+    [mapId, refresh],
+  );
+
+  const handleNotInMindBlownReclassify = useCallback(
+    async (item: NotInMindBlownItem) => {
+      if (!item.triageDecisionId) return;
+      setBusyDecisionId(item.triageDecisionId);
+      try {
+        await reclassifyTriageDecision(mapId, item.triageDecisionId);
+        refresh();
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : 'Re-classify failed';
+        setError(msg);
+      } finally {
+        setBusyDecisionId(null);
+      }
+    },
+    [mapId, refresh],
+  );
+
+  const handleNotInMindBlownConfirmSkip = useCallback(
+    async (item: NotInMindBlownItem) => {
+      if (!item.triageDecisionId) return;
+      setBusyDecisionId(item.triageDecisionId);
+      try {
+        // Reconstruct a minimal TriageDecision-shape so confirmTriageDecision
+        // can hit the dedicated /confirm route (which takes only the id).
+        await confirmTriageDecision(mapId, {
+          id: item.triageDecisionId,
+        } as TriageDecision);
+        refresh();
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : 'Confirm failed';
+        setError(msg);
+      } finally {
+        setBusyDecisionId(null);
+      }
+    },
+    [mapId, refresh],
   );
 
   // ── Bulk handlers (#95 Phase 2) ───────────────────────────────
@@ -457,34 +630,51 @@ export function TriagePanel({
         >
           Skipped
         </TabButton>
+        <TabButton
+          testId="triage-tab-not-in-mindblown"
+          active={view === 'not-in-mindblown'}
+          onClick={() => setView('not-in-mindblown')}
+        >
+          Not in MindBlown
+        </TabButton>
       </div>
 
-      {/* Filter row (#95 Phase 2) — confidence slider + state + window */}
-      <FilterBar
-        minConfidence={minConfidence}
-        maxConfidence={maxConfidence}
-        onMinChange={setMinConfidence}
-        onMaxChange={setMaxConfidence}
-        issueState={issueStateFilter}
-        onIssueStateChange={setIssueStateFilter}
-        timeWindow={timeWindow}
-        onTimeWindowChange={setTimeWindow}
-      />
+      {/* Filter row (#95 Phase 2) — confidence slider + state + window.
+          Hidden on the "Not in MindBlown" tab: confidence/state filters
+          don't apply to orphans (no decision row), and the time window
+          would silently exclude orphans (no decided_at). That view has
+          its own sub-filter pills instead. */}
+      {view !== 'not-in-mindblown' && (
+        <FilterBar
+          minConfidence={minConfidence}
+          maxConfidence={maxConfidence}
+          onMinChange={setMinConfidence}
+          onMaxChange={setMaxConfidence}
+          issueState={issueStateFilter}
+          onIssueStateChange={setIssueStateFilter}
+          timeWindow={timeWindow}
+          onTimeWindowChange={setTimeWindow}
+        />
+      )}
 
-      {/* Bulk-action toolbar (#95 Phase 2) — select-all + actions */}
-      <BulkToolbar
-        view={view}
-        totalVisible={decisions.length}
-        selectedCount={selectedIds.size}
-        allSelected={allSelected}
-        someSelected={someSelected}
-        onToggleSelectAll={toggleSelectAll}
-        canBulkOverride={canBulkOverride}
-        bulkBusy={bulkBusy}
-        onBulkConfirm={handleBulkConfirm}
-        onBulkOverride={() => setBulkPickerOpen(true)}
-        onBulkReclassify={handleBulkReclassify}
-      />
+      {/* Bulk-action toolbar (#95 Phase 2) — select-all + actions.
+          Hidden on the unified "Not in MindBlown" tab (#140); that view
+          has its own per-card actions and no selection model. */}
+      {view !== 'not-in-mindblown' && (
+        <BulkToolbar
+          view={view}
+          totalVisible={decisions.length}
+          selectedCount={selectedIds.size}
+          allSelected={allSelected}
+          someSelected={someSelected}
+          onToggleSelectAll={toggleSelectAll}
+          canBulkOverride={canBulkOverride}
+          bulkBusy={bulkBusy}
+          onBulkConfirm={handleBulkConfirm}
+          onBulkOverride={() => setBulkPickerOpen(true)}
+          onBulkReclassify={handleBulkReclassify}
+        />
+      )}
 
       {/* Info banner (bulk success) */}
       {info && !error && (
@@ -550,7 +740,21 @@ export function TriagePanel({
 
       {/* Body */}
       <div style={{ flex: 1, overflowY: 'auto' }} data-testid="triage-body">
-        {loading ? (
+        {view === 'not-in-mindblown' ? (
+          <NotInMindBlownView
+            loading={loading}
+            items={notInMindBlownItems}
+            filter={notInMindBlownFilter}
+            onFilterChange={setNotInMindBlownFilter}
+            orphansAvailable={orphansAvailable}
+            orphansError={orphansError}
+            busyKey={busyDecisionId}
+            onImport={(item) => setNotInMindBlownPickerItem(item)}
+            onOrphanSkip={handleOrphanSkip}
+            onReclassify={handleNotInMindBlownReclassify}
+            onConfirmSkip={handleNotInMindBlownConfirmSkip}
+          />
+        ) : loading ? (
           <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
             Loading…
           </div>
@@ -567,7 +771,7 @@ export function TriagePanel({
             <TriageCard
               key={d.id}
               decision={d}
-              view={view}
+              view={view as 'pending' | 'placed' | 'skipped'}
               busy={busyDecisionId === d.id}
               selected={selectedIds.has(d.id)}
               onToggleSelect={() => toggleSelect(d.id)}
@@ -627,6 +831,18 @@ export function TriagePanel({
             .filter((x): x is string => typeof x === 'string')}
           onPick={handleBulkOverridePickParent}
           onClose={() => setBulkPickerOpen(false)}
+        />
+      )}
+
+      {/* Not-in-MindBlown picker modal (#140) — for both orphan
+          imports and decision-row → place overrides from the unified
+          view. */}
+      {notInMindBlownPickerItem && (
+        <NodePickerModal
+          title={`Import "${notInMindBlownPickerItem.issueTitle}" — pick a parent`}
+          excludeNodeIds={[]}
+          onPick={handleNotInMindBlownPickParent}
+          onClose={() => setNotInMindBlownPickerItem(null)}
         />
       )}
     </div>
@@ -762,7 +978,11 @@ function BulkToolbar({
   onBulkOverride,
   onBulkReclassify,
 }: {
-  view: SubView;
+  // The "Not in MindBlown" tab has its own card component and no
+  // selection model — BulkToolbar is hidden in that view at the call
+  // site. Narrow the type so a future regression that re-introduces
+  // bulk actions there surfaces as a type error.
+  view: 'pending' | 'placed' | 'skipped';
   totalVisible: number;
   selectedCount: number;
   allSelected: boolean;
@@ -919,7 +1139,12 @@ function TriageCard({
   onUncertain,
 }: {
   decision: TriageDecision;
-  view: SubView;
+  // The legacy three-bucket TriageCard never renders inside the
+  // 'not-in-mindblown' tab — that tab has its own card component
+  // (NotInMindBlownCard) that handles orphans + decision-row buckets
+  // with the unified shape. Narrow the type so a stray case here
+  // surfaces at the compile step.
+  view: 'pending' | 'placed' | 'skipped';
   busy: boolean;
   selected: boolean;
   onToggleSelect: () => void;
@@ -1306,4 +1531,316 @@ function formatTimeAgo(iso: string): string {
   if (hr < 24) return `${hr}h ago`;
   const day = Math.floor(hr / 24);
   return `${day}d ago`;
+}
+
+// ── Not-in-MindBlown view (#140) ──────────────────────────────────
+//
+// Renders the unified "tickets that aren't on the roadmap" surface:
+// sub-filter buttons (All / Skipped / Pending / Uncertain / Orphans)
+// at the top, plus a vertical list of per-card items. Each card shows
+// the issue link + state, the bucket badge, and a small action set
+// matched to the bucket:
+//
+//   - skipped / uncertain → Import to MindBlown + Re-classify
+//   - pending-skipped     → Import + Confirm skip + Re-classify
+//   - orphan              → Import + Mark as skip (no decision row exists)
+//
+// When the orphan branch is unavailable (no GitHub integration, or the
+// import call failed) we still render the decision-row items and show
+// an inline notice explaining the missing bucket. The notice is muted
+// rather than red — the operator can still triage the rest.
+
+function NotInMindBlownView({
+  loading,
+  items,
+  filter,
+  onFilterChange,
+  orphansAvailable,
+  orphansError,
+  busyKey,
+  onImport,
+  onOrphanSkip,
+  onReclassify,
+  onConfirmSkip,
+}: {
+  loading: boolean;
+  items: NotInMindBlownItem[];
+  filter: NotInMindBlownFilter;
+  onFilterChange: (f: NotInMindBlownFilter) => void;
+  orphansAvailable: boolean;
+  orphansError: string | null;
+  busyKey: string | null;
+  onImport: (item: NotInMindBlownItem) => void;
+  onOrphanSkip: (item: NotInMindBlownItem) => void;
+  onReclassify: (item: NotInMindBlownItem) => void;
+  onConfirmSkip: (item: NotInMindBlownItem) => void;
+}) {
+  const filterButtons: Array<{ key: NotInMindBlownFilter; label: string; testId: string }> = [
+    { key: 'all', label: 'All', testId: 'not-in-mindblown-filter-all' },
+    { key: 'skipped', label: 'Skipped', testId: 'not-in-mindblown-filter-skipped' },
+    { key: 'pending-skipped', label: 'Pending', testId: 'not-in-mindblown-filter-pending-skipped' },
+    { key: 'uncertain', label: 'Uncertain', testId: 'not-in-mindblown-filter-uncertain' },
+    { key: 'orphan', label: 'Orphans', testId: 'not-in-mindblown-filter-orphan' },
+  ];
+  return (
+    <div data-testid="not-in-mindblown-view">
+      {/* Sub-filter pills */}
+      <div
+        data-testid="not-in-mindblown-filter-bar"
+        style={{
+          padding: '8px 10px',
+          borderBottom: '1px solid #f1f5f9',
+          background: '#f8fafc',
+          display: 'flex',
+          gap: 4,
+          flexWrap: 'wrap',
+        }}
+      >
+        {filterButtons.map((b) => (
+          <button
+            key={b.key}
+            data-testid={b.testId}
+            onClick={() => onFilterChange(b.key)}
+            style={{
+              padding: '3px 10px',
+              borderRadius: 12,
+              border: '1px solid #e2e8f0',
+              background: filter === b.key ? '#3b82f6' : '#fff',
+              color: filter === b.key ? '#fff' : '#475569',
+              fontSize: 11,
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {b.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Orphan-unavailable notice */}
+      {!orphansAvailable && (filter === 'all' || filter === 'orphan') && (
+        <div
+          data-testid="not-in-mindblown-orphans-notice"
+          style={{
+            padding: '8px 12px',
+            background: '#fef3c7',
+            color: '#92400e',
+            fontSize: 11,
+            borderBottom: '1px solid #fde68a',
+          }}
+        >
+          Orphan bucket unavailable: {orphansError ?? 'GitHub fetch failed'}
+        </div>
+      )}
+
+      {/* Body */}
+      {loading ? (
+        <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+          Loading…
+        </div>
+      ) : items.length === 0 ? (
+        <div
+          data-testid="not-in-mindblown-empty"
+          style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}
+        >
+          Nothing matches the current filter.
+        </div>
+      ) : (
+        items.map((item) => (
+          <NotInMindBlownCard
+            key={
+              item.triageDecisionId ?? `orphan:${item.externalId}`
+            }
+            item={item}
+            busy={busyKey === (item.triageDecisionId ?? item.externalId)}
+            onImport={() => onImport(item)}
+            onOrphanSkip={() => onOrphanSkip(item)}
+            onReclassify={() => onReclassify(item)}
+            onConfirmSkip={() => onConfirmSkip(item)}
+          />
+        ))
+      )}
+    </div>
+  );
+}
+
+function NotInMindBlownCard({
+  item,
+  busy,
+  onImport,
+  onOrphanSkip,
+  onReclassify,
+  onConfirmSkip,
+}: {
+  item: NotInMindBlownItem;
+  busy: boolean;
+  onImport: () => void;
+  onOrphanSkip: () => void;
+  onReclassify: () => void;
+  onConfirmSkip: () => void;
+}) {
+  const bucketBadge = (() => {
+    switch (item.kind) {
+      case 'skipped':
+        return { label: 'Skipped', bg: '#fef3c7', fg: '#854d0e' };
+      case 'pending-skipped':
+        return { label: 'Pending', bg: '#fef9c3', fg: '#854d0e' };
+      case 'uncertain':
+        return { label: 'Uncertain', bg: '#e2e8f0', fg: '#475569' };
+      case 'orphan':
+      default:
+        return { label: 'Orphan', bg: '#dbeafe', fg: '#1e40af' };
+    }
+  })();
+  const stateBadge =
+    item.issueState === 'closed'
+      ? { label: 'closed', bg: '#fee2e2', fg: '#991b1b' }
+      : { label: 'open', bg: '#dcfce7', fg: '#166534' };
+  return (
+    <div
+      data-testid="not-in-mindblown-card"
+      data-kind={item.kind}
+      data-external-id={item.externalId}
+      style={{
+        padding: 12,
+        borderBottom: '1px solid #f1f5f9',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}
+    >
+      {/* Title row */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', flex: 1 }}>
+          {item.issueTitle}
+        </span>
+        <span
+          data-testid="not-in-mindblown-card-bucket"
+          style={{
+            fontSize: 10,
+            fontWeight: 700,
+            padding: '2px 8px',
+            borderRadius: 10,
+            background: bucketBadge.bg,
+            color: bucketBadge.fg,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {bucketBadge.label}
+        </span>
+      </div>
+
+      {/* External link + state */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11 }}>
+        <a
+          href={item.issueUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="not-in-mindblown-card-link"
+          style={{ color: '#3b82f6', textDecoration: 'none' }}
+        >
+          {item.externalId}
+        </a>
+        <span
+          data-testid="not-in-mindblown-card-state"
+          style={{
+            fontSize: 9,
+            padding: '1px 6px',
+            borderRadius: 8,
+            background: stateBadge.bg,
+            color: stateBadge.fg,
+            fontWeight: 600,
+            textTransform: 'uppercase',
+          }}
+        >
+          {stateBadge.label}
+        </span>
+        {item.decidedAt && (
+          <>
+            <span style={{ color: '#cbd5e1' }}>•</span>
+            <span style={{ color: '#94a3b8', fontSize: 10 }}>
+              {formatTimeAgo(item.decidedAt)}
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* Decision detail or orphan placeholder */}
+      {item.kind === 'orphan' ? (
+        <div
+          data-testid="not-in-mindblown-card-orphan-marker"
+          style={{
+            fontSize: 11,
+            color: '#64748b',
+            fontStyle: 'italic',
+            padding: 6,
+            background: '#f8fafc',
+            borderRadius: 4,
+          }}
+        >
+          Not yet triaged — no decision row exists for this issue.
+        </div>
+      ) : (
+        <div
+          data-testid="not-in-mindblown-card-reason"
+          style={{
+            fontSize: 11,
+            color: '#475569',
+            lineHeight: 1.4,
+            padding: 6,
+            background: '#f8fafc',
+            borderRadius: 4,
+            border: '1px solid #f1f5f9',
+          }}
+        >
+          {item.confidence != null && (
+            <span style={{ color: '#94a3b8', marginRight: 6 }}>
+              {item.confidence}%
+            </span>
+          )}
+          {item.reason ?? ''}
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        <ActionBtn
+          testId="not-in-mindblown-card-import"
+          label="Import to MindBlown"
+          kind="primary"
+          disabled={busy}
+          onClick={onImport}
+        />
+        {item.kind === 'orphan' ? (
+          <ActionBtn
+            testId="not-in-mindblown-card-mark-skip"
+            label="Mark as skip"
+            kind="default"
+            disabled={busy}
+            onClick={onOrphanSkip}
+          />
+        ) : (
+          <ActionBtn
+            testId="not-in-mindblown-card-reclassify"
+            label={busy ? '…' : 'Re-classify'}
+            kind="ghost"
+            disabled={busy}
+            onClick={onReclassify}
+          />
+        )}
+        {item.kind === 'pending-skipped' && (
+          <ActionBtn
+            testId="not-in-mindblown-card-confirm-skip"
+            label="Confirm skip"
+            kind="default"
+            disabled={busy}
+            onClick={onConfirmSkip}
+          />
+        )}
+      </div>
+    </div>
+  );
 }

@@ -65,6 +65,8 @@ import { buildMapContext } from '../sync/mapContext.js';
 import { triageIssue } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
+import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
 // ── Auth helpers ──────────────────────────────────────────────────
@@ -258,6 +260,616 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       decisions: rows,
     });
   });
+
+  // ── GET /api/maps/:mapId/triage-decisions/not-in-mindblown ────
+  // Closes #140. A unified view of every GitHub ticket that is NOT
+  // currently a node in this map, split into four buckets:
+  //
+  //   - 'skipped'         — decision=skip AND reviewed=true
+  //   - 'pending-skipped' — decision=skip AND reviewed=false
+  //   - 'uncertain'       — decision=uncertain (regardless of reviewed)
+  //   - 'orphan'          — no triage_decisions row AND no node anywhere
+  //                         in this map references the issue's externalId
+  //
+  // Today the Triage Panel only surfaces the first three implicitly via
+  // its Pending/Skipped tabs (mixed with `place` rows); orphans are
+  // invisible except via the `github_sync_overview` endpoint. This view
+  // brings them all together with a single shape so the operator (and
+  // Eve via MCP) can answer "what's in GitHub that's not on the
+  // roadmap?" in one round-trip.
+  //
+  // Query params:
+  //   bucket=skipped|pending-skipped|uncertain|orphans|all  (default all)
+  //   limit=N  (default 50, hard cap 200)
+  //   since=ISO  (decision rows only — orphans don't carry a decidedAt)
+  //
+  // The orphan branch needs a live GitHub fetch via importGitHubIssues
+  // (same source the `github_sync_overview` route uses). When GitHub
+  // isn't configured for this map we silently skip orphans rather than
+  // failing the whole call — the decision-bucket data is still useful
+  // on a triage-only setup. The MCP tool surfaces this fact via the
+  // `orphansAvailable` flag.
+  //
+  // Auth: same gate as the other triage routes — session JWT + 'view'
+  // permission, API-key auth rejected.
+  app.get<{
+    Params: { mapId: string };
+    Querystring: {
+      bucket?: string;
+      limit?: string;
+      since?: string;
+    };
+  }>(
+    '/api/maps/:mapId/triage-decisions/not-in-mindblown',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'view');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+
+      const requestedBucket = req.query.bucket ?? 'all';
+      const validBuckets = new Set([
+        'all',
+        'skipped',
+        'pending-skipped',
+        'uncertain',
+        'orphans',
+      ]);
+      if (!validBuckets.has(requestedBucket)) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `bucket must be one of: skipped, pending-skipped, uncertain, orphans, all (got '${requestedBucket}')`,
+          },
+        });
+      }
+
+      const limitRaw = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0
+        ? Math.min(limitRaw, 200)
+        : 50;
+
+      let sinceDate: Date | null = null;
+      if (req.query.since) {
+        const t = Date.parse(req.query.since);
+        // Same posture as the main list route: silently ignore a
+        // malformed `since` rather than 400-erroring, so a URL typo
+        // doesn't blank the panel.
+        if (Number.isFinite(t)) sinceDate = new Date(t);
+      }
+
+      // ── Bucket 1-3: decision-row buckets (skipped, pending-skipped, uncertain) ──
+      //
+      // We always pull all three buckets unless `bucket` filters us
+      // down — a single SELECT against `triage_decisions` covers all
+      // three, then we partition in memory. The whole-row pre-limit
+      // count is small (capped at 200 server-wide for the existing
+      // triage list), so partitioning client-side is cheap.
+      const decisionFilters = [eq(triageDecisions.mapId, req.params.mapId)];
+      if (sinceDate) {
+        decisionFilters.push(gte(triageDecisions.decidedAt, sinceDate));
+      }
+
+      type DecisionItem = {
+        kind: 'skipped' | 'pending-skipped' | 'uncertain';
+        triageDecisionId: string;
+        decision: 'skip' | 'uncertain';
+        reason: string;
+        confidence: number;
+        decidedAt: string;
+        externalId: string;
+        issueTitle: string;
+        issueState: 'open' | 'closed';
+        issueUrl: string;
+      };
+
+      const decisionItems: DecisionItem[] = [];
+      const needDecisionRows =
+        requestedBucket === 'all' ||
+        requestedBucket === 'skipped' ||
+        requestedBucket === 'pending-skipped' ||
+        requestedBucket === 'uncertain';
+      // Track decision-row externalIds so the orphan branch can filter
+      // them out — same map of triaged ids regardless of bucket filter.
+      const triagedExternalIds = new Set<string>();
+      if (needDecisionRows || requestedBucket === 'orphans') {
+        const rows = await db
+          .select()
+          .from(triageDecisions)
+          .where(and(...decisionFilters))
+          .orderBy(desc(triageDecisions.decidedAt));
+        for (const row of rows) {
+          triagedExternalIds.add(row.externalId);
+          // Decision items only include skip/uncertain — `place`
+          // decisions belong on the map and don't fit "not in
+          // MindBlown" (whether they're actually placed yet is
+          // covered by the existing Pending/Placed tabs).
+          if (row.decision !== 'skip' && row.decision !== 'uncertain') continue;
+          let kind: DecisionItem['kind'];
+          if (row.decision === 'uncertain') {
+            kind = 'uncertain';
+          } else if (row.reviewed) {
+            kind = 'skipped';
+          } else {
+            kind = 'pending-skipped';
+          }
+          if (
+            requestedBucket !== 'all' &&
+            requestedBucket !== 'orphans' &&
+            kind !== requestedBucket
+          ) {
+            continue;
+          }
+          if (!needDecisionRows && requestedBucket === 'orphans') {
+            // We only walked the table to populate triagedExternalIds
+            // for the orphan filter — skip pushing the item.
+            continue;
+          }
+          decisionItems.push({
+            kind,
+            triageDecisionId: row.id,
+            decision: row.decision,
+            reason: row.reason,
+            confidence: row.confidence,
+            decidedAt:
+              row.decidedAt instanceof Date
+                ? row.decidedAt.toISOString()
+                : String(row.decidedAt),
+            externalId: row.externalId,
+            issueTitle: row.issueTitle,
+            issueState: (row.issueState === 'closed' ? 'closed' : 'open'),
+            issueUrl: buildIssueUrlFromExternalId(row.externalId),
+          });
+        }
+      }
+
+      // ── Bucket 4: orphans ──
+      //
+      // GitHub issues that have NO triage_decisions row AND no node in
+      // this map carrying an externalLink with their externalId. Same
+      // logic as `github_sync_overview.onlyInGitHub`, minus rows that
+      // already exist in triage (those are covered by the three buckets
+      // above).
+      //
+      // Three reasons to skip the orphan branch:
+      //   - operator filtered to a non-orphan bucket
+      //   - GitHub isn't configured on this map
+      //   - importGitHubIssues throws (rate limit, network)
+      // We surface `orphansAvailable` and `orphansError` on the response
+      // so the UI can render an inline notice without failing the whole
+      // request — the operator can still triage skip/uncertain rows
+      // when GitHub is unreachable.
+      type OrphanItem = {
+        kind: 'orphan';
+        externalId: string;
+        issueTitle: string;
+        issueState: 'open' | 'closed';
+        issueUrl: string;
+      };
+      const orphanItems: OrphanItem[] = [];
+      let orphansAvailable = false;
+      let orphansError: string | null = null;
+      const needOrphans = requestedBucket === 'all' || requestedBucket === 'orphans';
+      if (needOrphans) {
+        const ghCtx = await getGitHubContextForMap(req.params.mapId);
+        if (!ghCtx) {
+          orphansError = 'GitHub is not configured for this map — orphan bucket skipped';
+        } else {
+          try {
+            const imported = await importGitHubIssues(
+              ghCtx.owner,
+              ghCtx.repo,
+              ghCtx.token,
+              { includeAll: true },
+            );
+            // Build the set of externalIds already on a node in this
+            // map (any node with a github externalLink, deleted or not
+            // — we already filter to `notDeleted` below since deleted
+            // nodes shouldn't count as "in MindBlown").
+            const linkedNodes = await db
+              .select({
+                id: nodes.id,
+                externalLinks: nodes.externalLinks,
+              })
+              .from(nodes)
+              .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
+            const linkedExternalIds = new Set<string>();
+            for (const n of linkedNodes) {
+              const links = (n.externalLinks as ExternalLink[] | null) ?? [];
+              for (const l of links) {
+                if (l.provider === 'github' && l.externalId) {
+                  linkedExternalIds.add(l.externalId);
+                }
+              }
+            }
+            orphansAvailable = true;
+            for (const item of imported) {
+              const externalId = item.externalLink.externalId;
+              if (triagedExternalIds.has(externalId)) continue;
+              if (linkedExternalIds.has(externalId)) continue;
+              orphanItems.push({
+                kind: 'orphan',
+                externalId,
+                issueTitle: item.issue.title,
+                issueState: item.issue.state,
+                issueUrl: item.issue.html_url,
+              });
+            }
+          } catch (err) {
+            orphansError =
+              err instanceof Error
+                ? `GitHub fetch failed: ${err.message}`
+                : 'GitHub fetch failed';
+          }
+        }
+      }
+
+      // ── Stitch + paginate ──
+      // Items returned newest-first across buckets. Decision rows carry
+      // a real `decidedAt`; orphans don't (no decision row exists) — we
+      // append them after the decision items so the operator sees recent
+      // triage activity at the top, with the "never reviewed at all"
+      // tail at the bottom. Within each bucket we keep the source order
+      // (decisions are sorted by decided_at desc by the SQL; orphans
+      // are sorted by GitHub's `created asc` from importGitHubIssues —
+      // we don't re-sort to avoid a second pass).
+      const allItems = [...decisionItems, ...orphanItems];
+      const total = allItems.length;
+      const paged = allItems.slice(0, limit);
+
+      return reply.send({
+        mapId: req.params.mapId,
+        bucket: requestedBucket,
+        total,
+        returned: paged.length,
+        orphansAvailable,
+        orphansError,
+        items: paged,
+      });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/triage-decisions/orphan-import ─────
+  // #140 — operator picks an orphan (GitHub issue with no decision row
+  // + no node) and imports it into the map. Creates the triage_decisions
+  // row directly (decision='place', decided_by='operator', reviewed=
+  // true), then creates the node under parentNodeId and attaches the
+  // github externalLink. This is the orphan analogue to the existing
+  // /override route's `place` branch, except the row doesn't exist yet
+  // so we INSERT instead of UPDATE.
+  //
+  // Body: { externalId, issueTitle, issueState?, parentNodeId, reason? }
+  app.post<{
+    Params: { mapId: string };
+    Body: {
+      externalId?: string;
+      issueTitle?: string;
+      issueState?: string;
+      parentNodeId?: string;
+      reason?: string;
+    };
+  }>(
+    '/api/maps/:mapId/triage-decisions/orphan-import',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const userId = req.userId as string;
+      const body = req.body ?? {};
+      if (!body.externalId || typeof body.externalId !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'externalId is required' },
+        });
+      }
+      if (!body.issueTitle || typeof body.issueTitle !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'issueTitle is required' },
+        });
+      }
+      if (!body.parentNodeId || typeof body.parentNodeId !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'parentNodeId is required' },
+        });
+      }
+      const issueState = body.issueState === 'closed' ? 'closed' : 'open';
+
+      // Validate the parent is in this map.
+      const [parent] = await db
+        .select({ id: nodes.id, mapId: nodes.mapId })
+        .from(nodes)
+        .where(and(eq(nodes.id, body.parentNodeId), notDeleted));
+      if (!parent || parent.mapId !== req.params.mapId) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'parentNodeId must be a node in this map',
+          },
+        });
+      }
+
+      // Conflict guard + insert in a single transaction. We take a
+      // Postgres advisory xact lock keyed on the externalId so two
+      // concurrent orphan-import calls for the same issue can't both
+      // pass the precheck and race the unique `(map_id, external_id)`
+      // constraint — the loser would otherwise crash with a raw DB
+      // error (500) instead of the documented `409 NOT_ORPHAN`.
+      //
+      // Same lock pattern as `ensureNodeForIssue` in
+      // sync/githubIngest.ts:127 — precheck inside the tx with the
+      // lock held, then INSERT in the same tx so the row is visible
+      // to the next caller's precheck the instant we commit.
+      const isClosed = issueState === 'closed';
+      const externalId = body.externalId;
+      const issueTitle = body.issueTitle;
+      const reason = body.reason ?? 'Operator imported orphan from GitHub';
+      const parentNodeId = body.parentNodeId;
+      type TxResult =
+        | { kind: 'conflict' }
+        | {
+            kind: 'ok';
+            node: Awaited<ReturnType<typeof nodeDb.createNode>> | null;
+            decisionId: string | null;
+          };
+      const txResult: TxResult = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${externalId}, 0))`,
+        );
+        // Re-run the precheck *inside* the tx with the lock held so a
+        // concurrent caller that got past its own precheck (before we
+        // took the lock) is now blocked behind us; when it wakes up,
+        // its precheck reads our just-inserted row and 409s.
+        const [existingRow] = await tx
+          .select({ id: triageDecisions.id })
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.mapId, req.params.mapId),
+              eq(triageDecisions.externalId, externalId),
+            ),
+          );
+        if (existingRow) {
+          return { kind: 'conflict' };
+        }
+        const node = await nodeDb.createNode(
+          {
+            mapId: req.params.mapId,
+            parentId: parentNodeId,
+            text: `#${parseIssueNumber(externalId)} ${issueTitle}`,
+            createdBy: userId,
+            percentComplete: isClosed ? 100 : 0,
+            status: isClosed ? 'done' : 'todo',
+          },
+          tx,
+        );
+        const link: ExternalLink = {
+          provider: 'github',
+          externalId,
+          url: buildIssueUrlFromExternalId(externalId),
+          syncEnabled: true,
+          lastSyncedAt: new Date().toISOString(),
+        };
+        const updated = await nodeDb.updateNode(
+          node.id,
+          { externalLinks: [link] },
+          undefined,
+          tx,
+        );
+        const [inserted] = await tx
+          .insert(triageDecisions)
+          .values({
+            mapId: req.params.mapId,
+            externalId,
+            issueTitle,
+            issueState,
+            decision: 'place',
+            reason,
+            confidence: 100,
+            placedNodeId: node.id,
+            suggestedParentNodeId: null,
+            decidedBy: 'operator',
+            decidedAt: new Date(),
+            reviewed: true,
+            reviewedAt: new Date(),
+            reviewedBy: userId,
+          })
+          .returning({ id: triageDecisions.id });
+        return {
+          kind: 'ok',
+          node: updated ?? node,
+          decisionId: inserted?.id ?? null,
+        };
+      });
+
+      if (txResult.kind === 'conflict') {
+        return reply.status(409).send({
+          error: {
+            code: 'NOT_ORPHAN',
+            message:
+              'A triage decision already exists for this issue — use the override / confirm route instead',
+          },
+        });
+      }
+
+      const result = txResult;
+      if (result.node) {
+        broadcast(req.params.mapId, {
+          type: 'node:created',
+          node: result.node,
+          source: 'triage_orphan_import',
+        });
+      }
+      if (result.decisionId) {
+        // Brand-new row — there's no previous decision to override, so
+        // the audit-history `change_type` is 'created'. The orphan
+        // routes only reach this branch when the precheck above said
+        // no row existed, so the orphan case maps cleanly onto the
+        // ingest path's `previous ? 'overridden' : 'created'` rule
+        // (sync/githubIngest.ts:808).
+        await recordTriageHistory({
+          decisionId: result.decisionId,
+          changedBy: userId,
+          changeType: 'created',
+          previousDecision: null,
+          newDecision: 'place',
+          previousConfidence: null,
+          newConfidence: 100,
+          previousParentNodeId: null,
+          newParentNodeId: result.node?.id ?? null,
+          reason,
+        });
+        await applyTriageLabel({
+          mapId: req.params.mapId,
+          externalId,
+          decision: 'place',
+        });
+        broadcastTriageUpdated(req.params.mapId, 'overridden', [result.decisionId]);
+      }
+
+      return reply.send({
+        decisionId: result.decisionId,
+        nodeId: result.node?.id ?? null,
+        status: 'imported',
+      });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/triage-decisions/orphan-skip ───────
+  // #140 — operator marks an orphan as "skip" without creating a node.
+  // Inserts a triage_decisions row (decision='skip', decided_by=
+  // 'operator', reviewed=true). After this call the issue moves out of
+  // the 'orphan' bucket and into 'skipped' in the unified view.
+  //
+  // Body: { externalId, issueTitle, issueState?, reason? }
+  app.post<{
+    Params: { mapId: string };
+    Body: {
+      externalId?: string;
+      issueTitle?: string;
+      issueState?: string;
+      reason?: string;
+    };
+  }>(
+    '/api/maps/:mapId/triage-decisions/orphan-skip',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+      const userId = req.userId as string;
+      const body = req.body ?? {};
+      if (!body.externalId || typeof body.externalId !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'externalId is required' },
+        });
+      }
+      if (!body.issueTitle || typeof body.issueTitle !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'issueTitle is required' },
+        });
+      }
+      const issueState = body.issueState === 'closed' ? 'closed' : 'open';
+      const reason = body.reason ?? 'Operator marked orphan as skip';
+
+      // Same conflict-guard as orphan-import + race protection: take an
+      // advisory xact lock keyed on externalId so the precheck + INSERT
+      // run atomically against any concurrent orphan-skip /
+      // orphan-import for the same issue. Without the lock, two callers
+      // could both pass a pre-tx precheck and the loser would hit the
+      // unique `(map_id, external_id)` constraint as a raw 500 instead
+      // of a documented 409 NOT_ORPHAN.
+      const externalId = body.externalId;
+      const issueTitle = body.issueTitle;
+      type SkipTxResult =
+        | { kind: 'conflict' }
+        | { kind: 'ok'; decisionId: string | null };
+      const txResult: SkipTxResult = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${externalId}, 0))`,
+        );
+        const [existingRow] = await tx
+          .select({ id: triageDecisions.id })
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.mapId, req.params.mapId),
+              eq(triageDecisions.externalId, externalId),
+            ),
+          );
+        if (existingRow) {
+          return { kind: 'conflict' };
+        }
+        const [inserted] = await tx
+          .insert(triageDecisions)
+          .values({
+            mapId: req.params.mapId,
+            externalId,
+            issueTitle,
+            issueState,
+            decision: 'skip',
+            reason,
+            confidence: 100,
+            placedNodeId: null,
+            suggestedParentNodeId: null,
+            decidedBy: 'operator',
+            decidedAt: new Date(),
+            reviewed: true,
+            reviewedAt: new Date(),
+            reviewedBy: userId,
+          })
+          .returning({ id: triageDecisions.id });
+        return { kind: 'ok', decisionId: inserted?.id ?? null };
+      });
+
+      if (txResult.kind === 'conflict') {
+        return reply.status(409).send({
+          error: {
+            code: 'NOT_ORPHAN',
+            message:
+              'A triage decision already exists for this issue — use the override route instead',
+          },
+        });
+      }
+
+      const insertedId = txResult.decisionId;
+      if (insertedId) {
+        // Brand-new row → audit-history `change_type` is 'created'.
+        // The orphan routes only insert when the precheck above said
+        // no row existed, so we match the ingest path's
+        // `previous ? 'overridden' : 'created'` rule
+        // (sync/githubIngest.ts:808).
+        await recordTriageHistory({
+          decisionId: insertedId,
+          changedBy: userId,
+          changeType: 'created',
+          previousDecision: null,
+          newDecision: 'skip',
+          previousConfidence: null,
+          newConfidence: 100,
+          previousParentNodeId: null,
+          newParentNodeId: null,
+          reason,
+        });
+        await applyTriageLabel({
+          mapId: req.params.mapId,
+          externalId,
+          decision: 'skip',
+        });
+        broadcastTriageUpdated(req.params.mapId, 'overridden', [insertedId]);
+      }
+
+      return reply.send({
+        decisionId: insertedId,
+        status: 'skipped',
+      });
+    },
+  );
 
   // ── GET /api/maps/:mapId/triage-decisions/:decisionId/history ─
   // Phase 3 (#96). Returns the append-only audit log for a single

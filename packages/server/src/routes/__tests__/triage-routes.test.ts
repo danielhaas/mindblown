@@ -35,7 +35,19 @@ interface TriageRow {
 }
 
 const triageRows = new Map<string, TriageRow>();
-const nodes = new Map<string, { id: string; mapId: string; parentId: string | null }>();
+// #140 added `externalLinks` so the not-in-mindblown route's orphan
+// branch can filter out issues already attached to a node. Tests that
+// don't care about orphans seed `nodes` without setting externalLinks
+// (the field stays undefined, which the route treats as no links).
+const nodes = new Map<
+  string,
+  {
+    id: string;
+    mapId: string;
+    parentId: string | null;
+    externalLinks?: Array<{ provider: string; externalId: string }>;
+  }
+>();
 // Phase 3 (#96) — history insert recorder for the GET .../history route
 // test. Inserts from the mutation routes also land here so a test can
 // assert "the override route wrote a history row" without spinning up
@@ -145,6 +157,16 @@ function buildSelectChain(fields?: Record<string, unknown>) {
   };
 }
 
+// #141 race-fix harness: a hoisted holder so the test can install a gate
+// that the mocked `db.transaction` will consult before invoking the
+// callback. `gate` returns (or resolves to) void; resolving it lets the
+// transaction body run. The race test uses this to hold the second tx
+// outside its callback until the first tx has committed.
+const txGateHolder = vi.hoisted(() => ({
+  enter: undefined as ((n: number) => Promise<void> | void) | undefined,
+  count: 0,
+}));
+
 vi.mock('../../db/connection.js', () => {
   const db = {
     select: (fields?: Record<string, unknown>) => buildSelectChain(fields),
@@ -162,7 +184,8 @@ vi.mock('../../db/connection.js', () => {
       }),
     }),
     insert: (table: { __name?: string }) => ({
-      values: async (vals: Record<string, unknown>) => {
+      values: (vals: Record<string, unknown>) => {
+        let inserted: { id: string } | null = null;
         if (table?.__name === 'triageDecisionHistory') {
           const id = `h${historyRows.size + 1}`;
           historyRows.set(id, {
@@ -180,11 +203,57 @@ vi.mock('../../db/connection.js', () => {
             newParentNodeId: (vals.newParentNodeId as string | null) ?? null,
             reason: (vals.reason as string | null) ?? null,
           });
+          inserted = { id };
+        } else if (table?.__name === 'triageDecisions') {
+          // #140: orphan-import / orphan-skip INSERT into the triage
+          // table. Build a minimal row that the GET-list route would
+          // also surface; the synthetic id mirrors the seedRow pattern.
+          const id = `auto-tr-${triageRows.size + 1}`;
+          const row: TriageRow = {
+            id,
+            mapId: vals.mapId as string,
+            externalId: vals.externalId as string,
+            issueTitle: vals.issueTitle as string,
+            issueState: vals.issueState as string,
+            decision: (vals.decision as 'place' | 'skip' | 'uncertain'),
+            reason: (vals.reason as string) ?? '',
+            confidence: (vals.confidence as number) ?? 100,
+            placedNodeId: (vals.placedNodeId as string | null) ?? null,
+            suggestedParentNodeId:
+              (vals.suggestedParentNodeId as string | null) ?? null,
+            decidedAt: (vals.decidedAt as Date) ?? new Date(),
+            decidedBy: (vals.decidedBy as 'auto' | 'operator') ?? 'operator',
+            reviewed: (vals.reviewed as boolean) ?? false,
+            reviewedAt: (vals.reviewedAt as Date | null) ?? null,
+            reviewedBy: (vals.reviewedBy as string | null) ?? null,
+          };
+          triageRows.set(id, row);
+          inserted = { id };
         }
-        return { returning: async () => [] };
+        const thenable = {
+          then: (onFulfilled: (v: unknown) => unknown) => Promise.resolve(undefined).then(onFulfilled),
+          returning: async () => (inserted ? [inserted] : []),
+        };
+        return thenable;
       },
     }),
-    transaction: async <T>(cb: (tx: unknown) => Promise<T>): Promise<T> => cb(db),
+    // #141 race-fix: orphan-import / orphan-skip routes call
+    // `tx.execute(sql\`SELECT pg_advisory_xact_lock(...)\`)` inside their
+    // transactions. The mock has no real DB, so `execute` is a no-op.
+    // The gate below lets a test simulate Postgres's advisory-lock
+    // serialization: when armed, the Nth transaction waits on the
+    // promise returned by `__txGate(N)` before its callback runs, so the
+    // test can hold #2 outside the tx body until #1 has committed (i.e.
+    // its insert is visible to the in-tx precheck).
+    execute: async () => undefined,
+    transaction: async <T>(cb: (tx: unknown) => Promise<T>): Promise<T> => {
+      if (txGateHolder.enter) {
+        const n = txGateHolder.count;
+        txGateHolder.count = n + 1;
+        await txGateHolder.enter(n);
+      }
+      return cb(db);
+    },
   };
   return { db };
 });
@@ -198,6 +267,12 @@ vi.mock('../../db/schema.js', () => {
       id: col('id'),
       mapId: col('mapId'),
       parentId: col('parentId'),
+      // #140: not-in-mindblown's orphan branch reads externalLinks to
+      // filter out issues already attached to a node. The mock node
+      // store carries the column verbatim — predicates that match by
+      // mapId still work; the route only reads the field, doesn't
+      // filter on it.
+      externalLinks: col('externalLinks'),
     },
     triageDecisions: {
       __name: 'triageDecisions',
@@ -331,6 +406,48 @@ vi.mock('../../sync/mapContext.js', () => ({
   })),
 }));
 
+// ── #140 mocks: GitHub context + issue importer for the
+//    /not-in-mindblown route's orphan-bucket branch.
+//
+// `getGitHubContextForMap` is read once when the orphan branch runs;
+// returning `null` simulates a map with no GitHub integration, which the
+// route handles by setting `orphansAvailable: false` and skipping the
+// fetch. Tests that exercise the orphan branch flip the mock to return
+// a real context first.
+//
+// `importGitHubIssues` is the workhorse — each test seeds the issue
+// array it wants visible to the orphan bucket. The shape mirrors the
+// real ImportedIssue: `{ issue, externalLink }`.
+const githubContextMock = vi.hoisted(() =>
+  vi.fn(async (_mapId: string) => null as
+    | { owner: string; repo: string; token: string }
+    | null),
+);
+vi.mock('../../lib/githubContext.js', () => ({
+  getGitHubContextForMap: githubContextMock,
+}));
+
+interface FakeImportedIssue {
+  issue: {
+    number: number;
+    title: string;
+    state: 'open' | 'closed';
+    html_url: string;
+  };
+  externalLink: { externalId: string };
+}
+const importGitHubIssuesMock = vi.hoisted(() =>
+  vi.fn(async (
+    _owner: string,
+    _repo: string,
+    _token: string,
+    _opts?: { includeAll?: boolean },
+  ): Promise<FakeImportedIssue[]> => []),
+);
+vi.mock('@mindblown/integrations', () => ({
+  importGitHubIssues: importGitHubIssuesMock,
+}));
+
 import { triageRoutes } from '../triage.js';
 
 // ── Harness ──────────────────────────────────────────────────────
@@ -357,6 +474,15 @@ beforeEach(() => {
   triageIssueMock.mockClear();
   applyTriageLabelMock.mockReset();
   applyTriageLabelMock.mockImplementation(async () => undefined);
+  // #140 — reset the GitHub-context + import mocks so each test
+  // explicitly opts into the orphan-bucket branch by re-arming them.
+  githubContextMock.mockReset();
+  githubContextMock.mockImplementation(async () => null);
+  importGitHubIssuesMock.mockReset();
+  importGitHubIssuesMock.mockImplementation(async () => []);
+  // #141 race-fix harness: clear any gate left armed by a previous test.
+  txGateHolder.enter = undefined;
+  txGateHolder.count = 0;
 });
 
 // ── Auth gate ────────────────────────────────────────────────────
@@ -1882,5 +2008,562 @@ describe('GET .../triage-decisions/:decisionId/history', () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().total).toBe(0);
     expect(res.json().history).toEqual([]);
+  });
+});
+
+// ── Not-in-MindBlown unified view (#140) ─────────────────────────
+
+describe('GET .../triage-decisions/not-in-mindblown', () => {
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'admin';
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
+  it('returns 200 for a JWT session with view permission', async () => {
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().items).toEqual([]);
+  });
+
+  it('partitions decision rows into skipped / pending-skipped / uncertain', async () => {
+    // Three decision rows, one per bucket:
+    seedRow({
+      id: 'tr-skipped',
+      decision: 'skip',
+      reviewed: true,
+      externalId: 'o/r#1',
+      issueTitle: 'Skipped, reviewed',
+    });
+    seedRow({
+      id: 'tr-pending',
+      decision: 'skip',
+      reviewed: false,
+      externalId: 'o/r#2',
+      issueTitle: 'Skipped, NOT reviewed',
+    });
+    seedRow({
+      id: 'tr-uncertain',
+      decision: 'uncertain',
+      reviewed: false,
+      externalId: 'o/r#3',
+      issueTitle: 'Uncertain',
+    });
+    // A `place` decision must NOT be returned by this endpoint — the
+    // unified view is about issues NOT in MindBlown, and place rows
+    // are (in theory) attached to a node.
+    seedRow({
+      id: 'tr-place',
+      decision: 'place',
+      reviewed: true,
+      externalId: 'o/r#4',
+      issueTitle: 'Placed already',
+    });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as Array<{ kind: string; externalId: string }>;
+    const byKind = items.reduce<Record<string, string[]>>((acc, it) => {
+      acc[it.kind] = acc[it.kind] ?? [];
+      acc[it.kind].push(it.externalId);
+      return acc;
+    }, {});
+    expect(byKind.skipped).toEqual(['o/r#1']);
+    expect(byKind['pending-skipped']).toEqual(['o/r#2']);
+    expect(byKind.uncertain).toEqual(['o/r#3']);
+    // The place row never surfaces.
+    expect(items.some((i) => i.externalId === 'o/r#4')).toBe(false);
+  });
+
+  it('bucket=skipped narrows the result to skip+reviewed rows', async () => {
+    seedRow({ id: 'tr-skipped', decision: 'skip', reviewed: true, externalId: 'o/r#1' });
+    seedRow({ id: 'tr-pending', decision: 'skip', reviewed: false, externalId: 'o/r#2' });
+    seedRow({ id: 'tr-uncertain', decision: 'uncertain', externalId: 'o/r#3' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?bucket=skipped',
+    });
+    await app.close();
+    expect(res.json().items).toHaveLength(1);
+    expect(res.json().items[0].kind).toBe('skipped');
+  });
+
+  it('bucket=pending-skipped narrows to skip+unreviewed', async () => {
+    seedRow({ id: 'tr-skipped', decision: 'skip', reviewed: true, externalId: 'o/r#1' });
+    seedRow({ id: 'tr-pending', decision: 'skip', reviewed: false, externalId: 'o/r#2' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?bucket=pending-skipped',
+    });
+    await app.close();
+    expect(res.json().items).toHaveLength(1);
+    expect(res.json().items[0].kind).toBe('pending-skipped');
+  });
+
+  it('bucket=uncertain narrows to uncertain decisions', async () => {
+    seedRow({ id: 'tr-skipped', decision: 'skip', reviewed: true, externalId: 'o/r#1' });
+    seedRow({ id: 'tr-uncertain', decision: 'uncertain', externalId: 'o/r#3' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?bucket=uncertain',
+    });
+    await app.close();
+    expect(res.json().items).toHaveLength(1);
+    expect(res.json().items[0].kind).toBe('uncertain');
+  });
+
+  it('400 on an invalid bucket value', async () => {
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?bucket=banana',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error?.code).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns orphans for GitHub issues with no triage row + no node link', async () => {
+    // Arm the GitHub mocks: one map context + three GH issues. Two
+    // are already represented in the map (one via a triage row, one
+    // via an externalLink on a node); the third has neither and
+    // should land in the orphan bucket.
+    githubContextMock.mockImplementation(async () => ({
+      owner: 'o',
+      repo: 'r',
+      token: 't',
+    }));
+    importGitHubIssuesMock.mockImplementation(async () => [
+      {
+        issue: { number: 1, title: 'Has triage row', state: 'open', html_url: 'https://github.com/o/r/issues/1' },
+        externalLink: { externalId: 'o/r#1' },
+      },
+      {
+        issue: { number: 2, title: 'Linked on node', state: 'open', html_url: 'https://github.com/o/r/issues/2' },
+        externalLink: { externalId: 'o/r#2' },
+      },
+      {
+        issue: { number: 3, title: 'Orphan!', state: 'open', html_url: 'https://github.com/o/r/issues/3' },
+        externalLink: { externalId: 'o/r#3' },
+      },
+    ]);
+    // Issue #1 already has a triage_decisions row.
+    seedRow({ id: 'tr-1', decision: 'skip', reviewed: true, externalId: 'o/r#1' });
+    // Issue #2 is linked on a node in this map.
+    nodes.set('node-linked', {
+      id: 'node-linked',
+      mapId: 'map-1',
+      parentId: null,
+      externalLinks: [{ provider: 'github', externalId: 'o/r#2' }],
+    });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().orphansAvailable).toBe(true);
+    const items = res.json().items as Array<{ kind: string; externalId: string }>;
+    const orphans = items.filter((i) => i.kind === 'orphan');
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0].externalId).toBe('o/r#3');
+    // And the existing decision-row is still there in its own bucket.
+    expect(items.some((i) => i.kind === 'skipped' && i.externalId === 'o/r#1')).toBe(true);
+  });
+
+  it('bucket=orphans returns ONLY the orphan items', async () => {
+    githubContextMock.mockImplementation(async () => ({
+      owner: 'o',
+      repo: 'r',
+      token: 't',
+    }));
+    importGitHubIssuesMock.mockImplementation(async () => [
+      {
+        issue: { number: 1, title: 'Orphan', state: 'open', html_url: 'https://github.com/o/r/issues/1' },
+        externalLink: { externalId: 'o/r#1' },
+      },
+    ]);
+    seedRow({ id: 'tr-skipped', decision: 'skip', reviewed: true, externalId: 'o/r#999' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?bucket=orphans',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const items = res.json().items as Array<{ kind: string }>;
+    expect(items.every((i) => i.kind === 'orphan')).toBe(true);
+    expect(items).toHaveLength(1);
+  });
+
+  it('orphansAvailable=false + orphansError set when GitHub not configured', async () => {
+    // Default mock state returns null context → orphan branch skips.
+    seedRow({ id: 'tr-skipped', decision: 'skip', reviewed: true, externalId: 'o/r#1' });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().orphansAvailable).toBe(false);
+    expect(res.json().orphansError).toMatch(/not configured/);
+    // Decision-row buckets still return cleanly.
+    expect(res.json().items).toHaveLength(1);
+  });
+
+  it('orphansAvailable=false when importGitHubIssues throws — request still succeeds', async () => {
+    githubContextMock.mockImplementation(async () => ({
+      owner: 'o',
+      repo: 'r',
+      token: 't',
+    }));
+    importGitHubIssuesMock.mockImplementation(async () => {
+      throw new Error('rate limit hit');
+    });
+    seedRow({ id: 'tr-1', decision: 'skip', reviewed: true });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().orphansAvailable).toBe(false);
+    expect(res.json().orphansError).toMatch(/rate limit/);
+  });
+
+  it('honors limit (default 50, cap 200)', async () => {
+    for (let i = 0; i < 10; i++) {
+      seedRow({ id: `tr-${i}`, decision: 'skip', reviewed: true, externalId: `o/r#${i}` });
+    }
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions/not-in-mindblown?limit=3',
+    });
+    await app.close();
+    expect(res.json().total).toBe(10);
+    expect(res.json().returned).toBe(3);
+    expect(res.json().items).toHaveLength(3);
+  });
+});
+
+// ── Orphan-import / Orphan-skip routes (#140) ────────────────────
+
+describe('POST .../triage-decisions/orphan-import', () => {
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#42',
+        issueTitle: 'New',
+        parentNodeId: 'epic-1',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('creates a node + triage row when the issue is a true orphan', async () => {
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#42',
+        issueTitle: 'New orphan',
+        issueState: 'open',
+        parentNodeId: 'epic-1',
+        reason: 'manual import',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('imported');
+    expect(res.json().nodeId).toBe('created-node');
+    expect(createNodeMock).toHaveBeenCalledOnce();
+    // The triage row was inserted with operator-decided + reviewed.
+    const inserted = [...triageRows.values()].find(
+      (r) => r.externalId === 'o/r#42',
+    );
+    expect(inserted).toBeDefined();
+    expect(inserted!.decision).toBe('place');
+    expect(inserted!.decidedBy).toBe('operator');
+    expect(inserted!.reviewed).toBe(true);
+  });
+
+  it('rejects when a triage row already exists for the externalId (409 NOT_ORPHAN)', async () => {
+    seedRow({ id: 'tr-existing', externalId: 'o/r#42', decision: 'skip' });
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#42',
+        issueTitle: 'New',
+        parentNodeId: 'epic-1',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error?.code).toBe('NOT_ORPHAN');
+    expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when parentNodeId is not in this map', async () => {
+    nodes.set('outside', { id: 'outside', mapId: 'other-map', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#42',
+        issueTitle: 'New',
+        parentNodeId: 'outside',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('400 when externalId / issueTitle / parentNodeId missing', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: { externalId: 'o/r#42' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST .../triage-decisions/orphan-skip', () => {
+  it('403 for API-key auth', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload: { externalId: 'o/r#42', issueTitle: 'x' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('inserts a skip row, no node created', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload: {
+        externalId: 'o/r#7',
+        issueTitle: 'Orphan to skip',
+        issueState: 'open',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().status).toBe('skipped');
+    const inserted = [...triageRows.values()].find(
+      (r) => r.externalId === 'o/r#7',
+    );
+    expect(inserted).toBeDefined();
+    expect(inserted!.decision).toBe('skip');
+    expect(inserted!.decidedBy).toBe('operator');
+    expect(inserted!.reviewed).toBe(true);
+    expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when a triage row already exists (409 NOT_ORPHAN)', async () => {
+    seedRow({ id: 'tr-existing', externalId: 'o/r#7' });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload: { externalId: 'o/r#7', issueTitle: 'x' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error?.code).toBe('NOT_ORPHAN');
+  });
+});
+
+// ── Ray review (#141 round 2) ────────────────────────────────────
+//
+// Two should-fixes folded in after Ray's APPROVE: the race window on
+// orphan-import / orphan-skip (precheck was outside the tx, so two
+// concurrent callers could both pass it and the loser would crash on
+// the unique constraint) and the `change_type='overridden'` mis-label
+// on brand-new audit rows (semantically it's `'created'`).
+describe('orphan-import / orphan-skip — race-safety + audit-history change_type', () => {
+  it('orphan-import records change_type=created (brand-new row, no previous decision)', async () => {
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#new',
+        issueTitle: 'New orphan',
+        parentNodeId: 'epic-1',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const history = [...historyRows.values()];
+    expect(history.length).toBe(1);
+    expect(history[0].changeType).toBe('created');
+    expect(history[0].previousDecision).toBeNull();
+    expect(history[0].newDecision).toBe('place');
+  });
+
+  it('orphan-skip records change_type=created (brand-new row, no previous decision)', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload: { externalId: 'o/r#skip-new', issueTitle: 'Skip me' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const history = [...historyRows.values()];
+    expect(history.length).toBe(1);
+    expect(history[0].changeType).toBe('created');
+    expect(history[0].previousDecision).toBeNull();
+    expect(history[0].newDecision).toBe('skip');
+  });
+
+  it('orphan-import: two concurrent callers — exactly one wins, the other gets 409 NOT_ORPHAN', async () => {
+    // Race-simulation harness: gate the second transaction outside its
+    // callback until the first transaction has fully committed its
+    // INSERT. The fix moves the precheck *inside* the tx after the
+    // advisory lock, so when caller #2's tx body finally runs, its
+    // in-tx precheck reads caller #1's just-inserted row and returns
+    // the documented 409 — not a raw DB error.
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    let releaseSecond: (() => void) | null = null;
+    const secondReady = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    txGateHolder.enter = (n: number) => {
+      if (n === 0) return; // first tx runs immediately
+      return secondReady; // second tx waits until we release it
+    };
+    const app = await buildApp('jwt');
+    const payload = {
+      externalId: 'o/r#race',
+      issueTitle: 'Racy orphan',
+      parentNodeId: 'epic-1',
+    };
+    const a = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload,
+    });
+    const b = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload,
+    });
+    // First caller completes its transaction (insert visible), then we
+    // release the second caller — its in-tx precheck must now 409.
+    const aResult = await a;
+    releaseSecond!();
+    const bResult = await b;
+    await app.close();
+    const codes = [aResult.statusCode, bResult.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const winner = aResult.statusCode === 200 ? aResult : bResult;
+    const loser = aResult.statusCode === 409 ? aResult : bResult;
+    expect(winner.json().status).toBe('imported');
+    expect(loser.json().error?.code).toBe('NOT_ORPHAN');
+    // Exactly one triage row + one history row got persisted.
+    expect(triageRows.size).toBe(1);
+    expect(historyRows.size).toBe(1);
+    expect([...historyRows.values()][0].changeType).toBe('created');
+  });
+
+  it('orphan-skip: two concurrent callers — exactly one wins, the other gets 409 NOT_ORPHAN', async () => {
+    permissionLevel = 'edit';
+    let releaseSecond: (() => void) | null = null;
+    const secondReady = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    txGateHolder.enter = (n: number) => {
+      if (n === 0) return;
+      return secondReady;
+    };
+    const app = await buildApp('jwt');
+    const payload = { externalId: 'o/r#skip-race', issueTitle: 'Racy skip' };
+    const a = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload,
+    });
+    const b = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload,
+    });
+    const aResult = await a;
+    releaseSecond!();
+    const bResult = await b;
+    await app.close();
+    const codes = [aResult.statusCode, bResult.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const winner = aResult.statusCode === 200 ? aResult : bResult;
+    const loser = aResult.statusCode === 409 ? aResult : bResult;
+    expect(winner.json().status).toBe('skipped');
+    expect(loser.json().error?.code).toBe('NOT_ORPHAN');
+    expect(triageRows.size).toBe(1);
+    expect(historyRows.size).toBe(1);
+    expect([...historyRows.values()][0].changeType).toBe('created');
   });
 });

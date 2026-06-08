@@ -15,12 +15,15 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import {
+  listNotInMindBlownTool,
   listTriageDecisionsTool,
   overrideTriageTool,
   reclassifyTriageTool,
   confirmTriageTool,
 } from '../triage.js';
 import type {
+  NotInMindBlownItem,
+  NotInMindBlownResult,
   ToolBackend,
   TriageActionResult,
   TriageDecisionRow,
@@ -39,11 +42,15 @@ interface Recorder {
   } | null;
   lastReclassify: { mapId: string; decisionId: string } | null;
   lastConfirm: { mapId: string; decisionId: string } | null;
+  lastNotInMindBlown: { mapId: string; filters: Record<string, unknown> } | null;
   listResult: TriageListResult;
   overrideResult: TriageActionResult;
   reclassifyResult: TriageActionResult;
   confirmResult: TriageActionResult;
-  throwOn: Partial<Record<'list' | 'override' | 'reclassify' | 'confirm', Error>>;
+  notInMindBlownResult: NotInMindBlownResult;
+  throwOn: Partial<
+    Record<'list' | 'override' | 'reclassify' | 'confirm' | 'notInMindBlown', Error>
+  >;
 }
 
 function makeRecorder(): Recorder {
@@ -52,6 +59,7 @@ function makeRecorder(): Recorder {
     lastOverride: null,
     lastReclassify: null,
     lastConfirm: null,
+    lastNotInMindBlown: null,
     listResult: { mapId: 'm1', total: 0, returned: 0, decisions: [] },
     overrideResult: { decisionId: 'd1', status: 'placed', nodeId: 'n1' },
     reclassifyResult: {
@@ -62,6 +70,15 @@ function makeRecorder(): Recorder {
       reason: 'matches Frontend',
     },
     confirmResult: { decisionId: 'd1', status: 'confirmed', nodeId: 'n1' },
+    notInMindBlownResult: {
+      mapId: 'm1',
+      bucket: 'all',
+      total: 0,
+      returned: 0,
+      orphansAvailable: true,
+      orphansError: null,
+      items: [],
+    },
     throwOn: {},
     backend: {} as ToolBackend,
   };
@@ -100,6 +117,14 @@ function makeRecorder(): Recorder {
       if (state.throwOn.confirm) throw state.throwOn.confirm;
       state.lastConfirm = { mapId, decisionId };
       return state.confirmResult;
+    },
+    listNotInMindBlown: async (mapId, filters) => {
+      if (state.throwOn.notInMindBlown) throw state.throwOn.notInMindBlown;
+      state.lastNotInMindBlown = {
+        mapId,
+        filters: filters as Record<string, unknown>,
+      };
+      return state.notInMindBlownResult;
     },
     // Orchestration substrate (#111)
     readyNodes: async () => { throw new Error('not used'); },
@@ -394,5 +419,135 @@ describe('confirm_triage tool', () => {
         decisionId: 'd1',
       } as never),
     ).rejects.toThrow('API-key auth cannot access');
+  });
+});
+
+// ── list_not_in_mindblown (#140) ─────────────────────────────────
+
+function fakeNotInMindBlownItem(
+  overrides: Partial<NotInMindBlownItem> = {},
+): NotInMindBlownItem {
+  return {
+    kind: 'skipped',
+    triageDecisionId: 'd1',
+    decision: 'skip',
+    reason: 'duplicate',
+    confidence: 90,
+    decidedAt: new Date().toISOString(),
+    externalId: 'o/r#42',
+    issueTitle: 'A title',
+    issueState: 'open',
+    issueUrl: 'https://github.com/o/r/issues/42',
+    ...overrides,
+  };
+}
+
+describe('list_not_in_mindblown tool', () => {
+  it('accepts the documented schema (bucket / limit / since)', () => {
+    const schema = z.object(listNotInMindBlownTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      bucket: 'orphans',
+      limit: 100,
+      since: '2026-01-01T00:00:00Z',
+    });
+    expect(parsed.bucket).toBe('orphans');
+    expect(parsed.limit).toBe(100);
+  });
+
+  it('rejects an invalid bucket value', () => {
+    const schema = z.object(listNotInMindBlownTool.schema);
+    expect(() =>
+      schema.parse({ mapId: 'm1', bucket: 'banana' }),
+    ).toThrow();
+  });
+
+  it('rejects an out-of-range limit', () => {
+    const schema = z.object(listNotInMindBlownTool.schema);
+    expect(() => schema.parse({ mapId: 'm1', limit: 0 })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', limit: 250 })).toThrow();
+  });
+
+  it('happy path: forwards filters to backend and renders breakdown', async () => {
+    const rec = makeRecorder();
+    rec.notInMindBlownResult = {
+      mapId: 'm1',
+      bucket: 'all',
+      total: 3,
+      returned: 3,
+      orphansAvailable: true,
+      orphansError: null,
+      items: [
+        fakeNotInMindBlownItem({ kind: 'skipped', externalId: 'o/r#1' }),
+        fakeNotInMindBlownItem({
+          kind: 'orphan',
+          triageDecisionId: undefined,
+          decision: undefined,
+          reason: undefined,
+          confidence: undefined,
+          decidedAt: undefined,
+          externalId: 'o/r#2',
+        }),
+        fakeNotInMindBlownItem({ kind: 'uncertain', externalId: 'o/r#3' }),
+      ],
+    };
+    const out = await listNotInMindBlownTool.handler(rec.backend, {
+      mapId: 'm1',
+      bucket: 'all',
+      limit: 50,
+    } as never);
+    expect(rec.lastNotInMindBlown).toEqual({
+      mapId: 'm1',
+      filters: { mapId: undefined, bucket: 'all', limit: 50, since: undefined },
+    });
+    // Breakdown line surfaces per-kind counts.
+    expect(out).toContain('skipped=1');
+    expect(out).toContain('orphan=1');
+    expect(out).toContain('uncertain=1');
+    // Orphan item gets the "not yet triaged" suffix instead of a reason.
+    expect(out).toContain('not yet triaged');
+  });
+
+  it('renders the empty-state message when total=0', async () => {
+    const rec = makeRecorder();
+    rec.notInMindBlownResult = {
+      mapId: 'm1',
+      bucket: 'all',
+      total: 0,
+      returned: 0,
+      orphansAvailable: true,
+      orphansError: null,
+      items: [],
+    };
+    const out = await listNotInMindBlownTool.handler(rec.backend, {
+      mapId: 'm1',
+    } as never);
+    expect(out).toContain('No issues found');
+  });
+
+  it('surfaces the orphan-unavailable warning when the backend signals it', async () => {
+    const rec = makeRecorder();
+    rec.notInMindBlownResult = {
+      mapId: 'm1',
+      bucket: 'all',
+      total: 1,
+      returned: 1,
+      orphansAvailable: false,
+      orphansError: 'GitHub not configured',
+      items: [fakeNotInMindBlownItem({ kind: 'skipped' })],
+    };
+    const out = await listNotInMindBlownTool.handler(rec.backend, {
+      mapId: 'm1',
+    } as never);
+    expect(out).toContain('orphan bucket unavailable');
+    expect(out).toContain('GitHub not configured');
+  });
+
+  it('error path: backend throw propagates', async () => {
+    const rec = makeRecorder();
+    rec.throwOn.notInMindBlown = new Error('rate limit');
+    await expect(
+      listNotInMindBlownTool.handler(rec.backend, { mapId: 'm1' } as never),
+    ).rejects.toThrow('rate limit');
   });
 });

@@ -235,6 +235,11 @@ export function createChatBackend(userId: string): ToolBackend {
         'confirm_triage is not available through the in-app chat — call it via the MCP HTTP endpoint.',
       );
     },
+    async listNotInMindBlown(_mapId, _filters) {
+      throw new Error(
+        'list_not_in_mindblown is not available through the in-app chat — call it via the MCP HTTP endpoint.',
+      );
+    },
 
     // ── Orchestration substrate (#111) ──────────────────────────
     // Delegates to packages/server/src/services/orchestration.ts so the

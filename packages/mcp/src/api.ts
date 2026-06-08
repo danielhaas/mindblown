@@ -865,6 +865,61 @@ export function confirmTriage(
   );
 }
 
+// ── Not-in-MindBlown unified view (#140) ─────────────────────────
+
+export type NotInMindBlownKindApi =
+  | 'skipped'
+  | 'pending-skipped'
+  | 'uncertain'
+  | 'orphan';
+
+export interface NotInMindBlownItemApi {
+  kind: NotInMindBlownKindApi;
+  triageDecisionId?: string;
+  decision?: 'skip' | 'uncertain';
+  reason?: string;
+  confidence?: number;
+  decidedAt?: string;
+  externalId: string;
+  issueTitle: string;
+  issueState: 'open' | 'closed';
+  issueUrl: string;
+}
+
+export interface NotInMindBlownFiltersApi {
+  bucket?: NotInMindBlownKindApi | 'all' | 'orphans';
+  limit?: number;
+  since?: string;
+}
+
+export interface NotInMindBlownResultApi {
+  mapId: string;
+  bucket: string;
+  total: number;
+  returned: number;
+  orphansAvailable: boolean;
+  orphansError: string | null;
+  items: NotInMindBlownItemApi[];
+}
+
+export function listNotInMindBlown(
+  mapId: string,
+  filters: NotInMindBlownFiltersApi,
+): Promise<NotInMindBlownResultApi> {
+  const params = new URLSearchParams();
+  if (filters.bucket) {
+    // Server accepts both 'orphan' (singular) and 'orphans' (plural)
+    // — normalize to the canonical 'orphans' query value.
+    params.set('bucket', filters.bucket === 'orphan' ? 'orphans' : filters.bucket);
+  }
+  if (filters.limit != null) params.set('limit', String(filters.limit));
+  if (filters.since) params.set('since', filters.since);
+  const qs = params.toString();
+  return request<NotInMindBlownResultApi>(
+    `/api/maps/${mapId}/triage-decisions/not-in-mindblown${qs ? `?${qs}` : ''}`,
+  );
+}
+
 // ── Orchestration substrate (#111) ────────────────────────────
 
 export interface ReadyNodeApi {
