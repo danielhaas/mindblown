@@ -1042,8 +1042,41 @@ Title: "${targetText}"`;
       idByTag.set(tag, c.id);
     });
 
+    // For each child, include up to 3 grandchild names so the model can
+    // group by what a branch *contains*, not just its label. Without this,
+    // labels like "Frontend dashboard" and "Backend dashboard API" group
+    // under "Frontend" / "Backend" instead of "Dashboard" because the
+    // tech-layer theme is the only one visible in the labels themselves.
+    const GRANDCHILD_SAMPLE = 3;
+    const GRANDCHILD_CHAR_CAP = 60;
+    const childrenByParent = new Map<string, CoreNode[]>();
+    for (const n of mapDetail.nodes) {
+      if (!n.parentId) continue;
+      const bucket = childrenByParent.get(n.parentId) ?? [];
+      bucket.push(n);
+      childrenByParent.set(n.parentId, bucket);
+    }
+
     const childrenList = children
-      .map((c) => `  [${tags.get(c.id)}] ${c.text}`)
+      .map((c) => {
+        const grandchildren = childrenByParent.get(c.id) ?? [];
+        if (grandchildren.length === 0) {
+          return `  [${tags.get(c.id)}] ${c.text}`;
+        }
+        const sample = grandchildren
+          .slice(0, GRANDCHILD_SAMPLE)
+          .map((g) =>
+            g.text.length > GRANDCHILD_CHAR_CAP
+              ? g.text.slice(0, GRANDCHILD_CHAR_CAP - 1) + '…'
+              : g.text,
+          )
+          .join('; ');
+        const more =
+          grandchildren.length > GRANDCHILD_SAMPLE
+            ? ` (+${grandchildren.length - GRANDCHILD_SAMPLE} more)`
+            : '';
+        return `  [${tags.get(c.id)}] ${c.text} — contains: ${sample}${more}`;
+      })
       .join('\n');
 
     // When the fanout is wide, the model has a tendency to propose 2-3
@@ -1058,12 +1091,15 @@ Title: "${targetText}"`;
 
     const systemPrompt = `You are a project structure reviewer. You look at a parent node and its direct children, and you propose groupings when the children would be easier to read with intermediate category nodes.
 
+Each child is shown as "[N] <label> — contains: <sample of its own children>". Use the "contains" sample to understand what a child actually covers, not just its label.
+
 Rules:
 - Return ONLY a JSON object: {"groups": [{"members": [<int tags>], "label": "...", "reason": "..."}], "summary": "..."}
 - "members" is a list of integer tags identifying which existing children should be grouped together. Use the [N] tags from the input — do not invent new tags.
-- "label" is the proposed category name (concise, descriptive: "Backend", "UX polish", etc.)
+- "label" is the proposed category name (concise, descriptive: "Reporting", "Authentication", "Payments", etc.)
 - "reason" is one short sentence justifying the grouping
-- "summary" is one sentence on the overall structure (e.g. "Looks well-organized" or "Five children are clearly Backend tasks; the rest are unrelated")
+- "summary" is one sentence on the overall structure
+- **Prefer feature/domain themes** (Reporting, Auth, Payments, Onboarding, Notifications) **over technical-layer themes** (Frontend, Backend, Tests, Infrastructure). Feature groupings survive refactors; layer groupings get re-shuffled every time the architecture moves. Only fall back to a layer theme when no feature theme is defensible.
 - Only propose a group if ≥3 children share an obvious theme — small groups add noise
 - A child must not appear in more than one group
 - Do NOT propose any groups if the children are already balanced (≤6 total, or each clearly distinct)${aggressiveHint}
