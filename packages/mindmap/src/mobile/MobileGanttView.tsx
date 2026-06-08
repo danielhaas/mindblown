@@ -9,9 +9,21 @@ interface Props {
   onSelect: (nodeId: string) => void;
 }
 
-const PX_PER_DAY = 24;
+type Scale = 'day' | 'week' | 'month';
+
+const PX_PER_DAY_BY_SCALE: Record<Scale, number> = {
+  day: 24,
+  week: 14,
+  month: 6,
+};
+
+const LABEL_COL_WIDTH = 180;
 const ROW_HEIGHT = 36;
-const MONTH_HEADER_HEIGHT = 22;
+const HEADER_HEIGHT = 22;
+const HIDE_DONE_KEY = 'mindblown_gantt_hide_done';
+const SCALE_KEY = 'mb_mobile_gantt_scale';
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 function daysBetween(a: Date, b: Date): number {
   return Math.round((b.getTime() - a.getTime()) / 86_400_000);
@@ -30,8 +42,6 @@ function startOfMonth(d: Date): Date {
 function nextMonth(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1));
 }
-
-const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
 interface GanttRow {
   node: NodeWithComputed;
@@ -59,8 +69,6 @@ function flattenTreeIds(nodes: NodeWithComputed[], rootId: string): string[] {
   return order;
 }
 
-const HIDE_DONE_KEY = 'mindblown_gantt_hide_done';
-
 function readHideDone(): boolean {
   try {
     return localStorage.getItem(HIDE_DONE_KEY) === '1';
@@ -69,17 +77,34 @@ function readHideDone(): boolean {
   }
 }
 
+function readScale(): Scale {
+  try {
+    const v = localStorage.getItem(SCALE_KEY);
+    if (v === 'day' || v === 'week' || v === 'month') return v;
+  } catch {}
+  return 'week';
+}
+
 export function MobileGanttView({ nodes, map, onSelect }: Props) {
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
   const [hideDone, setHideDone] = useState<boolean>(readHideDone);
+  const [scale, setScale] = useState<Scale>(readScale);
+
+  const pxPerDay = PX_PER_DAY_BY_SCALE[scale];
 
   useEffect(() => {
     try {
       localStorage.setItem(HIDE_DONE_KEY, hideDone ? '1' : '0');
     } catch {}
   }, [hideDone]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(SCALE_KEY, scale);
+    } catch {}
+  }, [scale]);
 
   useEffect(() => {
     let cancelled = false;
@@ -98,14 +123,13 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
     };
   }, [map.id]);
 
-  const { rows, totalDays, monthMarkers, todayOffset, projectStart } = useMemo(() => {
+  const { rows, totalDays, monthMarkers, todayOffset } = useMemo(() => {
     if (!schedule) {
       return {
         rows: [] as GanttRow[],
         totalDays: 0,
         monthMarkers: [] as { offset: number; label: string }[],
         todayOffset: 0,
-        projectStart: new Date(),
       };
     }
     const anchor = new Date(schedule.projectStartDate);
@@ -143,7 +167,6 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
         totalDays: 0,
         monthMarkers: [] as { offset: number; label: string }[],
         todayOffset: 0,
-        projectStart: anchor,
       };
     }
 
@@ -184,18 +207,18 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
       totalDays,
       monthMarkers,
       todayOffset: daysBetween(padded, today),
-      projectStart: padded,
     };
   }, [schedule, nodes, map.rootNodeId, map.statusWorkflow, hideDone]);
 
   useEffect(() => {
     if (!timelineRef.current || totalDays === 0) return;
-    const x = todayOffset * PX_PER_DAY;
+    const x = todayOffset * pxPerDay;
     const w = timelineRef.current.clientWidth;
     timelineRef.current.scrollLeft = Math.max(0, x - w / 2);
-  }, [todayOffset, totalDays, schedule]);
+  }, [todayOffset, totalDays, schedule, pxPerDay]);
 
   const workflow = [...map.statusWorkflow].sort((a, b) => a.position - b.position);
+
   const controlBar = (
     <div className="mb-gantt-controls">
       <button
@@ -205,6 +228,18 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
       >
         {hideDone ? 'Hide done ✓' : 'Hide done'}
       </button>
+      <div className="mb-gantt-scale-group" role="group" aria-label="Time scale">
+        {(['day', 'week', 'month'] as const).map((sc) => (
+          <button
+            key={sc}
+            className="mb-gantt-scale-btn"
+            aria-pressed={scale === sc}
+            onClick={() => setScale(sc)}
+          >
+            {sc === 'day' ? 'D' : sc === 'week' ? 'W' : 'M'}
+          </button>
+        ))}
+      </div>
       <div className="mb-gantt-legend">
         {workflow.map((s) => (
           <span key={s.id} className="mb-gantt-legend-item">
@@ -249,110 +284,113 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
     );
   }
 
-  const timelineWidth = totalDays * PX_PER_DAY;
-  const labelWidth = 140;
+  const timelineWidth = totalDays * pxPerDay;
   const trackHeight = rows.length * ROW_HEIGHT;
-
-  const gridStyle: React.CSSProperties = {
-    ['--mb-gantt-label-w' as string]: `${labelWidth}px`,
-    ['--mb-gantt-time-w' as string]: `${timelineWidth}px`,
-  };
+  const monthColWidth = pxPerDay * 30;
 
   return (
     <>
-    {controlBar}
-    <div
-      className="mb-gantt-scroll-wrap"
-      ref={timelineRef}
-      style={{ maxHeight: 'calc(100dvh - 200px)' }}
-    >
-      <div className="mb-gantt-grid" style={gridStyle}>
-        {/* Sticky top-left corner over the label column */}
-        <div className="mb-gantt-month-header mb-gantt-corner" />
-        {/* Sticky month header above the timeline column */}
-        <div className="mb-gantt-month-header" style={{ position: 'sticky', top: 0, height: MONTH_HEADER_HEIGHT }}>
-          {monthMarkers.map((m) => (
+      {controlBar}
+      <div
+        className="mb-gantt-scroll-wrap"
+        style={{ maxHeight: 'calc(100dvh - 220px)' }}
+      >
+        <div className="mb-gantt-rows-col" style={{ width: LABEL_COL_WIDTH }}>
+          <div className="mb-gantt-rows-header" />
+          {rows.map((r) => (
             <div
-              key={m.offset}
-              className="mb-gantt-month"
-              style={{ left: m.offset * PX_PER_DAY, width: PX_PER_DAY * 30 }}
+              key={r.node.id}
+              className="mb-gantt-row-label"
+              onClick={() => onSelect(r.node.id)}
             >
-              {m.label}
-            </div>
-          ))}
-        </div>
-
-        {/* Today line — absolutely positioned over the whole timeline. */}
-        {todayOffset >= 0 && todayOffset <= totalDays && (
-          <div
-            className="mb-gantt-today"
-            style={{
-              left: labelWidth + todayOffset * PX_PER_DAY,
-              top: MONTH_HEADER_HEIGHT,
-              height: trackHeight,
-              pointerEvents: 'none',
-            }}
-          />
-        )}
-
-        {rows.map((r) => {
-          const pct = Math.round((r.node.computedProgress ?? 0) * 100);
-          const barColor = r.status?.color ?? (r.isCritical ? '#dc2626' : '#4f46e5');
-          return (
-            <div key={r.node.id} style={{ display: 'contents' }}>
-              <div
-                className="mb-gantt-row-label"
-                onClick={() => onSelect(r.node.id)}
-              >
+              <span className="mb-gantt-row-label-text">
                 {r.isCritical && (
                   <span style={{ color: '#dc2626', marginRight: 4, fontWeight: 700 }}>!</span>
                 )}
                 {r.node.text}
-              </div>
-              <div className="mb-gantt-row-track">
-                <div
-                  className="mb-gantt-bar"
-                  style={{
-                    left: r.startOffset * PX_PER_DAY,
-                    width: r.duration * PX_PER_DAY,
-                    background: `${barColor}33`,
-                    borderLeft: r.isCritical ? `2px solid ${barColor}` : 'none',
-                  }}
-                  onClick={() => onSelect(r.node.id)}
-                >
-                  <div
-                    className="mb-gantt-bar-fill"
-                    style={{ width: `${pct}%`, background: barColor }}
-                  />
-                  {r.duration * PX_PER_DAY > 90 && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: 6,
-                        top: 0,
-                        bottom: 0,
-                        display: 'flex',
-                        alignItems: 'center',
-                        fontSize: 11,
-                        color: '#0f172a',
-                        fontWeight: 500,
-                        pointerEvents: 'none',
-                        maxWidth: r.duration * PX_PER_DAY - 12,
-                        overflow: 'hidden',
-                        whiteSpace: 'nowrap',
-                        textOverflow: 'ellipsis',
-                      }}
-                    >
-                      {r.node.text}
-                    </div>
-                  )}
-                </div>
-              </div>
+              </span>
             </div>
-          );
-        })}
+          ))}
+        </div>
+
+        <div className="mb-gantt-timeline-col" ref={timelineRef}>
+          <div
+            className="mb-gantt-timeline-inner"
+            style={{ width: timelineWidth, minHeight: HEADER_HEIGHT + trackHeight }}
+          >
+            <div className="mb-gantt-month-header" style={{ width: timelineWidth }}>
+              {monthMarkers.map((m) => (
+                <div
+                  key={m.offset}
+                  className="mb-gantt-month"
+                  style={{ left: m.offset * pxPerDay, width: monthColWidth }}
+                >
+                  {m.label}
+                </div>
+              ))}
+            </div>
+
+            {todayOffset >= 0 && todayOffset <= totalDays && (
+              <div
+                className="mb-gantt-today"
+                style={{
+                  left: todayOffset * pxPerDay,
+                  top: HEADER_HEIGHT,
+                  height: trackHeight,
+                  pointerEvents: 'none',
+                }}
+              />
+            )}
+
+            {rows.map((r) => {
+              const pct = Math.round(r.node.computedProgress ?? 0);
+              const barColor = r.status?.color ?? (r.isCritical ? '#dc2626' : '#4f46e5');
+              const barWidthPx = r.duration * pxPerDay;
+              return (
+                <div key={r.node.id} className="mb-gantt-row-track">
+                  <div
+                    className="mb-gantt-bar"
+                    style={{
+                      left: r.startOffset * pxPerDay,
+                      width: barWidthPx,
+                      background: `${barColor}33`,
+                      borderLeft: r.isCritical ? `2px solid ${barColor}` : 'none',
+                    }}
+                    onClick={() => onSelect(r.node.id)}
+                  >
+                    <div
+                      className="mb-gantt-bar-fill"
+                      style={{ width: `${pct}%`, background: barColor }}
+                    />
+                    {barWidthPx > 90 && (
+                      <div
+                        style={{
+                          position: 'absolute',
+                          left: 6,
+                          top: 0,
+                          bottom: 0,
+                          display: 'flex',
+                          alignItems: 'center',
+                          fontSize: 11,
+                          color: '#0f172a',
+                          fontWeight: 500,
+                          pointerEvents: 'none',
+                          maxWidth: barWidthPx - 12,
+                          overflow: 'hidden',
+                          whiteSpace: 'nowrap',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {r.node.text}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
-    </div>
     </>
   );
 }

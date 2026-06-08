@@ -44,7 +44,7 @@ function pathTo(node: NodeWithComputed, byId: Map<string, NodeWithComputed>): No
 
 export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
   const s = statusOf(node, map.statusWorkflow);
-  const pct = Math.round((node.computedProgress ?? 0) * 100);
+  const pct = Math.round(node.computedProgress ?? 0);
   const ancestors = pathTo(node, byId).slice(1); // skip the root node
 
   const deps = node.dependencies ?? [];

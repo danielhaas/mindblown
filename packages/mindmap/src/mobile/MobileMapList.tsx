@@ -72,7 +72,7 @@ export function MobileMapList({ onPick }: Props) {
         Pick a map to view
       </div>
       {maps.map((m) => {
-        const pct = Math.round((m.computedProgress ?? 0) * 100);
+        const pct = Math.round(m.computedProgress ?? 0);
         return (
           <button key={m.id} className="mb-card" onClick={() => onPick(m)}>
             <div className="mb-card-title">

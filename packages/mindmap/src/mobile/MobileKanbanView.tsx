@@ -83,7 +83,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
               </div>
             )}
             {col.nodes.map((n) => {
-              const pct = Math.round((n.computedProgress ?? 0) * 100);
+              const pct = Math.round(n.computedProgress ?? 0);
               return (
                 <button
                   key={n.id}

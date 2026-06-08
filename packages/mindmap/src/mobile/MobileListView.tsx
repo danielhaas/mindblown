@@ -108,7 +108,7 @@ export function MobileListView({ nodes, map, onSelect }: Props) {
 
       {filtered.map(({ node, depth }) => {
         const s = statusOf(node, map.statusWorkflow);
-        const pct = Math.round((node.computedProgress ?? 0) * 100);
+        const pct = Math.round(node.computedProgress ?? 0);
         const healthCls =
           node.healthSignal === 'behind'
             ? 'mb-health-behind'
