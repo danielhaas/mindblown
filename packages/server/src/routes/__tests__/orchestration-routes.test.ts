@@ -247,6 +247,15 @@ function buildTestApp(): FastifyInstance {
         });
       }
 
+      // #118 issue 5 — releasing an unclaimed node is a no-op success.
+      if (node.claimedBySession === null) {
+        return reply.send({
+          node: { id: node.id, text: node.text },
+          released: false,
+          alreadyReleased: true,
+        });
+      }
+
       node.claimedBySession = null;
       node.claimedAt = null;
       node.updatedAt = new Date();
@@ -506,7 +515,7 @@ describe('orchestration routes', () => {
       expect(nodeStore.get('n1')!.claimedBySession).toBe('sess-001');
     });
 
-    it('allows releasing an unclaimed node by any session', async () => {
+    it('releasing an unclaimed node is a no-op success (#118 issue 5)', async () => {
       seedNode({ id: 'n1', claimedBySession: null });
       const res = await app.inject({
         method: 'POST',
@@ -514,6 +523,10 @@ describe('orchestration routes', () => {
         payload: { sessionId: 'sess-001' },
       });
       expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toMatchObject({
+        released: false,
+        alreadyReleased: true,
+      });
     });
   });
 

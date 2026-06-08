@@ -304,16 +304,17 @@ export async function updateNode(
     input.claimedBySession !== undefined || input.claimedAt !== undefined;
 
   if ((statusChanging || pctChanging) && (!claimTouched || !completedAtTouched)) {
-    const [nodeForMap] = await handle
-      .select({ mapId: nodes.mapId })
+    // #118 issue 3 — single JOIN replaces the previous 2-query path
+    // (SELECT node.mapId → SELECT map.statusWorkflow). Cuts the status-
+    // update hot path from 3 queries to 2 (the original UPDATE still
+    // fires below).
+    const [row] = await handle
+      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow })
       .from(nodes)
+      .innerJoin(maps, eq(maps.id, nodes.mapId))
       .where(and(eq(nodes.id, nodeId), notDeleted));
-    if (nodeForMap) {
-      const [mapRow] = await handle
-        .select({ statusWorkflow: maps.statusWorkflow })
-        .from(maps)
-        .where(eq(maps.id, nodeForMap.mapId as string));
-      const workflow = ((mapRow?.statusWorkflow as StatusDef[]) ?? []);
+    if (row) {
+      const workflow = ((row.statusWorkflow as StatusDef[]) ?? []);
 
       // Resolve whether the post-update node is "done":
       //   - status (if changing) → check its category in the workflow
