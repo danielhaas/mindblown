@@ -120,6 +120,9 @@ export const releaseNodeTool = defineTool({
   },
   handler: async (backend, { mapId, nodeId, sessionId }) => {
     const result = await backend.releaseNode(mapId, nodeId, sessionId);
+    if (result.alreadyReleased) {
+      return `Node ${nodeId} ("${result.node.text}") was not claimed — no-op.`;
+    }
     return `Released claim on node ${nodeId} ("${result.node.text}").`;
   },
 });

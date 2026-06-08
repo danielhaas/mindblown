@@ -148,7 +148,14 @@ export interface ClaimNodeResult {
 
 export interface ReleaseNodeResult {
   node: { id: string; text: string };
+  /** True when this call actually cleared a claim; false when nothing was claimed. */
   released: boolean;
+  /**
+   * True when the node was already unclaimed at call time (#118 issue 5).
+   * `released` is false in this case — the call is a no-op success.
+   * Callers logging "claim cleared" should suppress when this is true.
+   */
+  alreadyReleased?: boolean;
 }
 
 export interface ConflictEntry {

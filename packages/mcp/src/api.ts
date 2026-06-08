@@ -954,6 +954,8 @@ export interface ClaimNodeResultApi {
 export interface ReleaseNodeResultApi {
   node: { id: string; text: string };
   released: boolean;
+  /** True when the node was already unclaimed (#118 issue 5 — no-op success). */
+  alreadyReleased?: boolean;
 }
 
 export interface ConflictEntryApi {

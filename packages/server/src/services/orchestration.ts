@@ -155,28 +155,37 @@ export async function claimNode(
   nodeId: string,
   sessionId: string,
 ): Promise<ClaimNodeResult> {
-  const [row] = await db
-    .select()
-    .from(nodes)
-    .where(and(eq(nodes.id, nodeId), notDeleted));
-  if (!row) throw new OrchestrationNotFoundError(`Node ${nodeId} not found`);
+  // #118 issue 4 — race-condition fix. Two concurrent claims by
+  // different sessions used to both read pre-state, both report
+  // `warned: false`, and both UPDATE (last write wins). Wrap the
+  // SELECT + UPDATE in a single transaction with FOR UPDATE so the
+  // second tx blocks until the first commits, then observes the
+  // first writer's claim and reports `warned: true`.
+  const { previousClaim, updatedNode } = await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select()
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted))
+      .for('update');
+    if (!row) throw new OrchestrationNotFoundError(`Node ${nodeId} not found`);
 
-  const node = dbNodeToCore(row as unknown as Record<string, unknown>);
-  // NOTE: read-then-write without a transaction. The `warned` flag is
-  // best-effort under concurrent claims by different sessions; the soft-
-  // warn semantics of the spec accept this (last-write-wins on the claim,
-  // both writers may report not-warned). See follow-up issue.
-  const warned = node.claimedBySession !== null && node.claimedBySession !== sessionId;
-  const now = new Date();
+    const before = dbNodeToCore(row as unknown as Record<string, unknown>);
+    const now = new Date();
 
-  const [updated] = await db
-    .update(nodes)
-    .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
-    .where(and(eq(nodes.id, nodeId), notDeleted))
-    .returning();
-  if (!updated) throw new OrchestrationNotFoundError(`Node ${nodeId} not found`);
+    const [updatedRow] = await tx
+      .update(nodes)
+      .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+      .where(and(eq(nodes.id, nodeId), notDeleted))
+      .returning();
+    if (!updatedRow) throw new OrchestrationNotFoundError(`Node ${nodeId} not found`);
 
-  const updatedNode = dbNodeToCore(updated as unknown as Record<string, unknown>);
+    return {
+      previousClaim: before.claimedBySession,
+      updatedNode: dbNodeToCore(updatedRow as unknown as Record<string, unknown>),
+    };
+  });
+
+  const warned = previousClaim !== null && previousClaim !== sessionId;
 
   broadcast(mapId, {
     type: 'node:updated',
@@ -195,7 +204,7 @@ export async function claimNode(
     claimed: true,
     warned,
     warning: warned
-      ? `Node ${nodeId} was already claimed by session "${node.claimedBySession}". Claim transferred to "${sessionId}".`
+      ? `Node ${nodeId} was already claimed by session "${previousClaim}". Claim transferred to "${sessionId}".`
       : undefined,
   };
 }
@@ -220,6 +229,19 @@ export async function releaseNode(
     throw new ClaimOwnershipError(
       `Node ${nodeId} is claimed by session "${node.claimedBySession}", not "${sessionId}". Release rejected.`,
     );
+  }
+
+  // #118 issue 5 — when there's nothing to release, say so. The old
+  // code returned `released: true` for already-unclaimed nodes which
+  // was a misleading no-op. Callers checking `released` to decide
+  // whether to log "claim cleared" now have an `alreadyReleased`
+  // signal to suppress the noise. No DB write, no broadcast.
+  if (node.claimedBySession === null) {
+    return {
+      node: { id: node.id, text: node.text },
+      released: false,
+      alreadyReleased: true,
+    };
   }
 
   const now = new Date();
