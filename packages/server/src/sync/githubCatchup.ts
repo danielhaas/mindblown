@@ -596,7 +596,17 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
   // suppresses its own errors, but a synchronous throw at the top of
   // the function or an unhandled rejection escaping must NOT take down
   // the catchup return value.
+  //
+  // Note (2026-06-08): the dedicated 60s heartbeat in index.ts now
+  // owns the actual sd_notify pings. We keep this per-tick ping in
+  // place as belt-and-suspenders — pinging more often than
+  // WatchdogSec is harmless, and an extra ping on every healthy tick
+  // means the watchdog stays alive even if the 60s heartbeat
+  // setInterval is itself skipped due to event-loop blocking. We
+  // also record `lastHealthyTickAt` so the heartbeat knows whether
+  // to ping.
   if (isHealthyTick(results)) {
+    lastHealthyTickAt = Date.now();
     try {
       await sdNotifyWatchdog();
     } catch (err) {
@@ -608,6 +618,28 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
   }
 
   return results;
+}
+
+// Timestamp (epoch ms) of the most recent healthy catchup tick.
+// Initialised to process start so the heartbeat doesn't reject the
+// service as unhealthy before the very first tick has a chance to run.
+// Updated in-place above whenever a healthy tick completes; consumed
+// by the dedicated heartbeat in index.ts to decide whether to ping
+// the systemd watchdog independently of the catchup cadence.
+//
+// Decoupling matters because pre-2026-06-08 the watchdog ping was
+// tightly bound to the catchup setInterval — any event-loop hiccup
+// that delayed a tick past 5min triggered SIGABRT even when the
+// service was otherwise healthy. The new heartbeat fires every 60s
+// and only pings if the last healthy tick is within
+// `2 × CATCHUP_INTERVAL_MS` (= 10 min by default), so scheduler
+// drift up to ~10 min is tolerated while a truly dead catchup loop
+// still triggers a kill within ~15 min.
+let lastHealthyTickAt = Date.now();
+
+/** Read-only accessor for the heartbeat in index.ts. */
+export function getLastHealthyTickAt(): number {
+  return lastHealthyTickAt;
 }
 
 /**

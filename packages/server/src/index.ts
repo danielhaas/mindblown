@@ -4,14 +4,14 @@ import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
-import { runAllCatchups } from './sync/githubCatchup.js';
+import { runAllCatchups, getLastHealthyTickAt } from './sync/githubCatchup.js';
 import { runDriftAudit } from './sync/driftAudit.js';
 import { resolveDriftAuditIntervalMs } from './sync/driftAuditInterval.js';
 import { parsePositiveIntMs } from './sync/parseInterval.js';
 import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { runTrashGc } from './sync/trashGc.js';
-import { sdNotifyReady } from './sync/sdNotify.js';
+import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
@@ -179,6 +179,43 @@ async function main(): Promise<void> {
   };
   runCatchup();
   setInterval(runCatchup, CATCHUP_INTERVAL_MS);
+
+  // ── Systemd watchdog heartbeat (decoupled from catchup tick) ───
+  //
+  // Before this, sd_notify WATCHDOG=1 was pinged only at the END of
+  // each successful catchup tick (~every 5 min). With
+  // `WatchdogSec=300` in the unit file, even a 1-second scheduler
+  // drift past the 5-min mark triggered SIGABRT — and that drift
+  // happened often (any long LLM call from triage on a webhook event
+  // could block the event loop and slip the next tick).
+  //
+  // The dedicated 60s heartbeat below pings WATCHDOG=1 as long as
+  // `lastHealthyTickAt` is within `2 × CATCHUP_INTERVAL_MS`
+  // (= 10 min). So scheduler drift up to ~10 min is tolerated; a
+  // truly dead catchup loop (no healthy tick in >10 min) stops
+  // pinging and systemd kills within `WatchdogSec` after that
+  // (= ~15 min total deadline). The previous per-tick ping inside
+  // `githubCatchup.ts` is kept as belt-and-suspenders — pinging more
+  // often than WatchdogSec is harmless.
+  const HEARTBEAT_INTERVAL_MS = 60_000;
+  const HEARTBEAT_STALE_THRESHOLD_MS = 2 * CATCHUP_INTERVAL_MS;
+  setInterval(() => {
+    const stale = Date.now() - getLastHealthyTickAt();
+    if (stale > HEARTBEAT_STALE_THRESHOLD_MS) {
+      // Don't ping — let systemd notice. Logged at warn so the
+      // failure mode is visible in journalctl before SIGABRT lands.
+      console.warn(
+        `[sd-notify] heartbeat NOT pinged: last healthy catchup ${Math.round(stale / 1000)}s ago > ${HEARTBEAT_STALE_THRESHOLD_MS / 1000}s threshold`,
+      );
+      return;
+    }
+    sdNotifyWatchdog().catch((err) => {
+      console.warn(
+        '[sd-notify] heartbeat ping unexpectedly threw:',
+        err instanceof Error ? err.message : err,
+      );
+    });
+  }, HEARTBEAT_INTERVAL_MS);
 
   // ── Drift audit (GitHub→MindBlown reconciliation gate) ──────────
   // The webhook + catchup pair is good at "an event happened, did we

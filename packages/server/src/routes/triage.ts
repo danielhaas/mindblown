@@ -733,16 +733,32 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           const cap = maxOverride ?? drifted.length;
 
           // Long manual runs (the whole point of this endpoint) can
-          // exceed the systemd watchdog window (5 min by default) and
-          // get SIGABRT'd mid-LLM-call. Ping the watchdog every 60s
-          // while the audit is running so a 30-min sweep doesn't kill
-          // the service. We can't ping from inside the per-issue loop
-          // (it lives in autoBackfill → backfillMap → ensureNodeForIssue,
-          // three packages deep), but a 60s timer running alongside the
-          // await is good enough: even a single LLM call rarely
-          // exceeds 30s, so the audit's progress is reflected in
-          // pings going through.
+          // exceed the systemd watchdog window. Ping every 60s while
+          // the audit is running. The dedicated heartbeat in index.ts
+          // already covers this case (it pings as long as the catchup
+          // tick is healthy), but pinging here too is belt-and-suspenders
+          // — a single audit-internal ping ensures the watchdog stays
+          // fed even if both heartbeats happen to be skipped while the
+          // event loop is blocked on a slow LLM call.
+          //
+          // Also: log progress every tick. Operator can `journalctl -fu
+          // mindblown-api` and see the audit advancing in real-time, so
+          // a request that fails mid-flight at least surfaces what got
+          // committed. (Work-preservation is already structural: each
+          // issue commits in its own ensureNodeForIssue transaction —
+          // a SIGABRT mid-loop leaves the already-committed rows in
+          // place, and re-running this endpoint resumes from where it
+          // left off because already-triaged orphans drop out of the
+          // orphan set.)
+          console.log(
+            `[drift-audit-manual] map ${req.params.mapId} starting: ${report.onlyInGitHub} orphans, cap=${cap}`,
+          );
+          const startedAt = Date.now();
           const watchdogTimer = setInterval(() => {
+            const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+            console.log(
+              `[drift-audit-manual] map ${req.params.mapId} running… ${elapsedSec}s elapsed`,
+            );
             sdNotifyWatchdog().catch(() => {
               // sdNotifyWatchdog already swallows errors; this catch
               // is defense against the helper changing behaviour.
@@ -755,6 +771,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           } finally {
             clearInterval(watchdogTimer);
           }
+          console.log(
+            `[drift-audit-manual] map ${req.params.mapId} done: ${autoBackfill.totalImported} imported, ${autoBackfill.totalManualPending} pending, ${Math.round((Date.now() - startedAt) / 1000)}s`,
+          );
 
           return reply.send({
             mapId: mapRow.id,
