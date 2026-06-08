@@ -68,6 +68,44 @@ interface Props {
 // (not loading/input/listening — those are session-local UI state).
 const STORAGE_KEY_PREFIX = 'mindblown:aichat:';
 
+/**
+ * Two-note Web-Audio chime played when a chat turn finishes — pulls the
+ * user back when they've alt-tabbed away during a long restructure. No
+ * asset, no dependency; works as long as the browser allowed audio after
+ * the user's initial click on Send. Silent on failure (audio blocked,
+ * unsupported browser, etc.) so it never blocks the UI.
+ */
+function playBell(): void {
+  try {
+    const Ctor =
+      window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctor) return;
+    const ctx = new Ctor();
+    const now = ctx.currentTime;
+    const tones: Array<{ freq: number; start: number; dur: number }> = [
+      { freq: 880, start: 0, dur: 0.16 },
+      { freq: 1320, start: 0.09, dur: 0.20 },
+    ];
+    for (const t of tones) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = t.freq;
+      gain.gain.setValueAtTime(0, now + t.start);
+      gain.gain.linearRampToValueAtTime(0.08, now + t.start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + t.start + t.dur);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(now + t.start);
+      osc.stop(now + t.start + t.dur + 0.05);
+    }
+    setTimeout(() => {
+      ctx.close().catch(() => {});
+    }, 500);
+  } catch {
+    /* audio blocked or unsupported — ignore */
+  }
+}
+
 function loadStoredMessages(mapId: string): ChatMessage[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -275,6 +313,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     let assistantContent = '';
     const toolCalls: ChatToolCall[] = [];
     let banner: ChatMessage['statusBanner'] = undefined;
+    // Flip to true when the turn ends in a "the AI is done talking" state
+    // (natural completion or step_limit). Stays false on abort/error so we
+    // don't chime a misleading "success" for a failure.
+    let shouldChime = false;
     const flush = () => {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -334,9 +376,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
           case 'step_limit':
             banner = {
               kind: 'info',
-              text: `Stopped after ${event.maxSteps ?? 6} tool steps.`,
+              text: `Stopped after ${event.maxSteps ?? 12} tool steps.`,
               action: { label: 'Continue', payload: 'continue' },
             };
+            shouldChime = true;
             flush();
             break;
 
@@ -360,6 +403,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       if (needsRefresh) {
         await loadMap(mapId);
       }
+      // Natural end of the SSE stream (no abort, no error) — treat as
+      // success for chime purposes even if no explicit `done` event was
+      // surfaced. step_limit also flips this above.
+      if (!controller.signal.aborted) shouldChime = true;
     } catch (err: any) {
       if (controller.signal.aborted) {
         banner = { kind: 'info', text: 'Stopped.' };
@@ -382,6 +429,7 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     } finally {
       if (abortRef.current === controller) abortRef.current = null;
       setLoading(false);
+      if (shouldChime) playBell();
     }
   }, [input, messages, loading, mapId, loadMap, selectedNodeId]);
 
