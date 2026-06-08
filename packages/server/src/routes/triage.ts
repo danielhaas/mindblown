@@ -67,6 +67,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { runAutoBackfill } from '../sync/autoBackfill.js';
+import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
@@ -730,7 +731,30 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           // Cap defaults to drift size (no cap) for manual runs.
           // When the operator passes ?max=N we honour exactly that.
           const cap = maxOverride ?? drifted.length;
-          const autoBackfill = await runAutoBackfill([report], cap);
+
+          // Long manual runs (the whole point of this endpoint) can
+          // exceed the systemd watchdog window (5 min by default) and
+          // get SIGABRT'd mid-LLM-call. Ping the watchdog every 60s
+          // while the audit is running so a 30-min sweep doesn't kill
+          // the service. We can't ping from inside the per-issue loop
+          // (it lives in autoBackfill → backfillMap → ensureNodeForIssue,
+          // three packages deep), but a 60s timer running alongside the
+          // await is good enough: even a single LLM call rarely
+          // exceeds 30s, so the audit's progress is reflected in
+          // pings going through.
+          const watchdogTimer = setInterval(() => {
+            sdNotifyWatchdog().catch(() => {
+              // sdNotifyWatchdog already swallows errors; this catch
+              // is defense against the helper changing behaviour.
+            });
+          }, 60_000);
+
+          let autoBackfill;
+          try {
+            autoBackfill = await runAutoBackfill([report], cap);
+          } finally {
+            clearInterval(watchdogTimer);
+          }
 
           return reply.send({
             mapId: mapRow.id,
