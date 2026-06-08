@@ -1653,7 +1653,13 @@ export function GanttView() {
                   const progress = cv?.computedProgress ?? row.node.percentComplete ?? 0;
                   const isCritical = criticalSet.has(row.node.id);
                   const isSelected = row.node.id === selectedNodeId;
-                  const barColor = HEALTH_COLORS[health] ?? HEALTH_COLORS.on_track;
+                  // Bar color = workflow status color when set, else fall back
+                  // to health (on_track green / at_risk amber / behind red).
+                  const statusDef = row.node.status
+                    ? currentMap?.statusWorkflow.find((s) => s.id === row.node.status)
+                    : null;
+                  const barColor = statusDef?.color ?? HEALTH_COLORS[health] ?? HEALTH_COLORS.on_track;
+                  const barBg = statusDef ? `${statusDef.color}33` : (HEALTH_BG[health] ?? HEALTH_BG.on_track);
 
                   const centerY = idx * ROW_HEIGHT + ROW_HEIGHT / 2;
 
@@ -1699,7 +1705,7 @@ export function GanttView() {
                         width={w}
                         height={barH}
                         rx={4}
-                        fill={HEALTH_BG[health] ?? HEALTH_BG.on_track}
+                        fill={barBg}
                         stroke={isCritical ? '#dc2626' : isSelected ? '#4f46e5' : barColor}
                         strokeWidth={isCritical ? 2.5 : isSelected ? 2 : 1}
                       />

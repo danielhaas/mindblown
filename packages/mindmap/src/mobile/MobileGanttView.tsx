@@ -59,10 +59,27 @@ function flattenTreeIds(nodes: NodeWithComputed[], rootId: string): string[] {
   return order;
 }
 
+const HIDE_DONE_KEY = 'mindblown_gantt_hide_done';
+
+function readHideDone(): boolean {
+  try {
+    return localStorage.getItem(HIDE_DONE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
+
 export function MobileGanttView({ nodes, map, onSelect }: Props) {
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [hideDone, setHideDone] = useState<boolean>(readHideDone);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(HIDE_DONE_KEY, hideDone ? '1' : '0');
+    } catch {}
+  }, [hideDone]);
 
   useEffect(() => {
     let cancelled = false;
@@ -116,6 +133,7 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
       const node = nodes.find((n) => n.id === id);
       if (!node) continue;
       if (d.end <= d.start) continue;
+      if (hideDone && (node.percentComplete ?? 0) >= 100) continue;
       dated.push({ node, start: d.start, end: d.end });
     }
 
@@ -168,7 +186,7 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
       todayOffset: daysBetween(padded, today),
       projectStart: padded,
     };
-  }, [schedule, nodes, map.rootNodeId, map.statusWorkflow]);
+  }, [schedule, nodes, map.rootNodeId, map.statusWorkflow, hideDone]);
 
   useEffect(() => {
     if (!timelineRef.current || totalDays === 0) return;
@@ -176,6 +194,27 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
     const w = timelineRef.current.clientWidth;
     timelineRef.current.scrollLeft = Math.max(0, x - w / 2);
   }, [todayOffset, totalDays, schedule]);
+
+  const workflow = [...map.statusWorkflow].sort((a, b) => a.position - b.position);
+  const controlBar = (
+    <div className="mb-gantt-controls">
+      <button
+        className={`mb-gantt-toggle${hideDone ? ' mb-gantt-toggle-on' : ''}`}
+        onClick={() => setHideDone((v) => !v)}
+        aria-pressed={hideDone}
+      >
+        {hideDone ? 'Hide done ✓' : 'Hide done'}
+      </button>
+      <div className="mb-gantt-legend">
+        {workflow.map((s) => (
+          <span key={s.id} className="mb-gantt-legend-item">
+            <span className="mb-gantt-legend-swatch" style={{ background: s.color }} />
+            {s.name}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 
   if (scheduleError) {
     return (
@@ -197,12 +236,16 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
 
   if (rows.length === 0) {
     return (
-      <div className="mb-body">
-        <div style={{ color: '#64748b', textAlign: 'center', padding: 24 }}>
-          No tasks with computed duration. Add effort estimates on the desktop
-          to see them here.
+      <>
+        {controlBar}
+        <div className="mb-body">
+          <div style={{ color: '#64748b', textAlign: 'center', padding: 24 }}>
+            {hideDone
+              ? 'No open tasks. Toggle "Hide done" off to see completed ones.'
+              : 'No tasks with computed duration. Add effort estimates on the desktop to see them here.'}
+          </div>
         </div>
-      </div>
+      </>
     );
   }
 
@@ -216,10 +259,12 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
   };
 
   return (
+    <>
+    {controlBar}
     <div
       className="mb-gantt-scroll-wrap"
       ref={timelineRef}
-      style={{ maxHeight: 'calc(100dvh - 160px)' }}
+      style={{ maxHeight: 'calc(100dvh - 200px)' }}
     >
       <div className="mb-gantt-grid" style={gridStyle}>
         {/* Sticky top-left corner over the label column */}
@@ -308,5 +353,6 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
         })}
       </div>
     </div>
+    </>
   );
 }
