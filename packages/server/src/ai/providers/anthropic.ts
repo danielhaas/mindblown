@@ -41,19 +41,21 @@ function toAnthropicMessages(messages: NormalizedMessage[]): Anthropic.MessagePa
   const out: Anthropic.MessageParam[] = [];
   for (const m of messages) {
     if (m.role === 'user') {
-      // Anthropic rejects empty text blocks ("text content blocks must be non-empty").
-      // A whitespace placeholder preserves user→assistant alternation when client
-      // history replays a no-op turn.
-      out.push({ role: 'user', content: m.content || ' ' });
+      // Anthropic rejects text blocks that are empty OR whitespace-only.
+      // Drop the message entirely — Anthropic merges consecutive same-role
+      // messages, so alternation survives the skip.
+      if (!m.content.trim()) continue;
+      out.push({ role: 'user', content: m.content });
     } else if (m.role === 'assistant') {
       const blocks: Anthropic.ContentBlockParam[] = [];
-      if (m.content) blocks.push({ type: 'text', text: m.content });
+      if (m.content.trim()) blocks.push({ type: 'text', text: m.content });
       for (const tc of m.toolCalls) {
         blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.args });
       }
-      // Assistant messages need ≥1 content block AND each text block must be
-      // non-empty. A space satisfies both.
-      if (blocks.length === 0) blocks.push({ type: 'text', text: ' ' });
+      // An empty assistant turn (no text, no tool calls) carries no
+      // information — drop it rather than fabricate placeholder content
+      // that Anthropic will reject (empty/whitespace text fails validation).
+      if (blocks.length === 0) continue;
       out.push({ role: 'assistant', content: blocks });
     } else {
       out.push({
