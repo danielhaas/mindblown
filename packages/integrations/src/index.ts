@@ -11,6 +11,7 @@ export {
   updateGitHubIssue,
   closeGitHubIssue,
   processWebhook,
+  extractClosingIssueRefs,
   importGitHubIssues,
   fetchChangedIssues,
   extractVersionFromMilestone,

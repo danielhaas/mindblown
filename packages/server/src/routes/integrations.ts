@@ -9,6 +9,7 @@ import {
   getGitHubIssue,
   importGitHubIssues,
   extractVersionFromMilestone,
+  extractClosingIssueRefs,
   processWebhook,
   verifyWebhookSignature,
   mintInstallationToken,
@@ -1448,6 +1449,100 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         action: actionLabel,
         matched: true,
         nodeId,
+      });
+    }
+
+    // ── pull_request: closed + merged=true → transition linked nodes ─
+    //
+    // #152 — when a PR merges with `Closes #N` references in title or
+    // body, transition every referenced issue's linked node to done.
+    // Cuts the up-to-6h lag that the drift audit catches (catchup runs
+    // every 5min but only flips state on issue-close webhooks, which
+    // require the `issues` event subscription — not every repo has it).
+    //
+    // Iterates ALL refs (PR title + body), unlike the legacy
+    // processWebhook PR branch which only returned the first. The
+    // existing issues.closed handler still runs for repos subscribed
+    // to that event — this branch is the PR-only-subscription path.
+    //
+    // Idempotent: a second webhook for the same PR (replay or
+    // misconfigured retry) finds the node already at status='done' +
+    // percentComplete=100 and emits no second transition.
+    if (
+      event === 'pull_request' &&
+      payloadAction === 'closed' &&
+      (payload.pull_request as { merged?: boolean } | undefined)?.merged === true &&
+      repoFullName
+    ) {
+      const pr = payload.pull_request as {
+        number: number;
+        merged: boolean;
+        body: string | null;
+        title: string;
+      };
+      const refs = extractClosingIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
+      const transitions: Array<{
+        externalId: string;
+        nodeId: string;
+        status: 'transitioned' | 'already_done' | 'not_linked';
+      }> = [];
+
+      for (const issueNumber of refs) {
+        const externalId = `${repoFullName}#${issueNumber}`;
+        const nodeId = await findNodeByExternalId(externalId);
+        if (!nodeId) {
+          transitions.push({ externalId, nodeId: '', status: 'not_linked' });
+          continue;
+        }
+        const node = await nodeDb.getNode(nodeId);
+        if (!node) {
+          transitions.push({ externalId, nodeId, status: 'not_linked' });
+          continue;
+        }
+        // Idempotency: replay → no second transition.
+        if (node.status === 'done' && node.percentComplete === 100) {
+          transitions.push({ externalId, nodeId, status: 'already_done' });
+          continue;
+        }
+        const links = node.externalLinks.map((l) => ({ ...l }));
+        const linkIdx = links.findIndex(
+          (l) => l.provider === 'github' && l.externalId === externalId,
+        );
+        if (linkIdx >= 0) {
+          links[linkIdx] = {
+            ...links[linkIdx],
+            previousPercentComplete: node.percentComplete,
+            previousStatus: node.status,
+            lastSyncedAt: new Date().toISOString(),
+          };
+        }
+        const updates: nodeDb.UpdateNodeInput = {
+          percentComplete: 100,
+          status: 'done',
+          externalLinks: links,
+        };
+        const updated = await nodeDb.updateNode(nodeId, updates);
+        if (updated) {
+          broadcast(updated.mapId, {
+            type: 'node:updated',
+            nodeId,
+            fields: Object.keys(updates),
+            node: updated,
+            source: 'github_webhook_pr_merge',
+          });
+        }
+        console.log(
+          `[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`,
+        );
+        transitions.push({ externalId, nodeId, status: 'transitioned' });
+      }
+
+      return reply.send({
+        received: true,
+        action: 'pull_request.merged',
+        prNumber: pr.number,
+        matched: transitions.some((t) => t.status === 'transitioned' || t.status === 'already_done'),
+        transitions,
       });
     }
 

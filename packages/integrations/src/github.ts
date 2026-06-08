@@ -385,7 +385,7 @@ export function processWebhook(
     const text = `${prTitle} ${prBody}`;
     const repoName = payload.repository?.full_name ?? '';
 
-    const issueRefs = extractIssueReferences(text);
+    const issueRefs = extractClosingIssueRefs(text);
     if (issueRefs.length > 0) {
       // Return update for the first referenced issue
       const issueNumber = issueRefs[0];
@@ -404,17 +404,23 @@ export function processWebhook(
 }
 
 /**
- * Extract issue number references from text.
- * Matches: Closes #42, Fixes #42, Resolves #42 (case-insensitive)
+ * Extract closing-issue references from PR body/title text.
+ * Matches the GitHub auto-close keywords: Closes #42, Fixes #42, Resolves #42
+ * (case-insensitive; covers `close`/`closes`/`closed`/`fix`/`fixes`/`fixed`/
+ * `resolve`/`resolves`/`resolved`). De-duplicates so the same issue isn't
+ * processed twice when both PR title and body reference it.
+ *
+ * Exported for the webhook handler in @mindblown/server (#152) — needs to
+ * iterate ALL refs, not just the first one returned by processWebhook.
  */
-function extractIssueReferences(text: string): number[] {
+export function extractClosingIssueRefs(text: string): number[] {
   const pattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
-  const refs: number[] = [];
+  const refs = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {
-    refs.push(parseInt(match[1], 10));
+    refs.add(parseInt(match[1], 10));
   }
-  return refs;
+  return [...refs];
 }
 
 // ── Label helpers ────────────────────────────────────────────────
