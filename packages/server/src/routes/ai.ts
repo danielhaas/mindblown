@@ -473,16 +473,22 @@ Node to break down: "${targetNode.text}"`;
           ? `If the user names a node that doesn't appear in the tree above, treat it as a possible typo or paraphrase — try search_nodes (substring) or semantic_search (meaning) before assuming they meant something literal. E.g. "rename the lawyer node" on a map with no "lawyer" likely means "layer". When still unsure after one search, ask one short clarifying question instead of guessing.`
           : `If the user names a node that doesn't appear in the tree above, treat it as a possible typo — try search_nodes with the closest substring before assuming they meant something literal. E.g. "rename the lawyer node" on a map with no "lawyer" likely means "layer". When still unsure, ask one short clarifying question instead of guessing.`;
 
-      // Pacing rule diverges by provider: Opus 4.7 chains tool calls reliably,
+      // Pacing rules diverge by provider: Opus 4.7 chains tool calls reliably,
       // so let it finish the whole job in one user turn (saves cache misses
       // from intermediate confirmation rounds). Ollama 14B drifts when asked
       // to chain — keep the one-call-per-message constraint there.
-      const pacingRule =
+      //
+      // For Anthropic, the rule needs to be loud because it sits after a
+      // potentially huge tree dump in the system prompt — the model otherwise
+      // drifts back to a polite single-step-and-confirm cadence.
+      const pacingRules =
         provider.name === 'anthropic'
-          ? `Make all the tool calls needed to complete the user's request, then give one brief summary at the end. Do not stop after each tool call to ask for confirmation — only pause if the next action is genuinely ambiguous.`
+          ? `Keep calling tools until the user's request is fully done — only stop when there is nothing left to do or the next action is genuinely ambiguous. Do NOT pause after each call to confirm; the user does not want to type "continue" between every step. When the same action applies to many nodes, ALWAYS prefer the bulk_* tool (bulk_create_nodes, bulk_update_nodes, bulk_set_estimate, bulk_set_progress) over per-node calls — one bulk call handles N items in a single round trip. End with one short summary sentence after all the work is done, not before.`
           : `One tool call per message. Confirm what you did in one short English sentence.`;
 
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
+
+${pacingRules}
 
 mapId = "${body.mapId}"
 
@@ -495,9 +501,8 @@ ${treeText}
 Rules:
 1. Only use IDs shown in [id:...] above. Never invent an ID.
 2. For move_node: "source" is the node being moved, "destination" is where it goes.
-3. ${pacingRule}
-4. You cannot delete nodes.
-5. ${typoRecoveryHint}`;
+3. You cannot delete nodes.
+4. ${typoRecoveryHint}`;
 
       // Round-trip prior turns' tool calls + results so the model can see
       // what it actually did — without these blocks it second-guesses its
