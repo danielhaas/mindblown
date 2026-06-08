@@ -252,7 +252,10 @@ export function TriagePanel({
         : view === 'placed'
           ? { decision: 'place' as TriageDecisionKind, reviewed: true }
           : { decision: 'skip' as TriageDecisionKind, reviewed: true }),
-      limit: 200,
+      // 500 matches the server hard cap (lifted from 200 on 2026-06-08
+      // so a post-drift-audit Pending tab with 300+ rows isn't silently
+      // truncated).
+      limit: 500,
       minConfidence,
       maxConfidence,
       ...(issueStateFilter !== 'all' ? { issueState: issueStateFilter } : {}),
@@ -297,7 +300,7 @@ export function TriagePanel({
       notInMindBlownFilter === 'orphan' ? 'orphans' : notInMindBlownFilter;
     listNotInMindBlown(mapId, {
       bucket: bucketParam,
-      limit: 200,
+      limit: 500,
     })
       .then((res) => {
         if (cancelled) return;
