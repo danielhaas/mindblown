@@ -230,9 +230,14 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Hard cap lifted from 200 → 500 (2026-06-08) so an operator who's
+    // just landed a 300+ row drift audit can see the whole backlog in
+    // one fetch. 500 rows is still cheap server-side (single SELECT,
+    // small payload) but big enough that nobody hits it in practice for
+    // routine review work.
     const limitRaw = req.query.limit ? parseInt(req.query.limit, 10) : 50;
     const limit = Number.isFinite(limitRaw) && limitRaw > 0
-      ? Math.min(limitRaw, 200)
+      ? Math.min(limitRaw, 500)
       : 50;
 
     const rows = await db
@@ -328,9 +333,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // Hard cap 500 (matches the main list endpoint, lifted from
+      // 200 on 2026-06-08 so post-drift-audit reviews aren't
+      // silently truncated).
       const limitRaw = req.query.limit ? parseInt(req.query.limit, 10) : 50;
       const limit = Number.isFinite(limitRaw) && limitRaw > 0
-        ? Math.min(limitRaw, 200)
+        ? Math.min(limitRaw, 500)
         : 50;
 
       let sinceDate: Date | null = null;
@@ -1907,10 +1915,20 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
   //     client-side gating simple ("if selectedCount > 20, hide the
   //     bulk button").
 
-  const BULK_DECISION_CAP = 20;
+  // Per-route bulk caps. Split (2026-06-08):
+  //   - confirm + override: 500 per request. Pure DB writes (no LLM,
+  //     no GitHub round-trip per item). A 500-row batch on bulk-confirm
+  //     completes in <1 s on a warm connection; lifting from 20 lets
+  //     the operator finish a 300-row drift-audit review in one click
+  //     instead of 15 paginated submits.
+  //   - reclassify: stays at 20. Each item runs Claude (~3-5 s), so a
+  //     larger batch blocks a single HTTP connection for minutes.
+  const BULK_CONFIRM_OVERRIDE_CAP = 500;
+  const BULK_RECLASSIFY_CAP = 20;
 
   function validateBulkBody(
     body: unknown,
+    cap: number,
   ): { ok: true; ids: string[] } | { ok: false; reply: { status: number; code: string; message: string } } {
     const b = body as { decisionIds?: unknown } | null | undefined;
     const ids = b?.decisionIds;
@@ -1924,13 +1942,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         },
       };
     }
-    if (ids.length > BULK_DECISION_CAP) {
+    if (ids.length > cap) {
       return {
         ok: false,
         reply: {
           status: 400,
           code: 'VALIDATION_ERROR',
-          message: `decisionIds is capped at ${BULK_DECISION_CAP} per request`,
+          message: `decisionIds is capped at ${cap} per request`,
         },
       };
     }
@@ -1986,7 +2004,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       const userId = req.userId as string;
-      const validation = validateBulkBody(req.body);
+      const validation = validateBulkBody(req.body, BULK_CONFIRM_OVERRIDE_CAP);
       if (!validation.ok) {
         return reply.status(validation.reply.status).send({
           error: { code: validation.reply.code, message: validation.reply.message },
@@ -2115,7 +2133,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       const userId = req.userId as string;
-      const validation = validateBulkBody(req.body);
+      const validation = validateBulkBody(req.body, BULK_CONFIRM_OVERRIDE_CAP);
       if (!validation.ok) {
         return reply.status(validation.reply.status).send({
           error: { code: validation.reply.code, message: validation.reply.message },
@@ -2406,7 +2424,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           error: { code: gate.code, message: gate.message },
         });
       }
-      const validation = validateBulkBody(req.body);
+      // Reclassify uses the smaller cap: each row pays one LLM call,
+      // so a 500-row batch would block the connection for ~25 min.
+      const validation = validateBulkBody(req.body, BULK_RECLASSIFY_CAP);
       if (!validation.ok) {
         return reply.status(validation.reply.status).send({
           error: { code: validation.reply.code, message: validation.reply.message },
