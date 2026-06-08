@@ -771,9 +771,39 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           } finally {
             clearInterval(watchdogTimer);
           }
-          const manualPending = Math.max(0, drifted.length - backfillResult.imported);
+          // Decision-type breakdown for the response. backfillMap only
+          // reports `imported` (= node-created = decision='place'), so
+          // we re-query triage_decisions for rows decided since the
+          // audit started to count skip / uncertain too. Without this,
+          // the UI banner showed "N imported, M manual pending" where
+          // M wrongly conflated above-cap drift with skip/uncertain
+          // decisions that were actually finished.
+          const decisionBreakdownRows = await db
+            .select({
+              decision: triageDecisions.decision,
+              count: sql<number>`count(*)::int`,
+            })
+            .from(triageDecisions)
+            .where(
+              and(
+                eq(triageDecisions.mapId, req.params.mapId),
+                gte(triageDecisions.decidedAt, new Date(startedAt)),
+              ),
+            )
+            .groupBy(triageDecisions.decision);
+          const placedCount =
+            decisionBreakdownRows.find((r) => r.decision === 'place')?.count ?? 0;
+          const skippedCount =
+            decisionBreakdownRows.find((r) => r.decision === 'skip')?.count ?? 0;
+          const uncertainCount =
+            decisionBreakdownRows.find((r) => r.decision === 'uncertain')?.count ?? 0;
+          const triagedCount = placedCount + skippedCount + uncertainCount;
+          // "Queued for next run" — orphans found this sweep that were
+          // above the operator's cap. NOT skip/uncertain decisions.
+          const queuedForNextRun = Math.max(0, drifted.length - triagedCount);
+
           console.log(
-            `[drift-audit-manual] map ${req.params.mapId} done: ${backfillResult.imported} imported, ${backfillResult.errored} errored, ${manualPending} remaining, ${Math.round((Date.now() - startedAt) / 1000)}s`,
+            `[drift-audit-manual] map ${req.params.mapId} done: triaged=${triagedCount} (placed=${placedCount}, skipped=${skippedCount}, uncertain=${uncertainCount}), errored=${backfillResult.errored}, queued=${queuedForNextRun}, ${Math.round((Date.now() - startedAt) / 1000)}s`,
           );
 
           return reply.send({
@@ -784,21 +814,27 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               exampleIssues: drifted.slice(0, 5),
             },
             autoBackfill: {
-              totalImported: backfillResult.imported,
-              totalManualPending: manualPending,
+              totalImported: placedCount,
+              // Above-cap = "needs another run". Skip/uncertain are
+              // FINISHED, they don't belong here.
+              totalManualPending: queuedForNextRun,
               outcomes: [
                 {
                   mapId: mapRow.id,
                   mapName: mapRow.name,
                   kind: 'healed' as const,
-                  imported: backfillResult.imported,
+                  imported: placedCount,
                 },
               ],
             },
             counts: {
               driftedIssues: drifted.length,
-              imported: backfillResult.imported,
-              manualPending,
+              triaged: triagedCount,
+              placed: placedCount,
+              skipped: skippedCount,
+              uncertain: uncertainCount,
+              errored: backfillResult.errored,
+              queuedForNextRun,
               elapsedMs: Date.now() - t0,
             },
           });

@@ -1505,9 +1505,31 @@ export interface DriftAuditRunResponse {
   };
   counts: {
     driftedIssues: number;
-    imported: number;
-    manualPending: number;
+    /**
+     * Total orphans actually run through Claude this batch. Sum of
+     * placed + skipped + uncertain. Reflects the operator's slider
+     * cap, NOT the full orphan count (which is driftedIssues).
+     */
+    triaged: number;
+    /** Decision='place' → node was auto-created. */
+    placed: number;
+    /** Decision='skip' → triage row, no node. Finished, not pending. */
+    skipped: number;
+    /** Decision='uncertain' → goes to Pending review tab. */
+    uncertain: number;
+    /** Per-issue ingest failures (network, LLM timeout, etc.). */
+    errored: number;
+    /**
+     * Orphans NOT processed this run because they were above the
+     * operator's slider cap. These remain orphans and need another
+     * audit run to clear.
+     */
+    queuedForNextRun: number;
     elapsedMs: number;
+    /** @deprecated Use `placed` instead. Kept for the old banner. */
+    imported?: number;
+    /** @deprecated Use `queuedForNextRun` instead. */
+    manualPending?: number;
   };
 }
 
