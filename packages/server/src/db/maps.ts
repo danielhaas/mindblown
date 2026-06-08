@@ -121,6 +121,8 @@ export interface UpdateMapInput {
   githubRepoName?: string | null;
   autoImportNewIssues?: boolean;
   githubInboxNodeId?: string | null;
+  triageEnabled?: boolean;
+  triageLabelWriteback?: boolean;
 }
 
 export async function updateMap(mapId: string, input: UpdateMapInput): Promise<MindMap | null> {
@@ -142,6 +144,8 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;
   if (input.autoImportNewIssues !== undefined) updates.autoImportNewIssues = input.autoImportNewIssues;
   if (input.githubInboxNodeId !== undefined) updates.githubInboxNodeId = input.githubInboxNodeId;
+  if (input.triageEnabled !== undefined) updates.triageEnabled = input.triageEnabled;
+  if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

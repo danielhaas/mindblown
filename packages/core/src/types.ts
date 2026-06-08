@@ -325,6 +325,23 @@ export interface MindMap {
    * is handled by treating a dangling ID as "recreate on next ingest").
    */
   githubInboxNodeId?: string | null;
+  /**
+   * Per-map opt-in for the AI triage pipeline. When true, new GitHub
+   * issues bound to this map go through the LLM triage classifier
+   * before any node is created; high-confidence place decisions
+   * auto-create the node, low-confidence ones wait in the Triage panel.
+   * Default false → ingest behaves like vanilla auto-import.
+   * Server source: `maps.triage_enabled`.
+   */
+  triageEnabled?: boolean;
+  /**
+   * Per-map opt-in for GitHub label write-back. When true, finalized
+   * triage decisions write `triage:placed` / `triage:skipped` labels
+   * back to the source GitHub issue. Best-effort: a label write failure
+   * never blocks the triage flow. Requires `triageEnabled` to do anything.
+   * Server source: `maps.triage_label_writeback`.
+   */
+  triageLabelWriteback?: boolean;
 }
 
 // ── User / Workspace / Team ─────────────────────────────────────
