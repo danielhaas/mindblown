@@ -381,6 +381,12 @@ export const triageDecisions = pgTable('triage_decisions', {
   reviewed: boolean('reviewed').notNull().default(false),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
   reviewedBy: uuid('reviewed_by').references(() => users.id),
+  // SHA-256 of JSON.stringify({title, body, labels: sorted, state}). Populated
+  // lazily by the next auto-triage call; existing rows keep NULL until they're
+  // re-evaluated. When the freshly-computed hash matches this column, the LLM
+  // call is short-circuited (#142). Operators bypass via `force=true` on the
+  // reclassify route.
+  lastInputHash: text('last_input_hash'),
 });
 
 // ── Triage Decision History (#96, Phase 3) ────────────────────────

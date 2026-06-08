@@ -1197,11 +1197,48 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // swallowed so the webhook still acknowledges the underlying
     // event. The webhook covers opened / reopened / edited; the
     // catchup pass + manual backfill cover everything else.
+    //
+    // ── Cost-opt #142 layer 1: diff-aware skip on issues.edited ────
+    // GitHub's `issues.edited` payload carries a `changes` object
+    // listing what changed (e.g. `{ title: { from: '...' } }`,
+    // `{ body: { from: '...' } }`). When the operator only added /
+    // removed labels, assignees, or a milestone, `changes` is empty
+    // (those edits emit their own `issues.labeled` / `unlabeled` /
+    // `assigned` / `milestoned` actions, NOT a populated `changes`
+    // entry on `edited`). Skip the LLM call in that case — labels
+    // and milestone don't change the triage decision body (labels
+    // are folded into the hash but only as ordering / set
+    // membership; the LLM doesn't see them as decision signal),
+    // and the bot churn of label-rules firing 5-10 edited events
+    // per minute is exactly the worst-case workload this layer
+    // targets. The state-sync block below still runs for closed/
+    // reopened, so we don't lose lifecycle transitions.
+    //
+    // Skipped-edits intentionally don't accumulate triage_decisions
+    // history rows ("metadata_only" never reaches recordTriageHistory)
+    // so Phase 4 tuning-data collection isn't poisoned by edit-storm
+    // noise.
+    const isMetadataOnlyEdit =
+      payloadAction === 'edited' &&
+      (() => {
+        const changes = payload.changes as
+          | { title?: unknown; body?: unknown }
+          | undefined;
+        // Treat a missing/empty `changes` object as metadata-only.
+        // The keys we care about are `title` and `body`; anything else
+        // (`assignees`, `labels` in the rare cases GH does include
+        // them) is metadata. GitHub omits the `changes` key entirely
+        // on label-only edits, so the `!changes` arm covers that.
+        if (!changes || typeof changes !== 'object') return true;
+        return changes.title === undefined && changes.body === undefined;
+      })();
+
     if (
       event === 'issues' &&
       issuePayload?.number != null &&
       repoFullName &&
-      (payloadAction === 'opened' || payloadAction === 'reopened' || payloadAction === 'edited')
+      (payloadAction === 'opened' || payloadAction === 'reopened' || payloadAction === 'edited') &&
+      !isMetadataOnlyEdit
     ) {
       const slashIdx = repoFullName.indexOf('/');
       if (slashIdx > 0) {
@@ -1219,6 +1256,35 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           }
         }
       }
+    }
+
+    // ── Cost-opt #142 — metadata-only edit short-circuit ──────────
+    // The `edited` action with no title/body change has no work for
+    // the rest of the handler:
+    //   - The state-sync block below is gated on `closed`/`reopened`
+    //     (which doesn't include `edited`), so it's already a no-op.
+    //   - The `processWebhook` fallthrough would update node text +
+    //     description with the same values they already hold (the
+    //     payload's title/body match what's already there, by virtue
+    //     of `changes.title === undefined && changes.body === undefined`).
+    //
+    // Returning early keeps the DB write off the hot path and gives
+    // the operator a clear status code in the webhook response —
+    // useful for log greps when chasing LLM cost. The Phase 4 tuning
+    // data collector explicitly filters this status out of triage
+    // history rollups so label-bot storms don't poison the dataset.
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      isMetadataOnlyEdit
+    ) {
+      return reply.send({
+        received: true,
+        action: 'issues.edited',
+        matched: false,
+        status: 'metadata_only_skipped',
+      });
     }
 
     // ── Triage lifecycle: issues.reopened → re-triage (#95 Phase 2) ──

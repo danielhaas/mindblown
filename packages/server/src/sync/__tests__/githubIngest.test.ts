@@ -350,6 +350,7 @@ vi.mock('../../db/schema.js', () => {
       id: col('id'),
       mapId: col('mapId'),
       externalId: col('externalId'),
+      lastInputHash: col('lastInputHash'),
     },
   };
 });
@@ -395,6 +396,16 @@ const triageMockCalls: Array<{ issueNumber: number; mapId: string }> = [];
  */
 let triageMockMidCallHook: (() => Promise<void>) | null = null;
 
+// In-memory state for the cost-opt #142 debounce + hash mocks. The
+// production module keeps its own Map; we mirror just enough of the
+// behaviour here so callers (the SUT) can short-circuit predictably.
+// Tests reset this state in `beforeEach`.
+const _debounceState = new Map<string, number>();
+let _debounceWindowMs = 0; // 0 disables debounce by default in tests
+function debounceKey(mapId: string, externalId: string): string {
+  return `${mapId}/${externalId}`;
+}
+
 vi.mock('../triage.js', () => ({
   triageIssue: vi.fn(async (input: { issue: { number: number }; mapContext: { mapId: string } }) => {
     triageMockCalls.push({
@@ -407,7 +418,47 @@ vi.mock('../triage.js', () => ({
     return { ...triageMockResponse };
   }),
   TRIAGE_AUTO_APPLY_CONFIDENCE: 75,
+  // #142 cost-opt helpers. computeInputHash returns a deterministic
+  // string derived from the issue inputs so hash-match tests can
+  // pre-seed dbState.triageDecisions.lastInputHash with the same
+  // value the SUT will compute.
+  computeInputHash: vi.fn((issue: {
+    title: string;
+    body?: string | null;
+    state: 'open' | 'closed';
+    labels?: Array<{ name: string }> | null;
+  }) => {
+    const labels = (issue.labels ?? []).map((l) => l.name).slice().sort();
+    return `hash:${issue.title}:${issue.body ?? ''}:${labels.join(',')}:${issue.state}`;
+  }),
+  isWithinDebounceWindow: vi.fn((mapId: string, externalId: string, now: number = Date.now()) => {
+    if (_debounceWindowMs <= 0) return false;
+    const lastAt = _debounceState.get(debounceKey(mapId, externalId));
+    if (lastAt === undefined) return false;
+    return now - lastAt < _debounceWindowMs;
+  }),
+  markTriageDebounce: vi.fn((mapId: string, externalId: string, now: number = Date.now()) => {
+    if (_debounceWindowMs <= 0) return;
+    _debounceState.set(debounceKey(mapId, externalId), now);
+  }),
+  clearTriageDebounce: vi.fn((mapId: string, externalId: string) => {
+    _debounceState.delete(debounceKey(mapId, externalId));
+  }),
 }));
+
+// Helpers exposed for cost-opt tests below — they configure the
+// mock's debounce window and read/seed its internal map without
+// importing the SUT module.
+function _testSetDebounceWindowMs(ms: number): void {
+  _debounceWindowMs = ms;
+}
+function _testResetDebounceState(): void {
+  _debounceState.clear();
+  _debounceWindowMs = 0;
+}
+function _testSeedDebounce(mapId: string, externalId: string, ts: number): void {
+  _debounceState.set(debounceKey(mapId, externalId), ts);
+}
 
 const mapContextEpics = [
   { nodeId: 'epic-1', title: 'Frontend', description: 'UI' },
@@ -587,6 +638,9 @@ function resetState() {
   updateNodeThrowOnNthCall = null;
   updateNodeMockShouldThrow = null;
   triageMockMidCallHook = null;
+  // #142 cost-opt — clear debounce state between tests so a stamp
+  // from one case doesn't leak into the next.
+  _testResetDebounceState();
 }
 
 beforeEach(() => {
@@ -1383,5 +1437,299 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(createNodeCalls.length).toBe(0);
     const rows = [...dbState.triageDecisions.values()];
     expect(rows[0]).toMatchObject({ decision: 'uncertain' });
+  });
+});
+
+// ── #142 cost-opt — hash-match + debounce short-circuits ─────────
+
+describe('ensureNodeForIssue — triage cost-opt (#142)', () => {
+  const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
+
+  function seedTriageMap(): void {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', {
+      id: 'inbox-1',
+      mapId: 'm1',
+      parentId: 'root-1',
+      externalLinks: [],
+    });
+  }
+
+  // The mocked computeInputHash returns
+  // `hash:${title}:${body ?? ''}:${labels.sorted.join(',')}:${state}`.
+  // Tests pre-seed `lastInputHash` with the same shape so the SUT
+  // matches on the hash-match precheck path.
+  function expectedHash(iss: GitHubIssue): string {
+    const labels = (iss.labels ?? []).map((l) => l.name).slice().sort();
+    return `hash:${iss.title}:${iss.body ?? ''}:${labels.join(',')}:${iss.state}`;
+  }
+
+  // ── Body-hash idempotency ────────────────────────────────────
+
+  it('hash-match precheck → SKIPS LLM call, bumps decided_at, returns triaged_hash_match', async () => {
+    seedTriageMap();
+    const iss = issue(200, { title: 'cached', body: 'body-A' });
+    // Pre-seed an existing decision whose lastInputHash equals the
+    // hash the SUT will compute for `iss`.
+    const oldDecidedAt = new Date(2020, 0, 1);
+    dbState.triageDecisions.set('triage-pre', {
+      id: 'triage-pre',
+      mapId: 'm1',
+      externalId: 'owner/repo#200',
+      issueTitle: 'cached',
+      issueState: 'open',
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+      placedNodeId: null,
+      suggestedParentNodeId: null,
+      decidedAt: oldDecidedAt,
+      decidedBy: 'auto',
+      reviewed: false,
+      lastInputHash: expectedHash(iss),
+    });
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+
+    expect(result.status).toBe('triaged_hash_match');
+    expect(result.triage?.decisionId).toBe('triage-pre');
+    expect(result.triage?.decision).toBe('skip');
+    expect(result.triage?.confidence).toBe(80);
+    // LLM was NOT called.
+    expect(triageMockCalls.length).toBe(0);
+    // decided_at was bumped (the hash-match path runs an UPDATE on
+    // the existing row inside the precheck tx).
+    const row = dbState.triageDecisions.get('triage-pre')!;
+    expect((row.decidedAt as Date).getTime()).toBeGreaterThan(oldDecidedAt.getTime());
+    // No node was created (decision is skip).
+    expect(createNodeCalls.length).toBe(0);
+  });
+
+  it('hash-mismatch → LLM call runs, new hash is persisted on the row', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+    };
+    const iss = issue(201, { title: 'new content', body: 'fresh body' });
+    dbState.triageDecisions.set('triage-stale', {
+      id: 'triage-stale',
+      mapId: 'm1',
+      externalId: 'owner/repo#201',
+      issueTitle: 'old',
+      issueState: 'open',
+      decision: 'skip',
+      reason: 'old reason',
+      confidence: 60,
+      placedNodeId: null,
+      suggestedParentNodeId: null,
+      decidedAt: new Date(2020, 0, 1),
+      decidedBy: 'auto',
+      reviewed: false,
+      lastInputHash: 'hash:stale:::open', // intentionally different
+    });
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    // LLM was called exactly once.
+    expect(triageMockCalls.length).toBe(1);
+    // The row's hash was overwritten with the new content's hash.
+    const row = dbState.triageDecisions.get('triage-stale')!;
+    expect(row.lastInputHash).toBe(expectedHash(iss));
+  });
+
+  it('null lastInputHash (legacy / never-triaged row) → LLM call runs, hash is populated', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+    };
+    const iss = issue(202, { title: 'untouched legacy' });
+    dbState.triageDecisions.set('triage-legacy', {
+      id: 'triage-legacy',
+      mapId: 'm1',
+      externalId: 'owner/repo#202',
+      issueTitle: 'untouched legacy',
+      issueState: 'open',
+      decision: 'skip',
+      reason: 'r',
+      confidence: 50,
+      placedNodeId: null,
+      suggestedParentNodeId: null,
+      decidedAt: new Date(),
+      decidedBy: 'auto',
+      reviewed: false,
+      lastInputHash: null,
+    });
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(triageMockCalls.length).toBe(1);
+    const row = dbState.triageDecisions.get('triage-legacy')!;
+    expect(row.lastInputHash).toBe(expectedHash(iss));
+  });
+
+  it('first-time triage (no existing row) → LLM call runs, hash is persisted on insert', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+    };
+    const iss = issue(203);
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(triageMockCalls.length).toBe(1);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lastInputHash).toBe(expectedHash(iss));
+  });
+
+  it('triage_error → hash is NOT persisted (so the next webhook retries the LLM)', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'uncertain',
+      reason: 'triage_error: upstream 503',
+      confidence: 0,
+    };
+    const iss = issue(204);
+
+    await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].lastInputHash).toBeNull();
+  });
+
+  // ── Per-issue debounce window ───────────────────────────────
+
+  it('within debounce window → short-circuit BEFORE precheck tx, no LLM call, no DB write', async () => {
+    seedTriageMap();
+    _testSetDebounceWindowMs(60_000);
+    _testSeedDebounce('m1', 'owner/repo#205', Date.now());
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(205), ctx);
+
+    expect(result.status).toBe('triaged_debounced');
+    // Neither the LLM nor the precheck tx ran.
+    expect(triageMockCalls.length).toBe(0);
+    expect(dbState.triageDecisions.size).toBe(0);
+    expect(advisoryLocksTaken.length).toBe(0);
+  });
+
+  it('past the debounce window → LLM call runs', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+    };
+    _testSetDebounceWindowMs(60_000);
+    // Stamp the debounce well outside the window.
+    _testSeedDebounce('m1', 'owner/repo#206', Date.now() - 120_000);
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(206), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(triageMockCalls.length).toBe(1);
+  });
+
+  it('successful LLM call stamps the debounce → second call within window is debounced', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'unrelated',
+      confidence: 80,
+    };
+    _testSetDebounceWindowMs(60_000);
+    const iss = issue(207, { body: 'a' });
+
+    const first = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+    expect(first.status).toBe('triaged_skip');
+    expect(triageMockCalls.length).toBe(1);
+
+    // Same externalId, different content (so the hash short-circuit
+    // wouldn't fire either). Debounce should still squash it.
+    const second = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(207, { body: 'b' }),
+      ctx,
+    );
+    expect(second.status).toBe('triaged_debounced');
+    expect(triageMockCalls.length).toBe(1); // unchanged
+  });
+
+  it('hash-match path stamps the debounce so a burst rides on the single short-circuit', async () => {
+    seedTriageMap();
+    _testSetDebounceWindowMs(60_000);
+    const iss = issue(208, { title: 'hot' });
+    dbState.triageDecisions.set('triage-hot', {
+      id: 'triage-hot',
+      mapId: 'm1',
+      externalId: 'owner/repo#208',
+      issueTitle: 'hot',
+      issueState: 'open',
+      decision: 'skip',
+      reason: 'r',
+      confidence: 80,
+      placedNodeId: null,
+      suggestedParentNodeId: null,
+      decidedAt: new Date(2020, 0, 1),
+      decidedBy: 'auto',
+      reviewed: false,
+      lastInputHash: expectedHash(iss),
+    });
+
+    const first = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+    expect(first.status).toBe('triaged_hash_match');
+
+    // A second-burst delivery with DIFFERENT content (would normally
+    // call LLM) is squashed by the debounce that the hash-match path
+    // stamped.
+    const second = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(208, { title: 'hot', body: 'new body' }),
+      ctx,
+    );
+    expect(second.status).toBe('triaged_debounced');
+    // LLM never called across the whole burst.
+    expect(triageMockCalls.length).toBe(0);
+  });
+
+  it('triage_error → does NOT stamp the debounce (so retry can happen)', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'uncertain',
+      reason: 'triage_error: upstream 503',
+      confidence: 0,
+    };
+    _testSetDebounceWindowMs(60_000);
+
+    const first = await ensureNodeForIssue('m1', 'inbox-1', issue(209), ctx);
+    expect(first.status).toBe('triaged_uncertain');
+    expect(triageMockCalls.length).toBe(1);
+
+    // Second call with same content — would normally be debounced,
+    // but the prior call was a triage_error so the debounce wasn't
+    // stamped. The LLM is re-tried.
+    const second = await ensureNodeForIssue('m1', 'inbox-1', issue(209), ctx);
+    // It's either triaged_uncertain again (LLM still failing) or
+    // hash-match (the row's hash was NOT persisted on the error,
+    // so we should NOT see hash-match either — must be a real LLM call).
+    expect(second.status).toBe('triaged_uncertain');
+    expect(triageMockCalls.length).toBe(2);
   });
 });

@@ -285,6 +285,9 @@ vi.mock('../../db/schema.js', () => {
       confidence: col('confidence'),
       issueState: col('issueState'),
       suggestedParentNodeId: col('suggestedParentNodeId'),
+      // #142 — reclassify route writes lastInputHash:null to force the
+      // next webhook re-evaluation; column must exist on the schema mock.
+      lastInputHash: col('lastInputHash'),
     },
     // Phase 3 (#96) — recordTriageHistory inserts into this table from
     // every mutation route. The route tests don't assert on the history
@@ -395,6 +398,14 @@ vi.mock('../../sync/triageLabelWriteback.js', () => ({
 
 vi.mock('../../sync/triage.js', () => ({
   triageIssue: mocks.triageIssueMock,
+  // #142 cost-opt — reclassify route clears the debounce on the
+  // operator's behalf. Tests don't assert on this call, but the
+  // symbol must exist or the import resolves to undefined and the
+  // route throws on the first call.
+  clearTriageDebounce: vi.fn(),
+  computeInputHash: vi.fn(() => 'mock-hash'),
+  markTriageDebounce: vi.fn(),
+  isWithinDebounceWindow: vi.fn(() => false),
 }));
 
 vi.mock('../../sync/mapContext.js', () => ({
