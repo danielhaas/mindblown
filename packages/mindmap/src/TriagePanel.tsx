@@ -140,6 +140,11 @@ export function TriagePanel({
   const [notInMindBlownFilter, setNotInMindBlownFilter] = useState<NotInMindBlownFilter>('all');
   const [orphansAvailable, setOrphansAvailable] = useState(true);
   const [orphansError, setOrphansError] = useState<string | null>(null);
+  // True orphan count for this map — used to size the drift-audit
+  // slider correctly. Comes from the server's pre-pagination count
+  // (server > 2026-06-08); pre-2026-06-08 servers omit the field and
+  // we fall back to counting the visible items.
+  const [orphanTotal, setOrphanTotal] = useState<number | null>(null);
   // Picker mode tracks which not-in-mindblown card opened the modal so
   // the pick handler knows whether to call /override (decision-row
   // buckets) or to create+attach a node from scratch (orphan bucket).
@@ -299,6 +304,10 @@ export function TriagePanel({
         setNotInMindBlownItems(res.items);
         setOrphansAvailable(res.orphansAvailable);
         setOrphansError(res.orphansError);
+        // Prefer the server-supplied per-bucket count. Fall back to
+        // null so the trigger banner can fall through to counting
+        // visible items (legacy server compatibility).
+        setOrphanTotal(res.counts ? res.counts.orphan : null);
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -798,7 +807,10 @@ export function TriagePanel({
             onOrphanSkip={handleOrphanSkip}
             onReclassify={handleNotInMindBlownReclassify}
             onConfirmSkip={handleNotInMindBlownConfirmSkip}
-            orphanCount={notInMindBlownItems.filter((i) => i.kind === 'orphan').length}
+            orphanCount={
+              orphanTotal ??
+              notInMindBlownItems.filter((i) => i.kind === 'orphan').length
+            }
             driftBusy={driftBusy}
             driftResult={driftResult}
             driftError={driftError}
@@ -904,7 +916,10 @@ export function TriagePanel({
       {/* Drift-audit trigger modal */}
       {driftModalOpen && (
         <DriftAuditModal
-          orphanCount={notInMindBlownItems.filter((i) => i.kind === 'orphan').length}
+          orphanCount={
+            orphanTotal ??
+            notInMindBlownItems.filter((i) => i.kind === 'orphan').length
+          }
           busy={driftBusy}
           error={driftError}
           onCancel={() => {
