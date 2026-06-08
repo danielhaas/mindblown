@@ -553,6 +553,21 @@ export async function runMigrations(): Promise<void> {
     ON triage_decisions(map_id) WHERE reviewed = false
   `);
 
+  // ── suggested_parent_node_id (#TBD) ───────────────────────────
+  // The LLM's most recent suggested parent for `place` decisions —
+  // distinct from `placed_node_id` (which is set only when a node was
+  // actually created). On low-confidence places the operator must
+  // review; without this column the suggestion is only embedded in the
+  // `reason` text and the Override modal opens with empty selection.
+  // FK-less on purpose (mirrors placed_node_id) — when the suggested
+  // node is later deleted, the row stays and the UI shows a "stale
+  // suggestion" badge. Operator overrides do NOT update this column;
+  // it always reflects the latest LLM suggestion so the audit history
+  // can show "Claude suggested X, operator chose Y".
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_parent_node_id UUID
+  `);
+
   // ── Phase 3 (#96) — opt-in GitHub label write-back per map ────
   // When true, finalized triage decisions write `triage:placed` /
   // `triage:skipped` labels back to the source GitHub issue. Default

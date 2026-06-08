@@ -601,6 +601,15 @@ export function TriagePanel({
         <NodePickerModal
           title={`Pick a parent for "${pickerForDecision.issueTitle}"`}
           excludeNodeIds={pickerForDecision.placedNodeId ? [pickerForDecision.placedNodeId] : []}
+          // Pre-select the LLM's suggested parent when the operator
+          // opens Override on a place decision. The suggestion column
+          // is set on every auto-triage call (high- and low-confidence
+          // alike), so the operator confirms with one click instead of
+          // re-deriving the suggestion from the `reason` text. If the
+          // suggested node was deleted, NodePickerModal silently drops
+          // the pre-selection and opens unselected — the "(no longer
+          // exists)" badge on the card surfaces that to the operator.
+          initialSelectedNodeId={pickerForDecision.suggestedParentNodeId}
           onPick={handlePickParent}
           onClose={() => setPickerForDecision(null)}
         />
@@ -1055,6 +1064,25 @@ function TriageCard({
         {decision.reason}
       </div>
 
+      {/* Suggested-parent badge (place decisions only). The column is
+          set on every LLM call regardless of confidence, so a
+          low-confidence place that didn't auto-apply still surfaces
+          the suggestion here — operator clicks the badge to open the
+          Override picker pre-selected on that epic. Hidden on skipped
+          / uncertain (the suggestion is meaningless there).
+
+          When the suggested node was deleted between triage time and
+          now, we render "(no longer exists)" in muted style so the
+          operator knows to re-classify instead of confirming a stale
+          suggestion. */}
+      {decision.decision === 'place' && decision.suggestedParentNodeId && (
+        <SuggestedParentBadge
+          suggestedParentNodeId={decision.suggestedParentNodeId}
+          onClick={onPlace}
+          disabled={busy}
+        />
+      )}
+
       {/* Placed-node link (placed view only) */}
       {view === 'placed' && decision.placedNodeId && (
         <button
@@ -1121,6 +1149,78 @@ function TriageCard({
         />
       </div>
     </div>
+  );
+}
+
+// ── Suggested-parent badge ───────────────────────────────────────
+//
+// Renders under the reason on `place` decisions whose row has a
+// `suggested_parent_node_id` set. The badge text is the suggested
+// node's `text` (looked up in the in-memory store, same way the
+// NodePickerModal resolves names) — falling back to a muted "(no
+// longer exists)" affordance when the suggestion points at a
+// deleted node.
+//
+// Clicking the badge invokes the same handler as the Place/Move
+// button. That handler opens the NodePickerModal, which receives
+// the suggestion via `initialSelectedNodeId` and pre-highlights it
+// — so the operator can confirm with one click or pick a different
+// epic. We deliberately don't add a separate "Place with suggested"
+// shortcut: pre-selection + confirm IS the one-click flow, and an
+// extra button would split the operator's attention between two
+// near-identical affordances.
+
+function SuggestedParentBadge({
+  suggestedParentNodeId,
+  onClick,
+  disabled,
+}: {
+  suggestedParentNodeId: string;
+  onClick: () => void;
+  disabled: boolean;
+}) {
+  const nodes = useMindmapStore((s) => s.nodes);
+  const suggested = nodes[suggestedParentNodeId];
+  const stale = !suggested;
+  const label = stale
+    ? `${suggestedParentNodeId.slice(0, 8)}… (no longer exists)`
+    : suggested.text;
+  return (
+    <button
+      data-testid="triage-card-suggested-parent"
+      data-suggested-parent-node-id={suggestedParentNodeId}
+      data-suggested-stale={stale ? 'true' : 'false'}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+        padding: '4px 8px',
+        borderRadius: 4,
+        border: '1px dashed #cbd5e1',
+        background: 'transparent',
+        color: stale ? '#94a3b8' : '#475569',
+        fontStyle: stale ? 'italic' : 'normal',
+        fontSize: 11,
+        fontFamily: 'inherit',
+        cursor: disabled ? 'not-allowed' : 'pointer',
+        opacity: disabled ? 0.6 : 1,
+        textAlign: 'left',
+      }}
+      title={
+        stale
+          ? 'Claude suggested a parent that no longer exists in this map — re-classify or pick a different one.'
+          : 'Claude suggested this parent. Click to open the picker pre-selected here.'
+      }
+    >
+      <span style={{ color: '#94a3b8', fontSize: 10, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+        Suggested:
+      </span>
+      <span style={{ flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        {label}
+      </span>
+    </button>
   );
 }
 

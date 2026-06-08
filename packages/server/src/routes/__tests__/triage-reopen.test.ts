@@ -36,6 +36,7 @@ interface TriageRow {
   reason: string;
   confidence: number;
   placedNodeId: string | null;
+  suggestedParentNodeId: string | null;
   decidedAt: Date;
   decidedBy: 'auto' | 'operator';
   reviewed: boolean;
@@ -54,6 +55,7 @@ function seedRow(overrides: Partial<TriageRow> & { id: string; mapId: string; ex
     reason: 'r',
     confidence: 40,
     placedNodeId: null,
+    suggestedParentNodeId: null,
     decidedAt: new Date(),
     decidedBy: 'auto',
     reviewed: false,
@@ -141,6 +143,7 @@ vi.mock('../../db/schema.js', () => {
       externalId: col('externalId'),
       issueTitle: col('issueTitle'),
       placedNodeId: col('placedNodeId'),
+      suggestedParentNodeId: col('suggestedParentNodeId'),
       reviewed: col('reviewed'),
       decidedBy: col('decidedBy'),
       issueState: col('issueState'),

@@ -12,7 +12,7 @@
  * the mindmap is already rendering.
  */
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 
@@ -28,11 +28,21 @@ interface TreeRow {
 export function NodePickerModal({
   title,
   excludeNodeIds = [],
+  initialSelectedNodeId = null,
   onPick,
   onClose,
 }: {
   title: string;
   excludeNodeIds?: string[];
+  /**
+   * Pre-selected node when the picker opens. Used by the triage Override
+   * flow on low-confidence places to pre-pick the LLM's suggested epic.
+   * The node is selected (highlighted), all its ancestors are expanded
+   * so the row is visible, and the row scrolls into view. If the node
+   * isn't in the current tree (deleted or never existed), the prop is
+   * silently ignored and the picker opens with no selection.
+   */
+  initialSelectedNodeId?: string | null;
   onPick: (nodeId: string) => void;
   onClose: () => void;
 }) {
@@ -47,7 +57,9 @@ export function NodePickerModal({
   const [search, setSearch] = useState('');
   const [expanded, setExpanded] = useState<Set<string>>(() => {
     // Expand the root + its direct children by default — that's the
-    // "epic shelf" most overrides target.
+    // "epic shelf" most overrides target. When an initial selection is
+    // provided AND it's a node we know about, also expand every
+    // ancestor so the pre-selected row is visible without scrolling.
     const initial = new Set<string>();
     if (rootNodeId) {
       initial.add(rootNodeId);
@@ -56,9 +68,37 @@ export function NodePickerModal({
         for (const childId of root.childrenIds) initial.add(childId);
       }
     }
+    if (initialSelectedNodeId && nodes[initialSelectedNodeId]) {
+      let cur: string | null | undefined = nodes[initialSelectedNodeId]?.parentId ?? null;
+      while (cur) {
+        initial.add(cur);
+        cur = nodes[cur]?.parentId ?? null;
+      }
+    }
     return initial;
   });
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(() => {
+    // Only honor the initial selection if the node is actually in the
+    // tree. A suggestion that points at a deleted node is silently
+    // ignored — the badge in TriagePanel renders a "(no longer exists)"
+    // affordance for that case; the picker opens unselected.
+    if (initialSelectedNodeId && nodes[initialSelectedNodeId]) {
+      return initialSelectedNodeId;
+    }
+    return null;
+  });
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
+
+  // Scroll the pre-selected row into view once the tree has rendered.
+  // We only fire on the first mount (or the first time the selection
+  // becomes resolvable) — subsequent clicks shouldn't yank the scroll
+  // position.
+  useEffect(() => {
+    if (selectedRowRef.current) {
+      selectedRowRef.current.scrollIntoView({ block: 'center', behavior: 'auto' });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const excludeSet = useMemo(() => new Set(excludeNodeIds), [excludeNodeIds]);
 
@@ -259,6 +299,7 @@ export function NodePickerModal({
                   key={row.node.id}
                   data-testid="node-picker-row"
                   data-node-id={row.node.id}
+                  ref={isSelected ? selectedRowRef : undefined}
                   onClick={() => {
                     if (!isExcluded) setSelectedNodeId(row.node.id);
                   }}

@@ -26,6 +26,7 @@ interface TriageRow {
   reason: string;
   confidence: number;
   placedNodeId: string | null;
+  suggestedParentNodeId: string | null;
   decidedAt: Date;
   decidedBy: 'auto' | 'operator';
   reviewed: boolean;
@@ -68,6 +69,7 @@ function seedRow(overrides: Partial<TriageRow> = {}): TriageRow {
     reason: 'unsure',
     confidence: 40,
     placedNodeId: null,
+    suggestedParentNodeId: null,
     decidedAt: new Date(),
     decidedBy: 'auto',
     reviewed: false,
@@ -207,6 +209,7 @@ vi.mock('../../db/schema.js', () => {
       decidedAt: col('decidedAt'),
       confidence: col('confidence'),
       issueState: col('issueState'),
+      suggestedParentNodeId: col('suggestedParentNodeId'),
     },
     // Phase 3 (#96) — recordTriageHistory inserts into this table from
     // every mutation route. The route tests don't assert on the history
@@ -486,6 +489,41 @@ describe('GET /api/maps/:mapId/triage-decisions', () => {
     expect(decisions.every((d) => d === 'skip')).toBe(true);
   });
 
+  // ── suggested_parent_node_id surfacing ──────────────────────
+  // The column is populated by every LLM-driven write (auto-ingest +
+  // reclassify), distinct from placedNodeId which only flips on
+  // actual node creation. The GET list response must surface it so
+  // the Override modal can pre-select the suggestion.
+  it('returns suggestedParentNodeId on each row', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      confidence: 60, // low-confidence — no auto-apply, placedNodeId null
+      placedNodeId: null,
+      suggestedParentNodeId: 'epic-suggested',
+    });
+    seedRow({
+      id: 'tr-2',
+      decision: 'skip',
+      suggestedParentNodeId: null,
+    });
+    permissionLevel = 'view';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/maps/map-1/triage-decisions',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const decisions = res.json().decisions as Array<{
+      id: string;
+      suggestedParentNodeId: string | null;
+    }>;
+    const byId = Object.fromEntries(decisions.map((d) => [d.id, d.suggestedParentNodeId]));
+    expect(byId['tr-1']).toBe('epic-suggested');
+    expect(byId['tr-2']).toBeNull();
+  });
+
   it('honors limit and caps at 200', async () => {
     for (let i = 0; i < 10; i++) seedRow({ id: `t${i}` });
     permissionLevel = 'view';
@@ -737,6 +775,70 @@ describe('POST .../override', () => {
     expect(res.json().status).toBe('already_placed');
     expect(moveNodeMock).not.toHaveBeenCalled();
   });
+
+  // suggested_parent_node_id semantic: the column always reflects the
+  // latest LLM suggestion, NEVER the operator's pick. So an override
+  // that lands a place under parentNodeId=X leaves the original LLM
+  // suggestion untouched — that way the audit history shows "Claude
+  // suggested Y, operator chose X." Without this guard, the override
+  // route would silently rewrite the suggestion to whatever the
+  // operator clicked, erasing the audit signal.
+  it('place override does NOT overwrite suggestedParentNodeId (operator pick ≠ LLM suggestion)', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      confidence: 60,
+      placedNodeId: null,
+      // LLM suggested epic-X with low confidence.
+      suggestedParentNodeId: 'epic-X',
+    });
+    nodes.set('epic-Y', { id: 'epic-Y', mapId: 'map-1', parentId: 'root-1' });
+    permissionLevel = 'edit';
+
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      // Operator picks epic-Y — different from the LLM's epic-X.
+      payload: {
+        decision: 'place',
+        parentNodeId: 'epic-Y',
+        reason: 'better fit',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    // placedNodeId stamped to the newly-created node (operator pick).
+    expect(row.placedNodeId).toBe('created-node');
+    // But the LLM suggestion column is INTACT — the audit history can
+    // still surface "Claude suggested epic-X, operator chose epic-Y."
+    expect(row.suggestedParentNodeId).toBe('epic-X');
+  });
+
+  // Mirror the same invariant for the skip/uncertain override branch —
+  // a place row that the operator skips must keep the suggestion intact
+  // (it's still the most recent LLM call's output).
+  it('skip override does NOT overwrite suggestedParentNodeId', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      confidence: 60,
+      suggestedParentNodeId: 'epic-X',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/override',
+      payload: { decision: 'skip', reason: 'not for us' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    expect(row.decision).toBe('skip');
+    expect(row.suggestedParentNodeId).toBe('epic-X');
+  });
 });
 
 // ── POST /confirm ────────────────────────────────────────────────
@@ -945,6 +1047,58 @@ describe('POST .../reclassify', () => {
     // also doesn't clear the previously-placed node id, since the new
     // decision is still 'place'.
     expect(row.placedNodeId).toBe('node-still-here');
+  });
+
+  // Counterpart to the override-doesn't-touch-suggestion tests above.
+  // Reclassify is the LLM speaking; the suggested-parent column MUST
+  // refresh on every reclassify so a stale suggestion can't linger
+  // past a re-run.
+  it('reclassify → place refreshes suggestedParentNodeId from LLM output', async () => {
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      confidence: 50,
+      // Stale suggestion from an earlier LLM call.
+      suggestedParentNodeId: 'epic-stale',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    // Default triageIssueMock returns parentNodeId='epic-1' on place.
+    expect(res.json().suggestedParentNodeId).toBe('epic-1');
+    const row = triageRows.get('tr-1')!;
+    expect(row.suggestedParentNodeId).toBe('epic-1');
+  });
+
+  it('reclassify → skip nulls suggestedParentNodeId', async () => {
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip' as const,
+      parentNodeId: undefined,
+      reason: 'no longer relevant',
+      confidence: 92,
+    } as unknown as Awaited<ReturnType<typeof triageIssueMock>>);
+    seedRow({
+      id: 'tr-1',
+      decision: 'place',
+      confidence: 50,
+      suggestedParentNodeId: 'epic-was-suggested',
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().suggestedParentNodeId).toBeNull();
+    const row = triageRows.get('tr-1')!;
+    expect(row.suggestedParentNodeId).toBeNull();
   });
 });
 
