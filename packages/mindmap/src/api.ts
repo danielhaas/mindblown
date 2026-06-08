@@ -1464,6 +1464,49 @@ export function skipOrphanIssue(
   );
 }
 
+/**
+ * Manual per-map drift audit. Pushes a single batch of orphans through
+ * auto-backfill (= per-issue triage + placement), instead of waiting for
+ * the daily scheduled sweep to chew through them ~50/day.
+ *
+ * - `max` is the upper bound on issues processed in this one call.
+ *   Pass undefined to process every drifted issue in one shot.
+ * - Returns counters the caller renders in a toast / inline summary.
+ */
+export interface DriftAuditRunResponse {
+  mapId: string;
+  mapName: string;
+  drift: { onlyInGitHub: number; exampleIssues: number[] };
+  autoBackfill: {
+    totalImported: number;
+    totalManualPending: number;
+    outcomes: Array<
+      | { mapId: string; mapName: string; kind: 'healed'; imported: number }
+      | { mapId: string; mapName: string; kind: 'over-cap'; pending: number }
+      | { mapId: string; mapName: string; kind: 'failed'; pending: number; reason: string }
+    >;
+  };
+  counts: {
+    driftedIssues: number;
+    imported: number;
+    manualPending: number;
+    elapsedMs: number;
+  };
+}
+
+export function runDriftAuditForMap(
+  mapId: string,
+  opts: { max?: number } = {},
+): Promise<DriftAuditRunResponse> {
+  const qs = new URLSearchParams();
+  if (opts.max != null) qs.set('max', String(opts.max));
+  const q = qs.toString();
+  return request<DriftAuditRunResponse>(
+    `/api/maps/${mapId}/triage-decisions/drift-audit/run${q ? `?${q}` : ''}`,
+    { method: 'POST' },
+  );
+}
+
 export function listNotInMindBlown(
   mapId: string,
   filters: ListNotInMindBlownFilters = {},

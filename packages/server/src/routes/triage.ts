@@ -66,6 +66,7 @@ import { triageIssue, clearTriageDebounce } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { runAutoBackfill } from '../sync/autoBackfill.js';
 import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
@@ -528,6 +529,218 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         orphansError,
         items: paged,
       });
+    },
+  );
+
+  // ── POST /api/maps/:mapId/triage-decisions/drift-audit/run ────
+  // Manual per-map drift audit + auto-backfill trigger (companion to
+  // the daily scheduled sweep in `runDriftAudit`). Lets the operator
+  // process a backlog of orphans in one shot instead of waiting
+  // ~AUTO_BACKFILL_MAX_PER_DAY=50/day for the scheduled audit to chew
+  // through them.
+  //
+  // Differences from `POST /api/maps/sync/audit-drift`:
+  //   - Per-map (vs every opted-in map across every workspace),
+  //     so it gates on map-edit permission instead of admin and
+  //     can't fan out across workspaces.
+  //   - Caller-supplied `max` overrides the env-var cap. Default is
+  //     UNBOUNDED for the manual button — the operator already saw
+  //     the cost preview before clicking, so the daily cap is the
+  //     wrong reflex here. Pass a smaller `max` for sample runs.
+  //   - Skips the Kuma push entirely. The scheduled audit owns the
+  //     heartbeat; manual runs interleaving would muddy the signal.
+  //
+  // Body / query:
+  //   ?max=N — optional integer override for the backfill cap.
+  //            Default: import all drifted issues for this map.
+  //
+  // Response:
+  //   { mapId, mapName, drift: { onlyInGitHub, exampleIssues },
+  //     autoBackfill: AutoBackfillSummary,
+  //     counts: { driftedIssues, imported, manualPending, elapsedMs } }
+  //
+  // Concurrency: a Postgres advisory xact lock keyed on the map id
+  // serialises overlapping manual runs (and overlapping with the
+  // scheduler) so the LLM doesn't get called twice on the same
+  // externalId from two callers. See `ensureNodeForIssue`'s lock key
+  // pattern in githubIngest.ts for the namespacing convention.
+  app.post<{
+    Params: { mapId: string };
+    Querystring: { max?: string };
+  }>(
+    '/api/maps/:mapId/triage-decisions/drift-audit/run',
+    async (req, reply) => {
+      const gate = await gateMapAccess(req, req.params.mapId, 'edit');
+      if (gate) {
+        return reply.status(gate.status).send({
+          error: { code: gate.code, message: gate.message },
+        });
+      }
+
+      // Parse `max` — undefined means "no cap" (run them all).
+      // Negative or NaN inputs are rejected explicitly so a typo
+      // doesn't silently fall through to the env-var default and
+      // surprise the operator.
+      let maxOverride: number | undefined;
+      if (req.query.max != null && req.query.max !== '') {
+        const n = parseInt(req.query.max, 10);
+        if (!Number.isFinite(n) || n < 0) {
+          return reply.status(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `max must be a non-negative integer (got '${req.query.max}')`,
+            },
+          });
+        }
+        maxOverride = n;
+      }
+
+      // Map-level advisory lock — same hash-mod-1<<31 trick the
+      // ingest path uses to fit a UUID into a bigint key. The lock
+      // is transaction-scoped, so we wrap the whole audit + backfill
+      // in a single tx. If another caller (manual or scheduler)
+      // already holds it, we get pg_try_advisory_xact_lock=false and
+      // return 409 instead of queuing — the operator can click again
+      // in a moment.
+      const lockKeyHash = sql`hashtext(${req.params.mapId})::bigint`;
+
+      const [mapRow] = await db
+        .select({ id: maps.id, name: maps.name })
+        .from(maps)
+        .where(eq(maps.id, req.params.mapId));
+      if (!mapRow) {
+        return reply.status(404).send({
+          error: { code: 'NOT_FOUND', message: 'Map not found' },
+        });
+      }
+
+      const t0 = Date.now();
+      try {
+        const lockResult = await db.execute(
+          sql`SELECT pg_try_advisory_lock(${lockKeyHash}) AS acquired`,
+        );
+        const acquired =
+          (lockResult as unknown as { rows?: Array<{ acquired: boolean }> })
+            .rows?.[0]?.acquired === true;
+        if (!acquired) {
+          return reply.status(409).send({
+            error: {
+              code: 'CONFLICT',
+              message: 'Another drift audit is already running for this map',
+            },
+          });
+        }
+
+        try {
+          // Resolve the map's GitHub context the same way the scheduled
+          // audit does (App-binding first, PAT fallback) — reuse the
+          // helper so manual and scheduled paths can't drift on token
+          // resolution.
+          const ghCtx = await getGitHubContextForMap(req.params.mapId);
+          if (!ghCtx) {
+            return reply.status(400).send({
+              error: {
+                code: 'NO_INTEGRATION',
+                message:
+                  'GitHub not configured for this map — link a repo in settings first',
+              },
+            });
+          }
+
+          // Fetch every open issue and compare against linked
+          // externalIds in this map — mirrors `auditOneMap` in
+          // driftAudit.ts but inlined so we don't need to export the
+          // private helper (it's tightly coupled to the
+          // `discoverTargets` shape).
+          const importedIssues = await importGitHubIssues(
+            ghCtx.owner,
+            ghCtx.repo,
+            ghCtx.token,
+            { includeAll: false },
+          );
+
+          const mapNodes = await db
+            .select({ externalLinks: nodes.externalLinks })
+            .from(nodes)
+            .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
+          const linkedExternalIds = new Set<string>();
+          for (const n of mapNodes) {
+            const links = (n.externalLinks as ExternalLink[] | null) ?? [];
+            for (const l of links) {
+              if (l.provider === 'github' && l.externalId) {
+                linkedExternalIds.add(l.externalId);
+              }
+            }
+          }
+
+          const drifted = importedIssues
+            .filter((item) => !linkedExternalIds.has(item.externalLink.externalId))
+            .map((item) => item.issue.number);
+
+          if (drifted.length === 0) {
+            return reply.send({
+              mapId: mapRow.id,
+              mapName: mapRow.name,
+              drift: { onlyInGitHub: 0, exampleIssues: [] },
+              autoBackfill: {
+                totalImported: 0,
+                totalManualPending: 0,
+                outcomes: [],
+              },
+              counts: {
+                driftedIssues: 0,
+                imported: 0,
+                manualPending: 0,
+                elapsedMs: Date.now() - t0,
+              },
+            });
+          }
+
+          const report = {
+            mapId: mapRow.id,
+            mapName: mapRow.name,
+            repo: `${ghCtx.owner}/${ghCtx.repo}`,
+            onlyInGitHub: drifted.length,
+            exampleIssues: drifted.slice(0, 5),
+          };
+
+          // Cap defaults to drift size (no cap) for manual runs.
+          // When the operator passes ?max=N we honour exactly that.
+          const cap = maxOverride ?? drifted.length;
+          const autoBackfill = await runAutoBackfill([report], cap);
+
+          return reply.send({
+            mapId: mapRow.id,
+            mapName: mapRow.name,
+            drift: {
+              onlyInGitHub: report.onlyInGitHub,
+              exampleIssues: report.exampleIssues,
+            },
+            autoBackfill,
+            counts: {
+              driftedIssues: report.onlyInGitHub,
+              imported: autoBackfill.totalImported,
+              manualPending: autoBackfill.totalManualPending,
+              elapsedMs: Date.now() - t0,
+            },
+          });
+        } finally {
+          // Release the advisory lock even on error / early return.
+          await db.execute(sql`SELECT pg_advisory_unlock(${lockKeyHash})`);
+        }
+      } catch (err) {
+        console.error(
+          `[drift-audit-manual] map ${req.params.mapId} failed:`,
+          err,
+        );
+        return reply.status(500).send({
+          error: {
+            code: 'DRIFT_AUDIT_FAILED',
+            message:
+              err instanceof Error ? err.message : 'Drift audit failed',
+          },
+        });
+      }
     },
   );
 
