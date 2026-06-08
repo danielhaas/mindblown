@@ -820,6 +820,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       // NOT auto-deleted on reclassify (Ray's spec: "operator can
       // delete via UI") — only the decision-row reference is dropped.
       const clearPlacedNode = decision.decision !== 'place' && row.placedNodeId != null;
+      // Reclassify is an LLM call — refresh the suggested-parent
+      // column with the new pick (null on skip/uncertain). This is
+      // what the Override modal pre-selects when the operator opens
+      // it for a low-confidence place.
+      const newSuggestedParentNodeId =
+        decision.decision === 'place' ? (decision.parentNodeId ?? null) : null;
 
       await db
         .update(triageDecisions)
@@ -827,6 +833,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           decision: decision.decision,
           reason: decision.reason,
           confidence: decision.confidence,
+          suggestedParentNodeId: newSuggestedParentNodeId,
           decidedBy: 'auto',
           decidedAt: new Date(),
           reviewed: false,
@@ -880,6 +887,10 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         // client doesn't need a refetch to learn the row no longer
         // references the previously-placed node (Ray's #100 nit).
         placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
+        // Suggested parent reflects the LLM's new pick — surfaced so
+        // the operator's next Override modal can pre-select it without
+        // a refetch. Always matches what was just written to the row.
+        suggestedParentNodeId: newSuggestedParentNodeId,
       });
     },
   );
@@ -975,6 +986,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
     confidence?: number;
     reason?: string;
     placedNodeId?: string | null;
+    suggestedParentNodeId?: string | null;
   }
   interface BulkItemErr {
     id: string;
@@ -1476,12 +1488,20 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           });
           const clearPlacedNode =
             decision.decision !== 'place' && row.placedNodeId != null;
+          // Mirror single /reclassify: refresh the LLM's suggested
+          // parent on every bulk re-classify call. Operator overrides
+          // never touch this column; every LLM-driven write does.
+          const newSuggestedParentNodeId =
+            decision.decision === 'place'
+              ? (decision.parentNodeId ?? null)
+              : null;
           await db
             .update(triageDecisions)
             .set({
               decision: decision.decision,
               reason: decision.reason,
               confidence: decision.confidence,
+              suggestedParentNodeId: newSuggestedParentNodeId,
               decidedBy: 'auto',
               decidedAt: new Date(),
               reviewed: false,
@@ -1521,6 +1541,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             confidence: decision.confidence,
             reason: decision.reason,
             placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
+            suggestedParentNodeId: newSuggestedParentNodeId,
           });
         } catch (err) {
           results.push({

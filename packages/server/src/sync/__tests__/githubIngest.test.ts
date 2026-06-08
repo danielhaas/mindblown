@@ -1005,6 +1005,11 @@ describe('ensureNodeForIssue — triage fork', () => {
     });
     // placed_node_id was stamped after the node was created.
     expect(rows[0].placedNodeId).toBeDefined();
+    // suggested_parent_node_id mirrors the LLM's pick — set on every
+    // place decision, regardless of confidence / auto-apply outcome.
+    // Same column the Override modal later pre-selects from on
+    // low-confidence places.
+    expect(rows[0].suggestedParentNodeId).toBe('epic-1');
   });
 
   it('triage_enabled=true + place LOW-confidence → triage row persisted, NO node created', async () => {
@@ -1036,6 +1041,12 @@ describe('ensureNodeForIssue — triage fork', () => {
     });
     // placed_node_id is null since no node was created.
     expect(rows[0].placedNodeId).toBeNull();
+    // BUT suggested_parent_node_id IS populated — that's the entire
+    // point of the column: the Override modal needs the LLM's pick
+    // for low-confidence places even when auto-apply was blocked.
+    // Without this assertion the gap that motivated the column
+    // wouldn't be regression-tested.
+    expect(rows[0].suggestedParentNodeId).toBe('epic-1');
   });
 
   it('triage_enabled=true + skip → triage row persisted, no node created', async () => {

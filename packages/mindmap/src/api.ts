@@ -1108,6 +1108,18 @@ export interface TriageDecision {
   reason: string;
   confidence: number; // 0-100
   placedNodeId: string | null;
+  /**
+   * The LLM's most recent suggested parent (for `place` decisions).
+   * Distinct from `placedNodeId` — the suggestion is the LLM's pick;
+   * `placedNodeId` is set only when a node was actually created. On
+   * low-confidence places, the suggestion is what the Override modal
+   * pre-selects.
+   *
+   * Operator overrides do NOT update this field — it always reflects
+   * the latest LLM suggestion, so the audit history can show "Claude
+   * suggested X, operator chose Y".
+   */
+  suggestedParentNodeId: string | null;
   decidedAt: string;
   decidedBy: 'auto' | 'operator';
   reviewed: boolean;
@@ -1192,6 +1204,12 @@ export interface ReclassifyTriageResponse {
    * (#100 Round 2 nit from Ray.)
    */
   placedNodeId: string | null;
+  /**
+   * The LLM's newly-suggested parent. Always reflects what was just
+   * written to the row's `suggestedParentNodeId` column — null on
+   * skip/uncertain, the suggested epic UUID on place.
+   */
+  suggestedParentNodeId: string | null;
 }
 
 export function reclassifyTriageDecision(
@@ -1247,6 +1265,12 @@ export interface BulkTriageItemOk {
   confidence?: number;
   reason?: string;
   placedNodeId?: string | null;
+  /**
+   * Populated by bulk-reclassify per-item results — mirrors the
+   * single-reclassify response shape so the UI can pre-select the
+   * new LLM suggestion in the Override modal without a refetch.
+   */
+  suggestedParentNodeId?: string | null;
 }
 
 export interface BulkTriageItemErr {

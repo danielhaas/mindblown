@@ -260,12 +260,19 @@ export async function syncTriageRowsForReopen(
       // fix 4 — orphan cleanup).
       const clearPlacedNode =
         decision.decision !== 'place' && row.placedNodeId != null;
+      // The reopen-driven re-triage is an LLM call — refresh the
+      // suggested-parent column with the new pick (null on
+      // skip/uncertain). Operator overrides never touch this field;
+      // every LLM-driven write does.
+      const newSuggestedParentNodeId =
+        decision.decision === 'place' ? (decision.parentNodeId ?? null) : null;
       await db
         .update(triageDecisions)
         .set({
           decision: decision.decision,
           reason: decision.reason,
           confidence: decision.confidence,
+          suggestedParentNodeId: newSuggestedParentNodeId,
           decidedBy: 'auto',
           decidedAt: new Date(),
           reviewed: false,

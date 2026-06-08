@@ -362,6 +362,20 @@ export const triageDecisions = pgTable('triage_decisions', {
   reason: text('reason').notNull(),
   confidence: integer('confidence').notNull(), // 0-100
   placedNodeId: uuid('placed_node_id'),
+  // Suggested parent from the LLM's most recent triage call. Set on every
+  // `place` decision (regardless of auto-apply). Distinct from
+  // placed_node_id: this carries the LLM's suggestion; placed_node_id
+  // carries where the node was actually created (auto-applied or
+  // operator-placed). Lets the Override modal pre-select the LLM's
+  // suggested epic on low-confidence places, instead of asking the
+  // operator to guess from the `reason` text. FK-less (matches
+  // placed_node_id convention) — when the suggested node is later
+  // deleted, the decision row stays around and the UI shows
+  // "Suggested: <id> (no longer exists)" rather than cascading.
+  // Operator overrides do NOT update this field — the column always
+  // reflects the latest LLM suggestion, so the audit history can show
+  // "Claude suggested X, operator chose Y".
+  suggestedParentNodeId: uuid('suggested_parent_node_id'),
   decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
   decidedBy: text('decided_by').notNull(), // 'auto' | 'operator'
   reviewed: boolean('reviewed').notNull().default(false),

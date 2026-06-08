@@ -658,6 +658,16 @@ async function ensureNodeForIssueViaTriage(
     // time we reach this upsert we know the row (if any) is either
     // auto-decided or operator-touched-but-not-reviewed. The SET clause
     // therefore overwrites the auto fields freely.
+    // Capture the LLM's suggested parent for both branches of the
+    // upsert. Always reflects the latest auto-triage call: a `place`
+    // decision carries the suggested epic, a `skip`/`uncertain` decision
+    // carries null. The column is intentionally distinct from
+    // placed_node_id (which only flips when a node is actually created)
+    // so the Override modal can pre-select the LLM's pick on
+    // low-confidence places.
+    const suggestedParentNodeId =
+      decision.decision === 'place' ? (decision.parentNodeId ?? null) : null;
+
     const [decisionRow] = await tx
       .insert(triageDecisions)
       .values({
@@ -669,6 +679,7 @@ async function ensureNodeForIssueViaTriage(
         reason: decision.reason,
         confidence: decision.confidence,
         placedNodeId: null,
+        suggestedParentNodeId,
         decidedBy: 'auto',
         reviewed: false,
       })
@@ -684,6 +695,7 @@ async function ensureNodeForIssueViaTriage(
           // re-triages — placed_node_id stays whatever it was unless
           // the new decision is also auto-apply, in which case the
           // INSERT-branch fields below run.
+          suggestedParentNodeId,
           decidedAt: new Date(),
           decidedBy: 'auto',
           reviewed: false,
