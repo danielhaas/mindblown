@@ -130,6 +130,9 @@ export interface NodeWithComputed {
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;
+  // Orchestration substrate (#111) — surfaced for slot accounting (#153).
+  claimedBySession: string | null;
+  claimedAt: string | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;

@@ -22,6 +22,16 @@ function progressBar(pct: number): string {
   return `[${'#'.repeat(filled)}${'.'.repeat(empty)}] ${Math.round(clamped)}%`;
 }
 
+/**
+ * Render the orchestration claim state as a compact, parseable token.
+ * Always emitted (even when null) so Kira's slot accounting can parse a
+ * stable field rather than infer absence — see #153.
+ */
+export function formatClaim(session: string | null, at: string | null): string {
+  if (session === null) return 'claim: -';
+  return at ? `claim: ${session}@${at}` : `claim: ${session}`;
+}
+
 function buildNodeLookup(nodes: NodeWithComputed[]): Map<string, NodeWithComputed> {
   const map = new Map<string, NodeWithComputed>();
   for (const n of nodes) map.set(n.id, n);
@@ -53,6 +63,7 @@ function renderTreeNode(
   if (node.externalLinks?.length > 0) {
     parts.push(node.externalLinks.map((l) => `[${l.externalId}]`).join(' '));
   }
+  parts.push(formatClaim(node.claimedBySession, node.claimedAt));
   if (node.dependencies.length > 0) {
     const depLabels = node.dependencies.map((d) => {
       const target = lookup.get(d.targetNodeId);
