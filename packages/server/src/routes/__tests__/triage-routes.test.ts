@@ -157,6 +157,16 @@ function buildSelectChain(fields?: Record<string, unknown>) {
   };
 }
 
+// #141 race-fix harness: a hoisted holder so the test can install a gate
+// that the mocked `db.transaction` will consult before invoking the
+// callback. `gate` returns (or resolves to) void; resolving it lets the
+// transaction body run. The race test uses this to hold the second tx
+// outside its callback until the first tx has committed.
+const txGateHolder = vi.hoisted(() => ({
+  enter: undefined as ((n: number) => Promise<void> | void) | undefined,
+  count: 0,
+}));
+
 vi.mock('../../db/connection.js', () => {
   const db = {
     select: (fields?: Record<string, unknown>) => buildSelectChain(fields),
@@ -227,7 +237,23 @@ vi.mock('../../db/connection.js', () => {
         return thenable;
       },
     }),
-    transaction: async <T>(cb: (tx: unknown) => Promise<T>): Promise<T> => cb(db),
+    // #141 race-fix: orphan-import / orphan-skip routes call
+    // `tx.execute(sql\`SELECT pg_advisory_xact_lock(...)\`)` inside their
+    // transactions. The mock has no real DB, so `execute` is a no-op.
+    // The gate below lets a test simulate Postgres's advisory-lock
+    // serialization: when armed, the Nth transaction waits on the
+    // promise returned by `__txGate(N)` before its callback runs, so the
+    // test can hold #2 outside the tx body until #1 has committed (i.e.
+    // its insert is visible to the in-tx precheck).
+    execute: async () => undefined,
+    transaction: async <T>(cb: (tx: unknown) => Promise<T>): Promise<T> => {
+      if (txGateHolder.enter) {
+        const n = txGateHolder.count;
+        txGateHolder.count = n + 1;
+        await txGateHolder.enter(n);
+      }
+      return cb(db);
+    },
   };
   return { db };
 });
@@ -454,6 +480,9 @@ beforeEach(() => {
   githubContextMock.mockImplementation(async () => null);
   importGitHubIssuesMock.mockReset();
   importGitHubIssuesMock.mockImplementation(async () => []);
+  // #141 race-fix harness: clear any gate left armed by a previous test.
+  txGateHolder.enter = undefined;
+  txGateHolder.count = 0;
 });
 
 // ── Auth gate ────────────────────────────────────────────────────
@@ -2400,5 +2429,141 @@ describe('POST .../triage-decisions/orphan-skip', () => {
     await app.close();
     expect(res.statusCode).toBe(409);
     expect(res.json().error?.code).toBe('NOT_ORPHAN');
+  });
+});
+
+// ── Ray review (#141 round 2) ────────────────────────────────────
+//
+// Two should-fixes folded in after Ray's APPROVE: the race window on
+// orphan-import / orphan-skip (precheck was outside the tx, so two
+// concurrent callers could both pass it and the loser would crash on
+// the unique constraint) and the `change_type='overridden'` mis-label
+// on brand-new audit rows (semantically it's `'created'`).
+describe('orphan-import / orphan-skip — race-safety + audit-history change_type', () => {
+  it('orphan-import records change_type=created (brand-new row, no previous decision)', async () => {
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload: {
+        externalId: 'o/r#new',
+        issueTitle: 'New orphan',
+        parentNodeId: 'epic-1',
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const history = [...historyRows.values()];
+    expect(history.length).toBe(1);
+    expect(history[0].changeType).toBe('created');
+    expect(history[0].previousDecision).toBeNull();
+    expect(history[0].newDecision).toBe('place');
+  });
+
+  it('orphan-skip records change_type=created (brand-new row, no previous decision)', async () => {
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload: { externalId: 'o/r#skip-new', issueTitle: 'Skip me' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const history = [...historyRows.values()];
+    expect(history.length).toBe(1);
+    expect(history[0].changeType).toBe('created');
+    expect(history[0].previousDecision).toBeNull();
+    expect(history[0].newDecision).toBe('skip');
+  });
+
+  it('orphan-import: two concurrent callers — exactly one wins, the other gets 409 NOT_ORPHAN', async () => {
+    // Race-simulation harness: gate the second transaction outside its
+    // callback until the first transaction has fully committed its
+    // INSERT. The fix moves the precheck *inside* the tx after the
+    // advisory lock, so when caller #2's tx body finally runs, its
+    // in-tx precheck reads caller #1's just-inserted row and returns
+    // the documented 409 — not a raw DB error.
+    nodes.set('epic-1', { id: 'epic-1', mapId: 'map-1', parentId: null });
+    permissionLevel = 'edit';
+    let releaseSecond: (() => void) | null = null;
+    const secondReady = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    txGateHolder.enter = (n: number) => {
+      if (n === 0) return; // first tx runs immediately
+      return secondReady; // second tx waits until we release it
+    };
+    const app = await buildApp('jwt');
+    const payload = {
+      externalId: 'o/r#race',
+      issueTitle: 'Racy orphan',
+      parentNodeId: 'epic-1',
+    };
+    const a = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload,
+    });
+    const b = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-import',
+      payload,
+    });
+    // First caller completes its transaction (insert visible), then we
+    // release the second caller — its in-tx precheck must now 409.
+    const aResult = await a;
+    releaseSecond!();
+    const bResult = await b;
+    await app.close();
+    const codes = [aResult.statusCode, bResult.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const winner = aResult.statusCode === 200 ? aResult : bResult;
+    const loser = aResult.statusCode === 409 ? aResult : bResult;
+    expect(winner.json().status).toBe('imported');
+    expect(loser.json().error?.code).toBe('NOT_ORPHAN');
+    // Exactly one triage row + one history row got persisted.
+    expect(triageRows.size).toBe(1);
+    expect(historyRows.size).toBe(1);
+    expect([...historyRows.values()][0].changeType).toBe('created');
+  });
+
+  it('orphan-skip: two concurrent callers — exactly one wins, the other gets 409 NOT_ORPHAN', async () => {
+    permissionLevel = 'edit';
+    let releaseSecond: (() => void) | null = null;
+    const secondReady = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    txGateHolder.enter = (n: number) => {
+      if (n === 0) return;
+      return secondReady;
+    };
+    const app = await buildApp('jwt');
+    const payload = { externalId: 'o/r#skip-race', issueTitle: 'Racy skip' };
+    const a = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload,
+    });
+    const b = app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/orphan-skip',
+      payload,
+    });
+    const aResult = await a;
+    releaseSecond!();
+    const bResult = await b;
+    await app.close();
+    const codes = [aResult.statusCode, bResult.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+    const winner = aResult.statusCode === 200 ? aResult : bResult;
+    const loser = aResult.statusCode === 409 ? aResult : bResult;
+    expect(winner.json().status).toBe('skipped');
+    expect(loser.json().error?.code).toBe('NOT_ORPHAN');
+    expect(triageRows.size).toBe(1);
+    expect(historyRows.size).toBe(1);
+    expect([...historyRows.values()][0].changeType).toBe('created');
   });
 });

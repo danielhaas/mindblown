@@ -592,38 +592,49 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Conflict guard: if a triage_decisions row OR an externalLink
-      // for this issue already exists, the operator's view was stale —
-      // tell them rather than silently double-inserting. The unified
-      // view will refresh and show the row in its real bucket on the
-      // next poll.
-      const [existingRow] = await db
-        .select({ id: triageDecisions.id })
-        .from(triageDecisions)
-        .where(
-          and(
-            eq(triageDecisions.mapId, req.params.mapId),
-            eq(triageDecisions.externalId, body.externalId),
-          ),
-        );
-      if (existingRow) {
-        return reply.status(409).send({
-          error: {
-            code: 'NOT_ORPHAN',
-            message:
-              'A triage decision already exists for this issue — use the override / confirm route instead',
-          },
-        });
-      }
-
-      // Insert + create the node in a single transaction so a crash
-      // doesn't leave a half-attached row.
+      // Conflict guard + insert in a single transaction. We take a
+      // Postgres advisory xact lock keyed on the externalId so two
+      // concurrent orphan-import calls for the same issue can't both
+      // pass the precheck and race the unique `(map_id, external_id)`
+      // constraint — the loser would otherwise crash with a raw DB
+      // error (500) instead of the documented `409 NOT_ORPHAN`.
+      //
+      // Same lock pattern as `ensureNodeForIssue` in
+      // sync/githubIngest.ts:127 — precheck inside the tx with the
+      // lock held, then INSERT in the same tx so the row is visible
+      // to the next caller's precheck the instant we commit.
       const isClosed = issueState === 'closed';
       const externalId = body.externalId;
       const issueTitle = body.issueTitle;
       const reason = body.reason ?? 'Operator imported orphan from GitHub';
       const parentNodeId = body.parentNodeId;
-      const result = await db.transaction(async (tx) => {
+      type TxResult =
+        | { kind: 'conflict' }
+        | {
+            kind: 'ok';
+            node: Awaited<ReturnType<typeof nodeDb.createNode>> | null;
+            decisionId: string | null;
+          };
+      const txResult: TxResult = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${externalId}, 0))`,
+        );
+        // Re-run the precheck *inside* the tx with the lock held so a
+        // concurrent caller that got past its own precheck (before we
+        // took the lock) is now blocked behind us; when it wakes up,
+        // its precheck reads our just-inserted row and 409s.
+        const [existingRow] = await tx
+          .select({ id: triageDecisions.id })
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.mapId, req.params.mapId),
+              eq(triageDecisions.externalId, externalId),
+            ),
+          );
+        if (existingRow) {
+          return { kind: 'conflict' };
+        }
         const node = await nodeDb.createNode(
           {
             mapId: req.params.mapId,
@@ -667,9 +678,24 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             reviewedBy: userId,
           })
           .returning({ id: triageDecisions.id });
-        return { node: updated ?? node, decisionId: inserted?.id ?? null };
+        return {
+          kind: 'ok',
+          node: updated ?? node,
+          decisionId: inserted?.id ?? null,
+        };
       });
 
+      if (txResult.kind === 'conflict') {
+        return reply.status(409).send({
+          error: {
+            code: 'NOT_ORPHAN',
+            message:
+              'A triage decision already exists for this issue — use the override / confirm route instead',
+          },
+        });
+      }
+
+      const result = txResult;
       if (result.node) {
         broadcast(req.params.mapId, {
           type: 'node:created',
@@ -678,10 +704,16 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
       if (result.decisionId) {
+        // Brand-new row — there's no previous decision to override, so
+        // the audit-history `change_type` is 'created'. The orphan
+        // routes only reach this branch when the precheck above said
+        // no row existed, so the orphan case maps cleanly onto the
+        // ingest path's `previous ? 'overridden' : 'created'` rule
+        // (sync/githubIngest.ts:808).
         await recordTriageHistory({
           decisionId: result.decisionId,
           changedBy: userId,
-          changeType: 'overridden',
+          changeType: 'created',
           previousDecision: null,
           newDecision: 'place',
           previousConfidence: null,
@@ -745,18 +777,57 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const issueState = body.issueState === 'closed' ? 'closed' : 'open';
       const reason = body.reason ?? 'Operator marked orphan as skip';
 
-      // Same conflict-guard as orphan-import: the row mustn't already
-      // exist.
-      const [existingRow] = await db
-        .select({ id: triageDecisions.id })
-        .from(triageDecisions)
-        .where(
-          and(
-            eq(triageDecisions.mapId, req.params.mapId),
-            eq(triageDecisions.externalId, body.externalId),
-          ),
+      // Same conflict-guard as orphan-import + race protection: take an
+      // advisory xact lock keyed on externalId so the precheck + INSERT
+      // run atomically against any concurrent orphan-skip /
+      // orphan-import for the same issue. Without the lock, two callers
+      // could both pass a pre-tx precheck and the loser would hit the
+      // unique `(map_id, external_id)` constraint as a raw 500 instead
+      // of a documented 409 NOT_ORPHAN.
+      const externalId = body.externalId;
+      const issueTitle = body.issueTitle;
+      type SkipTxResult =
+        | { kind: 'conflict' }
+        | { kind: 'ok'; decisionId: string | null };
+      const txResult: SkipTxResult = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`SELECT pg_advisory_xact_lock(hashtextextended(${externalId}, 0))`,
         );
-      if (existingRow) {
+        const [existingRow] = await tx
+          .select({ id: triageDecisions.id })
+          .from(triageDecisions)
+          .where(
+            and(
+              eq(triageDecisions.mapId, req.params.mapId),
+              eq(triageDecisions.externalId, externalId),
+            ),
+          );
+        if (existingRow) {
+          return { kind: 'conflict' };
+        }
+        const [inserted] = await tx
+          .insert(triageDecisions)
+          .values({
+            mapId: req.params.mapId,
+            externalId,
+            issueTitle,
+            issueState,
+            decision: 'skip',
+            reason,
+            confidence: 100,
+            placedNodeId: null,
+            suggestedParentNodeId: null,
+            decidedBy: 'operator',
+            decidedAt: new Date(),
+            reviewed: true,
+            reviewedAt: new Date(),
+            reviewedBy: userId,
+          })
+          .returning({ id: triageDecisions.id });
+        return { kind: 'ok', decisionId: inserted?.id ?? null };
+      });
+
+      if (txResult.kind === 'conflict') {
         return reply.status(409).send({
           error: {
             code: 'NOT_ORPHAN',
@@ -766,33 +837,17 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const externalId = body.externalId;
-      const issueTitle = body.issueTitle;
-      const [inserted] = await db
-        .insert(triageDecisions)
-        .values({
-          mapId: req.params.mapId,
-          externalId,
-          issueTitle,
-          issueState,
-          decision: 'skip',
-          reason,
-          confidence: 100,
-          placedNodeId: null,
-          suggestedParentNodeId: null,
-          decidedBy: 'operator',
-          decidedAt: new Date(),
-          reviewed: true,
-          reviewedAt: new Date(),
-          reviewedBy: userId,
-        })
-        .returning({ id: triageDecisions.id });
-
-      if (inserted?.id) {
+      const insertedId = txResult.decisionId;
+      if (insertedId) {
+        // Brand-new row → audit-history `change_type` is 'created'.
+        // The orphan routes only insert when the precheck above said
+        // no row existed, so we match the ingest path's
+        // `previous ? 'overridden' : 'created'` rule
+        // (sync/githubIngest.ts:808).
         await recordTriageHistory({
-          decisionId: inserted.id,
+          decisionId: insertedId,
           changedBy: userId,
-          changeType: 'overridden',
+          changeType: 'created',
           previousDecision: null,
           newDecision: 'skip',
           previousConfidence: null,
@@ -806,11 +861,11 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           externalId,
           decision: 'skip',
         });
-        broadcastTriageUpdated(req.params.mapId, 'overridden', [inserted.id]);
+        broadcastTriageUpdated(req.params.mapId, 'overridden', [insertedId]);
       }
 
       return reply.send({
-        decisionId: inserted?.id ?? null,
+        decisionId: insertedId,
         status: 'skipped',
       });
     },
