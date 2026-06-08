@@ -73,6 +73,51 @@ export interface TriageActionResult {
   placedNodeId?: string | null;
 }
 
+// ── Not-in-MindBlown unified view (#140) ─────────────────────────
+// One result shape covers four buckets: skip + reviewed (skipped),
+// skip + unreviewed (pending-skipped), uncertain, and orphans (GH
+// issues that have no triage_decisions row + no node in the map).
+// The orphan branch needs a live GitHub fetch; if it's unavailable
+// (no integration / API error) the route still returns the decision-
+// row buckets and signals via `orphansAvailable`/`orphansError`.
+
+export type NotInMindBlownKind =
+  | 'skipped'
+  | 'pending-skipped'
+  | 'uncertain'
+  | 'orphan';
+
+export interface NotInMindBlownItem {
+  kind: NotInMindBlownKind;
+  // Decision-row buckets carry these; orphans have neither.
+  triageDecisionId?: string;
+  decision?: 'skip' | 'uncertain';
+  reason?: string;
+  confidence?: number;
+  decidedAt?: string;
+  // Always set.
+  externalId: string;
+  issueTitle: string;
+  issueState: 'open' | 'closed';
+  issueUrl: string;
+}
+
+export interface NotInMindBlownFilters {
+  bucket?: NotInMindBlownKind | 'all' | 'orphans';
+  limit?: number;
+  since?: string;
+}
+
+export interface NotInMindBlownResult {
+  mapId: string;
+  bucket: string;
+  total: number;
+  returned: number;
+  orphansAvailable: boolean;
+  orphansError: string | null;
+  items: NotInMindBlownItem[];
+}
+
 // ── Orchestration substrate (#111) ─────────────────────────────────
 
 export interface ReadyNode {
@@ -191,6 +236,12 @@ export interface ToolBackend {
   ): Promise<TriageActionResult>;
   reclassifyTriage(mapId: string, decisionId: string): Promise<TriageActionResult>;
   confirmTriage(mapId: string, decisionId: string): Promise<TriageActionResult>;
+
+  // ── Not-in-MindBlown unified view (#140) ────────────────────────
+  listNotInMindBlown(
+    mapId: string,
+    filters: NotInMindBlownFilters,
+  ): Promise<NotInMindBlownResult>;
 
   // ── Orchestration substrate (#111) ──────────────────────────────
   readyNodes(

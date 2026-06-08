@@ -1352,3 +1352,133 @@ export function bulkReclassifyTriageDecisions(
     },
   );
 }
+
+// ── Not-in-MindBlown unified view (#140) ─────────────────────────
+//
+// Surfaces every GitHub ticket that isn't currently a node in this map,
+// split into four buckets:
+//   - 'skipped'         — decision=skip AND reviewed=true
+//   - 'pending-skipped' — decision=skip AND reviewed=false
+//   - 'uncertain'       — decision=uncertain
+//   - 'orphan'          — no triage row + no node carrying the externalId
+//
+// The orphan bucket needs a live GitHub fetch via importGitHubIssues; if
+// GitHub isn't configured (or the API call fails) we still return the
+// decision-row buckets and signal the orphan-bucket state via
+// `orphansAvailable` + `orphansError`.
+
+export type NotInMindBlownBucket =
+  | 'skipped'
+  | 'pending-skipped'
+  | 'uncertain'
+  | 'orphan';
+
+export interface NotInMindBlownItem {
+  kind: NotInMindBlownBucket;
+
+  // Decision-row buckets (skipped/pending-skipped/uncertain) carry these.
+  // Orphans have neither.
+  triageDecisionId?: string;
+  decision?: 'skip' | 'uncertain';
+  reason?: string;
+  confidence?: number;
+  decidedAt?: string;
+
+  // Common fields — always set.
+  externalId: string; // "owner/repo#NNN"
+  issueTitle: string;
+  issueState: 'open' | 'closed';
+  issueUrl: string;
+}
+
+export interface ListNotInMindBlownFilters {
+  /** Narrow to one bucket (or pass 'all' / omit to get everything). */
+  bucket?: NotInMindBlownBucket | 'all' | 'orphans';
+  /** Default 50, hard cap 200. */
+  limit?: number;
+  /** ISO timestamp — applies only to decision-row buckets. */
+  since?: string;
+}
+
+export interface ListNotInMindBlownResponse {
+  mapId: string;
+  bucket: string;
+  total: number;
+  returned: number;
+  /** False when GitHub isn't configured or the import call failed. */
+  orphansAvailable: boolean;
+  /** Set when orphansAvailable is false, explains why. */
+  orphansError: string | null;
+  items: NotInMindBlownItem[];
+}
+
+export interface OrphanImportBody {
+  externalId: string;
+  issueTitle: string;
+  issueState?: 'open' | 'closed';
+  parentNodeId: string;
+  reason?: string;
+}
+
+export interface OrphanImportResponse {
+  decisionId: string | null;
+  nodeId: string | null;
+  status: 'imported';
+}
+
+export function importOrphanIssue(
+  mapId: string,
+  body: OrphanImportBody,
+): Promise<OrphanImportResponse> {
+  return request<OrphanImportResponse>(
+    `/api/maps/${mapId}/triage-decisions/orphan-import`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export interface OrphanSkipBody {
+  externalId: string;
+  issueTitle: string;
+  issueState?: 'open' | 'closed';
+  reason?: string;
+}
+
+export interface OrphanSkipResponse {
+  decisionId: string | null;
+  status: 'skipped';
+}
+
+export function skipOrphanIssue(
+  mapId: string,
+  body: OrphanSkipBody,
+): Promise<OrphanSkipResponse> {
+  return request<OrphanSkipResponse>(
+    `/api/maps/${mapId}/triage-decisions/orphan-skip`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+export function listNotInMindBlown(
+  mapId: string,
+  filters: ListNotInMindBlownFilters = {},
+): Promise<ListNotInMindBlownResponse> {
+  const qs = new URLSearchParams();
+  if (filters.bucket) {
+    // Server accepts 'orphan' as a bucket value but the user-facing
+    // filter is plural ('orphans'); honor either spelling on the way
+    // out. The server validation matches both.
+    qs.set('bucket', filters.bucket === 'orphan' ? 'orphans' : filters.bucket);
+  }
+  if (filters.limit) qs.set('limit', String(filters.limit));
+  if (filters.since) qs.set('since', filters.since);
+  const q = qs.toString();
+  return request<ListNotInMindBlownResponse>(
+    `/api/maps/${mapId}/triage-decisions/not-in-mindblown${q ? `?${q}` : ''}`,
+  );
+}
