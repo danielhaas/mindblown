@@ -66,7 +66,7 @@ import { triageIssue, clearTriageDebounce } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
-import { runAutoBackfill } from '../sync/autoBackfill.js';
+import { backfillMap } from '../sync/githubIngest.js';
 import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
@@ -671,16 +671,20 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             });
           }
 
-          // Fetch every open issue and compare against linked
-          // externalIds in this map — mirrors `auditOneMap` in
-          // driftAudit.ts but inlined so we don't need to export the
-          // private helper (it's tightly coupled to the
-          // `discoverTargets` shape).
+          // Fetch every issue (open + closed) and compare against
+          // linked externalIds in this map. Manual mode differs from
+          // the scheduled drift audit in scope: the daily sweep is
+          // open-only (closed-without-node is treated as intentional
+          // history), but the operator-driven cleanup needs to process
+          // the closed tail too — otherwise the "Not in MindBlown" UI
+          // (which lists open + closed orphans) and this endpoint
+          // disagree on what "345 orphans" means, and the audit
+          // returns 0 imported in 2s while the UI still shows 345.
           const importedIssues = await importGitHubIssues(
             ghCtx.owner,
             ghCtx.repo,
             ghCtx.token,
-            { includeAll: false },
+            { includeAll: true },
           );
 
           const mapNodes = await db
@@ -702,6 +706,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             .map((item) => item.issue.number);
 
           if (drifted.length === 0) {
+            console.log(
+              `[drift-audit-manual] map ${req.params.mapId} starting: 0 orphans found, nothing to do`,
+            );
             return reply.send({
               mapId: mapRow.id,
               mapName: mapRow.name,
@@ -720,14 +727,6 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             });
           }
 
-          const report = {
-            mapId: mapRow.id,
-            mapName: mapRow.name,
-            repo: `${ghCtx.owner}/${ghCtx.repo}`,
-            onlyInGitHub: drifted.length,
-            exampleIssues: drifted.slice(0, 5),
-          };
-
           // Cap defaults to drift size (no cap) for manual runs.
           // When the operator passes ?max=N we honour exactly that.
           const cap = maxOverride ?? drifted.length;
@@ -735,23 +734,16 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           // Long manual runs (the whole point of this endpoint) can
           // exceed the systemd watchdog window. Ping every 60s while
           // the audit is running. The dedicated heartbeat in index.ts
-          // already covers this case (it pings as long as the catchup
-          // tick is healthy), but pinging here too is belt-and-suspenders
-          // — a single audit-internal ping ensures the watchdog stays
-          // fed even if both heartbeats happen to be skipped while the
-          // event loop is blocked on a slow LLM call.
+          // already covers this case, but pinging here is
+          // belt-and-suspenders.
           //
-          // Also: log progress every tick. Operator can `journalctl -fu
-          // mindblown-api` and see the audit advancing in real-time, so
-          // a request that fails mid-flight at least surfaces what got
-          // committed. (Work-preservation is already structural: each
-          // issue commits in its own ensureNodeForIssue transaction —
-          // a SIGABRT mid-loop leaves the already-committed rows in
-          // place, and re-running this endpoint resumes from where it
-          // left off because already-triaged orphans drop out of the
-          // orphan set.)
+          // Work-preservation is structural: each issue commits in
+          // its own ensureNodeForIssue transaction — a SIGABRT
+          // mid-loop leaves already-committed rows in place, and
+          // re-running this endpoint resumes naturally because
+          // already-triaged orphans drop out of the orphan set.
           console.log(
-            `[drift-audit-manual] map ${req.params.mapId} starting: ${report.onlyInGitHub} orphans, cap=${cap}`,
+            `[drift-audit-manual] map ${req.params.mapId} starting: ${drifted.length} orphans, cap=${cap}`,
           );
           const startedAt = Date.now();
           const watchdogTimer = setInterval(() => {
@@ -765,28 +757,48 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             });
           }, 60_000);
 
-          let autoBackfill;
+          // Direct call to backfillMap with a 10000-day window so
+          // closed orphans (from years ago) are included. Bypasses
+          // runAutoBackfill's hard-coded `allowClosedWithinDays: 0`
+          // which is correct for the scheduled audit but wrong for
+          // manual cleanup.
+          let backfillResult: { imported: number; total: number; capped: boolean; errored: number };
           try {
-            autoBackfill = await runAutoBackfill([report], cap);
+            backfillResult = await backfillMap(req.params.mapId, {
+              maxToImport: cap,
+              allowClosedWithinDays: 10_000,
+            });
           } finally {
             clearInterval(watchdogTimer);
           }
+          const manualPending = Math.max(0, drifted.length - backfillResult.imported);
           console.log(
-            `[drift-audit-manual] map ${req.params.mapId} done: ${autoBackfill.totalImported} imported, ${autoBackfill.totalManualPending} pending, ${Math.round((Date.now() - startedAt) / 1000)}s`,
+            `[drift-audit-manual] map ${req.params.mapId} done: ${backfillResult.imported} imported, ${backfillResult.errored} errored, ${manualPending} remaining, ${Math.round((Date.now() - startedAt) / 1000)}s`,
           );
 
           return reply.send({
             mapId: mapRow.id,
             mapName: mapRow.name,
             drift: {
-              onlyInGitHub: report.onlyInGitHub,
-              exampleIssues: report.exampleIssues,
+              onlyInGitHub: drifted.length,
+              exampleIssues: drifted.slice(0, 5),
             },
-            autoBackfill,
+            autoBackfill: {
+              totalImported: backfillResult.imported,
+              totalManualPending: manualPending,
+              outcomes: [
+                {
+                  mapId: mapRow.id,
+                  mapName: mapRow.name,
+                  kind: 'healed' as const,
+                  imported: backfillResult.imported,
+                },
+              ],
+            },
             counts: {
-              driftedIssues: report.onlyInGitHub,
-              imported: autoBackfill.totalImported,
-              manualPending: autoBackfill.totalManualPending,
+              driftedIssues: drifted.length,
+              imported: backfillResult.imported,
+              manualPending,
               elapsedMs: Date.now() - t0,
             },
           });
