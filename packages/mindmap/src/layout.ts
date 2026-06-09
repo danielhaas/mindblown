@@ -433,6 +433,69 @@ export function computeLayout(
 }
 
 /**
+ * Compute radial positions for the leaf-like children of a parent node,
+ * spread evenly around 360°. "Leaf-like" = child has no children OR is
+ * collapsed (so it's visually a single node). Non-leaf expanded children
+ * are skipped so their subtrees are left alone.
+ *
+ * Returns updates the caller can persist via updateNode. Returns [] when
+ * there's nothing useful to distribute.
+ */
+export function distributeLeavesAroundParent(
+  parentId: string,
+  nodes: Record<string, Node>,
+  layoutMap: Map<string, LayoutNode>,
+): Array<{ id: string; x: number; y: number }> {
+  const parent = nodes[parentId];
+  if (!parent) return [];
+  const parentLayout = layoutMap.get(parentId);
+  if (!parentLayout) return [];
+
+  const leafLayouts: LayoutNode[] = [];
+  for (const childId of parent.childrenIds) {
+    const child = nodes[childId];
+    if (!child) continue;
+    const isLeafLike = child.childrenIds.length === 0 || child.collapsed;
+    if (!isLeafLike) continue;
+    const ln = layoutMap.get(childId);
+    if (ln) leafLayouts.push(ln);
+  }
+  if (leafLayouts.length === 0) return [];
+
+  const maxLeafW = Math.max(...leafLayouts.map((l) => l.width));
+  const maxLeafH = Math.max(...leafLayouts.map((l) => l.height));
+  const N = leafLayouts.length;
+
+  const cx = parentLayout.x + parentLayout.width / 2;
+  const cy = parentLayout.y + parentLayout.height / 2;
+
+  // Radius must clear the parent and (for N≥2) give each chord enough room
+  // for one leaf bounding box plus a small gap.
+  const SPACING = 16;
+  const PARENT_GAP = 40;
+  const radiusForParent =
+    Math.max(parentLayout.width, parentLayout.height) / 2 +
+    Math.max(maxLeafW, maxLeafH) / 2 +
+    PARENT_GAP;
+  const minChord = Math.max(maxLeafW, maxLeafH) + SPACING;
+  const radiusForFit = N >= 2 ? minChord / (2 * Math.sin(Math.PI / N)) : 0;
+  const radius = Math.max(radiusForParent, radiusForFit);
+
+  // Start at the top (−π/2) and walk clockwise so the distribution is stable
+  // and visually predictable regardless of layout direction.
+  const startAngle = -Math.PI / 2;
+
+  return leafLayouts.map((ln, i) => {
+    const angle = startAngle + (i / N) * 2 * Math.PI;
+    return {
+      id: ln.id,
+      x: cx + radius * Math.cos(angle) - ln.width / 2,
+      y: cy + radius * Math.sin(angle) - ln.height / 2,
+    };
+  });
+}
+
+/**
  * Compute the bounding box of all layout nodes (for centering/fitting).
  */
 export function computeBounds(
