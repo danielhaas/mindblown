@@ -49,6 +49,7 @@ export async function prRoutes(app: FastifyInstance): Promise<void> {
       const rows = await db
         .select({
           id: nodes.id,
+          text: nodes.text,
           externalLinks: nodes.externalLinks,
           linkedPr: nodes.linkedPr,
         })
@@ -66,6 +67,7 @@ export async function prRoutes(app: FastifyInstance): Promise<void> {
           .map((l) => l.externalId as string);
         out.push({
           nodeId: row.id,
+          nodeText: row.text,
           externalIds,
           linkedPr,
         });
