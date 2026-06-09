@@ -397,6 +397,100 @@ function buildTriagedCreateInput(
     percentComplete: isClosed ? 100 : 0,
     status: isClosed ? 'done' : 'todo',
   };
+  // (tags are populated in the post-create updateNode call, since
+  // CreateNodeInput doesn't accept tags. See ensureNodeForIssue and
+  // the auto-place path.)
+}
+
+/**
+ * GH labels → `gh-label:<name>` entries in the `tags` array.
+ *
+ * The `tags` array is also used for user-set tags, so we namespace
+ * webhook-synced GH labels with a fixed prefix. Reading code (e.g.
+ * Kira's dispatch filter) filters by prefix and strips it.
+ *
+ * Idempotent: returns the same string list for the same input set.
+ */
+export function ghLabelsToTagSlice(
+  labels: Array<{ name: string }> | undefined,
+): string[] {
+  return (labels ?? []).map((l) => `gh-label:${l.name}`);
+}
+
+/**
+ * Merge GH-synced label tags into an existing tags array. User-set
+ * tags (no `gh-label:` prefix) are preserved; old gh-label entries
+ * are replaced with the current set. Result is sorted for stable
+ * diffing.
+ */
+export function mergeGhLabelsIntoTags(
+  existingTags: string[] | undefined,
+  ghLabels: Array<{ name: string }> | undefined,
+): string[] {
+  const userTags = (existingTags ?? []).filter(
+    (t) => !t.startsWith('gh-label:'),
+  );
+  const ghTags = ghLabelsToTagSlice(ghLabels);
+  return [...userTags, ...ghTags].sort();
+}
+
+/**
+ * Sync the GH issue's current labels onto every MindBlown node that links
+ * to this externalId, in every map. No-op when no node references the
+ * externalId. Used by the webhook handler so label changes (which the
+ * triage layer skips as cost-opt) still keep node tags fresh.
+ *
+ * Returns the number of nodes updated.
+ */
+export async function syncIssueLabelsToNodes(
+  externalId: string,
+  ghLabels: Array<{ name: string }> | undefined,
+): Promise<number> {
+  const matches = await findNodesByExternalIdAcrossMaps(externalId);
+  if (matches.length === 0) return 0;
+  let updated = 0;
+  for (const { id, tags } of matches) {
+    const nextTags = mergeGhLabelsIntoTags(tags, ghLabels);
+    // Cheap diff check — skip the write if nothing changed
+    const same =
+      nextTags.length === (tags?.length ?? 0) &&
+      nextTags.every((t, i) => t === (tags ?? [])[i]);
+    if (same) continue;
+    await nodeDb.updateNode(id, { tags: nextTags });
+    updated += 1;
+  }
+  return updated;
+}
+
+/**
+ * Sibling of findNodeInMapByExternalId that scans ALL maps for nodes
+ * referencing the given externalId. Used by the label-sync path which
+ * doesn't know which maps care about this issue.
+ */
+async function findNodesByExternalIdAcrossMaps(
+  externalId: string,
+): Promise<Array<{ id: string; mapId: string; tags: string[] }>> {
+  const rows = await db
+    .select({
+      id: nodes.id,
+      mapId: nodes.mapId,
+      tags: nodes.tags,
+      externalLinks: nodes.externalLinks,
+    })
+    .from(nodes)
+    .where(nodeDb.notDeleted);
+  const out: Array<{ id: string; mapId: string; tags: string[] }> = [];
+  for (const row of rows) {
+    const links = (row.externalLinks as ExternalLink[]) ?? [];
+    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+      out.push({
+        id: row.id,
+        mapId: row.mapId as string,
+        tags: (row.tags as string[]) ?? [],
+      });
+    }
+  }
+  return out;
 }
 
 /**
@@ -840,6 +934,7 @@ async function ensureNodeForIssueViaTriage(
       {
         externalLinks: [link],
         description: issue.body ?? null,
+        tags: ghLabelsToTagSlice(issue.labels),
       },
       undefined,
       tx,
@@ -1106,6 +1201,7 @@ export async function ensureNodeForIssue(
       {
         externalLinks: [link],
         description: issue.body ?? null,
+        tags: ghLabelsToTagSlice(issue.labels),
       },
       undefined,
       tx,
