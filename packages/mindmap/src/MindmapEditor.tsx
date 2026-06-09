@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMindmapStore, getWsClient } from './store.js';
-import { computeLayout, computeBounds } from './layout.js';
+import { computeLayout, computeBounds, distributeLeavesAroundParent } from './layout.js';
 import type { LayoutType } from './layout.js';
 import { MindmapNode } from './MindmapNode.js';
 import { Connector } from './Connector.js';
@@ -1757,6 +1757,61 @@ export function MindmapEditor() {
                 Deep refine subtree…
               </button>
             )}
+            {(() => {
+              const parent = nodes[contextMenu.nodeId];
+              if (!parent) return null;
+              const leafLikeCount = parent.childrenIds.reduce((acc, id) => {
+                const c = nodes[id];
+                if (!c) return acc;
+                return acc + ((c.childrenIds.length === 0 || c.collapsed) ? 1 : 0);
+              }, 0);
+              const manualLeaves = parent.childrenIds.some((id) => {
+                const c = nodes[id];
+                return c && (c.x != null || c.y != null);
+              });
+              return (
+                <>
+                  {leafLikeCount >= 2 && (
+                    <button
+                      style={ctxMenuItemStyle}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      onClick={() => {
+                        const updates = distributeLeavesAroundParent(
+                          contextMenu.nodeId,
+                          nodes,
+                          layoutMap,
+                        );
+                        for (const u of updates) {
+                          updateNode(u.id, { x: u.x, y: u.y });
+                        }
+                        setContextMenu(null);
+                      }}
+                    >
+                      Distribute leaves around node
+                    </button>
+                  )}
+                  {manualLeaves && (
+                    <button
+                      style={ctxMenuItemStyle}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      onClick={() => {
+                        for (const id of parent.childrenIds) {
+                          const c = nodes[id];
+                          if (c && (c.x != null || c.y != null)) {
+                            updateNode(id, { x: null, y: null });
+                          }
+                        }
+                        setContextMenu(null);
+                      }}
+                    >
+                      Reset children to auto-layout
+                    </button>
+                  )}
+                </>
+              );
+            })()}
             <div style={{ height: 1, background: '#e2e8f0', margin: '4px 0' }} />
             <button
               style={ctxMenuItemStyle}
