@@ -44,6 +44,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
       ? (get('claimedAt', 'claimed_at') as Date).toISOString()
       : (get('claimedAt', 'claimed_at') as string)) ?? null,
     scopes: (get('scopes', 'scopes') as string[]) ?? [],
+    linkedPr: (get('linkedPr', 'linked_pr') as CoreNode['linkedPr']) ?? null,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

@@ -753,5 +753,13 @@ export async function runMigrations(): Promise<void> {
     END $$;
   `);
 
+  // linked_pr: mirror of the GitHub PR state attached to this node's
+  // linked issue (number, head/base branches, reviews, checks,
+  // mergeable). Populated by PR webhook handlers so dispatch/review
+  // automation can read PR state without polling the GH API.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS linked_pr JSONB
+  `);
+
   console.log('[db] Migrations complete.');
 }
