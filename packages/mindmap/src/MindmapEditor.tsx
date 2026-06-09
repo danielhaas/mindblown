@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMindmapStore, getWsClient } from './store.js';
-import { computeLayout, computeBounds, distributeLeavesAroundParent } from './layout.js';
+import {
+  computeLayout,
+  computeBounds,
+  distributeLeavesAroundParent,
+  distributeAllLeavesInSubtree,
+} from './layout.js';
 import type { LayoutType } from './layout.js';
 import { MindmapNode } from './MindmapNode.js';
 import { Connector } from './Connector.js';
@@ -1765,9 +1770,27 @@ export function MindmapEditor() {
                 if (!c) return acc;
                 return acc + ((c.childrenIds.length === 0 || c.collapsed) ? 1 : 0);
               }, 0);
-              const manualLeaves = parent.childrenIds.some((id) => {
+              const hasSubtree = parent.childrenIds.some((id) => {
                 const c = nodes[id];
-                return c && (c.x != null || c.y != null);
+                return Boolean(c) && c.childrenIds.length > 0;
+              });
+              // Walk subtree to see if any descendant carries a manual position.
+              const subtreeIds: string[] = [];
+              {
+                const stack = [contextMenu.nodeId];
+                const seen = new Set<string>();
+                while (stack.length > 0) {
+                  const id = stack.pop()!;
+                  if (seen.has(id)) continue;
+                  seen.add(id);
+                  subtreeIds.push(id);
+                  const n = nodes[id];
+                  if (n) for (const cid of n.childrenIds) stack.push(cid);
+                }
+              }
+              const manualInSubtree = subtreeIds.some((id) => {
+                const c = nodes[id];
+                return Boolean(c) && (c.x != null || c.y != null);
               });
               return (
                 <>
@@ -1791,13 +1814,33 @@ export function MindmapEditor() {
                       Distribute leaves around node
                     </button>
                   )}
-                  {manualLeaves && (
+                  {hasSubtree && (
                     <button
                       style={ctxMenuItemStyle}
                       onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
                       onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                       onClick={() => {
-                        for (const id of parent.childrenIds) {
+                        const updates = distributeAllLeavesInSubtree(
+                          contextMenu.nodeId,
+                          nodes,
+                          layoutMap,
+                        );
+                        for (const u of updates) {
+                          updateNode(u.id, { x: u.x, y: u.y });
+                        }
+                        setContextMenu(null);
+                      }}
+                    >
+                      Distribute all leaves in subtree
+                    </button>
+                  )}
+                  {manualInSubtree && (
+                    <button
+                      style={ctxMenuItemStyle}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = '#f1f5f9')}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+                      onClick={() => {
+                        for (const id of subtreeIds) {
                           const c = nodes[id];
                           if (c && (c.x != null || c.y != null)) {
                             updateNode(id, { x: null, y: null });
@@ -1806,7 +1849,7 @@ export function MindmapEditor() {
                         setContextMenu(null);
                       }}
                     >
-                      Reset children to auto-layout
+                      Reset positions in subtree
                     </button>
                   )}
                 </>
