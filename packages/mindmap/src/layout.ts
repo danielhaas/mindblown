@@ -496,6 +496,32 @@ export function distributeLeavesAroundParent(
 }
 
 /**
+ * Walk the subtree rooted at `subtreeRoot` and apply
+ * distributeLeavesAroundParent at every node whose direct children include
+ * any leaf-like ones. Lets one click on a tree root fan out every leaf
+ * cluster in the subtree at once.
+ */
+export function distributeAllLeavesInSubtree(
+  subtreeRoot: string,
+  nodes: Record<string, Node>,
+  layoutMap: Map<string, LayoutNode>,
+): Array<{ id: string; x: number; y: number }> {
+  const updates: Array<{ id: string; x: number; y: number }> = [];
+  const stack: string[] = [subtreeRoot];
+  const seen = new Set<string>();
+  while (stack.length > 0) {
+    const id = stack.pop()!;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const node = nodes[id];
+    if (!node) continue;
+    for (const childId of node.childrenIds) stack.push(childId);
+    updates.push(...distributeLeavesAroundParent(id, nodes, layoutMap));
+  }
+  return updates;
+}
+
+/**
  * Compute the bounding box of all layout nodes (for centering/fitting).
  */
 export function computeBounds(
