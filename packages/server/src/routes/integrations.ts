@@ -27,6 +27,7 @@ import {
   findNodesByExternalIds,
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
+import * as PrSync from '../sync/prSync.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
@@ -78,6 +79,49 @@ export const getGitHubContextForMap = getGitHubContextForMapImpl;
  * Best-effort: returns the first successfully-minted token. Errors minting
  * an App token (revoked install, etc.) fall through to PAT.
  */
+/**
+ * Fetch the list of file paths changed in a PR. Used by the linkedPr
+ * snapshot to populate `changedFiles`. Best-effort: returns [] on
+ * any error (auth, rate limit, network). The webhook handler treats
+ * an empty list the same as "no files snapshotted yet."
+ */
+async function fetchPrFiles(repoFullName: string, prNumber: number): Promise<string[]> {
+  const ctx = await getGitHubContextForRepo(repoFullName);
+  if (!ctx) return [];
+  const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}/files?per_page=100`;
+  const r = await fetch(url, {
+    headers: {
+      authorization: `token ${ctx.token}`,
+      accept: 'application/vnd.github+json',
+      'user-agent': 'mindblown-pr-sync',
+    },
+  });
+  if (!r.ok) return [];
+  const rows = (await r.json()) as Array<{ filename: string }>;
+  return rows.map((f) => f.filename);
+}
+
+/**
+ * Fetch a PR's body. Used by the check_suite handler because the
+ * check_suite payload doesn't include PR bodies — only PR numbers.
+ * Best-effort: returns null on any error.
+ */
+async function fetchPrBody(repoFullName: string, prNumber: number): Promise<string | null> {
+  const ctx = await getGitHubContextForRepo(repoFullName);
+  if (!ctx) return null;
+  const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}`;
+  const r = await fetch(url, {
+    headers: {
+      authorization: `token ${ctx.token}`,
+      accept: 'application/vnd.github+json',
+      'user-agent': 'mindblown-pr-sync',
+    },
+  });
+  if (!r.ok) return null;
+  const data = (await r.json()) as { body: string | null };
+  return data.body ?? null;
+}
+
 async function getGitHubContextForRepo(
   fullName: string,
 ): Promise<GitHubMapContext | null> {
@@ -1484,6 +1528,96 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         matched: true,
         nodeId,
       });
+    }
+
+    // ── pull_request snapshot → linkedPr on the linked-issue node ───
+    //
+    // Independent of the close/merge handler below. Runs for
+    // opened / reopened / synchronize / ready_for_review /
+    // converted_to_draft / edited so Kira (and future PR-aware
+    // consumers) can read the PR's structural state (head/base,
+    // mergeable, changed files, author, draft) without polling
+    // GitHub. Reviews + check state come from their own handlers
+    // below.
+    //
+    // No-op when the PR body doesn't reference any `Closes #NNNN`,
+    // or when none of the referenced issues have a MindBlown node.
+    if (
+      event === 'pull_request' &&
+      repoFullName &&
+      (payloadAction === 'opened' ||
+        payloadAction === 'reopened' ||
+        payloadAction === 'synchronize' ||
+        payloadAction === 'ready_for_review' ||
+        payloadAction === 'converted_to_draft' ||
+        payloadAction === 'edited')
+    ) {
+      try {
+        const pr = payload.pull_request as PrSync.GhPrPayload | undefined;
+        if (pr) {
+          // Changed-files list isn't in the PR webhook payload — fetch
+          // separately via the GitHub API. Best-effort: if the call
+          // fails, snapshot without files.
+          let changedFiles: string[] = [];
+          try {
+            changedFiles = await fetchPrFiles(repoFullName, pr.number);
+          } catch {
+            /* best-effort */
+          }
+          await PrSync.handlePrSnapshot(repoFullName, pr, changedFiles);
+        }
+      } catch (err) {
+        console.warn(
+          '[pr-sync] handlePrSnapshot failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // ── pull_request_review.submitted → append to linkedPr.reviews ───
+    if (
+      event === 'pull_request_review' &&
+      payloadAction === 'submitted' &&
+      repoFullName
+    ) {
+      try {
+        const pr = payload.pull_request as PrSync.GhPrPayload | undefined;
+        const review = payload.review as PrSync.GhReviewPayload | undefined;
+        if (pr && review) {
+          await PrSync.handleReviewSubmitted(repoFullName, pr.number, pr.body, review);
+        }
+      } catch (err) {
+        console.warn(
+          '[pr-sync] handleReviewSubmitted failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // ── check_suite.completed → update linkedPr.checks ──────────────
+    if (
+      event === 'check_suite' &&
+      payloadAction === 'completed' &&
+      repoFullName
+    ) {
+      try {
+        const suite = payload.check_suite as PrSync.GhCheckSuitePayload | undefined;
+        if (suite) {
+          await PrSync.handleCheckSuiteCompleted(repoFullName, suite, async (n) => {
+            // check_suite payload doesn't carry the PR body; fetch it.
+            try {
+              return await fetchPrBody(repoFullName, n);
+            } catch {
+              return null;
+            }
+          });
+        }
+      } catch (err) {
+        console.warn(
+          '[pr-sync] handleCheckSuiteCompleted failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
 
     // ── pull_request: closed + merged=true → transition linked nodes ─

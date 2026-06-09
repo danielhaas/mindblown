@@ -196,6 +196,13 @@ export const nodes = pgTable('nodes', {
   claimedBySession: text('claimed_by_session'),
   claimedAt: timestamp('claimed_at', { withTimezone: true }),
   scopes: jsonb('scopes').notNull().default([]),
+  // linked_pr: GH PR state mirrored onto the node so dispatch/review
+  // automation (Kira) can read it without polling GitHub.
+  // Populated by `pull_request.opened` / `.synchronize` / `.reopened` /
+  // `pull_request_review.submitted` / `check_suite.completed` webhooks.
+  // Cleared on `pull_request.closed`. Null when no PR currently
+  // references this issue.
+  linkedPr: jsonb('linked_pr'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────

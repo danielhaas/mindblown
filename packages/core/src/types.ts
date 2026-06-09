@@ -68,6 +68,46 @@ export interface ExternalLink {
   previousStatus?: string | null;
 }
 
+/**
+ * GH PR state mirrored onto a node, populated by `pull_request.*` /
+ * `pull_request_review.*` / `check_suite.completed` webhooks.
+ *
+ * The PR is linked to the node by parsing `Closes #NNNN` (or
+ * `Fixes #NNNN`) from the PR body, same convention the existing
+ * `pull_request.closed` (merged=true) handler uses.
+ */
+export interface LinkedPrState {
+  number: number;
+  repo: string; // e.g. 'octocat/foo'
+  url: string;
+  head: string; // head branch
+  base: string; // base branch (usually main / release/v1)
+  author: string | null;
+  draft: boolean;
+  /** open / closed / merged */
+  state: 'open' | 'closed' | 'merged';
+  /** GitHub's mergeable flag. `null` while GitHub is still computing it. */
+  mergeable: boolean | null;
+  /** Files changed in the PR — paths only, used by Kira's risky-paths gate. */
+  changedFiles: string[];
+  /** All reviews on the PR; Ray's verdict lives here in body. */
+  reviews: Array<{
+    author: string;
+    /** APPROVED | CHANGES_REQUESTED | COMMENTED | DISMISSED */
+    state: string;
+    body: string;
+    submittedAt: string;
+  }>;
+  /** Roll-up CI state for the latest commit on the PR head. */
+  checks: {
+    /** success | failure | pending | null (no checks yet) */
+    state: string | null;
+    failures: string[];
+  };
+  /** ISO timestamp of the most recent webhook update. */
+  lastSyncedAt: string;
+}
+
 // ── Node ────────────────────────────────────────────────────────
 
 /**
@@ -158,6 +198,17 @@ export interface Node {
    * Empty array = no scopes declared (no conflict-detection).
    */
   scopes: string[];
+
+  /**
+   * GH PR state mirrored onto this node, populated by the
+   * `pull_request.*` / `pull_request_review.*` / `check_suite.completed`
+   * webhook handlers in the MindBlown server. Lets Kira / other
+   * dispatch automation read PR state without polling the GH API.
+   * `null` when no PR currently references this node's linked issue.
+   * Optional so existing fixtures / synthetic nodes don't have to
+   * include it explicitly.
+   */
+  linkedPr?: LinkedPrState | null;
 
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**

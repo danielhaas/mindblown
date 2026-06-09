@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
@@ -221,6 +221,8 @@ export interface UpdateNodeInput {
   claimedBySession?: string | null;
   claimedAt?: string | null;
   scopes?: string[];
+  // PR-state mirror written by the GH webhook handlers.
+  linkedPr?: LinkedPrState | null;
 }
 
 export async function updateNode(
@@ -291,6 +293,7 @@ export async function updateNode(
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
   if (input.scopes !== undefined) updates.scopes = input.scopes;
+  if (input.linkedPr !== undefined) updates.linkedPr = input.linkedPr;
 
   // Auto-release claim when status transitions to a 'done' category (#111)
   // + write completedAt timestamp for the Gantt scheduler (v0.17.6).

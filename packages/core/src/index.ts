@@ -13,6 +13,7 @@ export type {
   CustomFieldValue,
   Dependency,
   ExternalLink,
+  LinkedPrState,
   Node,
   ComputedNodeValues,
   BlockedBy,
