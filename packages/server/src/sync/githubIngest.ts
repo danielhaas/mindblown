@@ -403,35 +403,32 @@ function buildTriagedCreateInput(
 }
 
 /**
- * GH labels → `gh-label:<name>` entries in the `tags` array.
+ * GH labels → tag list (raw names, sorted).
  *
- * The `tags` array is also used for user-set tags, so we namespace
- * webhook-synced GH labels with a fixed prefix. Reading code (e.g.
- * Kira's dispatch filter) filters by prefix and strips it.
+ * MindBlown does bidirectional `tags ↔ labels` sync (see
+ * `routes/nodes.ts` SYNC_FIELDS + `integrations/src/github.ts`
+ * updateGitHubIssue). The convention is "node.tags mirrors GH labels."
+ * We match that convention here: write raw label names directly.
  *
- * Idempotent: returns the same string list for the same input set.
+ * The `priority:*` family is filtered out because MindBlown stores
+ * priority in its own `node.priority` field — the bulk-import path at
+ * `routes/integrations.ts:821` uses the same filter, so we keep the
+ * established contract.
+ *
+ * An earlier draft of this code used a `gh-label:<name>` prefix scheme,
+ * which fought the bidirectional sync: prefixed entries pushed back to
+ * GH as new labels, polluting the issue and triggering a webhook loop.
+ * Reverted to raw names for that reason.
+ *
+ * Result is sorted for stable diffing in the caller's no-op check.
  */
-export function ghLabelsToTagSlice(
+export function ghLabelsToTags(
   labels: Array<{ name: string }> | undefined,
 ): string[] {
-  return (labels ?? []).map((l) => `gh-label:${l.name}`);
-}
-
-/**
- * Merge GH-synced label tags into an existing tags array. User-set
- * tags (no `gh-label:` prefix) are preserved; old gh-label entries
- * are replaced with the current set. Result is sorted for stable
- * diffing.
- */
-export function mergeGhLabelsIntoTags(
-  existingTags: string[] | undefined,
-  ghLabels: Array<{ name: string }> | undefined,
-): string[] {
-  const userTags = (existingTags ?? []).filter(
-    (t) => !t.startsWith('gh-label:'),
-  );
-  const ghTags = ghLabelsToTagSlice(ghLabels);
-  return [...userTags, ...ghTags].sort();
+  return (labels ?? [])
+    .map((l) => l.name)
+    .filter((n) => !n.startsWith('priority:'))
+    .sort();
 }
 
 /**
@@ -439,6 +436,10 @@ export function mergeGhLabelsIntoTags(
  * to this externalId, in every map. No-op when no node references the
  * externalId. Used by the webhook handler so label changes (which the
  * triage layer skips as cost-opt) still keep node tags fresh.
+ *
+ * The write replaces the tags array entirely (overwriting any user-set
+ * tags). This matches MindBlown's existing convention that tags mirror
+ * GH labels — user-set tags don't survive bulk import either.
  *
  * Returns the number of nodes updated.
  */
@@ -448,13 +449,13 @@ export async function syncIssueLabelsToNodes(
 ): Promise<number> {
   const matches = await findNodesByExternalIdAcrossMaps(externalId);
   if (matches.length === 0) return 0;
+  const nextTags = ghLabelsToTags(ghLabels);
   let updated = 0;
   for (const { id, tags } of matches) {
-    const nextTags = mergeGhLabelsIntoTags(tags, ghLabels);
-    // Cheap diff check — skip the write if nothing changed
+    const cur = (tags ?? []).slice().sort();
     const same =
-      nextTags.length === (tags?.length ?? 0) &&
-      nextTags.every((t, i) => t === (tags ?? [])[i]);
+      cur.length === nextTags.length &&
+      cur.every((t, i) => t === nextTags[i]);
     if (same) continue;
     await nodeDb.updateNode(id, { tags: nextTags });
     updated += 1;
@@ -934,7 +935,7 @@ async function ensureNodeForIssueViaTriage(
       {
         externalLinks: [link],
         description: issue.body ?? null,
-        tags: ghLabelsToTagSlice(issue.labels),
+        tags: ghLabelsToTags(issue.labels),
       },
       undefined,
       tx,
@@ -1201,7 +1202,7 @@ export async function ensureNodeForIssue(
       {
         externalLinks: [link],
         description: issue.body ?? null,
-        tags: ghLabelsToTagSlice(issue.labels),
+        tags: ghLabelsToTags(issue.labels),
       },
       undefined,
       tx,
