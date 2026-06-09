@@ -446,17 +446,21 @@ export async function syncIssueLabelsToNodes(
   externalId: string,
   ghLabels: Array<{ name: string }> | undefined,
 ): Promise<number> {
+  console.log(`[debug-sync] called externalId=${externalId} labels=${JSON.stringify((ghLabels ?? []).map(l => l.name))}`);
   const matches = await findNodesByExternalIdAcrossMaps(externalId);
+  console.log(`[debug-sync] found ${matches.length} matching nodes`);
   if (matches.length === 0) return 0;
   let updated = 0;
   for (const { id, tags } of matches) {
     const nextTags = mergeGhLabelsIntoTags(tags, ghLabels);
+    console.log(`[debug-sync] node ${id} before=${JSON.stringify(tags)} after=${JSON.stringify(nextTags)}`);
     // Cheap diff check — skip the write if nothing changed
     const same =
       nextTags.length === (tags?.length ?? 0) &&
       nextTags.every((t, i) => t === (tags ?? [])[i]);
-    if (same) continue;
+    if (same) { console.log(`[debug-sync] node ${id} skipped (same)`); continue; }
     await nodeDb.updateNode(id, { tags: nextTags });
+    console.log(`[debug-sync] node ${id} write OK`);
     updated += 1;
   }
   return updated;
