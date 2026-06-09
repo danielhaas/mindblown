@@ -455,10 +455,14 @@ export function distributeLeavesAroundParent(
   for (const childId of parent.childrenIds) {
     const child = nodes[childId];
     if (!child) continue;
-    const isLeafLike = child.childrenIds.length === 0 || child.collapsed;
-    if (!isLeafLike) continue;
     const ln = layoutMap.get(childId);
-    if (ln) leafLayouts.push(ln);
+    if (!ln) continue; // child isn't visible; nothing to position
+    // "Visually leaf-like" = no visible descendants. Covers true leaves,
+    // collapsed nodes, and depth-limited nodes (data children exist but
+    // none are laid out).
+    const hasVisibleChildren = child.childrenIds.some((id) => layoutMap.has(id));
+    if (hasVisibleChildren) continue;
+    leafLayouts.push(ln);
   }
   if (leafLayouts.length === 0) return [];
 
