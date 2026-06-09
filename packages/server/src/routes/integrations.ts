@@ -25,6 +25,7 @@ import {
   ensureInboxNode,
   ensureNodeForIssue,
   findNodesByExternalIds,
+  syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
@@ -1190,6 +1191,39 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // doesn't discard the user's prior progress.
     const issuePayload = payload.issue as { number?: number; title?: string } | undefined;
     const payloadAction = payload.action as string | undefined;
+
+    // ── GH label → node tags sync ──────────────────────────────────
+    // Independent of the triage / state-sync logic below. Runs for any
+    // issue event (opened, reopened, edited, labeled, unlabeled, closed)
+    // and writes the current `issue.labels` onto matching nodes' `tags`
+    // as `gh-label:<name>` entries.
+    //
+    // Triage's `isMetadataOnlyEdit` short-circuit (below) skips
+    // label-only edits to avoid LLM cost, but downstream consumers
+    // (Kira dispatcher, future label-aware features) need labels to
+    // be queryable from the node state instead of polling GH. This
+    // sync gives them that without touching the triage path.
+    //
+    // Failures swallowed — the webhook still acknowledges. Catchup
+    // reconciler is the backstop.
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName
+    ) {
+      const externalId = `${repoFullName}#${issuePayload.number}`;
+      const issue = payload.issue as GitHubIssue | undefined;
+      if (issue) {
+        try {
+          await syncIssueLabelsToNodes(externalId, issue.labels);
+        } catch (err) {
+          console.warn(
+            '[github-ingest] label sync failed:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
 
     // ── Auto-ingest new GitHub issues into the map's Inbox ──────────
     // Runs before the close/reopen state-sync below so a `reopened`

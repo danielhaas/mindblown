@@ -598,6 +598,8 @@ import {
   ingestNewIssuesForRepo,
   findIngestTargetMaps,
   findNodesByExternalIds,
+  ghLabelsToTagSlice,
+  mergeGhLabelsIntoTags,
 } from '../githubIngest.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
@@ -1731,5 +1733,54 @@ describe('ensureNodeForIssue — triage cost-opt (#142)', () => {
     // so we should NOT see hash-match either — must be a real LLM call).
     expect(second.status).toBe('triaged_uncertain');
     expect(triageMockCalls.length).toBe(2);
+  });
+});
+
+describe('GH label → node tags sync', () => {
+  it('ghLabelsToTagSlice maps each label name to a gh-label:* tag', () => {
+    expect(ghLabelsToTagSlice([{ name: 'bug' }, { name: 'p1' }])).toEqual([
+      'gh-label:bug',
+      'gh-label:p1',
+    ]);
+  });
+
+  it('ghLabelsToTagSlice returns [] for undefined/empty input', () => {
+    expect(ghLabelsToTagSlice(undefined)).toEqual([]);
+    expect(ghLabelsToTagSlice([])).toEqual([]);
+  });
+
+  it('mergeGhLabelsIntoTags preserves user tags and replaces gh-label slice', () => {
+    const existing = ['user:dan', 'gh-label:old-label', 'priority:p2'];
+    const next = mergeGhLabelsIntoTags(existing, [
+      { name: 'new-label' },
+      { name: 'kira-skip' },
+    ]);
+    expect(next).toEqual([
+      'gh-label:kira-skip',
+      'gh-label:new-label',
+      'priority:p2',
+      'user:dan',
+    ]);
+  });
+
+  it('mergeGhLabelsIntoTags strips gh-label entries when GH labels go to []', () => {
+    const existing = ['user:dan', 'gh-label:was-there'];
+    const next = mergeGhLabelsIntoTags(existing, []);
+    expect(next).toEqual(['user:dan']);
+  });
+
+  it('mergeGhLabelsIntoTags handles undefined existingTags', () => {
+    expect(mergeGhLabelsIntoTags(undefined, [{ name: 'x' }])).toEqual([
+      'gh-label:x',
+    ]);
+  });
+
+  it('mergeGhLabelsIntoTags produces a sorted result for stable diffing', () => {
+    const next = mergeGhLabelsIntoTags(['z-user-tag'], [
+      { name: 'zeta' },
+      { name: 'alpha' },
+    ]);
+    // alphabetical: gh-label:alpha < gh-label:zeta < z-user-tag
+    expect(next).toEqual(['gh-label:alpha', 'gh-label:zeta', 'z-user-tag']);
   });
 });
