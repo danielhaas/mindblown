@@ -1620,6 +1620,29 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // ── pull_request.closed → clear/close linkedPr ───────────────────
+    // Companion to the snapshot/review/check_suite handlers above.
+    // Without this, merged PRs stay in `nodes.linked_pr` with state='open'
+    // forever and the /api/prs/open endpoint keeps reporting them, which
+    // makes Kira repeatedly try to admin-merge an already-merged PR.
+    if (
+      event === 'pull_request' &&
+      payloadAction === 'closed' &&
+      repoFullName
+    ) {
+      try {
+        const pr = payload.pull_request as PrSync.GhPrPayload | undefined;
+        if (pr) {
+          await PrSync.handlePrClosed(repoFullName, pr);
+        }
+      } catch (err) {
+        console.warn(
+          '[pr-sync] handlePrClosed failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     // ── pull_request: closed + merged=true → transition linked nodes ─
     //
     // #152 — when a PR merges with `Closes #N` references in title or
