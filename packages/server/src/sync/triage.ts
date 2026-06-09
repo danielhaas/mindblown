@@ -293,19 +293,29 @@ You will see:
 
 Decide ONE of:
   - "place"     — The issue belongs in this map under a specific epic. Pick the epic that best matches.
-  - "skip"      — The issue does NOT belong in this map (e.g. closed bug from an unrelated component, test scenario, coordination chatter, feedback that should live elsewhere).
-  - "uncertain" — You can't tell. The issue may belong but the fit isn't clear, or the available epics don't cover the topic well.
+  - "skip"      — The issue does NOT belong in this map. The dominant skip patterns, all of which are CONFIDENT skips (90-100):
+                    1. CLOSED in GitHub with no clear epic fit — tactical bug fixes or small features that shipped at a granularity below the strategic roadmap. The roadmap epics are themes; closed tactical PRs don't belong on it.
+                    2. NOISE — test submissions ("test", "Test123", "asdf"), empty bodies, accidental feedback-widget content.
+                    3. META / UMBRELLA tracking issues that exist only to coordinate child tickets. The children may belong on the map; the parent doesn't.
+                    4. FOLLOW-UP / SUB-PR implicitly tracked under another ticket — titles like "Follow-up to #N ...", "[#N] ...", or bodies that explicitly say "tracking under #N". The parent absorbs the scope.
+                    5. NON-CODING work — vendor engagement, calendar, partner coordination, operational housekeeping. Look for labels like \`kira-skip\` as an explicit signal.
+  - "uncertain" — You can't tell. The issue may belong but the fit isn't clear, or the available epics don't cover the topic well. Use this when the call is genuinely ambiguous, not as a hedge against a hard skip.
 
 Calibration guidance:
-  - High confidence (85-100): The issue's topic matches an epic's title or description almost word-for-word.
-  - Medium confidence (60-84): Plausible fit, but the issue could also belong to a different epic or to no epic at all.
-  - Low confidence (<60): Flag as "uncertain" instead of forcing a "place".
+  Place:
+    - High confidence (85-100): The issue's topic matches an epic's title or description almost word-for-word.
+    - Medium confidence (60-84): Plausible fit, but the issue could also belong to a different epic or to no epic at all.
+    - Low confidence (<60): Flag as "uncertain" instead of forcing a "place".
+  Skip:
+    - High confidence (90-100): Matches one of the five skip patterns above. Be decisive — these are the common case, not edge cases.
+    - Medium confidence (60-89): Open issue that probably doesn't fit any epic but isn't a clean match for the five patterns (e.g. open feature request orthogonal to the roadmap).
+    - Low confidence (<60): Flag as "uncertain" instead.
 
 Output STRICTLY a JSON object with these fields, no markdown fences:
   {
     "decision": "place" | "skip" | "uncertain",
     "parentNodeId": "<UUID from the epics list, ONLY when decision is 'place'>",
-    "reason": "<one or two sentences explaining your choice — this is persisted in the audit log>",
+    "reason": "<one or two sentences explaining your choice — this is persisted in the audit log. For skips, lead with the pattern number/name from the list above (e.g. 'Pattern 1 (closed-no-fit): ...').>",
     "confidence": <integer 0-100>
   }
 
