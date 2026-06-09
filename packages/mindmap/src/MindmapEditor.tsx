@@ -1765,15 +1765,16 @@ export function MindmapEditor() {
             {(() => {
               const parent = nodes[contextMenu.nodeId];
               if (!parent) return null;
+              // "Visually leaf-like" mirrors distributeLeavesAroundParent:
+              // a child the user sees as a leaf, whether by data, collapse,
+              // or depth-limit hiding.
               const leafLikeCount = parent.childrenIds.reduce((acc, id) => {
                 const c = nodes[id];
-                if (!c) return acc;
-                return acc + ((c.childrenIds.length === 0 || c.collapsed) ? 1 : 0);
+                if (!c || !layoutMap.has(id)) return acc;
+                const hasVisibleChildren = c.childrenIds.some((cid) => layoutMap.has(cid));
+                return acc + (hasVisibleChildren ? 0 : 1);
               }, 0);
-              const hasSubtree = parent.childrenIds.some((id) => {
-                const c = nodes[id];
-                return Boolean(c) && c.childrenIds.length > 0;
-              });
+              const hasSubtree = parent.childrenIds.length > 0;
               // Walk subtree to see if any descendant carries a manual position.
               const subtreeIds: string[] = [];
               {
