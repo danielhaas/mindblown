@@ -10,13 +10,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-import { pushKumaHeartbeat } from '../kumaPush.js';
+import { pushKumaHeartbeat, _resetKumaSuppressionForTests } from '../kumaPush.js';
 
 describe('pushKumaHeartbeat', () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    _resetKumaSuppressionForTests();
   });
 
   afterEach(() => {
@@ -102,6 +103,84 @@ describe('pushKumaHeartbeat', () => {
     await pushKumaHeartbeat('', 'up', 'msg', '[kuma-push] test');
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('suppresses repeated identical failures within a logTag', async () => {
+    // Kuma returning the same 404 on every tick (e.g. operator deleted
+    // the monitor on Kuma's side) used to spam one warn per tick, every
+    // 5 minutes, forever. The helper should warn once then go quiet
+    // until the signature changes.
+    const fetchMock = vi.fn(
+      async (_input: unknown, _init?: unknown) => ({ ok: false, status: 404 }) as Response,
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (let i = 0; i < 5; i += 1) {
+      await pushKumaHeartbeat(
+        'https://kuma.example/api/push/missing',
+        'up',
+        `tick ${i}`,
+        '[kuma-push] catchup',
+      );
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    // Only the first 404 logs; the next four are suppressed.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0].join(' ')).toContain('404');
+  });
+
+  it('logs a "recovered" line when a previously-failing push starts succeeding', async () => {
+    // First two ticks fail with 404, then Kuma comes back. We want a
+    // single recovery line in the journal so the operator knows the
+    // monitor is healthy again without grepping for missing warns.
+    const responses: Array<{ ok: boolean; status: number }> = [
+      { ok: false, status: 404 },
+      { ok: false, status: 404 },
+      { ok: true, status: 200 },
+      { ok: true, status: 200 },
+    ];
+    const fetchMock = vi.fn(async () => responses.shift() as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (let i = 0; i < 4; i += 1) {
+      await pushKumaHeartbeat(
+        'https://kuma.example/api/push/recovers',
+        'up',
+        `tick ${i}`,
+        '[kuma-push] catchup',
+      );
+    }
+
+    // 404 once, recovery once, ok ticks silent → 2 warns total.
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy.mock.calls[0].join(' ')).toContain('404');
+    expect(warnSpy.mock.calls[1].join(' ')).toContain('recovered');
+  });
+
+  it('logs again when the failure signature changes (404 → 500)', async () => {
+    // Distinct failure modes shouldn't be silenced by a previous
+    // suppression for a different status code.
+    const responses: Array<{ ok: boolean; status: number }> = [
+      { ok: false, status: 404 },
+      { ok: false, status: 404 },
+      { ok: false, status: 500 },
+    ];
+    const fetchMock = vi.fn(async () => responses.shift() as Response);
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (let i = 0; i < 3; i += 1) {
+      await pushKumaHeartbeat(
+        'https://kuma.example/api/push/changing',
+        'up',
+        `tick ${i}`,
+        '[kuma-push] catchup',
+      );
+    }
+
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    expect(warnSpy.mock.calls[0].join(' ')).toContain('404');
+    expect(warnSpy.mock.calls[1].join(' ')).toContain('500');
   });
 
   it('URL-encodes special characters in the msg query param', async () => {

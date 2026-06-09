@@ -188,10 +188,18 @@ async function resolveTargets(): Promise<ResolvedTargets> {
 
 /**
  * Audit drift for one target map: fetch open issues from GitHub,
- * cross-reference against linked nodes IN THAT MAP, count issues that
- * have no MindBlown node.
+ * cross-reference against linked nodes ANYWHERE in the system, count
+ * issues that have no MindBlown node at all.
  *
- * Returns null if the map is currently clean. Returns a DriftReport
+ * Why globally-scoped (not per-map): the actual ingest skip rule in
+ * `ensureNodeForIssue` → `findNodesByExternalIds` is globally-scoped
+ * — a backfill won't re-create a node for an issue already linked
+ * elsewhere. A per-map "linked" check here would flag drift that
+ * backfill can't heal, producing the "imported 0/N (0 errored)" loop
+ * that pushes `status=down` for phantom drift and pages the operator
+ * at 3am for nothing. Keep this aligned with backfill's reality.
+ *
+ * Returns null if no genuinely-missing issues. Returns a DriftReport
  * with `onlyInGitHub > 0` otherwise.
  */
 async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
@@ -201,11 +209,13 @@ async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
     includeAll: false,
   });
 
-  // Build externalId lookup from this map's nodes.
+  // Build externalId lookup from EVERY non-deleted node (not just this
+  // map). Matches the skip semantics in githubIngest.findNodesByExternalIds
+  // so audit + backfill agree on what counts as "linked".
   const mapNodes = await db
     .select({ externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(and(eq(nodes.mapId, t.mapId), notDeleted));
+    .where(notDeleted);
 
   const linkedExternalIds = new Set<string>();
   for (const n of mapNodes) {

@@ -359,8 +359,12 @@ describe('auditDrift', () => {
   });
 
   it('reports one map per opted-in target, not aggregated by repo', async () => {
-    // Two maps bound to the SAME repo, both opted in, with different
-    // linked nodes. We want one report each.
+    // Two maps bound to the SAME repo, both opted in. Each gets its
+    // own report row (no aggregation). Issues 3 and 4 are unlinked
+    // ANYWHERE in the system, so the global-scoped "linked" check flags
+    // them as drift for BOTH maps. Issues 1 and 2 are linked somewhere
+    // (mA and mB respectively) so do NOT count — matching backfill's
+    // `findNodesByExternalIds` skip rule.
     dbState.maps.push({
       id: 'mA',
       name: 'Map A',
@@ -379,15 +383,47 @@ describe('auditDrift', () => {
       githubRepoName: 'repo',
       autoImportNewIssues: true,
     });
-    setupRepoIssues('owner', 'repo', [1, 2, 3]);
-    linkNodeToIssue('mA', 'owner', 'repo', 1); // mA misses 2, 3
-    linkNodeToIssue('mB', 'owner', 'repo', 1);
-    linkNodeToIssue('mB', 'owner', 'repo', 2); // mB misses 3
+    setupRepoIssues('owner', 'repo', [1, 2, 3, 4]);
+    linkNodeToIssue('mA', 'owner', 'repo', 1);
+    linkNodeToIssue('mB', 'owner', 'repo', 2);
 
     const { reports } = await auditDrift();
     const byId = new Map(reports.map((r) => [r.mapId, r]));
     expect(byId.get('mA')?.onlyInGitHub).toBe(2);
-    expect(byId.get('mB')?.onlyInGitHub).toBe(1);
+    expect(byId.get('mA')?.exampleIssues).toEqual([3, 4]);
+    expect(byId.get('mB')?.onlyInGitHub).toBe(2);
+    expect(byId.get('mB')?.exampleIssues).toEqual([3, 4]);
+  });
+
+  it('issue linked in ANOTHER map does not count as drift here', async () => {
+    // Regression for the 3am phantom-drift alarm: an issue linked in
+    // any non-deleted node anywhere is treated as not-drift here, since
+    // `ensureNodeForIssue`'s skip rule would refuse to recreate it
+    // during auto-backfill. Pre-fix this test reported drift=1; backfill
+    // then logged "imported 0/1 (0 errored)" and pushed status=down.
+    dbState.maps.push({
+      id: 'mAudit',
+      name: 'Audit Target',
+      workspaceId: 'ws',
+      githubInstallationId: 'inst-1',
+      githubRepoOwner: 'owner',
+      githubRepoName: 'repo',
+      autoImportNewIssues: true,
+    });
+    dbState.maps.push({
+      id: 'mOther',
+      name: 'Other Map',
+      workspaceId: 'ws',
+      githubInstallationId: null,
+      githubRepoOwner: null,
+      githubRepoName: null,
+      autoImportNewIssues: false,
+    });
+    setupRepoIssues('owner', 'repo', [99]);
+    linkNodeToIssue('mOther', 'owner', 'repo', 99); // linked elsewhere
+
+    const { reports } = await auditDrift();
+    expect(reports).toEqual([]);
   });
 
   it('falls back to a PAT integration when the App token mint fails', async () => {
