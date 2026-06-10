@@ -452,6 +452,10 @@ describe('syncTriageRowsForReopen', () => {
       mapId: 'm1',
       externalId: 'o/r#42',
       decision: 'skip',
+      // #178: re-triage flipped place→skip, so reopenNewParent is
+      // null. Skip-decisions don't care about placedNodeId for the
+      // label-add gate, but the call still passes it for consistency.
+      placedNodeId: null,
     });
   });
 

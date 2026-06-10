@@ -357,6 +357,7 @@ export async function syncTriageRowsForReopen(
         mapId: row.mapId,
         externalId,
         decision: decision.decision,
+        placedNodeId: reopenNewParent,
       });
     } catch (err) {
       console.warn(

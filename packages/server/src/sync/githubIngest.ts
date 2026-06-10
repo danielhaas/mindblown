@@ -1037,6 +1037,7 @@ async function ensureNodeForIssueViaTriage(
       mapId,
       externalId,
       decision: decision.decision,
+      placedNodeId: result.nodeId,
     });
     return {
       status: 'created',
@@ -1071,10 +1072,14 @@ async function ensureNodeForIssueViaTriage(
     newParentNodeId: null,
     reason: decision.reason,
   });
+  // Decision-only outcomes carry no placed node — the gate inside
+  // applyTriageLabel will skip the `triage:placed` add for an auto
+  // 'place' decision that didn't auto-apply (#178).
   await applyTriageLabel({
     mapId,
     externalId,
     decision: decision.decision,
+    placedNodeId: null,
   });
   return {
     status,
