@@ -195,12 +195,9 @@ async function resolveTargets(): Promise<ResolvedTargets> {
  * `ensureNodeForIssue` → `findNodesByExternalIds` is globally-scoped
  * — a backfill won't re-create a node for an issue already linked
  * elsewhere. A per-map "linked" check here would flag drift that
- * backfill can't heal, producing the "imported 0/N (0 errored)" loop.
- * Pre-2026-06-10 that loop also pushed Kuma `status=down` and paged
- * the operator at 3am for nothing; the rescope to up-on-manual-pending
- * removed the page, but the phantom-drift waste (LLM tokens spent on
- * triage retries) is still real. Keep this aligned with backfill's
- * reality.
+ * backfill can't heal, producing the "imported 0/N (0 errored)" loop
+ * that pushes `status=down` for phantom drift and pages the operator
+ * at 3am for nothing. Keep this aligned with backfill's reality.
  *
  * Returns null if no genuinely-missing issues. Returns a DriftReport
  * with `onlyInGitHub > 0` otherwise.
@@ -331,14 +328,9 @@ export function formatAutoBackfillMsg(summary: AutoBackfillSummary): string {
  * Pushes:
  *   - No drift                       → status=up, msg="no-drift"
  *   - Drift fully auto-healed        → status=up, msg="auto-backfilled-N"
- *   - Drift partially auto-healed    → status=up, msg="auto-backfilled-X,manual-Y"
- *   - All drift over cap / killed    → status=up, msg="manual-N"
+ *   - Drift partially auto-healed    → status=down, msg="auto-backfilled-X,manual-Y"
+ *   - All drift over cap / killed    → status=down, msg="manual-N"
  *   - Audit itself threw             → status=down, msg="audit_failed:<reason>"
- *
- * The manual-pending branches return `up` (not `down`) since 2026-06-10:
- * a triage queue waiting on human eyes is not infra failure; operators
- * get a daily email from Jenna's housekeeping sweep. Kuma stays scoped
- * to true infra problems (audit threw, no-heartbeat-in-24h).
  *
  * If any maps had token errors, `,token-errors-N` is appended to the
  * msg (e.g. `no-drift,token-errors-2`). Token errors alone do not flip
