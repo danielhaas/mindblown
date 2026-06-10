@@ -90,12 +90,26 @@ async function main(): Promise<void> {
     mapIdFlagIdx >= 0 && args[mapIdFlagIdx + 1] ? args[mapIdFlagIdx + 1] : null;
 
   const dryRun = args.includes('--dry-run');
+  // #178: the script's original purpose was "fill the suggestion
+  // column," so it only touched rows with suggested_parent_node_id IS
+  // NULL. Now that the script also writes the full new triage result
+  // and re-fires the GH label writeback, the natural definition of
+  // "stale" expanded to any decision='place' / placed_node_id IS NULL
+  // row — regardless of whether a suggestion was previously written.
+  // Pass --include-suggested to broaden the filter (catches rows like
+  // #117/#110 where the AI placed-label leaked onto GitHub but no node
+  // ever landed). Default stays narrow for back-compat.
+  const includeSuggested = args.includes('--include-suggested');
 
   console.log('[backfill] starting suggested_parent_node_id retro-fill');
   if (targetMapId) console.log(`[backfill]   filter: map_id=${targetMapId}`);
+  if (includeSuggested)
+    console.log(
+      '[backfill]   --include-suggested: also re-triaging rows with a non-null suggestion (#178 label-heal)',
+    );
   if (dryRun) console.log('[backfill]   DRY RUN — no writes, no LLM calls');
 
-  // Find every row that needs backfilling. Strict filter set: place
+  // Find every row that needs backfilling. Default filter: place
   // decision, no placed node, no existing suggestion. We DON'T touch
   // skip/uncertain rows (suggestion is irrelevant) or already-placed
   // rows (auto-apply already happened — suggestion ≠ placed but the
@@ -103,8 +117,10 @@ async function main(): Promise<void> {
   const filters = [
     eq(triageDecisions.decision, 'place'),
     isNull(triageDecisions.placedNodeId),
-    isNull(triageDecisions.suggestedParentNodeId),
   ];
+  if (!includeSuggested) {
+    filters.push(isNull(triageDecisions.suggestedParentNodeId));
+  }
   if (targetMapId) {
     filters.push(eq(triageDecisions.mapId, targetMapId));
   }
