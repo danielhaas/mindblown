@@ -434,8 +434,16 @@ export async function runDriftAudit(): Promise<DriftAuditRunResult> {
   }
 
   // Build the Kuma message and status.
+  //
+  // Manual-pending is a triage QUEUE state, not an infra failure —
+  // operators get a daily email from Jenna's housekeeping sweep telling
+  // them what to confirm. Kuma's job here shrinks to "did the audit run
+  // and not throw"; only `audit_failed` (catch block above) and the
+  // no-heartbeat-in-24h Kuma-side timeout trip the monitor. Background:
+  // 2026-06-10 incident — woke Dan at 00:45 CEST on an 8-item backlog
+  // that wasn't infra, just a triage queue waiting on human eyes.
   const msg = `${formatAutoBackfillMsg(autoBackfill)}${tokenSuffix}`.slice(0, 200);
-  const status = autoBackfill.totalManualPending > 0 ? 'down' : 'up';
+  const status = 'up';
 
   if (url) {
     try {
