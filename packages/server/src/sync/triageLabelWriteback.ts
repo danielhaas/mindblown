@@ -132,15 +132,16 @@ async function ghRequest(
  * never throws. Callers do `await applyTriageLabel(...)` and continue
  * regardless of outcome.
  *
- * The "remove the inverse label" step is also best-effort: if the inverse
- * label isn't on the issue, GitHub returns 404 on the remove — we treat
- * that as a no-op and don't log.
+ * - place + placedNodeId → POST `triage:placed`, DELETE `triage:skipped`
+ * - place + no placedNodeId → DELETE `triage:skipped` only (#178)
+ * - skip → POST `triage:skipped`, DELETE `triage:placed`
+ * - uncertain → DELETE BOTH `triage:placed` and `triage:skipped` so a
+ *   previous decision's label can't outlive a flip into uncertain (#181)
+ *
+ * The remove step is best-effort: if the label isn't on the issue,
+ * GitHub returns 404 — we treat that as a no-op and don't log.
  */
 export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
-  // Gate: 'uncertain' is a no-op (we don't want intermediate-state label
-  // churn on GitHub).
-  if (opts.decision === 'uncertain') return;
-
   // Gate: map must have label writeback enabled.
   const [mapRow] = await db
     .select({ writeback: maps.triageLabelWriteback })
@@ -164,19 +165,27 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
     return;
   }
 
-  const addLabel =
-    opts.decision === 'place' ? TRIAGE_PLACED_LABEL : TRIAGE_SKIPPED_LABEL;
-  const removeLabel =
-    opts.decision === 'place' ? TRIAGE_SKIPPED_LABEL : TRIAGE_PLACED_LABEL;
-
   // #178: gate the ADD step for place decisions that haven't actually
   // placed a node. Without this, the row's GH label says "we put it in
   // the map" even though `placed_node_id IS NULL` (pending operator
-  // review). The inverse-label remove still runs — a row that flips
-  // from skip→pending-place shouldn't keep the stale skip label.
+  // review). Uncertain decisions never add a label.
   const shouldAddLabel =
     opts.decision === 'skip' ||
     (opts.decision === 'place' && opts.placedNodeId != null);
+
+  const addLabel =
+    opts.decision === 'place' ? TRIAGE_PLACED_LABEL : TRIAGE_SKIPPED_LABEL;
+
+  // #181: uncertain transitions must clear BOTH previous labels — a
+  // place→uncertain or skip→uncertain flip would otherwise leave the
+  // pre-flip label on the GH issue, lying about the current state.
+  // For place/skip the remove set is the single inverse label.
+  const removeLabels: string[] =
+    opts.decision === 'uncertain'
+      ? [TRIAGE_PLACED_LABEL, TRIAGE_SKIPPED_LABEL]
+      : opts.decision === 'place'
+        ? [TRIAGE_SKIPPED_LABEL]
+        : [TRIAGE_PLACED_LABEL];
 
   const { owner, repo, issueNumber } = parsed;
 
@@ -218,37 +227,40 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
     }
   }
 
-  // 2) Remove the inverse label. DELETE /labels/{name} returns 404 if
-  //    the label isn't on the issue — treat as no-op (very common).
-  try {
-    const removeUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(removeLabel)}`;
-    const { status, bodyText } = await ghRequest(
-      removeUrl,
-      'DELETE',
-      ghCtx.token,
-      undefined,
-      opts.fetchImpl,
-    );
-    if (status === 404) {
-      // Label wasn't on the issue — common, silent skip.
-    } else if (status === 422) {
-      // Label doesn't exist on the repo at all — silent (mirror add-side
-      // behaviour; the operator's already been warned).
-    } else if (status < 200 || status >= 300) {
-      console.warn(
-        `[triage-label] remove ${removeLabel} on ${owner}/${repo}#${issueNumber} returned ${status}: ${bodyText.slice(0, 200)}`,
+  // 2) Remove the inverse label(s). DELETE /labels/{name} returns 404
+  //    if the label isn't on the issue — treat as no-op (very common).
+  //    For uncertain decisions this loop walks both placed and skipped.
+  for (const removeLabel of removeLabels) {
+    try {
+      const removeUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(removeLabel)}`;
+      const { status, bodyText } = await ghRequest(
+        removeUrl,
+        'DELETE',
+        ghCtx.token,
+        undefined,
+        opts.fetchImpl,
       );
-    }
-  } catch (err) {
-    if (err instanceof GitHubApiError) {
-      console.warn(
-        `[triage-label] remove label failed on ${owner}/${repo}#${issueNumber}: ${err.message}`,
-      );
-    } else {
-      console.warn(
-        `[triage-label] remove label network error on ${owner}/${repo}#${issueNumber}:`,
-        err instanceof Error ? err.message : err,
-      );
+      if (status === 404) {
+        // Label wasn't on the issue — common, silent skip.
+      } else if (status === 422) {
+        // Label doesn't exist on the repo at all — silent (mirror add-side
+        // behaviour; the operator's already been warned).
+      } else if (status < 200 || status >= 300) {
+        console.warn(
+          `[triage-label] remove ${removeLabel} on ${owner}/${repo}#${issueNumber} returned ${status}: ${bodyText.slice(0, 200)}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof GitHubApiError) {
+        console.warn(
+          `[triage-label] remove label failed on ${owner}/${repo}#${issueNumber}: ${err.message}`,
+        );
+      } else {
+        console.warn(
+          `[triage-label] remove label network error on ${owner}/${repo}#${issueNumber}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 }

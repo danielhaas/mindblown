@@ -124,16 +124,26 @@ describe('applyTriageLabel — gated off', () => {
     expect(shim.calls).toHaveLength(0);
   });
 
-  it("decision='uncertain' → no GH API call even when writeback is enabled", async () => {
+  it("decision='uncertain' → DELETEs both placed and skipped, no POST (#181)", async () => {
+    // Pre-#181 the helper short-circuited on uncertain entirely; that
+    // left previously-applied place/skip labels on the issue after a
+    // flip into uncertain. The new behaviour clears both labels so the
+    // issue ends up unlabelled until the next non-uncertain decision.
     labelWritebackEnabled = true;
-    const shim = fetchShim([]);
+    const shim = fetchShim([
+      { urlContains: '/labels/triage', method: 'DELETE', status: 200 },
+    ]);
     await applyTriageLabel({
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'uncertain',
       fetchImpl: shim.impl,
     });
-    expect(shim.calls).toHaveLength(0);
+    expect(shim.calls).toHaveLength(2);
+    expect(shim.calls.every((c) => c.method === 'DELETE')).toBe(true);
+    const urls = shim.calls.map((c) => c.url);
+    expect(urls.some((u) => u.includes(encodeURIComponent('triage:placed')))).toBe(true);
+    expect(urls.some((u) => u.includes(encodeURIComponent('triage:skipped')))).toBe(true);
   });
 
   it('map row missing → silent skip, no GH call', async () => {
