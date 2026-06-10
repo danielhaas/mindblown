@@ -209,7 +209,7 @@ export const clearBlockerTool = defineTool({
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
-    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId only. Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
   schema: {
     mapId: z.string().describe('The map ID'),
     query: z
@@ -230,8 +230,12 @@ export const searchNodesTool = defineTool({
       .string()
       .optional()
       .describe('Filter by version. Matches nodes whose own versionId is this OR any ancestor on the path inherits it.'),
+    parentId: z
+      .string()
+      .optional()
+      .describe('Filter to direct children of this node id. Combine with query="*" to enumerate the contents of a specific bucket — the only way to do so, since get_map truncates on large maps.'),
   },
-  handler: async (backend, { mapId, query, status, priority, tag, unestimated, leavesOnly, versionId }) => {
+  handler: async (backend, { mapId, query, status, priority, tag, unestimated, leavesOnly, versionId, parentId }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
@@ -247,6 +251,7 @@ export const searchNodesTool = defineTool({
     if (priority) matches = matches.filter((n) => n.priority === priority);
     if (tag) matches = matches.filter((n) => n.tags.includes(tag));
     if (leavesOnly) matches = matches.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+    if (parentId) matches = matches.filter((n) => n.parentId === parentId);
     if (unestimated === true) matches = matches.filter((n) => n.effortEstimate == null);
     else if (unestimated === false) matches = matches.filter((n) => n.effortEstimate != null);
     if (versionId) {
@@ -270,6 +275,7 @@ export const searchNodesTool = defineTool({
         unestimated !== undefined && `unestimated=${unestimated}`,
         leavesOnly && `leavesOnly=true`,
         versionId && `versionId=${versionId}`,
+        parentId && `parentId=${parentId}`,
       ].filter(Boolean);
       const filterStr = filters.length > 0 ? ` (filters: ${filters.join(', ')})` : '';
       const subject = matchAll ? 'nodes' : `nodes matching "${query}"`;
@@ -284,7 +290,9 @@ export const searchNodesTool = defineTool({
         ? ' ' + n.externalLinks.map((l) => `[${l.externalId}]`).join(' ')
         : '';
       const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${links}${claim}`;
+      const kids = n.childrenIds?.length ?? 0;
+      const kidsStr = kids > 0 ? ` (${kids} child${kids === 1 ? '' : 'ren'})` : '';
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${kidsStr}${links}${claim}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;

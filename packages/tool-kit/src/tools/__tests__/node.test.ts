@@ -9,9 +9,9 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
-import type { NodeWithComputed } from '../../types.js';
+import type { MapDetail, NodeWithComputed } from '../../types.js';
 
 /**
  * Minimal ToolBackend that records the last call to createNode / updateNode
@@ -287,5 +287,93 @@ describe('list_recently_deleted tool', () => {
       limit: 100,
     } as never);
     expect(seen[0]).toEqual({ mapId: 'm1', opts: { sinceDays: 7, limit: 100 } });
+  });
+});
+
+describe('search_nodes tool — parentId filter', () => {
+  function buildBucketMap(): MapDetail {
+    const node = (id: string, parentId: string | null, childrenIds: string[]): NodeWithComputed =>
+      ({
+        id,
+        mapId: 'm1',
+        parentId,
+        childrenIds,
+        text: id,
+        description: null,
+        effortEstimate: null,
+        actualEffort: null,
+        percentComplete: null,
+        status: null,
+        assigneeIds: [],
+        priority: null,
+        dueDate: null,
+        startDate: null,
+        tags: [],
+        dependencies: [],
+        versionId: null,
+        cycleId: null,
+        externalLinks: [],
+        collapsed: false,
+        createdAt: '2026-06-10T00:00:00Z',
+        updatedAt: '2026-06-10T00:00:00Z',
+        claimedBySession: null,
+        claimedAt: null,
+        computedEffort: 0,
+        computedProgress: 0,
+        healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: { id: 'm1', rootNodeId: 'root' } as unknown as MapDetail['map'],
+      nodes: [
+        node('root', null, ['bucket-a', 'bucket-b']),
+        node('bucket-a', 'root', ['a-leaf-1', 'a-leaf-2']),
+        node('a-leaf-1', 'bucket-a', []),
+        node('a-leaf-2', 'bucket-a', []),
+        node('bucket-b', 'root', ['b-leaf']),
+        node('b-leaf', 'bucket-b', []),
+      ],
+    };
+  }
+
+  it('returns only the direct children of the given parent', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildBucketMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      parentId: 'bucket-a',
+    } as never);
+    expect(out).toContain('Found 2 node(s)');
+    expect(out).toContain('id: a-leaf-1');
+    expect(out).toContain('id: a-leaf-2');
+    expect(out).not.toContain('id: b-leaf');
+    expect(out).not.toContain('id: bucket-b');
+    expect(out).not.toContain('id: bucket-a');
+  });
+
+  it('composes with leavesOnly (children of a parent that are themselves leaves)', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildBucketMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      parentId: 'root',
+      leavesOnly: true,
+    } as never);
+    expect(out).toContain('No nodes');
+    expect(out).toContain('parentId=root');
+    expect(out).toContain('leavesOnly=true');
+  });
+
+  it('reports child count on non-leaf result lines', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildBucketMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      parentId: 'root',
+    } as never);
+    expect(out).toMatch(/bucket-a[^\n]*\(2 children\)/);
+    expect(out).toMatch(/bucket-b[^\n]*\(1 child\)/);
   });
 });
