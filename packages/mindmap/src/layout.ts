@@ -25,7 +25,7 @@ const NODE_HEIGHT = 40;
 const NODE_PARENT_HEIGHT = 44;
 const HORIZONTAL_GAP = 60;
 const VERTICAL_GAP = 14;
-const CHAR_WIDTH = 7.5; // approximate px per character
+const CHAR_WIDTH = 8.5; // approximate px per character (calibrated for the 15/16 base label fontSize)
 const MIN_NODE_WIDTH = 100;
 const MAX_NODE_WIDTH = 260;
 

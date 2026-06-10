@@ -276,10 +276,40 @@ export function MindmapEditor() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<ViewState>({ panX: 0, panY: 0, zoom: 1 });
   const [textScale, setTextScale] = useState<number>(() => loadTextScale());
+  const textScaleRef = useRef(textScale);
+  useEffect(() => { textScaleRef.current = textScale; }, [textScale]);
   useEffect(() => {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
   }, [textScale]);
+  // Bump textScale by a factor while compensating viewport pan so the
+  // current screen center stays put. Without this, raising textScale
+  // visually slides the whole tree off-center because every node's
+  // layout coord grew proportional to the new scale.
+  const changeTextScale = useCallback((nextScale: number) => {
+    const oldScale = textScaleRef.current;
+    const clamped = Math.min(MAX_TEXT_SCALE, Math.max(MIN_TEXT_SCALE, nextScale));
+    if (Math.abs(clamped - oldScale) < 1e-6) return;
+    const ratio = clamped / oldScale;
+    const svg = svgRef.current;
+    if (svg) {
+      const rect = svg.getBoundingClientRect();
+      setView((v) => {
+        // Logical coord under the screen center, pre-rescale.
+        const cx = (rect.width / 2 - v.panX) / v.zoom;
+        const cy = (rect.height / 2 - v.panY) / v.zoom;
+        // Layout origin is (40,40) — only the distance from origin scales.
+        const newCx = 40 + (cx - 40) * ratio;
+        const newCy = 40 + (cy - 40) * ratio;
+        return {
+          ...v,
+          panX: rect.width / 2 - newCx * v.zoom,
+          panY: rect.height / 2 - newCy * v.zoom,
+        };
+      });
+    }
+    setTextScale(clamped);
+  }, []);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
@@ -1706,19 +1736,19 @@ export function MindmapEditor() {
         }}
       >
         <button
-          onClick={() => setTextScale((s) => Math.min(MAX_TEXT_SCALE, s * TEXT_SCALE_STEP))}
+          onClick={() => changeTextScale(textScaleRef.current * TEXT_SCALE_STEP)}
           title="Increase text size"
           aria-label="Increase text size"
           style={{ ...zoomCtrlBtnStyle, fontSize: 16 }}
         >A+</button>
         <button
-          onClick={() => setTextScale(1)}
+          onClick={() => changeTextScale(1)}
           title="Reset text size to 100%"
           aria-label="Reset text size"
           style={{ ...zoomCtrlBtnStyle, fontSize: 11, fontWeight: 600, color: '#64748b' }}
         >{Math.round(textScale * 100)}%</button>
         <button
-          onClick={() => setTextScale((s) => Math.max(MIN_TEXT_SCALE, s / TEXT_SCALE_STEP))}
+          onClick={() => changeTextScale(textScaleRef.current / TEXT_SCALE_STEP)}
           title="Decrease text size"
           aria-label="Decrease text size"
           style={{ ...zoomCtrlBtnStyle, fontSize: 12 }}
