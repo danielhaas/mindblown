@@ -1061,6 +1061,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           mapId: req.params.mapId,
           externalId,
           decision: 'place',
+          placedNodeId: result.node?.id ?? null,
         });
         broadcastTriageUpdated(req.params.mapId, 'overridden', [result.decisionId]);
       }
@@ -1195,6 +1196,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           mapId: req.params.mapId,
           externalId,
           decision: 'skip',
+          placedNodeId: null,
         });
         broadcastTriageUpdated(req.params.mapId, 'overridden', [insertedId]);
       }
@@ -1348,6 +1350,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         mapId: req.params.mapId,
         externalId: row.externalId,
         decision: row.decision as 'place' | 'skip' | 'uncertain',
+        placedNodeId: row.placedNodeId ?? null,
       });
 
       // Phase 3 follow-up (#102 item 7): notify connected clients.
@@ -1544,6 +1547,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           mapId: req.params.mapId,
           externalId: row.externalId,
           decision: 'place',
+          placedNodeId,
         });
 
         // Phase 3 follow-up (#102 item 7): notify connected clients.
@@ -1670,6 +1674,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         mapId: req.params.mapId,
         externalId: row.externalId,
         decision,
+        placedNodeId: decision === 'place' ? (createdNodeId ?? null) : null,
       });
 
       // Phase 3 follow-up (#102 item 7): notify connected clients.
@@ -1849,11 +1854,14 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       // the new decision is auto and intermediate. We still write the
       // label (the spec calls out reclassify-to-skip should flip the
       // label) — uncertain decisions are silently no-op'd inside
-      // applyTriageLabel.
+      // applyTriageLabel. `newParent` is null when reclassify cleared
+      // placedNodeId or the new decision isn't place — so the place
+      // gate inside the helper correctly suppresses a stale add.
       await applyTriageLabel({
         mapId: req.params.mapId,
         externalId: row.externalId,
         decision: decision.decision,
+        placedNodeId: newParent,
       });
 
       // Phase 3 follow-up (#102 item 7): notify connected clients.
@@ -2068,6 +2076,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               mapId: req.params.mapId,
               externalId: row.externalId,
               decision: row.decision as 'place' | 'skip' | 'uncertain',
+              placedNodeId: row.placedNodeId ?? null,
             }),
           );
           results.push({
@@ -2298,6 +2307,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 mapId: req.params.mapId,
                 externalId: row.externalId,
                 decision: 'place',
+                placedNodeId,
               }),
             );
             nodeId = placedNodeId;
@@ -2373,6 +2383,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 mapId: req.params.mapId,
                 externalId: row.externalId,
                 decision: 'place',
+                placedNodeId: nodeId,
               }),
             );
           }
@@ -2535,6 +2546,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               mapId: req.params.mapId,
               externalId: row.externalId,
               decision: decision.decision,
+              placedNodeId: clearPlacedNode ? null : (row.placedNodeId ?? null),
             }),
           );
           results.push({

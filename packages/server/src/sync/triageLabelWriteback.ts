@@ -38,6 +38,16 @@ interface WriteLabelOpts {
   externalId: string; // "owner/repo#NNN"
   decision: FinalizedTriageDecision;
   /**
+   * The node id the decision actually placed (when `decision='place'`).
+   * Null/undefined means the decision said "place" but the placement
+   * hasn't landed yet (low-confidence auto-decision still pending
+   * operator review). In that state we skip the `triage:placed` add —
+   * the label would lie about a node that doesn't exist in the map.
+   * The label fires later when the operator confirms/overrides and a
+   * node is actually created. Ignored for skip/uncertain. See #178.
+   */
+  placedNodeId?: string | null;
+  /**
    * Test injection: replace the `githubFetch` HTTP call. Production
    * callers omit this; tests pass a mock to assert request shape.
    */
@@ -159,41 +169,52 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
   const removeLabel =
     opts.decision === 'place' ? TRIAGE_SKIPPED_LABEL : TRIAGE_PLACED_LABEL;
 
+  // #178: gate the ADD step for place decisions that haven't actually
+  // placed a node. Without this, the row's GH label says "we put it in
+  // the map" even though `placed_node_id IS NULL` (pending operator
+  // review). The inverse-label remove still runs — a row that flips
+  // from skip→pending-place shouldn't keep the stale skip label.
+  const shouldAddLabel =
+    opts.decision === 'skip' ||
+    (opts.decision === 'place' && opts.placedNodeId != null);
+
   const { owner, repo, issueNumber } = parsed;
 
   // 1) Add the new label. POST /repos/{owner}/{repo}/issues/{number}/labels
   //    is additive — GitHub merges with existing labels rather than
   //    replacing the set.
-  try {
-    const addUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels`;
-    const { status, bodyText } = await ghRequest(
-      addUrl,
-      'POST',
-      ghCtx.token,
-      { labels: [addLabel] },
-      opts.fetchImpl,
-    );
-    if (status === 422) {
-      // GitHub returns 422 when the label doesn't exist on the repo.
-      // Per spec: don't auto-create — log a warn and continue.
-      console.warn(
-        `[triage-label] label "${addLabel}" does not exist on ${owner}/${repo}; create it in your repo to enable writeback. (issue #${issueNumber})`,
+  if (shouldAddLabel) {
+    try {
+      const addUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels`;
+      const { status, bodyText } = await ghRequest(
+        addUrl,
+        'POST',
+        ghCtx.token,
+        { labels: [addLabel] },
+        opts.fetchImpl,
       );
-    } else if (status < 200 || status >= 300) {
-      console.warn(
-        `[triage-label] add ${addLabel} on ${owner}/${repo}#${issueNumber} returned ${status}: ${bodyText.slice(0, 200)}`,
-      );
-    }
-  } catch (err) {
-    if (err instanceof GitHubApiError) {
-      console.warn(
-        `[triage-label] add label failed on ${owner}/${repo}#${issueNumber}: ${err.message}`,
-      );
-    } else {
-      console.warn(
-        `[triage-label] add label network error on ${owner}/${repo}#${issueNumber}:`,
-        err instanceof Error ? err.message : err,
-      );
+      if (status === 422) {
+        // GitHub returns 422 when the label doesn't exist on the repo.
+        // Per spec: don't auto-create — log a warn and continue.
+        console.warn(
+          `[triage-label] label "${addLabel}" does not exist on ${owner}/${repo}; create it in your repo to enable writeback. (issue #${issueNumber})`,
+        );
+      } else if (status < 200 || status >= 300) {
+        console.warn(
+          `[triage-label] add ${addLabel} on ${owner}/${repo}#${issueNumber} returned ${status}: ${bodyText.slice(0, 200)}`,
+        );
+      }
+    } catch (err) {
+      if (err instanceof GitHubApiError) {
+        console.warn(
+          `[triage-label] add label failed on ${owner}/${repo}#${issueNumber}: ${err.message}`,
+        );
+      } else {
+        console.warn(
+          `[triage-label] add label network error on ${owner}/${repo}#${issueNumber}:`,
+          err instanceof Error ? err.message : err,
+        );
+      }
     }
   }
 

@@ -118,6 +118,7 @@ describe('applyTriageLabel — gated off', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(0);
@@ -143,6 +144,7 @@ describe('applyTriageLabel — gated off', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(0);
@@ -155,6 +157,7 @@ describe('applyTriageLabel — gated off', () => {
       mapId: 'm1',
       externalId: 'not-an-external-id',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(0);
@@ -168,9 +171,68 @@ describe('applyTriageLabel — gated off', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(0);
+  });
+});
+
+// ── #178: place-without-placement gate ───────────────────────────
+
+describe('applyTriageLabel — #178 place gate', () => {
+  it("decision='place' with placedNodeId=null → DELETEs inverse but does NOT POST triage:placed", async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([
+      { urlContains: '/labels/triage', method: 'DELETE', status: 200 },
+    ]);
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/demo#42',
+      decision: 'place',
+      placedNodeId: null,
+      fetchImpl: shim.impl,
+    });
+    // No POST — only the inverse-label DELETE fires (1 call total).
+    expect(shim.calls).toHaveLength(1);
+    expect(shim.calls[0].method).toBe('DELETE');
+    expect(shim.calls[0].url).toContain(
+      `/repos/octocat/demo/issues/42/labels/${encodeURIComponent('triage:skipped')}`,
+    );
+  });
+
+  it("decision='place' with placedNodeId omitted → same gate (defensive)", async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([
+      { urlContains: '/labels/triage', method: 'DELETE', status: 200 },
+    ]);
+    // placedNodeId intentionally omitted — proves the helper doesn't
+    // post when the caller forgot to thread the field through.
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/demo#42',
+      decision: 'place',
+      fetchImpl: shim.impl,
+    });
+    expect(shim.calls.filter((c) => c.method === 'POST')).toHaveLength(0);
+  });
+
+  it("decision='skip' with placedNodeId=null still POSTs triage:skipped (gate only affects place)", async () => {
+    labelWritebackEnabled = true;
+    const shim = fetchShim([
+      { urlContains: '/labels', method: 'POST', status: 200 },
+      { urlContains: '/labels/triage', method: 'DELETE', status: 200 },
+    ]);
+    await applyTriageLabel({
+      mapId: 'm1',
+      externalId: 'octocat/demo#42',
+      decision: 'skip',
+      placedNodeId: null,
+      fetchImpl: shim.impl,
+    });
+    expect(shim.calls).toHaveLength(2);
+    expect(shim.calls[0].method).toBe('POST');
+    expect(shim.calls[0].body).toContain('triage:skipped');
   });
 });
 
@@ -187,6 +249,7 @@ describe('applyTriageLabel — active', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(2);
@@ -229,6 +292,7 @@ describe('applyTriageLabel — active', () => {
         mapId: 'm1',
         externalId: 'octocat/demo#42',
         decision: 'place',
+        placedNodeId: 'n42',
         fetchImpl: shim.impl,
       }),
     ).resolves.toBeUndefined();
@@ -246,6 +310,7 @@ describe('applyTriageLabel — active', () => {
         mapId: 'm1',
         externalId: 'octocat/demo#42',
         decision: 'place',
+        placedNodeId: 'n42',
         fetchImpl: shim.impl,
       }),
     ).resolves.toBeUndefined();
@@ -264,6 +329,7 @@ describe('applyTriageLabel — active', () => {
         mapId: 'm1',
         externalId: 'octocat/demo#42',
         decision: 'place',
+        placedNodeId: 'n42',
         fetchImpl: shim.impl,
       }),
     ).resolves.toBeUndefined();
@@ -283,6 +349,7 @@ describe('applyTriageLabel — active', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: impl,
     });
     expect(capturedAuth).toBe('Bearer t_test');
@@ -308,6 +375,7 @@ describe('applyTriageLabel — timeout (#104 item 10)', () => {
         mapId: 'm1',
         externalId: 'octocat/demo#42',
         decision: 'place',
+        placedNodeId: 'n42',
         fetchImpl: impl,
       }),
     ).resolves.toBeUndefined();
@@ -329,6 +397,7 @@ describe('applyTriageLabel — timeout (#104 item 10)', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: impl,
     });
     expect(calls).toEqual(['POST', 'DELETE']);
@@ -373,6 +442,7 @@ describe('parseExternalId regex (#104 item 13)', () => {
       mapId: 'm1',
       externalId: 'octocat/demo#42',
       decision: 'place',
+      placedNodeId: 'n42',
       fetchImpl: shim.impl,
     });
     expect(shim.calls).toHaveLength(2);
