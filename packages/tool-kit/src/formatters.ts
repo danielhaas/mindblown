@@ -56,7 +56,11 @@ function renderTreeNode(
   parts.push(healthIcon(node.healthSignal));
   parts.push(progressBar(node.computedProgress));
 
-  if (node.computedEffort > 0) parts.push(`effort: ${node.computedEffort}`);
+  if (isLeaf) {
+    parts.push(node.effortEstimate == null ? 'effort: —' : `effort: ${node.effortEstimate}`);
+  } else if (node.computedEffort > 0) {
+    parts.push(`effort: ${node.computedEffort}`);
+  }
   if (node.status) parts.push(`status: ${node.status}`);
   if (node.priority) parts.push(node.priority);
   if (node.dueDate) parts.push(`due: ${node.dueDate}`);
