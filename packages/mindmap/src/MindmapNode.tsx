@@ -83,21 +83,21 @@ function ProgressRing({
 
 // ── Avatar Circle ──────────────────────────────────────────────
 
-function AvatarCircle({ userId, index }: { userId: string; index: number }) {
+function AvatarCircle({ userId, index, scale = 1 }: { userId: string; index: number; scale?: number }) {
   const colors = ['#6366f1', '#ec4899', '#f59e0b', '#10b981', '#3b82f6'];
   const color = colors[index % colors.length];
   const initials = userId.slice(-2).toUpperCase();
 
   return (
-    <g transform={`translate(${index * 14}, 0)`}>
-      <circle cx="8" cy="8" r="8" fill={color} />
+    <g transform={`translate(${index * 14 * scale}, 0)`}>
+      <circle cx={8 * scale} cy={8 * scale} r={8 * scale} fill={color} />
       <text
-        x="8"
-        y="8"
+        x={8 * scale}
+        y={8 * scale}
         textAnchor="middle"
         dominantBaseline="central"
         fill="white"
-        fontSize="7"
+        fontSize={7 * scale}
         fontWeight="600"
       >
         {initials}
@@ -112,22 +112,24 @@ function AvatarCircle({ userId, index }: { userId: string; index: number }) {
  * Renders a small colored pill showing the claiming session ID.
  * Positioned at the top-right corner of the node rect.
  */
-function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth, nodeHeight }: {
+function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth, nodeHeight, scale = 1 }: {
   sessionId: string;
   nodeX: number;
   nodeY: number;
   nodeWidth: number;
   nodeHeight: number;
+  scale?: number;
 }) {
   // Truncate to last 8 chars so it stays readable at small sizes
   const label = sessionId.length > 8 ? '…' + sessionId.slice(-8) : sessionId;
-  const badgeWidth = label.length * 6 + 12;
-  const badgeX = nodeX + nodeWidth - badgeWidth - 2;
+  const badgeWidth = (label.length * 6 + 12) * scale;
+  const badgeHeight = 13 * scale;
+  const badgeX = nodeX + nodeWidth - badgeWidth - 2 * scale;
   // #119: clamp to canvas top — if placing the badge above the node
   // would put it at y<0, flip it under the node instead so it never
   // gets clipped by the SVG viewport.
-  const ABOVE_Y = nodeY - 14;
-  const badgeY = ABOVE_Y < 0 ? nodeY + nodeHeight + 1 : ABOVE_Y;
+  const ABOVE_Y = nodeY - 14 * scale;
+  const badgeY = ABOVE_Y < 0 ? nodeY + nodeHeight + 1 * scale : ABOVE_Y;
 
   return (
     <g>
@@ -136,17 +138,17 @@ function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth, nodeHeight }: {
         x={badgeX}
         y={badgeY}
         width={badgeWidth}
-        height={13}
-        rx={6}
+        height={badgeHeight}
+        rx={6 * scale}
         fill="#f59e0b"
         opacity={0.92}
       />
       <text
         x={badgeX + badgeWidth / 2}
-        y={badgeY + 6.5}
+        y={badgeY + badgeHeight / 2}
         textAnchor="middle"
         dominantBaseline="central"
-        fontSize={8}
+        fontSize={8 * scale}
         fontWeight={600}
         fill="#fff"
         style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -164,7 +166,7 @@ function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth, nodeHeight }: {
  * Chips are placed horizontally, wrapping isn't attempted — only the
  * first N chips that fit within nodeWidth are shown.
  */
-function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeBelow }: {
+function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeBelow, scale = 1 }: {
   scopes: string[];
   nodeX: number;
   nodeY: number;
@@ -174,24 +176,25 @@ function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeB
    * stack under the badge (badge first, chips below it) so the stack
    * stays in the same visual order as the default above-node layout. */
   claimedBadgeBelow: boolean;
+  scale?: number;
 }) {
   if (scopes.length === 0) return null;
 
-  const CHIP_HEIGHT = 12;
-  const CHIP_PAD_X = 5;
-  const CHIP_GAP = 4;
-  const ABOVE_Y = nodeY - 16 - CHIP_HEIGHT;
+  const CHIP_HEIGHT = 12 * scale;
+  const CHIP_PAD_X = 5 * scale;
+  const CHIP_GAP = 4 * scale;
+  const ABOVE_Y = nodeY - 16 * scale - CHIP_HEIGHT;
   // #119: clamp to canvas top — when the default above-node placement
   // would render at y<0, render under the node. If the claim badge
   // also got clamped, leave room for it (badge height ~13 + 2 gap).
-  const belowOffset = claimedBadgeBelow ? nodeHeight + 1 + 13 + 2 : nodeHeight + 1;
+  const belowOffset = claimedBadgeBelow ? nodeHeight + (1 + 13 + 2) * scale : nodeHeight + 1 * scale;
   const CHIP_Y = ABOVE_Y < 0 ? nodeY + belowOffset : ABOVE_Y;
 
   let xCursor = nodeX;
   const chips: Array<{ label: string; x: number; width: number }> = [];
 
   for (const scope of scopes) {
-    const chipWidth = scope.length * 5.5 + CHIP_PAD_X * 2;
+    const chipWidth = scope.length * 5.5 * scale + CHIP_PAD_X * 2;
     if (xCursor + chipWidth > nodeX + nodeWidth) break; // overflow → stop
     chips.push({ label: scope, x: xCursor, width: chipWidth });
     xCursor += chipWidth + CHIP_GAP;
@@ -209,7 +212,7 @@ function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeB
             y={CHIP_Y}
             width={chip.width}
             height={CHIP_HEIGHT}
-            rx={5}
+            rx={5 * scale}
             fill="#e0e7ff"
             stroke="#a5b4fc"
             strokeWidth={0.5}
@@ -219,7 +222,7 @@ function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeB
             y={CHIP_Y + CHIP_HEIGHT / 2}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize={7.5}
+            fontSize={7.5 * scale}
             fontWeight={500}
             fill="#3730a3"
             style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -382,7 +385,7 @@ export function MindmapNode({
 
   // ── Annotations offset ────────────────────────────────────
 
-  const annotationY = y + height + 4;
+  const annotationY = y + height + 4 * textScale;
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
@@ -454,12 +457,12 @@ export function MindmapNode({
 
       {/* Collapse indicator */}
       {collapsed && !hasHiddenChildren && (
-        <g transform={`translate(${x + width - 8}, ${y + height / 2})`}>
-          <circle r="8" fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="1" />
+        <g transform={`translate(${x + width - 8 * textScale}, ${y + height / 2})`}>
+          <circle r={8 * textScale} fill="#f1f5f9" stroke="#cbd5e1" strokeWidth="1" />
           <text
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize="11"
+            fontSize={11 * textScale}
             fontWeight="700"
             fill="#64748b"
           >
@@ -469,24 +472,27 @@ export function MindmapNode({
       )}
 
       {/* Hidden children badge (depth limit reached) */}
-      {hasHiddenChildren && hiddenDescendantCount > 0 && (
-        <g transform={`translate(${x + width + 6}, ${y + height / 2 - 10})`}>
+      {hasHiddenChildren && hiddenDescendantCount > 0 && (() => {
+        const badgeW = (hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) * textScale;
+        const badgeH = 20 * textScale;
+        return (
+        <g transform={`translate(${x + width + 6 * textScale}, ${y + height / 2 - badgeH / 2})`}>
           <rect
             x={0}
             y={0}
-            width={hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40}
-            height={20}
-            rx={10}
+            width={badgeW}
+            height={badgeH}
+            rx={10 * textScale}
             fill="#eef2ff"
             stroke="#c7d2fe"
             strokeWidth={1}
           />
           <text
-            x={(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) / 2}
-            y={10}
+            x={badgeW / 2}
+            y={badgeH / 2}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize={10}
+            fontSize={10 * textScale}
             fontWeight={600}
             fill="#4f46e5"
             style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -495,19 +501,20 @@ export function MindmapNode({
           </text>
           {/* Small expand arrow hint */}
           <polygon
-            points={`${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 2},7 ${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 7},10 ${(hiddenDescendantCount >= 100 ? 52 : hiddenDescendantCount >= 10 ? 46 : 40) + 2},13`}
+            points={`${badgeW + 2 * textScale},${7 * textScale} ${badgeW + 7 * textScale},${10 * textScale} ${badgeW + 2 * textScale},${13 * textScale}`}
             fill="#4f46e5"
             opacity={0.5}
           />
         </g>
-      )}
+        );
+      })()}
 
       {/* Strikethrough for done nodes */}
       {progress >= 100 && (
         <line
-          x1={x + 12}
+          x1={x + 12 * textScale}
           y1={y + height / 2}
-          x2={x + width - 12}
+          x2={x + width - 12 * textScale}
           y2={y + height / 2}
           stroke="#94a3b8"
           strokeWidth={1.5}
@@ -518,9 +525,9 @@ export function MindmapNode({
       {/* Priority dot */}
       {showPriority && node.priority && (
         <circle
-          cx={x + (showProgress ? 32 : 14)}
+          cx={x + (showProgress ? 32 : 14) * textScale}
           cy={y + height / 2}
-          r={4}
+          r={4 * textScale}
           fill={PRIORITY_COLORS[node.priority] || '#6b7280'}
         />
       )}
@@ -536,9 +543,9 @@ export function MindmapNode({
         >
           <title>{githubLink.externalId}</title>
           <OctocatIcon
-            x={x + width - 14}
-            y={y + 3}
-            size={11}
+            x={x + width - 14 * textScale}
+            y={y + 3 * textScale}
+            size={11 * textScale}
             color={githubLink.syncEnabled ? '#1f2937' : '#9ca3af'}
           />
         </g>
@@ -560,19 +567,19 @@ export function MindmapNode({
             {wideFanoutCount} children — click for grouping suggestions
           </title>
           <circle
-            cx={x + 8}
-            cy={y + 8}
-            r={7}
+            cx={x + 8 * textScale}
+            cy={y + 8 * textScale}
+            r={7 * textScale}
             fill="#eef2ff"
             stroke="#6366f1"
             strokeWidth={1}
           />
           <text
-            x={x + 8}
-            y={y + 8}
+            x={x + 8 * textScale}
+            y={y + 8 * textScale}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize={9}
+            fontSize={9 * textScale}
             fontWeight={700}
             fill="#4338ca"
             style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -587,9 +594,9 @@ export function MindmapNode({
         <g>
           <title>GitHub Inbox — auto-imported issues land here</title>
           <OctocatIcon
-            x={x + width - 14}
-            y={y + 3}
-            size={11}
+            x={x + width - 14 * textScale}
+            y={y + 3 * textScale}
+            size={11 * textScale}
             color="#4f46e5"
           />
         </g>
@@ -598,10 +605,10 @@ export function MindmapNode({
       {/* Node text or edit input */}
       {isEditing ? (
         <foreignObject
-          x={x + 4}
-          y={y + 2}
-          width={width - 8}
-          height={height - 4}
+          x={x + 4 * textScale}
+          y={y + 2 * textScale}
+          width={width - 8 * textScale}
+          height={height - 4 * textScale}
         >
           <input
             ref={inputRef}
@@ -615,7 +622,7 @@ export function MindmapNode({
               border: 'none',
               outline: 'none',
               background: 'transparent',
-              fontSize: `${(depth === 0 ? 14 : 13) * textScale}px`,
+              fontSize: `${(depth === 0 ? 16 : 15) * textScale}px`,
               fontWeight: depth === 0 ? '700' : '500',
               color: textColor,
               fontFamily: 'inherit',
@@ -630,7 +637,7 @@ export function MindmapNode({
           y={y + height / 2}
           textAnchor="middle"
           dominantBaseline="central"
-          fontSize={(depth === 0 ? 14 : 13) * textScale}
+          fontSize={(depth === 0 ? 16 : 15) * textScale}
           fontWeight={depth === 0 ? 700 : hasChildren ? 600 : 400}
           fill={progress >= 100 ? '#94a3b8' : textColor}
           style={{ pointerEvents: 'none', userSelect: 'none' }}
@@ -641,9 +648,9 @@ export function MindmapNode({
 
       {/* Assignee avatars (below node) */}
       {showAssignees && (
-        <g transform={`translate(${x + 4}, ${annotationY})`}>
+        <g transform={`translate(${x + 4 * textScale}, ${annotationY})`}>
           {node.assigneeIds.slice(0, 3).map((uid, i) => (
-            <AvatarCircle key={uid} userId={uid} index={i} />
+            <AvatarCircle key={uid} userId={uid} index={i} scale={textScale} />
           ))}
         </g>
       )}
@@ -651,10 +658,10 @@ export function MindmapNode({
       {/* Progress % and remaining effort (below node, right-aligned) */}
       {effort > 0 && (
         <text
-          x={x + width - 8}
-          y={annotationY + 8}
+          x={x + width - 8 * textScale}
+          y={annotationY + 8 * textScale}
           textAnchor="end"
-          fontSize={10}
+          fontSize={10 * textScale}
           fill={progress >= 100 ? '#059669' : '#64748b'}
           fontWeight={500}
           style={{ pointerEvents: 'none' }}
@@ -678,7 +685,8 @@ export function MindmapNode({
           nodeY={y}
           nodeWidth={width}
           nodeHeight={height}
-          claimedBadgeBelow={!!node.claimedBySession && y - 14 < 0}
+          claimedBadgeBelow={!!node.claimedBySession && y - 14 * textScale < 0}
+          scale={textScale}
         />
       )}
 
@@ -690,6 +698,7 @@ export function MindmapNode({
           nodeY={y}
           nodeWidth={width}
           nodeHeight={height}
+          scale={textScale}
         />
       )}
     </g>
