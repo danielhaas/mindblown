@@ -569,9 +569,9 @@ export function MindmapEditor() {
     for (const dn of dimmedNodes) {
       // Mirror the constants used in layout.ts:measureNodeWidth so dimmed
       // siblings grow with the same textScale as the main tree.
-      const textWidth = dn.node.text.length * 17 * textScale + 64 * textScale;
-      const width = Math.min(520 * textScale, Math.max(200 * textScale, Math.max(320 * textScale, textWidth)));
-      const height = 80 * textScale;
+      const textWidth = dn.node.text.length * 7.5 * textScale + 32 * textScale;
+      const width = Math.min(260 * textScale, Math.max(100 * textScale, Math.max(160 * textScale, textWidth)));
+      const height = 40 * textScale;
       result.push({
         id: dn.node.id,
         x: mainBounds.minX - width - 80,
@@ -583,7 +583,7 @@ export function MindmapEditor() {
         hasChildren: dn.node.childrenIds.length > 0,
         collapsed: dn.node.collapsed,
       });
-      yOffset += height + 28 * textScale;
+      yOffset += height + 14 * textScale;
     }
     return result;
   }, [visibleNodes, layoutNodes, effectiveRootId, textScale]);
