@@ -20,7 +20,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 const updateMapMock = vi.fn();
 const getMapMock = vi.fn();
-const listMapsForUserMock = vi.fn(async () => []);
+const listMapsForUserMock = vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []);
 const createBaselineMock = vi.fn();
 const deleteMapMock = vi.fn();
 const createMapMock = vi.fn();
@@ -34,7 +34,7 @@ vi.mock('../../db/maps.js', () => ({
   createMap: (...args: unknown[]) => createMapMock(...args),
 }));
 
-const getPermissionMock = vi.fn(async () => 'edit' as 'view' | 'edit' | 'admin' | null);
+const getPermissionMock = vi.fn<(...args: unknown[]) => Promise<'view' | 'edit' | 'admin' | null>>(async () => 'edit');
 vi.mock('../../db/permissions.js', () => ({
   getPermission: (...args: unknown[]) => getPermissionMock(...args),
   hasPermission: (actual: string | null, required: string) => {
