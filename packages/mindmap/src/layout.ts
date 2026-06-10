@@ -53,10 +53,10 @@ function computeWrapGrid(n: number): { major: number; minor: number } {
 
 // ── Measure node width ─────────────────────────────────────────
 
-function measureNodeWidth(text: string, hasChildren: boolean): number {
-  const textWidth = text.length * CHAR_WIDTH + 32; // 16px padding each side
-  const baseWidth = hasChildren ? NODE_PARENT_WIDTH : NODE_BASE_WIDTH;
-  return Math.min(MAX_NODE_WIDTH, Math.max(MIN_NODE_WIDTH, Math.max(baseWidth, textWidth)));
+function measureNodeWidth(text: string, hasChildren: boolean, scale: number): number {
+  const textWidth = text.length * CHAR_WIDTH * scale + 32 * scale; // 16px padding each side
+  const baseWidth = (hasChildren ? NODE_PARENT_WIDTH : NODE_BASE_WIDTH) * scale;
+  return Math.min(MAX_NODE_WIDTH * scale, Math.max(MIN_NODE_WIDTH * scale, Math.max(baseWidth, textWidth)));
 }
 
 // ── Internal tree node ────────────────────────────────────────
@@ -78,18 +78,19 @@ function buildTree(
   nodeId: string,
   nodes: Record<string, Node>,
   depth: number = 0,
+  scale: number = 1,
 ): TreeNode | null {
   const node = nodes[nodeId];
   if (!node) return null;
 
   const hasChildren = node.childrenIds.length > 0;
-  const width = measureNodeWidth(node.text, hasChildren);
-  const height = hasChildren ? NODE_PARENT_HEIGHT : NODE_HEIGHT;
+  const width = measureNodeWidth(node.text, hasChildren, scale);
+  const height = (hasChildren ? NODE_PARENT_HEIGHT : NODE_HEIGHT) * scale;
 
   const children: TreeNode[] = [];
   if (!node.collapsed) {
     for (const childId of node.childrenIds) {
-      const child = buildTree(childId, nodes, depth + 1);
+      const child = buildTree(childId, nodes, depth + 1, scale);
       if (child) children.push(child);
     }
   }
@@ -138,17 +139,17 @@ function flatten(tree: TreeNode): LayoutNode[] {
 // Tree Left-to-Right layout
 // ══════════════════════════════════════════════════════════════
 
-function computeSubtreeHeightLR(tree: TreeNode): number {
+function computeSubtreeHeightLR(tree: TreeNode, scale: number): number {
   if (tree.children.length === 0) {
     tree.subtreeHeight = tree.height;
     return tree.subtreeHeight;
   }
 
-  for (const c of tree.children) computeSubtreeHeightLR(c);
+  for (const c of tree.children) computeSubtreeHeightLR(c, scale);
 
   if (shouldWrapChildren(tree)) {
     const { minor } = computeWrapGrid(tree.children.length);
-    const colHeight = minor * NODE_HEIGHT + (minor - 1) * VERTICAL_GAP;
+    const colHeight = minor * NODE_HEIGHT * scale + (minor - 1) * VERTICAL_GAP * scale;
     tree.subtreeHeight = Math.max(tree.height, colHeight);
     return tree.subtreeHeight;
   }
@@ -157,7 +158,7 @@ function computeSubtreeHeightLR(tree: TreeNode): number {
   for (let i = 0; i < tree.children.length; i++) {
     totalChildrenHeight += tree.children[i].subtreeHeight;
     if (i < tree.children.length - 1) {
-      totalChildrenHeight += VERTICAL_GAP;
+      totalChildrenHeight += VERTICAL_GAP * scale;
     }
   }
 
@@ -165,7 +166,7 @@ function computeSubtreeHeightLR(tree: TreeNode): number {
   return tree.subtreeHeight;
 }
 
-function assignPositionsLR(tree: TreeNode, x: number, yStart: number): void {
+function assignPositionsLR(tree: TreeNode, x: number, yStart: number, scale: number): void {
   tree.x = x;
   tree.y = yStart + tree.subtreeHeight / 2 - tree.height / 2;
 
@@ -174,19 +175,19 @@ function assignPositionsLR(tree: TreeNode, x: number, yStart: number): void {
   if (shouldWrapChildren(tree)) {
     const { major, minor } = computeWrapGrid(tree.children.length);
     const colWidth = Math.max(...tree.children.map((c) => c.width));
-    const firstColX = x + tree.width + HORIZONTAL_GAP;
+    const firstColX = x + tree.width + HORIZONTAL_GAP * scale;
 
     for (let i = 0; i < tree.children.length; i++) {
       const colIdx = Math.floor(i / minor);
       const rowIdx = i % minor;
       const child = tree.children[i];
       const itemsInCol = colIdx === major - 1 ? tree.children.length - colIdx * minor : minor;
-      const thisColHeight = itemsInCol * NODE_HEIGHT + (itemsInCol - 1) * VERTICAL_GAP;
+      const thisColHeight = itemsInCol * NODE_HEIGHT * scale + (itemsInCol - 1) * VERTICAL_GAP * scale;
       // Center each column vertically inside the parent's subtreeHeight so
       // the trailing (shorter) column doesn't look stuck to the top.
       const colYTop = yStart + (tree.subtreeHeight - thisColHeight) / 2;
-      child.x = firstColX + colIdx * (colWidth + WRAP_COLUMN_GAP) + (colWidth - child.width) / 2;
-      child.y = colYTop + rowIdx * (NODE_HEIGHT + VERTICAL_GAP);
+      child.x = firstColX + colIdx * (colWidth + WRAP_COLUMN_GAP * scale) + (colWidth - child.width) / 2;
+      child.y = colYTop + rowIdx * (NODE_HEIGHT * scale + VERTICAL_GAP * scale);
     }
     return;
   }
@@ -195,24 +196,24 @@ function assignPositionsLR(tree: TreeNode, x: number, yStart: number): void {
   for (let i = 0; i < tree.children.length; i++) {
     totalChildrenHeight += tree.children[i].subtreeHeight;
     if (i < tree.children.length - 1) {
-      totalChildrenHeight += VERTICAL_GAP;
+      totalChildrenHeight += VERTICAL_GAP * scale;
     }
   }
 
   let childY = yStart + (tree.subtreeHeight - totalChildrenHeight) / 2;
-  const childX = x + tree.width + HORIZONTAL_GAP;
+  const childX = x + tree.width + HORIZONTAL_GAP * scale;
 
   for (const child of tree.children) {
-    assignPositionsLR(child, childX, childY);
-    childY += child.subtreeHeight + VERTICAL_GAP;
+    assignPositionsLR(child, childX, childY, scale);
+    childY += child.subtreeHeight + VERTICAL_GAP * scale;
   }
 }
 
-function layoutTreeLR(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
-  const tree = buildTree(rootId, nodes);
+function layoutTreeLR(rootId: string, nodes: Record<string, Node>, scale: number): LayoutNode[] {
+  const tree = buildTree(rootId, nodes, 0, scale);
   if (!tree) return [];
-  computeSubtreeHeightLR(tree);
-  assignPositionsLR(tree, 40, 40);
+  computeSubtreeHeightLR(tree, scale);
+  assignPositionsLR(tree, 40, 40, scale);
   return flatten(tree);
 }
 
@@ -220,18 +221,18 @@ function layoutTreeLR(rootId: string, nodes: Record<string, Node>): LayoutNode[]
 // Tree Top-to-Bottom layout
 // ══════════════════════════════════════════════════════════════
 
-function computeSubtreeWidthTB(tree: TreeNode): number {
+function computeSubtreeWidthTB(tree: TreeNode, scale: number): number {
   if (tree.children.length === 0) {
     tree.subtreeWidth = tree.width;
     return tree.subtreeWidth;
   }
 
-  for (const c of tree.children) computeSubtreeWidthTB(c);
+  for (const c of tree.children) computeSubtreeWidthTB(c, scale);
 
   if (shouldWrapChildren(tree)) {
     const { minor } = computeWrapGrid(tree.children.length);
     const childWidth = Math.max(...tree.children.map((c) => c.width));
-    const rowWidth = minor * childWidth + (minor - 1) * (HORIZONTAL_GAP / 2);
+    const rowWidth = minor * childWidth + (minor - 1) * (HORIZONTAL_GAP * scale / 2);
     tree.subtreeWidth = Math.max(tree.width, rowWidth);
     return tree.subtreeWidth;
   }
@@ -240,7 +241,7 @@ function computeSubtreeWidthTB(tree: TreeNode): number {
   for (let i = 0; i < tree.children.length; i++) {
     totalChildrenWidth += tree.children[i].subtreeWidth;
     if (i < tree.children.length - 1) {
-      totalChildrenWidth += HORIZONTAL_GAP / 2;
+      totalChildrenWidth += HORIZONTAL_GAP * scale / 2;
     }
   }
 
@@ -248,7 +249,7 @@ function computeSubtreeWidthTB(tree: TreeNode): number {
   return tree.subtreeWidth;
 }
 
-function assignPositionsTB(tree: TreeNode, xStart: number, y: number): void {
+function assignPositionsTB(tree: TreeNode, xStart: number, y: number, scale: number): void {
   tree.x = xStart + tree.subtreeWidth / 2 - tree.width / 2;
   tree.y = y;
 
@@ -257,17 +258,17 @@ function assignPositionsTB(tree: TreeNode, xStart: number, y: number): void {
   if (shouldWrapChildren(tree)) {
     const { major, minor } = computeWrapGrid(tree.children.length);
     const childWidth = Math.max(...tree.children.map((c) => c.width));
-    const firstRowY = y + tree.height + WRAP_ROW_GAP;
-    const rowStep = NODE_HEIGHT + WRAP_ROW_GAP;
+    const firstRowY = y + tree.height + WRAP_ROW_GAP * scale;
+    const rowStep = NODE_HEIGHT * scale + WRAP_ROW_GAP * scale;
 
     for (let i = 0; i < tree.children.length; i++) {
       const rowIdx = Math.floor(i / minor);
       const colIdx = i % minor;
       const child = tree.children[i];
       const itemsInRow = rowIdx === major - 1 ? tree.children.length - rowIdx * minor : minor;
-      const thisRowWidth = itemsInRow * childWidth + (itemsInRow - 1) * (HORIZONTAL_GAP / 2);
+      const thisRowWidth = itemsInRow * childWidth + (itemsInRow - 1) * (HORIZONTAL_GAP * scale / 2);
       const rowXStart = xStart + (tree.subtreeWidth - thisRowWidth) / 2;
-      child.x = rowXStart + colIdx * (childWidth + HORIZONTAL_GAP / 2) + (childWidth - child.width) / 2;
+      child.x = rowXStart + colIdx * (childWidth + HORIZONTAL_GAP * scale / 2) + (childWidth - child.width) / 2;
       child.y = firstRowY + rowIdx * rowStep;
     }
     return;
@@ -277,24 +278,24 @@ function assignPositionsTB(tree: TreeNode, xStart: number, y: number): void {
   for (let i = 0; i < tree.children.length; i++) {
     totalChildrenWidth += tree.children[i].subtreeWidth;
     if (i < tree.children.length - 1) {
-      totalChildrenWidth += HORIZONTAL_GAP / 2;
+      totalChildrenWidth += HORIZONTAL_GAP * scale / 2;
     }
   }
 
   let childX = xStart + (tree.subtreeWidth - totalChildrenWidth) / 2;
-  const childY = y + tree.height + VERTICAL_GAP * 3;
+  const childY = y + tree.height + VERTICAL_GAP * scale * 3;
 
   for (const child of tree.children) {
-    assignPositionsTB(child, childX, childY);
-    childX += child.subtreeWidth + HORIZONTAL_GAP / 2;
+    assignPositionsTB(child, childX, childY, scale);
+    childX += child.subtreeWidth + HORIZONTAL_GAP * scale / 2;
   }
 }
 
-function layoutTreeTB(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
-  const tree = buildTree(rootId, nodes);
+function layoutTreeTB(rootId: string, nodes: Record<string, Node>, scale: number): LayoutNode[] {
+  const tree = buildTree(rootId, nodes, 0, scale);
   if (!tree) return [];
-  computeSubtreeWidthTB(tree);
-  assignPositionsTB(tree, 40, 40);
+  computeSubtreeWidthTB(tree, scale);
+  assignPositionsTB(tree, 40, 40, scale);
   return flatten(tree);
 }
 
@@ -302,15 +303,15 @@ function layoutTreeTB(rootId: string, nodes: Record<string, Node>): LayoutNode[]
 // Org Chart layout (top-to-bottom, wider spacing)
 // ══════════════════════════════════════════════════════════════
 
-function layoutOrgChart(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
-  const tree = buildTree(rootId, nodes);
+function layoutOrgChart(rootId: string, nodes: Record<string, Node>, scale: number): LayoutNode[] {
+  const tree = buildTree(rootId, nodes, 0, scale);
   if (!tree) return [];
-  computeSubtreeWidthOC(tree);
-  assignPositionsOC(tree, 40, 40);
+  computeSubtreeWidthOC(tree, scale);
+  assignPositionsOC(tree, 40, 40, scale);
   return flatten(tree);
 }
 
-function computeSubtreeWidthOC(tree: TreeNode): number {
+function computeSubtreeWidthOC(tree: TreeNode, scale: number): number {
   if (tree.children.length === 0) {
     tree.subtreeWidth = tree.width;
     return tree.subtreeWidth;
@@ -318,9 +319,9 @@ function computeSubtreeWidthOC(tree: TreeNode): number {
 
   let totalChildrenWidth = 0;
   for (let i = 0; i < tree.children.length; i++) {
-    totalChildrenWidth += computeSubtreeWidthOC(tree.children[i]);
+    totalChildrenWidth += computeSubtreeWidthOC(tree.children[i], scale);
     if (i < tree.children.length - 1) {
-      totalChildrenWidth += HORIZONTAL_GAP;
+      totalChildrenWidth += HORIZONTAL_GAP * scale;
     }
   }
 
@@ -328,7 +329,7 @@ function computeSubtreeWidthOC(tree: TreeNode): number {
   return tree.subtreeWidth;
 }
 
-function assignPositionsOC(tree: TreeNode, xStart: number, y: number): void {
+function assignPositionsOC(tree: TreeNode, xStart: number, y: number, scale: number): void {
   tree.x = xStart + tree.subtreeWidth / 2 - tree.width / 2;
   tree.y = y;
 
@@ -338,16 +339,16 @@ function assignPositionsOC(tree: TreeNode, xStart: number, y: number): void {
   for (let i = 0; i < tree.children.length; i++) {
     totalChildrenWidth += tree.children[i].subtreeWidth;
     if (i < tree.children.length - 1) {
-      totalChildrenWidth += HORIZONTAL_GAP;
+      totalChildrenWidth += HORIZONTAL_GAP * scale;
     }
   }
 
   let childX = xStart + (tree.subtreeWidth - totalChildrenWidth) / 2;
-  const childY = y + tree.height + VERTICAL_GAP * 5;
+  const childY = y + tree.height + VERTICAL_GAP * scale * 5;
 
   for (const child of tree.children) {
-    assignPositionsOC(child, childX, childY);
-    childX += child.subtreeWidth + HORIZONTAL_GAP;
+    assignPositionsOC(child, childX, childY, scale);
+    childX += child.subtreeWidth + HORIZONTAL_GAP * scale;
   }
 }
 
@@ -395,8 +396,8 @@ function assignPositionsRadial(
   }
 }
 
-function layoutRadial(rootId: string, nodes: Record<string, Node>): LayoutNode[] {
-  const tree = buildTree(rootId, nodes);
+function layoutRadial(rootId: string, nodes: Record<string, Node>, scale: number): LayoutNode[] {
+  const tree = buildTree(rootId, nodes, 0, scale);
   if (!tree) return [];
 
   const cx = 400;
@@ -417,18 +418,19 @@ export function computeLayout(
   rootId: string,
   nodes: Record<string, Node>,
   layoutType: LayoutType = 'tree-lr',
+  textScale: number = 1,
 ): LayoutNode[] {
   switch (layoutType) {
     case 'tree-lr':
-      return layoutTreeLR(rootId, nodes);
+      return layoutTreeLR(rootId, nodes, textScale);
     case 'tree-tb':
-      return layoutTreeTB(rootId, nodes);
+      return layoutTreeTB(rootId, nodes, textScale);
     case 'radial':
-      return layoutRadial(rootId, nodes);
+      return layoutRadial(rootId, nodes, textScale);
     case 'org-chart':
-      return layoutOrgChart(rootId, nodes);
+      return layoutOrgChart(rootId, nodes, textScale);
     default:
-      return layoutTreeLR(rootId, nodes);
+      return layoutTreeLR(rootId, nodes, textScale);
   }
 }
 

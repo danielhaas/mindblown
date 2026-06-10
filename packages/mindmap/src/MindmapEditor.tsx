@@ -33,6 +33,23 @@ const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 3;
 const DRAG_THRESHOLD = 5; // px of movement before drag starts
 
+// Text-size pref: multiplies node label fonts and the underlying layout
+// dimensions so labels grow without requiring the user to zoom in (which
+// loses overview). Persisted in localStorage so it survives reloads.
+const MIN_TEXT_SCALE = 0.8;
+const MAX_TEXT_SCALE = 2.0;
+const TEXT_SCALE_STEP = 1.15;
+const TEXT_SCALE_STORAGE_KEY = 'mindmap.textScale';
+
+function loadTextScale(): number {
+  if (typeof window === 'undefined') return 1;
+  const raw = window.localStorage.getItem(TEXT_SCALE_STORAGE_KEY);
+  if (!raw) return 1;
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(MAX_TEXT_SCALE, Math.max(MIN_TEXT_SCALE, n));
+}
+
 // ── Drag state ────────────────────────────────────────────────
 
 interface DragState {
@@ -258,6 +275,11 @@ const DEPTH_OPTIONS = [
 export function MindmapEditor() {
   const svgRef = useRef<SVGSVGElement>(null);
   const [view, setView] = useState<ViewState>({ panX: 0, panY: 0, zoom: 1 });
+  const [textScale, setTextScale] = useState<number>(() => loadTextScale());
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
+  }, [textScale]);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
 
@@ -465,8 +487,8 @@ export function MindmapEditor() {
   const effectiveRootId = focusNodeId ?? rootNodeId;
 
   const layoutNodes = useMemo(
-    () => effectiveRootId ? computeLayout(effectiveRootId, visibleNodesRecord, layoutType) : [],
-    [effectiveRootId, visibleNodesRecord, layoutType],
+    () => effectiveRootId ? computeLayout(effectiveRootId, visibleNodesRecord, layoutType, textScale) : [],
+    [effectiveRootId, visibleNodesRecord, layoutType, textScale],
   );
 
   // Also layout dimmed sibling nodes (simple positioning beside the main tree)
@@ -480,9 +502,11 @@ export function MindmapEditor() {
     let yOffset = mainBounds.minY;
 
     for (const dn of dimmedNodes) {
-      const textWidth = dn.node.text.length * 7.5 + 32;
-      const width = Math.min(260, Math.max(100, Math.max(160, textWidth)));
-      const height = 40;
+      // Mirror the constants used in layout.ts:measureNodeWidth so dimmed
+      // siblings grow with the same textScale as the main tree.
+      const textWidth = dn.node.text.length * 7.5 * textScale + 32 * textScale;
+      const width = Math.min(260 * textScale, Math.max(100 * textScale, Math.max(160 * textScale, textWidth)));
+      const height = 40 * textScale;
       result.push({
         id: dn.node.id,
         x: mainBounds.minX - width - 80,
@@ -494,10 +518,10 @@ export function MindmapEditor() {
         hasChildren: dn.node.childrenIds.length > 0,
         collapsed: dn.node.collapsed,
       });
-      yOffset += height + 14;
+      yOffset += height + 14 * textScale;
     }
     return result;
-  }, [visibleNodes, layoutNodes, effectiveRootId]);
+  }, [visibleNodes, layoutNodes, effectiveRootId, textScale]);
 
   const allLayoutNodes = useMemo(
     () => [...layoutNodes, ...dimmedLayoutNodes],
@@ -1439,6 +1463,7 @@ export function MindmapEditor() {
                   layout={ln}
                   node={nodeData}
                   computedValues={computed.get(ln.id)}
+                  textScale={textScale}
                   isSelected={selectedSet.has(ln.id)}
                   isEditing={ln.id === editingNodeId}
                   isDragging={isBeingDragged ?? false}
@@ -1657,6 +1682,47 @@ export function MindmapEditor() {
             lineHeight: 1,
           }}
         >⛶</button>
+      </div>
+
+      {/* Text-size controls — deliberately a separate floating column so
+          users see it as orthogonal to zoom (zoom changes how much fits,
+          text size changes label legibility). */}
+      <div
+        style={{
+          position: 'absolute',
+          left: 60,
+          bottom: 12,
+          zIndex: 15,
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'stretch',
+          background: '#fff',
+          border: '1px solid #e2e8f0',
+          borderRadius: 8,
+          boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+          overflow: 'hidden',
+          fontFamily: 'inherit',
+          minWidth: 44,
+        }}
+      >
+        <button
+          onClick={() => setTextScale((s) => Math.min(MAX_TEXT_SCALE, s * TEXT_SCALE_STEP))}
+          title="Increase text size"
+          aria-label="Increase text size"
+          style={{ ...zoomCtrlBtnStyle, fontSize: 16 }}
+        >A+</button>
+        <button
+          onClick={() => setTextScale(1)}
+          title="Reset text size to 100%"
+          aria-label="Reset text size"
+          style={{ ...zoomCtrlBtnStyle, fontSize: 11, fontWeight: 600, color: '#64748b' }}
+        >{Math.round(textScale * 100)}%</button>
+        <button
+          onClick={() => setTextScale((s) => Math.max(MIN_TEXT_SCALE, s / TEXT_SCALE_STEP))}
+          title="Decrease text size"
+          aria-label="Decrease text size"
+          style={{ ...zoomCtrlBtnStyle, fontSize: 12 }}
+        >A−</button>
       </div>
 
       {/* Bulk action bar */}
