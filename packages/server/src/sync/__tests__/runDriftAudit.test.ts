@@ -273,25 +273,32 @@ describe('runDriftAudit', () => {
     expect(msg).toBe('auto-backfilled-3');
   });
 
-  it('drift partially auto-healed → Kuma status=down msg=auto-backfilled-X,manual-Y', async () => {
+  it('drift partially auto-healed → Kuma status=up msg=auto-backfilled-X,manual-Y (queue, not infra)', async () => {
+    // 2026-06-10 scope clarification: manual-pending is a triage queue
+    // waiting on human eyes, not an infra failure. Kuma stays UP; the
+    // operator gets a daily email from Jenna's housekeeping sweep
+    // instead. Only `audit_failed` and no-heartbeat-in-24h trip the
+    // monitor now.
     setupDriftyMap('m1', 'Mixed', 4);
     runAutoBackfillMock.mockResolvedValue(summary(2, 100));
 
     await runDriftAudit();
 
     const [, status, msg] = pushKumaMock.mock.calls[0];
-    expect(status).toBe('down');
+    expect(status).toBe('up');
     expect(msg).toBe('auto-backfilled-2,manual-100');
   });
 
-  it('drift all over cap → Kuma status=down msg=manual-N', async () => {
+  it('drift all over cap → Kuma status=up msg=manual-N (queue, not infra)', async () => {
+    // Same scope clarification as the partially-healed case above:
+    // over-cap drift is a backlog, not an infra problem.
     setupDriftyMap('m1', 'Over Cap', 75);
     runAutoBackfillMock.mockResolvedValue(summary(0, 75));
 
     await runDriftAudit();
 
     const [, status, msg] = pushKumaMock.mock.calls[0];
-    expect(status).toBe('down');
+    expect(status).toBe('up');
     expect(msg).toBe('manual-75');
   });
 

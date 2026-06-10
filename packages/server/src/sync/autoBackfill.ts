@@ -21,13 +21,18 @@
  * Kuma push semantics (set by `runDriftAudit` in `./driftAudit.ts`):
  *   - No drift → status=up, msg="no-drift"
  *   - Drift fully auto-healed → status=up, msg="auto-backfilled-N"
- *   - Drift partially healed → status=down, msg="auto-backfilled-N,manual-M"
- *   - Drift all over cap → status=down, msg="manual-N"
+ *   - Drift partially healed → status=up, msg="auto-backfilled-N,manual-M"
+ *   - Drift all over cap → status=up, msg="manual-N"
  *   - Backfill threw entirely → status=down, msg="audit_failed:<reason>"
  *
- * The `up` for full auto-heal means the operator never gets a page when
- * the system recovers itself; the message field carries the receipt so
- * Kuma's history shows what self-healing did.
+ * `up` for full auto-heal means the operator never gets a page when the
+ * system recovers itself. `up` for the manual-pending branches reflects
+ * a 2026-06-10 scope clarification: a triage queue waiting on human
+ * eyes is not an infra failure — operators get a daily email from
+ * Jenna's housekeeping sweep instead. Kuma only fires for true infra
+ * failures (audit threw, no heartbeat in 24h). The message field still
+ * carries the manual-N receipt so the Kuma dashboard shows the
+ * backlog; it just doesn't page.
  */
 
 import type { DriftReport } from './driftAudit.js';
