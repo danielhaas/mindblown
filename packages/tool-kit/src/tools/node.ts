@@ -35,7 +35,13 @@ export const createNodeTool = defineTool({
       if (v !== undefined) cleanFields[k] = v;
     }
     const node = await backend.createNode(mapId, parentId, text, cleanFields);
-    return `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
+    const base = `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
+    // Flag missing estimate so agents/users don't forget to size new work —
+    // unestimated leaves under-count forecasts and "ready node" picks.
+    if (fields.effortEstimate == null) {
+      return `${base}. No effort estimate set — call set_estimate (or update_node with effortEstimate) once the size is known.`;
+    }
+    return base;
   },
 });
 
