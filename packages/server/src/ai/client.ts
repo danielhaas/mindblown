@@ -53,7 +53,7 @@ function release(): void {
   if (next) next();
 }
 
-async function withAiSlot<T>(fn: () => Promise<T>): Promise<T> {
+export async function withAiSlot<T>(fn: () => Promise<T>): Promise<T> {
   await acquire();
   try {
     return await fn();

@@ -9,7 +9,7 @@
 import type OpenAI from 'openai';
 import type { ToolSpec } from '@mindblown/tool-kit';
 import { specToOpenAiTool } from '@mindblown/tool-kit';
-import { getClient } from '../client.js';
+import { getClient, withAiSlot } from '../client.js';
 import type {
   ChatProvider,
   NormalizedMessage,
@@ -71,15 +71,20 @@ export const ollamaProvider: ChatProvider = {
       (s: ToolSpec) => specToOpenAiTool(s) as unknown as OpenAI.ChatCompletionTool,
     );
 
-    const response = await client.chat.completions.create(
-      {
-        model: AI_MODEL,
-        messages: toOpenAiMessages(opts.systemPrompt, opts.messages),
-        tools,
-        temperature: 0.3,
-        max_tokens: opts.maxTokens ?? 2048,
-      },
-      opts.signal ? { signal: opts.signal } : undefined,
+    // Share the chatCompletion/embed slot so chat-panel turns can't race
+    // ai_estimate (or each other) onto Ollama's single inference slot —
+    // that race was the source of the 502s the queue was supposed to fix.
+    const response = await withAiSlot(() =>
+      client.chat.completions.create(
+        {
+          model: AI_MODEL,
+          messages: toOpenAiMessages(opts.systemPrompt, opts.messages),
+          tools,
+          temperature: 0.3,
+          max_tokens: opts.maxTokens ?? 2048,
+        },
+        opts.signal ? { signal: opts.signal } : undefined,
+      ),
     );
 
     const choice = response.choices[0];
