@@ -19,15 +19,18 @@ export type LayoutType = 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart';
 
 // ── Configuration ──────────────────────────────────────────────
 
-const NODE_BASE_WIDTH = 160;
-const NODE_PARENT_WIDTH = 180;
-const NODE_HEIGHT = 40;
-const NODE_PARENT_HEIGHT = 44;
-const HORIZONTAL_GAP = 60;
-const VERTICAL_GAP = 14;
-const CHAR_WIDTH = 8.5; // approximate px per character (calibrated for the 15/16 base label fontSize)
-const MIN_NODE_WIDTH = 100;
-const MAX_NODE_WIDTH = 260;
+// All sizes baked at the "200%" feel — the previous default was half
+// these values and felt too small at typical viewing distances. textScale
+// is now a multiplier on top, so 1.0 is the comfortable default.
+const NODE_BASE_WIDTH = 320;
+const NODE_PARENT_WIDTH = 360;
+const NODE_HEIGHT = 80;
+const NODE_PARENT_HEIGHT = 88;
+const HORIZONTAL_GAP = 120;
+const VERTICAL_GAP = 28;
+const CHAR_WIDTH = 17; // approximate px per character (calibrated for the 30/32 base label fontSize)
+const MIN_NODE_WIDTH = 200;
+const MAX_NODE_WIDTH = 520;
 
 // Wrap wide leaf-fans into multiple columns/rows. Only triggers when a node
 // has > WRAP_THRESHOLD children AND all of those children are leaves —
@@ -54,7 +57,7 @@ function computeWrapGrid(n: number): { major: number; minor: number } {
 // ── Measure node width ─────────────────────────────────────────
 
 function measureNodeWidth(text: string, hasChildren: boolean, scale: number): number {
-  const textWidth = text.length * CHAR_WIDTH * scale + 32 * scale; // 16px padding each side
+  const textWidth = text.length * CHAR_WIDTH * scale + 64 * scale; // 32px padding each side
   const baseWidth = (hasChildren ? NODE_PARENT_WIDTH : NODE_BASE_WIDTH) * scale;
   return Math.min(MAX_NODE_WIDTH * scale, Math.max(MIN_NODE_WIDTH * scale, Math.max(baseWidth, textWidth)));
 }
@@ -379,7 +382,7 @@ function assignPositionsRadial(
   if (tree.children.length === 0) return;
 
   const totalLeaves = tree.children.reduce((s, c) => s + countLeaves(c), 0);
-  const childRadius = radius + Math.max(tree.width, 180) + 40;
+  const childRadius = radius + Math.max(tree.width, 360) + 80;
 
   let currentAngle = startAngle;
 
