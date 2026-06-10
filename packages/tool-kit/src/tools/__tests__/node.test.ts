@@ -171,6 +171,31 @@ describe('create_node tool', () => {
     } as never);
     expect(recorder.lastCreate?.fields).toMatchObject({ autoProgress: 'children' });
   });
+
+  // Bug 2bee313d — created nodes without an estimate were silently
+  // shipped as unestimated leaves, breaking forecasts and ready-node
+  // picks. The handler must flag missing estimates back to the caller.
+  it('flags missing estimate when none is provided', async () => {
+    const recorder = makeRecordingBackend();
+    const out = await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'unsized task',
+    } as never);
+    expect(out).toMatch(/no effort estimate set/i);
+    expect(out).toMatch(/set_estimate/);
+  });
+
+  it('does not flag when an estimate is provided', async () => {
+    const recorder = makeRecordingBackend();
+    const out = await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'sized task',
+      effortEstimate: 4,
+    } as never);
+    expect(out).not.toMatch(/no effort estimate set/i);
+  });
 });
 
 // ── Soft-delete / restore (#107) ────────────────────────────────

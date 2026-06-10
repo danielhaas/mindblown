@@ -2140,6 +2140,12 @@ server.tool(
       }
       if (result.nodes.length > 0) {
         lines.push(`\n${result.nodes.length} nodes created (grouped by functional area).`);
+        // GitHub issues never carry effort estimates, so every newly created
+        // node is unestimated. Surface this so the planner sizes them before
+        // forecasts and "ready node" picks under-count.
+        lines.push(
+          `${result.nodes.length} created node(s) have no effort estimate — use bulk_set_estimate (or set_estimate per node) to size them.`,
+        );
       }
       lines.push('\nAll newly created and newly linked nodes will receive webhook updates.');
       return toolResult(lines.join('\n'));
