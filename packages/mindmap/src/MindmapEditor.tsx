@@ -384,13 +384,19 @@ export function MindmapEditor() {
   } | null>(null);
 
   // ── Orchestration conflict detection (#111) ──────────────────
-  // When hovering a todo node, compute which OTHER todo nodes have scope
-  // overlap with any in-flight (claimed or in_progress) node. These are
-  // flagged with an amber border so the operator can spot contention.
+  // When hovering a node with scopes, compute which OTHER in-flight
+  // nodes have scope overlap. The hovered node gets flagged with an
+  // amber border so the operator can spot contention.
+  //
+  // #119: dropped the `status !== null` gate — scanning from an
+  // in-progress node ("what's already competing with me?") is just as
+  // useful as scanning from a todo ("can I safely dispatch this?").
+  // Done nodes still surface conflicts (cheap and the visualisation
+  // tells the operator the overlap is already in flight).
   const conflictNodeIds = useMemo<Set<string>>(() => {
     if (!hoveredNodeId) return new Set();
     const hoveredNode = nodes[hoveredNodeId];
-    if (!hoveredNode || hoveredNode.status !== null || !hoveredNode.scopes?.length) {
+    if (!hoveredNode || !hoveredNode.scopes?.length) {
       return new Set();
     }
     // Collect in-flight scopes: any node that is claimed OR in_progress
