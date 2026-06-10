@@ -282,33 +282,68 @@ export function MindmapEditor() {
     if (typeof window === 'undefined') return;
     window.localStorage.setItem(TEXT_SCALE_STORAGE_KEY, String(textScale));
   }, [textScale]);
-  // Bump textScale by a factor while compensating viewport pan so the
-  // current screen center stays put. Without this, raising textScale
-  // visually slides the whole tree off-center because every node's
-  // layout coord grew proportional to the new scale.
+  // Bump textScale while anchoring a focal node — the selected node when
+  // there is one, otherwise the visible node closest to the screen
+  // center. We capture that node's pre-rescale screen position, set the
+  // new scale, then on the next frame (after the layout reflows with the
+  // new constants) adjust pan so the focal node lands at the same screen
+  // coordinates. This is more reliable than the prior linear-origin
+  // approximation, especially for radial/wrap layouts where the
+  // relationship between logical-coord and scale is not strictly linear.
   const changeTextScale = useCallback((nextScale: number) => {
     const oldScale = textScaleRef.current;
     const clamped = Math.min(MAX_TEXT_SCALE, Math.max(MIN_TEXT_SCALE, nextScale));
     if (Math.abs(clamped - oldScale) < 1e-6) return;
-    const ratio = clamped / oldScale;
+
     const svg = svgRef.current;
-    if (svg) {
+    const layoutMap = layoutMapRef.current;
+    const view = viewRef.current;
+
+    let focal: { id: string; screenX: number; screenY: number } | null = null;
+    if (svg && layoutMap.size > 0) {
       const rect = svg.getBoundingClientRect();
-      setView((v) => {
-        // Logical coord under the screen center, pre-rescale.
-        const cx = (rect.width / 2 - v.panX) / v.zoom;
-        const cy = (rect.height / 2 - v.panY) / v.zoom;
-        // Layout origin is (40,40) — only the distance from origin scales.
-        const newCx = 40 + (cx - 40) * ratio;
-        const newCy = 40 + (cy - 40) * ratio;
-        return {
-          ...v,
-          panX: rect.width / 2 - newCx * v.zoom,
-          panY: rect.height / 2 - newCy * v.zoom,
+      const cx = (rect.width / 2 - view.panX) / view.zoom;
+      const cy = (rect.height / 2 - view.panY) / view.zoom;
+      let focalId: string | null = null;
+      const sel = selectedNodeIdRef.current;
+      if (sel && layoutMap.has(sel)) {
+        focalId = sel;
+      } else {
+        let best = Infinity;
+        for (const ln of layoutMap.values()) {
+          const dx = ln.x + ln.width / 2 - cx;
+          const dy = ln.y + ln.height / 2 - cy;
+          const d = dx * dx + dy * dy;
+          if (d < best) { best = d; focalId = ln.id; }
+        }
+      }
+      if (focalId) {
+        const ln = layoutMap.get(focalId)!;
+        focal = {
+          id: focalId,
+          screenX: (ln.x + ln.width / 2) * view.zoom + view.panX,
+          screenY: (ln.y + ln.height / 2) * view.zoom + view.panY,
         };
-      });
+      }
     }
+
     setTextScale(clamped);
+
+    if (!focal) return;
+    // Two rAFs — layoutMap is recomputed inside a useMemo dependent on
+    // textScale, then the ref-syncing useEffect runs after paint. One
+    // frame catches the layoutMap update; we wait a second to be safe.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const after = layoutMapRef.current.get(focal!.id);
+        if (!after) return;
+        setView((v) => ({
+          ...v,
+          panX: focal!.screenX - (after.x + after.width / 2) * v.zoom,
+          panY: focal!.screenY - (after.y + after.height / 2) * v.zoom,
+        }));
+      });
+    });
   }, []);
   const [isPanning, setIsPanning] = useState(false);
   const panStart = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
@@ -534,9 +569,9 @@ export function MindmapEditor() {
     for (const dn of dimmedNodes) {
       // Mirror the constants used in layout.ts:measureNodeWidth so dimmed
       // siblings grow with the same textScale as the main tree.
-      const textWidth = dn.node.text.length * 7.5 * textScale + 32 * textScale;
-      const width = Math.min(260 * textScale, Math.max(100 * textScale, Math.max(160 * textScale, textWidth)));
-      const height = 40 * textScale;
+      const textWidth = dn.node.text.length * 17 * textScale + 64 * textScale;
+      const width = Math.min(520 * textScale, Math.max(200 * textScale, Math.max(320 * textScale, textWidth)));
+      const height = 80 * textScale;
       result.push({
         id: dn.node.id,
         x: mainBounds.minX - width - 80,
@@ -548,7 +583,7 @@ export function MindmapEditor() {
         hasChildren: dn.node.childrenIds.length > 0,
         collapsed: dn.node.collapsed,
       });
-      yOffset += height + 14 * textScale;
+      yOffset += height + 28 * textScale;
     }
     return result;
   }, [visibleNodes, layoutNodes, effectiveRootId, textScale]);
@@ -565,6 +600,16 @@ export function MindmapEditor() {
     }
     return map;
   }, [allLayoutNodes]);
+
+  // Mirror layoutMap, view, and selectedNodeId into refs so the textScale
+  // handler can read them without stale-closure issues — it needs the
+  // pre-rescale positions to anchor a focal node across the rescale.
+  const layoutMapRef = useRef(layoutMap);
+  useEffect(() => { layoutMapRef.current = layoutMap; }, [layoutMap]);
+  const viewRef = useRef(view);
+  useEffect(() => { viewRef.current = view; }, [view]);
+  const selectedNodeIdRef = useRef(selectedNodeId);
+  useEffect(() => { selectedNodeIdRef.current = selectedNodeId; }, [selectedNodeId]);
 
   // ── Selected node IDs as a Set for fast lookup ────────────
 
