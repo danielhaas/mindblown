@@ -264,6 +264,14 @@ interface MindmapNodeProps {
    * the threshold; the click handler opens RefineModal.
    */
   wideFanoutCount?: number;
+  /**
+   * Multiplier applied to label font sizes (and the inline-edit input).
+   * Defaults to 1; the editor wires this from the user's text-size pref so
+   * label legibility scales without changing the viewport zoom. Layout
+   * already grew node boxes by the same factor (see computeLayout(scale)),
+   * so the text fits.
+   */
+  textScale?: number;
   onRefineClick?: () => void;
   onSelect: (shiftKey: boolean) => void;
   onDoubleClick: () => void;
@@ -287,6 +295,7 @@ export function MindmapNode({
   isGithubInbox = false,
   hasConflict = false,
   wideFanoutCount,
+  textScale = 1,
   onRefineClick,
   onSelect,
   onDoubleClick,
@@ -606,7 +615,7 @@ export function MindmapNode({
               border: 'none',
               outline: 'none',
               background: 'transparent',
-              fontSize: depth === 0 ? '14px' : '13px',
+              fontSize: `${(depth === 0 ? 14 : 13) * textScale}px`,
               fontWeight: depth === 0 ? '700' : '500',
               color: textColor,
               fontFamily: 'inherit',
@@ -621,7 +630,7 @@ export function MindmapNode({
           y={y + height / 2}
           textAnchor="middle"
           dominantBaseline="central"
-          fontSize={depth === 0 ? 14 : 13}
+          fontSize={(depth === 0 ? 14 : 13) * textScale}
           fontWeight={depth === 0 ? 700 : hasChildren ? 600 : 400}
           fill={progress >= 100 ? '#94a3b8' : textColor}
           style={{ pointerEvents: 'none', userSelect: 'none' }}
