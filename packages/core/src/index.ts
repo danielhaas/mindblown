@@ -74,3 +74,11 @@ export {
   businessDaysBetween,
   hoursToBusinessDays,
 } from './calendar.js';
+
+// Status-workflow helpers (#119)
+export {
+  resolveStatusDef,
+  buildIsDonePredicate,
+  buildInProgressIds,
+  buildTodoIds,
+} from './statusWorkflow.js';

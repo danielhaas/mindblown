@@ -2,7 +2,7 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle } from '@mindblown/core';
+import { hasCycle, resolveStatusDef } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
@@ -325,11 +325,7 @@ export async function updateNode(
       let movingToDone = false;
       let movingFromDone = false;
       if (statusChanging && input.status !== null) {
-        const targetDef = workflow.find(
-          (s) =>
-            s.id === input.status ||
-            s.name.toLowerCase() === (input.status as string).toLowerCase(),
-        );
+        const targetDef = resolveStatusDef(workflow, input.status as string);
         if (targetDef?.category === 'done') movingToDone = true;
         else movingFromDone = true;
       } else if (statusChanging && input.status === null) {

@@ -18,7 +18,14 @@ import { nodes, maps } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
-import { resolvedSiblingOrder, isReady, scopeOverlap } from '@mindblown/core';
+import {
+  resolvedSiblingOrder,
+  isReady,
+  scopeOverlap,
+  buildIsDonePredicate,
+  buildInProgressIds,
+  buildTodoIds,
+} from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap } from '@mindblown/core';
 import type {
   ReadyNodesResult,
@@ -46,40 +53,12 @@ export class OrchestrationNotFoundError extends Error {
 }
 
 // ── Workflow predicate helpers ──────────────────────────────────
-
-/**
- * Build an `isDone` predicate for a given map's status workflow.
- * Returns a function that returns true when a status string (id OR
- * case-insensitive name) maps to a status with category='done'.
- */
-export function buildIsDonePredicate(
-  workflow: StatusDef[],
-): (status: string | null) => boolean {
-  const doneIds = new Set(
-    workflow.filter((s) => s.category === 'done').map((s) => s.id),
-  );
-  const doneNames = new Set(
-    workflow.filter((s) => s.category === 'done').map((s) => s.name.toLowerCase()),
-  );
-  return (status: string | null): boolean => {
-    if (!status) return false;
-    return doneIds.has(status) || doneNames.has(status.toLowerCase());
-  };
-}
-
-/** Build the set of status IDs whose category is 'in_progress'. */
-export function buildInProgressIds(workflow: StatusDef[]): Set<string> {
-  return new Set(
-    workflow.filter((s) => s.category === 'in_progress').map((s) => s.id),
-  );
-}
-
-/** Build the set of status IDs whose category is 'todo'. */
-export function buildTodoIds(workflow: StatusDef[]): Set<string> {
-  return new Set(
-    workflow.filter((s) => s.category === 'todo').map((s) => s.id),
-  );
-}
+//
+// `buildIsDonePredicate`, `buildInProgressIds`, and `buildTodoIds`
+// moved to `@mindblown/core/statusWorkflow` in #119 so the duplicate
+// id-or-name lookup in db/nodes.ts can import the same source of
+// truth. Re-exported here for back-compat with existing imports.
+export { buildIsDonePredicate, buildInProgressIds, buildTodoIds };
 
 // ── readyNodes ──────────────────────────────────────────────────
 

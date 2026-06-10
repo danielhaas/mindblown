@@ -112,17 +112,22 @@ function AvatarCircle({ userId, index }: { userId: string; index: number }) {
  * Renders a small colored pill showing the claiming session ID.
  * Positioned at the top-right corner of the node rect.
  */
-function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth }: {
+function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth, nodeHeight }: {
   sessionId: string;
   nodeX: number;
   nodeY: number;
   nodeWidth: number;
+  nodeHeight: number;
 }) {
   // Truncate to last 8 chars so it stays readable at small sizes
   const label = sessionId.length > 8 ? '…' + sessionId.slice(-8) : sessionId;
   const badgeWidth = label.length * 6 + 12;
   const badgeX = nodeX + nodeWidth - badgeWidth - 2;
-  const badgeY = nodeY - 14;
+  // #119: clamp to canvas top — if placing the badge above the node
+  // would put it at y<0, flip it under the node instead so it never
+  // gets clipped by the SVG viewport.
+  const ABOVE_Y = nodeY - 14;
+  const badgeY = ABOVE_Y < 0 ? nodeY + nodeHeight + 1 : ABOVE_Y;
 
   return (
     <g>
@@ -159,18 +164,28 @@ function ClaimBadge({ sessionId, nodeX, nodeY, nodeWidth }: {
  * Chips are placed horizontally, wrapping isn't attempted — only the
  * first N chips that fit within nodeWidth are shown.
  */
-function ScopeChips({ scopes, nodeX, nodeY, nodeWidth }: {
+function ScopeChips({ scopes, nodeX, nodeY, nodeWidth, nodeHeight, claimedBadgeBelow }: {
   scopes: string[];
   nodeX: number;
   nodeY: number;
   nodeWidth: number;
+  nodeHeight: number;
+  /** True when the claim badge was clamped below the node. Chips then
+   * stack under the badge (badge first, chips below it) so the stack
+   * stays in the same visual order as the default above-node layout. */
+  claimedBadgeBelow: boolean;
 }) {
   if (scopes.length === 0) return null;
 
   const CHIP_HEIGHT = 12;
   const CHIP_PAD_X = 5;
   const CHIP_GAP = 4;
-  const CHIP_Y = nodeY - 16 - CHIP_HEIGHT; // place above claim badge row
+  const ABOVE_Y = nodeY - 16 - CHIP_HEIGHT;
+  // #119: clamp to canvas top — when the default above-node placement
+  // would render at y<0, render under the node. If the claim badge
+  // also got clamped, leave room for it (badge height ~13 + 2 gap).
+  const belowOffset = claimedBadgeBelow ? nodeHeight + 1 + 13 + 2 : nodeHeight + 1;
+  const CHIP_Y = ABOVE_Y < 0 ? nodeY + belowOffset : ABOVE_Y;
 
   let xCursor = nodeX;
   const chips: Array<{ label: string; x: number; width: number }> = [];
@@ -646,23 +661,26 @@ export function MindmapNode({
 
       {/* Orchestration substrate (#111) ─────────────────────── */}
 
-      {/* Scope chips — rendered above the node */}
+      {/* Scope chips — rendered above the node (clamped under when near canvas top) */}
       {node.scopes && node.scopes.length > 0 && (
         <ScopeChips
           scopes={node.scopes}
           nodeX={x}
           nodeY={y}
           nodeWidth={width}
+          nodeHeight={height}
+          claimedBadgeBelow={!!node.claimedBySession && y - 14 < 0}
         />
       )}
 
-      {/* Claim badge — amber pill in the top-right corner */}
+      {/* Claim badge — amber pill in the top-right corner (clamped under when near canvas top) */}
       {node.claimedBySession && (
         <ClaimBadge
           sessionId={node.claimedBySession}
           nodeX={x}
           nodeY={y}
           nodeWidth={width}
+          nodeHeight={height}
         />
       )}
     </g>
