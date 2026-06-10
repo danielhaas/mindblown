@@ -479,14 +479,23 @@ export function distributeLeavesAroundParent(
   const cy = parentLayout.y + parentLayout.height / 2;
 
   // Radius must clear the parent and (for N≥2) give each chord enough room
-  // for one leaf bounding box plus a small gap.
-  const SPACING = 16;
-  const PARENT_GAP = 40;
+  // along the chord direction. SPACING/PARENT_GAP were calibrated for the
+  // pre-2x node sizes — at the new larger base they pushed leaves so far
+  // out that fit-to-screen made labels unreadably small. Two changes:
+  //   - drop SPACING/PARENT_GAP to modest absolute pixel values,
+  //   - require only ~65% of the worst-case leaf bounding box along the
+  //     chord. Adjacent leaves sit at different angles, so the *tangential*
+  //     extent that actually needs to fit on the chord is smaller than the
+  //     axis-aligned width — the leaves don't actually overlap in screen
+  //     space despite the chord allowing some bbox overlap.
+  const SPACING = 8;
+  const PARENT_GAP = 20;
+  const CHORD_FILL = 0.65;
   const radiusForParent =
     Math.max(parentLayout.width, parentLayout.height) / 2 +
     Math.max(maxLeafW, maxLeafH) / 2 +
     PARENT_GAP;
-  const minChord = Math.max(maxLeafW, maxLeafH) + SPACING;
+  const minChord = Math.max(maxLeafW, maxLeafH) * CHORD_FILL + SPACING;
   const radiusForFit = N >= 2 ? minChord / (2 * Math.sin(Math.PI / N)) : 0;
   const radius = Math.max(radiusForParent, radiusForFit);
 
