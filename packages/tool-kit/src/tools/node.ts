@@ -280,10 +280,20 @@ export const searchNodesTool = defineTool({
     else if (unestimated === false) matches = matches.filter((n) => n.effortEstimate != null);
     if (versionId) {
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      // Explicit-assignment-wins inheritance: walk up the ancestor chain
+      // and let the FIRST non-null versionId on the path decide membership.
+      // Pre-fix, the walk kept climbing past a leaf's own non-matching
+      // versionId — so a leaf explicitly assigned to V2 whose epic parent
+      // still carried the legacy `Unversioned` row would be reported as
+      // "in Unversioned" on every sweep, and Jenna's §8.1 fire would
+      // re-bulk-assign-to-V2 the same 26 leaves hour after hour (digest
+      // 2026-06-11 tick 20:38, beta-feedback #9). Now an explicit child
+      // assignment overrides the ancestor's, matching the "leaf knows
+      // best" semantics users expect.
       const inVersion = (id: string): boolean => {
         let cur = nodeById.get(id);
         while (cur) {
-          if (cur.versionId === versionId) return true;
+          if (cur.versionId != null) return cur.versionId === versionId;
           cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
         }
         return false;

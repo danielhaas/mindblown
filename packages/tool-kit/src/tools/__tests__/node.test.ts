@@ -417,6 +417,99 @@ describe('search_nodes tool — parentId filter', () => {
   });
 });
 
+// Jenna housekeeping digest 2026-06-11 tick 20:38 (§8.1 beta-feedback
+// #9) — `bulk_assign_to_version` was wrongly reported as a no-op for
+// 26 leaves that survived 6 re-runs in one day. Root cause was on the
+// READ side: a leaf with an explicit versionId=V2 sat under an epic
+// parent still carrying versionId=Unversioned, and the ancestor walk
+// kept climbing past the explicit assignment. The fix lets the first
+// non-null versionId on the path decide membership.
+describe('search_nodes tool — versionId ancestor-walk', () => {
+  function buildMixedVersionMap(): MapDetail {
+    const node = (
+      id: string,
+      parentId: string | null,
+      childrenIds: string[],
+      versionId: string | null,
+    ): NodeWithComputed =>
+      ({
+        id,
+        mapId: 'm1',
+        parentId,
+        childrenIds,
+        text: id,
+        description: null,
+        effortEstimate: null,
+        actualEffort: null,
+        percentComplete: null,
+        status: null,
+        assigneeIds: [],
+        priority: null,
+        dueDate: null,
+        startDate: null,
+        tags: [],
+        dependencies: [],
+        versionId,
+        cycleId: null,
+        externalLinks: [],
+        collapsed: false,
+        createdAt: '2026-06-11T00:00:00Z',
+        updatedAt: '2026-06-11T00:00:00Z',
+        claimedBySession: null,
+        claimedAt: null,
+        computedEffort: 0,
+        computedProgress: 0,
+        healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: { id: 'm1', rootNodeId: 'root' } as unknown as MapDetail['map'],
+      nodes: [
+        node('root', null, ['epic'], null),
+        // The Jenna-2026-06-11 shape: epic explicitly Unversioned, leaf
+        // explicitly V2. The leaf must NOT be reported as in-Unversioned.
+        node('epic', 'root', ['leaf-v2', 'leaf-inherits', 'leaf-other'], 'unversioned-uuid'),
+        node('leaf-v2', 'epic', [], 'v2-uuid'),
+        node('leaf-inherits', 'epic', [], null),
+        node('leaf-other', 'epic', [], 'v1-uuid'),
+      ],
+    };
+  }
+
+  it("doesn't report a child with explicit versionId as belonging to the parent's version", async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildMixedVersionMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      versionId: 'unversioned-uuid',
+    } as never);
+    // Explicit-versionId children of the Unversioned epic are NOT
+    // pulled in; only the epic itself and its null-versionId child
+    // (which inherits the epic's assignment) match.
+    expect(out).not.toContain('id: leaf-v2');
+    expect(out).not.toContain('id: leaf-other');
+    expect(out).toContain('id: epic');
+    expect(out).toContain('id: leaf-inherits');
+  });
+
+  it('still inherits ancestor version when the child has no explicit assignment', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildMixedVersionMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      versionId: 'v2-uuid',
+    } as never);
+    // Only the explicitly-V2 leaf shows up — the V1-leaf doesn't,
+    // the Unversioned-epic doesn't, and the inheriting leaf
+    // (which would inherit Unversioned from its epic) doesn't.
+    expect(out).toContain('id: leaf-v2');
+    expect(out).not.toContain('id: leaf-other');
+    expect(out).not.toContain('id: epic');
+    expect(out).not.toContain('id: leaf-inherits');
+  });
+});
+
 // Jenna housekeeping digest 2026-06-11 (§8.6) — `unestimated:true`
 // without a status-exclusion filter returns thousands of done leaves
 // whose effortEstimate is null, drowning out the actionable subset.
