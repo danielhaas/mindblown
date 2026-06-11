@@ -1648,23 +1648,50 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     //
     // #152 — when a PR merges with `Closes #N` references in title or
     // body, transition every referenced issue's linked node to done.
-    // Cuts the up-to-6h lag that the drift audit catches (catchup runs
-    // every 5min but only flips state on issue-close webhooks, which
-    // require the `issues` event subscription — not every repo has it).
+    // Cuts the up-to-5min lag of the catchup loop (`runCatchup` in
+    // index.ts, every 5min) which reconciles state by polling the
+    // GitHub API and is the unconditional safety net. This branch
+    // handles the PR-only-subscription path — repos subscribed to
+    // `pull_request` events but not `issues` events still need
+    // immediate transitions on PR merge without waiting for catchup.
     //
-    // Iterates ALL refs (PR title + body), unlike the legacy
-    // processWebhook PR branch which only returned the first. The
-    // existing issues.closed handler still runs for repos subscribed
-    // to that event — this branch is the PR-only-subscription path.
+    // Iterates ALL refs (PR title + body). The legacy single-ref
+    // PR-merge branch in @mindblown/integrations processWebhook was
+    // deleted on 2026-06-11 (#199 review) — it bypassed the
+    // default-branch gate below, so a V1-hotfix merge fell through
+    // to it and still wrongly transitioned the linked node.
     //
     // Idempotent: a second webhook for the same PR (replay or
     // misconfigured retry) finds the node already at status='done' +
     // percentComplete=100 and emits no second transition.
+    //
+    // Default-branch gate (2026-06-11): GitHub itself only auto-closes
+    // referenced issues when a PR merges to the repo's default branch.
+    // V1-hotfix PRs target `release/v1`; they merge but the linked GH
+    // issue stays OPEN until the forward-port to `main` lands. Without
+    // this gate we'd transition the node to `done` on the V1-hotfix
+    // merge, blocking re-dispatch on `main` and creating drift between
+    // MindBlown ("done") and GitHub ("open"). Observed on crm #2291 /
+    // #2292 — both v1-hotfix tickets whose nodes got prematurely
+    // transitioned by PRs targeting `release/v1`. Mirror GitHub's
+    // judgement: only transition when the PR's base ref matches the
+    // repository's default branch.
+    const prPayload = payload.pull_request as
+      | { merged?: boolean; base?: { ref?: string } }
+      | undefined;
+    const repoPayload = payload.repository as
+      | { default_branch?: string }
+      | undefined;
+    const baseBranch = prPayload?.base?.ref;
+    const defaultBranch = repoPayload?.default_branch;
     if (
       event === 'pull_request' &&
       payloadAction === 'closed' &&
-      (payload.pull_request as { merged?: boolean } | undefined)?.merged === true &&
-      repoFullName
+      prPayload?.merged === true &&
+      repoFullName &&
+      baseBranch != null &&
+      defaultBranch != null &&
+      baseBranch === defaultBranch
     ) {
       const pr = payload.pull_request as {
         number: number;

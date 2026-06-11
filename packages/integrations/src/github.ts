@@ -376,29 +376,19 @@ export function processWebhook(
     }
   }
 
-  // pull_request events — check if PR references a linked issue
-  if (event === 'pull_request' && payload.action === 'closed' && payload.pull_request?.merged) {
-    // Try to extract linked issue references from PR body
-    // Common patterns: "Closes #42", "Fixes #42", "Resolves #42"
-    const prBody = payload.pull_request.body ?? '';
-    const prTitle = payload.pull_request.title ?? '';
-    const text = `${prTitle} ${prBody}`;
-    const repoName = payload.repository?.full_name ?? '';
-
-    const issueRefs = extractClosingIssueRefs(text);
-    if (issueRefs.length > 0) {
-      // Return update for the first referenced issue
-      const issueNumber = issueRefs[0];
-      return {
-        action: 'pull_request.merged',
-        externalId: `${repoName}#${issueNumber}`,
-        nodeUpdates: {
-          percentComplete: 100,
-          status: 'done',
-        },
-      };
-    }
-  }
+  // NOTE: the legacy pull_request → done branch lived here. Removed
+  // 2026-06-11 because the canonical handler in
+  // @mindblown/server (routes/integrations.ts, around the
+  // `pull_request: closed + merged=true` block) is a strict superset:
+  //   - iterates ALL `Closes #N` refs, not just the first
+  //   - is idempotent on replay
+  //   - gates on the PR's base branch matching the repo's default branch,
+  //     mirroring GitHub's own auto-close behaviour (#199)
+  // The legacy single-ref + branch-agnostic version here was reachable
+  // via the `processWebhook` fall-through after the canonical handler
+  // skipped on the default-branch gate, which caused V1-hotfix PRs
+  // (base=release/v1) to still transition their linked nodes to done —
+  // exactly the bug #199 was meant to fix.
 
   return { action: `${event}.${payload.action}`, nodeUpdates: null, externalId: null };
 }
