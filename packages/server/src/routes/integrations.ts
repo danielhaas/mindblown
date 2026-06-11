@@ -1660,11 +1660,34 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // Idempotent: a second webhook for the same PR (replay or
     // misconfigured retry) finds the node already at status='done' +
     // percentComplete=100 and emits no second transition.
+    //
+    // Default-branch gate (2026-06-11): GitHub itself only auto-closes
+    // referenced issues when a PR merges to the repo's default branch.
+    // V1-hotfix PRs target `release/v1`; they merge but the linked GH
+    // issue stays OPEN until the forward-port to `main` lands. Without
+    // this gate we'd transition the node to `done` on the V1-hotfix
+    // merge, blocking re-dispatch on `main` and creating drift between
+    // MindBlown ("done") and GitHub ("open"). Observed on crm #2291 /
+    // #2292 — both v1-hotfix tickets whose nodes got prematurely
+    // transitioned by PRs targeting `release/v1`. Mirror GitHub's
+    // judgement: only transition when the PR's base ref matches the
+    // repository's default branch.
+    const prPayload = payload.pull_request as
+      | { merged?: boolean; base?: { ref?: string } }
+      | undefined;
+    const repoPayload = payload.repository as
+      | { default_branch?: string }
+      | undefined;
+    const baseBranch = prPayload?.base?.ref;
+    const defaultBranch = repoPayload?.default_branch;
     if (
       event === 'pull_request' &&
       payloadAction === 'closed' &&
-      (payload.pull_request as { merged?: boolean } | undefined)?.merged === true &&
-      repoFullName
+      prPayload?.merged === true &&
+      repoFullName &&
+      baseBranch != null &&
+      defaultBranch != null &&
+      baseBranch === defaultBranch
     ) {
       const pr = payload.pull_request as {
         number: number;
