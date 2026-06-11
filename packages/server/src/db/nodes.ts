@@ -40,6 +40,43 @@ export class RevisionConflictError extends Error {
   }
 }
 
+/**
+ * Thrown when a single updateNode call mixes `tags` (replace) with
+ * `tagsAppend`/`tagsRemove` (merge). The two modes are mutually
+ * exclusive so the caller can't silently lose tags they thought
+ * they were keeping.
+ */
+export class TagsModeConflictError extends Error {
+  constructor() {
+    super('Cannot combine `tags` (replace) with `tagsAppend`/`tagsRemove` (merge) in the same update.');
+    this.name = 'TagsModeConflictError';
+  }
+}
+
+// ── Tag merge math (exported for unit tests) ──────────────────────
+//
+// Used by updateNode to resolve `tagsAppend` / `tagsRemove` into a
+// concrete `tags` array given the node's current tag set. Pure function
+// so we can test it without a DB connection.
+//
+//   - tagsRemove is applied first; tags not present are no-ops.
+//   - tagsAppend is then unioned in, preserving the existing order and
+//     appending new tags after — dedup'd against the post-remove set.
+//   - When tagsAppend and tagsRemove both name the same tag, append
+//     wins (the final array contains it). This matches the natural
+//     "swap one tag for another" use case where the caller asks to
+//     re-add the same value as one being removed.
+export function mergeTags(
+  current: string[],
+  append: string[] | undefined,
+  remove: string[] | undefined,
+): string[] {
+  const removeSet = new Set(remove ?? []);
+  const kept = current.filter((t) => !removeSet.has(t));
+  if (!append || append.length === 0) return kept;
+  return [...kept, ...append.filter((t) => !kept.includes(t))];
+}
+
 // ── Auto-status from progress ─────────────────────────────────────
 //
 // When percentComplete moves but status is left untouched, we promote
@@ -209,6 +246,15 @@ export interface UpdateNodeInput {
   dueDate?: string | null;
   startDate?: string | null;
   tags?: string[];
+  /**
+   * Add tags without clobbering the existing set. Dedup on merge.
+   * Cannot be combined with `tags` (replace) in the same call —
+   * the DB layer throws TagsModeConflictError so callers don't
+   * silently lose intent.
+   */
+  tagsAppend?: string[];
+  /** Remove tags from the existing set (no-op for tags not present). */
+  tagsRemove?: string[];
   customFields?: Record<string, CustomFieldValue>;
   dependencies?: Dependency[];
   versionId?: string | null;
@@ -242,6 +288,27 @@ export async function updateNode(
   // Validate dependencies if provided
   if (input.dependencies !== undefined) {
     await validateDependencies(nodeId, input.dependencies, handle);
+  }
+
+  // Resolve tags merge (append/remove) into a concrete `tags` write.
+  // Replace-mode (`tags`) and merge-mode (`tagsAppend`/`tagsRemove`) are
+  // mutually exclusive so callers can't accidentally clobber what they
+  // also asked to add. When merging we read the current tags inside the
+  // same handle (tx-safe) so a concurrent merge in another connection
+  // doesn't race us into a lost-update — pair this with expectedRevision
+  // for true serializability when the call chain demands it.
+  if (input.tagsAppend !== undefined || input.tagsRemove !== undefined) {
+    if (input.tags !== undefined) throw new TagsModeConflictError();
+    const [row] = await handle
+      .select({ tags: nodes.tags })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    if (row) {
+      const current = (row.tags as string[]) ?? [];
+      input.tags = mergeTags(current, input.tagsAppend, input.tagsRemove);
+    }
+    delete input.tagsAppend;
+    delete input.tagsRemove;
   }
 
   // Auto-derive status from percentComplete when status is not explicitly set

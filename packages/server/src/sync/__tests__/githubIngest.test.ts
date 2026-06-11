@@ -55,12 +55,16 @@ type DbState = {
   // Triage decision rows, keyed by id. Populated by the insert mock so
   // tests can assert on what was persisted.
   triageDecisions: Map<string, Record<string, unknown>>;
+  // Versions rows. Populated by individual tests that exercise the
+  // milestone → version routing path in ensureNodeForIssue.
+  versions: Array<{ id: string; mapId: string; name: string }>;
 };
 const dbState: DbState = {
   maps: new Map(),
   nodes: new Map(),
   integrations: [],
   triageDecisions: new Map(),
+  versions: [],
 };
 
 // Counter for generating triage decision ids.
@@ -139,6 +143,8 @@ function buildChain(): {
       rows = dbState.integrations.map((i) => ({ ...i }));
     } else if (step.table === 'triageDecisions') {
       rows = [...dbState.triageDecisions.values()].map((r) => ({ ...r }));
+    } else if (step.table === 'versions') {
+      rows = dbState.versions.map((v) => ({ id: v.id, mapId: v.mapId, name: v.name }));
     }
     return applyPred(rows, step.pred);
   };
@@ -351,6 +357,13 @@ vi.mock('../../db/schema.js', () => {
       mapId: col('mapId'),
       externalId: col('externalId'),
       lastInputHash: col('lastInputHash'),
+    },
+    // Milestone → versionId resolver lookups select against this table.
+    versions: {
+      __name: 'versions',
+      id: col('id'),
+      mapId: col('mapId'),
+      name: col('name'),
     },
   };
 });
@@ -629,6 +642,7 @@ function resetState() {
   dbState.nodes.clear();
   dbState.integrations = [];
   dbState.triageDecisions.clear();
+  dbState.versions = [];
   updateNodeCalls.length = 0;
   createNodeCalls.length = 0;
   advisoryLocksTaken.length = 0;
@@ -720,6 +734,92 @@ describe('ensureNodeForIssue', () => {
     ]);
     // Advisory lock taken before precheck.
     expect(advisoryLocksTaken.length).toBeGreaterThan(0);
+  });
+
+  // Jenna housekeeping digest 2026-06-11 — webhook-ingested issues
+  // were landing with versionId=null even when their GH milestone
+  // mapped cleanly to a known MindBlown version, refilling the
+  // Unversioned bucket between every sweep tick.
+  it('routes a milestoned issue into the matching version', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+
+    await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(101, {
+        title: 'route me',
+        milestone: {
+          id: 7000,
+          number: 7,
+          title: 'V2: 7. Infrastruktur',
+          description: null,
+          state: 'open',
+          due_on: null,
+          created_at: new Date().toISOString(),
+        },
+      }),
+      { owner: 'owner', repo: 'repo', createdBy: 'u1' },
+    );
+
+    const updateCall = updateNodeCalls.find((c) => c.input.externalLinks);
+    expect(updateCall?.input.versionId).toBe('v2-uuid');
+  });
+
+  it('leaves versionId unset when no version row matches the milestone prefix', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // No 'V3' version row in this map.
+    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+
+    await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(102, {
+        title: 'orphan milestone',
+        milestone: {
+          id: 9000,
+          number: 9,
+          title: 'V3: ahead-of-its-time',
+          description: null,
+          state: 'open',
+          due_on: null,
+          created_at: new Date().toISOString(),
+        },
+      }),
+      { owner: 'owner', repo: 'repo', createdBy: 'u1' },
+    );
+
+    const updateCall = updateNodeCalls.find((c) => c.input.externalLinks);
+    expect('versionId' in (updateCall?.input ?? {})).toBe(false);
+  });
+
+  it('leaves versionId unset for a milestone without a V-prefix', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+
+    await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(103, {
+        title: 'non-version milestone',
+        milestone: {
+          id: 12000,
+          number: 12,
+          title: 'Sprint 4',
+          description: null,
+          state: 'open',
+          due_on: null,
+          created_at: new Date().toISOString(),
+        },
+      }),
+      { owner: 'owner', repo: 'repo', createdBy: 'u1' },
+    );
+
+    const updateCall = updateNodeCalls.find((c) => c.input.externalLinks);
+    expect('versionId' in (updateCall?.input ?? {})).toBe(false);
   });
 
   it('is idempotent — second call with same externalId returns skipped_exists', async () => {

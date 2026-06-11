@@ -41,11 +41,11 @@
 
 import { and, eq, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
-import { importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
+import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
-import { integrations, maps, nodes, triageDecisions } from '../db/schema.js';
+import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from './mapContext.js';
@@ -429,6 +429,43 @@ export function ghLabelsToTags(
     .map((l) => l.name)
     .filter((n) => !n.startsWith('priority:'))
     .sort();
+}
+
+/**
+ * Resolve a GitHub milestone title to the matching MindBlown version
+ * id on a given map, or null when no resolution is possible.
+ *
+ * Three pieces have to line up:
+ *   1. The issue must carry a milestone whose title has a parseable
+ *      version prefix (`V1: …`, `V2: …`) — see `extractVersionFromMilestone`.
+ *   2. The map must already have a version row whose `name` equals the
+ *      extracted prefix. The bulk-import path (`routes/integrations.ts`)
+ *      is what creates those rows on first run; we never create one
+ *      from inside the auto-ingest path because that risks racing
+ *      against the import / explicit `create_version` and producing
+ *      duplicate-named version rows.
+ *   3. The lookup runs on the caller's tx/db handle so it shares
+ *      visibility (and lock state) with the rest of the ingest tx.
+ *
+ * Without this, every webhook-ingested issue lands with `versionId=null`
+ * even when its milestone maps cleanly to a known MindBlown version —
+ * the operator then has to re-route it manually, and Jenna's housekeeping
+ * sweep re-discovers the same nodes in the Unversioned bucket on every
+ * tick (digest 2026-06-11).
+ */
+export async function resolveVersionIdFromMilestone(
+  handle: nodeDb.DbHandle,
+  mapId: string,
+  milestoneTitle: string | null | undefined,
+): Promise<string | null> {
+  if (!milestoneTitle) return null;
+  const versionName = extractVersionFromMilestone(milestoneTitle);
+  if (!versionName) return null;
+  const [row] = await handle
+    .select({ id: versions.id })
+    .from(versions)
+    .where(and(eq(versions.mapId, mapId), eq(versions.name, versionName)));
+  return row?.id ?? null;
 }
 
 /**
@@ -930,12 +967,17 @@ async function ensureNodeForIssueViaTriage(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
     };
+    // Same milestone-based version routing as the non-triage path —
+    // keeps Jenna's Unversioned bucket from refilling after the LLM
+    // auto-places a node.
+    const triageVersionId = await resolveVersionIdFromMilestone(tx, mapId, issue.milestone?.title);
     const updated = await nodeDb.updateNode(
       created.id,
       {
         externalLinks: [link],
         description: issue.body ?? null,
         tags: ghLabelsToTags(issue.labels),
+        ...(triageVersionId ? { versionId: triageVersionId } : {}),
       },
       undefined,
       tx,
@@ -1202,12 +1244,20 @@ export async function ensureNodeForIssue(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
     };
+    // Route the new node to its milestone-derived version when one
+    // resolves on this map, so it doesn't land in the Unversioned
+    // bucket for Jenna's next housekeeping sweep to re-discover.
+    // Issues with no milestone — or a milestone that doesn't carry a
+    // recognized version prefix — still land unversioned; the operator
+    // makes the call via NEEDS-VERSION triage.
+    const versionId = await resolveVersionIdFromMilestone(tx, mapId, issue.milestone?.title);
     const updated = await nodeDb.updateNode(
       created.id,
       {
         externalLinks: [link],
         description: issue.body ?? null,
         tags: ghLabelsToTags(issue.labels),
+        ...(versionId ? { versionId } : {}),
       },
       undefined,
       tx,
