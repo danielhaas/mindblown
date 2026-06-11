@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as nodeDb from '../db/nodes.js';
-import { DependencyValidationError, RevisionConflictError } from '../db/nodes.js';
+import { DependencyValidationError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
@@ -281,6 +281,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof DependencyValidationError) {
           return reply.status(400).send({
             error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        if (err instanceof TagsModeConflictError) {
+          return reply.status(400).send({
+            error: { code: 'TAGS_MODE_CONFLICT', message: err.message },
           });
         }
         if (err instanceof RevisionConflictError) {

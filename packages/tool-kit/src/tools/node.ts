@@ -64,7 +64,24 @@ export const updateNodeTool = defineTool({
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).nullable().optional().describe('Priority'),
     dueDate: z.string().nullable().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().nullable().optional().describe('Start date (ISO 8601)'),
-    tags: z.array(z.string()).optional().describe('Tags'),
+    tags: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Tags (REPLACE mode — overwrites the existing tag set). Use `tagsAppend` / `tagsRemove` when you want to add or remove specific tags without clobbering ones you didn\'t name. Mixing `tags` with either merge field in the same call is rejected with TAGS_MODE_CONFLICT.',
+      ),
+    tagsAppend: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Tags to add to the existing set (dedup on merge). Safe to use when you only know the tag you want to add, not the full target set — e.g. tagging SCOPE-REVIEW on a node that may already carry STATUS-UNSET. Cannot be combined with `tags`.',
+      ),
+    tagsRemove: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Tags to remove from the existing set (no-op for tags not present). Use to clear a single bookkeeping tag like NEEDS-PRIORITY without touching the rest. Cannot be combined with `tags`.',
+      ),
     assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
     autoProgress: z
@@ -216,6 +233,12 @@ export const searchNodesTool = defineTool({
       .string()
       .describe('Search text (case-insensitive substring match). Empty string or "*" matches all nodes.'),
     status: z.string().optional().describe('Filter by status (exact match)'),
+    notStatus: z
+      .string()
+      .optional()
+      .describe(
+        'Exclude nodes with this status (exact match). Use with `unestimated:true` to answer "which non-done leaves still need an estimate?" — the canonical Jenna §8.6 sweep. Most useful values: "done" (skip completed work).',
+      ),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Filter by priority'),
     tag: z.string().optional().describe('Filter by tag (nodes must include this tag)'),
     unestimated: z
@@ -235,7 +258,7 @@ export const searchNodesTool = defineTool({
       .optional()
       .describe('Filter to direct children of this node id. Combine with query="*" to enumerate the contents of a specific bucket — the only way to do so, since get_map truncates on large maps.'),
   },
-  handler: async (backend, { mapId, query, status, priority, tag, unestimated, leavesOnly, versionId, parentId }) => {
+  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, parentId }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
@@ -248,6 +271,7 @@ export const searchNodesTool = defineTool({
             (n.description?.toLowerCase().includes(lowerQ) ?? false),
         );
     if (status) matches = matches.filter((n) => n.status === status);
+    if (notStatus) matches = matches.filter((n) => n.status !== notStatus);
     if (priority) matches = matches.filter((n) => n.priority === priority);
     if (tag) matches = matches.filter((n) => n.tags.includes(tag));
     if (leavesOnly) matches = matches.filter((n) => (n.childrenIds?.length ?? 0) === 0);
@@ -270,6 +294,7 @@ export const searchNodesTool = defineTool({
     if (matches.length === 0) {
       const filters = [
         status && `status=${status}`,
+        notStatus && `notStatus=${notStatus}`,
         priority && `priority=${priority}`,
         tag && `tag=${tag}`,
         unestimated !== undefined && `unestimated=${unestimated}`,

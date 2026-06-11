@@ -12,6 +12,8 @@ const VALID_NODE_FIELDS = new Set([
   'dueDate',
   'startDate',
   'tags',
+  'tagsAppend',
+  'tagsRemove',
   'assigneeIds',
   'priorityRank',
 ]);
@@ -45,7 +47,7 @@ function normalizeBulkUpdateItem(
 export const bulkUpdateNodesTool = defineTool({
   name: 'bulk_update_nodes',
   description:
-    'Update multiple nodes at once. Each update is {nodeId, ...fields} OR {nodeId, fields: {...}} — both shapes are accepted. Valid fields: text, description, effortEstimate, percentComplete, status, blockedReason, priority, dueDate, startDate, tags, assigneeIds.',
+    'Update multiple nodes at once. Each update is {nodeId, ...fields} OR {nodeId, fields: {...}} — both shapes are accepted. Valid fields: text, description, effortEstimate, percentComplete, status, blockedReason, priority, dueDate, startDate, tags, tagsAppend, tagsRemove, assigneeIds, priorityRank. Use `tagsAppend`/`tagsRemove` for tag-set merges that preserve other tags; use `tags` only when you intend to fully replace the set.',
   schema: {
     mapId: z.string().describe('The map ID'),
     updates: z

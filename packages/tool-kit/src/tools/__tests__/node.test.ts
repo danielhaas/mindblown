@@ -147,6 +147,45 @@ describe('update_node tool', () => {
     expect(recorder.lastUpdate?.fields).toMatchObject({ text: 'rename me' });
     expect('autoProgress' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
   });
+
+  // Jenna housekeeping digest 2026-06-11 — `bulk_update_nodes` with a flat
+  // `tags` array silently clobbered all other tags on a node, blocking any
+  // reliable multi-sweep tagging strategy. The merge variants let the caller
+  // add or remove specific tags without round-tripping a read first.
+  it('forwards tagsAppend through to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      tagsAppend: ['SCOPE-REVIEW'],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({ tagsAppend: ['SCOPE-REVIEW'] });
+    expect('tags' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+  });
+
+  it('forwards tagsRemove through to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      tagsRemove: ['NEEDS-PRIORITY'],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({ tagsRemove: ['NEEDS-PRIORITY'] });
+  });
+
+  it('allows append + remove together for swap-style updates', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      tagsAppend: ['NEEDS-VERSION'],
+      tagsRemove: ['STATUS-UNSET'],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      tagsAppend: ['NEEDS-VERSION'],
+      tagsRemove: ['STATUS-UNSET'],
+    });
+  });
 });
 
 describe('create_node tool', () => {
@@ -375,5 +414,80 @@ describe('search_nodes tool — parentId filter', () => {
     } as never);
     expect(out).toMatch(/bucket-a[^\n]*\(2 children\)/);
     expect(out).toMatch(/bucket-b[^\n]*\(1 child\)/);
+  });
+});
+
+// Jenna housekeeping digest 2026-06-11 (§8.6) — `unestimated:true`
+// without a status-exclusion filter returns thousands of done leaves
+// whose effortEstimate is null, drowning out the actionable subset.
+// `notStatus:"done"` collapses the post-filter back to one call.
+describe('search_nodes tool — notStatus filter', () => {
+  function buildStatusMap(): MapDetail {
+    const node = (id: string, status: string | null): NodeWithComputed =>
+      ({
+        id,
+        mapId: 'm1',
+        parentId: 'root',
+        childrenIds: [],
+        text: id,
+        description: null,
+        effortEstimate: null,
+        actualEffort: null,
+        percentComplete: null,
+        status,
+        assigneeIds: [],
+        priority: null,
+        dueDate: null,
+        startDate: null,
+        tags: [],
+        dependencies: [],
+        versionId: null,
+        cycleId: null,
+        externalLinks: [],
+        collapsed: false,
+        createdAt: '2026-06-10T00:00:00Z',
+        updatedAt: '2026-06-10T00:00:00Z',
+        claimedBySession: null,
+        claimedAt: null,
+        computedEffort: 0,
+        computedProgress: 0,
+        healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: { id: 'm1', rootNodeId: 'root' } as unknown as MapDetail['map'],
+      nodes: [
+        { ...node('root', null), parentId: null } as NodeWithComputed,
+        node('todo-1', 'todo'),
+        node('inprogress-1', 'in_progress'),
+        node('done-1', 'done'),
+        node('done-2', 'done'),
+      ],
+    };
+  }
+
+  it('excludes nodes matching the given status', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildStatusMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      notStatus: 'done',
+    } as never);
+    expect(out).toContain('id: todo-1');
+    expect(out).toContain('id: inprogress-1');
+    expect(out).not.toContain('id: done-1');
+    expect(out).not.toContain('id: done-2');
+  });
+
+  it('reports notStatus in the empty-result filter line', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildStatusMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: 'nope',
+      notStatus: 'done',
+    } as never);
+    expect(out).toContain('No nodes matching');
+    expect(out).toContain('notStatus=done');
   });
 });
