@@ -1,8 +1,8 @@
 /**
  * #152 — pull_request: closed (merged=true) → linked nodes transition to done.
  *
- * Covers the new branch in routes/integrations.ts that subscribes to PR
- * merge events for repos that don't send `issues` webhooks (e.g.
+ * Covers the canonical handler in routes/integrations.ts that subscribes
+ * to PR merge events for repos that don't send `issues` webhooks (e.g.
  * FulcrumCRM/crm). Verifies:
  *
  *   1. Multi-issue: PR body with "Closes #1, fixes #2" transitions BOTH
@@ -15,10 +15,17 @@
  *      through unchanged.
  *   5. References to issues with no linked MindBlown node are reported
  *      as `not_linked` (not an error).
+ *   6. (#199) PR merged to a NON-default branch (V1-hotfix flow targeting
+ *      `release/v1`) does NOT transition the linked node, mirroring
+ *      GitHub's auto-close semantics.
+ *   7. (#199) PR with missing `base.ref` does NOT transition (fail-safe).
  *
  * Signature verification is stubbed to pass; HMAC plumbing is covered
  * by separate tests in `webhookAuthCheck.test.ts`. The processWebhook
- * fallthrough is mocked to a no-op so we can isolate the new branch.
+ * spy delegates to the REAL implementation (see the @mindblown/integrations
+ * mock factory below) so the tests exercise the production fall-through —
+ * a noop stub would have masked the legacy PR-merge bypass that #199
+ * fixes.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';

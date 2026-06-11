@@ -1649,10 +1649,11 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // #152 — when a PR merges with `Closes #N` references in title or
     // body, transition every referenced issue's linked node to done.
     // Cuts the up-to-5min lag of the catchup loop (`runCatchup` in
-    // index.ts, every 5min) which reconciles state from GH issues
-    // but only catches a close once it's already happened on GH and
-    // requires the `issues` event subscription. This branch handles
-    // the PR-only-subscription path.
+    // index.ts, every 5min) which reconciles state by polling the
+    // GitHub API and is the unconditional safety net. This branch
+    // handles the PR-only-subscription path — repos subscribed to
+    // `pull_request` events but not `issues` events still need
+    // immediate transitions on PR merge without waiting for catchup.
     //
     // Iterates ALL refs (PR title + body). The legacy single-ref
     // PR-merge branch in @mindblown/integrations processWebhook was
