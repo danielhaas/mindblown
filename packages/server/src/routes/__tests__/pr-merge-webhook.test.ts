@@ -57,30 +57,49 @@ const mocks = vi.hoisted(() => {
     selectNodesMock: vi.fn(),
     broadcastMock: vi.fn(),
     verifySignatureMock: vi.fn(async () => true),
-    processWebhookMock: vi.fn(() => ({ action: 'noop', nodeUpdates: null, externalId: null })),
+    // Initial implementation is a placeholder; the mock factory below
+    // rewires this to delegate to the real processWebhook so the
+    // tests exercise production behaviour. The signature is widened
+    // to accept the real (payload, event) shape from @mindblown/integrations.
+    processWebhookMock: vi.fn(
+      (...args: unknown[]): unknown => ({ action: 'noop', nodeUpdates: null, externalId: null }),
+    ),
   };
 });
 
-vi.mock('@mindblown/integrations', () => ({
-  createGitHubIssue: vi.fn(),
-  getGitHubIssue: vi.fn(),
-  importGitHubIssues: vi.fn(),
-  extractVersionFromMilestone: vi.fn(),
-  // Real implementation — the regex is the unit under test for ref extraction.
-  extractClosingIssueRefs: (text: string): number[] => {
-    const pattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
-    const refs = new Set<number>();
-    let match: RegExpExecArray | null;
-    while ((match = pattern.exec(text)) !== null) {
-      refs.add(parseInt(match[1], 10));
-    }
-    return [...refs];
-  },
-  processWebhook: mocks.processWebhookMock,
-  verifyWebhookSignature: mocks.verifySignatureMock,
-  mintInstallationToken: vi.fn(),
-  isGitHubAppConfigured: vi.fn(() => true),
-}));
+vi.mock('@mindblown/integrations', async () => {
+  // Use REAL implementations of the pure functions (processWebhook,
+  // extractClosingIssueRefs) so the tests assert against the
+  // production code path — not against a noop mock that would hide
+  // the legacy PR-merge → done branch (#199 review caught exactly
+  // this masking bug). Side-effect functions (GitHub API,
+  // signature verification) stay mocked.
+  //
+  // processWebhook is wrapped in a spy so per-test `.mock.calls`
+  // assertions still work, but the spy delegates to the real
+  // implementation by default. Individual tests may override the
+  // return value with `mocks.processWebhookMock.mockReturnValueOnce(...)`.
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  // Cast through `unknown` to satisfy the `vi.fn(...)` parameter widening.
+  // The runtime contract — "delegate every call to the real
+  // implementation" — matches the production wiring.
+  mocks.processWebhookMock.mockImplementation(
+    actual.processWebhook as unknown as (...args: unknown[]) => unknown,
+  );
+  return {
+    ...actual,
+    createGitHubIssue: vi.fn(),
+    getGitHubIssue: vi.fn(),
+    importGitHubIssues: vi.fn(),
+    extractVersionFromMilestone: vi.fn(),
+    verifyWebhookSignature: mocks.verifySignatureMock,
+    mintInstallationToken: vi.fn(),
+    isGitHubAppConfigured: vi.fn(() => true),
+    processWebhook: mocks.processWebhookMock,
+  };
+});
 
 vi.mock('../../db/connection.js', () => ({
   db: {
@@ -211,8 +230,11 @@ beforeEach(() => {
   mocks.broadcastMock.mockReset();
   mocks.verifySignatureMock.mockReset();
   mocks.verifySignatureMock.mockResolvedValue(true);
-  mocks.processWebhookMock.mockReset();
-  mocks.processWebhookMock.mockReturnValue({ action: 'noop', nodeUpdates: null, externalId: null });
+  // Clear call history but PRESERVE the implementation set in the
+  // module-mock factory above — the spy delegates to real
+  // processWebhook so the new V1-hotfix / missing-base.ref tests
+  // exercise the production fall-through, not a noop stub.
+  mocks.processWebhookMock.mockClear();
   process.env.GITHUB_APP_WEBHOOK_SECRET = 'test-secret';
 });
 
