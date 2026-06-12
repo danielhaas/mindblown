@@ -205,4 +205,90 @@ describe('pushKumaHeartbeat', () => {
     // And the status param must remain a clean separate key/value.
     expect(calledUrl).toMatch(/[?&]status=down(&|$)/);
   });
+
+  describe('Gatus mode (URL contains /api/v1/endpoints/)', () => {
+    const ORIGINAL_TOKEN = process.env.GATUS_PUSH_TOKEN;
+
+    beforeEach(() => {
+      process.env.GATUS_PUSH_TOKEN = 'test-bearer-abc';
+    });
+
+    afterEach(() => {
+      if (ORIGINAL_TOKEN === undefined) delete process.env.GATUS_PUSH_TOKEN;
+      else process.env.GATUS_PUSH_TOKEN = ORIGINAL_TOKEN;
+    });
+
+    it('POSTs with bearer auth + success=true on status="up"', async () => {
+      const fetchMock = vi.fn(
+        async (_input: unknown, _init?: unknown) =>
+          ({ ok: true, status: 200 }) as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await pushKumaHeartbeat(
+        'http://gatus.example/api/v1/endpoints/push_foo/external',
+        'up',
+        'tick ok',
+        '[gatus-push] foo',
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [calledUrl, calledInit] = fetchMock.mock.calls[0] as [
+        string,
+        RequestInit,
+      ];
+      expect(String(calledUrl)).toContain('success=true');
+      expect(String(calledUrl)).toContain('duration=');
+      // Healthy push must NOT include error=, since Gatus surfaces error
+      // text verbatim in the alert body and "tick ok" would land there.
+      expect(String(calledUrl)).not.toContain('error=');
+      expect(calledInit.method).toBe('POST');
+      expect(
+        (calledInit.headers as Record<string, string>).Authorization,
+      ).toBe('Bearer test-bearer-abc');
+    });
+
+    it('POSTs success=false + error=<msg> on status="down"', async () => {
+      const fetchMock = vi.fn(
+        async (_input: unknown, _init?: unknown) =>
+          ({ ok: true, status: 200 }) as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await pushKumaHeartbeat(
+        'http://gatus.example/api/v1/endpoints/push_foo/external',
+        'down',
+        'auth check failed: 3 webhooks unauthenticated',
+        '[gatus-push] foo',
+      );
+
+      const calledUrl = String(fetchMock.mock.calls[0][0]);
+      expect(calledUrl).toContain('success=false');
+      // msg goes into error= and is URL-encoded.
+      expect(calledUrl).toContain(
+        'error=auth%20check%20failed%3A%203%20webhooks%20unauthenticated',
+      );
+    });
+
+    it('omits Authorization header when GATUS_PUSH_TOKEN is unset', async () => {
+      delete process.env.GATUS_PUSH_TOKEN;
+
+      const fetchMock = vi.fn(
+        async (_input: unknown, _init?: unknown) =>
+          ({ ok: true, status: 200 }) as Response,
+      );
+      vi.stubGlobal('fetch', fetchMock);
+
+      await pushKumaHeartbeat(
+        'http://gatus.example/api/v1/endpoints/push_foo/external',
+        'up',
+        'ok',
+        '[gatus-push] foo',
+      );
+
+      const calledInit = fetchMock.mock.calls[0][1] as RequestInit;
+      const headers = (calledInit.headers as Record<string, string>) ?? {};
+      expect(headers.Authorization).toBeUndefined();
+    });
+  });
 });
