@@ -110,13 +110,23 @@ NODE_ENV=production
 # SMTP_PASS=CHANGE-ME
 # MAIL_FROM=MindBlown <noreply@example.com>
 
-# Optional — Uptime-Kuma push URLs for GitHub-sync observability.
+# Optional — Heartbeat-push URLs for GitHub-sync observability.
 # Without these, the API still runs the catchup loop + drift audit,
 # but silent failures have no external alarm. See below.
-# KUMA_GITHUB_CATCHUP_PUSH_URL=https://kuma.example.com/api/push/<token>
-# KUMA_GITHUB_DRIFT_PUSH_URL=https://kuma.example.com/api/push/<token>
-# KUMA_GITHUB_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
-# KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL=https://kuma.example.com/api/push/<token>
+#
+# The helper `pushKumaHeartbeat` accepts EITHER shape:
+#   - Gatus  (preferred): http://<host>/api/v1/endpoints/push_<name>/external
+#     Requires GATUS_PUSH_TOKEN set with the matching bearer.
+#   - Kuma (legacy):      https://kuma.example.com/api/push/<token>
+#     No bearer needed; token is embedded in the path.
+#
+# Env var names are kept as KUMA_* for minimum-diff compatibility.
+# Migration target as of 2026-06-12: Gatus (see crm#2620).
+# KUMA_GITHUB_CATCHUP_PUSH_URL=http://10.0.20.14:8080/api/v1/endpoints/push_mindblown-github-catchup/external
+# KUMA_GITHUB_DRIFT_PUSH_URL=http://10.0.20.14:8080/api/v1/endpoints/push_mindblown-github-drift/external
+# KUMA_GITHUB_AUTH_FAILURE_PUSH_URL=http://10.0.20.14:8080/api/v1/endpoints/push_mindblown-github-auth-failure/external
+# KUMA_WEBHOOK_AUTH_FAILURE_PUSH_URL=http://10.0.20.14:8080/api/v1/endpoints/push_mindblown-webhook-auth/external
+# GATUS_PUSH_TOKEN=<bearer from /opt/gatus/.env on CT 124>
 
 # Optional — consecutive GH 401 ticks per repo before the catchup
 # fires `status=down msg=auth_failed:owner/repo` on the auth-failure
@@ -124,10 +134,11 @@ NODE_ENV=production
 # bridge. Default 3 (≈ 15 min on a 5-min catchup tick).
 # CATCHUP_AUTH_FAILURE_THRESHOLD=3
 
-# Optional — Uptime-Kuma push URL for the weekly Pushover-canary
+# Optional — Heartbeat-push URL for the weekly Pushover-canary
 # (alarm-chain liveness probe). Unset = canary is disabled. See the
 # "Pushover canary" section below for the full operator runbook.
-# KUMA_ALARM_CANARY_PUSH_URL=https://kuma.example.com/api/push/<token>
+# Same dual-mode (Gatus or Kuma) as the other 4 push URLs above.
+# KUMA_ALARM_CANARY_PUSH_URL=http://10.0.20.14:8080/api/v1/endpoints/push_mindblown-alarm-canary/external
 
 # Optional — drift-audit cadence in milliseconds. Default 21600000
 # (6h). Minimum 3600000 (1h) — values below the minimum (incl. zero
