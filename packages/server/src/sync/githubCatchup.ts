@@ -135,6 +135,15 @@ export interface ReconcileResult {
   durationMs: number;
   since: string | null;
   error?: string;          // present when reconcile failed before completion
+  /**
+   * True when `error` is a GitHub 401 (revoked PAT, suspended App
+   * install). Auth failures are excluded from tick health — they have
+   * their own escalation channel (`pushAuthFailureAlarm`), and one
+   * tenant's dead credential must not starve the watchdog/heartbeat
+   * for the whole service (see incident 2026-07-10: a stale demo PAT
+   * restart-looped prod every ~24 min for two weeks).
+   */
+  authFailure?: boolean;
 }
 
 // ── State helper (idempotent transition logic) ───────────────────
@@ -282,7 +291,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     // errors (PAT lookup throwing for non-401 reasons, etc.) stay on
     // the "no counter bump" path — they're transient and shouldn't
     // pin the escalation.
-    if (err instanceof GitHubApiError && err.status === 401) {
+    const isAuthFailure = err instanceof GitHubApiError && err.status === 401;
+    if (isAuthFailure) {
       const next = (consecutiveAuthFailures.get(repoLabel) ?? 0) + 1;
       consecutiveAuthFailures.set(repoLabel, next);
       const threshold = getAuthFailureThreshold();
@@ -296,6 +306,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
+      ...(isAuthFailure && { authFailure: true }),
     };
   }
 
@@ -310,7 +321,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     // fire a dedicated Kuma alarm once we've crossed the threshold,
     // so the operator gets `auth_failed:owner/repo` instead of a
     // generic "catchup is broken".
-    if (err instanceof GitHubApiError && err.status === 401) {
+    const isAuthFailure = err instanceof GitHubApiError && err.status === 401;
+    if (isAuthFailure) {
       const next = (consecutiveAuthFailures.get(repoLabel) ?? 0) + 1;
       consecutiveAuthFailures.set(repoLabel, next);
       const threshold = getAuthFailureThreshold();
@@ -333,6 +345,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
+      ...(isAuthFailure && { authFailure: true }),
     };
   }
 
@@ -650,6 +663,14 @@ export function getLastHealthyTickAt(): number {
  * entirely; pinging on a partial-failure path would defeat its
  * purpose by hiding exactly those incidents from systemd.
  *
+ * Exception: per-repo GitHub auth failures (`authFailure`) do NOT
+ * make a tick unhealthy. A revoked PAT or suspended App install is a
+ * credential problem on one repo, not a frozen loop — it already has
+ * its own escalation channel (the `auth_failed` alarm monitor).
+ * Before this carve-out, a single tenant's dead token suppressed the
+ * watchdog ping forever and systemd restart-looped the whole service
+ * every ~24 min (incident 2026-07-10, `meheav1-stack/proptechdev`).
+ *
  * An empty `results` array (no repos discovered, no work done) counts
  * as healthy — the sweep completed without crashing, which is what
  * the watchdog actually measures.
@@ -658,7 +679,10 @@ export function getLastHealthyTickAt(): number {
  */
 export function isHealthyTick(results: ReconcileResult[]): boolean {
   return results.every(
-    (r) => !r.error && r.ingestErrored === 0 && r.stateSyncErrored === 0,
+    (r) =>
+      (!r.error || r.authFailure) &&
+      r.ingestErrored === 0 &&
+      r.stateSyncErrored === 0,
   );
 }
 
@@ -673,6 +697,12 @@ export function isHealthyTick(results: ReconcileResult[]): boolean {
  * so the Kuma monitor's history shows whether catchup is actually
  * making progress, not just whether it's running.
  *
+ * Per-repo auth failures do NOT flip the status to `down` — same
+ * rationale as `isHealthyTick`: the `auth_failed` alarm monitor owns
+ * that signal, and this heartbeat measures whether the loop is alive.
+ * They still surface in the message as `authFailed=N` so the monitor
+ * history shows the degradation.
+ *
  * Exported for unit-test access — production callers go through
  * `runAllCatchups` which invokes this at end of sweep.
  */
@@ -684,10 +714,11 @@ export async function pushCatchupHeartbeat(results: ReconcileResult[]): Promise<
     results.reduce((acc, r) => acc + pick(r), 0);
 
   const hasError = results.some(
-    (r) => r.error || r.ingestErrored > 0 || r.stateSyncErrored > 0,
+    (r) => (r.error && !r.authFailure) || r.ingestErrored > 0 || r.stateSyncErrored > 0,
   );
+  const authFailed = results.filter((r) => r.authFailure).length;
   const status = hasError ? 'down' : 'up';
-  const msg = `repos=${results.length} fetched=${sum((r) => r.fetched)} ingested=${sum((r) => r.ingested)} applied=${sum((r) => r.applied)} errored=${sum((r) => r.ingestErrored + r.stateSyncErrored)}`;
+  const msg = `repos=${results.length} fetched=${sum((r) => r.fetched)} ingested=${sum((r) => r.ingested)} applied=${sum((r) => r.applied)} errored=${sum((r) => r.ingestErrored + r.stateSyncErrored)} authFailed=${authFailed}`;
 
   await pushKumaHeartbeat(url, status, msg, '[kuma-push] catchup heartbeat');
 }
