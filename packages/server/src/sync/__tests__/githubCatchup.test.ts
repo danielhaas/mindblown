@@ -256,6 +256,35 @@ describe('pushCatchupHeartbeat (direct helper)', () => {
     const [, status] = pushKumaMock.mock.calls[0];
     expect(status).toBe('down');
   });
+
+  it('pushes status=up when the only error is an auth failure — the auth_failed alarm owns that signal', async () => {
+    process.env.KUMA_GITHUB_CATCHUP_PUSH_URL = 'https://k/api/push/x';
+    await pushCatchupHeartbeat([
+      makeResult({ fetched: 2, applied: 1 }),
+      makeResult({
+        repo: 'b/c',
+        error: 'fetch: GitHub API 401: Bad credentials',
+        authFailure: true,
+      }),
+    ]);
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    expect(status).toBe('up');
+    expect(msg).toMatch(/authFailed=1/);
+  });
+
+  it('still pushes status=down when an auth failure coexists with a real error', async () => {
+    process.env.KUMA_GITHUB_CATCHUP_PUSH_URL = 'https://k/api/push/x';
+    await pushCatchupHeartbeat([
+      makeResult({
+        error: 'fetch: GitHub API 401: Bad credentials',
+        authFailure: true,
+      }),
+      makeResult({ repo: 'b/c', error: 'fetch: 503' }),
+    ]);
+    const [, status, msg] = pushKumaMock.mock.calls[0];
+    expect(status).toBe('down');
+    expect(msg).toMatch(/authFailed=1/);
+  });
 });
 
 describe('runAllCatchups → systemd watchdog', () => {
@@ -316,6 +345,31 @@ describe('isHealthyTick', () => {
       isHealthyTick([makeResult({ error: 'fetch: 503' })]),
     ).toBe(false);
   });
+
+  it('returns true when the only error is a per-repo auth failure (dead tenant token must not starve the watchdog)', () => {
+    expect(
+      isHealthyTick([
+        makeResult({ fetched: 3, applied: 2 }),
+        makeResult({
+          repo: 'b/c',
+          error: 'fetch: GitHub API 401: Bad credentials',
+          authFailure: true,
+        }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns false when an auth-failure repo coexists with a real error elsewhere', () => {
+    expect(
+      isHealthyTick([
+        makeResult({
+          error: 'fetch: GitHub API 401: Bad credentials',
+          authFailure: true,
+        }),
+        makeResult({ repo: 'b/c', ingestErrored: 1 }),
+      ]),
+    ).toBe(false);
+  });
 });
 
 // ── 401-escalation tests (#75) ───────────────────────────────────
@@ -359,6 +413,7 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     const result = await reconcileRepo(makeTarget('o', 'r'));
 
     expect(result.error).toMatch(/^fetch: GitHub API 401/);
+    expect(result.authFailure).toBe(true);
     expect(pushKumaMock).not.toHaveBeenCalled();
     expect(_getAuthFailureCountForTests('o/r')).toBe(1);
   });
@@ -477,11 +532,14 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL = 'https://kuma/api/push/auth';
     fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(503, 'Service Unavailable'));
 
-    await reconcileRepo(makeTarget('o', 'r'));
+    const result = await reconcileRepo(makeTarget('o', 'r'));
     await reconcileRepo(makeTarget('o', 'r'));
     await reconcileRepo(makeTarget('o', 'r'));
     await reconcileRepo(makeTarget('o', 'r'));
 
+    // A 5xx is a real (possibly transient) failure, not an auth
+    // failure — it must NOT get the tick-health carve-out.
+    expect(result.authFailure).toBeUndefined();
     expect(pushKumaMock).not.toHaveBeenCalled();
     expect(_getAuthFailureCountForTests('o/r')).toBe(0);
   });
@@ -545,6 +603,9 @@ describe('reconcileRepo → 401 auth-failure escalation, token-resolution path (
     expect(result1.error).toMatch(/^token: /);
     expect(result2.error).toMatch(/^token: /);
     expect(result3.error).toMatch(/^token: /);
+    // Mint-401 is an auth failure too — same tick-health carve-out
+    // as the fetch-401 path.
+    expect(result1.authFailure).toBe(true);
 
     // Counter ticks on every 401, pushes on the threshold-crossing tick.
     expect(_getAuthFailureCountForTests('o/r')).toBe(3);
