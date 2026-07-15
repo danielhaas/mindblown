@@ -16,7 +16,7 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'releases';
+export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'releases' | 'requirements';
 
 export interface VisibleNode {
   node: Node;
@@ -126,7 +126,7 @@ export interface MindmapState {
   selectAllNodes: () => void;
   clearSelection: () => void;
   startEditing: (id: string | null) => void;
-  addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }) => string;
+  addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }, fields?: Partial<Node>) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   deleteNode: (id: string) => void;
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
@@ -153,6 +153,7 @@ export interface MindmapState {
   // Helpers
   getLeafNodes: () => Node[];
   getNodeBreadcrumb: (nodeId: NodeId) => string;
+  getTopLevelAncestor: (nodeId: NodeId) => Node | null;
 }
 
 // ── WebSocket connection ───────────────────────────────────────
@@ -757,6 +758,20 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     return parts.join(' > ');
   },
 
+  getTopLevelAncestor: (nodeId: NodeId) => {
+    const { nodes, rootNodeId } = get();
+    let current = nodes[nodeId];
+    if (!current) return null;
+    // The root has no chapter; a child of root is its own chapter.
+    if (current.id === rootNodeId) return null;
+    while (current.parentId && current.parentId !== rootNodeId) {
+      const parent = nodes[current.parentId];
+      if (!parent) break;
+      current = parent;
+    }
+    return current;
+  },
+
   // ── Node actions ─────────────────────────────────────────────
 
   // ── Layout actions ────────────────────────────────────────────
@@ -789,7 +804,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   startEditing: (id) => set({ editingNodeId: id }),
 
-  addNode: (parentId, text = 'New node', asSibling = false, position) => {
+  addNode: (parentId, text = 'New node', asSibling = false, position, fields) => {
     const state = get();
     const mapId = state.currentMapId;
     let targetParentId = parentId;
@@ -839,6 +854,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       autoProgress: 'off',
       priorityRank: null,
     completedAt: null,
+      requirementId: null,
+      requirementPriority: null,
       // Orchestration substrate (#111)
       claimedBySession: null,
       claimedAt: null,
@@ -848,6 +865,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       createdBy: state.user?.id ?? 'user-001',
       revision: 1,
       deletedAt: null,
+      ...(fields ?? {}),
     };
 
     // Optimistic local update
@@ -874,7 +892,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
     // Sync to API
     if (mapId) {
-      api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined, position)
+      api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined, position, fields)
         .then((serverNode) => {
           // Replace temp node with server node
           const current = get();

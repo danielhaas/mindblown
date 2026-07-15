@@ -210,6 +210,20 @@ export interface Node {
    */
   linkedPr?: LinkedPrState | null;
 
+  // ── Requirements register ─────────────────────────────────
+  /**
+   * Stable business requirement ID (e.g. "MAN-01"). Non-null marks this
+   * node as a requirement: it appears in the Requirements view and the
+   * `requirements_overview` MCP register. Unique per map (application-
+   * level check in the DB layer). The requirement's status is never
+   * stored — it derives from progress rollup (100 → done, >0 → partial,
+   * else open).
+   */
+  requirementId: string | null;
+
+  /** MoSCoW-style requirement priority (Muss/Soll/Kann). */
+  requirementPriority: 'must' | 'should' | 'could' | null;
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this

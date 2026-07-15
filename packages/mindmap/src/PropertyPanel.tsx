@@ -202,6 +202,7 @@ function PropertyPanelInner({
   const [dueDate, setDueDate] = useState(node.dueDate ?? '');
   const [startDate, setStartDate] = useState(node.startDate ?? '');
   const [blockedReason, setBlockedReason] = useState(node.blockedReason ?? '');
+  const [requirementId, setRequirementId] = useState(node.requirementId ?? '');
 
   // Sync local state when node changes externally
   useEffect(() => { setTitle(node.text); }, [node.text]);
@@ -212,6 +213,7 @@ function PropertyPanelInner({
   useEffect(() => { setDueDate(node.dueDate ?? ''); }, [node.dueDate]);
   useEffect(() => { setStartDate(node.startDate ?? ''); }, [node.startDate]);
   useEffect(() => { setBlockedReason(node.blockedReason ?? ''); }, [node.blockedReason]);
+  useEffect(() => { setRequirementId(node.requirementId ?? ''); }, [node.requirementId]);
 
   const allNodes = useMindmapStore((s) => s.nodes);
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
@@ -412,6 +414,45 @@ function PropertyPanelInner({
             ))}
           </select>
         </Field>
+
+        {/* Requirement ID — marks this node as a business requirement */}
+        <Field label="Requirement ID">
+          <input
+            value={requirementId}
+            onChange={(e) => setRequirementId(e.target.value)}
+            onBlur={() => {
+              const trimmed = requirementId.trim();
+              const persisted = node.requirementId ?? '';
+              if (trimmed !== persisted) {
+                directUpdate(nodeId, { requirementId: trimmed || null });
+              }
+            }}
+            onKeyDown={(e) => e.stopPropagation()}
+            style={inputStyle}
+            placeholder="e.g. MAN-01 (marks node as requirement)"
+          />
+        </Field>
+
+        {/* Requirement priority (MoSCoW) — only relevant with an ID */}
+        {(node.requirementId != null || requirementId.trim() !== '') && (
+          <Field label="Req. Priority">
+            <select
+              value={node.requirementPriority ?? ''}
+              onChange={(e) => {
+                directUpdate(nodeId, {
+                  requirementPriority: (e.target.value || null) as Node['requirementPriority'],
+                });
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              style={selectStyle}
+            >
+              <option value="">None</option>
+              <option value="must">Must (Muss)</option>
+              <option value="should">Should (Soll)</option>
+              <option value="could">Could (Kann)</option>
+            </select>
+          </Field>
+        )}
 
         {/* Effort estimate */}
         <Field label="Effort Estimate" computed={hasChildren}>

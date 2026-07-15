@@ -510,6 +510,83 @@ describe('search_nodes tool — versionId ancestor-walk', () => {
   });
 });
 
+// Requirements register — requirementId marks a node as a business
+// requirement (unique per map); requirementPriority is MoSCoW. Both must
+// round-trip through create_node AND update_node or the register is
+// invisible to MCP agents (the CLAUDE.md layer-6 failure mode).
+describe('requirement fields', () => {
+  it('accepts requirementId + requirementPriority on update_node', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      nodeId: 'n1',
+      requirementId: 'MAN-01',
+      requirementPriority: 'must',
+    });
+    expect(parsed.requirementId).toBe('MAN-01');
+    expect(parsed.requirementPriority).toBe('must');
+  });
+
+  it('rejects unknown requirementPriority values', () => {
+    const schema = z.object(updateNodeTool.schema);
+    expect(() =>
+      schema.parse({ mapId: 'm1', nodeId: 'n1', requirementPriority: 'urgent' }),
+    ).toThrow();
+  });
+
+  it('accepts null to clear both fields', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      nodeId: 'n1',
+      requirementId: null,
+      requirementPriority: null,
+    });
+    expect(parsed.requirementId).toBeNull();
+    expect(parsed.requirementPriority).toBeNull();
+  });
+
+  it('forwards requirement fields to the backend on update', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      requirementId: 'DOK-08',
+      requirementPriority: 'should',
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      requirementId: 'DOK-08',
+      requirementPriority: 'should',
+    });
+  });
+
+  it('forwards requirement fields to the backend on create', async () => {
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'Mandate können liquidiert werden',
+      requirementId: 'MAN-15',
+      requirementPriority: 'could',
+    } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({
+      requirementId: 'MAN-15',
+      requirementPriority: 'could',
+    });
+  });
+
+  it('omits requirement fields from the backend call when not provided', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      text: 'rename me',
+    } as never);
+    expect('requirementId' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+    expect('requirementPriority' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+  });
+});
+
 // Jenna housekeeping digest 2026-06-11 (§8.6) — `unestimated:true`
 // without a status-exclusion filter returns thousands of done leaves
 // whose effortEstimate is null, drowning out the actionable subset.

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as nodeDb from '../db/nodes.js';
-import { DependencyValidationError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
+import { DependencyValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
@@ -168,6 +168,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       dueDate?: string;
       autoProgress?: 'off' | 'children';
       priorityRank?: number | null;
+      requirementId?: string | null;
+      requirementPriority?: 'must' | 'should' | 'could' | null;
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`
        * auto-link backstop (#58). Useful when the leading `#NNNN` is
@@ -187,11 +189,21 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     // `skipAutoLink` is not a column on the nodes table — strip it before
     // forwarding to the DB layer.
     const { skipAutoLink, ...nodeFields } = body;
-    const node = await nodeDb.createNode({
-      ...nodeFields,
-      mapId: req.params.id,
-      createdBy: userId,
-    });
+    let node: CoreNode;
+    try {
+      node = await nodeDb.createNode({
+        ...nodeFields,
+        mapId: req.params.id,
+        createdBy: userId,
+      });
+    } catch (err) {
+      if (err instanceof RequirementIdConflictError) {
+        return reply.status(400).send({
+          error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message },
+        });
+      }
+      throw err;
+    }
 
     // Broadcast to connected clients
     broadcast(req.params.id, { type: 'node:created', node });
@@ -286,6 +298,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof TagsModeConflictError) {
           return reply.status(400).send({
             error: { code: 'TAGS_MODE_CONFLICT', message: err.message },
+          });
+        }
+        if (err instanceof RequirementIdConflictError) {
+          return reply.status(400).send({
+            error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message },
           });
         }
         if (err instanceof RevisionConflictError) {

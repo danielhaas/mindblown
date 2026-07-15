@@ -187,6 +187,14 @@ export const nodes = pgTable('nodes', {
   // the past instead of piling them on the today line.
   completedAt: timestamp('completed_at', { withTimezone: true }),
 
+  // ── Requirements register ─────────────────────────────────────
+  // requirement_id: stable business requirement ID (e.g. 'MAN-01').
+  //   Non-null marks the node as a requirement. Unique per map,
+  //   enforced application-level in nodes.ts (no DB constraint).
+  // requirement_priority: MoSCoW priority — 'must' | 'should' | 'could'.
+  requirementId: text('requirement_id'),
+  requirementPriority: text('requirement_priority'),
+
   // ── Orchestration substrate (#111) ───────────────────────────
   // claimed_by_session: session ID that owns this node for active work.
   //   null = unclaimed / available.
