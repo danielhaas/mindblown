@@ -153,7 +153,6 @@ export interface MindmapState {
   // Helpers
   getLeafNodes: () => Node[];
   getNodeBreadcrumb: (nodeId: NodeId) => string;
-  getTopLevelAncestor: (nodeId: NodeId) => Node | null;
 }
 
 // ── WebSocket connection ───────────────────────────────────────
@@ -756,20 +755,6 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       current = parent;
     }
     return parts.join(' > ');
-  },
-
-  getTopLevelAncestor: (nodeId: NodeId) => {
-    const { nodes, rootNodeId } = get();
-    let current = nodes[nodeId];
-    if (!current) return null;
-    // The root has no chapter; a child of root is its own chapter.
-    if (current.id === rootNodeId) return null;
-    while (current.parentId && current.parentId !== rootNodeId) {
-      const parent = nodes[current.parentId];
-      if (!parent) break;
-      current = parent;
-    }
-    return current;
   },
 
   // ── Node actions ─────────────────────────────────────────────
