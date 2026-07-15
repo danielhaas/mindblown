@@ -67,7 +67,6 @@ export function RequirementsView() {
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
-  const getTopLevelAncestor = useMindmapStore((s) => s.getTopLevelAncestor);
   const effortUnit = useMindmapStore((s) => s.currentMap?.effortUnit ?? 'days');
 
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
@@ -105,7 +104,10 @@ export function RequirementsView() {
         const cv = computed.get(node.id);
         const isLeaf = node.childrenIds.length === 0;
         const progress = isLeaf ? (node.percentComplete ?? 0) : (cv?.computedProgress ?? 0);
-        const chapter = getTopLevelAncestor(node.id);
+        // Chapter = the requirement's parent node. In a doc-shaped map the
+        // requirements sit directly under their Bereich node, so the parent
+        // IS the chapter; this also matches ListView's group-by-parent.
+        const chapter = node.parentId ? nodes[node.parentId] : null;
         return {
           node,
           chapterId: chapter?.id ?? null,
@@ -121,7 +123,7 @@ export function RequirementsView() {
             .map((l) => ({ id: l.externalId, url: l.url })),
         };
       });
-  }, [nodes, computed, getTopLevelAncestor]);
+  }, [nodes, computed]);
 
   const totals = useMemo(() => {
     const t = { done: 0, partial: 0, open: 0 };
@@ -139,8 +141,22 @@ export function RequirementsView() {
     [allRows, statusFilter, priorityFilter],
   );
 
-  // Group by chapter, chapters in tree order (root's childrenIds),
-  // requirements within a chapter in REQ-ID order.
+  // Depth-first tree order — used to sort chapter groups so the register
+  // follows the map's structure (Bereich order in a doc-shaped spine).
+  const dfsOrder = useMemo(() => {
+    const order = new Map<string, number>();
+    if (!rootNodeId) return order;
+    let i = 0;
+    const walk = (id: string) => {
+      order.set(id, i++);
+      for (const cid of nodes[id]?.childrenIds ?? []) if (nodes[cid]) walk(cid);
+    };
+    walk(rootNodeId);
+    return order;
+  }, [nodes, rootNodeId]);
+
+  // Group by chapter (= parent node) in tree order; requirements within a
+  // chapter in REQ-ID order.
   const grouped = useMemo(() => {
     const byChapter = new Map<string, ReqRow[]>();
     for (const r of [...filteredRows].sort(compareReqIds)) {
@@ -149,19 +165,26 @@ export function RequirementsView() {
       list.push(r);
       byChapter.set(key, list);
     }
-    const chapterOrder = rootNodeId ? (nodes[rootNodeId]?.childrenIds ?? []) : [];
     return [...byChapter.entries()].sort(
-      (a, b) => chapterOrder.indexOf(a[0]) - chapterOrder.indexOf(b[0]),
+      (a, b) => (dfsOrder.get(a[0]) ?? Infinity) - (dfsOrder.get(b[0]) ?? Infinity),
     );
-  }, [filteredRows, nodes, rootNodeId]);
+  }, [filteredRows, dfsOrder]);
 
-  const chapters = useMemo(
-    () =>
-      rootNodeId
-        ? (nodes[rootNodeId]?.childrenIds ?? []).map((id) => nodes[id]).filter(Boolean)
-        : [],
-    [nodes, rootNodeId],
-  );
+  // Add-form chapter choices: parents that already hold requirements (the
+  // Bereiche once the map is doc-shaped), falling back to root's children
+  // on a map with no requirements yet.
+  const chapters = useMemo(() => {
+    const parentIds = new Set<string>();
+    for (const r of allRows) if (r.chapterId) parentIds.add(r.chapterId);
+    const list = [...parentIds]
+      .map((id) => nodes[id])
+      .filter(Boolean)
+      .sort((a, b) => (dfsOrder.get(a.id) ?? Infinity) - (dfsOrder.get(b.id) ?? Infinity));
+    if (list.length > 0) return list;
+    return rootNodeId
+      ? (nodes[rootNodeId]?.childrenIds ?? []).map((id) => nodes[id]).filter(Boolean)
+      : [];
+  }, [allRows, nodes, rootNodeId, dfsOrder]);
 
   const jumpToNode = (node: Node) => {
     setActiveView('mindmap');

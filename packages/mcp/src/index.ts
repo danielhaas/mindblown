@@ -514,15 +514,27 @@ server.tool(
         );
       }
 
-      // Top-level chapter = the child-of-root ancestor. Requirements that
-      // are themselves children of root (or the root) group under their
-      // own text.
+      // Chapter = the requirement's parent node (the Bereich in a
+      // doc-shaped map). Chapters are ordered by depth-first tree order.
       const chapterOf = (id: string): string => {
-        let cur = nodeById.get(id);
-        while (cur && cur.parentId && cur.parentId !== rootId) {
-          cur = nodeById.get(cur.parentId);
-        }
-        return cur?.text ?? '(unknown)';
+        const parentId = nodeById.get(id)?.parentId;
+        return (parentId && nodeById.get(parentId)?.text) || '(root)';
+      };
+      const dfsOrder = new Map<string, number>();
+      {
+        let i = 0;
+        const walk = (id: string) => {
+          dfsOrder.set(id, i++);
+          for (const cid of nodeById.get(id)?.childrenIds ?? []) {
+            if (nodeById.has(cid)) walk(cid);
+          }
+        };
+        walk(rootId);
+      }
+      const chapterOrderOf = (id: string): number => {
+        const parentId = nodeById.get(id)?.parentId;
+        if (!parentId) return Infinity;
+        return dfsOrder.get(parentId) ?? Infinity;
       };
 
       // Progress: rollup for parents, own percentComplete for leaves.
@@ -555,6 +567,7 @@ server.tool(
         return {
           node: n,
           chapter: chapterOf(n.id),
+          chapterOrder: chapterOrderOf(n.id),
           progress,
           status: statusOf(progress),
           remaining: n.computedEffort * (1 - progress / 100),
@@ -579,7 +592,10 @@ server.tool(
         });
 
       const chapters = new Map<string, typeof rows>();
-      for (const r of [...rows].sort(byId)) {
+      const sorted = [...rows].sort(
+        (a, b) => a.chapterOrder - b.chapterOrder || byId(a, b),
+      );
+      for (const r of sorted) {
         const list = chapters.get(r.chapter) ?? [];
         list.push(r);
         chapters.set(r.chapter, list);
