@@ -38,6 +38,9 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     completedAt: (get('completedAt', 'completed_at') instanceof Date
       ? (get('completedAt', 'completed_at') as Date).toISOString()
       : (get('completedAt', 'completed_at') as string)) ?? null,
+    requirementId: (get('requirementId', 'requirement_id') as string) ?? null,
+    requirementPriority:
+      (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
     // Orchestration substrate (#111)
     claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
     claimedAt: (get('claimedAt', 'claimed_at') instanceof Date

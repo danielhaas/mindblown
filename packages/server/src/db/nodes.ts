@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
@@ -51,6 +51,60 @@ export class TagsModeConflictError extends Error {
     super('Cannot combine `tags` (replace) with `tagsAppend`/`tagsRemove` (merge) in the same update.');
     this.name = 'TagsModeConflictError';
   }
+}
+
+/**
+ * Thrown when a create/update would give a node a requirementId that
+ * another (non-deleted) node in the same map already carries. Requirement
+ * IDs are stable business identifiers (e.g. 'MAN-01') — two nodes with
+ * the same ID would make the requirements register ambiguous.
+ */
+export class RequirementIdConflictError extends Error {
+  constructor(requirementId: string, existingNodeId?: string) {
+    super(
+      existingNodeId
+        ? `Requirement ID "${requirementId}" is already used by node ${existingNodeId} in this map.`
+        : `Requirement ID "${requirementId}" is already used by another node in this map.`,
+    );
+    this.name = 'RequirementIdConflictError';
+  }
+}
+
+/**
+ * True when a thrown pg error is a unique-violation (23505) on the
+ * per-map requirement_id partial index. The app-level precheck catches
+ * the sequential case with a friendlier message; this catches the
+ * concurrent-create race the precheck can't see.
+ */
+function isRequirementIdUniqueViolation(err: unknown): boolean {
+  const e = err as { code?: string; constraint?: string } | null;
+  return e?.code === '23505' && e?.constraint === 'nodes_map_requirement_id_unique';
+}
+
+/**
+ * Per-map uniqueness guard for requirementId. Application-level (no DB
+ * constraint) — modeled on the dependency-duplicate guard below. Throws
+ * RequirementIdConflictError when another non-deleted node in the map
+ * already carries the ID.
+ */
+async function assertRequirementIdAvailable(
+  handle: DbHandle,
+  mapId: string,
+  requirementId: string,
+  excludeNodeId?: string,
+): Promise<void> {
+  const conditions = [
+    eq(nodes.mapId, mapId),
+    eq(nodes.requirementId, requirementId),
+    notDeleted,
+  ];
+  if (excludeNodeId) conditions.push(ne(nodes.id, excludeNodeId));
+  const [existing] = await handle
+    .select({ id: nodes.id })
+    .from(nodes)
+    .where(and(...conditions))
+    .limit(1);
+  if (existing) throw new RequirementIdConflictError(requirementId, existing.id as string);
 }
 
 // ── Tag merge math (exported for unit tests) ──────────────────────
@@ -147,6 +201,8 @@ export interface CreateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  requirementId?: string | null;
+  requirementPriority?: 'must' | 'should' | 'could' | null;
 }
 
 export async function createNode(
@@ -162,33 +218,47 @@ export async function createNode(
   const handle: DbHandle = txHandle ?? db;
   const now = new Date();
 
+  if (input.requirementId != null) {
+    await assertRequirementIdAvailable(handle, input.mapId, input.requirementId);
+  }
+
   // Create the node
-  const [row] = await handle.insert(nodes).values({
-    mapId: input.mapId,
-    parentId: input.parentId,
-    childrenOrder: [],
-    text: input.text,
-    collapsed: false,
-    x: input.x ?? null,
-    y: input.y ?? null,
-    effortEstimate: input.effortEstimate ?? null,
-    percentComplete: input.percentComplete ?? null,
-    status: input.status ?? null,
-    priority: input.priority ?? null,
-    startDate: input.startDate ?? null,
-    dueDate: input.dueDate ?? null,
-    autoProgress: input.autoProgress ?? 'off',
-    priorityRank: input.priorityRank ?? null,
-    completedAt: input.completedAt ? new Date(input.completedAt) : null,
-    assigneeIds: [],
-    tags: [],
-    customFields: {},
-    dependencies: [],
-    externalLinks: [],
-    createdAt: now,
-    updatedAt: now,
-    createdBy: input.createdBy,
-  }).returning();
+  let row;
+  try {
+    [row] = await handle.insert(nodes).values({
+      mapId: input.mapId,
+      parentId: input.parentId,
+      childrenOrder: [],
+      text: input.text,
+      collapsed: false,
+      x: input.x ?? null,
+      y: input.y ?? null,
+      effortEstimate: input.effortEstimate ?? null,
+      percentComplete: input.percentComplete ?? null,
+      status: input.status ?? null,
+      priority: input.priority ?? null,
+      startDate: input.startDate ?? null,
+      dueDate: input.dueDate ?? null,
+      autoProgress: input.autoProgress ?? 'off',
+      priorityRank: input.priorityRank ?? null,
+      completedAt: input.completedAt ? new Date(input.completedAt) : null,
+      requirementId: input.requirementId ?? null,
+      requirementPriority: input.requirementPriority ?? null,
+      assigneeIds: [],
+      tags: [],
+      customFields: {},
+      dependencies: [],
+      externalLinks: [],
+      createdAt: now,
+      updatedAt: now,
+      createdBy: input.createdBy,
+    }).returning();
+  } catch (err) {
+    if (isRequirementIdUniqueViolation(err)) {
+      throw new RequirementIdConflictError(input.requirementId as string);
+    }
+    throw err;
+  }
 
   // Add to parent's children_order
   const [parent] = await handle
@@ -263,6 +333,8 @@ export interface UpdateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  requirementId?: string | null;
+  requirementPriority?: 'must' | 'should' | 'could' | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -311,6 +383,17 @@ export async function updateNode(
     delete input.tagsRemove;
   }
 
+  // Per-map uniqueness of requirementId (application-level guard).
+  if (input.requirementId != null) {
+    const [row] = await handle
+      .select({ mapId: nodes.mapId })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    if (row) {
+      await assertRequirementIdAvailable(handle, row.mapId as string, input.requirementId, nodeId);
+    }
+  }
+
   // Auto-derive status from percentComplete when status is not explicitly set
   // in this update. See deriveAutoStatus for the exact rules.
   if (input.percentComplete !== undefined && input.status === undefined) {
@@ -356,6 +439,8 @@ export async function updateNode(
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
   if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
   if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
+  if (input.requirementId !== undefined) updates.requirementId = input.requirementId;
+  if (input.requirementPriority !== undefined) updates.requirementPriority = input.requirementPriority;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
@@ -433,7 +518,15 @@ export async function updateNode(
       ? and(eq(nodes.id, nodeId), notDeleted)
       : and(eq(nodes.id, nodeId), eq(nodes.revision, expectedRevision), notDeleted);
 
-  const [row] = await handle.update(nodes).set(updates).where(where).returning();
+  let row;
+  try {
+    [row] = await handle.update(nodes).set(updates).where(where).returning();
+  } catch (err) {
+    if (isRequirementIdUniqueViolation(err)) {
+      throw new RequirementIdConflictError(input.requirementId as string);
+    }
+    throw err;
+  }
   if (row) {
     // Triage cache invalidation (#92, #93). Same rationale as createNode —
     // a depth-1 node's title/description may have just changed, which

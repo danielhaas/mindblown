@@ -487,6 +487,149 @@ server.tool(
 );
 
 server.tool(
+  'requirements_overview',
+  'Business-facing requirements register: every node carrying a requirementId, grouped by top-level branch (chapter). Per requirement: MoSCoW priority, derived status (done ≙ Umgesetzt / partial ≙ Teilweise / open ≙ Offen — from progress rollup, never stored), progress %, remaining effort, and linked GitHub issues. Answers "which requirements exist and where do they stand?" without the full get_map dump.',
+  {
+    mapId: z.string().describe('The map ID'),
+    status: z
+      .enum(['open', 'partial', 'done'])
+      .optional()
+      .describe('Only requirements in this derived status'),
+    requirementPriority: z
+      .enum(['must', 'should', 'could'])
+      .optional()
+      .describe('Only requirements with this MoSCoW priority'),
+  },
+  async ({ mapId, status, requirementPriority }) => {
+    try {
+      const data = await api.getMap(mapId);
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      const rootId = data.map.rootNodeId;
+      const unit = data.map.effortUnit ?? 'units';
+
+      const requirements = data.nodes.filter((n) => n.requirementId != null);
+      if (requirements.length === 0) {
+        return toolResult(
+          `No requirements in map ${mapId}. Mark nodes as requirements by setting requirementId via update_node (e.g. "MAN-01").`,
+        );
+      }
+
+      // Top-level chapter = the child-of-root ancestor. Requirements that
+      // are themselves children of root (or the root) group under their
+      // own text.
+      const chapterOf = (id: string): string => {
+        let cur = nodeById.get(id);
+        while (cur && cur.parentId && cur.parentId !== rootId) {
+          cur = nodeById.get(cur.parentId);
+        }
+        return cur?.text ?? '(unknown)';
+      };
+
+      // Progress: rollup for parents, own percentComplete for leaves.
+      const progressOf = (n: (typeof requirements)[number]): number =>
+        (n.childrenIds?.length ?? 0) > 0 ? n.computedProgress : (n.percentComplete ?? 0);
+
+      const statusOf = (progress: number): 'open' | 'partial' | 'done' =>
+        progress >= 100 ? 'done' : progress > 0 ? 'partial' : 'open';
+
+      // Unestimated leaves in a requirement's subtree — flags where the
+      // effort/remaining numbers under-count (null leaves carry 0 effort
+      // in computedEffort).
+      const unestimatedLeaves = (id: string): number => {
+        let count = 0;
+        const stack = [id];
+        while (stack.length) {
+          const n = nodeById.get(stack.pop()!);
+          if (!n) continue;
+          if ((n.childrenIds?.length ?? 0) === 0) {
+            if (n.effortEstimate == null) count++;
+          } else {
+            stack.push(...n.childrenIds);
+          }
+        }
+        return count;
+      };
+
+      let rows = requirements.map((n) => {
+        const progress = progressOf(n);
+        return {
+          node: n,
+          chapter: chapterOf(n.id),
+          progress,
+          status: statusOf(progress),
+          remaining: n.computedEffort * (1 - progress / 100),
+          unestimated: unestimatedLeaves(n.id),
+          ghLinks: (n.externalLinks ?? [])
+            .filter((l) => l.provider === 'github')
+            .map((l) => l.externalId),
+        };
+      });
+
+      const totalByStatus = { done: 0, partial: 0, open: 0 };
+      for (const r of rows) totalByStatus[r.status]++;
+
+      if (status) rows = rows.filter((r) => r.status === status);
+      if (requirementPriority) {
+        rows = rows.filter((r) => r.node.requirementPriority === requirementPriority);
+      }
+
+      const byId = (a: (typeof rows)[number], b: (typeof rows)[number]) =>
+        (a.node.requirementId ?? '').localeCompare(b.node.requirementId ?? '', undefined, {
+          numeric: true,
+        });
+
+      const chapters = new Map<string, typeof rows>();
+      for (const r of [...rows].sort(byId)) {
+        const list = chapters.get(r.chapter) ?? [];
+        list.push(r);
+        chapters.set(r.chapter, list);
+      }
+
+      const lines: string[] = [];
+      lines.push(`Requirements register — ${data.map.name}`);
+      lines.push(
+        `${requirements.length} requirement(s): ${totalByStatus.done} done / ${totalByStatus.partial} partial / ${totalByStatus.open} open`,
+      );
+      if (status || requirementPriority) {
+        const filters = [
+          status ? `status=${status}` : null,
+          requirementPriority ? `requirementPriority=${requirementPriority}` : null,
+        ].filter(Boolean);
+        lines.push(`Showing ${rows.length} after filter (${filters.join(', ')})`);
+      }
+
+      const statusMark = { done: '✓ done', partial: '◐ partial', open: '○ open' } as const;
+      for (const [chapter, list] of chapters) {
+        const doneCount = list.filter((r) => r.status === 'done').length;
+        lines.push('');
+        lines.push(`## ${chapter} (${list.length} req, ${doneCount} done)`);
+        for (const r of list) {
+          const prio = r.node.requirementPriority ? ` [${r.node.requirementPriority}]` : '';
+          const parts = [
+            `${r.node.requirementId}${prio} ${statusMark[r.status]} ${r.progress.toFixed(0)}%`,
+            `— ${r.node.text} (id: ${r.node.id})`,
+          ];
+          if (r.status !== 'done' && r.remaining > 0) {
+            parts.push(`· ${r.remaining.toFixed(1)} ${unit} remaining`);
+          }
+          if (r.unestimated > 0) {
+            parts.push(`· ⚠ ${r.unestimated} unestimated leaf(s) — effort under-counts`);
+          }
+          if (r.ghLinks.length > 0) {
+            parts.push(`· gh: ${r.ghLinks.join(', ')}`);
+          }
+          lines.push(`  ${parts.join(' ')}`);
+        }
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'completion_forecast',
   'Forecast "when will it be done?" for a node/subtree/version. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version or node dueDates), and slip vs target. Scope with one of nodeId or versionId; omit both to forecast the whole map.',
   {

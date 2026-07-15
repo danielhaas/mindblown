@@ -761,5 +761,28 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS linked_pr JSONB
   `);
 
+  // ── Requirements register ──────────────────────────────────────
+  // requirement_id: stable business requirement ID (e.g. 'MAN-01');
+  // non-null marks the node as a requirement. requirement_priority:
+  // MoSCoW 'must' | 'should' | 'could'. Per-map uniqueness of
+  // requirement_id is enforced application-level in db/nodes.ts.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS requirement_id TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS requirement_priority TEXT
+  `);
+  // DB-level backstop for per-map requirement_id uniqueness. The
+  // application-level precheck in db/nodes.ts gives friendly errors on
+  // the sequential path, but concurrent creates (MCP pipelines tool
+  // calls) can both pass the precheck — observed in verification. The
+  // partial index closes that race; 23505 on this index is mapped back
+  // to RequirementIdConflictError in db/nodes.ts.
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS nodes_map_requirement_id_unique
+      ON nodes (map_id, requirement_id)
+      WHERE requirement_id IS NOT NULL AND deleted_at IS NULL
+  `);
+
   console.log('[db] Migrations complete.');
 }

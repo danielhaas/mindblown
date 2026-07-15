@@ -16,6 +16,7 @@ import { QuickAdd } from './QuickAdd.js';
 import { HillChart } from './HillChart.js';
 import { WorkloadView } from './WorkloadView.js';
 import { ReleasesView } from './ReleasesView.js';
+import { RequirementsView } from './RequirementsView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
@@ -856,6 +857,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'kanban', label: 'Kanban', enabled: true },
   { id: 'gantt', label: 'Gantt', enabled: true },
   { id: 'releases', label: 'Releases', enabled: true },
+  { id: 'requirements', label: 'Requirements', enabled: true },
   { id: 'list', label: 'List', enabled: false },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -2113,6 +2115,7 @@ export function App() {
           {activeView === 'kanban' && <KanbanView />}
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'releases' && <ReleasesView />}
+          {activeView === 'requirements' && <RequirementsView />}
           {activeView === 'list' && <ListView />}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}

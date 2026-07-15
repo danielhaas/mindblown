@@ -542,10 +542,18 @@ export function createNode(
   text: string,
   position?: number,
   coords?: { x: number; y: number },
+  /**
+   * Extra node fields to set atomically at create time (e.g.
+   * requirementId). Preferred over a follow-up updateNode when the
+   * caller only has a temp id — the store skips the API for temp ids,
+   * so post-create enrichment can silently fail to persist.
+   */
+  fields?: Partial<Node>,
 ): Promise<Node> {
   return request<Node>(`/api/maps/${mapId}/nodes`, {
     method: 'POST',
     body: JSON.stringify({
+      ...(fields ?? {}),
       parentId,
       text,
       createdBy: 'current-user',

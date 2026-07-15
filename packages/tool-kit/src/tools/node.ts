@@ -28,6 +28,18 @@ export const createNodeTool = defineTool({
       .describe(
         'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear earlier. Use (A.rank + B.rank) / 2 for midpoint insertion. null = no explicit rank (sorts after ranked siblings).',
       ),
+    requirementId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        'Stable business requirement ID (e.g. "MAN-01"). Setting this marks the node as a requirement: it appears in the Requirements view and requirements_overview. Unique per map — creating a duplicate is rejected with REQUIREMENT_ID_CONFLICT.',
+      ),
+    requirementPriority: z
+      .enum(['must', 'should', 'could'])
+      .nullable()
+      .optional()
+      .describe('MoSCoW requirement priority (Muss/Soll/Kann). Only meaningful alongside requirementId.'),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -97,6 +109,18 @@ export const updateNodeTool = defineTool({
       .describe(
         'Fractional rank for sibling ordering within the same parent (Gantt slice 1). Lower numbers appear first. Use (A.rank + B.rank) / 2 to insert between two nodes. null clears the rank.',
       ),
+    requirementId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        'Stable business requirement ID (e.g. "MAN-01"). Setting this marks the node as a requirement: it appears in the Requirements view and requirements_overview. Unique per map — a duplicate is rejected with REQUIREMENT_ID_CONFLICT. null clears the requirement marker.',
+      ),
+    requirementPriority: z
+      .enum(['must', 'should', 'could'])
+      .nullable()
+      .optional()
+      .describe('MoSCoW requirement priority (Muss/Soll/Kann). null clears it.'),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())
