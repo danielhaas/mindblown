@@ -787,5 +787,32 @@ export async function runMigrations(): Promise<void> {
       WHERE requirement_id IS NOT NULL AND deleted_at IS NULL
   `);
 
+  // ── Requirement acceptances (Abnahme) ──────────────────────────
+  // Append-only sign-off history per requirement node per user.
+  // Active acceptance = revoked_at IS NULL; the partial unique index
+  // guarantees at most one active acceptance per (node, user) even
+  // under concurrent accepts.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS requirement_acceptances (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      node_id UUID NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+      user_id UUID NOT NULL REFERENCES users(id),
+      accepted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      progress_at_acceptance REAL NOT NULL,
+      node_revision_at_acceptance INTEGER NOT NULL,
+      revoked_at TIMESTAMPTZ
+    )
+  `);
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS requirement_acceptances_active_unique
+      ON requirement_acceptances (node_id, user_id)
+      WHERE revoked_at IS NULL
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS requirement_acceptances_map_idx
+      ON requirement_acceptances (map_id)
+  `);
+
   console.log('[db] Migrations complete.');
 }

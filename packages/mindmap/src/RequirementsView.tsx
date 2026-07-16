@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -71,7 +71,33 @@ export function RequirementsView() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
   const effortUnit = useMindmapStore((s) => s.currentMap?.effortUnit ?? 'days');
 
+  const user = useMindmapStore((s) => s.user);
+  const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
+  const [acceptanceFilter, setAcceptanceFilter] = useState<'' | 'none' | 'mine-open'>('');
   const [exporting, setExporting] = useState(false);
+
+  useEffect(() => {
+    if (!currentMapId) return;
+    let cancelled = false;
+    api
+      .fetchAcceptances(currentMapId)
+      .then((r) => !cancelled && setAcceptances(r.acceptances))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentMapId]);
+
+  const accByNode = useMemo(() => {
+    const m = new Map<string, api.AcceptanceRow[]>();
+    for (const a of acceptances) {
+      const list = m.get(a.nodeId) ?? [];
+      list.push(a);
+      m.set(a.nodeId, list);
+    }
+    return m;
+  }, [acceptances]);
+
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
@@ -136,12 +162,19 @@ export function RequirementsView() {
 
   const filteredRows = useMemo(
     () =>
-      allRows.filter(
-        (r) =>
-          (!statusFilter || r.status === statusFilter) &&
-          (!priorityFilter || r.node.requirementPriority === priorityFilter),
-      ),
-    [allRows, statusFilter, priorityFilter],
+      allRows.filter((r) => {
+        if (statusFilter && r.status !== statusFilter) return false;
+        if (priorityFilter && r.node.requirementPriority !== priorityFilter) return false;
+        if (acceptanceFilter) {
+          const accs = accByNode.get(r.node.id) ?? [];
+          if (acceptanceFilter === 'none' && accs.length > 0) return false;
+          if (acceptanceFilter === 'mine-open' && accs.some((a) => a.userId === user?.id)) {
+            return false;
+          }
+        }
+        return true;
+      }),
+    [allRows, statusFilter, priorityFilter, acceptanceFilter, accByNode, user],
   );
 
   // Depth-first tree order — used to sort chapter groups so the register
@@ -188,6 +221,29 @@ export function RequirementsView() {
       ? (nodes[rootNodeId]?.childrenIds ?? []).map((id) => nodes[id]).filter(Boolean)
       : [];
   }, [allRows, nodes, rootNodeId, dfsOrder]);
+
+  const toggleAcceptance = async (row: ReqRow) => {
+    if (!currentMapId || !user) return;
+    const mine = (accByNode.get(row.node.id) ?? []).find((a) => a.userId === user.id);
+    try {
+      if (mine) {
+        await api.revokeAcceptance(currentMapId, row.node.id);
+        setAcceptances((prev) => prev.filter((a) => a.id !== mine.id));
+      } else {
+        if (
+          row.status !== 'done' &&
+          !window.confirm(`Status ist ${STATUS_LABEL[row.status]} — trotzdem abnehmen?`)
+        ) {
+          return;
+        }
+        const created = await api.acceptRequirement(currentMapId, row.node.id);
+        setAcceptances((prev) => [...prev, created]);
+      }
+    } catch {
+      // Refresh on conflict (e.g. accepted elsewhere) — server state wins.
+      api.fetchAcceptances(currentMapId).then((r) => setAcceptances(r.acceptances)).catch(() => {});
+    }
+  };
 
   const jumpToNode = (node: Node) => {
     setActiveView('mindmap');
@@ -254,6 +310,15 @@ export function RequirementsView() {
             <option value="must">Must</option>
             <option value="should">Should</option>
             <option value="could">Could</option>
+          </select>
+          <select
+            value={acceptanceFilter}
+            onChange={(e) => setAcceptanceFilter(e.target.value as '' | 'none' | 'mine-open')}
+            style={filterSelectStyle}
+          >
+            <option value="">Abnahme: alle</option>
+            <option value="none">Nicht abgenommen</option>
+            <option value="mine-open">Meine Abnahme offen</option>
           </select>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -367,6 +432,7 @@ export function RequirementsView() {
                 <th style={{ ...thStyle, width: 130 }}>Progress</th>
                 <th style={{ ...thStyle, width: 130, textAlign: 'right' }}>Remaining</th>
                 <th style={{ ...thStyle, width: 140 }}>GitHub</th>
+                <th style={{ ...thStyle, width: 170 }}>Abnahme</th>
               </tr>
             </thead>
             <tbody>
@@ -380,6 +446,9 @@ export function RequirementsView() {
                   setEditingCell={setEditingCell}
                   updateNode={updateNode}
                   jumpToNode={jumpToNode}
+                  accByNode={accByNode}
+                  currentUserId={user?.id ?? null}
+                  toggleAcceptance={toggleAcceptance}
                 />
               ))}
             </tbody>
@@ -400,6 +469,9 @@ function ChapterGroup({
   setEditingCell,
   updateNode,
   jumpToNode,
+  accByNode,
+  currentUserId,
+  toggleAcceptance,
 }: {
   chapterText: string;
   rows: ReqRow[];
@@ -408,12 +480,15 @@ function ChapterGroup({
   setEditingCell: (cell: { nodeId: string; field: string } | null) => void;
   updateNode: (id: string, updates: Partial<Node>) => void;
   jumpToNode: (node: Node) => void;
+  accByNode: Map<string, api.AcceptanceRow[]>;
+  currentUserId: string | null;
+  toggleAcceptance: (row: ReqRow) => void;
 }) {
   const done = rows.filter((r) => r.status === 'done').length;
   return (
     <>
       <tr>
-        <td colSpan={7} style={groupHeaderStyle}>
+        <td colSpan={8} style={groupHeaderStyle}>
           {chapterText}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
             {rows.length} req · {done} done
@@ -638,6 +713,60 @@ function ChapterGroup({
                 </a>
               ))
             )}
+          </td>
+
+          {/* Abnahme — per-user sign-off chips; own chip toggles */}
+          <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+            {(accByNode.get(r.node.id) ?? []).map((a) => {
+              const stale =
+                Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
+                r.node.revision !== a.nodeRevisionAtAcceptance;
+              const own = a.userId === currentUserId;
+              const label = `${a.userName.split(' ')[0]} ✓ ${a.acceptedAt.slice(5, 10).split('-').reverse().join('.')}.`;
+              return (
+                <span
+                  key={a.id}
+                  onClick={own ? () => toggleAcceptance(r) : undefined}
+                  title={
+                    (stale ? 'Seit Abnahme geändert! ' : '') +
+                    `${a.userName}, abgenommen ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)}%` +
+                    (own ? ' — klicken zum Zurückziehen' : '')
+                  }
+                  style={{
+                    display: 'inline-block',
+                    padding: '2px 8px',
+                    marginRight: 4,
+                    borderRadius: 10,
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: own ? 'pointer' : 'default',
+                    background: stale ? '#fef3c7' : '#d1fae5',
+                    color: stale ? '#92400e' : '#065f46',
+                  }}
+                >
+                  {stale ? '⚠ ' : ''}
+                  {label}
+                </span>
+              );
+            })}
+            {currentUserId &&
+              !(accByNode.get(r.node.id) ?? []).some((a) => a.userId === currentUserId) && (
+                <button
+                  onClick={() => toggleAcceptance(r)}
+                  title="Requirement abnehmen (persönliche Abnahme, Status bleibt abgeleitet)"
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 10,
+                    fontSize: 11,
+                    border: '1px dashed #cbd5e1',
+                    background: 'transparent',
+                    color: '#64748b',
+                    cursor: 'pointer',
+                  }}
+                >
+                  ✓ Abnehmen
+                </button>
+              )}
           </td>
         </tr>
       ))}

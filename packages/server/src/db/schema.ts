@@ -447,3 +447,23 @@ export const cycles = pgTable('cycles', {
   status: text('status').notNull().default('planned'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Requirement acceptances (Abnahme) ──────────────────────────────
+//
+// Human sign-off per requirement node per user — orthogonal to the
+// derived status. Append-only history: revoking sets revoked_at, a
+// re-acceptance is a NEW row. Active acceptance = revoked_at IS NULL
+// (enforced unique per node+user via partial index in migrate.ts).
+// progress/revision snapshots power the "changed since acceptance"
+// staleness flag on the read side.
+
+export const requirementAcceptances = pgTable('requirement_acceptances', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  nodeId: uuid('node_id').notNull().references(() => nodes.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id),
+  acceptedAt: timestamp('accepted_at', { withTimezone: true }).notNull().defaultNow(),
+  progressAtAcceptance: real('progress_at_acceptance').notNull(),
+  nodeRevisionAtAcceptance: integer('node_revision_at_acceptance').notNull(),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+});

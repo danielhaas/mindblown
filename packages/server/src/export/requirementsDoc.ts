@@ -14,6 +14,29 @@ import {
 
 // ── Register data (shared by both renderers) ─────────────────────
 
+export interface AcceptanceInfo {
+  userId: string;
+  userName: string;
+  acceptedAt: string; // ISO
+  progressAtAcceptance: number;
+  nodeRevisionAtAcceptance: number;
+}
+
+/**
+ * An acceptance is stale when the requirement changed materially after
+ * sign-off: derived progress moved by more than one point, or the node
+ * itself was edited (revision bump). Pure — shared by export, MCP
+ * overview and (conceptually) the register UI.
+ */
+export function acceptanceIsStale(
+  acc: AcceptanceInfo,
+  currentProgress: number,
+  currentRevision: number,
+): boolean {
+  if (Math.abs(currentProgress - acc.progressAtAcceptance) > 1) return true;
+  return currentRevision !== acc.nodeRevisionAtAcceptance;
+}
+
 export interface RegisterRow {
   id: string;
   text: string;
@@ -21,6 +44,8 @@ export interface RegisterRow {
   status: string;
   aufwand: string;
   rest: string;
+  /** e.g. "D. Haas ✓ 15.07." — one entry per active acceptance, ⚠-suffixed when stale. */
+  abnahme: string[];
 }
 
 export interface RegisterData {
@@ -42,7 +67,12 @@ export function buildRegisterData(
   map: MindMap,
   nodes: CoreNode[],
   computed: Map<NodeId, ComputedNodeValues>,
+  acceptances: Array<AcceptanceInfo & { nodeId: string }> = [],
 ): RegisterData {
+  const accByNode = new Map<string, Array<AcceptanceInfo & { nodeId: string }>>();
+  for (const a of acceptances) {
+    (accByNode.get(a.nodeId) ?? accByNode.set(a.nodeId, []).get(a.nodeId)!).push(a);
+  }
   const byId = new Map(nodes.map((n) => [n.id, n]));
   const requirements = nodes.filter((n) => n.requirementId != null);
 
@@ -87,6 +117,11 @@ export function buildRegisterData(
           const p = progressOf(n);
           const status = statusOf(p);
           const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
+          const abnahme = (accByNode.get(n.id) ?? []).map((a) => {
+            const d = a.acceptedAt.slice(5, 10).split('-').reverse().join('.');
+            const stale = acceptanceIsStale(a, p, n.revision) ? ' ⚠' : '';
+            return `${a.userName} ✓ ${d}.${stale}`;
+          });
           return {
             id: n.requirementId ?? '',
             text: (n.requirementText ?? n.text).replace(/\n/g, ' '),
@@ -94,6 +129,7 @@ export function buildRegisterData(
             status,
             aufwand: sizeOf(effort),
             rest: status === 'Umgesetzt' ? '—' : sizeOf(effort * (1 - p / 100)),
+            abnahme,
           };
         }),
     }));
@@ -136,11 +172,11 @@ export function renderMarkdown(data: RegisterData): string {
     L.push('');
     L.push(`## ${i + 1}. ${ch.name}`);
     L.push('');
-    L.push('| ID | Anforderung | Priorität | Status | Aufwand | Rest |');
-    L.push('|---|---|---|---|---|---|');
+    L.push('| ID | Anforderung | Priorität | Status | Aufwand | Rest | Abnahme |');
+    L.push('|---|---|---|---|---|---|---|');
     for (const r of ch.rows) {
       L.push(
-        `| ${r.id} | ${r.text.replace(/\|/g, '\\|')} | ${r.prio} | ${r.status} | ${r.aufwand} | ${r.rest} |`,
+        `| ${r.id} | ${r.text.replace(/\|/g, '\\|')} | ${r.prio} | ${r.status} | ${r.aufwand} | ${r.rest} | ${r.abnahme.join(' · ') || '—'} |`,
       );
     }
   });
@@ -218,11 +254,12 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
       tableHeader: true,
       children: [
         cell('ID', { bold: true, fill: 'e2e8f0', width: 9 }),
-        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: 55 }),
+        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: 43 }),
         cell('Priorität', { bold: true, fill: 'e2e8f0', width: 9 }),
         cell('Status', { bold: true, fill: 'e2e8f0', width: 11 }),
-        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: 8 }),
-        cell('Rest', { bold: true, fill: 'e2e8f0', width: 8 }),
+        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: 7 }),
+        cell('Rest', { bold: true, fill: 'e2e8f0', width: 7 }),
+        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: 14 }),
       ],
     });
     const rows = ch.rows.map(
@@ -235,6 +272,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
             cell(r.status, { fill: STATUS_FILL[r.status] }),
             cell(r.aufwand),
             cell(r.rest),
+            cell(r.abnahme.join('\n') || '—'),
           ],
         }),
     );

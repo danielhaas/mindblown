@@ -130,6 +130,7 @@ export interface NodeWithComputed {
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;
+  revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
   requirementPriority: 'must' | 'should' | 'could' | null;
@@ -311,6 +312,33 @@ async function requestText(path: string): Promise<string> {
   const res = await fetch(`${ctx.baseUrl}${path}`, { headers });
   if (!res.ok) throw new ApiError(res.status, res.statusText);
   return res.text();
+}
+
+export interface AcceptanceRow {
+  id: string;
+  nodeId: string;
+  userId: string;
+  userName: string;
+  acceptedAt: string;
+  progressAtAcceptance: number;
+  nodeRevisionAtAcceptance: number;
+}
+
+export function getAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
+  return request<{ acceptances: AcceptanceRow[] }>(`/api/maps/${mapId}/acceptances`);
+}
+
+export function acceptRequirement(mapId: string, nodeId: string): Promise<AcceptanceRow> {
+  return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export function revokeAcceptance(mapId: string, nodeId: string): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
+    method: 'DELETE',
+  });
 }
 
 export function exportRequirements(mapId: string): Promise<string> {
