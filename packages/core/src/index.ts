@@ -89,4 +89,6 @@ export {
   FOCUS_FACTOR_MAX,
   DEFAULT_FOCUS_FACTOR,
   clampFocusFactor,
+  scopedCapacityDays,
 } from './velocity.js';
+export type { ScopedCapacityInput } from './velocity.js';
