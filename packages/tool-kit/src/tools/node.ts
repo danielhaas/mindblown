@@ -40,6 +40,11 @@ export const createNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('MoSCoW requirement priority (Muss/Soll/Kann). Only meaningful alongside requirementId.'),
+    requirementText: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Business phrasing of the requirement for the register/doc export. Falls back to the node text when null. Not synced to GitHub.'),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -121,6 +126,11 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('MoSCoW requirement priority (Muss/Soll/Kann). null clears it.'),
+    requirementText: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Business phrasing for the register/doc export (falls back to node text). Safe to edit freely — never pushed to GitHub. null clears it.'),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())

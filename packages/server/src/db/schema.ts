@@ -194,6 +194,8 @@ export const nodes = pgTable('nodes', {
   // requirement_priority: MoSCoW priority — 'must' | 'should' | 'could'.
   requirementId: text('requirement_id'),
   requirementPriority: text('requirement_priority'),
+  // Business phrasing for register/doc export; NOT GitHub-synced.
+  requirementText: text('requirement_text'),
 
   // ── Orchestration substrate (#111) ───────────────────────────
   // claimed_by_session: session ID that owns this node for active work.

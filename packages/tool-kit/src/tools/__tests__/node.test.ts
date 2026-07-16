@@ -575,6 +575,18 @@ describe('requirement fields', () => {
     });
   });
 
+  it('forwards requirementText on update', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      requirementText: 'Mandate können liquidiert werden.',
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      requirementText: 'Mandate können liquidiert werden.',
+    });
+  });
+
   it('omits requirement fields from the backend call when not provided', async () => {
     const recorder = makeRecordingBackend();
     await updateNodeTool.handler(recorder.backend, {

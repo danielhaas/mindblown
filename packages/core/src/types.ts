@@ -224,6 +224,14 @@ export interface Node {
   /** MoSCoW-style requirement priority (Muss/Soll/Kann). */
   requirementPriority: 'must' | 'should' | 'could' | null;
 
+  /**
+   * Business phrasing of the requirement for the register and doc export.
+   * Kept separate from `text` (which may be a ticket-style title synced to
+   * GitHub) and deliberately NOT in the GitHub outbound SYNC_FIELDS.
+   * null = fall back to `text`.
+   */
+  requirementText: string | null;
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this

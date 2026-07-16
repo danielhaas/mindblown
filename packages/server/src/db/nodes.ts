@@ -203,6 +203,7 @@ export interface CreateNodeInput {
   completedAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
+  requirementText?: string | null;
 }
 
 export async function createNode(
@@ -244,6 +245,7 @@ export async function createNode(
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
+      requirementText: input.requirementText ?? null,
       assigneeIds: [],
       tags: [],
       customFields: {},
@@ -335,6 +337,7 @@ export interface UpdateNodeInput {
   completedAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
+  requirementText?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -441,6 +444,7 @@ export async function updateNode(
   if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
   if (input.requirementId !== undefined) updates.requirementId = input.requirementId;
   if (input.requirementPriority !== undefined) updates.requirementPriority = input.requirementPriority;
+  if (input.requirementText !== undefined) updates.requirementText = input.requirementText;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

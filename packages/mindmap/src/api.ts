@@ -534,6 +534,19 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
   });
 }
 
+/**
+ * Fetch the requirements register rendered as a Markdown
+ * Anforderungsdokument. Raw text — not JSON.
+ */
+export async function exportRequirements(mapId: string): Promise<string> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/requirements-export`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Export failed: HTTP ${res.status}`);
+  return res.text();
+}
+
 // ── Nodes ────────────────────────────────────────────────────────
 
 export function createNode(

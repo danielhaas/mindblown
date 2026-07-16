@@ -75,6 +75,7 @@ function toNodeWithComputed(
     updatedAt: toIsoString((node as unknown as { updatedAt: unknown }).updatedAt),
     requirementId: node.requirementId,
     requirementPriority: node.requirementPriority,
+    requirementText: node.requirementText,
     claimedBySession: node.claimedBySession,
     claimedAt: node.claimedAt,
     computedEffort: computed?.computedEffort ?? 0,
