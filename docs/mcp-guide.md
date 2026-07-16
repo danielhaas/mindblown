@@ -288,6 +288,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `status_digest` | Markdown status digest: done / in progress / behind / changes | `mapId`, `sinceDays?` |
 | `alert_digest` | Threshold-triggered alerts (slipped milestones, overdue, unassigned P0/P1) | `mapId` |
 | `risk_scan` | Stalled WIP, no-estimate leaves, overruns, fragile critical path | `mapId`, `nodeId?`, `versionId?`, `milestoneId?`, `stalledDays?` |
+| `plan_lint` | Plan-quality coach: 8 hygiene checks (unestimated/oversized leaves, stale progress, overdue-unreplanned, calibration drift, missing done-criteria, stale plan, missing dependencies), each with a teaching why + fix | `mapId`, `nodeId?`, `versionId?`, `stalledDays?`, `rule?`, `limit?` |
 | `scope_simulate` | In-memory what-if: before/after totals for a list of add/remove/update patches | `mapId`, `patches` |
 
 ### GitHub Integration Tools

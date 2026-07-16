@@ -1,6 +1,6 @@
 # Plan Linter — v1 Specification
 
-*Status: draft spec, not yet implemented. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
+*Status: surface 1 (`plan_lint` MCP tool) implemented; UI panel and moment-of-action nudges open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
 
 ---
 
