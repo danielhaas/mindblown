@@ -62,6 +62,10 @@ vi.mock('../../db/events.js', () => ({
   listEvents: vi.fn(async () => []),
 }));
 
+vi.mock('../../db/acceptances.js', () => ({
+  listActiveAcceptances: vi.fn(async () => []),
+}));
+
 interface DismissalRow {
   id: string;
   mapId: string;

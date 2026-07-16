@@ -1,6 +1,6 @@
 # Plan Linter — v1 Specification
 
-*Status: surfaces 1 (`plan_lint` MCP tool) and 2 (plan-health panel + dismissals) implemented; the engine lives server-side (`packages/server/src/lint/engine.ts`) and both surfaces consume `GET /api/maps/:id/lint`. Moment-of-action nudges (surface 3) open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
+*Status: surfaces 1 (`plan_lint` MCP tool) and 2 (plan-health panel + dismissals) implemented, plus the requirements pack (rules 9–11) and sprint (`cycleId`) scoping; the engine lives server-side (`packages/server/src/lint/engine.ts`) and both surfaces consume `GET /api/maps/:id/lint`. Moment-of-action nudges (surface 3) open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
 
 ---
 
@@ -39,6 +39,16 @@ Ordered basics-first: "when is it done / how much is left" hygiene before advanc
 | 6 | `no-done-criteria` | Leaf with estimate ≥ 2 days and empty description | info | "A task without a definition of done tends to be 90% finished forever — one sentence of 'done means…' prevents it." | Prompt description (links to requirements register where present) |
 | 7 | `stale-plan` | Map < 100% complete and no change_events at all in **14 days** | info | "A plan that isn't touched weekly is a document, not a plan — a 2-minute review keeps the forecast honest." | Suggest review (offer `status_digest`) |
 | 8 | `dates-without-dependencies` | Map has ≥ 10 dated leaves and zero dependencies | info | "Without dependencies the schedule assumes everything can happen in parallel — the critical path is what makes a finish date real." | Point at dependency creation |
+
+### Requirements pack (added 2026-07-16, evaluated map-wide)
+
+| # | Rule id | Fires when | Severity | Why-line (teaching sentence) | Fix action |
+|---|---|---|---|---|---|
+| 9 | `uncovered-requirement` | Incomplete `must`-requirement with zero estimated effort in its subtree | warn | "A requirement without estimated implementation work exists only on paper — the forecast has no idea it is missing." | Break into estimated children (ai_breakdown) |
+| 10 | `stale-acceptance` | Active acceptance whose node changed since sign-off (>1% progress drift or revision bump — same definition as the register) | warn | "A sign-off is a snapshot — when the work changes afterwards, the acceptance silently stops meaning anything." | Re-review with the acceptor: re-accept or revoke |
+| 11 | `unscheduled-must` | Incomplete `must`-requirement with no version tag (own or inherited) | info | "A must-requirement with no release assignment is committed scope floating outside every plan." | Assign a target version |
+
+Scoping also accepts `cycleId` (sprint) with the same ancestor-inheritance semantics — lint a sprint's contents before committing to it.
 
 Thresholds above are **opinionated defaults, not configuration**. v1 exposes only `stalledDays`-style overrides where `risk_scan` already does; no settings sprawl.
 

@@ -17,6 +17,10 @@ export const LINT_RULE_IDS = [
   'no-done-criteria',
   'stale-plan',
   'dates-without-dependencies',
+  // Requirements pack — evaluated map-wide (the register is map-global).
+  'uncovered-requirement',
+  'stale-acceptance',
+  'unscheduled-must',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 export type LintSeverity = 'warn' | 'info';
@@ -65,6 +69,15 @@ export interface LintDismissal {
   ruleId: string;
 }
 
+/** Active requirement sign-off (see db/acceptances.ts) for stale-acceptance. */
+export interface AcceptanceInfo {
+  nodeId: string;
+  userName: string;
+  acceptedAt: string;
+  progressAtAcceptance: number;
+  nodeRevisionAtAcceptance: number;
+}
+
 export interface LintOptions {
   map: {
     statusWorkflow?: Array<{ id: string; category: string }> | null;
@@ -74,8 +87,13 @@ export interface LintOptions {
   unitsPerDay: number;
   history: LintHistory;
   dismissals: LintDismissal[];
+  /** Active acceptances; omit to skip the stale-acceptance rule. */
+  acceptances?: AcceptanceInfo[];
+  /** Rolled-up progress per node (core computeTree); enables requirement rules on parent nodes. */
+  computedProgress?: Map<string, number>;
   nodeId?: string;
   versionId?: string;
+  cycleId?: string;
   stalledDays?: number;
   now?: Date;
 }
@@ -95,10 +113,10 @@ export const DEFAULT_STALLED_DAYS = 7;
 
 const isLeaf = (n: Node) => (n.childrenIds?.length ?? 0) === 0;
 
-/** Subtree + inherited-version scoping (same semantics as the MI suite). */
+/** Subtree + inherited version/cycle scoping (same semantics as the MI suite). */
 function scopeLeaves(
   nodes: Node[],
-  opts: { nodeId?: string; versionId?: string },
+  opts: { nodeId?: string; versionId?: string; cycleId?: string },
 ): { leaves: Node[]; scopeLabel: string } | { error: string } {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   let leaves: Node[];
@@ -122,17 +140,23 @@ function scopeLeaves(
     leaves = nodes.filter(isLeaf);
   }
 
+  // A leaf is in scope when it OR any ancestor carries the tag.
+  const inheritsTag = (leaf: Node, field: 'versionId' | 'cycleId', value: string): boolean => {
+    let cur: Node | undefined = leaf;
+    while (cur) {
+      if (cur[field] === value) return true;
+      cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+    }
+    return false;
+  };
+
   if (opts.versionId) {
     scopeLabel = `version ${opts.versionId}` + (opts.nodeId ? ` within ${scopeLabel}` : '');
-    const inherits = (leaf: Node): boolean => {
-      let cur: Node | undefined = leaf;
-      while (cur) {
-        if (cur.versionId === opts.versionId) return true;
-        cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-      }
-      return false;
-    };
-    leaves = leaves.filter(inherits);
+    leaves = leaves.filter((l) => inheritsTag(l, 'versionId', opts.versionId!));
+  }
+  if (opts.cycleId) {
+    scopeLabel = `sprint ${opts.cycleId} within ${scopeLabel}`;
+    leaves = leaves.filter((l) => inheritsTag(l, 'cycleId', opts.cycleId!));
   }
 
   return { leaves, scopeLabel };
@@ -143,9 +167,16 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   const stalledDays = opts.stalledDays ?? DEFAULT_STALLED_DAYS;
   const now = opts.now ?? new Date();
 
-  const scoped = scopeLeaves(nodes, { nodeId: opts.nodeId, versionId: opts.versionId });
+  const scoped = scopeLeaves(nodes, {
+    nodeId: opts.nodeId,
+    versionId: opts.versionId,
+    cycleId: opts.cycleId,
+  });
   if ('error' in scoped) return { error: scoped.error };
   const { leaves, scopeLabel } = scoped;
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const progressOf = (n: Node): number =>
+    opts.computedProgress?.get(n.id) ?? n.percentComplete ?? 0;
 
   const unit = map.effortUnit ?? 'units';
   const incomplete = leaves.filter((l) => (l.percentComplete ?? 0) < 100);
@@ -325,6 +356,82 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       datedLeaves.length >= MIN_DATED_LEAVES_FOR_DEPS && totalDeps === 0
         ? [mapFinding(`${datedLeaves.length} dated leaves, 0 dependencies`)]
         : [],
+  });
+
+  // ── Requirements pack (map-wide — the register is map-global) ──
+  const mustRequirements = nodes.filter(
+    (n) => n.requirementId != null && n.requirementPriority === 'must',
+  );
+  const subtreeEstimate = (root: Node): number => {
+    let sum = 0;
+    const stack = [root];
+    while (stack.length) {
+      const n = stack.pop()!;
+      if (isLeaf(n)) sum += n.effortEstimate ?? 0;
+      else for (const cid of n.childrenIds) {
+        const c = nodeById.get(cid);
+        if (c) stack.push(c);
+      }
+    }
+    return sum;
+  };
+  const hasVersionTag = (node: Node): boolean => {
+    let cur: Node | undefined = node;
+    while (cur) {
+      if (cur.versionId != null) return true;
+      cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+    }
+    return false;
+  };
+
+  // 9. uncovered-requirement
+  rules.push({
+    ruleId: 'uncovered-requirement',
+    severity: 'warn',
+    title: 'Must-requirements with no estimated work (map-level)',
+    why: 'A requirement without estimated implementation work exists only on paper — the forecast has no idea it is missing.',
+    fix: 'Break the requirement into estimated child tasks, or estimate the node itself.',
+    findings: mustRequirements
+      .filter((r) => progressOf(r) < 99.5 && subtreeEstimate(r) === 0)
+      .map((r) => finding(r, `${r.requirementId}: no estimated work in its subtree`)),
+  });
+
+  // 10. stale-acceptance — staleness mirrors the requirements register:
+  // progress moved by more than a point, or the node was edited (revision).
+  const acceptances = opts.acceptances ?? [];
+  rules.push({
+    ruleId: 'stale-acceptance',
+    severity: 'warn',
+    title: 'Accepted requirements changed since sign-off (map-level)',
+    why: 'A sign-off is a snapshot — when the work changes afterwards, the acceptance silently stops meaning anything.',
+    fix: 'Re-review with the acceptor: re-accept, or revoke until the change is verified.',
+    findings: acceptances
+      .map((a) => ({ a, node: nodeById.get(a.nodeId) }))
+      .filter((x): x is { a: AcceptanceInfo; node: Node } => x.node != null)
+      .filter(
+        ({ a, node }) =>
+          Math.abs(progressOf(node) - a.progressAtAcceptance) > 1 ||
+          node.revision !== a.nodeRevisionAtAcceptance,
+      )
+      .map(({ a, node }) =>
+        finding(
+          node,
+          `accepted by ${a.userName} on ${a.acceptedAt.slice(0, 10)} at ${a.progressAtAcceptance.toFixed(0)}% (rev ${a.nodeRevisionAtAcceptance}) — now ${progressOf(node).toFixed(0)}% (rev ${node.revision})`,
+        ),
+      ),
+    skipped: opts.acceptances == null ? 'acceptance data unavailable' : undefined,
+  });
+
+  // 11. unscheduled-must
+  rules.push({
+    ruleId: 'unscheduled-must',
+    severity: 'info',
+    title: 'Must-requirements with no target version (map-level)',
+    why: 'A must-requirement with no release assignment is committed scope floating outside every plan.',
+    fix: 'Tag it with a version so the release forecast owns it.',
+    findings: mustRequirements
+      .filter((r) => progressOf(r) < 99.5 && !hasVersionTag(r))
+      .map((r) => finding(r, `${r.requirementId}: no target version`)),
   });
 
   // ── Apply dismissals ──

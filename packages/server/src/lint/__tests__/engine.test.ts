@@ -39,6 +39,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     requirementText: null,
     claimedBySession: null,
     claimedAt: null,
+    revision: 0,
     ...overrides,
   } as Node;
 }
@@ -218,6 +219,80 @@ describe('computePlanLint — rules', () => {
   });
 });
 
+describe('computePlanLint — requirements pack', () => {
+  it('uncovered-requirement fires on incomplete must-requirements with zero subtree estimate', () => {
+    const report = lint(
+      [
+        makeNode({ id: 'root', childrenIds: ['bare', 'covered', 'should', 'done'] }),
+        // must-requirement, no estimate anywhere → fires
+        makeNode({ id: 'bare', parentId: 'root', requirementId: 'REQ-1', requirementPriority: 'must', childrenIds: ['bare-child'] }),
+        makeNode({ id: 'bare-child', parentId: 'bare' }),
+        // must-requirement with an estimated child → clean
+        makeNode({ id: 'covered', parentId: 'root', requirementId: 'REQ-2', requirementPriority: 'must', childrenIds: ['covered-child'] }),
+        makeNode({ id: 'covered-child', parentId: 'covered', effortEstimate: 3 }),
+        // should-requirement → out of scope for this rule
+        makeNode({ id: 'should', parentId: 'root', requirementId: 'REQ-3', requirementPriority: 'should' }),
+        // completed must-requirement → exempt
+        makeNode({ id: 'done', parentId: 'root', requirementId: 'REQ-4', requirementPriority: 'must', percentComplete: 100 }),
+      ],
+      { computedProgress: new Map([['done', 100]]) },
+    );
+    const r = rule(report, 'uncovered-requirement');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['bare']);
+    expect(r.findings[0].detail).toContain('REQ-1');
+  });
+
+  it('stale-acceptance mirrors the register: >1% progress drift or revision change', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['fresh', 'moved', 'edited'] }),
+      makeNode({ id: 'fresh', parentId: 'root', requirementId: 'R1', percentComplete: 50 }),
+      makeNode({ id: 'moved', parentId: 'root', requirementId: 'R2', percentComplete: 80 }),
+      makeNode({ id: 'edited', parentId: 'root', requirementId: 'R3', percentComplete: 50 }),
+    ] as ReturnType<typeof makeNode>[];
+    (nodes[3] as { revision: number }).revision = 7;
+    const acceptances = [
+      { nodeId: 'fresh', userName: 'Thomas', acceptedAt: '2026-07-01T00:00:00Z', progressAtAcceptance: 50, nodeRevisionAtAcceptance: 0 },
+      { nodeId: 'moved', userName: 'Thomas', acceptedAt: '2026-07-01T00:00:00Z', progressAtAcceptance: 50, nodeRevisionAtAcceptance: 0 },
+      { nodeId: 'edited', userName: 'Rita', acceptedAt: '2026-07-01T00:00:00Z', progressAtAcceptance: 50, nodeRevisionAtAcceptance: 0 },
+      { nodeId: 'gone', userName: 'Rita', acceptedAt: '2026-07-01T00:00:00Z', progressAtAcceptance: 50, nodeRevisionAtAcceptance: 0 },
+    ];
+    const report = lint(nodes, { acceptances });
+    const r = rule(report, 'stale-acceptance');
+    // fresh: unchanged → clean. moved: 50→80. edited: revision 0→7. gone: node deleted → skipped.
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['edited', 'moved']);
+    expect(r.findings.find((f) => f.nodeId === 'moved')!.detail).toContain('Thomas');
+  });
+
+  it('stale-acceptance is skipped (not empty-passed) without acceptance data', () => {
+    const report = lint([makeNode({ id: 'root' })]);
+    expect(rule(report, 'stale-acceptance').skipped).toBeTruthy();
+  });
+
+  it('unscheduled-must fires only without an own or inherited version tag', () => {
+    const report = lint([
+      makeNode({ id: 'root', childrenIds: ['epic', 'floating'] }),
+      makeNode({ id: 'epic', parentId: 'root', versionId: 'v1', childrenIds: ['tagged'] }),
+      // inherits v1 from epic → clean
+      makeNode({ id: 'tagged', parentId: 'epic', requirementId: 'R1', requirementPriority: 'must' }),
+      // no version anywhere up the chain → fires
+      makeNode({ id: 'floating', parentId: 'root', requirementId: 'R2', requirementPriority: 'must' }),
+    ]);
+    expect(rule(report, 'unscheduled-must').findings.map((f) => f.nodeId)).toEqual(['floating']);
+  });
+
+  it('requirement rules evaluate map-wide even under subtree scoping', () => {
+    const report = lint(
+      [
+        makeNode({ id: 'root', childrenIds: ['a', 'req'] }),
+        makeNode({ id: 'a', parentId: 'root' }),
+        makeNode({ id: 'req', parentId: 'root', requirementId: 'R9', requirementPriority: 'must' }),
+      ],
+      { nodeId: 'a' },
+    );
+    expect(rule(report, 'uncovered-requirement').findings.map((f) => f.nodeId)).toEqual(['req']);
+  });
+});
+
 describe('computePlanLint — scoping and dismissals', () => {
   const tree = () => [
     makeNode({ id: 'root', childrenIds: ['epicA', 'epicB'] }),
@@ -237,6 +312,21 @@ describe('computePlanLint — scoping and dismissals', () => {
   it('versionId scopes with ancestor inheritance', () => {
     const report = lint(tree(), { versionId: 'v1' });
     expect(rule(report, 'unestimated-leaf').findings.map((f) => f.nodeId).sort()).toEqual(['a1', 'a2']);
+  });
+
+  it('cycleId scopes with ancestor inheritance', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['epic', 'other'] }),
+      makeNode({ id: 'epic', parentId: 'root', cycleId: 's1', childrenIds: ['in1', 'in2'] }),
+      makeNode({ id: 'in1', parentId: 'epic' }),
+      makeNode({ id: 'in2', parentId: 'epic', cycleId: 's2' }),
+      makeNode({ id: 'other', parentId: 'root' }),
+    ];
+    const s1 = lint(nodes, { cycleId: 's1' });
+    expect(rule(s1, 'unestimated-leaf').findings.map((f) => f.nodeId).sort()).toEqual(['in1', 'in2']);
+    expect(s1.scopeLabel).toContain('sprint s1');
+    const s2 = lint(nodes, { cycleId: 's2' });
+    expect(rule(s2, 'unestimated-leaf').findings.map((f) => f.nodeId)).toEqual(['in2']);
   });
 
   it('unknown nodeId returns an error, not a report', () => {
