@@ -631,6 +631,9 @@ function PropertyPanelInner({
         {/* Sprint / Cycle */}
         <CycleField nodeId={nodeId} currentCycleId={node.cycleId} />
 
+        {/* Phase */}
+        <PhaseField nodeId={nodeId} currentPhaseId={node.phaseId} />
+
         {/* Divider */}
         <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
 
@@ -644,6 +647,43 @@ function PropertyPanelInner({
         <CommentsPanel mapId={node.mapId} nodeId={nodeId} />
       </div>
     </div>
+  );
+}
+
+// ── Phase Field ──────────────────────────────────────────────────
+//
+// Select over the map's PhaseDefs (statusWorkflow idiom), ordered by
+// position. Sits next to Version/Sprint — a phase is a lightweight
+// label reference (node.phaseId), not a heavy entity.
+
+function PhaseField({
+  nodeId,
+  currentPhaseId,
+}: {
+  nodeId: string;
+  currentPhaseId: string | null;
+}) {
+  const currentMap = useMindmapStore((s) => s.currentMap);
+  const updateNode = useMindmapStore((s) => s.updateNode);
+
+  const phases = [...(currentMap?.phases ?? [])].sort((a, b) => a.position - b.position);
+
+  return (
+    <Field label="Phase">
+      <select
+        value={currentPhaseId ?? ''}
+        onChange={(e) => updateNode(nodeId, { phaseId: e.target.value || null })}
+        onKeyDown={(e) => e.stopPropagation()}
+        style={selectStyle}
+      >
+        <option value="">None</option>
+        {phases.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name}
+          </option>
+        ))}
+      </select>
+    </Field>
   );
 }
 
