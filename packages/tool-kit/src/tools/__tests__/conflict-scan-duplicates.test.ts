@@ -45,6 +45,26 @@ describe('conflict_scan — map-wide duplicate sweep (no candidate)', () => {
   });
 });
 
+describe('conflict_scan — empty candidateNodeId means map-wide', () => {
+  // Jenna passed candidateNodeId: '' on 2026-07-16 and got a 404 node
+  // lookup — agents use '' for "none", the tool must treat it as omitted.
+  it("treats '' as a map-wide sweep", async () => {
+    let received: unknown = 'sentinel';
+    const backend = {
+      conflictScan: async (_m: string, c?: string) => {
+        received = c;
+        return { candidateId: null, candidateScopes: [], conflicts: [], duplicateLinks: [] };
+      },
+    } as unknown as ToolBackend;
+    const out = await conflictScanTool.handler(backend, {
+      mapId: 'm1',
+      candidateNodeId: '',
+    } as never);
+    expect(received).toBeUndefined();
+    expect(out).toContain('Map-wide duplicate sweep');
+  });
+});
+
 describe('conflict_scan — per-candidate duplicate section', () => {
   it('appends duplicates to a no-scope candidate result', async () => {
     const out = await conflictScanTool.handler(
