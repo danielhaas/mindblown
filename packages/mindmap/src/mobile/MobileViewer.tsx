@@ -1,20 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import * as api from '../api.js';
 import type { MapDetail, MapSummary, NodeWithComputed } from '../api.js';
 import { MobileListView } from './MobileListView.js';
 import { MobileKanbanView } from './MobileKanbanView.js';
 import { MobileGanttView } from './MobileGanttView.js';
 import { MobileMindmapView } from './MobileMindmapView.js';
+import { MobileRequirementsView } from './MobileRequirementsView.js';
 import { MobileNodeDetailSheet } from './MobileNodeDetailSheet.js';
+import { MobileAddNodeSheet } from './MobileAddNodeSheet.js';
 
-type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap';
+type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap' | 'requirements';
 
 const VIEW_KEY = 'mb_mobile_view';
+
+const VIEW_LABELS: Record<ViewKey, string> = {
+  list: 'List',
+  kanban: 'Kanban',
+  gantt: 'Gantt',
+  mindmap: 'Mindmap',
+  requirements: 'Reqs',
+};
 
 function readDefaultView(): ViewKey {
   try {
     const v = localStorage.getItem(VIEW_KEY);
-    if (v === 'list' || v === 'kanban' || v === 'gantt' || v === 'mindmap') return v;
+    if (v && v in VIEW_LABELS) return v as ViewKey;
   } catch {}
   return 'list';
 }
@@ -28,7 +38,7 @@ export function MobileViewer({ map }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewKey>(readDefaultView);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [reloadTick, setReloadTick] = useState(0);
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -45,7 +55,18 @@ export function MobileViewer({ map }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [map.id, reloadTick]);
+  }, [map.id]);
+
+  // Re-fetch without dropping the current detail, so edits made from the
+  // node sheet update rollups in place instead of flashing "Loading map…".
+  const silentReload = useCallback(() => {
+    api
+      .fetchMap(map.id)
+      .then(setDetail)
+      .catch(() => {
+        // Keep showing the stale tree; the next manual refresh surfaces errors.
+      });
+  }, [map.id]);
 
   const setViewPersist = (v: ViewKey) => {
     setView(v);
@@ -61,7 +82,7 @@ export function MobileViewer({ map }: Props) {
   return (
     <>
       <div className="mb-view-tabs" role="tablist">
-        {(['list', 'kanban', 'gantt', 'mindmap'] as const).map((k) => (
+        {(Object.keys(VIEW_LABELS) as ViewKey[]).map((k) => (
           <button
             key={k}
             role="tab"
@@ -69,18 +90,12 @@ export function MobileViewer({ map }: Props) {
             onClick={() => setViewPersist(k)}
             className="mb-view-tab"
           >
-            {k === 'list'
-              ? 'List'
-              : k === 'kanban'
-                ? 'Kanban'
-                : k === 'gantt'
-                  ? 'Gantt'
-                  : 'Mindmap'}
+            {VIEW_LABELS[k]}
           </button>
         ))}
         <button
           className="mb-view-refresh"
-          onClick={() => setReloadTick((t) => t + 1)}
+          onClick={silentReload}
           aria-label="Refresh"
           title="Refresh"
         >
@@ -130,15 +145,40 @@ export function MobileViewer({ map }: Props) {
               onSelect={setSelectedId}
             />
           )}
+          {view === 'requirements' && (
+            <MobileRequirementsView
+              nodes={nodes}
+              map={detail.map}
+              onSelect={setSelectedId}
+            />
+          )}
+
+          <button
+            className="mb-fab"
+            aria-label="Add node"
+            onClick={() => setAdding(true)}
+          >
+            +
+          </button>
         </>
       )}
 
-      {selectedNode && (
+      {selectedNode && detail && (
         <MobileNodeDetailSheet
           node={selectedNode}
-          map={detail!.map}
+          map={detail.map}
           byId={byId}
           onClose={() => setSelectedId(null)}
+          onChanged={silentReload}
+        />
+      )}
+
+      {adding && detail && (
+        <MobileAddNodeSheet
+          nodes={nodes}
+          map={detail.map}
+          onClose={() => setAdding(false)}
+          onCreated={silentReload}
         />
       )}
     </>
