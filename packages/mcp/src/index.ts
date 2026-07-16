@@ -1084,26 +1084,30 @@ const LINT_RULES = [
   'no-done-criteria',
   'stale-plan',
   'dates-without-dependencies',
+  'uncovered-requirement',
+  'stale-acceptance',
+  'unscheduled-must',
 ] as const;
 
 server.tool(
   'plan_lint',
-  'Check plan QUALITY (hygiene), not execution risk — the coaching counterpart to risk_scan. Runs 8 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies. Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree) or versionId; the map-level checks (calibration-drift, stale-plan, dates-without-dependencies) always evaluate the whole map. See docs/plan-linter.md for the rule rationale.',
+  'Check plan QUALITY (hygiene), not execution risk — the coaching counterpart to risk_scan. Runs 11 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, plus a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint); map-level checks (calibration-drift, stale-plan, dates-without-dependencies, the requirements pack) always evaluate the whole map. See docs/plan-linter.md for the rule rationale.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
+    cycleId: z.string().optional().describe('Scope to leaves assigned to this sprint/cycle (directly or via an ancestor) — lint a sprint before committing to it'),
     stalledDays: z.number().int().min(1).default(7).describe('Days without a progress update before in-progress work counts as stale (default 7)'),
-    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all eight'),
+    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all eleven'),
     limit: z.number().int().min(1).max(1000).default(20).describe('Max findings listed per rule (default 20)'),
   },
-  async ({ mapId, nodeId, versionId, stalledDays, rule, limit }) => {
+  async ({ mapId, nodeId, versionId, cycleId, stalledDays, rule, limit }) => {
     try {
       // The rules run server-side (packages/server/src/lint/engine.ts) so
       // the MCP tool and the plan-health panel share one engine; this
       // handler only formats. Dismissed findings (panel) are excluded
       // from counts and listings but summarized per rule.
-      const report = await api.getLint(mapId, { nodeId, versionId, stalledDays, rule });
+      const report = await api.getLint(mapId, { nodeId, versionId, cycleId, stalledDays, rule });
 
       const lines: string[] = [];
       lines.push(`Plan lint — ${report.scopeLabel}`);

@@ -10,9 +10,11 @@
  * nodes from the map, change-event digests, dismissals, unitsPerDay.
  */
 import type { FastifyInstance } from 'fastify';
+import { computeTree } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as lintDb from '../db/lint.js';
+import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
 import {
   computePlanLint,
@@ -58,7 +60,13 @@ export async function lintRoutes(app: FastifyInstance) {
   // ── GET /api/maps/:id/lint ─────────────────────────────────────
   app.get<{
     Params: { id: string };
-    Querystring: { nodeId?: string; versionId?: string; stalledDays?: string; rule?: string };
+    Querystring: {
+      nodeId?: string;
+      versionId?: string;
+      cycleId?: string;
+      stalledDays?: string;
+      rule?: string;
+    };
   }>('/api/maps/:id/lint', async (req, reply) => {
     const userId = req.userId;
     if (userId) {
@@ -94,10 +102,18 @@ export async function lintRoutes(app: FastifyInstance) {
     const unitsPerDay = data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
 
     const now = new Date();
-    const [history, dismissalRows] = await Promise.all([
+    const [history, dismissalRows, acceptances] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
+      // Best-effort: a failed acceptance load skips stale-acceptance
+      // (reported as such) instead of failing the whole lint run.
+      listActiveAcceptances(req.params.id).catch(() => undefined),
     ]);
+
+    // Rolled-up progress so requirement rules work on parent nodes too.
+    const computed = computeTree(data.nodes, data.map.healthThreshold);
+    const computedProgress = new Map<string, number>();
+    for (const [id, cv] of computed) computedProgress.set(id, cv.computedProgress);
 
     const report = computePlanLint({
       map: data.map,
@@ -105,8 +121,11 @@ export async function lintRoutes(app: FastifyInstance) {
       unitsPerDay,
       history,
       dismissals: dismissalRows.map((d) => ({ nodeId: d.nodeId, ruleId: d.ruleId })),
+      acceptances,
+      computedProgress,
       nodeId: req.query.nodeId,
       versionId: req.query.versionId,
+      cycleId: req.query.cycleId,
       stalledDays,
       now,
     });

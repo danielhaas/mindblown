@@ -723,11 +723,18 @@ export interface LintReport {
 
 export function getLint(
   mapId: string,
-  opts: { nodeId?: string; versionId?: string; stalledDays?: number; rule?: string } = {},
+  opts: {
+    nodeId?: string;
+    versionId?: string;
+    cycleId?: string;
+    stalledDays?: number;
+    rule?: string;
+  } = {},
 ): Promise<LintReport> {
   const params = new URLSearchParams();
   if (opts.nodeId) params.set('nodeId', opts.nodeId);
   if (opts.versionId) params.set('versionId', opts.versionId);
+  if (opts.cycleId) params.set('cycleId', opts.cycleId);
   if (opts.stalledDays != null) params.set('stalledDays', String(opts.stalledDays));
   if (opts.rule) params.set('rule', opts.rule);
   const qs = params.toString();
