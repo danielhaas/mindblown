@@ -10,6 +10,7 @@ import {
   TextRun,
   WidthType,
   BorderStyle,
+  TableLayoutType,
 } from 'docx';
 
 // ── Register data (shared by both renderers) ─────────────────────
@@ -192,6 +193,15 @@ const STATUS_FILL: Record<string, string> = {
   Offen: 'f1f5f9',
 };
 
+// Column widths as % of table width: ID, Anforderung, Priorität, Status,
+// Aufwand, Rest, Abnahme. LibreOffice ignores percentage widths that only
+// sit on header cells — the table needs an explicit grid (columnWidths, in
+// DXA) and fixed layout, and every cell must carry its column width.
+const COL_PCT = [9, 43, 9, 11, 7, 7, 14];
+// Usable A4 portrait width with the docx default 1440-twip margins.
+const TABLE_DXA = 11906 - 2 * 1440;
+const COL_DXA = COL_PCT.map((p) => Math.round((TABLE_DXA * p) / 100));
+
 function cell(text: string, opts: { bold?: boolean; fill?: string; width?: number } = {}): TableCell {
   return new TableCell({
     shading: opts.fill ? { fill: opts.fill } : undefined,
@@ -253,32 +263,34 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
     const header = new TableRow({
       tableHeader: true,
       children: [
-        cell('ID', { bold: true, fill: 'e2e8f0', width: 9 }),
-        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: 43 }),
-        cell('Priorität', { bold: true, fill: 'e2e8f0', width: 9 }),
-        cell('Status', { bold: true, fill: 'e2e8f0', width: 11 }),
-        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: 7 }),
-        cell('Rest', { bold: true, fill: 'e2e8f0', width: 7 }),
-        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: 14 }),
+        cell('ID', { bold: true, fill: 'e2e8f0', width: COL_PCT[0] }),
+        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: COL_PCT[1] }),
+        cell('Priorität', { bold: true, fill: 'e2e8f0', width: COL_PCT[2] }),
+        cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
+        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
+        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
+        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
       ],
     });
     const rows = ch.rows.map(
       (r) =>
         new TableRow({
           children: [
-            cell(r.id, { bold: true }),
-            cell(r.text),
-            cell(r.prio),
-            cell(r.status, { fill: STATUS_FILL[r.status] }),
-            cell(r.aufwand),
-            cell(r.rest),
-            cell(r.abnahme.join('\n') || '—'),
+            cell(r.id, { bold: true, width: COL_PCT[0] }),
+            cell(r.text, { width: COL_PCT[1] }),
+            cell(r.prio, { width: COL_PCT[2] }),
+            cell(r.status, { fill: STATUS_FILL[r.status], width: COL_PCT[3] }),
+            cell(r.aufwand, { width: COL_PCT[4] }),
+            cell(r.rest, { width: COL_PCT[5] }),
+            cell(r.abnahme.join('\n') || '—', { width: COL_PCT[6] }),
           ],
         }),
     );
     children.push(
       new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
+        columnWidths: COL_DXA,
+        layout: TableLayoutType.FIXED,
         borders: {
           top: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
           bottom: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
