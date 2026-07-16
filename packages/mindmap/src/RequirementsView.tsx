@@ -266,11 +266,12 @@ export function RequirementsView() {
               if (!currentMapId || exporting) return;
               setExporting(true);
               try {
-                const md = await api.exportRequirements(currentMapId);
-                const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+                // Word is what business consumers open — the Markdown
+                // variant stays available via ?format=md and the MCP tool.
+                const blob = await api.exportRequirementsDocx(currentMapId);
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = `anforderungsdokument-${new Date().toISOString().slice(0, 10)}.md`;
+                a.download = `anforderungsdokument-${new Date().toISOString().slice(0, 10)}.docx`;
                 a.click();
                 URL.revokeObjectURL(a.href);
               } finally {
@@ -278,10 +279,10 @@ export function RequirementsView() {
               }
             }}
             disabled={exporting}
-            title="Als Anforderungsdokument (Markdown) exportieren"
+            title="Als Anforderungsdokument (Word) exportieren"
             style={secondaryButtonStyle(exporting)}
           >
-            {exporting ? 'Exporting…' : 'Export'}
+            {exporting ? 'Exporting…' : 'Export Word'}
           </button>
         </div>
       </div>
