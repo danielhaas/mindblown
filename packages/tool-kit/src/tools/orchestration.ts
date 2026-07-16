@@ -156,7 +156,10 @@ export const conflictScanTool = defineTool({
       .describe('The node ID to check. Omit for a map-wide duplicate-link sweep.'),
   },
   handler: async (backend, { mapId, candidateNodeId }) => {
-    const result = await backend.conflictScan(mapId, candidateNodeId);
+    // Agents pass '' or whitespace to mean "no candidate" — treat like omitted
+    // (an empty id would otherwise 404 as a node lookup on the server).
+    const candidate = candidateNodeId?.trim() || undefined;
+    const result = await backend.conflictScan(mapId, candidate);
     const lines: string[] = [];
 
     const formatDupes = () => {
@@ -169,7 +172,7 @@ export const conflictScanTool = defineTool({
       }
     };
 
-    if (candidateNodeId === undefined) {
+    if (candidate === undefined) {
       if (result.duplicateLinks.length === 0) {
         return 'Map-wide duplicate sweep: no GitHub link is attached to more than one node. Clean.';
       }
@@ -187,15 +190,15 @@ export const conflictScanTool = defineTool({
 
     if (result.candidateScopes.length === 0) {
       lines.push(
-        `Node ${candidateNodeId} has no scopes declared — scope-conflict detection skipped. Set scopes via update_node to enable it.`,
+        `Node ${candidate} has no scopes declared — scope-conflict detection skipped. Set scopes via update_node to enable it.`,
       );
     } else if (result.conflicts.length === 0) {
       lines.push(
-        `No scope conflicts for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]).`,
+        `No scope conflicts for node ${candidate} (scopes: [${result.candidateScopes.join(', ')}]).`,
       );
     } else {
       lines.push(
-        `${result.conflicts.length} conflict(s) found for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]):`,
+        `${result.conflicts.length} conflict(s) found for node ${candidate} (scopes: [${result.candidateScopes.join(', ')}]):`,
         '',
       );
       for (const c of result.conflicts) {

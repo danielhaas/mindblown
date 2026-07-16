@@ -1154,9 +1154,11 @@ export function conflictScan(
   mapId: string,
   candidateNodeId?: string,
 ): Promise<ConflictScanResultApi> {
+  // Empty/whitespace candidate = map-wide sweep (agents pass '' for "none").
+  const candidate = candidateNodeId?.trim();
   return request<ConflictScanResultApi>(
-    candidateNodeId === undefined
+    !candidate
       ? `/api/maps/${mapId}/conflict-scan`
-      : `/api/maps/${mapId}/nodes/${candidateNodeId}/conflict-scan`,
+      : `/api/maps/${mapId}/nodes/${candidate}/conflict-scan`,
   );
 }
