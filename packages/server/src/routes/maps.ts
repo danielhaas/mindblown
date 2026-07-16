@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
 import { computeTree, schedule, criticalPath } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
+import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
@@ -261,7 +262,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const computed = computeTree(data.nodes, data.map.healthThreshold);
-      const register = buildRegisterData(data.map, data.nodes, computed);
+      const acceptances = await listActiveAcceptances(req.params.id);
+      const register = buildRegisterData(data.map, data.nodes, computed, acceptances);
       const format = (req.query as { format?: string }).format ?? 'md';
 
       if (format === 'docx') {

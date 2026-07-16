@@ -576,6 +576,31 @@ export async function exportRequirements(mapId: string): Promise<string> {
   return res.text();
 }
 
+export interface AcceptanceRow {
+  id: string;
+  nodeId: string;
+  userId: string;
+  userName: string;
+  acceptedAt: string;
+  progressAtAcceptance: number;
+  nodeRevisionAtAcceptance: number;
+}
+
+export function fetchAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
+  return request<{ acceptances: AcceptanceRow[] }>(`/api/maps/${mapId}/acceptances`);
+}
+
+export function acceptRequirement(mapId: string, nodeId: string): Promise<AcceptanceRow> {
+  return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export function revokeAcceptance(mapId: string, nodeId: string): Promise<void> {
+  return request<void>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, { method: 'DELETE' });
+}
+
 // ── Nodes ────────────────────────────────────────────────────────
 
 export function createNode(

@@ -20,6 +20,7 @@ import { nodeRoutes } from './routes/nodes.js';
 import { cycleRoutes } from './routes/cycles.js';
 import { versionRoutes } from './routes/versions.js';
 import { commentRoutes } from './routes/comments.js';
+import { acceptanceRoutes } from './routes/acceptances.js';
 import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { triageRoutes } from './routes/triage.js';
@@ -83,6 +84,7 @@ async function main(): Promise<void> {
   await app.register(cycleRoutes);
   await app.register(versionRoutes);
   await app.register(commentRoutes);
+  await app.register(acceptanceRoutes);
   await app.register(permissionRoutes);
   await app.register(integrationRoutes);
   await app.register(triageRoutes);

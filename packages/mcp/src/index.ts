@@ -445,6 +445,60 @@ server.tool(
 );
 
 server.tool(
+  'accept_requirement',
+  "Record the calling user's acceptance (Abnahme) of a requirement — a human sign-off, orthogonal to the derived status. Snapshots current progress + node revision so later changes flag the acceptance as stale. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
+  {
+    mapId: z.string().describe('The map ID'),
+    requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
+    nodeId: z.string().optional().describe('Node ID (alternative to requirementId)'),
+  },
+  async ({ mapId, requirementId, nodeId }) => {
+    try {
+      let id = nodeId;
+      if (!id) {
+        if (!requirementId) return toolError('Provide requirementId or nodeId.');
+        const data = await api.getMap(mapId);
+        const hit = data.nodes.find((n) => n.requirementId === requirementId);
+        if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
+        id = hit.id;
+      }
+      const a = await api.acceptRequirement(mapId, id);
+      return toolResult(
+        `Accepted ${requirementId ?? id} as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}).`,
+      );
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'revoke_acceptance',
+  "Revoke the calling user's active acceptance on a requirement. History is preserved (append-only); a later re-acceptance is a new sign-off.",
+  {
+    mapId: z.string().describe('The map ID'),
+    requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
+    nodeId: z.string().optional().describe('Node ID (alternative to requirementId)'),
+  },
+  async ({ mapId, requirementId, nodeId }) => {
+    try {
+      let id = nodeId;
+      if (!id) {
+        if (!requirementId) return toolError('Provide requirementId or nodeId.');
+        const data = await api.getMap(mapId);
+        const hit = data.nodes.find((n) => n.requirementId === requirementId);
+        if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
+        id = hit.id;
+      }
+      await api.revokeAcceptance(mapId, id);
+      return toolResult(`Revoked acceptance on ${requirementId ?? id}.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'requirements_export',
   'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
   {
@@ -476,6 +530,11 @@ server.tool(
   async ({ mapId, status, requirementPriority }) => {
     try {
       const data = await api.getMap(mapId);
+      const { acceptances } = await api.getAcceptances(mapId).catch(() => ({ acceptances: [] }));
+      const accByNode = new Map<string, typeof acceptances>();
+      for (const a of acceptances) {
+        (accByNode.get(a.nodeId) ?? accByNode.set(a.nodeId, []).get(a.nodeId)!).push(a);
+      }
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
       const rootId = data.map.rootNodeId;
       const unit = data.map.effortUnit ?? 'units';
@@ -606,6 +665,16 @@ server.tool(
           }
           if (r.ghLinks.length > 0) {
             parts.push(`· gh: ${r.ghLinks.join(', ')}`);
+          }
+          const accs = accByNode.get(r.node.id) ?? [];
+          if (accs.length > 0) {
+            const fmt = accs.map((a) => {
+              const stale =
+                Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
+                r.node.revision !== a.nodeRevisionAtAcceptance;
+              return `${a.userName}${stale ? ' ⚠stale' : ''}`;
+            });
+            parts.push(`· Abnahme: ${fmt.join(', ')}`);
           }
           lines.push(`  ${parts.join(' ')}`);
         }
