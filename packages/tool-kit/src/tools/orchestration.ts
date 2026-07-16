@@ -140,36 +140,79 @@ export const conflictScanTool = defineTool({
     '  2. conflict_scan(candidate) → if non-empty, decide: skip, wait, or dispatch anyway',
     '  3. claim_node → dispatch agent',
     '',
-    'If the candidate has no scopes declared, returns empty (no conflict detection).',
-    'Set scopes via update_node({ scopes: ["apps/workflows", "migration:workflows"] }).',
+    'If the candidate has no scopes declared, scope conflicts are skipped (set scopes',
+    'via update_node), but duplicate detection still runs.',
+    '',
+    'DUPLICATE DETECTION: the scan also reports GitHub issue links attached to more',
+    'than one node — the duplicate-node pattern that falsifies progress rollups.',
+    'Per-candidate scans check the candidate\'s links; calling WITHOUT candidateNodeId',
+    'runs a map-wide duplicate sweep (hygiene check for housekeeping agents).',
   ].join('\n'),
   schema: {
     mapId: z.string().describe('The map ID'),
-    candidateNodeId: z.string().describe('The node ID to check for conflicts'),
+    candidateNodeId: z
+      .string()
+      .optional()
+      .describe('The node ID to check. Omit for a map-wide duplicate-link sweep.'),
   },
   handler: async (backend, { mapId, candidateNodeId }) => {
     const result = await backend.conflictScan(mapId, candidateNodeId);
+    const lines: string[] = [];
+
+    const formatDupes = () => {
+      for (const g of result.duplicateLinks) {
+        lines.push(`  - ${g.externalId} on ${g.nodes.length} nodes:`);
+        for (const n of g.nodes) {
+          const pct = n.percentComplete != null ? ` ${n.percentComplete}%` : '';
+          lines.push(`      ${n.id} "${n.text.slice(0, 70)}"${pct}${n.hasChildren ? ' (has children)' : ''}`);
+        }
+      }
+    };
+
+    if (candidateNodeId === undefined) {
+      if (result.duplicateLinks.length === 0) {
+        return 'Map-wide duplicate sweep: no GitHub link is attached to more than one node. Clean.';
+      }
+      lines.push(
+        `Map-wide duplicate sweep: ${result.duplicateLinks.length} GitHub link(s) attached to multiple nodes:`,
+        '',
+      );
+      formatDupes();
+      lines.push('');
+      lines.push(
+        'Resolution pattern: keep the node with real progress/children, strip the externalLinks from the duplicate (update_node) BEFORE deleting it — deleting a linked node closes the GitHub issue as not_planned.',
+      );
+      return lines.join('\n');
+    }
 
     if (result.candidateScopes.length === 0) {
-      return `Node ${candidateNodeId} has no scopes declared — no conflict detection possible. Set scopes via update_node to enable conflict scanning.`;
+      lines.push(
+        `Node ${candidateNodeId} has no scopes declared — scope-conflict detection skipped. Set scopes via update_node to enable it.`,
+      );
+    } else if (result.conflicts.length === 0) {
+      lines.push(
+        `No scope conflicts for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]).`,
+      );
+    } else {
+      lines.push(
+        `${result.conflicts.length} conflict(s) found for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]):`,
+        '',
+      );
+      for (const c of result.conflicts) {
+        const status = c.status ? ` status=${c.status}` : '';
+        const claimed = c.claimedBySession ? ` claimed_by=${c.claimedBySession}` : '';
+        lines.push(`  - ${c.id} "${c.text}"${status}${claimed}`);
+        lines.push(`    overlapping scopes: [${c.overlappingScopes.join(', ')}]`);
+      }
+      lines.push('');
+      lines.push('Consider waiting for these to complete or dispatching with isolation: "worktree".');
     }
 
-    if (result.conflicts.length === 0) {
-      return `No conflicts found for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]).`;
+    if (result.duplicateLinks.length > 0) {
+      lines.push('');
+      lines.push(`⚠ ${result.duplicateLinks.length} duplicate GitHub link(s) involving this node:`);
+      formatDupes();
     }
-
-    const lines: string[] = [
-      `${result.conflicts.length} conflict(s) found for node ${candidateNodeId} (scopes: [${result.candidateScopes.join(', ')}]):`,
-      '',
-    ];
-    for (const c of result.conflicts) {
-      const status = c.status ? ` status=${c.status}` : '';
-      const claimed = c.claimedBySession ? ` claimed_by=${c.claimedBySession}` : '';
-      lines.push(`  - ${c.id} "${c.text}"${status}${claimed}`);
-      lines.push(`    overlapping scopes: [${c.overlappingScopes.join(', ')}]`);
-    }
-    lines.push('');
-    lines.push('Consider waiting for these to complete or dispatching with isolation: "worktree".');
     return lines.join('\n');
   },
 });

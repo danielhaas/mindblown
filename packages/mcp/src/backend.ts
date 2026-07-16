@@ -30,5 +30,5 @@ export const httpBackend: ToolBackend = {
   readyNodes: (mapId, opts) => api.readyNodes(mapId, opts),
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
-  conflictScan: (mapId, candidateNodeId) => api.conflictScan(mapId, candidateNodeId),
+  conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
 };

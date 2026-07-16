@@ -166,10 +166,28 @@ export interface ConflictEntry {
   overlappingScopes: string[];
 }
 
+/** Nodes sharing one GitHub issue link — the duplicate-node pattern. */
+export interface DuplicateLinkGroup {
+  externalId: string;
+  nodes: Array<{
+    id: string;
+    text: string;
+    percentComplete: number | null;
+    hasChildren: boolean;
+  }>;
+}
+
 export interface ConflictScanResult {
-  candidateId: string;
+  /** null in map-wide mode (no candidate given). */
+  candidateId: string | null;
   candidateScopes: string[];
   conflicts: ConflictEntry[];
+  /**
+   * GitHub links attached to more than one node. Per-candidate scans
+   * restrict this to the candidate's own links; map-wide scans (no
+   * candidateNodeId) report every duplicated link in the map.
+   */
+  duplicateLinks: DuplicateLinkGroup[];
 }
 
 export interface ToolBackend {
@@ -257,5 +275,5 @@ export interface ToolBackend {
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
-  conflictScan(mapId: string, candidateNodeId: string): Promise<ConflictScanResult>;
+  conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
 }

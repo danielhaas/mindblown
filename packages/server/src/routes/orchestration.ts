@@ -107,6 +107,20 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/maps/:id/conflict-scan — map-wide duplicate sweep ──
+  // conflict_scan without a candidate: reports every GitHub link that
+  // is attached to more than one node (the duplicate-node pattern).
+  app.get<{ Params: { id: string } }>(
+    '/api/maps/:id/conflict-scan',
+    async (req, reply) => {
+      try {
+        return reply.send(await conflictScan(req.params.id));
+      } catch (err) {
+        return handleOrchestrationError(err, reply);
+      }
+    },
+  );
+
   // ── GET /api/maps/:id/nodes/:nodeId/conflict-scan — conflict_scan ──
   app.get<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId/conflict-scan',
