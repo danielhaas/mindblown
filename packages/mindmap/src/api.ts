@@ -538,6 +538,19 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
  * Fetch the requirements register rendered as a Markdown
  * Anforderungsdokument. Raw text — not JSON.
  */
+/**
+ * Fetch the requirements register as a Word document (docx) — the
+ * format business consumers actually open. Returns a Blob for download.
+ */
+export async function exportRequirementsDocx(mapId: string): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/requirements-export?format=docx`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Export failed: HTTP ${res.status}`);
+  return res.blob();
+}
+
 export async function exportRequirements(mapId: string): Promise<string> {
   const token = getToken();
   const res = await fetch(`${BASE_URL}/api/maps/${mapId}/requirements-export`, {

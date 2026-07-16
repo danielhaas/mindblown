@@ -1,0 +1,259 @@
+import type { Node as CoreNode, MindMap, ComputedNodeValues, NodeId } from '@mindblown/core';
+import {
+  Document,
+  HeadingLevel,
+  Packer,
+  Paragraph,
+  Table,
+  TableCell,
+  TableRow,
+  TextRun,
+  WidthType,
+  BorderStyle,
+} from 'docx';
+
+// ── Register data (shared by both renderers) ─────────────────────
+
+export interface RegisterRow {
+  id: string;
+  text: string;
+  prio: string;
+  status: string;
+  aufwand: string;
+  rest: string;
+}
+
+export interface RegisterData {
+  title: string;
+  generatedAt: string; // YYYY-MM-DD
+  total: number;
+  counts: { Umgesetzt: number; Teilweise: number; Offen: number };
+  chapters: Array<{ name: string; rows: RegisterRow[] }>;
+}
+
+const PRIO: Record<string, string> = { must: 'Muss', should: 'Soll', could: 'Kann' };
+
+// Doc buckets: S ≤ 2 Tage · M 3–5 · L 1–3 Wochen · XL > 3 Wochen
+function sizeOf(days: number): string {
+  return days <= 0 ? '—' : days <= 2 ? 'S' : days <= 5 ? 'M' : days <= 15 ? 'L' : 'XL';
+}
+
+export function buildRegisterData(
+  map: MindMap,
+  nodes: CoreNode[],
+  computed: Map<NodeId, ComputedNodeValues>,
+): RegisterData {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const requirements = nodes.filter((n) => n.requirementId != null);
+
+  const progressOf = (n: CoreNode): number =>
+    n.childrenIds.length > 0
+      ? (computed.get(n.id)?.computedProgress ?? 0)
+      : (n.percentComplete ?? 0);
+  const statusOf = (p: number): string =>
+    p >= 99.5 ? 'Umgesetzt' : p > 0 ? 'Teilweise' : 'Offen';
+
+  // Depth-first order for chapter (= parent) sorting.
+  const dfs = new Map<string, number>();
+  {
+    let i = 0;
+    const walk = (id: string) => {
+      dfs.set(id, i++);
+      for (const c of byId.get(id)?.childrenIds ?? []) if (byId.has(c)) walk(c);
+    };
+    walk(map.rootNodeId);
+  }
+
+  const chapters = new Map<string, CoreNode[]>();
+  for (const n of requirements) {
+    const key = n.parentId ?? map.rootNodeId;
+    (chapters.get(key) ?? chapters.set(key, []).get(key)!).push(n);
+  }
+
+  const counts = { Umgesetzt: 0, Teilweise: 0, Offen: 0 };
+  for (const n of requirements) counts[statusOf(progressOf(n)) as keyof typeof counts]++;
+
+  const orderedChapters = [...chapters.entries()]
+    .sort((a, b) => (dfs.get(a[0]) ?? Infinity) - (dfs.get(b[0]) ?? Infinity))
+    .map(([chapterId, list]) => ({
+      name: byId.get(chapterId)?.text ?? '(Root)',
+      rows: list
+        .sort((a, b) =>
+          (a.requirementId ?? '').localeCompare(b.requirementId ?? '', undefined, {
+            numeric: true,
+          }),
+        )
+        .map((n) => {
+          const p = progressOf(n);
+          const status = statusOf(p);
+          const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
+          return {
+            id: n.requirementId ?? '',
+            text: (n.requirementText ?? n.text).replace(/\n/g, ' '),
+            prio: PRIO[n.requirementPriority ?? ''] ?? '—',
+            status,
+            aufwand: sizeOf(effort),
+            rest: status === 'Umgesetzt' ? '—' : sizeOf(effort * (1 - p / 100)),
+          };
+        }),
+    }));
+
+  return {
+    title: `${map.name} — Anforderungsdokument`,
+    generatedAt: new Date().toISOString().slice(0, 10),
+    total: requirements.length,
+    counts,
+    chapters: orderedChapters,
+  };
+}
+
+// ── Markdown renderer ─────────────────────────────────────────────
+
+const LEGEND = [
+  '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
+  '**Status:** Umgesetzt · Teilweise · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)',
+  '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» bei Umgesetzt): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
+];
+
+export function renderMarkdown(data: RegisterData): string {
+  const L: string[] = [];
+  L.push(`# ${data.title}`);
+  L.push('');
+  L.push(
+    `*Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.*`,
+  );
+  for (const line of LEGEND) {
+    L.push('');
+    L.push(line);
+  }
+  L.push('');
+  L.push(
+    `**Stand:** ${data.total} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
+  );
+  L.push('');
+  L.push('---');
+  data.chapters.forEach((ch, i) => {
+    L.push('');
+    L.push(`## ${i + 1}. ${ch.name}`);
+    L.push('');
+    L.push('| ID | Anforderung | Priorität | Status | Aufwand | Rest |');
+    L.push('|---|---|---|---|---|---|');
+    for (const r of ch.rows) {
+      L.push(
+        `| ${r.id} | ${r.text.replace(/\|/g, '\\|')} | ${r.prio} | ${r.status} | ${r.aufwand} | ${r.rest} |`,
+      );
+    }
+  });
+  L.push('');
+  return L.join('\n');
+}
+
+// ── DOCX renderer ─────────────────────────────────────────────────
+
+const STATUS_FILL: Record<string, string> = {
+  Umgesetzt: 'd1fae5',
+  Teilweise: 'fef3c7',
+  Offen: 'f1f5f9',
+};
+
+function cell(text: string, opts: { bold?: boolean; fill?: string; width?: number } = {}): TableCell {
+  return new TableCell({
+    shading: opts.fill ? { fill: opts.fill } : undefined,
+    width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
+    margins: { top: 60, bottom: 60, left: 100, right: 100 },
+    children: [
+      new Paragraph({
+        children: [new TextRun({ text, bold: opts.bold ?? false, size: 18 })],
+      }),
+    ],
+  });
+}
+
+export async function renderDocx(data: RegisterData): Promise<Buffer> {
+  const children: Array<Paragraph | Table> = [];
+
+  children.push(
+    new Paragraph({ heading: HeadingLevel.TITLE, children: [new TextRun(data.title)] }),
+    new Paragraph({
+      children: [
+        new TextRun({
+          text: `Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.`,
+          italics: true,
+          size: 18,
+        }),
+      ],
+    }),
+  );
+  for (const line of LEGEND) {
+    // Strip the markdown bold markers for the docx paragraphs.
+    children.push(
+      new Paragraph({
+        children: [new TextRun({ text: line.replace(/\*\*/g, ''), size: 18 })],
+        spacing: { before: 120 },
+      }),
+    );
+  }
+  children.push(
+    new Paragraph({
+      spacing: { before: 160, after: 240 },
+      children: [
+        new TextRun({
+          text: `Stand: ${data.total} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
+          bold: true,
+          size: 20,
+        }),
+      ],
+    }),
+  );
+
+  data.chapters.forEach((ch, i) => {
+    children.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 320, after: 120 },
+        children: [new TextRun(`${i + 1}. ${ch.name}`)],
+      }),
+    );
+    const header = new TableRow({
+      tableHeader: true,
+      children: [
+        cell('ID', { bold: true, fill: 'e2e8f0', width: 9 }),
+        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: 55 }),
+        cell('Priorität', { bold: true, fill: 'e2e8f0', width: 9 }),
+        cell('Status', { bold: true, fill: 'e2e8f0', width: 11 }),
+        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: 8 }),
+        cell('Rest', { bold: true, fill: 'e2e8f0', width: 8 }),
+      ],
+    });
+    const rows = ch.rows.map(
+      (r) =>
+        new TableRow({
+          children: [
+            cell(r.id, { bold: true }),
+            cell(r.text),
+            cell(r.prio),
+            cell(r.status, { fill: STATUS_FILL[r.status] }),
+            cell(r.aufwand),
+            cell(r.rest),
+          ],
+        }),
+    );
+    children.push(
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        borders: {
+          top: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
+          bottom: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
+          left: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
+          right: { style: BorderStyle.SINGLE, size: 2, color: 'cbd5e1' },
+          insideHorizontal: { style: BorderStyle.SINGLE, size: 2, color: 'e2e8f0' },
+          insideVertical: { style: BorderStyle.SINGLE, size: 2, color: 'e2e8f0' },
+        },
+        rows: [header, ...rows],
+      }),
+    );
+  });
+
+  const doc = new Document({ sections: [{ children }] });
+  return Packer.toBuffer(doc);
+}

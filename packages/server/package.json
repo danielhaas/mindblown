@@ -31,6 +31,7 @@
     "@mindblown/mcp": "workspace:*",
     "@mindblown/tool-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.12.1",
+    "docx": "^9.7.1",
     "drizzle-orm": "^0.39.3",
     "fastify": "^5.2.2",
     "jsonwebtoken": "^9.0.2",

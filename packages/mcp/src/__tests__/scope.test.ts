@@ -34,6 +34,7 @@ function makeNode(overrides: Partial<NodeWithComputed> & { id: string }): NodeWi
     updatedAt: '2026-01-01T00:00:00Z',
     requirementId: null,
     requirementPriority: null,
+    requirementText: null,
     claimedBySession: null,
     claimedAt: null,
     computedEffort: 0,
