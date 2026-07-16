@@ -252,6 +252,6 @@ export function createChatBackend(userId: string): ToolBackend {
     readyNodes: (mapId, opts) => orchestrationService.readyNodes(mapId, opts),
     claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
     releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
-    conflictScan: (mapId, candidateNodeId) => orchestrationService.conflictScan(mapId, candidateNodeId),
+    conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
   };
 }

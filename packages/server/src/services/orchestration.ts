@@ -250,20 +250,57 @@ export async function releaseNode(
 
 export async function conflictScan(
   mapId: string,
-  candidateNodeId: string,
+  candidateNodeId?: string,
 ): Promise<ConflictScanResult> {
-  const [candidateRow] = await db
+  const allRows = await db
     .select()
     .from(nodes)
-    .where(and(eq(nodes.id, candidateNodeId), notDeleted));
-  if (!candidateRow) {
+    .where(and(eq(nodes.mapId, mapId), notDeleted));
+  const all = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+
+  // ── Duplicate GitHub links ──────────────────────────────────────
+  // The same issue linked on several nodes falsifies progress rollups
+  // and makes status answers contradictory (2026-07-15 cleanup removed
+  // 164 such pairs map-wide). Per-candidate scans check the candidate's
+  // links; map-wide scans (no candidate) report every duplicated link.
+  const byLink = new Map<string, CoreNode[]>();
+  for (const n of all) {
+    for (const l of n.externalLinks) {
+      if (l.provider !== 'github') continue;
+      (byLink.get(l.externalId) ?? byLink.set(l.externalId, []).get(l.externalId)!).push(n);
+    }
+  }
+  const toGroup = (externalId: string, group: CoreNode[]) => ({
+    externalId,
+    nodes: group.map((n) => ({
+      id: n.id,
+      text: n.text,
+      percentComplete: n.percentComplete,
+      hasChildren: n.childrenIds.length > 0,
+    })),
+  });
+
+  if (candidateNodeId === undefined) {
+    const duplicateLinks = [...byLink.entries()]
+      .filter(([, group]) => group.length > 1)
+      .sort((a, b) => a[0].localeCompare(b[0], undefined, { numeric: true }))
+      .map(([ext, group]) => toGroup(ext, group));
+    return { candidateId: null, candidateScopes: [], conflicts: [], duplicateLinks };
+  }
+
+  const candidate = all.find((n) => n.id === candidateNodeId);
+  if (!candidate) {
     throw new OrchestrationNotFoundError(`Node ${candidateNodeId} not found`);
   }
 
-  const candidate = dbNodeToCore(candidateRow as unknown as Record<string, unknown>);
+  const duplicateLinks = candidate.externalLinks
+    .filter((l) => l.provider === 'github')
+    .map((l) => [l.externalId, byLink.get(l.externalId) ?? []] as const)
+    .filter(([, group]) => group.length > 1)
+    .map(([ext, group]) => toGroup(ext, group));
 
   if (candidate.scopes.length === 0) {
-    return { candidateId: candidateNodeId, candidateScopes: [], conflicts: [] };
+    return { candidateId: candidateNodeId, candidateScopes: [], conflicts: [], duplicateLinks };
   }
 
   const [mapRow] = await db
@@ -273,15 +310,9 @@ export async function conflictScan(
   const workflow = ((mapRow?.statusWorkflow as StatusDef[]) ?? []);
   const inProgressIds = buildInProgressIds(workflow);
 
-  const allRows = await db
-    .select()
-    .from(nodes)
-    .where(and(eq(nodes.mapId, mapId), notDeleted));
-
   const conflicts: ConflictScanResult['conflicts'] = [];
-  for (const row of allRows) {
-    if ((row.id as string) === candidateNodeId) continue;
-    const n = dbNodeToCore(row as unknown as Record<string, unknown>);
+  for (const n of all) {
+    if (n.id === candidateNodeId) continue;
     const isInProgress = n.status !== null && inProgressIds.has(n.status);
     const isClaimed = n.claimedBySession !== null;
     if (!isInProgress && !isClaimed) continue;
@@ -302,5 +333,6 @@ export async function conflictScan(
     candidateId: candidateNodeId,
     candidateScopes: candidate.scopes,
     conflicts,
+    duplicateLinks,
   };
 }

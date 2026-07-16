@@ -1025,10 +1025,16 @@ export interface ConflictEntryApi {
   overlappingScopes: string[];
 }
 
+export interface DuplicateLinkGroupApi {
+  externalId: string;
+  nodes: Array<{ id: string; text: string; percentComplete: number | null; hasChildren: boolean }>;
+}
+
 export interface ConflictScanResultApi {
-  candidateId: string;
+  candidateId: string | null;
   candidateScopes: string[];
   conflicts: ConflictEntryApi[];
+  duplicateLinks: DuplicateLinkGroupApi[];
 }
 
 export function readyNodes(
@@ -1068,9 +1074,11 @@ export function releaseNode(
 
 export function conflictScan(
   mapId: string,
-  candidateNodeId: string,
+  candidateNodeId?: string,
 ): Promise<ConflictScanResultApi> {
   return request<ConflictScanResultApi>(
-    `/api/maps/${mapId}/nodes/${candidateNodeId}/conflict-scan`,
+    candidateNodeId === undefined
+      ? `/api/maps/${mapId}/conflict-scan`
+      : `/api/maps/${mapId}/nodes/${candidateNodeId}/conflict-scan`,
   );
 }
