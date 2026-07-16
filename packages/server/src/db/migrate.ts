@@ -822,6 +822,19 @@ export async function runMigrations(): Promise<void> {
       ON requirement_acceptances (map_id)
   `);
 
+  // ── Phase column (nodes.phase_id + maps.phases) ────────────────
+  // maps.phases: PhaseDef[] jsonb — {id, name, position, color?,
+  // targetDate?} (statusWorkflow idiom). nodes.phase_id: nullable TEXT
+  // referencing a PhaseDef.id; stable ids make phase renames free.
+  // Deliberately lightweight — a phase is a label with an order, not an
+  // entity (unlike the April-removed Milestones).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS phase_id TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS phases JSONB NOT NULL DEFAULT '[]'
+  `);
+
   // ── Lint dismissals (plan-health panel) ────────────────────────
   // node_id NULL = rule muted map-wide. Non-FK node_id by convention
   // (see triage_decisions.placed_node_id) so node deletion leaves the

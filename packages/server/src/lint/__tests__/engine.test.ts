@@ -37,6 +37,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     requirementId: null,
     requirementPriority: null,
     requirementText: null,
+    phaseId: null,
     claimedBySession: null,
     claimedAt: null,
     revision: 0,

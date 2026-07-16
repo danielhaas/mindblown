@@ -38,6 +38,7 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'versionId',
   'cycleId',
   'assigneeIds',
+  'phaseId',
 ]);
 
 function valuesDiffer(a: unknown, b: unknown): boolean {

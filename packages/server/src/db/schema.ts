@@ -79,6 +79,10 @@ export const maps = pgTable('maps', {
   defaultLayout: text('default_layout').notNull().default('tree_lr'),
   healthThreshold: real('health_threshold').notNull().default(0.2),
   baselines: jsonb('baselines').notNull().default([]),
+  // Project phases (statusWorkflow idiom): PhaseDef[] — {id, name, position,
+  // color?, targetDate?}. Nodes reference entries via nodes.phase_id; stable
+  // ids make renames free. position = canonical phase order.
+  phases: jsonb('phases').notNull().default([]), // PhaseDef[]
   wipLimit: real('wip_limit'),
   projectStartDate: date('project_start_date'),
   hoursPerDay: real('hours_per_day').notNull().default(8),
@@ -202,6 +206,13 @@ export const nodes = pgTable('nodes', {
   requirementPriority: text('requirement_priority'),
   // Business phrasing for register/doc export; NOT GitHub-synced.
   requirementText: text('requirement_text'),
+
+  // ── Phase ─────────────────────────────────────────────────────
+  // References a PhaseDef.id from maps.phases (statusWorkflow idiom,
+  // same shape as version_id/cycle_id). TEXT, no FK — phase defs live
+  // in the maps.phases jsonb, not a table. Validated app-level in
+  // db/nodes.ts (unknown id → PhaseIdValidationError → 400).
+  phaseId: text('phase_id'),
 
   // ── Orchestration substrate (#111) ───────────────────────────
   // claimed_by_session: session ID that owns this node for active work.

@@ -19,6 +19,7 @@ export type {
   BlockedBy,
   CustomFieldDef,
   StatusDef,
+  PhaseDef,
   Baseline,
   MindMap,
   User,
