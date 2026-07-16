@@ -395,9 +395,22 @@ function ChapterGroup({
         </td>
       </tr>
       {rows.map((r) => (
-        <tr key={r.node.id} style={{ borderBottom: '1px solid #f1f5f9' }}>
-          {/* REQ-ID — inline editable */}
-          <td style={tdStyle} onClick={() => setEditingCell({ nodeId: r.node.id, field: 'requirementId' })}>
+        <tr
+          key={r.node.id}
+          onClick={() => jumpToNode(r.node)}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#f8fafc')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = '')}
+          title="Open in mindmap"
+          style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
+        >
+          {/* REQ-ID — inline editable (stopPropagation so editing doesn't navigate) */}
+          <td
+            style={tdStyle}
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditingCell({ nodeId: r.node.id, field: 'requirementId' });
+            }}
+          >
             {isEditing(r.node.id, 'requirementId') ? (
               <input
                 autoFocus
@@ -423,8 +436,14 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* Title — inline editable, with jump-to-map affordance */}
-          <td style={tdStyle} onClick={() => setEditingCell({ nodeId: r.node.id, field: 'text' })}>
+          {/* Title — inline editable (stopPropagation); ↗ is an explicit jump too */}
+          <td
+            style={tdStyle}
+            onClick={(e) => {
+              e.stopPropagation();
+              setEditingCell({ nodeId: r.node.id, field: 'text' });
+            }}
+          >
             {isEditing(r.node.id, 'text') ? (
               <input
                 autoFocus
@@ -469,8 +488,8 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* MoSCoW priority — inline select */}
-          <td style={tdStyle}>
+          {/* MoSCoW priority — inline select (stopPropagation so it doesn't navigate) */}
+          <td style={tdStyle} onClick={(e) => e.stopPropagation()}>
             <select
               value={r.node.requirementPriority ?? ''}
               onChange={(e) =>
@@ -508,9 +527,13 @@ function ChapterGroup({
           {/* Progress — editable on leaves only (parents roll up) */}
           <td
             style={tdStyle}
-            onClick={() =>
-              r.isLeaf && setEditingCell({ nodeId: r.node.id, field: 'percentComplete' })
-            }
+            onClick={(e) => {
+              // Leaves edit in place (stopPropagation); parents fall through to navigate.
+              if (r.isLeaf) {
+                e.stopPropagation();
+                setEditingCell({ nodeId: r.node.id, field: 'percentComplete' });
+              }
+            }}
           >
             {r.isLeaf && isEditing(r.node.id, 'percentComplete') ? (
               <input
@@ -566,6 +589,7 @@ function ChapterGroup({
                   href={l.url}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(e) => e.stopPropagation()}
                   style={{ color: '#3b82f6', textDecoration: 'none', marginLeft: i > 0 ? 6 : 0 }}
                 >
                   {l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id}
