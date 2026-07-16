@@ -4,6 +4,7 @@ import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
+import { clampFocusFactor } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -116,6 +117,7 @@ export interface UpdateMapInput {
   projectStartDate?: string | null;
   hoursPerDay?: number;
   workerCount?: number;
+  focusFactor?: number;
   githubInstallationId?: string | null;
   githubRepoOwner?: string | null;
   githubRepoName?: string | null;
@@ -139,6 +141,7 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.projectStartDate !== undefined) updates.projectStartDate = input.projectStartDate;
   if (input.hoursPerDay !== undefined) updates.hoursPerDay = input.hoursPerDay;
   if (input.workerCount !== undefined) updates.workerCount = input.workerCount;
+  if (input.focusFactor !== undefined) updates.focusFactor = clampFocusFactor(input.focusFactor);
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;

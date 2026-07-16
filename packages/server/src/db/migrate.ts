@@ -703,6 +703,14 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS worker_count REAL NOT NULL DEFAULT 1
   `);
 
+  // ── Forecast capacity knob: focusFactor ────────────────────────
+  // Per-map fraction of calendar time reaching planned-ticket work (0.05–1.0).
+  // Discounts the velocity-adjusted completion forecast. Default 1 = no
+  // leakage, so existing maps forecast exactly as before until it is set.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS focus_factor REAL NOT NULL DEFAULT 1
+  `);
+
   // ── One-shot data migrations ───────────────────────────────────
   // Tracks data flips that should run exactly once per database.
   await db.execute(sql`

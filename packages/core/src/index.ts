@@ -82,3 +82,11 @@ export {
   buildInProgressIds,
   buildTodoIds,
 } from './statusWorkflow.js';
+
+// Velocity & capacity helpers
+export {
+  FOCUS_FACTOR_MIN,
+  FOCUS_FACTOR_MAX,
+  DEFAULT_FOCUS_FACTOR,
+  clampFocusFactor,
+} from './velocity.js';

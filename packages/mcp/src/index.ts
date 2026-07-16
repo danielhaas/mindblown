@@ -23,6 +23,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
+import { clampFocusFactor } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { httpBackend } from './backend.js';
@@ -734,6 +735,12 @@ server.tool(
 
       // ── Scheduler-based planned finish ──
       const sched = await api.getSchedule(mapId);
+
+      // ── Focus factor (capacity leakage) — velocity line only ──
+      // Fraction of calendar time reaching planned work; stretches the
+      // velocity-adjusted finish so it reflects real throughput, not just
+      // estimation bias. Default 1.0 = no effect.
+      const focusFactor = clampFocusFactor(sched.focusFactor);
       const scopedIds = new Set(leaves.map((l) => l.id));
       const scopedSched = sched.schedule.filter((s) => scopedIds.has(s.nodeId));
       const maxComputedEnd = scopedSched.reduce((m, s) => Math.max(m, s.computedEnd), 0);
@@ -764,7 +771,7 @@ server.tool(
       const anchor = today > projectStart ? today : projectStart;
       const elapsedFromStart = Math.max(0, daysBetween(anchor, projectStart));
       const remainingSchedulerDays = Math.max(0, plannedFinishCalendarDays - elapsedFromStart);
-      const velocityFinishCalendarDays = remainingSchedulerDays * effectiveFudge;
+      const velocityFinishCalendarDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
       const velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
 
       // ── Target date resolution ──
@@ -802,6 +809,11 @@ server.tool(
       } else {
         lines.push(`Velocity calibration: no data (need leaves with both estimate + actual); using 1.00x`);
       }
+      if (focusFactor < 1) {
+        lines.push(`Focus factor:         ${focusFactor.toFixed(2)} (${Math.round(focusFactor * 100)}% of calendar time reaches planned work — set via update_map)`);
+      } else {
+        lines.push(`Focus factor:         1.00 (full capacity assumed — lower it via update_map to reflect meetings/support/unplanned work)`);
+      }
       lines.push('');
 
       if (maxComputedEnd > 0) {
@@ -810,7 +822,8 @@ server.tool(
         lines.push(`Planned finish:      (no schedulable effort in scope)`);
       }
       if (remainingEffort > 0) {
-        lines.push(`Velocity-adjusted:   ${iso(velocityFinishDate)} (${velocityFinishCalendarDays.toFixed(1)} calendar days from ${iso(anchor)}, fudge ${effectiveFudge.toFixed(2)}x)`);
+        const focusNote = focusFactor < 1 ? `, focus ${focusFactor.toFixed(2)}` : '';
+        lines.push(`Velocity-adjusted:   ${iso(velocityFinishDate)} (${velocityFinishCalendarDays.toFixed(1)} calendar days from ${iso(anchor)}, fudge ${effectiveFudge.toFixed(2)}x${focusNote})`);
       } else {
         lines.push(`Velocity-adjusted:   already complete`);
       }

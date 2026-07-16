@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -634,6 +634,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       effortUnit: data.map.effortUnit,
       unitsPerDay,
       workerCount: effectiveWorkers,
+      focusFactor: clampFocusFactor(data.map.focusFactor),
       versionId: versionId ?? null,
       crossVersionDependencies: versionId ? crossVersionDependencies : [],
     });
@@ -728,6 +729,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
     const effectiveFudge = fudgeFactor ?? 1.0;
 
+    // ── Focus factor (capacity leakage) — velocity line only ──
+    const focusFactor = clampFocusFactor(data.map.focusFactor);
+
     // ── Run scheduler over the full map so cross-scope deps still apply ──
     const projectStart = data.map.projectStartDate
       ? new Date(data.map.projectStartDate)
@@ -782,7 +786,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
             Math.round((anchor.getTime() - projectStart.getTime()) / MS_PER_DAY),
           );
           const remainingSchedulerDays = Math.max(0, plannedCalDays - elapsedFromStart);
-          const velDays = remainingSchedulerDays * effectiveFudge;
+          const velDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
           velocityAdjustedFinishDate = addCalendarDays(anchor, velDays).toISOString().slice(0, 10);
         }
       }
@@ -826,6 +830,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       remainingEffort,
       effortUnit: data.map.effortUnit,
       fudgeFactor,
+      focusFactor,
       calibrationLeafCount: calibrationLeaves.length,
       projectStartDate: projectStart.toISOString().slice(0, 10),
       plannedFinishDate,
