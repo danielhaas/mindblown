@@ -45,6 +45,13 @@ export const createNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Business phrasing of the requirement for the register/doc export. Falls back to the node text when null. Not synced to GitHub.'),
+    phaseId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        'Phase reference — the id of a PhaseDef from the map\'s `phases` list (shown by get_map). Must reference an existing phase; add new phases via update_map first. Same idiom as versionId.',
+      ),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -131,6 +138,13 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Business phrasing for the register/doc export (falls back to node text). Safe to edit freely — never pushed to GitHub. null clears it.'),
+    phaseId: z
+      .string()
+      .nullable()
+      .optional()
+      .describe(
+        'Phase reference — the id of a PhaseDef from the map\'s `phases` list (shown by get_map). Must reference an existing phase; add new phases via update_map first. null clears the phase. Same idiom as versionId.',
+      ),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())
@@ -351,6 +365,9 @@ export const searchNodesTool = defineTool({
       return `No ${subject}${filterStr} found in map ${mapId}.`;
     }
 
+    const phaseNameById = new Map(
+      (data.map.phases ?? []).map((p) => [p.id, p.name] as const),
+    );
     const lines = matches.map((n) => {
       const health =
         n.healthSignal === 'on_track' ? '[OK]' : n.healthSignal === 'at_risk' ? '[AT RISK]' : '[BEHIND]';
@@ -361,7 +378,10 @@ export const searchNodesTool = defineTool({
       const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
       const kids = n.childrenIds?.length ?? 0;
       const kidsStr = kids > 0 ? ` (${kids} child${kids === 1 ? '' : 'ren'})` : '';
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${kidsStr}${links}${claim}`;
+      const phase = n.phaseId
+        ? ` (phase: ${phaseNameById.get(n.phaseId) ?? n.phaseId})`
+        : '';
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;
