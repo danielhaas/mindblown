@@ -372,6 +372,17 @@ export interface MindMap {
    */
   workerCount: number;
 
+  /**
+   * Fraction of calendar time that actually reaches planned-ticket work
+   * (0.05–1.0). Captures the drag of meetings, support, firefighting and
+   * unplanned work — a team spending half its time on planned tickets has a
+   * focus factor of 0.5, so the same estimated effort takes twice as long in
+   * calendar terms. Applied to the *velocity-adjusted* forecast line only
+   * (planned finish stays the idealised scheduler baseline), orthogonal to
+   * the estimation fudge factor. Default 1.0 = no capacity leakage.
+   */
+  focusFactor: number;
+
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;

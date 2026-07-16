@@ -185,6 +185,7 @@ export interface ToolBackend {
       projectStartDate?: string | null;
       hoursPerDay?: number;
       workerCount?: number;
+      focusFactor?: number;
       autoImportNewIssues?: boolean;
     },
   ): Promise<MapSummary>;

@@ -172,6 +172,8 @@ export interface ScheduleResult {
   projectStartDate: string;
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
+  /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
+  focusFactor?: number;
   versionId?: string | null;
   crossVersionDependencies?: Array<{
     fromNodeId: string;
@@ -343,6 +345,7 @@ export function updateMap(
     projectStartDate?: string | null;
     hoursPerDay?: number;
     workerCount?: number;
+    focusFactor?: number;
     autoImportNewIssues?: boolean;
   },
 ): Promise<MapSummary> {

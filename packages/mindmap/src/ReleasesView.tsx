@@ -113,6 +113,11 @@ export function ReleasesView() {
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [formState, setFormState] = useState<FormState | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Focus-factor knob: fraction of calendar time reaching planned work.
+  // Editing it saves via update_map and re-runs the forecast (which stretches
+  // the velocity-adjusted finish dates). Mirrors the server value on load.
+  const [focusInput, setFocusInput] = useState<number>(1);
+  const [savingFocus, setSavingFocus] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -148,6 +153,31 @@ export function ReleasesView() {
   }, [currentMapId, versions, refreshNonce]);
 
   const handleRefresh = () => setRefreshNonce((n) => n + 1);
+
+  // Keep the visible Focus input in sync with whatever the server returns.
+  useEffect(() => {
+    if (forecast?.focusFactor !== undefined) {
+      setFocusInput(forecast.focusFactor);
+    }
+  }, [forecast?.focusFactor]);
+
+  // Commit a new focus factor: clamp to (0.05, 1], persist, then re-forecast.
+  const commitFocus = async (value: number) => {
+    if (!currentMapId) return;
+    const clamped = Math.min(1, Math.max(0.05, value));
+    setFocusInput(clamped);
+    if (forecast && clamped === forecast.focusFactor) return;
+    setSavingFocus(true);
+    try {
+      await api.updateMap(currentMapId, { focusFactor: clamped });
+      setRefreshNonce((n) => n + 1); // re-run forecast with the new factor
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to update focus factor');
+      if (forecast) setFocusInput(forecast.focusFactor); // revert visible value
+    } finally {
+      setSavingFocus(false);
+    }
+  };
 
   // Merge store versions (authoritative list, includes empty ones) with
   // the forecast rows (richer stats for versions that have linked leaves).
@@ -243,6 +273,7 @@ export function ReleasesView() {
                 {' · sequential by sortOrder, '}
                 {forecast.dailyCapacity} {unit}/day capacity
                 {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
+                {forecast.focusFactor < 1 && ` · ${Math.round(forecast.focusFactor * 100)}% focus`}
                 {' · snapshot '}
                 {formatAge(forecast.lastSnapshotAt)}
               </>
@@ -250,7 +281,38 @@ export function ReleasesView() {
             {activeVersionFilter && ' · filtered'}
           </div>
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <label
+            title="Focus factor — fraction of calendar time reaching planned work. Below 100% stretches the velocity-adjusted finish to absorb meetings, support and unplanned work."
+            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', fontWeight: 600 }}
+          >
+            Focus
+            <input
+              type="number"
+              min={5}
+              max={100}
+              step={5}
+              disabled={savingFocus || !forecast}
+              value={Math.round(focusInput * 100)}
+              onChange={(e) => {
+                const pct = Number(e.target.value);
+                if (!Number.isNaN(pct)) setFocusInput(Math.min(100, Math.max(5, pct)) / 100);
+              }}
+              onBlur={() => commitFocus(focusInput)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+              }}
+              style={{
+                width: 52,
+                padding: '3px 6px',
+                fontSize: 12,
+                border: '1px solid #cbd5e1',
+                borderRadius: 4,
+                background: savingFocus ? '#f1f5f9' : '#fff',
+              }}
+            />
+            <span>%</span>
+          </label>
           <button
             onClick={startCreate}
             disabled={formState !== null}

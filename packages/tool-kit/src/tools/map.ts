@@ -67,7 +67,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -89,12 +89,18 @@ export const updateMapTool = defineTool({
       .max(100)
       .optional()
       .describe('Number of parallel work tracks the schedule projects onto (view knob, default 1 = strict serial single-worker view; higher = more parallelism).'),
+    focusFactor: z
+      .number()
+      .min(0.05)
+      .max(1)
+      .optional()
+      .describe('Fraction of calendar time reaching planned-ticket work (0.05–1.0, default 1). Below 1 stretches the velocity-adjusted completion forecast to absorb meetings/support/unplanned work (0.5 = half of each day reaches planned work).'),
     autoImportNewIssues: z
       .boolean()
       .optional()
       .describe('When true, new GitHub issues on the bound repo are auto-imported into this map\'s GitHub Inbox.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, autoImportNewIssues }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, autoImportNewIssues }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -102,6 +108,7 @@ export const updateMapTool = defineTool({
       projectStartDate?: string | null;
       hoursPerDay?: number;
       workerCount?: number;
+      focusFactor?: number;
       autoImportNewIssues?: boolean;
     } = {};
     if (name !== undefined) fields.name = name;
@@ -110,6 +117,7 @@ export const updateMapTool = defineTool({
     if (projectStartDate !== undefined) fields.projectStartDate = projectStartDate;
     if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
     if (workerCount !== undefined) fields.workerCount = workerCount;
+    if (focusFactor !== undefined) fields.focusFactor = focusFactor;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);

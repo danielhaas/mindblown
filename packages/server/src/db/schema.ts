@@ -128,6 +128,12 @@ export const maps = pgTable('maps', {
   // higher = more parallelism. Stored as REAL to allow fractional
   // values later if useful.
   workerCount: real('worker_count').notNull().default(1),
+
+  // ── Forecast capacity knob: focusFactor ────────────────────────
+  // Fraction of calendar time that reaches planned-ticket work (0.05–1.0).
+  // Discounts the velocity-adjusted completion forecast to absorb meetings /
+  // support / firefighting / unplanned work. Default 1 = no leakage.
+  focusFactor: real('focus_factor').notNull().default(1),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

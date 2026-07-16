@@ -1,4 +1,5 @@
 import type { Node as CoreNode, MindMap, Version } from '@mindblown/core';
+import { clampFocusFactor } from '@mindblown/core';
 
 /**
  * Release forecast row for a single version.
@@ -29,6 +30,7 @@ export interface ReleaseForecastResult {
   effortUnit: string;
   dailyCapacity: number;
   fudgeFactor: number | null;
+  focusFactor: number;
   calibrationLeafCount: number;
   releases: ReleaseForecastRow[];
 }
@@ -98,6 +100,12 @@ export function computeReleaseForecast(
   const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
   const effectiveFudge = fudgeFactor ?? 1.0;
 
+  // ── Focus factor (capacity leakage) ──
+  // Discounts effective daily capacity on the velocity-adjusted line only:
+  // if only `focusFactor` of each day reaches planned work, the same remaining
+  // effort spans proportionally more calendar days.
+  const focusFactor = clampFocusFactor(map.focusFactor);
+
   // ── Ancestor-inherited version tags ──
   // A leaf belongs to version V if itself or any ancestor is tagged V.
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
@@ -162,7 +170,7 @@ export function computeReleaseForecast(
       plannedFinishDate = iso(plannedFinish);
       plannedCursor = plannedFinish;
 
-      const velCalDays = (remainingEffort * effectiveFudge) / dailyCapacity;
+      const velCalDays = (remainingEffort * effectiveFudge) / (dailyCapacity * focusFactor);
       const velFinish = addCalendarDays(velocityCursor, velCalDays);
       velocityAdjustedFinishDate = iso(velFinish);
       velocityCursor = velFinish;
@@ -203,6 +211,7 @@ export function computeReleaseForecast(
     effortUnit: map.effortUnit,
     dailyCapacity,
     fudgeFactor,
+    focusFactor,
     calibrationLeafCount: calibrationLeaves.length,
     releases,
   };

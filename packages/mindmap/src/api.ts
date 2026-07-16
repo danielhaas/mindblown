@@ -694,6 +694,8 @@ export interface ScheduleResponse {
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
   workerCount: number;
+  /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
+  focusFactor: number;
 }
 
 export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {
@@ -843,6 +845,8 @@ export interface ReleaseForecastResponse {
   effortUnit: string;
   dailyCapacity: number;
   fudgeFactor: number | null;
+  /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
+  focusFactor: number;
   calibrationLeafCount: number;
   releases: ReleaseForecastRow[];
   lastSnapshotAt: string | null;
