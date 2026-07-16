@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { httpBackend } from './backend.js';
@@ -733,7 +733,7 @@ server.tool(
       const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
       const effectiveFudge = fudgeFactor ?? 1.0;
 
-      // ── Scheduler-based planned finish ──
+      // ── Scheduler meta (project start, units, capacity, focus) ──
       const sched = await api.getSchedule(mapId);
 
       // ── Focus factor (capacity leakage) — velocity line only ──
@@ -741,16 +741,12 @@ server.tool(
       // velocity-adjusted finish so it reflects real throughput, not just
       // estimation bias. Default 1.0 = no effect.
       const focusFactor = clampFocusFactor(sched.focusFactor);
-      const scopedIds = new Set(leaves.map((l) => l.id));
-      const scopedSched = sched.schedule.filter((s) => scopedIds.has(s.nodeId));
-      const maxComputedEnd = scopedSched.reduce((m, s) => Math.max(m, s.computedEnd), 0);
 
       const MS_PER_DAY = 86_400_000;
       const projectStart = new Date(sched.projectStartDate);
       const today = new Date();
       today.setUTCHours(0, 0, 0, 0);
-
-      const effortUnitsToCalendarDays = (units: number): number => units / sched.unitsPerDay;
+      const anchor = today > projectStart ? today : projectStart;
       const addCalendarDays = (base: Date, days: number): Date => {
         const d = new Date(base.getTime());
         d.setUTCDate(d.getUTCDate() + Math.ceil(days));
@@ -760,19 +756,44 @@ server.tool(
       const daysBetween = (a: Date, b: Date) =>
         Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
 
-      const plannedFinishCalendarDays = effortUnitsToCalendarDays(maxComputedEnd);
-      const plannedFinishDate = addCalendarDays(projectStart, plannedFinishCalendarDays);
+      // A scoped forecast (a version/milestone or subtree) must NOT read its
+      // finish off the whole-map scheduler — its leaves land behind the entire
+      // backlog there, so the date reflects the backlog, not the milestone.
+      // Project the scope's own remaining effort against team capacity instead.
+      const scoped = Boolean(versionId || nodeId);
+      const workers = Math.max(1, Math.floor(sched.workerCount ?? 1));
+      let plannedFinishCalendarDays: number;
+      let velocityFinishCalendarDays: number;
+      let plannedFinishDate: Date;
+      let velocityFinishDate: Date;
+      let hasSchedulableEffort: boolean;
 
-      // Velocity-adjusted finish: take the scheduler's remaining calendar days
-      // (which already accounts for parallelism and dependencies) and scale by
-      // the fudge factor. If the scheduler says 5 days and fudge is 1.5x, we
-      // expect 7.5 days. Anchor at max(today, projectStart) so a future-start
-      // project doesn't report a past finish.
-      const anchor = today > projectStart ? today : projectStart;
-      const elapsedFromStart = Math.max(0, daysBetween(anchor, projectStart));
-      const remainingSchedulerDays = Math.max(0, plannedFinishCalendarDays - elapsedFromStart);
-      const velocityFinishCalendarDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
-      const velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+      if (scoped) {
+        const cap = scopedCapacityDays(remainingEffort, {
+          workers,
+          unitsPerDay: sched.unitsPerDay,
+          fudge: effectiveFudge,
+          focusFactor,
+        });
+        plannedFinishCalendarDays = cap.plannedCalendarDays;
+        velocityFinishCalendarDays = cap.velocityCalendarDays;
+        plannedFinishDate = addCalendarDays(anchor, plannedFinishCalendarDays);
+        velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+        hasSchedulableEffort = remainingEffort > 0;
+      } else {
+        // Whole map: the critical-path scheduler IS the right answer.
+        const scopedIds = new Set(leaves.map((l) => l.id));
+        const maxComputedEnd = sched.schedule
+          .filter((s) => scopedIds.has(s.nodeId))
+          .reduce((m, s) => Math.max(m, s.computedEnd), 0);
+        plannedFinishCalendarDays = maxComputedEnd / sched.unitsPerDay;
+        plannedFinishDate = addCalendarDays(projectStart, plannedFinishCalendarDays);
+        const elapsedFromStart = Math.max(0, daysBetween(anchor, projectStart));
+        const remainingSchedulerDays = Math.max(0, plannedFinishCalendarDays - elapsedFromStart);
+        velocityFinishCalendarDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
+        velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+        hasSchedulableEffort = maxComputedEnd > 0;
+      }
 
       // ── Target date resolution ──
       let targetDate: string | null = null;
@@ -816,10 +837,13 @@ server.tool(
       }
       lines.push('');
 
-      if (maxComputedEnd > 0) {
-        lines.push(`Planned finish:      ${iso(plannedFinishDate)} (scheduler, project start ${sched.projectStartDate})`);
+      if (hasSchedulableEffort) {
+        const basis = scoped
+          ? `capacity: ${remainingEffort.toFixed(1)} ${unit} ÷ ${workers} worker(s) from ${iso(anchor)}`
+          : `scheduler, project start ${sched.projectStartDate}`;
+        lines.push(`Planned finish:      ${iso(plannedFinishDate)} (${basis})`);
       } else {
-        lines.push(`Planned finish:      (no schedulable effort in scope)`);
+        lines.push(`Planned finish:      (no remaining effort in scope)`);
       }
       if (remainingEffort > 0) {
         const focusNote = focusFactor < 1 ? `, focus ${focusFactor.toFixed(2)}` : '';
@@ -832,7 +856,7 @@ server.tool(
         lines.push('');
         lines.push(`Target:              ${targetDate} (${targetSource})`);
         const targetDateObj = new Date(targetDate);
-        if (maxComputedEnd > 0) {
+        if (hasSchedulableEffort) {
           const slipPlanned = daysBetween(plannedFinishDate, targetDateObj);
           lines.push(`Slip (planned):      ${slipPlanned >= 0 ? '+' : ''}${slipPlanned} days`);
         }

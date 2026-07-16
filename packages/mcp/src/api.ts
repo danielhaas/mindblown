@@ -173,6 +173,8 @@ export interface ScheduleResult {
   projectStartDate: string;
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
+  /** Parallel work tracks the schedule projects onto; default 1. */
+  workerCount?: number;
   /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
   focusFactor?: number;
   versionId?: string | null;

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -761,35 +761,63 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let plannedFinishDate: string | null = null;
     let velocityAdjustedFinishDate: string | null = null;
     let maxScopedEnd = 0;
+    const scoped = Boolean(versionId || nodeId);
+    const workers = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
     try {
-      const workers = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
-      const scheduled = schedule(data.nodes, 0, constraints, undefined, workers);
-      const scopedIds = new Set(leaves.map((l) => l.id));
-      maxScopedEnd = scheduled
-        .filter((s) => scopedIds.has(s.nodeId))
-        .reduce((m, s) => Math.max(m, s.computedEnd), 0);
-
       const addCalendarDays = (base: Date, days: number): Date => {
         const d = new Date(base.getTime());
         d.setUTCDate(d.getUTCDate() + Math.ceil(days));
         return d;
       };
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const anchor = today > projectStart ? today : projectStart;
 
-      if (maxScopedEnd > 0) {
-        const plannedCalDays = maxScopedEnd / unitsPerDay;
-        plannedFinishDate = addCalendarDays(projectStart, plannedCalDays).toISOString().slice(0, 10);
-
+      if (scoped) {
+        // A scoped forecast (version/milestone or subtree) must project the
+        // scope's OWN remaining effort against capacity. Reading a finish off
+        // the whole-map scheduler buries the milestone behind the entire
+        // backlog, so the date reflects the backlog's size, not the milestone.
         if (remainingEffort > 0) {
-          const today = new Date();
-          today.setUTCHours(0, 0, 0, 0);
-          const anchor = today > projectStart ? today : projectStart;
-          const elapsedFromStart = Math.max(
-            0,
-            Math.round((anchor.getTime() - projectStart.getTime()) / MS_PER_DAY),
-          );
-          const remainingSchedulerDays = Math.max(0, plannedCalDays - elapsedFromStart);
-          const velDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
-          velocityAdjustedFinishDate = addCalendarDays(anchor, velDays).toISOString().slice(0, 10);
+          const cap = scopedCapacityDays(remainingEffort, {
+            workers,
+            unitsPerDay,
+            fudge: effectiveFudge,
+            focusFactor,
+          });
+          plannedFinishDate = addCalendarDays(anchor, cap.plannedCalendarDays)
+            .toISOString()
+            .slice(0, 10);
+          velocityAdjustedFinishDate = addCalendarDays(anchor, cap.velocityCalendarDays)
+            .toISOString()
+            .slice(0, 10);
+          maxScopedEnd = remainingEffort; // non-zero → "has schedulable effort"
+        }
+      } else {
+        // Whole map: the critical-path scheduler IS the right answer.
+        const scheduled = schedule(data.nodes, 0, constraints, undefined, workers);
+        const scopedIds = new Set(leaves.map((l) => l.id));
+        maxScopedEnd = scheduled
+          .filter((s) => scopedIds.has(s.nodeId))
+          .reduce((m, s) => Math.max(m, s.computedEnd), 0);
+
+        if (maxScopedEnd > 0) {
+          const plannedCalDays = maxScopedEnd / unitsPerDay;
+          plannedFinishDate = addCalendarDays(projectStart, plannedCalDays)
+            .toISOString()
+            .slice(0, 10);
+
+          if (remainingEffort > 0) {
+            const elapsedFromStart = Math.max(
+              0,
+              Math.round((anchor.getTime() - projectStart.getTime()) / MS_PER_DAY),
+            );
+            const remainingSchedulerDays = Math.max(0, plannedCalDays - elapsedFromStart);
+            const velDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
+            velocityAdjustedFinishDate = addCalendarDays(anchor, velDays)
+              .toISOString()
+              .slice(0, 10);
+          }
         }
       }
     } catch {
