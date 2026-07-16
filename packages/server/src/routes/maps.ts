@@ -214,6 +214,117 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  // ── GET /api/maps/:id/requirements-export — Anforderungsdokument ──
+  //
+  // Renders the requirements register as a Markdown document mirroring
+  // the hand-maintained Anforderungsdokument format: chapters = the
+  // requirement nodes' parents (Bereiche) in depth-first tree order,
+  // one table row per requirement with derived status. Effort sizes
+  // map to the doc's S/M/L/XL buckets. text/markdown response.
+  app.get<{ Params: { id: string } }>(
+    '/api/maps/:id/requirements-export',
+    async (req, reply) => {
+      const userId = req.userId;
+      if (userId) {
+        const perm = await permDb.getPermission(req.params.id, userId);
+        if (!permDb.hasPermission(perm, 'view')) {
+          return reply.status(403).send({
+            error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
+          });
+        }
+      }
+
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+
+      const computed = computeTree(data.nodes, data.map.healthThreshold);
+      const byId = new Map(data.nodes.map((n) => [n.id, n]));
+      const requirements = data.nodes.filter((n) => n.requirementId != null);
+
+      const progressOf = (n: CoreNode): number =>
+        n.childrenIds.length > 0
+          ? (computed.get(n.id)?.computedProgress ?? 0)
+          : (n.percentComplete ?? 0);
+      const statusOf = (p: number): string =>
+        p >= 99.5 ? 'Umgesetzt' : p > 0 ? 'Teilweise' : 'Offen';
+      // Doc buckets: S ≤ 2 Tage · M 3–5 · L 1–3 Wochen · XL > 3 Wochen
+      const sizeOf = (days: number): string =>
+        days <= 0 ? '—' : days <= 2 ? 'S' : days <= 5 ? 'M' : days <= 15 ? 'L' : 'XL';
+      const PRIO: Record<string, string> = { must: 'Muss', should: 'Soll', could: 'Kann' };
+
+      // Depth-first order for chapter (= parent) sorting.
+      const dfs = new Map<string, number>();
+      {
+        let i = 0;
+        const walk = (id: string) => {
+          dfs.set(id, i++);
+          for (const c of byId.get(id)?.childrenIds ?? []) if (byId.has(c)) walk(c);
+        };
+        walk(data.map.rootNodeId);
+      }
+
+      const chapters = new Map<string, CoreNode[]>();
+      for (const n of requirements) {
+        const key = n.parentId ?? data.map.rootNodeId;
+        (chapters.get(key) ?? chapters.set(key, []).get(key)!).push(n);
+      }
+      const orderedChapters = [...chapters.entries()].sort(
+        (a, b) => (dfs.get(a[0]) ?? Infinity) - (dfs.get(b[0]) ?? Infinity),
+      );
+
+      const today = new Date().toISOString().slice(0, 10);
+      const counts = { Umgesetzt: 0, Teilweise: 0, Offen: 0 };
+      for (const n of requirements) counts[statusOf(progressOf(n)) as keyof typeof counts]++;
+
+      const L: string[] = [];
+      L.push(`# ${data.map.name} — Anforderungsdokument`);
+      L.push('');
+      L.push(`*Generiert aus MindBlown am ${today} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.*`);
+      L.push('');
+      L.push('**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert');
+      L.push('');
+      L.push('**Status:** Umgesetzt · Teilweise · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)');
+      L.push('');
+      L.push('**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» bei Umgesetzt): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen');
+      L.push('');
+      L.push(`**Stand:** ${requirements.length} Anforderungen — ${counts.Umgesetzt} Umgesetzt · ${counts.Teilweise} Teilweise · ${counts.Offen} Offen`);
+      L.push('');
+      L.push('---');
+
+      let sec = 0;
+      for (const [chapterId, list] of orderedChapters) {
+        sec++;
+        const chapterName = byId.get(chapterId)?.text ?? '(Root)';
+        L.push('');
+        L.push(`## ${sec}. ${chapterName}`);
+        L.push('');
+        L.push('| ID | Anforderung | Priorität | Status | Aufwand | Rest |');
+        L.push('|---|---|---|---|---|---|');
+        list.sort((a, b) =>
+          (a.requirementId ?? '').localeCompare(b.requirementId ?? '', undefined, { numeric: true }),
+        );
+        for (const n of list) {
+          const p = progressOf(n);
+          const status = statusOf(p);
+          const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
+          const remaining = effort * (1 - p / 100);
+          const text = (n.requirementText ?? n.text).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+          L.push(
+            `| ${n.requirementId} | ${text} | ${PRIO[n.requirementPriority ?? ''] ?? '—'} | ${status} | ${sizeOf(effort)} | ${status === 'Umgesetzt' ? '—' : sizeOf(remaining)} |`,
+          );
+        }
+      }
+      L.push('');
+
+      reply.header('content-type', 'text/markdown; charset=utf-8');
+      return reply.send(L.join('\n'));
+    },
+  );
+
   // ── PUT /api/maps/:id — Update map settings ──────────────────
   app.put<{ Params: { id: string } }>('/api/maps/:id', async (req, reply) => {
     const userId = req.userId!;
@@ -390,6 +501,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           completedAt: null,
           requirementId: null,
           requirementPriority: null,
+          requirementText: null,
           // Orchestration substrate (#111)
           claimedBySession: null,
           claimedAt: null,

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import * as api from './api.js';
 
 // ── Derived requirement status ───────────────────────────────────
 //
@@ -60,6 +61,7 @@ function compareReqIds(a: ReqRow, b: ReqRow): number {
 
 export function RequirementsView() {
   const nodes = useMindmapStore((s) => s.nodes);
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const computed = useMindmapStore((s) => s.computed);
   const updateNode = useMindmapStore((s) => s.updateNode);
@@ -69,6 +71,7 @@ export function RequirementsView() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
   const effortUnit = useMindmapStore((s) => s.currentMap?.effortUnit ?? 'days');
 
+  const [exporting, setExporting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
@@ -257,6 +260,28 @@ export function RequirementsView() {
             style={primaryButtonStyle(false)}
           >
             + New requirement
+          </button>
+          <button
+            onClick={async () => {
+              if (!currentMapId || exporting) return;
+              setExporting(true);
+              try {
+                const md = await api.exportRequirements(currentMapId);
+                const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = `anforderungsdokument-${new Date().toISOString().slice(0, 10)}.md`;
+                a.click();
+                URL.revokeObjectURL(a.href);
+              } finally {
+                setExporting(false);
+              }
+            }}
+            disabled={exporting}
+            title="Als Anforderungsdokument (Markdown) exportieren"
+            style={secondaryButtonStyle(exporting)}
+          >
+            {exporting ? 'Exporting…' : 'Export'}
           </button>
         </div>
       </div>
@@ -447,10 +472,18 @@ function ChapterGroup({
             {isEditing(r.node.id, 'text') ? (
               <input
                 autoFocus
-                defaultValue={r.node.text}
+                defaultValue={r.node.requirementText ?? r.node.text}
                 onBlur={(e) => {
                   const v = e.target.value.trim();
-                  if (v && v !== r.node.text) updateNode(r.node.id, { text: v });
+                  // Business phrasing edits go to requirementText when one is
+                  // set — never touching the (GitHub-synced) node text.
+                  if (r.node.requirementText != null) {
+                    if (v !== r.node.requirementText) {
+                      updateNode(r.node.id, { requirementText: v || null });
+                    }
+                  } else if (v && v !== r.node.text) {
+                    updateNode(r.node.id, { text: v });
+                  }
                   setEditingCell(null);
                 }}
                 onKeyDown={(e) => {
@@ -473,7 +506,15 @@ function ChapterGroup({
                   }}
                   title={`Health: ${r.health}`}
                 />
-                {r.node.text}
+                <span
+                  title={
+                    r.node.requirementText != null && r.node.requirementText !== r.node.text
+                      ? `Node: ${r.node.text}`
+                      : undefined
+                  }
+                >
+                  {r.node.requirementText ?? r.node.text}
+                </span>
                 <button
                   onClick={(e) => {
                     e.stopPropagation();

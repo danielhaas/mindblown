@@ -133,6 +133,7 @@ export interface NodeWithComputed {
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
   requirementPriority: 'must' | 'should' | 'could' | null;
+  requirementText: string | null;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
@@ -287,6 +288,33 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (res.status === 204) return undefined as unknown as T;
   return res.json() as Promise<T>;
+}
+
+/**
+ * Raw-text GET for endpoints that return non-JSON bodies (e.g. the
+ * Markdown requirements export). Mirrors request()'s auth + injector
+ * fast path but returns the body verbatim.
+ */
+async function requestText(path: string): Promise<string> {
+  const ctx = getContext();
+  const headers: Record<string, string> = {};
+  if (ctx.token) headers['Authorization'] = `Bearer ${ctx.token}`;
+
+  if (ctx.injector) {
+    const res = await ctx.injector({ method: 'GET', url: path, headers });
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw new ApiError(res.statusCode, `HTTP ${res.statusCode}`);
+    }
+    return res.body ?? '';
+  }
+
+  const res = await fetch(`${ctx.baseUrl}${path}`, { headers });
+  if (!res.ok) throw new ApiError(res.status, res.statusText);
+  return res.text();
+}
+
+export function exportRequirements(mapId: string): Promise<string> {
+  return requestText(`/api/maps/${mapId}/requirements-export`);
 }
 
 // ── Maps ────────────────────────────────────────────────────────

@@ -49,6 +49,7 @@ export interface NodeWithComputed {
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
   requirementPriority: 'must' | 'should' | 'could' | null;
+  requirementText: string | null;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;

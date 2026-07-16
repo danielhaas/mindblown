@@ -41,6 +41,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     requirementId: (get('requirementId', 'requirement_id') as string) ?? null,
     requirementPriority:
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
+    requirementText: (get('requirementText', 'requirement_text') as string) ?? null,
     // Orchestration substrate (#111)
     claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
     claimedAt: (get('claimedAt', 'claimed_at') instanceof Date

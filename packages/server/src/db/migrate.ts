@@ -779,6 +779,9 @@ export async function runMigrations(): Promise<void> {
   // partial index closes that race; 23505 on this index is mapped back
   // to RequirementIdConflictError in db/nodes.ts.
   await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS requirement_text TEXT
+  `);
+  await db.execute(sql`
     CREATE UNIQUE INDEX IF NOT EXISTS nodes_map_requirement_id_unique
       ON nodes (map_id, requirement_id)
       WHERE requirement_id IS NOT NULL AND deleted_at IS NULL

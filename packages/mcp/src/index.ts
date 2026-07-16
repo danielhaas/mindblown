@@ -487,6 +487,21 @@ server.tool(
 );
 
 server.tool(
+  'requirements_export',
+  'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
+  {
+    mapId: z.string().describe('The map ID'),
+  },
+  async ({ mapId }) => {
+    try {
+      return toolResult(await api.exportRequirements(mapId));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'requirements_overview',
   'Business-facing requirements register: every node carrying a requirementId, grouped by top-level branch (chapter). Per requirement: MoSCoW priority, derived status (done ≙ Umgesetzt / partial ≙ Teilweise / open ≙ Offen — from progress rollup, never stored), progress %, remaining effort, and linked GitHub issues. Answers "which requirements exist and where do they stand?" without the full get_map dump.',
   {
