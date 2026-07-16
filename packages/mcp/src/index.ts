@@ -812,7 +812,7 @@ server.tool(
       if (focusFactor < 1) {
         lines.push(`Focus factor:         ${focusFactor.toFixed(2)} (${Math.round(focusFactor * 100)}% of calendar time reaches planned work — set via update_map)`);
       } else {
-        lines.push(`Focus factor:         1.00 (full capacity assumed — lower it via update_map to reflect meetings/support/unplanned work)`);
+        lines.push(`Focus factor:         1.00 (full capacity assumed — run velocity_report to measure it from history, then set via update_map)`);
       }
       lines.push('');
 
@@ -1706,6 +1706,60 @@ server.tool(
             );
           }
         }
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'velocity_report',
+  'Measure the empirical focus factor — the fraction of nominal capacity that actually reaches planned-ticket work — from completion history, and recommend a value for the map\'s focusFactor knob (settable via update_map). Reads estimate-weighted percentComplete deltas from change_events over a window (default 8 weeks), so it captures the drag of meetings/support/firefighting/unplanned work without inferring per-ticket duration. Batch writes (hygiene passes, sprint-close) are detected by shared timestamps and excluded from the clean rate. Read-only; it does not change the forecast — set the recommended value with update_map to apply it.',
+  {
+    mapId: z.string().describe('The map ID'),
+    windowDays: z
+      .number()
+      .int()
+      .min(7)
+      .max(365)
+      .default(56)
+      .describe('Look-back window in calendar days (default 56 = 8 weeks). Idle days count against the rate — that is the point.'),
+  },
+  async ({ mapId, windowDays }) => {
+    try {
+      const v = await api.getVelocity(mapId, { windowDays });
+      const unit = v.effortUnit ?? 'units';
+      const lines: string[] = [];
+
+      lines.push(`Velocity / focus factor — ${v.windowDays}-day window`);
+      lines.push('');
+      lines.push(`Completed (organic):  ${v.estCompleted.toFixed(2)} ${unit} across ${v.completionEvents} completion event(s), ${v.activeDays} active day(s)`);
+      lines.push(`Delivery rate:        ${v.deliveryRate.toFixed(3)} ${unit}/calendar-day`);
+      lines.push(`Nominal capacity:     ${v.nominalCapacity.toFixed(2)} ${unit}/day (workerCount ${v.workerCount} × ${v.unitsPerDay} ${unit}/day)`);
+      lines.push('');
+      lines.push(`Measured focus factor: ${v.measuredFocusFactor.toFixed(2)} (${Math.round(v.measuredFocusFactor * 100)}% of nominal capacity reaches planned work)`);
+      lines.push(`Current map setting:   ${v.currentFocusFactor.toFixed(2)}`);
+      lines.push('');
+
+      if (v.bulkEventsExcluded > 0) {
+        lines.push(`Excluded as bulk:     ${v.estCompletedExcludedAsBulk.toFixed(2)} ${unit} from ${v.bulkGroupsExcluded} batch write(s) (${v.bulkEventsExcluded} events sharing a timestamp — hygiene/sprint-close, not daily throughput)`);
+        lines.push(`Raw incl. bulk:       ${v.deliveryRateRaw.toFixed(3)} ${unit}/day → focus ${v.measuredFocusFactorRaw.toFixed(2)}`);
+        lines.push('');
+      }
+
+      if (!v.sampleSufficient) {
+        lines.push(`⚠ Not enough organic completions to trust this yet (need ≥3, have ${v.completionEvents}). Treat the number as indicative, not a setting — let more work complete, then re-run.`);
+      } else {
+        lines.push(`→ To apply: update_map(mapId, focusFactor: ${v.measuredFocusFactor.toFixed(2)}). This stretches the velocity-adjusted completion_forecast to match real throughput.`);
+      }
+
+      lines.push('');
+      lines.push(`Note: measured in estimate units, so it assumes estimates are roughly unbiased (check get_estimation_accuracy — a large fudge means this factor also absorbs estimation bias). Idle calendar days are included by design, so the rate reflects real capacity, not burst speed.`);
+      if (v.truncated) {
+        lines.push(`⚠ Event window hit the fetch cap — the rate may be based on a partial window.`);
       }
 
       return toolResult(lines.join('\n'));

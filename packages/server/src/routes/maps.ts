@@ -10,6 +10,8 @@ import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
+import { computeVelocity } from '../lib/velocity.js';
+import * as events from '../db/events.js';
 import {
   buildCalendarIcs,
   calendarTokenFor,
@@ -839,6 +841,71 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       targetSource,
       slipPlannedDays,
       slipVelocityDays,
+    });
+  });
+
+  // ── GET /api/maps/:id/velocity — Empirical focus-factor measurement
+  //
+  // Reads estimate-weighted completion (percentComplete deltas) from
+  // change_events over a window and expresses it as a focus factor —
+  // deliveryRate ÷ nominal capacity. Bulk writes (batch hygiene/sprint-close,
+  // detected by shared exact timestamps) are excluded from the clean rate. The
+  // math lives in lib/velocity.ts; this route just gathers inputs.
+  app.get<{
+    Params: { id: string };
+    Querystring: { windowDays?: string };
+  }>('/api/maps/:id/velocity', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+
+    const windowDays = req.query.windowDays
+      ? Math.max(7, Math.min(365, Math.floor(Number(req.query.windowDays))))
+      : 56; // default 8 weeks
+    const since = new Date(Date.now() - windowDays * 86_400_000);
+
+    // Current estimate per leaf — the weight for progress deltas (same proxy
+    // burnup uses; cross-time estimate drift is rare enough to ignore for v1).
+    const estimateByNodeId = new Map<string, number>();
+    for (const n of data.nodes) {
+      if ((n.childrenIds?.length ?? 0) === 0 && n.effortEstimate != null) {
+        estimateByNodeId.set(n.id, n.effortEstimate);
+      }
+    }
+
+    // High limit so a busy window isn't silently truncated; percentComplete
+    // events are far fewer than estimate edits, so this comfortably covers it.
+    const progressEvents = await events.listEvents({
+      mapId: req.params.id,
+      fieldName: 'percentComplete',
+      since,
+      limit: 10_000,
+    });
+
+    const unitsPerDay = data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
+    const workerCount = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
+
+    const result = computeVelocity({
+      windowDays,
+      unitsPerDay,
+      workerCount,
+      currentFocusFactor: data.map.focusFactor ?? 1,
+      estimateByNodeId,
+      progressEvents: progressEvents.map((e) => ({
+        nodeId: e.nodeId,
+        oldValue: e.oldValue,
+        newValue: e.newValue,
+        createdAt: e.createdAt,
+      })),
+    });
+
+    return reply.send({
+      ...result,
+      effortUnit: data.map.effortUnit,
+      truncated: progressEvents.length >= 10_000,
     });
   });
 

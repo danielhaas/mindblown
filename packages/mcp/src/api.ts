@@ -732,6 +732,38 @@ export function getLint(
   return request<LintReport>(`/api/maps/${mapId}/lint${qs ? `?${qs}` : ''}`);
 }
 
+// ── Velocity (empirical focus factor) ─────────────────────────
+
+export interface VelocityResponse {
+  windowDays: number;
+  unitsPerDay: number;
+  workerCount: number;
+  nominalCapacity: number;
+  currentFocusFactor: number;
+  completionEvents: number;
+  estCompleted: number;
+  deliveryRate: number;
+  measuredFocusFactor: number;
+  activeDays: number;
+  estCompletedRaw: number;
+  deliveryRateRaw: number;
+  measuredFocusFactorRaw: number;
+  bulkGroupsExcluded: number;
+  bulkEventsExcluded: number;
+  estCompletedExcludedAsBulk: number;
+  sampleSufficient: boolean;
+  effortUnit: string;
+  truncated: boolean;
+}
+
+export function getVelocity(
+  mapId: string,
+  opts: { windowDays?: number } = {},
+): Promise<VelocityResponse> {
+  const qs = opts.windowDays != null ? `?windowDays=${opts.windowDays}` : '';
+  return request<VelocityResponse>(`/api/maps/${mapId}/velocity${qs}`);
+}
+
 // ── Versions ──────────────────────────────────────────────────
 
 export function listVersions(mapId: string): Promise<VersionInfo[]> {
