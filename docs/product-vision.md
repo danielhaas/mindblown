@@ -2,6 +2,8 @@
 
 *A mindmap-based project management tool where ideas become plans.*
 
+**The tool that makes you a good project manager without you noticing.**
+
 ---
 
 ## The Problem
@@ -73,6 +75,14 @@ This matters for:
 - Extensibility and customization
 - Community-driven development
 - Trust and transparency
+
+### 7. The method is built in
+
+Most projects are not run by trained project managers. They're run by developers, founders, designers, researchers — people who know *what* they want to build but were never taught how to plan and track it. The research on why such projects fail is remarkably consistent: no decomposition into small units, missing or never-calibrated estimates, vague done-criteria, and plans that are written once and never revisited.
+
+MindBlown's answer is that **the defaults are the methodology**. Following the tool's grain — map the work, estimate the leaves, update progress, re-plan when the forecast slips — *is* textbook project management (work breakdown structure, bottom-up estimation, earned-value tracking, continuous re-planning), without the user ever needing to learn those terms.
+
+Where defaults aren't enough, MindBlown **coaches — it never takes over**. Guidance means explainable checks and moment-of-action nudges, each teaching the principle it enforces in one sentence. It does not mean an AI that runs the project for you. (See "Guided Project Management" below.)
 
 ---
 
@@ -163,6 +173,62 @@ No existing tool does this loop well:
 - **Mindomo**: Has rollup and Gantt, but no health tracking, no projections, no "are we on track?"
 
 MindBlown is the tool where you **think in a mindmap** and get a **project plan for free**.
+
+---
+
+## Guided Project Management
+
+*The planning loop is the mechanism. This is the benefit: MindBlown makes you a good project manager without you noticing.*
+
+### The gap we're filling
+
+No tool today teaches project management in-product. The market splits into two failure poles:
+
+- **Autopilot AI** — "the AI does the PM for you" (Height 2.0's autonomous PM: auto-triage, backlog grooming, health monitoring). Height shut down in 2025 despite heavy funding. Removing the human from planning removes the reason to engage with the plan.
+- **Methodology for experts** — Linear's Method and Basecamp's Shape Up bake real opinions into the product, but both are written for already-competent, self-organized product teams. They assume you know why cycles, small batches, and appetite matter.
+
+The open lane: **coach the untrained user**, at the moment they're about to make a known mistake, in language that teaches the principle. monday.com's Risk Insights comes closest (risk flags with explanations) but is enterprise-tier, portfolio-level, and diagnostic-only — it flags risk, it doesn't help you fix the plan.
+
+### The failure modes we guard against
+
+Decades of research (PMI Pulse, Standish CHAOS, planning-fallacy literature) reduce untrained-PM failure to a short chain:
+
+1. **No decomposition** — work isn't broken into small units. Small projects with short iterations succeed dramatically more often; chunk size is the single strongest success lever.
+2. **No estimates, or uncalibrated optimism** — the planning fallacy holds even when people *know* their history. The fix is reference-class forecasting: correct new estimates by observed past accuracy.
+3. **Vague done-criteria** — inaccurate requirements are a primary cited cause in ~40% of failed projects.
+4. **Publish-and-forget plans** — the plan is written once and never amended when reality diverges.
+
+Every one of these has a computable signal in MindBlown's data model. That's the design insight: **guidance is mostly surfacing what the engine already knows.**
+
+### The plan linter
+
+Professional scheduling has had automated plan-quality checks for years (the DCMA 14-point assessment); nothing consumer-grade does. MindBlown ships a **plan linter**: a set of deterministic, explainable checks on plan hygiene — unestimated leaves, oversized chunks, stalled progress, overdue-but-never-replanned tasks, estimates contradicted by the user's own history. Each finding carries a one-sentence *why* and a one-click fix path.
+
+See [docs/plan-linter.md](plan-linter.md) for the v1 specification.
+
+### How guidance works: five layers
+
+From most passive to most active — and in roughly this ship order:
+
+1. **The rails.** The data model itself prevents the classic mistakes: estimates live only on leaves, parents compute themselves. The wrong math is impossible, not warned about. (Already built — and worth protecting: manual parent overrides would break the pedagogy, not just the math.)
+2. **Empty states that teach.** Every derived view explains what feeds it when it has nothing to show. An empty Gantt doesn't render a blank grid; it says "I build myself from estimates and a start date — you have 12 unestimated leaves, start there." Guidance that only exists at the moment it's wanted, with zero annoyance cost.
+3. **The compass.** The map's own data reveals which phase of the planning loop a project is in (brainstorming → estimating → scheduling → executing → re-planning → done). The tool offers exactly **one next action** for that phase, dismissible, never a checklist. During brainstorming it stays silent — asking for estimates mid-braindump is the wizard mistake.
+4. **The re-plan moment.** The one place the tool actively interrupts: the forecast just slipped past the target. Not a red "you're behind" banner — a structured decision: descope (here are the lowest-priority unstarted leaves), split and defer, or move the target, each option simulated so the user sees the consequence before committing. This is the moment an untrained person becomes a project manager.
+5. **Graduation.** Nudges taper once the habit is observed — a user who estimates new leaves unprompted stops being asked. The tool succeeds when it goes quiet. (This is what separates a coach from Clippy, and it gives guidance an honest success metric: time until silence.)
+
+All five layers speak **as the plan, about the plan** ("Backend starts in 2 days at 0% with nobody assigned") — never as the tool about methodology ("Tip: estimation matters!"). The user should feel the project talking to them, not a tutorial. That's the "without you noticing" in the tagline, mechanically.
+
+### Guidance design rules
+
+1. **Moment of action, not upfront wizards.** Prompt for an estimate when a node becomes a leaf; prompt a re-plan when the forecast slips. Never a multi-step project-setup wizard — onboarding research is unambiguous that wizards fatigue and get abandoned.
+2. **Every nudge teaches its own why, in one sentence.** "Break this down — smaller pieces get estimated far more accurately" beats a bare warning. Users absorb PM practice by osmosis; that's the point.
+3. **Quiet by default, dismissible forever.** Guidance lives in a pull-based plan-health surface plus a very small set of pushed nudges. Dismissed findings stay dismissed. The failure mode to avoid is Clippy / notification flood.
+4. **Deterministic first, AI optional.** The linter is rule-based on computed data. AI features (suggest a breakdown, draft estimates) can accelerate the *fix*, but the guidance mechanism itself never depends on a model.
+5. **If it needs a manual, it's wrong.** The target user is, by definition, someone who won't read one. The user-facing vocabulary stays tiny — node, estimate, % done, due date; everything else (rollup, critical path, health, calibration) is *output*, never something the user must understand to operate the tool. PM concepts are hidden behind their consequences: nobody needs to learn what "critical path" means when the tool says "this task is the one holding up your finish date." The acceptance test is literal: hand MindBlown to someone with zero instructions; they reach a useful map in 30 seconds and a finish date without help.
+
+### Coach, not autopilot
+
+The user stays the project manager. MindBlown's job is to make them a better one each week they use it — until the nudges stop firing because the habits stuck.
 
 ---
 

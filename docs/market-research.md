@@ -642,9 +642,12 @@ Only MindManager and XMind support all 4 dependency types. Only MindManager has 
 
 ## Recommended Positioning for MindBlown
 
-**"The open-source tool where projects start as ideas and become plans — without switching apps."**
+**"The tool that makes you a good project manager without you noticing."**
+
+The mechanism pitch behind it: *the open-source tool where projects start as ideas and become plans — without switching apps.* The benefit is guided PM; the seamless mindmap→plan transition is how it's delivered.
 
 Core differentiators:
+0. **Guided PM** — the defaults are the methodology, plus a plan linter that teaches as it checks. No tool on the market coaches untrained users into PM practice (see product-vision.md → Guided Project Management)
 1. **Open source** — no competitor here
 2. **Mindmap-first, but not mindmap-only** — the map is the primary planning surface, with kanban/list/Gantt as derived views
 3. **Graceful brainstorm → execute transition** — nodes start as ideas, get promoted to tasks when ready, without breaking the visual flow
