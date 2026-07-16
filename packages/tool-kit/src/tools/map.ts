@@ -147,14 +147,20 @@ export const updateMapTool = defineTool({
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
       // array index — callers reordering can just send the array in the
-      // desired order without renumbering by hand.
-      fields.phases = phases.map((p, i) => ({
-        id: p.id ?? crypto.randomUUID(),
-        name: p.name,
-        position: p.position ?? i,
-        ...(p.color !== undefined ? { color: p.color } : {}),
-        ...(p.targetDate !== undefined ? { targetDate: p.targetDate } : {}),
-      }));
+      // desired order without renumbering by hand. Entries carrying an
+      // explicit position win the ordering (stable sort), then positions
+      // are renumbered sequentially so mixed explicit/omitted input can't
+      // produce duplicate positions with arbitrary tie-breaks downstream.
+      fields.phases = phases
+        .map((p, i) => ({
+          id: p.id ?? crypto.randomUUID(),
+          name: p.name,
+          position: p.position ?? i,
+          ...(p.color !== undefined ? { color: p.color } : {}),
+          ...(p.targetDate !== undefined ? { targetDate: p.targetDate } : {}),
+        }))
+        .sort((a, b) => a.position - b.position)
+        .map((p, i) => ({ ...p, position: i }));
     }
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);

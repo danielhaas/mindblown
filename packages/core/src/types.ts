@@ -370,6 +370,11 @@ export interface MindMap {
    * here, nodes reference them via `phaseId`. `position` is the
    * canonical order. Rename/reorder by replacing the array via map
    * update — node phaseIds stay valid because ids are stable.
+   *
+   * Updates are replace-mode, last-writer-wins: there is no
+   * optimistic-concurrency guard on map-level fields, so two concurrent
+   * full-array writes silently drop each other's additions (same
+   * trade-off as statusWorkflow/customFieldDefs).
    */
   phases: PhaseDef[];
 
