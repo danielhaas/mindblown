@@ -10,6 +10,7 @@ import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
 import { BlockedPanel } from './BlockedPanel.js';
 import { TriagePanel } from './TriagePanel.js';
+import { PlanHealthPanel } from './PlanHealthPanel.js';
 import { listTriageDecisions } from './api.js';
 import { CommandPalette } from './CommandPalette.js';
 import { QuickAdd } from './QuickAdd.js';
@@ -1400,6 +1401,7 @@ export function App() {
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
   const [triagePanelOpen, setTriagePanelOpen] = useState(false);
+  const [planHealthPanelOpen, setPlanHealthPanelOpen] = useState(false);
   const [triagePendingCount, setTriagePendingCount] = useState(0);
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [quickAddOpen, setQuickAddOpen] = useState(false);
@@ -1872,6 +1874,7 @@ export function App() {
                 // close Triage on open (symmetric with the Blocked/Triage
                 // handlers below).
                 setTriagePanelOpen(false);
+                setPlanHealthPanelOpen(false);
               }
             }}
             style={{
@@ -1901,6 +1904,7 @@ export function App() {
               if (!blockedPanelOpen) {
                 setSprintPanelOpen(false);
                 setTriagePanelOpen(false);
+                setPlanHealthPanelOpen(false);
               }
             }}
           />
@@ -1916,9 +1920,39 @@ export function App() {
               if (!triagePanelOpen) {
                 setSprintPanelOpen(false);
                 setBlockedPanelOpen(false);
+                setPlanHealthPanelOpen(false);
               }
             }}
           />
+
+          <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+
+          {/* Plan-health panel toggle (pull-based lint, docs/plan-linter.md) */}
+          <button
+            onClick={() => {
+              setPlanHealthPanelOpen(!planHealthPanelOpen);
+              if (!planHealthPanelOpen) {
+                setSprintPanelOpen(false);
+                setBlockedPanelOpen(false);
+                setTriagePanelOpen(false);
+              }
+            }}
+            title="Check the plan's hygiene: estimates, chunk size, stale progress, overdue re-planning"
+            style={{
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: planHealthPanelOpen ? '1px solid #4f46e5' : '1px solid #e2e8f0',
+              fontSize: 11,
+              fontWeight: 600,
+              fontFamily: 'inherit',
+              cursor: 'pointer',
+              background: planHealthPanelOpen ? '#eef2ff' : '#fff',
+              color: planHealthPanelOpen ? '#4f46e5' : '#64748b',
+              transition: 'all 0.15s',
+            }}
+          >
+            🩺 Plan health
+          </button>
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
@@ -2129,6 +2163,11 @@ export function App() {
           <TriagePanel
             mapId={currentMapId}
             onClose={() => setTriagePanelOpen(false)}
+          />
+        ) : planHealthPanelOpen && currentMapId ? (
+          <PlanHealthPanel
+            mapId={currentMapId}
+            onClose={() => setPlanHealthPanelOpen(false)}
           />
         ) : (
           <PropertyPanel />

@@ -814,5 +814,23 @@ export async function runMigrations(): Promise<void> {
       ON requirement_acceptances (map_id)
   `);
 
+  // ── Lint dismissals (plan-health panel) ────────────────────────
+  // node_id NULL = rule muted map-wide. Non-FK node_id by convention
+  // (see triage_decisions.placed_node_id) so node deletion leaves the
+  // dismissal row inert rather than cascading.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS lint_dismissals (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      node_id UUID,
+      rule_id TEXT NOT NULL,
+      dismissed_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS lint_dismissals_map_idx ON lint_dismissals (map_id)
+  `);
+
   console.log('[db] Migrations complete.');
 }

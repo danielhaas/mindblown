@@ -467,3 +467,19 @@ export const requirementAcceptances = pgTable('requirement_acceptances', {
   nodeRevisionAtAcceptance: integer('node_revision_at_acceptance').notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 });
+
+// ── Lint dismissals (plan-health panel, docs/plan-linter.md) ───────
+// One row = "stop showing this lint finding". node_id NULL mutes the
+// rule for the whole map. node_id is non-FK on purpose (same convention
+// as triage_decisions.placed_node_id): when the node is deleted the
+// dismissal simply becomes inert instead of cascading. Uniqueness of
+// (map_id, node_id, rule_id) is enforced application-level in the
+// route (NULL node_id makes a DB unique constraint awkward pre-PG15).
+export const lintDismissals = pgTable('lint_dismissals', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  nodeId: uuid('node_id'),
+  ruleId: text('rule_id').notNull(),
+  dismissedBy: uuid('dismissed_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

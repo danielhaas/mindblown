@@ -686,6 +686,49 @@ export function getChangeHistory(
   return request<{ events: ChangeEvent[] }>(`/api/maps/${mapId}/changes${qs ? `?${qs}` : ''}`);
 }
 
+// ── Plan lint ─────────────────────────────────────────────────
+
+export interface LintFinding {
+  nodeId: string | null;
+  nodeText: string | null;
+  priority: string | null;
+  detail: string;
+  dismissed: boolean;
+}
+
+export interface LintRuleReport {
+  ruleId: string;
+  severity: 'warn' | 'info';
+  title: string;
+  why: string;
+  fix: string;
+  findings: LintFinding[];
+  activeCount: number;
+  dismissedCount: number;
+  ruleMuted: boolean;
+  skipped?: string;
+}
+
+export interface LintReport {
+  scopeLabel: string;
+  warnCount: number;
+  infoCount: number;
+  rules: LintRuleReport[];
+}
+
+export function getLint(
+  mapId: string,
+  opts: { nodeId?: string; versionId?: string; stalledDays?: number; rule?: string } = {},
+): Promise<LintReport> {
+  const params = new URLSearchParams();
+  if (opts.nodeId) params.set('nodeId', opts.nodeId);
+  if (opts.versionId) params.set('versionId', opts.versionId);
+  if (opts.stalledDays != null) params.set('stalledDays', String(opts.stalledDays));
+  if (opts.rule) params.set('rule', opts.rule);
+  const qs = params.toString();
+  return request<LintReport>(`/api/maps/${mapId}/lint${qs ? `?${qs}` : ''}`);
+}
+
 // ── Versions ──────────────────────────────────────────────────
 
 export function listVersions(mapId: string): Promise<VersionInfo[]> {

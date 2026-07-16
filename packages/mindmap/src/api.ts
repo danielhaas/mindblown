@@ -1639,3 +1639,59 @@ export function listNotInMindBlown(
     `/api/maps/${mapId}/triage-decisions/not-in-mindblown${q ? `?${q}` : ''}`,
   );
 }
+
+// ── Plan lint (plan-health panel, docs/plan-linter.md) ────────────
+
+export interface LintFinding {
+  nodeId: string | null;
+  nodeText: string | null;
+  priority: string | null;
+  detail: string;
+  dismissed: boolean;
+}
+
+export interface LintRuleReport {
+  ruleId: string;
+  severity: 'warn' | 'info';
+  title: string;
+  why: string;
+  fix: string;
+  findings: LintFinding[];
+  activeCount: number;
+  dismissedCount: number;
+  ruleMuted: boolean;
+  skipped?: string;
+}
+
+export interface LintReport {
+  scopeLabel: string;
+  warnCount: number;
+  infoCount: number;
+  rules: LintRuleReport[];
+}
+
+export function fetchLint(mapId: string): Promise<LintReport> {
+  return request<LintReport>(`/api/maps/${mapId}/lint`);
+}
+
+/** nodeId null mutes the rule for the whole map. */
+export function dismissLintFinding(
+  mapId: string,
+  ruleId: string,
+  nodeId: string | null,
+): Promise<unknown> {
+  return request(`/api/maps/${mapId}/lint/dismissals`, {
+    method: 'POST',
+    body: JSON.stringify({ ruleId, nodeId }),
+  });
+}
+
+export function undismissLintFinding(
+  mapId: string,
+  ruleId: string,
+  nodeId: string | null,
+): Promise<unknown> {
+  const params = new URLSearchParams({ ruleId });
+  if (nodeId) params.set('nodeId', nodeId);
+  return request(`/api/maps/${mapId}/lint/dismissals?${params}`, { method: 'DELETE' });
+}

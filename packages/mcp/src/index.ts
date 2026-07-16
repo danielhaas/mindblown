@@ -1062,296 +1062,56 @@ server.tool(
   },
   async ({ mapId, nodeId, versionId, stalledDays, rule, limit }) => {
     try {
-      // Opinionated defaults, deliberately not configurable (see docs/plan-linter.md).
-      const OVERSIZED_DAYS = 5; // absolute: leaf bigger than a work week
-      const OVERSIZED_MAP_SHARE = 0.15; // relative: leaf dwarfs the rest of the plan
-      const OVERSIZED_SHARE_MIN_LEAVES = 8; // share rule needs enough leaves to be meaningful
-      const DONE_CRITERIA_MIN_DAYS = 2; // small tasks may skip a written done-definition
-      const STALE_PLAN_DAYS = 14;
-      const MIN_CALIBRATION_SAMPLES = 5;
-      const CALIBRATION_LOW = 0.8;
-      const CALIBRATION_HIGH = 1.25;
-      const MIN_DATED_LEAVES_FOR_DEPS = 10;
-      const REPLAN_LOOKBACK_DAYS = 90; // how far back we look for re-plan events
-
-      const data = await api.getMap(mapId);
-      const scope = scopedLeaves(data, { nodeId, versionId });
-      if (!scope.ok) return toolError(scope.error);
-      const { leaves, scopeLabel } = scope;
-
-      if (leaves.length === 0) {
-        return toolResult(`No leaf nodes in scope (${scopeLabel}).`);
-      }
-
-      const unit = data.map.effortUnit ?? 'units';
-
-      // Units-per-day so day-based thresholds work for hour/point maps.
-      // Best-effort from the scheduler; 1 unit == 1 day as fallback.
-      let unitsPerDay = 1;
-      try {
-        const sched = await api.getSchedule(mapId);
-        if (sched.unitsPerDay > 0) unitsPerDay = sched.unitsPerDay;
-      } catch {
-        /* keep fallback */
-      }
-
-      // Change-event-backed signals (stale-progress, overdue-unreplanned,
-      // stale-plan) are best-effort: the event log may be unavailable.
-      let historyOk = true;
-      // Latest percentComplete change per node (events arrive newest-first;
-      // first hit per node wins). Nodes absent from the map have no progress
-      // change in the lookback window — with a 1000-event cap, worst case we
-      // under-record ancient changes, which only ever makes a node MORE stale.
-      const lastProgressChange = new Map<string, string>();
-      const replanEventsByNode = new Map<string, string[]>();
-      let anyRecentEvent = false;
-      try {
-        const [progress, dueChanges, startChanges, estChanges, recent] = await Promise.all([
-          api.getChangeHistory(mapId, { fieldName: 'percentComplete', sinceDays: REPLAN_LOOKBACK_DAYS, limit: 1000 }),
-          api.getChangeHistory(mapId, { fieldName: 'dueDate', sinceDays: REPLAN_LOOKBACK_DAYS, limit: 1000 }),
-          api.getChangeHistory(mapId, { fieldName: 'startDate', sinceDays: REPLAN_LOOKBACK_DAYS, limit: 1000 }),
-          api.getChangeHistory(mapId, { fieldName: 'effortEstimate', sinceDays: REPLAN_LOOKBACK_DAYS, limit: 1000 }),
-          api.getChangeHistory(mapId, { sinceDays: STALE_PLAN_DAYS, limit: 1 }),
-        ]);
-        for (const e of progress.events) {
-          if (e.nodeId && !lastProgressChange.has(e.nodeId)) {
-            lastProgressChange.set(e.nodeId, e.createdAt);
-          }
-        }
-        for (const e of [...dueChanges.events, ...startChanges.events, ...estChanges.events]) {
-          if (!e.nodeId) continue;
-          const list = replanEventsByNode.get(e.nodeId) ?? [];
-          list.push(e.createdAt);
-          replanEventsByNode.set(e.nodeId, list);
-        }
-        anyRecentEvent = recent.events.length > 0;
-      } catch {
-        historyOk = false;
-      }
-
-      const incomplete = leaves.filter((l) => (l.percentComplete ?? 0) < 100);
-      const totalEffort = leaves.reduce((s, l) => s + (l.effortEstimate ?? 0), 0);
-
-      const inProgressStatusIds = new Set(
-        (data.map.statusWorkflow ?? [])
-          .filter((s) => s.category === 'in_progress')
-          .map((s) => s.id),
-      );
-      const isInProgress = (n: (typeof leaves)[number]) =>
-        (n.status != null && inProgressStatusIds.has(n.status)) ||
-        ((n.percentComplete ?? 0) > 0 && (n.percentComplete ?? 0) < 100);
-
-      const fmtNode = (n: (typeof leaves)[number], extra?: string) => {
-        const bits: string[] = [`${n.id} ${n.text}`];
-        if (n.priority) bits.push(`[${n.priority}]`);
-        if (extra) bits.push(`— ${extra}`);
-        return bits.join(' ');
-      };
-
-      // ── Evaluate rules (basics first) ──
-      type Finding = { line: string };
-      type RuleResult = {
-        id: (typeof LINT_RULES)[number];
-        severity: 'warn' | 'info';
-        title: string;
-        why: string;
-        fix: string;
-        findings: Finding[];
-        skipped?: string;
-      };
-      const results: RuleResult[] = [];
-
-      // 1. unestimated-leaf
-      results.push({
-        id: 'unestimated-leaf',
-        severity: 'warn',
-        title: 'Leaves without an effort estimate',
-        why: 'Unestimated work is invisible to the forecast — your finish date is under-counting.',
-        fix: 'Set an estimate on each (set_estimate); ai_estimate can draft one.',
-        findings: incomplete
-          .filter((l) => l.effortEstimate == null)
-          .map((l) => ({ line: fmtNode(l) })),
-      });
-
-      // 2. oversized-leaf
-      const oversizedAbs = OVERSIZED_DAYS * unitsPerDay;
-      const shareRuleActive = totalEffort > 0 && leaves.length >= OVERSIZED_SHARE_MIN_LEAVES;
-      results.push({
-        id: 'oversized-leaf',
-        severity: 'warn',
-        title: `Oversized leaves (> ${OVERSIZED_DAYS} days${shareRuleActive ? ` or > ${OVERSIZED_MAP_SHARE * 100}% of the plan` : ''})`,
-        why: 'Small pieces get estimated far more accurately — projects built from small chunks succeed dramatically more often.',
-        fix: 'Split it into smaller children (ai_breakdown can suggest a split).',
-        findings: incomplete
-          .filter(
-            (l) =>
-              l.effortEstimate != null &&
-              (l.effortEstimate > oversizedAbs ||
-                (shareRuleActive && l.effortEstimate > OVERSIZED_MAP_SHARE * totalEffort)),
-          )
-          .sort((a, b) => (b.effortEstimate ?? 0) - (a.effortEstimate ?? 0))
-          .map((l) => ({ line: fmtNode(l, `${l.effortEstimate} ${unit}`) })),
-      });
-
-      // 3. stale-progress
-      results.push({
-        id: 'stale-progress',
-        severity: 'warn',
-        title: `In-progress work with no progress update in ${stalledDays}+ days`,
-        why: 'A task that stops moving is usually stuck, not slow — surface it before it slips the schedule.',
-        fix: 'Update its % complete (set_progress), or flag what blocks it (flag_blocker).',
-        findings: historyOk
-          ? incomplete
-              .filter((l) => {
-                if (!isInProgress(l)) return false;
-                const last = lastProgressChange.get(l.id);
-                return last == null || new Date(last).getTime() < Date.now() - stalledDays * 86_400_000;
-              })
-              .map((l) => {
-                const last = lastProgressChange.get(l.id);
-                const detail = last
-                  ? `${l.percentComplete ?? 0}%, last progress change ${last.slice(0, 10)}`
-                  : `${l.percentComplete ?? 0}%, no progress change on record`;
-                return { line: fmtNode(l, detail) };
-              })
-          : [],
-        skipped: historyOk ? undefined : 'change history unavailable',
-      });
-
-      // 4. overdue-unreplanned
-      const todayIso = new Date().toISOString().slice(0, 10);
-      results.push({
-        id: 'overdue-unreplanned',
-        severity: 'warn',
-        title: 'Overdue leaves never re-planned',
-        why: 'Plans only work if they are amended when reality diverges — an ignored overdue date makes every downstream date fiction.',
-        fix: 'Re-plan it: move the due date, split the remainder, or descope (scope_simulate previews the impact).',
-        findings: historyOk
-          ? incomplete
-              .filter((l) => {
-                if (!l.dueDate || l.dueDate.slice(0, 10) >= todayIso) return false;
-                const evs = replanEventsByNode.get(l.id) ?? [];
-                return !evs.some((ts) => ts > l.dueDate!);
-              })
-              .map((l) => ({ line: fmtNode(l, `due ${l.dueDate!.slice(0, 10)}, ${l.percentComplete ?? 0}%`) }))
-          : [],
-        skipped: historyOk ? undefined : 'change history unavailable',
-      });
-
-      // 5. calibration-drift (map-level)
-      const calibrationLeaves = data.nodes.filter(
-        (n) =>
-          (n.childrenIds?.length ?? 0) === 0 &&
-          n.effortEstimate != null &&
-          n.actualEffort != null,
-      );
-      const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-      const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-      const fudge = calibEstimate > 0 ? calibActual / calibEstimate : null;
-      const drifted =
-        fudge != null &&
-        calibrationLeaves.length >= MIN_CALIBRATION_SAMPLES &&
-        (fudge < CALIBRATION_LOW || fudge > CALIBRATION_HIGH);
-      results.push({
-        id: 'calibration-drift',
-        severity: 'info',
-        title: 'Estimation calibration drift (map-level)',
-        why: fudge != null
-          ? `Your estimates historically run ${fudge.toFixed(2)}× — the velocity-adjusted forecast already corrects for this; consider sizing new estimates accordingly.`
-          : 'Once completed leaves carry both estimate and actual, the linter watches your calibration.',
-        fix: 'See get_estimation_accuracy for the per-node breakdown.',
-        findings: drifted
-          ? [{ line: `fudge factor ${fudge!.toFixed(2)}× over ${calibrationLeaves.length} completed leaves` }]
-          : [],
-      });
-
-      // 6. no-done-criteria
-      results.push({
-        id: 'no-done-criteria',
-        severity: 'info',
-        title: `Sizeable leaves (≥ ${DONE_CRITERIA_MIN_DAYS} days) without a done-definition`,
-        why: 'A task without a definition of done tends to be 90% finished forever — one sentence of "done means…" prevents it.',
-        fix: 'Add a sentence to the description (update_node). Nodes linked to a requirement are exempt.',
-        findings: incomplete
-          .filter(
-            (l) =>
-              l.requirementId == null &&
-              l.effortEstimate != null &&
-              l.effortEstimate >= DONE_CRITERIA_MIN_DAYS * unitsPerDay &&
-              (l.description ?? '').trim() === '',
-          )
-          .map((l) => ({ line: fmtNode(l, `${l.effortEstimate} ${unit}`) })),
-      });
-
-      // 7. stale-plan (map-level)
-      const mapIncomplete = (data.map.computedProgress ?? 0) < 100;
-      results.push({
-        id: 'stale-plan',
-        severity: 'info',
-        title: `Stale plan (no changes in ${STALE_PLAN_DAYS}+ days, map-level)`,
-        why: 'A plan that is not touched weekly is a document, not a plan — a 2-minute review keeps the forecast honest.',
-        fix: 'Run status_digest, then update the progress and dates that changed.',
-        findings:
-          historyOk && mapIncomplete && !anyRecentEvent
-            ? [{ line: `map is at ${(data.map.computedProgress ?? 0).toFixed(0)}% with no recorded change in ${STALE_PLAN_DAYS} days` }]
-            : [],
-        skipped: historyOk ? undefined : 'change history unavailable',
-      });
-
-      // 8. dates-without-dependencies (map-level)
-      const datedLeaves = data.nodes.filter(
-        (n) => (n.childrenIds?.length ?? 0) === 0 && (n.dueDate || n.startDate),
-      );
-      const totalDeps = data.nodes.reduce((s, n) => s + (n.dependencies?.length ?? 0), 0);
-      results.push({
-        id: 'dates-without-dependencies',
-        severity: 'info',
-        title: 'Scheduled plan with zero dependencies (map-level)',
-        why: 'Without dependencies the schedule assumes everything can happen in parallel — the critical path is what makes a finish date real.',
-        fix: 'Add dependencies between sequential tasks (add_dependency).',
-        findings:
-          datedLeaves.length >= MIN_DATED_LEAVES_FOR_DEPS && totalDeps === 0
-            ? [{ line: `${datedLeaves.length} dated leaves, 0 dependencies` }]
-            : [],
-      });
-
-      // ── Format ──
-      const shown = rule ? results.filter((r) => r.id === rule) : results;
-      const warnCount = shown.filter((r) => r.severity === 'warn').reduce((s, r) => s + r.findings.length, 0);
-      const infoCount = shown.filter((r) => r.severity === 'info').reduce((s, r) => s + r.findings.length, 0);
+      // The rules run server-side (packages/server/src/lint/engine.ts) so
+      // the MCP tool and the plan-health panel share one engine; this
+      // handler only formats. Dismissed findings (panel) are excluded
+      // from counts and listings but summarized per rule.
+      const report = await api.getLint(mapId, { nodeId, versionId, stalledDays, rule });
 
       const lines: string[] = [];
-      lines.push(`Plan lint — ${scopeLabel}`);
-      lines.push(`Plan health: ${warnCount} warning(s), ${infoCount} suggestion(s)`);
+      lines.push(`Plan lint — ${report.scopeLabel}`);
+      lines.push(`Plan health: ${report.warnCount} warning(s), ${report.infoCount} suggestion(s)`);
       if (rule) lines.push(`Filtered to rule: ${rule}`);
       lines.push('');
 
       const clean: string[] = [];
+      const muted: string[] = [];
       const skippedRules: string[] = [];
-      for (const r of shown) {
+      for (const r of report.rules) {
         if (r.skipped) {
-          skippedRules.push(`${r.id} (${r.skipped})`);
+          skippedRules.push(`${r.ruleId} (${r.skipped})`);
           continue;
         }
-        if (r.findings.length === 0) {
-          clean.push(r.id);
+        if (r.ruleMuted) {
+          muted.push(r.ruleId);
           continue;
         }
-        lines.push(`## [${r.severity}] ${r.id}: ${r.findings.length} — ${r.title}`);
+        const active = r.findings.filter((f) => !f.dismissed);
+        if (active.length === 0) {
+          clean.push(r.dismissedCount > 0 ? `${r.ruleId} (${r.dismissedCount} dismissed)` : r.ruleId);
+          continue;
+        }
+        lines.push(
+          `## [${r.severity}] ${r.ruleId}: ${active.length}${r.dismissedCount > 0 ? ` (+${r.dismissedCount} dismissed)` : ''} — ${r.title}`,
+        );
         lines.push(`Why: ${r.why}`);
         lines.push(`Fix: ${r.fix}`);
-        for (const f of r.findings.slice(0, limit)) {
-          lines.push(`  - ${f.line}`);
+        for (const f of active.slice(0, limit)) {
+          const bits: string[] = [f.nodeId ? `${f.nodeId} ${f.nodeText}` : '(map-level)'];
+          if (f.priority) bits.push(`[${f.priority}]`);
+          bits.push(`— ${f.detail}`);
+          lines.push(`  - ${bits.join(' ')}`);
         }
-        if (r.findings.length > limit) {
-          lines.push(`  … and ${r.findings.length - limit} more (raise \`limit\` or pass \`rule: "${r.id}"\`)`);
+        if (active.length > limit) {
+          lines.push(`  … and ${active.length - limit} more (raise \`limit\` or pass \`rule: "${r.ruleId}"\`)`);
         }
         lines.push('');
       }
 
       if (clean.length > 0) lines.push(`✓ Clean: ${clean.join(', ')}`);
+      if (muted.length > 0) lines.push(`🔕 Muted on this map: ${muted.join(', ')}`);
       if (skippedRules.length > 0) lines.push(`⚠ Skipped: ${skippedRules.join(', ')}`);
-      if (warnCount + infoCount === 0 && skippedRules.length === 0) {
+      if (report.warnCount + report.infoCount === 0 && skippedRules.length === 0) {
         lines.push('');
         lines.push('The plan is in good shape — every check passed.');
       }
