@@ -32,6 +32,16 @@ interface Column {
 }
 
 export function MobileKanbanView({ nodes, map, onSelect }: Props) {
+  const breadcrumbs = useMemo(() => {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const out = new Map<string, string>();
+    for (const n of nodes) {
+      const parent = n.parentId ? byId.get(n.parentId) : undefined;
+      if (parent && parent.id !== map.rootNodeId) out.set(n.id, parent.text);
+    }
+    return out;
+  }, [nodes, map.rootNodeId]);
+
   const columns: Column[] = useMemo(() => {
     const workflow = [...map.statusWorkflow].sort((a, b) => a.position - b.position);
     const byStatus = new Map<string, NodeWithComputed[]>();
@@ -39,6 +49,9 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
 
     for (const n of nodes) {
       if (n.id === map.rootNodeId) continue;
+      // Parents are containers, not work items — a card for "Backend"
+      // next to its own children only adds noise on a phone screen.
+      if (n.childrenIds.length > 0) continue;
       if (n.status === null) {
         unstatused.push(n);
       } else {
@@ -101,7 +114,14 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                         flexShrink: 0,
                       }}
                     />
-                    <div style={{ fontSize: 13, color: '#0f172a', flex: 1 }}>{n.text}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, color: '#0f172a' }}>{n.text}</div>
+                      {breadcrumbs.has(n.id) && (
+                        <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 2 }}>
+                          {breadcrumbs.get(n.id)}
+                        </div>
+                      )}
+                    </div>
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#64748b' }}>
                     <span>{pct}%</span>

@@ -230,6 +230,13 @@ export function MobileMindmapView({ nodes, map, onSelect }: Props) {
           {layoutNodes.map((ln) => {
             const n = lookup.get(ln.id);
             const h = n?.healthSignal;
+            // Truncate to what actually fits this node's width (layout.ts
+            // measures ~7.5px per char + 16px padding each side) instead of
+            // a fixed character count.
+            const maxChars = Math.max(4, Math.floor((ln.width - 24) / 7.5));
+            const text = n?.text ?? '';
+            const label = text.length > maxChars ? `${text.slice(0, maxChars - 1)}…` : text;
+            const pct = Math.round(n?.computedProgress ?? 0);
             return (
               <g key={ln.id}>
                 <rect
@@ -243,6 +250,18 @@ export function MobileMindmapView({ nodes, map, onSelect }: Props) {
                   stroke={healthStroke(h)}
                   strokeWidth={ln.id === map.rootNodeId ? 2 : 1}
                 />
+                {pct > 0 && (
+                  <rect
+                    x={ln.x + 1}
+                    y={ln.y + ln.height - 4}
+                    width={(ln.width - 2) * (pct / 100)}
+                    height={3}
+                    rx={1.5}
+                    fill={pct >= 100 ? '#16a34a' : '#4f46e5'}
+                    opacity={0.75}
+                    style={{ pointerEvents: 'none' }}
+                  />
+                )}
                 <text
                   x={ln.x + ln.width / 2}
                   y={ln.y + ln.height / 2 + 4}
@@ -252,7 +271,7 @@ export function MobileMindmapView({ nodes, map, onSelect }: Props) {
                   fill="#0f172a"
                   style={{ pointerEvents: 'none' }}
                 >
-                  {n?.text.slice(0, 28) ?? ''}
+                  {label}
                 </text>
               </g>
             );

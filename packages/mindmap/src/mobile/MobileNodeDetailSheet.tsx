@@ -1,4 +1,6 @@
+import { useEffect, useRef, useState } from 'react';
 import type { MindMap, StatusDef } from '@mindblown/core';
+import * as api from '../api.js';
 import type { NodeWithComputed } from '../api.js';
 
 interface Props {
@@ -6,15 +8,15 @@ interface Props {
   map: MindMap;
   byId: Map<string, NodeWithComputed>;
   onClose: () => void;
+  /** Called after any successful edit so the owner can re-fetch rollups. */
+  onChanged: () => void;
 }
+
+const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const;
 
 function statusOf(node: NodeWithComputed, workflow: StatusDef[]): StatusDef | null {
   if (!node.status) return null;
   return workflow.find((s) => s.id === node.status) ?? null;
-}
-
-function priorityLabel(p: string | null): string {
-  return p ?? '—';
 }
 
 function formatDate(iso: string | null): string {
@@ -42,13 +44,41 @@ function pathTo(node: NodeWithComputed, byId: Map<string, NodeWithComputed>): No
   return out;
 }
 
-export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
+export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: Props) {
   const s = statusOf(node, map.statusWorkflow);
-  const pct = Math.round(node.computedProgress ?? 0);
+  const isLeaf = node.childrenIds.length === 0;
   const ancestors = pathTo(node, byId).slice(1); // skip the root node
 
   const deps = node.dependencies ?? [];
   const blockedBy = deps.filter((d) => d.type === 'FS' || d.type === 'SS');
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Slider state is local while dragging; committed on release.
+  const [draftPct, setDraftPct] = useState<number | null>(null);
+  const pct = draftPct ?? Math.round(isLeaf ? node.percentComplete ?? 0 : node.computedProgress ?? 0);
+
+  const [blockerDraft, setBlockerDraft] = useState<string | null>(null);
+  const blockerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    if (blockerDraft !== null) blockerInputRef.current?.focus();
+  }, [blockerDraft !== null]);
+
+  const save = async (fields: Record<string, unknown>) => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.updateNode(map.id, node.id, fields);
+      onChanged();
+    } catch (e) {
+      setSaveError((e as Error).message ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const workflow = [...map.statusWorkflow].sort((a, b) => a.position - b.position);
 
   return (
     <>
@@ -74,33 +104,131 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
             </div>
           )}
 
-          <div className="mb-detail-grid">
-            <div className="mb-detail-cell">
-              <div className="mb-detail-label">Status</div>
-              <div>
-                {s ? (
-                  <span
-                    className="mb-status-pill"
-                    style={{ background: `${s.color}22`, color: s.color, borderColor: `${s.color}66` }}
+          {saveError && <div className="mb-error">{saveError}</div>}
+
+          <div className="mb-detail-section">
+            <div className="mb-detail-label">Status</div>
+            <div className="mb-edit-pill-row">
+              {workflow.map((w) => {
+                const active = node.status === w.id;
+                return (
+                  <button
+                    key={w.id}
+                    className="mb-status-pill mb-status-pill-tappable"
+                    aria-pressed={active}
+                    disabled={saving}
+                    style={
+                      active
+                        ? { background: w.color, color: '#fff', borderColor: w.color }
+                        : { background: `${w.color}18`, color: w.color, borderColor: `${w.color}55` }
+                    }
+                    onClick={() => void save({ status: active ? null : w.id })}
                   >
-                    {s.name}
-                  </span>
-                ) : (
-                  <span className="mb-status-pill mb-status-pill-empty">No status</span>
-                )}
+                    {w.name}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mb-detail-section">
+            <div className="mb-detail-label">
+              Progress · {pct}%{!isLeaf && ' (auto from children)'}
+            </div>
+            {isLeaf ? (
+              <input
+                type="range"
+                className="mb-progress-slider"
+                min={0}
+                max={100}
+                step={5}
+                value={pct}
+                disabled={saving}
+                onChange={(e) => setDraftPct(Number(e.target.value))}
+                onPointerUp={() => {
+                  if (draftPct !== null && draftPct !== (node.percentComplete ?? 0)) {
+                    void save({ percentComplete: draftPct }).then(() => setDraftPct(null));
+                  } else {
+                    setDraftPct(null);
+                  }
+                }}
+              />
+            ) : (
+              <div className="mb-progress-track">
+                <div className="mb-progress-fill" style={{ width: `${pct}%` }} />
               </div>
+            )}
+          </div>
+
+          <div className="mb-detail-section">
+            <div className="mb-detail-label">Priority</div>
+            <div className="mb-edit-pill-row">
+              {PRIORITIES.map((p) => {
+                const active = node.priority === p;
+                return (
+                  <button
+                    key={p}
+                    className="mb-status-pill mb-status-pill-tappable"
+                    aria-pressed={active}
+                    disabled={saving}
+                    onClick={() => void save({ priority: active ? null : p })}
+                  >
+                    {p}
+                  </button>
+                );
+              })}
             </div>
-            <div className="mb-detail-cell">
-              <div className="mb-detail-label">Progress</div>
-              <div>{pct}%</div>
-            </div>
+          </div>
+
+          <div className="mb-detail-section">
+            <div className="mb-detail-label">Blocked</div>
+            {node.blockedReason ? (
+              <div className="mb-blocker-box">
+                <div style={{ color: '#b91c1c', flex: 1 }}>{node.blockedReason}</div>
+                <button
+                  className="mb-link"
+                  disabled={saving}
+                  onClick={() => void save({ blockedReason: null })}
+                >
+                  Clear
+                </button>
+              </div>
+            ) : blockerDraft !== null ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <textarea
+                  ref={blockerInputRef}
+                  className="mb-textarea"
+                  rows={2}
+                  placeholder="What is blocking this?"
+                  value={blockerDraft}
+                  onChange={(e) => setBlockerDraft(e.target.value)}
+                />
+                <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                  <button className="mb-link" onClick={() => setBlockerDraft(null)}>
+                    Cancel
+                  </button>
+                  <button
+                    className="mb-btn-primary"
+                    disabled={saving || !blockerDraft.trim()}
+                    onClick={() =>
+                      void save({ blockedReason: blockerDraft.trim() }).then(() => setBlockerDraft(null))
+                    }
+                  >
+                    Flag blocker
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className="mb-btn-soft" onClick={() => setBlockerDraft('')}>
+                Flag a blocker
+              </button>
+            )}
+          </div>
+
+          <div className="mb-detail-grid">
             <div className="mb-detail-cell">
               <div className="mb-detail-label">Health</div>
               <div>{(node.healthSignal ?? 'unknown').replace('_', ' ')}</div>
-            </div>
-            <div className="mb-detail-cell">
-              <div className="mb-detail-label">Priority</div>
-              <div>{priorityLabel(node.priority)}</div>
             </div>
             <div className="mb-detail-cell">
               <div className="mb-detail-label">Estimate</div>
@@ -119,6 +247,14 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
               </div>
             </div>
             <div className="mb-detail-cell">
+              <div className="mb-detail-label">Children</div>
+              <div>
+                {isLeaf
+                  ? 'Leaf node'
+                  : `${node.childrenIds.length} child${node.childrenIds.length === 1 ? '' : 'ren'}`}
+              </div>
+            </div>
+            <div className="mb-detail-cell">
               <div className="mb-detail-label">Start</div>
               <div>{formatDate(node.startDate)}</div>
             </div>
@@ -127,13 +263,6 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
               <div>{formatDate(node.dueDate)}</div>
             </div>
           </div>
-
-          {node.blockedReason && (
-            <div className="mb-detail-section">
-              <div className="mb-detail-label">Blocked</div>
-              <div style={{ color: '#b91c1c' }}>{node.blockedReason}</div>
-            </div>
-          )}
 
           {blockedBy.length > 0 && (
             <div className="mb-detail-section">
@@ -196,15 +325,6 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose }: Props) {
               </div>
             </div>
           )}
-
-          <div className="mb-detail-section">
-            <div className="mb-detail-label">Children</div>
-            <div style={{ color: '#475569', fontSize: 13 }}>
-              {node.childrenIds.length === 0
-                ? 'Leaf node'
-                : `${node.childrenIds.length} child${node.childrenIds.length === 1 ? '' : 'ren'}`}
-            </div>
-          </div>
         </div>
       </div>
     </>

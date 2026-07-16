@@ -64,7 +64,7 @@ export function MobileListView({ nodes, map, onSelect }: Props) {
         const s = statusOf(node, map.statusWorkflow);
         if (s?.category === 'in_progress') return true;
         const pct = node.computedProgress ?? 0;
-        return pct > 0 && pct < 1;
+        return pct > 0 && pct < 100;
       }
       return true;
     });
@@ -77,7 +77,7 @@ export function MobileListView({ nodes, map, onSelect }: Props) {
         const s = statusOf(node, map.statusWorkflow);
         if (s?.category === 'in_progress') return true;
         const pct = node.computedProgress ?? 0;
-        return pct > 0 && pct < 1;
+        return pct > 0 && pct < 100;
       }).length,
       behind: rows.filter(({ node }) => node.healthSignal === 'behind').length,
       mine: userId === null ? 0 : rows.filter(({ node }) => node.assigneeIds.includes(userId)).length,
