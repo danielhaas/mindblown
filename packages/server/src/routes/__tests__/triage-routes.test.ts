@@ -1476,13 +1476,13 @@ describe('POST .../bulk-confirm', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  // Phase 3 follow-up (#102 item 1): bulk cap lowered from 200 → 20 so
-  // a long-poll on bulk-reclassify doesn't tie up the request connection
-  // for 6-10 min. 21 is the first over-limit batch.
-  it('400 when batch exceeds 20', async () => {
+  // PR #151 split the bulk caps: confirm/override are capped at 500
+  // (drift-audit reviews come in ~300-row batches), reclassify stays at
+  // 20 (each item runs the LLM). 501 is the first over-limit batch.
+  it('400 when batch exceeds 500', async () => {
     permissionLevel = 'edit';
     const app = await buildApp('jwt');
-    const ids = Array.from({ length: 21 }, (_, i) => `t${i}`);
+    const ids = Array.from({ length: 501 }, (_, i) => `t${i}`);
     const res = await app.inject({
       method: 'POST',
       url: '/api/maps/map-1/triage-decisions/bulk-confirm',
@@ -1490,14 +1490,14 @@ describe('POST .../bulk-confirm', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(400);
-    expect(res.json().error?.message).toContain('20');
+    expect(res.json().error?.message).toContain('500');
   });
 
-  it('accepts the boundary batch of exactly 20 ids', async () => {
-    for (let i = 0; i < 20; i++) seedRow({ id: `t${i}`, reviewed: false, decidedBy: 'auto' });
+  it('accepts the boundary batch of exactly 500 ids', async () => {
+    for (let i = 0; i < 500; i++) seedRow({ id: `t${i}`, reviewed: false, decidedBy: 'auto' });
     permissionLevel = 'edit';
     const app = await buildApp('jwt');
-    const ids = Array.from({ length: 20 }, (_, i) => `t${i}`);
+    const ids = Array.from({ length: 500 }, (_, i) => `t${i}`);
     const res = await app.inject({
       method: 'POST',
       url: '/api/maps/map-1/triage-decisions/bulk-confirm',
@@ -1505,7 +1505,7 @@ describe('POST .../bulk-confirm', () => {
     });
     await app.close();
     expect(res.statusCode).toBe(200);
-    expect(res.json().results).toHaveLength(20);
+    expect(res.json().results).toHaveLength(500);
   });
 
   it('403 for API-key auth', async () => {
@@ -1887,10 +1887,15 @@ describe('bulk routes — label writes fire in parallel after the DB loop', () =
       url: routePath,
       payload,
     });
-    // Yield to the event loop several times so the bulk route's DB
-    // loop drains and queues every label write before we resolve any.
-    for (let i = 0; i < 20; i++) await Promise.resolve();
-    await new Promise((r) => setTimeout(r, 0));
+    // Wait until both label writes are pinned in flight. A fixed number
+    // of event-loop yields is racy (the DB loop crosses macrotask
+    // boundaries); polling is deterministic for both code paths — the
+    // sequential path hangs on the first unresolved write, never reaches
+    // 2 resolvers, and times out here.
+    const deadline = Date.now() + 2000;
+    while (resolvers.length < 2 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 1));
+    }
     // All label writes should be in flight simultaneously. The
     // peakActive is at least 2 — the sequential code path peaked at 1.
     expect(peakActive).toBeGreaterThanOrEqual(2);
