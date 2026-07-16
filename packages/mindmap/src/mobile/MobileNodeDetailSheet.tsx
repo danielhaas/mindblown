@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { MindMap, StatusDef } from '@mindblown/core';
+import type { MindMap, Node, StatusDef } from '@mindblown/core';
 import * as api from '../api.js';
 import type { NodeWithComputed } from '../api.js';
 
@@ -8,8 +8,8 @@ interface Props {
   map: MindMap;
   byId: Map<string, NodeWithComputed>;
   onClose: () => void;
-  /** Called after any successful edit so the owner can re-fetch rollups. */
-  onChanged: () => void;
+  /** Called with the server's updated node after any successful edit. */
+  onChanged: (updated: Node) => void;
 }
 
 const PRIORITIES = ['P0', 'P1', 'P2', 'P3'] as const;
@@ -65,12 +65,39 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
     if (blockerDraft !== null) blockerInputRef.current?.focus();
   }, [blockerDraft !== null]);
 
+  // The map payload arrives without description/externalLinks (see
+  // OMIT_FIELDS in MobileViewer) — fetch the full node once on open.
+  const [full, setFull] = useState<Node | null>(null);
+  // Widened view: the slim map payload physically lacks these keys even
+  // though the Node type declares them.
+  const slim = node as Partial<Node>;
+  const needsFull = slim.description === undefined || slim.externalLinks === undefined;
+  useEffect(() => {
+    let cancelled = false;
+    setFull(null);
+    if (needsFull) {
+      api
+        .fetchNode(map.id, node.id)
+        .then((n) => {
+          if (!cancelled) setFull(n);
+        })
+        .catch(() => {
+          // Sheet still works without the tail fields.
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [map.id, node.id]);
+  const description = node.description ?? full?.description ?? null;
+  const externalLinks = node.externalLinks ?? full?.externalLinks ?? [];
+
   const save = async (fields: Record<string, unknown>) => {
     setSaving(true);
     setSaveError(null);
     try {
-      await api.updateNode(map.id, node.id, fields);
-      onChanged();
+      const updated = await api.updateNode(map.id, node.id, fields);
+      onChanged(updated);
     } catch (e) {
       setSaveError((e as Error).message ?? 'Save failed');
     } finally {
@@ -304,10 +331,10 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
             </div>
           )}
 
-          {node.externalLinks.length > 0 && (
+          {externalLinks.length > 0 && (
             <div className="mb-detail-section">
               <div className="mb-detail-label">Links</div>
-              {node.externalLinks.map((l, i) => (
+              {externalLinks.map((l, i) => (
                 <div key={i} className="mb-detail-row-soft">
                   <a href={l.url} target="_blank" rel="noopener noreferrer" style={{ color: '#4f46e5' }}>
                     {l.provider}: {l.externalId}
@@ -317,11 +344,11 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
             </div>
           )}
 
-          {node.description && (
+          {description && (
             <div className="mb-detail-section">
               <div className="mb-detail-label">Description</div>
               <div style={{ whiteSpace: 'pre-wrap', fontSize: 14, lineHeight: 1.5 }}>
-                {node.description}
+                {description}
               </div>
             </div>
           )}

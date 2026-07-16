@@ -173,7 +173,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/maps/:id — Get map with all nodes + computed fields
-  app.get<{ Params: { id: string } }>('/api/maps/:id', async (req, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { omit?: string } }>('/api/maps/:id', async (req, reply) => {
     const userId = req.userId;
 
     // Check permissions if authenticated
@@ -208,6 +208,22 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         blockedBy: cv?.blockedBy ?? { manual: false, predecessorIds: [], blockedDescendantCount: 0 },
       };
     });
+
+    // ?omit=description,externalLinks strips heavy display-only fields
+    // for low-bandwidth clients (the mobile app). On a large synced map
+    // descriptions alone are >half the payload; detail views fetch the
+    // full node on demand instead. Allowlisted so structural fields the
+    // tree depends on can never be stripped.
+    const OMITTABLE = new Set(['description', 'externalLinks']);
+    const omit = (req.query.omit ?? '')
+      .split(',')
+      .map((f) => f.trim())
+      .filter((f) => OMITTABLE.has(f));
+    if (omit.length > 0) {
+      for (const node of nodesWithComputed as Record<string, unknown>[]) {
+        for (const f of omit) delete node[f];
+      }
+    }
 
     return reply.send({
       map: data.map,

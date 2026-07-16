@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { Node } from '@mindblown/core';
 import * as api from '../api.js';
 import type { MapDetail, MapSummary, NodeWithComputed } from '../api.js';
 import { MobileListView } from './MobileListView.js';
@@ -33,6 +34,11 @@ interface Props {
   map: MapSummary;
 }
 
+// Heavy fields stripped from the mobile map payload — on large synced
+// maps descriptions alone are >half the JSON. The detail sheet fetches
+// the full node on demand.
+const OMIT_FIELDS: Array<'description' | 'externalLinks'> = ['description', 'externalLinks'];
+
 export function MobileViewer({ map }: Props) {
   const [detail, setDetail] = useState<MapDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +51,7 @@ export function MobileViewer({ map }: Props) {
     setDetail(null);
     setError(null);
     api
-      .fetchMap(map.id)
+      .fetchMap(map.id, { omit: OMIT_FIELDS })
       .then((d) => {
         if (!cancelled) setDetail(d);
       })
@@ -61,12 +67,65 @@ export function MobileViewer({ map }: Props) {
   // node sheet update rollups in place instead of flashing "Loading map…".
   const silentReload = useCallback(() => {
     api
-      .fetchMap(map.id)
+      .fetchMap(map.id, { omit: OMIT_FIELDS })
       .then(setDetail)
       .catch(() => {
         // Keep showing the stale tree; the next manual refresh surfaces errors.
       });
   }, [map.id]);
+
+  // Edits patch the returned node into local state immediately; the full
+  // re-fetch that refreshes ancestor rollups is debounced so a burst of
+  // edits (slider drags, rapid-add) costs one download, not one each.
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleReload = useCallback(() => {
+    if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    reloadTimer.current = setTimeout(silentReload, 1500);
+  }, [silentReload]);
+  useEffect(
+    () => () => {
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    },
+    [],
+  );
+
+  const patchNode = useCallback(
+    (updated: Node) => {
+      setDetail((d) =>
+        d
+          ? { ...d, nodes: d.nodes.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)) }
+          : d,
+      );
+      scheduleReload();
+    },
+    [scheduleReload],
+  );
+
+  const insertNode = useCallback(
+    (created: Node) => {
+      setDetail((d) => {
+        if (!d) return d;
+        const asComputed: NodeWithComputed = {
+          ...created,
+          computedEffort: created.effortEstimate ?? 0,
+          computedProgress: created.percentComplete ?? 0,
+          healthSignal: 'on_track',
+        };
+        return {
+          ...d,
+          nodes: d.nodes
+            .map((n) =>
+              n.id === created.parentId && !n.childrenIds.includes(created.id)
+                ? { ...n, childrenIds: [...n.childrenIds, created.id] }
+                : n,
+            )
+            .concat(asComputed),
+        };
+      });
+      scheduleReload();
+    },
+    [scheduleReload],
+  );
 
   const setViewPersist = (v: ViewKey) => {
     setView(v);
@@ -169,7 +228,7 @@ export function MobileViewer({ map }: Props) {
           map={detail.map}
           byId={byId}
           onClose={() => setSelectedId(null)}
-          onChanged={silentReload}
+          onChanged={patchNode}
         />
       )}
 
@@ -178,7 +237,7 @@ export function MobileViewer({ map }: Props) {
           nodes={nodes}
           map={detail.map}
           onClose={() => setAdding(false)}
-          onCreated={silentReload}
+          onCreated={insertNode}
         />
       )}
     </>

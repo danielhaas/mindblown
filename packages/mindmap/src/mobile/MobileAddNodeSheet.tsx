@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import type { MindMap } from '@mindblown/core';
+import type { MindMap, Node } from '@mindblown/core';
 import * as api from '../api.js';
 import type { NodeWithComputed } from '../api.js';
 
@@ -7,8 +7,8 @@ interface Props {
   nodes: NodeWithComputed[];
   map: MindMap;
   onClose: () => void;
-  /** Called after each successful create so the owner can re-fetch. */
-  onCreated: () => void;
+  /** Called with the created node so the owner can patch it in locally. */
+  onCreated: (created: Node) => void;
 }
 
 interface ParentOption {
@@ -57,8 +57,8 @@ export function MobileAddNodeSheet({ nodes, map, onClose, onCreated }: Props) {
     setSaving(true);
     setError(null);
     try {
-      await api.createNode(map.id, parentId, t);
-      onCreated();
+      const created = await api.createNode(map.id, parentId, t);
+      onCreated(created);
       setText('');
       setAddedCount((c) => c + 1);
       inputRef.current?.focus();
