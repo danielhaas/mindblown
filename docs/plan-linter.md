@@ -1,6 +1,6 @@
 # Plan Linter — v1 Specification
 
-*Status: surface 1 (`plan_lint` MCP tool) implemented; UI panel and moment-of-action nudges open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
+*Status: surfaces 1 (`plan_lint` MCP tool) and 2 (plan-health panel + dismissals) implemented; the engine lives server-side (`packages/server/src/lint/engine.ts`) and both surfaces consume `GET /api/maps/:id/lint`. Moment-of-action nudges (surface 3) open. Companion to the "Guided Project Management" section of [product-vision.md](product-vision.md).*
 
 ---
 
@@ -50,8 +50,8 @@ Per finding: `{ ruleId, severity, nodeId, nodeText, detail, why, fix }` plus a s
 
 - Stored per `(mapId, nodeId, ruleId)` — dismissing `oversized-leaf` on one node never hides it elsewhere.
 - Map-level rule mute per `(mapId, ruleId)` for teams that reject a given opinion (e.g. sprints-only teams muting `dates-without-dependencies`).
-- Dismissals are permanent until the underlying value changes materially (e.g. estimate edited after dismissal → eligible to re-fire).
-- Needs a small table: `lint_dismissals (map_id, node_id nullable, rule_id, dismissed_by, dismissed_at)`.
+- v1 semantics: dismissals are permanent until explicitly undone (the panel offers undo/unmute; re-firing on material change of the underlying value is a possible v2 refinement).
+- Table: `lint_dismissals (map_id, node_id nullable, rule_id, dismissed_by, created_at)` — uniqueness enforced app-level (nullable node_id + pre-PG15).
 
 ## Surfaces (in ship order)
 
