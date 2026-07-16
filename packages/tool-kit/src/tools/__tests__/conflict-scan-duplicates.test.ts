@@ -33,7 +33,7 @@ describe('conflict_scan — map-wide duplicate sweep (no candidate)', () => {
     expect(out).toContain('n-zero');
     // The resolution warning must mention stripping links before delete —
     // deleting a linked node closes the GitHub issue as not_planned.
-    expect(out).toMatch(/strip.*externalLinks.*BEFORE deleting/i);
+    expect(out).toMatch(/unlink_github_issue BEFORE deleting/i);
   });
 
   it('reports a clean map tersely', async () => {
