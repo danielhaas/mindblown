@@ -510,8 +510,24 @@ export function fetchMaps(): Promise<MapSummary[]> {
   return request<MapSummary[]>('/api/maps');
 }
 
-export function fetchMap(id: string): Promise<MapDetail> {
-  return request<MapDetail>(`/api/maps/${id}`);
+export function fetchMap(
+  id: string,
+  opts?: {
+    /**
+     * Heavy display-only fields to strip from every node in the payload
+     * (server allowlist: 'description', 'externalLinks'). Used by the
+     * mobile app; omitted fields are absent from the JSON, so consumers
+     * must fetch the full node (fetchNode) before rendering them.
+     */
+    omit?: Array<'description' | 'externalLinks'>;
+  },
+): Promise<MapDetail> {
+  const q = opts?.omit?.length ? `?omit=${opts.omit.join(',')}` : '';
+  return request<MapDetail>(`/api/maps/${id}${q}`);
+}
+
+export function fetchNode(mapId: string, nodeId: string): Promise<Node> {
+  return request<Node>(`/api/maps/${mapId}/nodes/${nodeId}`);
 }
 
 export function createMap(name: string): Promise<MindMap> {

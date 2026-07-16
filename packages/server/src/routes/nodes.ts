@@ -272,6 +272,23 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/maps/:id/nodes/:nodeId — Fetch a single node ────
+  // Counterpart to GET /api/maps/:id?omit=…: clients that load the
+  // slimmed map payload fetch the full node (description, links) on
+  // demand when a detail view opens.
+  app.get<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId',
+    async (req, reply) => {
+      const node = await nodeDb.getNode(req.params.nodeId);
+      if (!node || node.mapId !== req.params.id) {
+        return reply.status(404).send({
+          error: { code: 'NODE_NOT_FOUND', message: `Node ${req.params.nodeId} not found` },
+        });
+      }
+      return reply.send(node);
+    },
+  );
+
   // ── PUT /api/maps/:id/nodes/:nodeId — Update a node ──────────
   app.put<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId',
