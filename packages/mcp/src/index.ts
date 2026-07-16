@@ -2403,6 +2403,46 @@ server.tool(
 );
 
 server.tool(
+  'unlink_github_issue',
+  "Remove a GitHub issue link from a node WITHOUT touching the issue on GitHub. This is the safe first step when resolving duplicate-node findings from conflict_scan: strip the duplicate's link first, THEN delete_node — deleting a still-linked node closes its GitHub issue as not_planned.",
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node ID to unlink'),
+    externalId: z
+      .string()
+      .optional()
+      .describe('Specific link to remove, e.g. "FulcrumCRM/crm#2649". Omit to remove ALL GitHub links of the node.'),
+  },
+  async ({ mapId, nodeId, externalId }) => {
+    try {
+      const mapData = await api.getMap(mapId);
+      const node = mapData.nodes.find((n) => n.id === nodeId);
+      if (!node) {
+        return toolError(`Node ${nodeId} not found in map ${mapId}.`);
+      }
+      const links = node.externalLinks ?? [];
+      const removed = links.filter(
+        (l) => l.provider === 'github' && (externalId === undefined || l.externalId === externalId),
+      );
+      if (removed.length === 0) {
+        return toolError(
+          externalId
+            ? `Node ${nodeId} has no GitHub link ${externalId}.`
+            : `Node ${nodeId} has no GitHub links.`,
+        );
+      }
+      const remaining = links.filter((l) => !removed.includes(l));
+      await api.updateNode(mapId, nodeId, { externalLinks: remaining });
+      return toolResult(
+        `Unlinked ${removed.map((l) => l.externalId).join(', ')} from node ${nodeId}. The GitHub issue(s) were NOT touched; the node no longer syncs with them.`,
+      );
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'github_sync_overview',
   'Three-way diff between a MindBlown map and its connected GitHub repo: which nodes are linked to issues (synced), which leaf nodes have no GitHub link yet (onlyInMindBlown), and which repo issues are not yet linked to any node in the map (onlyInGitHub). Use this to audit the sync state before bulk operations or to find gaps worth promoting/linking. Requires the map to have a GitHub repo connected.',
   {

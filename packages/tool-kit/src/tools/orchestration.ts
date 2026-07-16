@@ -180,7 +180,7 @@ export const conflictScanTool = defineTool({
       formatDupes();
       lines.push('');
       lines.push(
-        'Resolution pattern: keep the node with real progress/children, strip the externalLinks from the duplicate (update_node) BEFORE deleting it — deleting a linked node closes the GitHub issue as not_planned.',
+        'Resolution pattern: keep the node with real progress/children, strip the duplicate\'s links via unlink_github_issue BEFORE deleting it — deleting a still-linked node closes the GitHub issue as not_planned.',
       );
       return lines.join('\n');
     }
