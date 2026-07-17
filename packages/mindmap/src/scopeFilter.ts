@@ -33,6 +33,30 @@ export function hasActiveScopeFilter(filters: ScopeFilters): boolean {
 }
 
 /**
+ * Resolve an active filter id to the chip that announces it in the UI.
+ *
+ * Keyed on the ACTIVE ID, not on whether the id still resolves against
+ * the definition list: if the referenced definition vanishes from under
+ * the filter (WS map sync / map reload — phases have no
+ * delete-clears-filter hook the way deleteVersion has), the filter still
+ * restricts every view, so the chip and the "Clear all filters" button
+ * must stay visible and clickable. We fall back to `unknownLabel` for
+ * the chip text instead of silently dropping the user's only UI path to
+ * clearing the filter.
+ *
+ * Returns null only when no filter is active.
+ */
+export function resolveFilterChip(
+  activeId: string | null,
+  defs: { id: string; name: string }[],
+  unknownLabel: string,
+): { id: string; name: string } | null {
+  if (!activeId) return null;
+  const def = defs.find((d) => d.id === activeId);
+  return def ? { id: def.id, name: def.name } : { id: activeId, name: unknownLabel };
+}
+
+/**
  * DFS from `rootId`, propagating inherited version/cycle/phase tags
  * downward, and collect the ids of every node whose effective tags
  * match ALL active filters (AND semantics). Inactive filters (null)

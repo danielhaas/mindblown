@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import type { ActiveView } from './store.js';
+import { resolveFilterChip } from './scopeFilter.js';
 import { MindmapEditor } from './MindmapEditor.js';
 import { PropertyPanel } from './PropertyPanel.js';
 import { KanbanView } from './KanbanView.js';
@@ -956,9 +957,11 @@ function FiltersPopover({
   const filterCycle = activeCycleFilter
     ? cycles.find((c) => c.id === activeCycleFilter)
     : null;
-  const filterPhase = activePhaseFilter
-    ? phases.find((p) => p.id === activePhaseFilter)
-    : null;
+  // Keyed on the active id, NOT on whether it still resolves: a phase can
+  // vanish from currentMap.phases under an active filter (WS sync / map
+  // reload) and the chip + "Clear all" must survive as the only UI path
+  // to clearing it — see resolveFilterChip.
+  const filterPhase = resolveFilterChip(activePhaseFilter, phases, '(unknown phase)');
   const activeSprint = cycles.find((c) => c.status === 'active');
   const hasAnyFilter = !!(filterVersion || filterCycle || filterPhase);
 

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node } from '@mindblown/core';
-import { collectScopeMatches, hasActiveScopeFilter } from '../scopeFilter.js';
+import { collectScopeMatches, hasActiveScopeFilter, resolveFilterChip } from '../scopeFilter.js';
 import type { ScopeFilters } from '../scopeFilter.js';
 
 /**
@@ -105,5 +105,40 @@ describe('collectScopeMatches', () => {
 
   it('tolerates a missing root id', () => {
     expect([...collectScopeMatches(buildNodes(), 'nope', { ...NO_FILTERS, phaseId: 'p1' })]).toEqual([]);
+  });
+});
+
+describe('resolveFilterChip (FiltersPopover chip data basis)', () => {
+  const phases = [
+    { id: 'p1', name: 'M1 – Grundgerüst' },
+    { id: 'p2', name: 'M2 – Ausbau' },
+  ];
+
+  it('returns null only when no filter is active', () => {
+    expect(resolveFilterChip(null, phases, '(unknown phase)')).toBeNull();
+  });
+
+  it('resolves an existing id to its definition name', () => {
+    expect(resolveFilterChip('p2', phases, '(unknown phase)')).toEqual({
+      id: 'p2',
+      name: 'M2 – Ausbau',
+    });
+  });
+
+  it('keeps the chip alive when the active id no longer resolves (dangling filter stays clearable)', () => {
+    // A phase removed from currentMap.phases under an active filter (WS
+    // sync / map reload) must NOT hide the chip or the "Clear all filters"
+    // button — the store filter still restricts every view, and the chip's
+    // × is the only UI path to clearing it (there is no deletePhase hook
+    // that clears the filter, unlike deleteVersion).
+    const chip = resolveFilterChip('p-vanished', phases, '(unknown phase)');
+    expect(chip).toEqual({ id: 'p-vanished', name: '(unknown phase)' });
+    // hasAnyFilter in the popover keys on this truthiness:
+    expect(!!chip).toBe(true);
+    // ...even against an empty definition list (map lost all phases).
+    expect(resolveFilterChip('p-vanished', [], '(unknown phase)')).toEqual({
+      id: 'p-vanished',
+      name: '(unknown phase)',
+    });
   });
 });
