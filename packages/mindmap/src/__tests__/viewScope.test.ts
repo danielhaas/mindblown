@@ -247,6 +247,33 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
     });
   });
 
+  describe('combined and non-matching filters', () => {
+    it('version + cycle filter combine with AND semantics (both view data bases)', () => {
+      useMindmapStore.setState({ activeVersionFilter: 'v1', activeCycleFilter: 'c1' });
+      // Only b1 matches both: versionId v1 AND cycleId c1.
+      // a1 inherits v1 from epicA but has no cycle → no c1 match → out.
+      // epicB survives only as b1's connecting ancestor.
+      expect(scopeIds().sort()).toEqual(['b1', 'epicB', 'root']);
+
+      expect(hillBranchIds()).toEqual(['epicB']);
+
+      const w = workloadsNow();
+      expect(w.map((x) => x.assigneeId)).toEqual(['alice']);
+      expect(w[0]).toMatchObject({ todo: 0, inProgress: 0, done: 2, total: 2 });
+      // The connecting ancestor epicB must not contribute (it is no leaf).
+      expect(
+        w.flatMap((x) => x.tasksByStatus.flatMap((g) => g.nodes.map((n) => n.id))),
+      ).toEqual(['b1']);
+    });
+
+    it('a filter matching nothing empties both view data bases', () => {
+      useMindmapStore.setState({ activeVersionFilter: 'v999' });
+      expect(scopeIds()).toEqual([]);
+      expect(hillBranchIds()).toEqual([]);
+      expect(workloadsNow()).toEqual([]);
+    });
+  });
+
   describe('default getVisibleNodes() semantics stay intact for existing callers', () => {
     it('respects maxDepth by default', () => {
       useMindmapStore.setState({ maxDepth: 1 });
