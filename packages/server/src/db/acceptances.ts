@@ -12,6 +12,8 @@ import { requirementAcceptances, users } from './schema.js';
  * when, at which progress) is preserved forever.
  */
 
+export type AcceptanceDecision = 'accepted' | 'rejected';
+
 export interface Acceptance {
   id: string;
   mapId: string;
@@ -21,6 +23,10 @@ export interface Acceptance {
   acceptedAt: string;
   progressAtAcceptance: number;
   nodeRevisionAtAcceptance: number;
+  /** Verdict of this sign-off row. Pre-decision rows default to 'accepted'. */
+  decision: AcceptanceDecision;
+  /** Reviewer comment — always present on rejections (route-enforced). */
+  comment: string | null;
 }
 
 function toIso(v: unknown): string {
@@ -39,19 +45,26 @@ export async function listActiveAcceptances(mapId: string): Promise<Acceptance[]
       acceptedAt: requirementAcceptances.acceptedAt,
       progressAtAcceptance: requirementAcceptances.progressAtAcceptance,
       nodeRevisionAtAcceptance: requirementAcceptances.nodeRevisionAtAcceptance,
+      decision: requirementAcceptances.decision,
+      comment: requirementAcceptances.comment,
     })
     .from(requirementAcceptances)
     .innerJoin(users, eq(users.id, requirementAcceptances.userId))
     .where(and(eq(requirementAcceptances.mapId, mapId), isNull(requirementAcceptances.revokedAt)));
-  return rows.map((r) => ({ ...r, acceptedAt: toIso(r.acceptedAt) }));
+  return rows.map((r) => ({
+    ...r,
+    acceptedAt: toIso(r.acceptedAt),
+    decision: (r.decision as AcceptanceDecision) ?? 'accepted',
+  }));
 }
 
 /**
- * Accept a requirement node. Snapshots the derived progress and node
- * revision the acceptor saw. Returns the new acceptance, or null when
- * an active acceptance by this user already exists (idempotent accept —
- * the 23505 on the partial unique index is mapped to null so a double
- * click never errors).
+ * Record a verdict (accept or reject) on a requirement node. Snapshots
+ * the derived progress and node revision the reviewer saw. Returns the
+ * new row, or null when this user already has an ACTIVE verdict on the
+ * node (idempotent — the 23505 on the partial unique index is mapped to
+ * null so a double click never errors). Switching verdict = revoke the
+ * old row first, then record the new one.
  */
 export async function accept(
   mapId: string,
@@ -59,11 +72,13 @@ export async function accept(
   userId: string,
   progressAtAcceptance: number,
   nodeRevisionAtAcceptance: number,
+  decision: AcceptanceDecision = 'accepted',
+  comment: string | null = null,
 ): Promise<Acceptance | null> {
   try {
     const [row] = await db
       .insert(requirementAcceptances)
-      .values({ mapId, nodeId, userId, progressAtAcceptance, nodeRevisionAtAcceptance })
+      .values({ mapId, nodeId, userId, progressAtAcceptance, nodeRevisionAtAcceptance, decision, comment })
       .returning();
     const [u] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId));
     return {
@@ -75,6 +90,8 @@ export async function accept(
       acceptedAt: toIso(row.acceptedAt),
       progressAtAcceptance: row.progressAtAcceptance,
       nodeRevisionAtAcceptance: row.nodeRevisionAtAcceptance,
+      decision: (row.decision as AcceptanceDecision) ?? 'accepted',
+      comment: row.comment ?? null,
     };
   } catch (err) {
     const e = err as { code?: string; constraint?: string };

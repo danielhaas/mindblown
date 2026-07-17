@@ -21,6 +21,10 @@ export interface AcceptanceInfo {
   acceptedAt: string; // ISO
   progressAtAcceptance: number;
   nodeRevisionAtAcceptance: number;
+  /** Verdict — optional so pre-decision callers/rows read as 'accepted'. */
+  decision?: 'accepted' | 'rejected';
+  /** Reviewer comment; always present on rejections. */
+  comment?: string | null;
 }
 
 /**
@@ -58,6 +62,10 @@ export interface RegisterData {
 }
 
 const PRIO: Record<string, string> = { must: 'Muss', should: 'Soll', could: 'Kann' };
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
+}
 
 // Doc buckets: S ≤ 2 Tage · M 3–5 · L 1–3 Wochen · XL > 3 Wochen
 function sizeOf(days: number): string {
@@ -121,6 +129,10 @@ export function buildRegisterData(
           const abnahme = (accByNode.get(n.id) ?? []).map((a) => {
             const d = a.acceptedAt.slice(5, 10).split('-').reverse().join('.');
             const stale = acceptanceIsStale(a, p, n.revision) ? ' ⚠' : '';
+            if (a.decision === 'rejected') {
+              const why = a.comment ? ` («${truncate(a.comment, 60)}»)` : '';
+              return `${a.userName} ✗ ${d}.${why}${stale}`;
+            }
             return `${a.userName} ✓ ${d}.${stale}`;
           });
           return {
@@ -150,6 +162,7 @@ const LEGEND = [
   '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
   '**Status:** Umgesetzt · Teilweise · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» bei Umgesetzt): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
+  '**Abnahme:** ✓ abgenommen · ✗ abgelehnt (mit Begründung) · ⚠ seit dem Urteil geändert',
 ];
 
 export function renderMarkdown(data: RegisterData): string {

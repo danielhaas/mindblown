@@ -794,6 +794,15 @@ export async function runMigrations(): Promise<void> {
       ON nodes (map_id, requirement_id)
       WHERE requirement_id IS NOT NULL AND deleted_at IS NULL
   `);
+  // verification_text: how to verify (Prüfanleitung, markdown) rendered on
+  // the review surface. verification_url: deep link (e.g. staging URL).
+  // Both business prose like requirement_text — never GitHub-synced.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_text TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_url TEXT
+  `);
 
   // ── Requirement acceptances (Abnahme) ──────────────────────────
   // Append-only sign-off history per requirement node per user.
@@ -820,6 +829,16 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS requirement_acceptances_map_idx
       ON requirement_acceptances (map_id)
+  `);
+  // decision: 'accepted' | 'rejected' — the verdict of the sign-off row.
+  // Default 'accepted' keeps all pre-existing rows valid. comment: the
+  // reviewer's reasoning; the route makes it mandatory for rejections.
+  await db.execute(sql`
+    ALTER TABLE requirement_acceptances
+      ADD COLUMN IF NOT EXISTS decision TEXT NOT NULL DEFAULT 'accepted'
+  `);
+  await db.execute(sql`
+    ALTER TABLE requirement_acceptances ADD COLUMN IF NOT EXISTS comment TEXT
   `);
 
   // ── Phase column (nodes.phase_id + maps.phases) ────────────────

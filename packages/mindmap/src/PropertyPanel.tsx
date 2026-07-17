@@ -203,6 +203,8 @@ function PropertyPanelInner({
   const [startDate, setStartDate] = useState(node.startDate ?? '');
   const [blockedReason, setBlockedReason] = useState(node.blockedReason ?? '');
   const [requirementId, setRequirementId] = useState(node.requirementId ?? '');
+  const [verificationText, setVerificationText] = useState(node.verificationText ?? '');
+  const [verificationUrl, setVerificationUrl] = useState(node.verificationUrl ?? '');
 
   // Sync local state when node changes externally
   useEffect(() => { setTitle(node.text); }, [node.text]);
@@ -214,6 +216,8 @@ function PropertyPanelInner({
   useEffect(() => { setStartDate(node.startDate ?? ''); }, [node.startDate]);
   useEffect(() => { setBlockedReason(node.blockedReason ?? ''); }, [node.blockedReason]);
   useEffect(() => { setRequirementId(node.requirementId ?? ''); }, [node.requirementId]);
+  useEffect(() => { setVerificationText(node.verificationText ?? ''); }, [node.verificationText]);
+  useEffect(() => { setVerificationUrl(node.verificationUrl ?? ''); }, [node.verificationUrl]);
 
   const allNodes = useMindmapStore((s) => s.nodes);
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
@@ -452,6 +456,49 @@ function PropertyPanelInner({
               <option value="could">Could (Kann)</option>
             </select>
           </Field>
+        )}
+
+        {/* Verification how-to + deep link — the review surface reads these */}
+        {(node.requirementId != null || requirementId.trim() !== '') && (
+          <>
+            <Field label="Prüfanleitung">
+              <textarea
+                value={verificationText}
+                onChange={(e) => setVerificationText(e.target.value)}
+                onBlur={() => {
+                  const trimmed = verificationText.trim();
+                  const persisted = node.verificationText ?? '';
+                  if (trimmed !== persisted) {
+                    directUpdate(nodeId, { verificationText: trimmed || null });
+                  }
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={{
+                  ...inputStyle,
+                  minHeight: 80,
+                  resize: 'vertical',
+                  fontFamily: 'inherit',
+                }}
+                placeholder={'Wie prüfen? Markdown, z.B.\n1. Einloggen als …\n2. …\n\n**Erwartet:** …\n**Testen mit:** …'}
+              />
+            </Field>
+            <Field label="Prüf-Link">
+              <input
+                value={verificationUrl}
+                onChange={(e) => setVerificationUrl(e.target.value)}
+                onBlur={() => {
+                  const trimmed = verificationUrl.trim();
+                  const persisted = node.verificationUrl ?? '';
+                  if (trimmed !== persisted) {
+                    directUpdate(nodeId, { verificationUrl: trimmed || null });
+                  }
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={inputStyle}
+                placeholder="https://staging… (wo wird geprüft?)"
+              />
+            </Field>
+          </>
         )}
 
         {/* Effort estimate */}

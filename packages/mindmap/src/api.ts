@@ -584,16 +584,22 @@ export interface AcceptanceRow {
   acceptedAt: string;
   progressAtAcceptance: number;
   nodeRevisionAtAcceptance: number;
+  decision: 'accepted' | 'rejected';
+  comment: string | null;
 }
 
 export function fetchAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
   return request<{ acceptances: AcceptanceRow[] }>(`/api/maps/${mapId}/acceptances`);
 }
 
-export function acceptRequirement(mapId: string, nodeId: string): Promise<AcceptanceRow> {
+export function acceptRequirement(
+  mapId: string,
+  nodeId: string,
+  verdict?: { decision: 'accepted' | 'rejected'; comment?: string },
+): Promise<AcceptanceRow> {
   return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify(verdict ?? {}),
   });
 }
 

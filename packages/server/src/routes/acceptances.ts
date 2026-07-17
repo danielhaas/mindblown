@@ -26,7 +26,11 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ acceptances: await acceptanceDb.listActiveAcceptances(req.params.id) });
   });
 
-  // ── POST /api/maps/:id/nodes/:nodeId/acceptance — accept ───────
+  // ── POST /api/maps/:id/nodes/:nodeId/acceptance — verdict ──────
+  // Body (optional): { decision: 'accepted' | 'rejected', comment }.
+  // Default 'accepted' keeps the #218 body-less accept working.
+  // Rejections require a non-empty comment — a ✗ without reasoning
+  // is not actionable for anyone.
   app.post<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId/acceptance',
     async (req, reply) => {
@@ -34,6 +38,25 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
       if (!userId) {
         return reply.status(401).send({
           error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+        });
+      }
+      const body = (req.body ?? {}) as { decision?: string; comment?: string };
+      const decision = body.decision ?? 'accepted';
+      if (decision !== 'accepted' && decision !== 'rejected') {
+        return reply.status(400).send({
+          error: {
+            code: 'INVALID_DECISION',
+            message: "decision must be 'accepted' or 'rejected'",
+          },
+        });
+      }
+      const comment = typeof body.comment === 'string' ? body.comment.trim() : '';
+      if (decision === 'rejected' && comment.length === 0) {
+        return reply.status(400).send({
+          error: {
+            code: 'REJECTION_NEEDS_COMMENT',
+            message: 'Rejecting a requirement requires a comment explaining why',
+          },
         });
       }
       const perm = await permDb.getPermission(req.params.id, userId);
@@ -73,12 +96,15 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
         userId,
         progress,
         node.revision,
+        decision,
+        comment.length > 0 ? comment : null,
       );
       if (!acceptance) {
         return reply.status(409).send({
           error: {
             code: 'ALREADY_ACCEPTED',
-            message: 'You already have an active acceptance on this requirement',
+            message:
+              'You already have an active verdict on this requirement — revoke it first to change it',
           },
         });
       }

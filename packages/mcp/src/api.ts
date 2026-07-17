@@ -138,6 +138,8 @@ export interface NodeWithComputed {
   // References a PhaseDef.id from the map's `phases` list (statusWorkflow
   // idiom). null = no phase assigned.
   phaseId: string | null;
+  verificationText: string | null;
+  verificationUrl: string | null;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
@@ -340,16 +342,22 @@ export interface AcceptanceRow {
   acceptedAt: string;
   progressAtAcceptance: number;
   nodeRevisionAtAcceptance: number;
+  decision: 'accepted' | 'rejected';
+  comment: string | null;
 }
 
 export function getAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
   return request<{ acceptances: AcceptanceRow[] }>(`/api/maps/${mapId}/acceptances`);
 }
 
-export function acceptRequirement(mapId: string, nodeId: string): Promise<AcceptanceRow> {
+export function acceptRequirement(
+  mapId: string,
+  nodeId: string,
+  verdict?: { decision: 'accepted' | 'rejected'; comment?: string },
+): Promise<AcceptanceRow> {
   return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
     method: 'POST',
-    body: JSON.stringify({}),
+    body: JSON.stringify(verdict ?? {}),
   });
 }
 

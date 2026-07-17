@@ -241,6 +241,19 @@ export interface Node {
    * no rollup, no health, no scheduling. null = no phase assigned.
    */
   phaseId: string | null;
+  /**
+   * How to verify this requirement (Prüfanleitung): markdown with numbered
+   * steps, expected result and test data, written for a non-technical
+   * reviewer. Rendered on the review surface next to the accept/reject
+   * actions. Like `requirementText`, NOT in the GitHub SYNC_FIELDS.
+   */
+  verificationText: string | null;
+
+  /**
+   * Deep link to where this requirement is verified (e.g. a staging URL).
+   * Rendered as an "open" button on the review surface.
+   */
+  verificationUrl: string | null;
 
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**

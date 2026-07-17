@@ -206,6 +206,10 @@ export const nodes = pgTable('nodes', {
   requirementPriority: text('requirement_priority'),
   // Business phrasing for register/doc export; NOT GitHub-synced.
   requirementText: text('requirement_text'),
+  // How to verify (Prüfanleitung, markdown) + deep link for the review
+  // surface. Like requirement_text, NOT GitHub-synced.
+  verificationText: text('verification_text'),
+  verificationUrl: text('verification_url'),
 
   // ── Phase ─────────────────────────────────────────────────────
   // References a PhaseDef.id from maps.phases (statusWorkflow idiom,
@@ -483,6 +487,12 @@ export const requirementAcceptances = pgTable('requirement_acceptances', {
   progressAtAcceptance: real('progress_at_acceptance').notNull(),
   nodeRevisionAtAcceptance: integer('node_revision_at_acceptance').notNull(),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  // Verdict of this sign-off: 'accepted' | 'rejected'. The partial unique
+  // index means one ACTIVE verdict per (node, user) — switching verdict is
+  // revoke + new row, same append-only semantics as re-acceptance.
+  decision: text('decision').notNull().default('accepted'),
+  // Reviewer comment — mandatory for 'rejected' (enforced in the route).
+  comment: text('comment'),
 });
 
 // ── Lint dismissals (plan-health panel, docs/plan-linter.md) ───────
