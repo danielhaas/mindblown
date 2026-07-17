@@ -52,6 +52,16 @@ export const createNodeTool = defineTool({
       .describe(
         'Phase reference — the id of a PhaseDef from the map\'s `phases` list (shown by get_map). Must reference an existing phase; add new phases via update_map first. Same idiom as versionId.',
       ),
+    verificationText: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to GitHub.'),
+    verificationUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Deep link to where the requirement is verified (e.g. a staging URL). Rendered as an "open" button on the review surface.'),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -145,6 +155,16 @@ export const updateNodeTool = defineTool({
       .describe(
         'Phase reference — the id of a PhaseDef from the map\'s `phases` list (shown by get_map). Must reference an existing phase; add new phases via update_map first. null clears the phase. Same idiom as versionId.',
       ),
+    verificationText: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to GitHub. null clears it.'),
+    verificationUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Deep link to where the requirement is verified (e.g. a staging URL). null clears it.'),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())

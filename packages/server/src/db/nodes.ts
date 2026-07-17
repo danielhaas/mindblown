@@ -243,6 +243,8 @@ export interface CreateNodeInput {
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
   phaseId?: string | null;
+  verificationText?: string | null;
+  verificationUrl?: string | null;
 }
 
 export async function createNode(
@@ -291,6 +293,8 @@ export async function createNode(
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
       phaseId: input.phaseId ?? null,
+      verificationText: input.verificationText ?? null,
+      verificationUrl: input.verificationUrl ?? null,
       assigneeIds: [],
       tags: [],
       customFields: {},
@@ -384,6 +388,8 @@ export interface UpdateNodeInput {
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
   phaseId?: string | null;
+  verificationText?: string | null;
+  verificationUrl?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -503,6 +509,8 @@ export async function updateNode(
   if (input.requirementPriority !== undefined) updates.requirementPriority = input.requirementPriority;
   if (input.requirementText !== undefined) updates.requirementText = input.requirementText;
   if (input.phaseId !== undefined) updates.phaseId = input.phaseId;
+  if (input.verificationText !== undefined) updates.verificationText = input.verificationText;
+  if (input.verificationUrl !== undefined) updates.verificationUrl = input.verificationUrl;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

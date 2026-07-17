@@ -37,6 +37,8 @@ function makeNode(overrides: Partial<NodeWithComputed> & { id: string }): NodeWi
     requirementPriority: null,
     requirementText: null,
     phaseId: null,
+    verificationText: null,
+    verificationUrl: null,
     claimedBySession: null,
     claimedAt: null,
     computedEffort: 0,

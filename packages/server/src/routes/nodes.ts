@@ -172,6 +172,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       requirementPriority?: 'must' | 'should' | 'could' | null;
       requirementText?: string | null;
       phaseId?: string | null;
+      verificationText?: string | null;
+      verificationUrl?: string | null;
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`
        * auto-link backstop (#58). Useful when the leading `#NNNN` is

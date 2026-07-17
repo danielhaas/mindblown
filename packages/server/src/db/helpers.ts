@@ -43,6 +43,8 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
     requirementText: (get('requirementText', 'requirement_text') as string) ?? null,
     phaseId: (get('phaseId', 'phase_id') as string) ?? null,
+    verificationText: (get('verificationText', 'verification_text') as string) ?? null,
+    verificationUrl: (get('verificationUrl', 'verification_url') as string) ?? null,
     // Orchestration substrate (#111)
     claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
     claimedAt: (get('claimedAt', 'claimed_at') instanceof Date

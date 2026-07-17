@@ -587,6 +587,35 @@ describe('requirement fields', () => {
     });
   });
 
+  it('forwards verification fields on update', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      verificationText: '1. Einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar',
+      verificationUrl: 'https://staging.example.com/mandates',
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      verificationText: '1. Einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar',
+      verificationUrl: 'https://staging.example.com/mandates',
+    });
+  });
+
+  it('forwards verification fields on create', async () => {
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'Neue Anforderung',
+      verificationText: 'Prüfen im Admin-Panel',
+      verificationUrl: 'https://staging.example.com/admin',
+    } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({
+      verificationText: 'Prüfen im Admin-Panel',
+      verificationUrl: 'https://staging.example.com/admin',
+    });
+  });
+
   it('omits requirement fields from the backend call when not provided', async () => {
     const recorder = makeRecordingBackend();
     await updateNodeTool.handler(recorder.backend, {
@@ -596,6 +625,8 @@ describe('requirement fields', () => {
     } as never);
     expect('requirementId' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
     expect('requirementPriority' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+    expect('verificationText' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+    expect('verificationUrl' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
   });
 });
 

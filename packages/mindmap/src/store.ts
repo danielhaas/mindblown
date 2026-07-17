@@ -897,6 +897,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       requirementPriority: null,
       requirementText: null,
       phaseId: null,
+      verificationText: null,
+      verificationUrl: null,
       // Orchestration substrate (#111)
       claimedBySession: null,
       claimedAt: null,

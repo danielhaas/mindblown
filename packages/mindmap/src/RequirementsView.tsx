@@ -73,7 +73,7 @@ export function RequirementsView() {
 
   const user = useMindmapStore((s) => s.user);
   const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
-  const [acceptanceFilter, setAcceptanceFilter] = useState<'' | 'none' | 'mine-open'>('');
+  const [acceptanceFilter, setAcceptanceFilter] = useState<'' | 'none' | 'mine-open' | 'rejected'>('');
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
@@ -171,6 +171,9 @@ export function RequirementsView() {
           if (acceptanceFilter === 'mine-open' && accs.some((a) => a.userId === user?.id)) {
             return false;
           }
+          if (acceptanceFilter === 'rejected' && !accs.some((a) => a.decision === 'rejected')) {
+            return false;
+          }
         }
         return true;
       }),
@@ -245,6 +248,24 @@ export function RequirementsView() {
     }
   };
 
+  const rejectRequirement = async (row: ReqRow) => {
+    if (!currentMapId || !user) return;
+    const comment = window.prompt(
+      `${row.node.requirementId} ablehnen — warum? (Begründung ist Pflicht)`,
+    );
+    if (comment == null) return; // cancelled
+    if (comment.trim() === '') return;
+    try {
+      const created = await api.acceptRequirement(currentMapId, row.node.id, {
+        decision: 'rejected',
+        comment: comment.trim(),
+      });
+      setAcceptances((prev) => [...prev, created]);
+    } catch {
+      api.fetchAcceptances(currentMapId).then((r) => setAcceptances(r.acceptances)).catch(() => {});
+    }
+  };
+
   const jumpToNode = (node: Node) => {
     setActiveView('mindmap');
     selectNode(node.id);
@@ -313,12 +334,15 @@ export function RequirementsView() {
           </select>
           <select
             value={acceptanceFilter}
-            onChange={(e) => setAcceptanceFilter(e.target.value as '' | 'none' | 'mine-open')}
+            onChange={(e) =>
+              setAcceptanceFilter(e.target.value as '' | 'none' | 'mine-open' | 'rejected')
+            }
             style={filterSelectStyle}
           >
             <option value="">Abnahme: alle</option>
             <option value="none">Nicht abgenommen</option>
             <option value="mine-open">Meine Abnahme offen</option>
+            <option value="rejected">Abgelehnt</option>
           </select>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -449,6 +473,7 @@ export function RequirementsView() {
                   accByNode={accByNode}
                   currentUserId={user?.id ?? null}
                   toggleAcceptance={toggleAcceptance}
+                  rejectRequirement={rejectRequirement}
                 />
               ))}
             </tbody>
@@ -472,6 +497,7 @@ function ChapterGroup({
   accByNode,
   currentUserId,
   toggleAcceptance,
+  rejectRequirement,
 }: {
   chapterText: string;
   rows: ReqRow[];
@@ -483,6 +509,7 @@ function ChapterGroup({
   accByNode: Map<string, api.AcceptanceRow[]>;
   currentUserId: string | null;
   toggleAcceptance: (row: ReqRow) => void;
+  rejectRequirement: (row: ReqRow) => void;
 }) {
   const done = rows.filter((r) => r.status === 'done').length;
   return (
@@ -722,14 +749,17 @@ function ChapterGroup({
                 Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
                 r.node.revision !== a.nodeRevisionAtAcceptance;
               const own = a.userId === currentUserId;
-              const label = `${a.userName.split(' ')[0]} ✓ ${a.acceptedAt.slice(5, 10).split('-').reverse().join('.')}.`;
+              const rejected = a.decision === 'rejected';
+              const mark = rejected ? '✗' : '✓';
+              const label = `${a.userName.split(' ')[0]} ${mark} ${a.acceptedAt.slice(5, 10).split('-').reverse().join('.')}.`;
               return (
                 <span
                   key={a.id}
                   onClick={own ? () => toggleAcceptance(r) : undefined}
                   title={
-                    (stale ? 'Seit Abnahme geändert! ' : '') +
-                    `${a.userName}, abgenommen ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)}%` +
+                    (stale ? 'Seit dem Urteil geändert! ' : '') +
+                    `${a.userName}, ${rejected ? 'abgelehnt' : 'abgenommen'} ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)}%` +
+                    (rejected && a.comment ? ` — «${a.comment}»` : '') +
                     (own ? ' — klicken zum Zurückziehen' : '')
                   }
                   style={{
@@ -740,8 +770,8 @@ function ChapterGroup({
                     fontSize: 11,
                     fontWeight: 600,
                     cursor: own ? 'pointer' : 'default',
-                    background: stale ? '#fef3c7' : '#d1fae5',
-                    color: stale ? '#92400e' : '#065f46',
+                    background: rejected ? '#fee2e2' : stale ? '#fef3c7' : '#d1fae5',
+                    color: rejected ? '#991b1b' : stale ? '#92400e' : '#065f46',
                   }}
                 >
                   {stale ? '⚠ ' : ''}
@@ -751,21 +781,39 @@ function ChapterGroup({
             })}
             {currentUserId &&
               !(accByNode.get(r.node.id) ?? []).some((a) => a.userId === currentUserId) && (
-                <button
-                  onClick={() => toggleAcceptance(r)}
-                  title="Requirement abnehmen (persönliche Abnahme, Status bleibt abgeleitet)"
-                  style={{
-                    padding: '2px 8px',
-                    borderRadius: 10,
-                    fontSize: 11,
-                    border: '1px dashed #cbd5e1',
-                    background: 'transparent',
-                    color: '#64748b',
-                    cursor: 'pointer',
-                  }}
-                >
-                  ✓ Abnehmen
-                </button>
+                <>
+                  <button
+                    onClick={() => toggleAcceptance(r)}
+                    title="Requirement abnehmen (persönliche Abnahme, Status bleibt abgeleitet)"
+                    style={{
+                      padding: '2px 8px',
+                      borderRadius: 10,
+                      fontSize: 11,
+                      border: '1px dashed #cbd5e1',
+                      background: 'transparent',
+                      color: '#64748b',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ✓ Abnehmen
+                  </button>
+                  <button
+                    onClick={() => rejectRequirement(r)}
+                    title="Requirement ablehnen — Begründung ist Pflicht"
+                    style={{
+                      padding: '2px 8px',
+                      marginLeft: 4,
+                      borderRadius: 10,
+                      fontSize: 11,
+                      border: '1px dashed #fca5a5',
+                      background: 'transparent',
+                      color: '#b91c1c',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    ✗
+                  </button>
+                </>
               )}
           </td>
         </tr>

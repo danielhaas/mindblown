@@ -474,8 +474,40 @@ server.tool(
 );
 
 server.tool(
+  'reject_requirement',
+  "Record the calling user's REJECTION of a requirement with a mandatory comment explaining why — the counterpart to accept_requirement. Shows as ✗ in the register, overview and exports so the objection is visible data. One active verdict per user per requirement: revoke_acceptance first to change an existing verdict. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
+  {
+    mapId: z.string().describe('The map ID'),
+    requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
+    nodeId: z.string().optional().describe('Node ID (alternative to requirementId)'),
+    comment: z
+      .string()
+      .min(1)
+      .describe('Why the requirement is rejected — what is wrong or missing (mandatory)'),
+  },
+  async ({ mapId, requirementId, nodeId, comment }) => {
+    try {
+      let id = nodeId;
+      if (!id) {
+        if (!requirementId) return toolError('Provide requirementId or nodeId.');
+        const data = await api.getMap(mapId);
+        const hit = data.nodes.find((n) => n.requirementId === requirementId);
+        if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
+        id = hit.id;
+      }
+      const a = await api.acceptRequirement(mapId, id, { decision: 'rejected', comment });
+      return toolResult(
+        `Rejected ${requirementId ?? id} as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}): «${comment}»`,
+      );
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'revoke_acceptance',
-  "Revoke the calling user's active acceptance on a requirement. History is preserved (append-only); a later re-acceptance is a new sign-off.",
+  "Revoke the calling user's active verdict (acceptance OR rejection) on a requirement. History is preserved (append-only); a later re-acceptance/re-rejection is a new sign-off row.",
   {
     mapId: z.string().describe('The map ID'),
     requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
@@ -492,7 +524,7 @@ server.tool(
         id = hit.id;
       }
       await api.revokeAcceptance(mapId, id);
-      return toolResult(`Revoked acceptance on ${requirementId ?? id}.`);
+      return toolResult(`Revoked verdict on ${requirementId ?? id}.`);
     } catch (err) {
       return toolError(err);
     }
@@ -673,7 +705,9 @@ server.tool(
               const stale =
                 Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
                 r.node.revision !== a.nodeRevisionAtAcceptance;
-              return `${a.userName}${stale ? ' ⚠stale' : ''}`;
+              const mark = a.decision === 'rejected' ? ' ✗' : '';
+              const why = a.decision === 'rejected' && a.comment ? ` («${a.comment}»)` : '';
+              return `${a.userName}${mark}${why}${stale ? ' ⚠stale' : ''}`;
             });
             parts.push(`· Abnahme: ${fmt.join(', ')}`);
           }
