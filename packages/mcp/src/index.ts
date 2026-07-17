@@ -829,6 +829,26 @@ server.tool(
         hasSchedulableEffort = maxComputedEnd > 0;
       }
 
+      // ── Fold in the measured NET delivery rate (net of rework) ──
+      // The focus-factor line above is a manual knob. When the map has a
+      // connected repo, velocity_report measures the real throughput net of
+      // rework — use it directly: calendar days = remaining ÷ net rate.
+      // Falls back to the focus-based line when unavailable.
+      let velocityBasis = `fudge ${effectiveFudge.toFixed(2)}x${focusFactor < 1 ? `, focus ${focusFactor.toFixed(2)}` : ''}`;
+      if (remainingEffort > 0) {
+        try {
+          const vel = await api.getVelocity(mapId);
+          const rt = vel.repoThroughput;
+          if (rt && rt.netRatePerDay > 0) {
+            velocityFinishCalendarDays = remainingEffort / rt.netRatePerDay;
+            velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+            velocityBasis = `net rate ${rt.netRatePerDay.toFixed(2)} ${data.map.effortUnit ?? 'units'}/day, ${Math.round(rt.reworkFraction * 100)}% rework — measured ${vel.windowDays}d`;
+          }
+        } catch {
+          /* velocity/repo unavailable — keep the focus-based line */
+        }
+      }
+
       // ── Target date resolution ──
       let targetDate: string | null = null;
       let targetSource = '';
@@ -880,8 +900,7 @@ server.tool(
         lines.push(`Planned finish:      (no remaining effort in scope)`);
       }
       if (remainingEffort > 0) {
-        const focusNote = focusFactor < 1 ? `, focus ${focusFactor.toFixed(2)}` : '';
-        lines.push(`Velocity-adjusted:   ${iso(velocityFinishDate)} (${velocityFinishCalendarDays.toFixed(1)} calendar days from ${iso(anchor)}, fudge ${effectiveFudge.toFixed(2)}x${focusNote})`);
+        lines.push(`Velocity-adjusted:   ${iso(velocityFinishDate)} (${velocityFinishCalendarDays.toFixed(1)} calendar days from ${iso(anchor)}, ${velocityBasis})`);
       } else {
         lines.push(`Velocity-adjusted:   already complete`);
       }
