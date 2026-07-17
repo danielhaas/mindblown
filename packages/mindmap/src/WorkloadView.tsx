@@ -1,34 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
-import type { Node } from '@mindblown/core';
-
-// ── Types ────────────────────────────────────────────────────────
-
-interface AssigneeWorkload {
-  assigneeId: string;
-  todo: number;
-  inProgress: number;
-  done: number;
-  total: number;
-  tasksByStatus: {
-    status: 'todo' | 'in_progress' | 'done';
-    nodes: Node[];
-  }[];
-}
-
-// ── Status category mapping ──────────────────────────────────────
-
-function statusCategory(node: Node, statusWorkflow: { id: string; name: string; category: string }[]): 'todo' | 'in_progress' | 'done' {
-  if (!node.status) return 'todo';
-  const def = statusWorkflow.find((s) => s.id === node.status || s.name === node.status);
-  if (def) return def.category as 'todo' | 'in_progress' | 'done';
-
-  // Fallback heuristics
-  const lower = node.status.toLowerCase();
-  if (lower === 'done' || lower === 'completed' || lower === 'closed') return 'done';
-  if (lower === 'in_progress' || lower === 'in progress' || lower === 'active' || lower === 'doing') return 'in_progress';
-  return 'todo';
-}
+import { computeWorkloads } from './viewScope.js';
 
 // ── Colors ───────────────────────────────────────────────────────
 
@@ -51,6 +23,12 @@ export function WorkloadView() {
   const currentMap = useMindmapStore((s) => s.currentMap);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const rootNodeId = useMindmapStore((s) => s.rootNodeId);
+  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
+  const maxDepth = useMindmapStore((s) => s.maxDepth);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
   const [capacity, setCapacity] = useState(40);
   const [editingCapacity, setEditingCapacity] = useState(false);
@@ -59,60 +37,13 @@ export function WorkloadView() {
 
   const statusWorkflow = currentMap?.statusWorkflow ?? [];
 
-  // Compute workloads from leaf nodes
-  const workloads = useMemo(() => {
-    const map = new Map<string, { todo: number; inProgress: number; done: number; todoNodes: Node[]; ipNodes: Node[]; doneNodes: Node[] }>();
-
-    const allNodes = Object.values(nodes);
-    // Leaf nodes with assignees and effort
-    const leaves = allNodes.filter((n) => n.childrenIds.length === 0);
-
-    for (const leaf of leaves) {
-      if (leaf.assigneeIds.length === 0) continue;
-      const effort = leaf.effortEstimate ?? 0;
-      if (effort === 0) continue;
-
-      const cat = statusCategory(leaf, statusWorkflow);
-
-      for (const assignee of leaf.assigneeIds) {
-        let entry = map.get(assignee);
-        if (!entry) {
-          entry = { todo: 0, inProgress: 0, done: 0, todoNodes: [], ipNodes: [], doneNodes: [] };
-          map.set(assignee, entry);
-        }
-        if (cat === 'todo') {
-          entry.todo += effort;
-          entry.todoNodes.push(leaf);
-        } else if (cat === 'in_progress') {
-          entry.inProgress += effort;
-          entry.ipNodes.push(leaf);
-        } else {
-          entry.done += effort;
-          entry.doneNodes.push(leaf);
-        }
-      }
-    }
-
-    const result: AssigneeWorkload[] = [];
-    for (const [assigneeId, data] of map.entries()) {
-      result.push({
-        assigneeId,
-        todo: data.todo,
-        inProgress: data.inProgress,
-        done: data.done,
-        total: data.todo + data.inProgress + data.done,
-        tasksByStatus: [
-          { status: 'todo', nodes: data.todoNodes },
-          { status: 'in_progress', nodes: data.ipNodes },
-          { status: 'done', nodes: data.doneNodes },
-        ],
-      });
-    }
-
-    // Sort by total effort descending
-    result.sort((a, b) => b.total - a.total);
-    return result;
-  }, [nodes, statusWorkflow]);
+  // Per-assignee effort from the leaf nodes of the store's visible set, so
+  // the active version/sprint filters and drill-down scope apply — same
+  // data basis as ListView/CalendarView.
+  const workloads = useMemo(
+    () => computeWorkloads(getVisibleNodes(), statusWorkflow),
+    [nodes, rootNodeId, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, statusWorkflow],
+  );
 
   const maxEffort = Math.max(capacity, ...workloads.map((w) => w.total));
 
@@ -238,7 +169,9 @@ export function WorkloadView() {
               fontSize: 13,
             }}
           >
-            No assigned tasks with effort estimates found. Assign tasks and add effort estimates to leaf nodes.
+            {activeVersionFilter || activeCycleFilter
+              ? 'No assigned tasks with effort estimates match the active filter.'
+              : 'No assigned tasks with effort estimates found. Assign tasks and add effort estimates to leaf nodes.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
