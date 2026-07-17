@@ -374,6 +374,7 @@ export function MindmapEditor() {
   const user = useMindmapStore((s) => s.user);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const currentMap = useMindmapStore((s) => s.currentMap);
   const presence = useMindmapStore((s) => s.presence);
@@ -504,7 +505,7 @@ export function MindmapEditor() {
 
   // ── Visible nodes computation ───────────────────────────────
 
-  const visibleNodes = useMemo(() => getVisibleNodes(), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, getVisibleNodes]);
+  const visibleNodes = useMemo(() => getVisibleNodes(), [nodes, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter, getVisibleNodes]);
 
   // Build a filtered nodes record containing only visible (non-dimmed) nodes
   // with adjusted parentId for the layout algorithm

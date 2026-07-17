@@ -27,6 +27,7 @@ export function WorkloadView() {
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
 
   const [capacity, setCapacity] = useState(40);
   const [editingCapacity, setEditingCapacity] = useState(false);
@@ -46,7 +47,7 @@ export function WorkloadView() {
         getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
         statusWorkflow,
       ),
-    [nodes, rootNodeId, getVisibleNodes, activeVersionFilter, activeCycleFilter, statusWorkflow],
+    [nodes, rootNodeId, getVisibleNodes, activeVersionFilter, activeCycleFilter, activePhaseFilter, statusWorkflow],
   );
 
   const maxEffort = Math.max(capacity, ...workloads.map((w) => w.total));
@@ -173,7 +174,7 @@ export function WorkloadView() {
               fontSize: 13,
             }}
           >
-            {activeVersionFilter || activeCycleFilter
+            {activeVersionFilter || activeCycleFilter || activePhaseFilter
               ? 'No assigned tasks with effort estimates match the active filter.'
               : 'No assigned tasks with effort estimates found. Assign tasks and add effort estimates to leaf nodes.'}
           </div>
