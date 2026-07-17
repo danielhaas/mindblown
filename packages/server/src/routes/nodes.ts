@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import * as nodeDb from '../db/nodes.js';
-import { DependencyValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
+import { DependencyValidationError, PhaseIdValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
@@ -171,6 +171,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       requirementId?: string | null;
       requirementPriority?: 'must' | 'should' | 'could' | null;
       requirementText?: string | null;
+      phaseId?: string | null;
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`
        * auto-link backstop (#58). Useful when the leading `#NNNN` is
@@ -201,6 +202,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       if (err instanceof RequirementIdConflictError) {
         return reply.status(400).send({
           error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message },
+        });
+      }
+      if (err instanceof PhaseIdValidationError) {
+        return reply.status(400).send({
+          error: { code: 'UNKNOWN_PHASE_ID', message: err.message },
         });
       }
       throw err;
@@ -321,6 +327,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof RequirementIdConflictError) {
           return reply.status(400).send({
             error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message },
+          });
+        }
+        if (err instanceof PhaseIdValidationError) {
+          return reply.status(400).send({
+            error: { code: 'UNKNOWN_PHASE_ID', message: err.message },
           });
         }
         if (err instanceof RevisionConflictError) {

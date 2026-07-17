@@ -67,7 +67,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, or GitHub auto-import setting. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, or GitHub auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -99,8 +99,32 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe('When true, new GitHub issues on the bound repo are auto-imported into this map\'s GitHub Inbox.'),
+    phases: z
+      .array(
+        z.object({
+          id: z
+            .string()
+            .optional()
+            .describe('Stable phase id. REQUIRED for existing phases (keep it unchanged); omit for a new phase and one is generated.'),
+          name: z.string().min(1).describe('Display name, e.g. "M1 – Grundgerüst"'),
+          position: z
+            .number()
+            .optional()
+            .describe('Canonical sort position. Omitted = the entry\'s index in this array.'),
+          color: z.string().optional().describe('Optional hex color'),
+          targetDate: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Optional ISO target date (modeled, unused in v1)'),
+        }),
+      )
+      .optional()
+      .describe(
+        'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
+      ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, autoImportNewIssues }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, autoImportNewIssues, phases }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -110,6 +134,7 @@ export const updateMapTool = defineTool({
       workerCount?: number;
       focusFactor?: number;
       autoImportNewIssues?: boolean;
+      phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
@@ -119,6 +144,24 @@ export const updateMapTool = defineTool({
     if (workerCount !== undefined) fields.workerCount = workerCount;
     if (focusFactor !== undefined) fields.focusFactor = focusFactor;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
+    if (phases !== undefined) {
+      // Normalize: generate ids for new entries, default position to the
+      // array index — callers reordering can just send the array in the
+      // desired order without renumbering by hand. Entries carrying an
+      // explicit position win the ordering (stable sort), then positions
+      // are renumbered sequentially so mixed explicit/omitted input can't
+      // produce duplicate positions with arbitrary tie-breaks downstream.
+      fields.phases = phases
+        .map((p, i) => ({
+          id: p.id ?? crypto.randomUUID(),
+          name: p.name,
+          position: p.position ?? i,
+          ...(p.color !== undefined ? { color: p.color } : {}),
+          ...(p.targetDate !== undefined ? { targetDate: p.targetDate } : {}),
+        }))
+        .sort((a, b) => a.position - b.position)
+        .map((p, i) => ({ ...p, position: i }));
+    }
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
     return `Updated map "${updated.name}" (id: ${updated.id})`;

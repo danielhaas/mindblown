@@ -232,6 +232,16 @@ export interface Node {
    */
   requirementText: string | null;
 
+  // ── Phase ─────────────────────────────────────────────────
+  /**
+   * Reference to a `PhaseDef.id` from the map's `phases` list (same
+   * idiom as `status` → `Map.statusWorkflow`, and same shape as
+   * versionId/cycleId). Lightweight by design — a phase is a label
+   * with an order, NOT a heavy entity (the April-removed Milestones):
+   * no rollup, no health, no scheduling. null = no phase assigned.
+   */
+  phaseId: string | null;
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this
@@ -294,6 +304,20 @@ export interface CustomFieldDef {
   required: boolean;
 }
 
+/**
+ * A project phase (e.g. "M1 – Grundgerüst"). Lives on the map (same
+ * pattern as StatusDef in `statusWorkflow`); nodes reference it via
+ * `Node.phaseId`. Stable `id` so phases can be renamed without touching
+ * nodes; `position` is the canonical phase order.
+ */
+export interface PhaseDef {
+  id: string; // stable — rename without touching nodes
+  name: string; // e.g. 'M1 – Grundgerüst'
+  position: number; // canonical sort order
+  color?: string; // optional hex, unused in v1 UI
+  targetDate?: string | null; // optional ISO date; deliberately in the model, unused in v1
+}
+
 /** A status in the workflow. */
 export interface StatusDef {
   id: string;
@@ -339,6 +363,20 @@ export interface MindMap {
   customFieldDefs: CustomFieldDef[];
   defaultLayout: LayoutMode;
   healthThreshold: number; // 0–1, default 0.2 (at_risk if 20% behind pace)
+
+  // ── Phases ────────────────────────────────────────────────
+  /**
+   * Project phases of this map (statusWorkflow idiom): definitions live
+   * here, nodes reference them via `phaseId`. `position` is the
+   * canonical order. Rename/reorder by replacing the array via map
+   * update — node phaseIds stay valid because ids are stable.
+   *
+   * Updates are replace-mode, last-writer-wins: there is no
+   * optimistic-concurrency guard on map-level fields, so two concurrent
+   * full-array writes silently drop each other's additions (same
+   * trade-off as statusWorkflow/customFieldDefs).
+   */
+  phases: PhaseDef[];
 
   // ── Baselines ─────────────────────────────────────────────
   baselines: Baseline[];

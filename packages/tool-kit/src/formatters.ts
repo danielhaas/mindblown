@@ -42,6 +42,7 @@ function renderTreeNode(
   nodeId: string,
   lookup: Map<string, NodeWithComputed>,
   indent: number,
+  phaseNameById?: Map<string, string>,
 ): string[] {
   const node = lookup.get(nodeId);
   if (!node) return [];
@@ -63,6 +64,7 @@ function renderTreeNode(
   }
   if (node.status) parts.push(`status: ${node.status}`);
   if (node.priority) parts.push(node.priority);
+  if (node.phaseId) parts.push(`phase: ${phaseNameById?.get(node.phaseId) ?? node.phaseId}`);
   if (node.dueDate) parts.push(`due: ${node.dueDate}`);
   if (node.externalLinks?.length > 0) {
     parts.push(node.externalLinks.map((l) => `[${l.externalId}]`).join(' '));
@@ -81,7 +83,7 @@ function renderTreeNode(
 
   const lines = [line];
   for (const childId of node.childrenIds) {
-    lines.push(...renderTreeNode(childId, lookup, indent + 1));
+    lines.push(...renderTreeNode(childId, lookup, indent + 1, phaseNameById));
   }
   return lines;
 }
@@ -133,10 +135,17 @@ export function formatMapTree(data: MapDetail): string {
   lines.push(`# ${data.map.name}`);
   if (data.map.description) lines.push(`${data.map.description}`);
   lines.push(`Effort unit: ${data.map.effortUnit ?? 'hours'}`);
+  const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
+  if (orderedPhases.length > 0) {
+    lines.push(
+      `Phases (ordered): ${orderedPhases.map((p) => `${p.name} (id: ${p.id})`).join(' → ')}`,
+    );
+  }
   lines.push('');
 
+  const phaseNameById = new Map(orderedPhases.map((p) => [p.id, p.name] as const));
   if (rootNode) {
-    lines.push(...renderTreeNode(data.map.rootNodeId, lookup, 0));
+    lines.push(...renderTreeNode(data.map.rootNodeId, lookup, 0, phaseNameById));
   } else {
     lines.push('(empty map)');
   }

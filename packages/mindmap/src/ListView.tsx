@@ -45,18 +45,24 @@ const ROW_HEIGHT = 36;
 const INDENT_PX = 20;
 const DEBOUNCE_MS = 400;
 
+// Sentinel option value for the "+ New phase…" entry in the phase
+// dropdown — switches the cell into an inline text editor that creates
+// the phase (appended to the map's phases list) and assigns it.
+const NEW_PHASE_VALUE = '__new_phase__';
+
 type SortKey =
   | 'tree'
   | 'title'
   | 'status'
   | 'priority'
+  | 'phase'
   | 'effort'
   | 'progress'
   | 'health'
   | 'startDate'
   | 'dueDate';
 type SortDir = 'asc' | 'desc';
-type GroupBy = 'none' | 'status' | 'priority' | 'parent';
+type GroupBy = 'none' | 'status' | 'priority' | 'phase' | 'parent';
 
 // ── Flat row type ──────────────────────────────────────────────
 
@@ -124,11 +130,13 @@ const disabledCell: React.CSSProperties = {
 
 export function ListView() {
   const nodes = useMindmapStore((s) => s.nodes);
+  const currentMap = useMindmapStore((s) => s.currentMap);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const computed = useMindmapStore((s) => s.computed);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const updateNode = useMindmapStore((s) => s.updateNode);
+  const createPhase = useMindmapStore((s) => s.createPhase);
   const deleteNode = useMindmapStore((s) => s.deleteNode);
   const toggleCollapse = useMindmapStore((s) => s.toggleCollapse);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
@@ -152,6 +160,17 @@ export function ListView() {
 
   const debounce = useDebouncedCallback(DEBOUNCE_MS);
   const tableRef = useRef<HTMLDivElement>(null);
+
+  // Phase definitions of the current map, sorted by position (canonical
+  // phase order) — dropdown options and phase grouping render in this order.
+  const mapPhases = useMemo(
+    () => [...(currentMap?.phases ?? [])].sort((a, b) => a.position - b.position),
+    [currentMap],
+  );
+  const phaseNameById = useMemo(
+    () => new Map(mapPhases.map((p) => [p.id, p.name] as const)),
+    [mapPhases],
+  );
 
   // Sync single selection with store
   useEffect(() => {
@@ -288,6 +307,16 @@ export function ListView() {
         case 'priority':
           cmp = (a.node.priority ?? 'P9').localeCompare(b.node.priority ?? 'P9');
           break;
+        case 'phase': {
+          // Sort by the map's canonical phase order (position); rows
+          // without a phase (or with a dangling id) sort last.
+          const ai = a.node.phaseId ? mapPhases.findIndex((p) => p.id === a.node.phaseId) : -1;
+          const bi = b.node.phaseId ? mapPhases.findIndex((p) => p.id === b.node.phaseId) : -1;
+          cmp =
+            (ai === -1 ? Number.MAX_SAFE_INTEGER : ai) -
+            (bi === -1 ? Number.MAX_SAFE_INTEGER : bi);
+          break;
+        }
         case 'effort':
           cmp = (a.cv?.computedEffort ?? 0) - (b.cv?.computedEffort ?? 0);
           break;
@@ -310,7 +339,7 @@ export function ListView() {
     });
 
     return sorted;
-  }, [filteredRows, sortKey, sortDir]);
+  }, [filteredRows, sortKey, sortDir, mapPhases]);
 
   // ── Group ─────────────────────────────────────────────────────
 
@@ -329,6 +358,11 @@ export function ListView() {
           break;
         case 'priority':
           key = row.node.priority ?? '(no priority)';
+          break;
+        case 'phase':
+          key = row.node.phaseId
+            ? (phaseNameById.get(row.node.phaseId) ?? '(unknown phase)')
+            : '(no phase)';
           break;
         case 'parent':
           key = row.node.parentId ? (nodes[row.node.parentId]?.text ?? '(unknown)') : '(root)';
@@ -349,8 +383,19 @@ export function ListView() {
       result.push({ label, rows, stats: { effort: totalEffort, progress: avgProgress, count: rows.length } });
     }
 
+    // Phase groups render in canonical phase order (position), with the
+    // "(no phase)" / "(unknown phase)" buckets at the end.
+    if (groupBy === 'phase') {
+      const orderByLabel = new Map(mapPhases.map((p, i) => [p.name, i] as const));
+      result.sort(
+        (x, y) =>
+          (orderByLabel.get(x.label) ?? Number.MAX_SAFE_INTEGER) -
+          (orderByLabel.get(y.label) ?? Number.MAX_SAFE_INTEGER),
+      );
+    }
+
     return result;
-  }, [sortedRows, groupBy, nodes]);
+  }, [sortedRows, groupBy, nodes, mapPhases, phaseNameById]);
 
   // ── Column header click → sort ────────────────────────────────
 
@@ -696,6 +741,67 @@ export function ListView() {
               </span>
             ) : (
               <span style={{ fontSize: 11, color: '#cbd5e1' }}>-</span>
+            )
+          )}
+        </div>
+
+        {/* Phase */}
+        <div
+          style={{ width: 110, minWidth: 110, height: '100%', display: 'flex', alignItems: 'center', borderRight: '1px solid #f1f5f9', padding: '0 4px', boxSizing: 'border-box' }}
+          onClick={(e) => {
+            // Don't restart the select while the "+ New phase…" text
+            // editor is open — a click inside the input bubbles here.
+            if (isEditingField('phaseNew')) {
+              e.stopPropagation();
+              return;
+            }
+            handleCellClick(node.id, 'phase', e);
+          }}
+        >
+          {isEditingField('phaseNew') ? (
+            <PhaseEditor
+              onSave={async (name) => {
+                // Create the PhaseDef on the map (appended at the end of
+                // the canonical order), then assign it to the node.
+                const phaseId = await createPhase(name);
+                if (phaseId) updateNode(node.id, { phaseId });
+                setEditingCell(null);
+              }}
+              onCancel={() => setEditingCell(null)}
+            />
+          ) : isEditingField('phase') ? (
+            <select
+              autoFocus
+              value={node.phaseId ?? ''}
+              onChange={(e) => {
+                if (e.target.value === NEW_PHASE_VALUE) {
+                  setEditingCell({ nodeId: node.id, field: 'phaseNew' });
+                  return;
+                }
+                updateNode(node.id, { phaseId: e.target.value || null });
+                setEditingCell(null);
+              }}
+              onBlur={() =>
+                // Keep the phaseNew editor alive when the blur was caused
+                // by switching to it via the "+ New phase…" option.
+                setEditingCell((cur) => (cur?.field === 'phaseNew' ? cur : null))
+              }
+              onKeyDown={(e) => { e.stopPropagation(); if (e.key === 'Escape') setEditingCell(null); }}
+              style={cellSelect}
+            >
+              <option value="">—</option>
+              {mapPhases.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+              <option value={NEW_PHASE_VALUE}>+ New phase…</option>
+            </select>
+          ) : (
+            node.phaseId ? (
+              <span style={{ fontSize: 11, fontWeight: 500, padding: '2px 6px', borderRadius: 4, background: '#f5f3ff', color: '#6d28d9', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {phaseNameById.get(node.phaseId) ?? node.phaseId}
+              </span>
+            ) : (
+              <span style={{ fontSize: 11, color: '#cbd5e1' }}>—</span>
             )
           )}
         </div>
@@ -1062,6 +1168,7 @@ export function ListView() {
             <option value="none">None</option>
             <option value="status">Status</option>
             <option value="priority">Priority</option>
+            <option value="phase">Phase</option>
             <option value="parent">Parent</option>
           </select>
         </div>
@@ -1098,6 +1205,9 @@ export function ListView() {
           </div>
           <div style={thStyle(70)} onClick={() => handleSort('priority')}>
             Priority{sortArrow('priority')}
+          </div>
+          <div style={thStyle(110)} onClick={() => handleSort('phase')}>
+            Phase{sortArrow('phase')}
           </div>
           <div style={thStyle(100)}>
             Assignee
@@ -1304,6 +1414,51 @@ function TitleEditor({
         fontWeight: 500,
         paddingLeft: 4,
       }}
+    />
+  );
+}
+
+// ── Inline "new phase" editor ───────────────────────────────────
+//
+// Rendered when "+ New phase…" is picked in the phase dropdown. Typing a
+// label and committing assigns it to the node; the server appends unknown
+// labels to the map's ordered phases list automatically (the store
+// mirrors that append locally so the dropdown updates immediately).
+
+function PhaseEditor({
+  onSave,
+  onCancel,
+}: {
+  onSave: (v: string) => void;
+  onCancel: () => void;
+}) {
+  const [text, setText] = useState('');
+  const ref = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+
+  const commit = () => {
+    const trimmed = text.trim();
+    if (trimmed) onSave(trimmed);
+    else onCancel();
+  };
+
+  return (
+    <input
+      ref={ref}
+      value={text}
+      placeholder="New phase…"
+      onChange={(e) => setText(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') commit();
+        else if (e.key === 'Escape') onCancel();
+      }}
+      style={{ ...cellInput, fontSize: 11 }}
     />
   );
 }

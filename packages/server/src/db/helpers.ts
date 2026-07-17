@@ -42,6 +42,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     requirementPriority:
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,
     requirementText: (get('requirementText', 'requirement_text') as string) ?? null,
+    phaseId: (get('phaseId', 'phase_id') as string) ?? null,
     // Orchestration substrate (#111)
     claimedBySession: (get('claimedBySession', 'claimed_by_session') as string) ?? null,
     claimedAt: (get('claimedAt', 'claimed_at') instanceof Date
@@ -80,6 +81,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     customFieldDefs: (get('customFieldDefs', 'custom_field_defs') as MindMap['customFieldDefs']) ?? [],
     defaultLayout: (get('defaultLayout', 'default_layout') as MindMap['defaultLayout']) ?? 'tree_lr',
     healthThreshold: (get('healthThreshold', 'health_threshold') as number) ?? 0.2,
+    phases: (get('phases', 'phases') as MindMap['phases']) ?? [],
     baselines: (get('baselines', 'baselines') as MindMap['baselines']) ?? [],
     wipLimit: (get('wipLimit', 'wip_limit') as number) ?? null,
     projectStartDate: (get('projectStartDate', 'project_start_date') as string) ?? null,

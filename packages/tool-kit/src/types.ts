@@ -50,6 +50,9 @@ export interface NodeWithComputed {
   requirementId: string | null;
   requirementPriority: 'must' | 'should' | 'could' | null;
   requirementText: string | null;
+  // References a PhaseDef.id from the map's `phases` list (statusWorkflow
+  // idiom). null = no phase assigned.
+  phaseId: string | null;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
@@ -58,11 +61,22 @@ export interface NodeWithComputed {
   healthSignal: string;
 }
 
+/** Project phase definition (mirrors core PhaseDef; statusWorkflow idiom). */
+export interface PhaseDef {
+  id: string;
+  name: string;
+  position: number;
+  color?: string;
+  targetDate?: string | null;
+}
+
 export interface MapDetail {
   map: MapSummary & {
     statusWorkflow: Array<{ id: string; name: string; category: string; color: string; position: number }>;
     baselines: unknown[];
     wipLimit: number | null;
+    /** Project phase definitions; `position` = canonical phase order. */
+    phases?: PhaseDef[];
   };
   nodes: NodeWithComputed[];
 }

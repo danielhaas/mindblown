@@ -131,6 +131,44 @@ export function mergeTags(
   return [...kept, ...append.filter((t) => !kept.includes(t))];
 }
 
+// ── Phase reference validation ────────────────────────────────────
+//
+// `nodes.phase_id` references a PhaseDef.id in `maps.phases` (jsonb,
+// statusWorkflow idiom — no FK possible). Writes with an unknown id are
+// rejected with PhaseIdValidationError → 400, so a typo'd/stale id
+// can't silently orphan a node. null always passes (clears the phase).
+
+export class PhaseIdValidationError extends Error {
+  constructor(phaseId: string) {
+    super(
+      `Unknown phaseId "${phaseId}" — it does not reference a phase of this map. ` +
+        `Add the phase to the map first (update_map phases / PUT /api/maps/:id).`,
+    );
+    this.name = 'PhaseIdValidationError';
+  }
+}
+
+/**
+ * Assert `phaseId` (when non-null) references a PhaseDef of the map.
+ * Exported for unit tests (mergeTags pattern — testable with a stub
+ * handle, no Postgres needed).
+ */
+export async function assertPhaseIdKnown(
+  handle: DbHandle,
+  mapId: string,
+  phaseId: string | null | undefined,
+): Promise<void> {
+  if (phaseId == null) return;
+  const [map] = await handle
+    .select({ phases: maps.phases })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  const defs = ((map?.phases as Array<{ id: string }>) ?? []);
+  if (!defs.some((p) => p.id === phaseId)) {
+    throw new PhaseIdValidationError(phaseId);
+  }
+}
+
 // ── Auto-status from progress ─────────────────────────────────────
 //
 // When percentComplete moves but status is left untouched, we promote
@@ -204,6 +242,7 @@ export interface CreateNodeInput {
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
+  phaseId?: string | null;
 }
 
 export async function createNode(
@@ -221,6 +260,11 @@ export async function createNode(
 
   if (input.requirementId != null) {
     await assertRequirementIdAvailable(handle, input.mapId, input.requirementId);
+  }
+
+  // phaseId must reference a PhaseDef of this map (null = no phase).
+  if (input.phaseId != null) {
+    await assertPhaseIdKnown(handle, input.mapId, input.phaseId);
   }
 
   // Create the node
@@ -246,6 +290,7 @@ export async function createNode(
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
+      phaseId: input.phaseId ?? null,
       assigneeIds: [],
       tags: [],
       customFields: {},
@@ -338,6 +383,7 @@ export interface UpdateNodeInput {
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
+  phaseId?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -397,6 +443,17 @@ export async function updateNode(
     }
   }
 
+  // phaseId must reference a PhaseDef of this map (null clears it).
+  if (input.phaseId != null) {
+    const [row] = await handle
+      .select({ mapId: nodes.mapId })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    if (row) {
+      await assertPhaseIdKnown(handle, row.mapId as string, input.phaseId);
+    }
+  }
+
   // Auto-derive status from percentComplete when status is not explicitly set
   // in this update. See deriveAutoStatus for the exact rules.
   if (input.percentComplete !== undefined && input.status === undefined) {
@@ -445,6 +502,7 @@ export async function updateNode(
   if (input.requirementId !== undefined) updates.requirementId = input.requirementId;
   if (input.requirementPriority !== undefined) updates.requirementPriority = input.requirementPriority;
   if (input.requirementText !== undefined) updates.requirementText = input.requirementText;
+  if (input.phaseId !== undefined) updates.phaseId = input.phaseId;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

@@ -673,3 +673,116 @@ describe('search_nodes tool — notStatus filter', () => {
     expect(out).toContain('notStatus=done');
   });
 });
+
+// Phase column — node.phaseId references a PhaseDef.id from the map's
+// `phases` list (statusWorkflow idiom). Must round-trip through
+// create_node AND update_node (the CLAUDE.md layer-6 failure mode), and
+// null must clear it.
+describe('phase fields', () => {
+  it('accepts phaseId on update_node', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({ mapId: 'm1', nodeId: 'n1', phaseId: 'ph-1' });
+    expect(parsed.phaseId).toBe('ph-1');
+  });
+
+  it('accepts null to clear the phase', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({ mapId: 'm1', nodeId: 'n1', phaseId: null });
+    expect(parsed.phaseId).toBeNull();
+  });
+
+  it('forwards phaseId to the backend on update (set)', async () => {
+    const recorder = makeRecordingBackend();
+    const out = await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      phaseId: 'ph-1',
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({ phaseId: 'ph-1' });
+    expect(out).toContain('phaseId');
+  });
+
+  it('forwards phaseId: null to the backend on update (clear)', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      phaseId: null,
+    } as never);
+    // null is a real value (clear), not an omitted field — it must survive
+    // the handler's undefined-stripping.
+    expect(recorder.lastUpdate?.fields).toMatchObject({ phaseId: null });
+    expect('phaseId' in (recorder.lastUpdate?.fields ?? {})).toBe(true);
+  });
+
+  it('forwards phaseId to the backend on create', async () => {
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'phased task',
+      phaseId: 'ph-2',
+    } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ phaseId: 'ph-2' });
+  });
+
+  it('omits phaseId from the backend call when not provided', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      text: 'rename me',
+    } as never);
+    expect('phaseId' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+  });
+});
+
+describe('search_nodes tool — phase name in output', () => {
+  it('renders the phase NAME (resolved via map.phases), not the raw id', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => ({
+      map: {
+        id: 'm1',
+        rootNodeId: 'root',
+        phases: [{ id: 'ph-1', name: 'M1 – Grundgerüst', position: 0 }],
+      } as unknown as MapDetail['map'],
+      nodes: [
+        {
+          id: 'n1',
+          mapId: 'm1',
+          parentId: null,
+          childrenIds: [],
+          text: 'phased node',
+          description: null,
+          effortEstimate: null,
+          actualEffort: null,
+          percentComplete: null,
+          status: null,
+          assigneeIds: [],
+          priority: null,
+          dueDate: null,
+          startDate: null,
+          tags: [],
+          dependencies: [],
+          versionId: null,
+          cycleId: null,
+          phaseId: 'ph-1',
+          externalLinks: [],
+          collapsed: false,
+          createdAt: '2026-07-16T00:00:00Z',
+          updatedAt: '2026-07-16T00:00:00Z',
+          claimedBySession: null,
+          claimedAt: null,
+          computedEffort: 0,
+          computedProgress: 0,
+          healthSignal: 'on_track',
+        } as unknown as NodeWithComputed,
+      ],
+    });
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: 'phased',
+    } as never);
+    expect(out).toContain('phase: M1 – Grundgerüst');
+  });
+});

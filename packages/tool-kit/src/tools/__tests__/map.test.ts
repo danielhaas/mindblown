@@ -56,3 +56,74 @@ describe('update_map tool — focusFactor', () => {
     expect(result).toContain('stub map');
   });
 });
+
+// Phase column — update_map is the write surface for the map's PhaseDef
+// list (add / rename / reorder in REPLACE mode). The handler normalizes:
+// missing ids are generated, missing positions default to the array index.
+describe('update_map tool — phases', () => {
+  it('accepts a full PhaseDef array', () => {
+    const schema = z.object(updateMapTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      phases: [
+        { id: 'ph-1', name: 'M1', position: 0 },
+        { id: 'ph-2', name: 'M2', position: 1, color: '#ff0000', targetDate: null },
+      ],
+    });
+    expect(parsed.phases).toHaveLength(2);
+  });
+
+  it('rejects entries without a name', () => {
+    const schema = z.object(updateMapTool.schema);
+    expect(() => schema.parse({ mapId: 'm1', phases: [{ id: 'ph-1' }] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', phases: [{ name: '' }] })).toThrow();
+  });
+
+  it('forwards a reorder (position swap) to the backend with ids intact', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      phases: [
+        { id: 'ph-2', name: 'M2', position: 0 },
+        { id: 'ph-1', name: 'M1', position: 1 },
+      ],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      phases: [
+        { id: 'ph-2', name: 'M2', position: 0 },
+        { id: 'ph-1', name: 'M1', position: 1 },
+      ],
+    });
+  });
+
+  it('generates an id for new entries and defaults position to the array index', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      phases: [
+        { id: 'ph-1', name: 'M1', position: 0 },
+        { name: 'M9' }, // new phase: no id, no position
+      ],
+    } as never);
+    const sent = (recorder.lastUpdate?.fields.phases ?? []) as Array<{
+      id: string;
+      name: string;
+      position: number;
+    }>;
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toMatchObject({ id: 'ph-1', name: 'M1', position: 0 });
+    expect(sent[1].name).toBe('M9');
+    expect(sent[1].position).toBe(1);
+    expect(typeof sent[1].id).toBe('string');
+    expect(sent[1].id.length).toBeGreaterThan(0);
+  });
+
+  it('does not send phases when omitted', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      name: 'renamed',
+    } as never);
+    expect('phases' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+  });
+});

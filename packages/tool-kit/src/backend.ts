@@ -8,7 +8,7 @@
  * Adding a new backend method requires adding it to both implementations.
  */
 
-import type { MapDetail, MapSummary, NodeWithComputed } from './types.js';
+import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef } from './types.js';
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
 // Mirrors the persisted `triage_decisions` row, plus the per-request
@@ -205,6 +205,7 @@ export interface ToolBackend {
       workerCount?: number;
       focusFactor?: number;
       autoImportNewIssues?: boolean;
+      phases?: PhaseDef[];
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;

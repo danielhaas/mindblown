@@ -97,6 +97,15 @@ export interface MindmapState {
   createMap: (name: string) => Promise<void>;
   closeMap: () => void;
   updateMapName: (name: string) => void;
+  /**
+   * Append a new phase (PhaseDef) to the current map's phases list and
+   * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
+   * can immediately assign it to a node via updateNode phaseId), or null
+   * when there is no current map / the name is blank. When a phase with
+   * the same name already exists, returns that phase's id instead of
+   * creating a duplicate.
+   */
+  createPhase: (name: string) => Promise<string | null>;
 
   // Actions — view
   setActiveView: (view: ActiveView) => void;
@@ -365,6 +374,40 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       // Revert on error
       set({ currentMap: state.currentMap });
     });
+  },
+
+  createPhase: async (name: string) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    const map = state.currentMap;
+    if (!mapId || !map) return null;
+
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+
+    const current = map.phases ?? [];
+    // Reuse an existing phase with the same name instead of duplicating.
+    const existing = current.find((p) => p.name === trimmed);
+    if (existing) return existing.id;
+
+    const newPhase = {
+      id: crypto.randomUUID(),
+      name: trimmed,
+      position: current.length > 0 ? Math.max(...current.map((p) => p.position)) + 1 : 0,
+    };
+    const phases = [...current, newPhase];
+
+    // Optimistic update so the dropdown shows the phase immediately.
+    set({ currentMap: { ...map, phases } });
+
+    try {
+      await api.updateMap(mapId, { phases });
+      return newPhase.id;
+    } catch (e: any) {
+      // Revert on error
+      set({ currentMap: { ...get().currentMap!, phases: current }, error: e.message ?? 'Failed to create phase' });
+      return null;
+    }
   },
 
   // ── Cycle / sprint actions ────────────────────────────────────
@@ -842,6 +885,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       requirementId: null,
       requirementPriority: null,
       requirementText: null,
+      phaseId: null,
       // Orchestration substrate (#111)
       claimedBySession: null,
       claimedAt: null,

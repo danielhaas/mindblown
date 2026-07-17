@@ -76,6 +76,7 @@ function toNodeWithComputed(
     requirementId: node.requirementId,
     requirementPriority: node.requirementPriority,
     requirementText: node.requirementText,
+    phaseId: node.phaseId,
     claimedBySession: node.claimedBySession,
     claimedAt: node.claimedAt,
     computedEffort: computed?.computedEffort ?? 0,
@@ -124,6 +125,7 @@ export function createChatBackend(userId: string): ToolBackend {
           statusWorkflow: data.map.statusWorkflow,
           baselines: data.map.baselines,
           wipLimit: data.map.wipLimit,
+          phases: data.map.phases,
         },
         nodes: nodesWithComputed,
       };

@@ -40,6 +40,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     requirementId: null,
     requirementPriority: null,
     requirementText: null,
+    phaseId: null,
     // Orchestration substrate (#111)
     claimedBySession: null,
     claimedAt: null,

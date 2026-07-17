@@ -859,7 +859,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'gantt', label: 'Gantt', enabled: true },
   { id: 'releases', label: 'Releases', enabled: true },
   { id: 'requirements', label: 'Requirements', enabled: true },
-  { id: 'list', label: 'List', enabled: false },
+  { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
   { id: 'workload', label: 'Workload', enabled: true },

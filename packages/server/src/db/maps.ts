@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
-import type { MindMap, Node as CoreNode, StatusDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
 import { clampFocusFactor } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -112,6 +112,12 @@ export interface UpdateMapInput {
   customFieldDefs?: CustomFieldDef[];
   defaultLayout?: LayoutMode;
   healthThreshold?: number;
+  /**
+   * Project phase definitions — full replacement array (statusWorkflow
+   * idiom). Reorder = new `position` values; rename = same `id`, new
+   * `name` (node phaseIds stay valid because ids are stable).
+   */
+  phases?: PhaseDef[];
   baselines?: Baseline[];
   wipLimit?: number | null;
   projectStartDate?: string | null;
@@ -136,6 +142,7 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.customFieldDefs !== undefined) updates.customFieldDefs = input.customFieldDefs;
   if (input.defaultLayout !== undefined) updates.defaultLayout = input.defaultLayout;
   if (input.healthThreshold !== undefined) updates.healthThreshold = input.healthThreshold;
+  if (input.phases !== undefined) updates.phases = input.phases;
   if (input.baselines !== undefined) updates.baselines = input.baselines;
   if (input.wipLimit !== undefined) updates.wipLimit = input.wipLimit;
   if (input.projectStartDate !== undefined) updates.projectStartDate = input.projectStartDate;
