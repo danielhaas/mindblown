@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, analyzeRepoThroughput, netDeliveryRate } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -11,6 +11,8 @@ import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { computeVelocity } from '../lib/velocity.js';
+import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { fetchMergedPrsSince } from '../lib/repoThroughput.js';
 import * as events from '../db/events.js';
 import {
   buildCalendarIcs,
@@ -931,10 +933,34 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       })),
     });
 
+    // ── Repo throughput: net-of-rework rate + review latency ──
+    // The MindBlown velocity above is *gross* completion. Live-read the
+    // connected repo's merged PRs to expose the *net* rate — gross overstates
+    // progress because a large share of merges are corrections of prior work.
+    // Only for GitHub-connected maps; null otherwise (net == gross).
+    let repoThroughput: Record<string, unknown> | null = null;
+    try {
+      const ctx = await getGitHubContextForMap(req.params.id);
+      if (ctx) {
+        const { prs, truncated: prTruncated } = await fetchMergedPrsSince(ctx, since.getTime());
+        const rt = analyzeRepoThroughput(prs);
+        repoThroughput = {
+          ...rt,
+          repo: `${ctx.owner}/${ctx.repo}`,
+          grossRatePerDay: result.deliveryRate,
+          netRatePerDay: netDeliveryRate(result.deliveryRate, rt.reworkFraction),
+          truncated: prTruncated,
+        };
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'repo throughput fetch failed');
+    }
+
     return reply.send({
       ...result,
       effortUnit: data.map.effortUnit,
       truncated: progressEvents.length >= 10_000,
+      repoThroughput,
     });
   });
 

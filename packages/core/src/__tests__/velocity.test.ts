@@ -2,10 +2,23 @@ import { describe, it, expect } from 'vitest';
 import {
   clampFocusFactor,
   scopedCapacityDays,
+  analyzeRepoThroughput,
+  netDeliveryRate,
   DEFAULT_FOCUS_FACTOR,
   FOCUS_FACTOR_MIN,
   FOCUS_FACTOR_MAX,
 } from '../velocity.js';
+
+function pr(number: number, title: string, openH: number, mergeH: number, body = '') {
+  const base = Date.parse('2026-07-10T00:00:00Z');
+  return {
+    number,
+    title,
+    body,
+    createdAt: new Date(base + openH * 3_600_000).toISOString(),
+    mergedAt: new Date(base + mergeH * 3_600_000).toISOString(),
+  };
+}
 
 describe('clampFocusFactor', () => {
   it('passes valid values through unchanged', () => {
@@ -58,5 +71,58 @@ describe('scopedCapacityDays', () => {
     const r = scopedCapacityDays(10, { workers: 0, unitsPerDay: 0, fudge: 1, focusFactor: 5 });
     expect(Number.isFinite(r.plannedCalendarDays)).toBe(true);
     expect(Number.isFinite(r.velocityCalendarDays)).toBe(true);
+  });
+});
+
+describe('analyzeRepoThroughput', () => {
+  it('classifies correction keywords + references to in-window PRs as rework', () => {
+    const prs = [
+      pr(1, 'feat(a): new thing', 0, 0.5),
+      pr(2, 'feat(b): another', 1, 1.4),
+      pr(3, 'fix(a): correct #1 regression', 2, 2.5), // keyword + ref
+      pr(4, 'follow-up to #2', 3, 3.2),               // keyword + ref
+      pr(5, 'feat(c): builds on #1', 4, 4.3),         // ref only (in-window) → rework
+    ];
+    const rt = analyzeRepoThroughput(prs);
+    expect(rt.merged).toBe(5);
+    expect(rt.reworkCount).toBe(3); // #3, #4, #5
+    expect(rt.reworkFraction).toBeCloseTo(0.6, 6);
+  });
+
+  it('computes review-latency stats and offline (>6h) merges', () => {
+    const prs = [
+      pr(1, 'a', 0, 0.4),   // 0.4h
+      pr(2, 'b', 0, 0.6),   // 0.6h
+      pr(3, 'c', 0, 12),    // 12h → offline
+    ];
+    const rt = analyzeRepoThroughput(prs);
+    expect(rt.medianLatencyHours).toBeCloseTo(0.6, 6);
+    expect(rt.maxLatencyHours).toBeCloseTo(12, 6);
+    expect(rt.offlineMergeCount).toBe(1);
+  });
+
+  it('a reference to a PR NOT in the window is not rework by itself', () => {
+    const prs = [pr(10, 'feat: extends #9999 (not in window)', 0, 0.5)];
+    const rt = analyzeRepoThroughput(prs);
+    expect(rt.reworkCount).toBe(0);
+  });
+
+  it('empty input is safe', () => {
+    const rt = analyzeRepoThroughput([]);
+    expect(rt.merged).toBe(0);
+    expect(rt.reworkFraction).toBe(0);
+    expect(rt.medianLatencyHours).toBe(0);
+  });
+});
+
+describe('netDeliveryRate', () => {
+  it('discounts gross by the rework fraction', () => {
+    expect(netDeliveryRate(3.2, 0.42)).toBeCloseTo(3.2 * 0.58, 6);
+    expect(netDeliveryRate(2, 0)).toBe(2);
+    expect(netDeliveryRate(2, 1)).toBe(0);
+  });
+  it('clamps out-of-range fractions', () => {
+    expect(netDeliveryRate(2, 1.5)).toBe(0);
+    expect(netDeliveryRate(2, -1)).toBe(2);
   });
 });
