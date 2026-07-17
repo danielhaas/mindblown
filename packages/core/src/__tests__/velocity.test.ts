@@ -75,18 +75,19 @@ describe('scopedCapacityDays', () => {
 });
 
 describe('analyzeRepoThroughput', () => {
-  it('classifies correction keywords + references to in-window PRs as rework', () => {
+  it('rework = correction keyword AND reference to an in-window PR (both required)', () => {
     const prs = [
       pr(1, 'feat(a): new thing', 0, 0.5),
       pr(2, 'feat(b): another', 1, 1.4),
-      pr(3, 'fix(a): correct #1 regression', 2, 2.5), // keyword + ref
-      pr(4, 'follow-up to #2', 3, 3.2),               // keyword + ref
-      pr(5, 'feat(c): builds on #1', 4, 4.3),         // ref only (in-window) → rework
+      pr(3, 'fix(a): correct #1 regression', 2, 2.5), // keyword + ref → rework
+      pr(4, 'follow-up to #2', 3, 3.2),               // keyword + ref → rework
+      pr(5, 'feat(c): builds on #1', 4, 4.3),         // ref only, NO keyword → NOT rework
+      pr(6, 'fix(z): standalone bug', 5, 5.3),        // keyword only, NO ref → NOT rework
     ];
     const rt = analyzeRepoThroughput(prs);
-    expect(rt.merged).toBe(5);
-    expect(rt.reworkCount).toBe(3); // #3, #4, #5
-    expect(rt.reworkFraction).toBeCloseTo(0.6, 6);
+    expect(rt.merged).toBe(6);
+    expect(rt.reworkCount).toBe(2); // only #3, #4
+    expect(rt.reworkFraction).toBeCloseTo(2 / 6, 6);
   });
 
   it('computes review-latency stats and offline (>6h) merges', () => {

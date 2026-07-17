@@ -89,10 +89,11 @@ export function scopedCapacityDays(
 //     separate signal (it paces delivery but isn't a rework loss).
 //
 // v1 detects rework by signal, not file-overlap: a merged PR is rework if its
-// title/body carries a correction keyword OR references (#NNN) another PR that
-// also merged in the window. That is "same work-item", cheap (no per-PR file
-// fetch), and tighter than a bare keyword match. File-level same-area is a
-// documented follow-up refinement.
+// title/body carries a correction keyword AND references (#NNN) another PR that
+// also merged in the window — a correction that points at recent work. Both are
+// required (reference-alone over-fires in a high-volume repo where nearly every
+// PR cross-references; keyword-alone counts standalone net-new bug fixes).
+// File-level same-area is a documented follow-up refinement.
 
 /** Correction-intent keywords in a PR title/body → likely rework. */
 const REWORK_KEYWORD = /\b(fix|fixup|hotfix|revert|reverts|redo|rework|re-?work|follow-?ups?|followup|regress\w*|correct\w*|amend|nit|nits)\b/i;
@@ -151,11 +152,16 @@ export function analyzeRepoThroughput(prs: PrRecord[]): RepoThroughput {
       latencies.push(hours);
       if (hours > OFFLINE_MERGE_HOURS) offline++;
     }
+    // Rework = a *correction* (keyword) that *points at recent work* (references
+    // another PR merged in the same window). Both are required: in a repo
+    // merging dozens of PRs a day almost every PR cross-references another, so
+    // reference-alone flags nearly everything; keyword-alone counts standalone
+    // net-new bug fixes as rework. The AND is "redoing something just done."
     const keyword = REWORK_KEYWORD.test(pr.title) || REWORK_KEYWORD.test(pr.body ?? '');
     const refsRecent = referencedNumbers(pr).some(
       (n) => n !== pr.number && mergedSet.has(n),
     );
-    if (keyword || refsRecent) rework++;
+    if (keyword && refsRecent) rework++;
   }
 
   latencies.sort((a, b) => a - b);
