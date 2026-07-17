@@ -1794,7 +1794,7 @@ server.tool(
         lines.push(`Gross rate:           ${rt.grossRatePerDay.toFixed(2)} ${unit}/day (what you'd forecast off — inflated)`);
         lines.push(`NET rate:             ${rt.netRatePerDay.toFixed(2)} ${unit}/day  ← forecast off THIS (gross × (1 − rework))`);
         lines.push(`Review latency:       median ${rt.medianLatencyHours.toFixed(1)}h | mean ${rt.meanLatencyHours.toFixed(1)}h | max ${rt.maxLatencyHours.toFixed(1)}h | ${rt.offlineMergeCount} waited >6h (reviewer offline)`);
-        lines.push(`Rework detection is signal-based (correction keywords + references to other in-window PRs), not file-overlap — an approximation; treat rework% as indicative.`);
+        lines.push(`Rework detection: correction keyword AND a reference to another in-window PR (a fixup pointing at recent work) — not file-overlap; treat rework% as indicative.`);
       }
 
       lines.push('');
