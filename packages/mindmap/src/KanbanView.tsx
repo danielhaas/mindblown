@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
+import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
 import { OctocatIcon } from './icons/Octocat.js';
 
@@ -450,6 +451,7 @@ export function KanbanView() {
   const getNodeBreadcrumb = useMindmapStore((s) => s.getNodeBreadcrumb);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
 
   const [swimlanes, setSwimlanes] = useState(false);
@@ -473,26 +475,17 @@ export function KanbanView() {
   const columns: KanbanColumn[] = useMemo(() => {
     // Kanban shows ALL leaves regardless of the mindmap's collapse state or
     // depth limit — those are mindmap-only concerns. We still respect the
-    // explicit version/sprint filters via ancestor inheritance.
+    // explicit version/sprint/phase filters via ancestor inheritance
+    // (shared walk in scopeFilter.ts, same semantics as getVisibleNodes).
     let leafNodes = getLeafNodes();
 
-    if ((activeVersionFilter || activeCycleFilter) && rootNodeId) {
-      const inScope = new Set<string>();
-      const walk = (
-        nodeId: string,
-        inheritedVersion: string | null,
-        inheritedCycle: string | null,
-      ) => {
-        const node = nodes[nodeId];
-        if (!node) return;
-        const effVersion = node.versionId ?? inheritedVersion;
-        const effCycle = node.cycleId ?? inheritedCycle;
-        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
-        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
-        if (matchesVersion && matchesCycle) inScope.add(nodeId);
-        for (const cid of node.childrenIds) walk(cid, effVersion, effCycle);
-      };
-      walk(rootNodeId, null, null);
+    const scopeFilters = {
+      versionId: activeVersionFilter,
+      cycleId: activeCycleFilter,
+      phaseId: activePhaseFilter,
+    };
+    if (hasActiveScopeFilter(scopeFilters) && rootNodeId) {
+      const inScope = collectScopeMatches(nodes, rootNodeId, scopeFilters);
       leafNodes = leafNodes.filter((n) => inScope.has(n.id));
     }
 
@@ -551,7 +544,7 @@ export function KanbanView() {
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, nodes, rootNodeId]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {

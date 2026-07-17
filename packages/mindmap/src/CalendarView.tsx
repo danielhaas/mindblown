@@ -409,6 +409,7 @@ export function CalendarView() {
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
   const versions = useMindmapStore((s) => s.versions);
   const cycles = useMindmapStore((s) => s.cycles);
 
@@ -577,7 +578,7 @@ export function CalendarView() {
       });
     }
     return result;
-  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, scheduleDates, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter]);
+  }, [nodes, computed, today, currentMap, getNodeBreadcrumb, getVisibleNodes, scheduleDates, focusNodeId, maxDepth, rootNodeId, activeVersionFilter, activeCycleFilter, activePhaseFilter]);
 
   // ── Group tasks by date key ─────────────────────────────────
 

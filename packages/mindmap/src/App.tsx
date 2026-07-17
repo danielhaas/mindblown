@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import type { ActiveView } from './store.js';
+import { resolveFilterChip } from './scopeFilter.js';
 import { MindmapEditor } from './MindmapEditor.js';
 import { PropertyPanel } from './PropertyPanel.js';
 import { KanbanView } from './KanbanView.js';
@@ -906,7 +907,7 @@ function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: 
   );
 }
 
-// ── Filters Popover (Version + Sprint) ───────────────────────
+// ── Filters Popover (Version + Sprint + Phase) ───────────────
 
 function FiltersPopover({
   versions,
@@ -915,6 +916,9 @@ function FiltersPopover({
   cycles,
   activeCycleFilter,
   onCycleFilterChange,
+  phases,
+  activePhaseFilter,
+  onPhaseFilterChange,
 }: {
   versions: { id: string; name: string; status: string }[];
   activeVersionFilter: string | null;
@@ -922,6 +926,10 @@ function FiltersPopover({
   cycles: { id: string; name: string; status: string; startDate: string; endDate: string }[];
   activeCycleFilter: string | null;
   onCycleFilterChange: (id: string | null) => void;
+  /** PhaseDefs from the current map, already sorted by position. */
+  phases: { id: string; name: string; position: number }[];
+  activePhaseFilter: string | null;
+  onPhaseFilterChange: (id: string | null) => void;
 }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -949,8 +957,13 @@ function FiltersPopover({
   const filterCycle = activeCycleFilter
     ? cycles.find((c) => c.id === activeCycleFilter)
     : null;
+  // Keyed on the active id, NOT on whether it still resolves: a phase can
+  // vanish from currentMap.phases under an active filter (WS sync / map
+  // reload) and the chip + "Clear all" must survive as the only UI path
+  // to clearing it — see resolveFilterChip.
+  const filterPhase = resolveFilterChip(activePhaseFilter, phases, '(unknown phase)');
   const activeSprint = cycles.find((c) => c.status === 'active');
-  const hasAnyFilter = !!(filterVersion || filterCycle);
+  const hasAnyFilter = !!(filterVersion || filterCycle || filterPhase);
 
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
   function fmtShort(iso: string): string {
@@ -984,7 +997,7 @@ function FiltersPopover({
     <div ref={wrapRef} style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 6 }}>
       <button
         onClick={() => setOpen((o) => !o)}
-        title="Filter the mindmap by version or sprint"
+        title="Filter the mindmap by version, sprint, or phase"
         style={{
           padding: '3px 10px',
           borderRadius: 4,
@@ -1039,6 +1052,23 @@ function FiltersPopover({
         >
           {filterCycle.name}
           {chipCloseBtn(() => onCycleFilterChange(null), 'Clear sprint filter')}
+        </span>
+      )}
+      {filterPhase && (
+        <span
+          style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            fontSize: 10,
+            fontWeight: 600,
+            padding: '2px 4px 2px 8px',
+            borderRadius: 4,
+            background: '#fffbeb',
+            color: '#d97706',
+          }}
+        >
+          {filterPhase.name}
+          {chipCloseBtn(() => onPhaseFilterChange(null), 'Clear phase filter')}
         </span>
       )}
 
@@ -1145,11 +1175,42 @@ function FiltersPopover({
             </label>
           )}
 
+          {phases.length > 0 && (
+            <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              <span style={{ color: '#64748b', fontWeight: 600, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.4 }}>
+                Phase
+              </span>
+              <select
+                value={activePhaseFilter ?? ''}
+                onChange={(e) => onPhaseFilterChange(e.target.value || null)}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={{
+                  fontSize: 12,
+                  fontFamily: 'inherit',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 4,
+                  padding: '5px 8px',
+                  color: '#0f172a',
+                  background: '#fff',
+                  cursor: 'pointer',
+                }}
+              >
+                <option value="">All phases</option>
+                {phases.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {hasAnyFilter && (
             <button
               onClick={() => {
                 onVersionFilterChange(null);
                 onCycleFilterChange(null);
+                onPhaseFilterChange(null);
               }}
               style={{
                 marginTop: 2,
@@ -1390,6 +1451,14 @@ export function App() {
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const setActiveVersionFilter = useMindmapStore((s) => s.setActiveVersionFilter);
   const loadVersions = useMindmapStore((s) => s.loadVersions);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
+  const setActivePhaseFilter = useMindmapStore((s) => s.setActivePhaseFilter);
+  // PhaseDefs live on the map itself (statusWorkflow idiom) — sorted by
+  // position, the canonical phase order, for the filter dropdown.
+  const sortedPhases = useMemo(
+    () => [...(currentMap?.phases ?? [])].sort((a, b) => a.position - b.position),
+    [currentMap],
+  );
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
@@ -1854,7 +1923,7 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          {/* Combined Version + Sprint filters */}
+          {/* Combined Version + Sprint + Phase filters */}
           <FiltersPopover
             versions={versions}
             activeVersionFilter={activeVersionFilter}
@@ -1862,6 +1931,9 @@ export function App() {
             cycles={cycles}
             activeCycleFilter={activeCycleFilter}
             onCycleFilterChange={setActiveCycleFilter}
+            phases={sortedPhases}
+            activePhaseFilter={activePhaseFilter}
+            onPhaseFilterChange={setActivePhaseFilter}
           />
 
           {/* Sprints panel toggle (opens the right-dock panel — distinct from the sprint filter) */}

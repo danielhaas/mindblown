@@ -68,6 +68,7 @@ export function HillChart() {
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
@@ -84,7 +85,7 @@ export function HillChart() {
         getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
         computed,
       ),
-    [nodes, rootNodeId, computed, getVisibleNodes, activeVersionFilter, activeCycleFilter],
+    [nodes, rootNodeId, computed, getVisibleNodes, activeVersionFilter, activeCycleFilter, activePhaseFilter],
   );
 
   const maxEffort = branches.length > 0 ? Math.max(...branches.map((b) => b.computed.computedEffort)) : 0;
@@ -349,7 +350,7 @@ export function HillChart() {
               fill="#94a3b8"
               fontSize="14"
             >
-              {activeVersionFilter || activeCycleFilter
+              {activeVersionFilter || activeCycleFilter || activePhaseFilter
                 ? 'No branches match the active filter.'
                 : 'No top-level branches to display. Add children to the root node.'}
             </text>

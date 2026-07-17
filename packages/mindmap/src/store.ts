@@ -5,6 +5,7 @@ import * as api from './api.js';
 import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
+import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -92,6 +93,9 @@ export interface MindmapState {
   versions: Version[];
   activeVersionFilter: string | null;
 
+  // Phase state (PhaseDefs live on currentMap.phases; only the filter is store state)
+  activePhaseFilter: string | null;
+
   // UI state
   activeView: ActiveView;
   loading: boolean;
@@ -142,6 +146,9 @@ export interface MindmapState {
   updateVersion: (id: string, fields: Partial<api.CreateVersionFields>) => Promise<void>;
   deleteVersion: (id: string) => Promise<void>;
   setActiveVersionFilter: (versionId: string | null) => void;
+
+  // Actions — phase
+  setActivePhaseFilter: (phaseId: string | null) => void;
 
   // Actions — layout
   setLayoutType: (layout: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart') => void;
@@ -211,6 +218,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   activeCycleFilter: null,
   versions: [],
   activeVersionFilter: null,
+  activePhaseFilter: null,
   activeView: 'mindmap',
   loading: false,
   error: null,
@@ -374,6 +382,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       maxDepth: 1,
       versions: [],
       activeVersionFilter: null,
+      activePhaseFilter: null,
       wsConnected: false,
       presence: {},
       followingUserId: null,
@@ -601,6 +610,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   setActiveVersionFilter: (versionId) => set({ activeVersionFilter: versionId }),
 
+  // ── Phase actions ────────────────────────────────────────────
+
+  setActivePhaseFilter: (phaseId) => set({ activePhaseFilter: phaseId }),
+
   // ── View actions ─────────────────────────────────────────────
 
   setActiveView: (view) => set({ activeView: view }),
@@ -638,49 +651,29 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   getVisibleNodes: (options) => {
     const { respectFocus = true, respectDepth = true, respectCollapsed = true } = options ?? {};
-    const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter } = get();
+    const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, activePhaseFilter } = get();
     if (!rootNodeId) return [];
 
     const effectiveRootId = (respectFocus ? focusNodeId : null) ?? rootNodeId;
     const effectiveRoot = nodes[effectiveRootId];
     if (!effectiveRoot) return [];
 
-    // Build the visible set for the active version + sprint filters.
+    // Build the visible set for the active version + sprint + phase
+    // filters — see `collectScopeMatches` in scopeFilter.ts for the tag
+    // inheritance / AND semantics (shared with KanbanView and GanttView).
     //
-    // Semantic: a node is "in scope" if its effective version/cycle matches
-    // every active filter, where "effective" means the node's own tag OR
-    // the nearest tagged ancestor. This lets users tag an epic/branch with
-    // a sprint and see the entire subtree under it, while still supporting
-    // leaf-level tags for fine-grained work items.
-    //
-    // We also include ancestors of in-scope nodes so the mindmap stays a
-    // connected tree even when scope nodes are deep.
+    // We walk from rootNodeId (not effectiveRootId) so inheritance picks
+    // up tags on nodes above the current drill-down focus, and we expand
+    // with ancestors of in-scope nodes so the mindmap stays a connected
+    // tree even when scope nodes are deep.
+    const scopeFilters = {
+      versionId: activeVersionFilter,
+      cycleId: activeCycleFilter,
+      phaseId: activePhaseFilter,
+    };
     let filterMatchIds: Set<string> | null = null;
-    if (activeVersionFilter || activeCycleFilter) {
-      const directMatches = new Set<string>();
-
-      // DFS from the real root, propagating inherited tags downward.
-      // We walk from rootNodeId (not effectiveRootId) so inheritance picks
-      // up tags on nodes above the current drill-down focus.
-      function inheritDfs(
-        nodeId: string,
-        inheritedVersion: string | null,
-        inheritedCycle: string | null,
-      ) {
-        const node = nodes[nodeId];
-        if (!node) return;
-        const effVersion = node.versionId ?? inheritedVersion;
-        const effCycle = node.cycleId ?? inheritedCycle;
-        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
-        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
-        if (matchesVersion && matchesCycle) {
-          directMatches.add(nodeId);
-        }
-        for (const childId of node.childrenIds) {
-          inheritDfs(childId, effVersion, effCycle);
-        }
-      }
-      inheritDfs(rootNodeId, null, null);
+    if (hasActiveScopeFilter(scopeFilters)) {
+      const directMatches = collectScopeMatches(nodes, rootNodeId, scopeFilters);
 
       // Expand with ancestors of every in-scope node so the tree stays
       // connected back to the root.

@@ -7,6 +7,7 @@ import {
   businessDaysBetween,
 } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import { fetchSchedule, updateMap as updateMapApi } from './api.js';
 
 // ── Schedule response shape (from GET /api/maps/:id/schedule) ────
@@ -268,6 +269,7 @@ export function GanttView() {
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
 
   // Local UI state
   const [scale, setScale] = useState<TimeScale>('week');
@@ -413,26 +415,22 @@ export function GanttView() {
   // mindmap silently hide their children from the Gantt (the same bug
   // KanbanView had before v0.7.1).
   //
-  // Version/cycle filters still apply, with ancestor inheritance: if a
-  // parent is tagged V1, its untagged children inherit V1. A subtree is
-  // shown only if the current node matches the active filter.
+  // Version/cycle/phase filters still apply, with ancestor inheritance:
+  // if a parent is tagged V1, its untagged children inherit V1. A subtree
+  // is shown only if the current node matches the active filter (shared
+  // walk in scopeFilter.ts, same semantics as getVisibleNodes).
   const rows = useMemo(() => {
     if (!rootNodeId || !nodes[rootNodeId]) return [];
 
-    const inScope = new Set<string>();
-    if (activeVersionFilter || activeCycleFilter) {
-      const walkScope = (nodeId: string, inheritedVersion: string | null, inheritedCycle: string | null) => {
-        const node = nodes[nodeId];
-        if (!node) return;
-        const effVersion = node.versionId ?? inheritedVersion;
-        const effCycle = node.cycleId ?? inheritedCycle;
-        const matchesVersion = !activeVersionFilter || effVersion === activeVersionFilter;
-        const matchesCycle = !activeCycleFilter || effCycle === activeCycleFilter;
-        if (matchesVersion && matchesCycle) inScope.add(nodeId);
-        for (const cid of node.childrenIds) walkScope(cid, effVersion, effCycle);
-      };
-      walkScope(rootNodeId, null, null);
-    }
+    const scopeFilters = {
+      versionId: activeVersionFilter,
+      cycleId: activeCycleFilter,
+      phaseId: activePhaseFilter,
+    };
+    const scopeFilterActive = hasActiveScopeFilter(scopeFilters);
+    const inScope = scopeFilterActive
+      ? collectScopeMatches(nodes, rootNodeId, scopeFilters)
+      : new Set<string>();
 
     // "Behind only" filter keeps any leaf flagged behind (via computed
     // health) plus every ancestor up to the root, so the tree shape
@@ -459,7 +457,7 @@ export function GanttView() {
     const walk = (nodeId: string, depth: number) => {
       const node = nodes[nodeId];
       if (!node) return;
-      if ((activeVersionFilter || activeCycleFilter) && !inScope.has(nodeId)) {
+      if (scopeFilterActive && !inScope.has(nodeId)) {
         // Skip this node but still descend — a tagged leaf can live under
         // an untagged parent.
         for (const cid of node.childrenIds) walk(cid, depth);
@@ -494,6 +492,7 @@ export function GanttView() {
     collapsedSet,
     activeVersionFilter,
     activeCycleFilter,
+    activePhaseFilter,
     showBehindOnly,
     hideDone,
     computed,

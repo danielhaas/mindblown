@@ -55,6 +55,7 @@ function makeNode(id: string, parentId: string | null, overrides: Partial<Node> 
     dependencies: [],
     versionId: null,
     cycleId: null,
+    phaseId: null,
     externalLinks: [],
     priorityRank: null,
     completedAt: null,
@@ -78,11 +79,11 @@ function makeNode(id: string, parentId: string | null, overrides: Partial<Node> 
 /**
  * Tree:
  *   root
- *   ├─ epicA (versionId v1)
- *   │   ├─ a1  leaf — no own tag → inherits v1; alice, 5h, todo
- *   │   └─ a2  leaf — versionId v2 (overrides); bob, 3h, in_progress
+ *   ├─ epicA (versionId v1, phaseId p1)
+ *   │   ├─ a1  leaf — no own tag → inherits v1 + p1; alice, 5h, todo
+ *   │   └─ a2  leaf — versionId v2 (overrides), inherits p1; bob, 3h, in_progress
  *   └─ epicB (untagged)
- *       ├─ b1  leaf — versionId v1, cycleId c1; alice, 2h, done
+ *       ├─ b1  leaf — versionId v1, cycleId c1, phaseId p2; alice, 2h, done
  *       └─ b2  leaf — untagged; bob, 8h, todo
  */
 function buildFixture(): Record<string, Node> {
@@ -91,6 +92,7 @@ function buildFixture(): Record<string, Node> {
     epicA: makeNode('epicA', 'root', {
       childrenIds: ['a1', 'a2'],
       versionId: 'v1',
+      phaseId: 'p1',
       customFields: { hillPosition: 30 },
     }),
     epicB: makeNode('epicB', 'root', { childrenIds: ['b1', 'b2'] }),
@@ -104,6 +106,7 @@ function buildFixture(): Record<string, Node> {
     b1: makeNode('b1', 'epicB', {
       versionId: 'v1',
       cycleId: 'c1',
+      phaseId: 'p2',
       assigneeIds: ['alice'],
       effortEstimate: 2,
       status: 'done',
@@ -125,6 +128,7 @@ function setStoreState(overrides: Record<string, unknown> = {}) {
     maxDepth: 0,
     activeVersionFilter: null,
     activeCycleFilter: null,
+    activePhaseFilter: null,
   });
   if (Object.keys(overrides).length > 0) {
     useMindmapStore.setState(overrides);
@@ -271,6 +275,52 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
       expect(scopeIds()).toEqual([]);
       expect(hillBranchIds()).toEqual([]);
       expect(workloadsNow()).toEqual([]);
+    });
+  });
+
+  describe('phase filter (same inheritance semantics as version/cycle)', () => {
+    it('active phase filter keeps only nodes of that phase, incl. scope inheritance and connecting ancestors', () => {
+      useMindmapStore.setState({ activePhaseFilter: 'p1' });
+      // epicA is tagged p1; a1 AND a2 inherit p1 (a2's versionId override
+      // does not affect phase inheritance). b1 is p2, b2 untagged → out.
+      expect(scopeIds().sort()).toEqual(['a1', 'a2', 'epicA', 'root']);
+    });
+
+    it('phase + version filters combine with AND semantics', () => {
+      useMindmapStore.setState({ activeVersionFilter: 'v1', activePhaseFilter: 'p1' });
+      // epicA matches both directly; a1 inherits both; a2 fails on version
+      // (own v2 overrides). b1 is v1 but phase p2 → out.
+      expect(scopeIds().sort()).toEqual(['a1', 'epicA', 'root']);
+    });
+
+    it('phase + version AND can isolate a single leaf under a partially-matching epic', () => {
+      useMindmapStore.setState({ activeVersionFilter: 'v2', activePhaseFilter: 'p1' });
+      // Only a2: own versionId v2 + inherited phase p1. epicA itself is v1
+      // → survives only as a2's connecting ancestor.
+      expect(scopeIds().sort()).toEqual(['a2', 'epicA', 'root']);
+    });
+
+    it('phase + cycle filters combine with AND semantics', () => {
+      useMindmapStore.setState({ activeCycleFilter: 'c1', activePhaseFilter: 'p2' });
+      // Only b1 carries both c1 and p2; epicB survives as connecting ancestor.
+      expect(scopeIds().sort()).toEqual(['b1', 'epicB', 'root']);
+    });
+
+    it('a phase filter matching nothing empties the scope and both view data bases', () => {
+      useMindmapStore.setState({ activePhaseFilter: 'p999' });
+      expect(scopeIds()).toEqual([]);
+      expect(hillBranchIds()).toEqual([]);
+      expect(workloadsNow()).toEqual([]);
+    });
+
+    it('feeds the HillChart/Workload data bases like the other filters', () => {
+      useMindmapStore.setState({ activePhaseFilter: 'p1' });
+      expect(hillBranchIds()).toEqual(['epicA']);
+      const w = workloadsNow();
+      // a1 (alice, 5h todo) + a2 (bob, 3h in_progress) are in phase scope.
+      expect(w.map((x) => x.assigneeId)).toEqual(['alice', 'bob']);
+      expect(w.find((x) => x.assigneeId === 'alice')!).toMatchObject({ todo: 5, total: 5 });
+      expect(w.find((x) => x.assigneeId === 'bob')!).toMatchObject({ inProgress: 3, total: 3 });
     });
   });
 
