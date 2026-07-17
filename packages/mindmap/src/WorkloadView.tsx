@@ -25,8 +25,6 @@ export function WorkloadView() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
-  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
@@ -37,12 +35,18 @@ export function WorkloadView() {
 
   const statusWorkflow = currentMap?.statusWorkflow ?? [];
 
-  // Per-assignee effort from the leaf nodes of the store's visible set, so
-  // the active version/sprint filters and drill-down scope apply — same
-  // data basis as ListView/CalendarView.
+  // Per-assignee effort from the leaf nodes of the store's scope walk, so
+  // the active version/sprint filters apply (incl. tag inheritance +
+  // ancestor connect). Drill-down focus, depth limit, and collapse state
+  // deliberately do NOT apply — the workload always aggregates ALL leaves,
+  // exactly as before the filter fix.
   const workloads = useMemo(
-    () => computeWorkloads(getVisibleNodes(), statusWorkflow),
-    [nodes, rootNodeId, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter, statusWorkflow],
+    () =>
+      computeWorkloads(
+        getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
+        statusWorkflow,
+      ),
+    [nodes, rootNodeId, getVisibleNodes, activeVersionFilter, activeCycleFilter, statusWorkflow],
   );
 
   const maxEffort = Math.max(capacity, ...workloads.map((w) => w.total));

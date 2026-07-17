@@ -21,6 +21,13 @@ if (typeof globalThis.localStorage === 'undefined') {
 
 const { useMindmapStore } = await import('../store.js');
 
+/**
+ * How HillChart/WorkloadView call the store's scope walk: only the
+ * version/sprint filter applies; drill-down focus, depth limit, and
+ * collapse state must NOT cut the aggregate views' data basis.
+ */
+const SCOPE_ONLY = { respectFocus: false, respectDepth: false, respectCollapsed: false } as const;
+
 // ── Fixtures ─────────────────────────────────────────────────────
 
 function makeNode(id: string, parentId: string | null, overrides: Partial<Node> = {}): Node {
@@ -115,39 +122,60 @@ function setStoreState(overrides: Record<string, unknown> = {}) {
     computed: computeTree(Object.values(nodes)),
     focusNodeId: null,
     focusHistory: [],
-    maxDepth: 0, // unlimited — the aggregate views care about deep leaves
+    maxDepth: 0,
     activeVersionFilter: null,
     activeCycleFilter: null,
-    ...overrides,
   });
+  if (Object.keys(overrides).length > 0) {
+    useMindmapStore.setState(overrides);
+  }
 }
 
-const visibleIds = () =>
+/** Patch one fixture node in place (e.g. flip `collapsed`). */
+function patchNode(id: string, patch: Partial<Node>) {
+  const nodes = useMindmapStore.getState().nodes;
+  useMindmapStore.setState({ nodes: { ...nodes, [id]: { ...nodes[id], ...patch } } });
+}
+
+const scopeIds = () =>
   useMindmapStore
     .getState()
-    .getVisibleNodes()
-    .filter((v) => !v.isDimmed)
+    .getVisibleNodes(SCOPE_ONLY)
     .map((v) => v.node.id);
 
-describe('getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
+const hillBranchIds = () =>
+  selectHillBranches(
+    useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+    useMindmapStore.getState().computed,
+  ).map((b) => b.node.id);
+
+const workflow = [
+  { id: 'todo', name: 'To Do', category: 'todo' },
+  { id: 'in_progress', name: 'In Progress', category: 'in_progress' },
+  { id: 'done', name: 'Done', category: 'done' },
+];
+
+const workloadsNow = () =>
+  computeWorkloads(useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY), workflow);
+
+describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
   beforeEach(() => setStoreState());
 
   it('without filters, every node is in scope', () => {
-    expect(visibleIds().sort()).toEqual(['a1', 'a2', 'b1', 'b2', 'epicA', 'epicB', 'root']);
+    expect(scopeIds().sort()).toEqual(['a1', 'a2', 'b1', 'b2', 'epicA', 'epicB', 'root']);
   });
 
   it('active version filter keeps only nodes of that version, incl. scope inheritance and connecting ancestors', () => {
     useMindmapStore.setState({ activeVersionFilter: 'v1' });
-    const ids = visibleIds().sort();
     // a1 inherits v1 from epicA; a2 overrides with v2 → out.
     // b1 is tagged v1 directly; epicB survives only as its connecting ancestor; b2 → out.
-    expect(ids).toEqual(['a1', 'b1', 'epicA', 'epicB', 'root']);
+    expect(scopeIds().sort()).toEqual(['a1', 'b1', 'epicA', 'epicB', 'root']);
   });
 
   describe('HillChart branch selection', () => {
     it('shows all top-level branches without filters', () => {
       const branches = selectHillBranches(
-        useMindmapStore.getState().getVisibleNodes(),
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
         useMindmapStore.getState().computed,
       );
       expect(branches.map((b) => b.node.id)).toEqual(['epicA', 'epicB']);
@@ -159,46 +187,25 @@ describe('getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
 
     it('drops branches outside the active version filter', () => {
       useMindmapStore.setState({ activeVersionFilter: 'v2' });
-      const branches = selectHillBranches(
-        useMindmapStore.getState().getVisibleNodes(),
-        useMindmapStore.getState().computed,
-      );
       // Only epicA contains a v2 node (a2); epicB has none.
-      expect(branches.map((b) => b.node.id)).toEqual(['epicA']);
+      expect(hillBranchIds()).toEqual(['epicA']);
     });
 
     it('drops branches outside the active cycle filter', () => {
       useMindmapStore.setState({ activeCycleFilter: 'c1' });
-      const branches = selectHillBranches(
-        useMindmapStore.getState().getVisibleNodes(),
-        useMindmapStore.getState().computed,
-      );
       // Only b1 is in sprint c1 → epicB survives as its ancestor branch.
-      expect(branches.map((b) => b.node.id)).toEqual(['epicB']);
+      expect(hillBranchIds()).toEqual(['epicB']);
     });
 
-    it('excludes dimmed drill-down context siblings', () => {
-      useMindmapStore.setState({ focusNodeId: 'epicA' });
-      const branches = selectHillBranches(
-        useMindmapStore.getState().getVisibleNodes(),
-        useMindmapStore.getState().computed,
-      );
-      // Focused on epicA: its children are the depth-1 branches; the dimmed
-      // sibling epicB must not leak in.
-      expect(branches.map((b) => b.node.id)).toEqual(['a1', 'a2']);
+    it('keeps showing the root branches under drill-down focus, depth limit, and collapse', () => {
+      useMindmapStore.setState({ focusNodeId: 'epicA', maxDepth: 1 });
+      patchNode('epicA', { collapsed: true });
+      // Unchanged: the hill is root-branch level regardless of drill-down state.
+      expect(hillBranchIds()).toEqual(['epicA', 'epicB']);
     });
   });
 
   describe('Workload aggregation', () => {
-    const workflow = [
-      { id: 'todo', name: 'To Do', category: 'todo' },
-      { id: 'in_progress', name: 'In Progress', category: 'in_progress' },
-      { id: 'done', name: 'Done', category: 'done' },
-    ];
-
-    const workloadsNow = () =>
-      computeWorkloads(useMindmapStore.getState().getVisibleNodes(), workflow);
-
     it('aggregates all assigned leaves without filters', () => {
       const w = workloadsNow();
       expect(w.map((x) => x.assigneeId)).toEqual(['bob', 'alice']); // sorted by total desc
@@ -213,9 +220,8 @@ describe('getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
       const w = workloadsNow();
       // bob's leaves (a2: v2, b2: untagged) are out of scope entirely.
       expect(w.map((x) => x.assigneeId)).toEqual(['alice']);
-      const alice = w[0];
       // a1 (5h, inherits v1 from epicA) + b1 (2h, tagged v1 directly)
-      expect(alice).toMatchObject({ todo: 5, inProgress: 0, done: 2, total: 7 });
+      expect(w[0]).toMatchObject({ todo: 5, inProgress: 0, done: 2, total: 7 });
       // The surviving ancestor epicB must not contribute (it is no leaf).
       expect(
         w.flatMap((x) => x.tasksByStatus.flatMap((g) => g.nodes.map((n) => n.id))).sort(),
@@ -227,6 +233,51 @@ describe('getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
       const w = workloadsNow();
       expect(w.map((x) => x.assigneeId)).toEqual(['alice']);
       expect(w[0]).toMatchObject({ todo: 0, inProgress: 0, done: 2, total: 2 });
+    });
+
+    it('keeps aggregating ALL leaves under drill-down focus, depth limit, and collapse', () => {
+      useMindmapStore.setState({ focusNodeId: 'epicA', maxDepth: 1 });
+      patchNode('epicB', { collapsed: true });
+      const w = workloadsNow();
+      // Unchanged from the unfiltered case: deep, collapsed, or out-of-focus
+      // leaves must not vanish from the workload bars.
+      expect(w.map((x) => x.assigneeId)).toEqual(['bob', 'alice']);
+      expect(w.find((x) => x.assigneeId === 'bob')!.total).toBe(11);
+      expect(w.find((x) => x.assigneeId === 'alice')!.total).toBe(7);
+    });
+  });
+
+  describe('default getVisibleNodes() semantics stay intact for existing callers', () => {
+    it('respects maxDepth by default', () => {
+      useMindmapStore.setState({ maxDepth: 1 });
+      const ids = useMindmapStore
+        .getState()
+        .getVisibleNodes()
+        .map((v) => v.node.id)
+        .sort();
+      expect(ids).toEqual(['epicA', 'epicB', 'root']); // leaves cut at depth 1
+    });
+
+    it('respects collapse by default', () => {
+      patchNode('epicA', { collapsed: true });
+      const ids = useMindmapStore
+        .getState()
+        .getVisibleNodes()
+        .map((v) => v.node.id)
+        .sort();
+      expect(ids).toEqual(['b1', 'b2', 'epicA', 'epicB', 'root']); // a1/a2 hidden
+    });
+
+    it('respects drill-down focus by default (incl. dimmed context siblings)', () => {
+      useMindmapStore.setState({ focusNodeId: 'epicA' });
+      const vns = useMindmapStore.getState().getVisibleNodes();
+      expect(
+        vns
+          .filter((v) => !v.isDimmed)
+          .map((v) => v.node.id)
+          .sort(),
+      ).toEqual(['a1', 'a2', 'epicA']);
+      expect(vns.filter((v) => v.isDimmed).map((v) => v.node.id)).toEqual(['epicB']);
     });
   });
 });

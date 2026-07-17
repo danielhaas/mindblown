@@ -66,8 +66,6 @@ export function HillChart() {
   const selectNode = useMindmapStore((s) => s.selectNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
-  const focusNodeId = useMindmapStore((s) => s.focusNodeId);
-  const maxDepth = useMindmapStore((s) => s.maxDepth);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
@@ -75,12 +73,18 @@ export function HillChart() {
   const [dragging, setDragging] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
 
-  // Top-level branches (direct children of the effective root), taken from
-  // the store's visible-node set so the active version/sprint filters and
-  // drill-down scope apply — same data basis as ListView/CalendarView.
+  // Top-level branches (direct children of the map root), taken from the
+  // store's scope walk so the active version/sprint filters apply (incl.
+  // tag inheritance + ancestor connect). Drill-down focus, depth limit,
+  // and collapse state deliberately do NOT apply — the hill always shows
+  // the root branches, exactly as before the filter fix.
   const branches: HillBranch[] = useMemo(
-    () => selectHillBranches(getVisibleNodes(), computed),
-    [nodes, rootNodeId, computed, getVisibleNodes, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter],
+    () =>
+      selectHillBranches(
+        getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
+        computed,
+      ),
+    [nodes, rootNodeId, computed, getVisibleNodes, activeVersionFilter, activeCycleFilter],
   );
 
   const maxEffort = branches.length > 0 ? Math.max(...branches.map((b) => b.computed.computedEffort)) : 0;

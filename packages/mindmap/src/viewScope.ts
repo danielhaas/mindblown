@@ -5,11 +5,14 @@ import type { Node, ComputedNodeValues } from '@mindblown/core';
  *
  * Both views used to read the raw `s.nodes` record and therefore ignored
  * the active version / sprint filters entirely (filter chip visible, view
- * still showing everything). They now consume the store's
- * `getVisibleNodes()` output — the same filtered set ListView and
- * CalendarView are built on — and these helpers derive each view's data
- * basis from it. Kept as pure functions (no store import) so they are
- * unit-testable without a DOM or the zustand store machinery.
+ * still showing everything). They now consume the output of
+ * `getVisibleNodes({ respectFocus: false, respectDepth: false,
+ * respectCollapsed: false })` — the store's ONE scope walk with only the
+ * version/sprint filter applied (incl. tag inheritance + ancestor
+ * connect), while drill-down focus, depth limit, and collapse state keep
+ * NOT affecting these aggregate views, exactly as before the filter fix.
+ * Kept as pure functions (no store import) so they are unit-testable
+ * without a DOM or the zustand store machinery.
  */
 
 /**
@@ -34,12 +37,13 @@ export interface HillBranch {
 /**
  * Select the Hill Chart dots from the visible-node set.
  *
- * Depth 1 = direct children of the effective root (the drill-down focus,
- * or the map root when not drilled down). Dimmed context siblings and
- * nodes outside the active version/sprint filter are already excluded
- * from `visibleNodes`, so the hill only shows in-scope branches.
- * Preserves the sibling order `getVisibleNodes()` emits (= childrenIds
- * order).
+ * Depth 1 = direct children of the walk root (the map root, since the
+ * view calls the scope walk with `respectFocus: false`). Nodes outside
+ * the active version/sprint filter are already excluded from
+ * `visibleNodes`, so the hill only shows in-scope branches; dimmed
+ * context siblings are skipped defensively should a caller ever pass a
+ * focus-aware set. Preserves the sibling order `getVisibleNodes()`
+ * emits (= childrenIds order).
  */
 export function selectHillBranches(
   visibleNodes: ScopedVisibleNode[],
