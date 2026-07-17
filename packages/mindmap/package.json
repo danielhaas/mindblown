@@ -15,6 +15,8 @@
     "dev": "vite",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "sync-help": "cp ../../docs/user-guide.md public/user-guide.md && pandoc ../../docs/user-guide.md -o public/user-guide.pdf --pdf-engine=weasyprint --metadata title='MindBlown User Guide'"
   },
   "dependencies": {
@@ -30,6 +32,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
     "typescript": "^5.7.0",
-    "vite": "^6.0.0"
+    "vite": "^6.0.0",
+    "vitest": "^3.0.0"
   }
 }

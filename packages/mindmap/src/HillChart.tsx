@@ -1,6 +1,7 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
-import type { Node, ComputedNodeValues } from '@mindblown/core';
+import { selectHillBranches } from './viewScope.js';
+import type { HillBranch } from './viewScope.js';
 
 // ── Hill curve math ─────────────────────────────────────────────
 
@@ -57,12 +58,6 @@ function dotRadius(effort: number, maxEffort: number): number {
 
 // ── Component ────────────────────────────────────────────────────
 
-interface BranchDot {
-  node: Node;
-  computed: ComputedNodeValues;
-  hillPosition: number; // 0-100
-}
-
 export function HillChart() {
   const nodes = useMindmapStore((s) => s.nodes);
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
@@ -70,33 +65,27 @@ export function HillChart() {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const getVisibleNodes = useMindmapStore((s) => s.getVisibleNodes);
+  const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
+  const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
 
   const svgRef = useRef<SVGSVGElement>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
 
-  // Get top-level branches (direct children of root)
-  const branches: BranchDot[] = [];
-  if (rootNodeId && nodes[rootNodeId]) {
-    const root = nodes[rootNodeId];
-    let maxEffort = 0;
-
-    // First pass: collect and find max effort
-    const rawBranches: { node: Node; computed: ComputedNodeValues; hillPosition: number }[] = [];
-    for (const childId of root.childrenIds) {
-      const child = nodes[childId];
-      const comp = computed.get(childId);
-      if (!child || !comp) continue;
-
-      const hp = (child.customFields?.hillPosition as number) ?? 0;
-      rawBranches.push({ node: child, computed: comp, hillPosition: hp });
-      if (comp.computedEffort > maxEffort) maxEffort = comp.computedEffort;
-    }
-
-    for (const b of rawBranches) {
-      branches.push(b);
-    }
-  }
+  // Top-level branches (direct children of the map root), taken from the
+  // store's scope walk so the active version/sprint filters apply (incl.
+  // tag inheritance + ancestor connect). Drill-down focus, depth limit,
+  // and collapse state deliberately do NOT apply — the hill always shows
+  // the root branches, exactly as before the filter fix.
+  const branches: HillBranch[] = useMemo(
+    () =>
+      selectHillBranches(
+        getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
+        computed,
+      ),
+    [nodes, rootNodeId, computed, getVisibleNodes, activeVersionFilter, activeCycleFilter],
+  );
 
   const maxEffort = branches.length > 0 ? Math.max(...branches.map((b) => b.computed.computedEffort)) : 0;
 
@@ -360,7 +349,9 @@ export function HillChart() {
               fill="#94a3b8"
               fontSize="14"
             >
-              No top-level branches to display. Add children to the root node.
+              {activeVersionFilter || activeCycleFilter
+                ? 'No branches match the active filter.'
+                : 'No top-level branches to display. Add children to the root node.'}
             </text>
           )}
         </svg>

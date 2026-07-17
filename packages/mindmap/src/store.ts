@@ -27,6 +27,23 @@ export interface VisibleNode {
 }
 
 /**
+ * Options for getVisibleNodes(). All default to true (full drill-down
+ * semantics — what the tree-shaped views want). Aggregate views (Hill
+ * Chart, Workload) pass all three as false so ONLY the version/sprint
+ * scope walk (incl. tag inheritance + ancestor connect) applies, and
+ * drill-down focus, depth limit, and collapse state don't cut their
+ * data basis.
+ */
+export interface VisibleNodesOptions {
+  /** Walk from the drill-down focus node and append dimmed context siblings. */
+  respectFocus?: boolean;
+  /** Truncate the walk at the maxDepth level (0 = unlimited). */
+  respectDepth?: boolean;
+  /** Don't descend into collapsed nodes. */
+  respectCollapsed?: boolean;
+}
+
+/**
  * Live presence info for another user on this map.
  * Broadcast over WebSocket; viewport is encoded as a logical SVG center
  * (cx, cy) + zoom so it survives different window sizes.
@@ -156,7 +173,7 @@ export interface MindmapState {
 
   // Presence / follow mode actions
   setFollowingUser: (userId: string | null) => void;
-  getVisibleNodes: () => VisibleNode[];
+  getVisibleNodes: (options?: VisibleNodesOptions) => VisibleNode[];
   getFocusBreadcrumb: () => Array<{ id: string; text: string }>;
 
   // Helpers
@@ -619,11 +636,12 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
 
   setFollowingUser: (userId) => set({ followingUserId: userId }),
 
-  getVisibleNodes: () => {
+  getVisibleNodes: (options) => {
+    const { respectFocus = true, respectDepth = true, respectCollapsed = true } = options ?? {};
     const { nodes, rootNodeId, focusNodeId, maxDepth, activeVersionFilter, activeCycleFilter } = get();
     if (!rootNodeId) return [];
 
-    const effectiveRootId = focusNodeId ?? rootNodeId;
+    const effectiveRootId = (respectFocus ? focusNodeId : null) ?? rootNodeId;
     const effectiveRoot = nodes[effectiveRootId];
     if (!effectiveRoot) return [];
 
@@ -701,7 +719,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       const visibleChildren = filterMatchIds
         ? node.childrenIds.filter((id) => filterMatchIds!.has(id))
         : node.childrenIds;
-      const atMaxDepth = maxDepth > 0 && depth >= maxDepth;
+      const atMaxDepth = respectDepth && maxDepth > 0 && depth >= maxDepth;
       const hasChildren = visibleChildren.length > 0;
       const hasHiddenChildren = atMaxDepth && hasChildren;
       const hiddenDescendantCount = hasHiddenChildren ? countDescendants(nodeId) : 0;
@@ -715,7 +733,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       });
 
       // Don't recurse past maxDepth (0 = unlimited)
-      if (!atMaxDepth && !node.collapsed) {
+      if (!atMaxDepth && (!respectCollapsed || !node.collapsed)) {
         for (const childId of visibleChildren) {
           walk(childId, depth + 1);
         }
@@ -725,7 +743,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     walk(effectiveRootId, 0);
 
     // If we have a focus node (not the actual root), add dimmed siblings for context
-    if (focusNodeId && focusNodeId !== rootNodeId) {
+    if (respectFocus && focusNodeId && focusNodeId !== rootNodeId) {
       const focusNode = nodes[focusNodeId];
       if (focusNode?.parentId) {
         const parent = nodes[focusNode.parentId];
