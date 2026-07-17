@@ -778,6 +778,20 @@ export interface VelocityResponse {
   sampleSufficient: boolean;
   effortUnit: string;
   truncated: boolean;
+  /** Net-of-rework rate + review latency from the connected repo; null if none. */
+  repoThroughput: {
+    repo: string;
+    merged: number;
+    medianLatencyHours: number;
+    meanLatencyHours: number;
+    maxLatencyHours: number;
+    offlineMergeCount: number;
+    reworkCount: number;
+    reworkFraction: number;
+    grossRatePerDay: number;
+    netRatePerDay: number;
+    truncated: boolean;
+  } | null;
 }
 
 export function getVelocity(

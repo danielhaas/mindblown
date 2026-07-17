@@ -1784,8 +1784,21 @@ server.tool(
         lines.push(`→ To apply: update_map(mapId, focusFactor: ${v.measuredFocusFactor.toFixed(2)}). This stretches the velocity-adjusted completion_forecast to match real throughput.`);
       }
 
+      // ── Net-of-rework rate + review latency (connected repo) ──
+      const rt = v.repoThroughput;
+      if (rt) {
+        lines.push('');
+        lines.push(`── Repo throughput (${rt.repo}, ${v.windowDays}d) — gross vs NET ──`);
+        lines.push(`Merged PRs:           ${rt.merged}${rt.truncated ? ' (page cap hit — floor)' : ''}`);
+        lines.push(`Rework share:         ${Math.round(rt.reworkFraction * 100)}% (${rt.reworkCount}/${rt.merged} merges are corrections of prior work)`);
+        lines.push(`Gross rate:           ${rt.grossRatePerDay.toFixed(2)} ${unit}/day (what you'd forecast off — inflated)`);
+        lines.push(`NET rate:             ${rt.netRatePerDay.toFixed(2)} ${unit}/day  ← forecast off THIS (gross × (1 − rework))`);
+        lines.push(`Review latency:       median ${rt.medianLatencyHours.toFixed(1)}h | mean ${rt.meanLatencyHours.toFixed(1)}h | max ${rt.maxLatencyHours.toFixed(1)}h | ${rt.offlineMergeCount} waited >6h (reviewer offline)`);
+        lines.push(`Rework detection is signal-based (correction keywords + references to other in-window PRs), not file-overlap — an approximation; treat rework% as indicative.`);
+      }
+
       lines.push('');
-      lines.push(`Note: measured in estimate units, so it assumes estimates are roughly unbiased (check get_estimation_accuracy — a large fudge means this factor also absorbs estimation bias). Idle calendar days are included by design, so the rate reflects real capacity, not burst speed.`);
+      lines.push(`Note: gross rate is measured in estimate units, so it assumes estimates are roughly unbiased (check get_estimation_accuracy). Idle calendar days are included by design, so the rate reflects real capacity, not burst speed.`);
       if (v.truncated) {
         lines.push(`⚠ Event window hit the fetch cap — the rate may be based on a partial window.`);
       }

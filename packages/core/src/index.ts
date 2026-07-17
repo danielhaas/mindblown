@@ -91,5 +91,8 @@ export {
   DEFAULT_FOCUS_FACTOR,
   clampFocusFactor,
   scopedCapacityDays,
+  analyzeRepoThroughput,
+  netDeliveryRate,
+  OFFLINE_MERGE_HOURS,
 } from './velocity.js';
-export type { ScopedCapacityInput } from './velocity.js';
+export type { ScopedCapacityInput, PrRecord, RepoThroughput } from './velocity.js';
