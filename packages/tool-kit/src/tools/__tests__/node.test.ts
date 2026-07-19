@@ -510,6 +510,90 @@ describe('search_nodes tool — versionId ancestor-walk', () => {
   });
 });
 
+describe('search_nodes tool — phaseId ancestor-walk', () => {
+  function buildPhaseMap(): MapDetail {
+    const node = (
+      id: string,
+      parentId: string | null,
+      childrenIds: string[],
+      phaseId: string | null,
+    ): NodeWithComputed =>
+      ({
+        id,
+        mapId: 'm1',
+        parentId,
+        childrenIds,
+        text: id,
+        description: null,
+        effortEstimate: null,
+        actualEffort: null,
+        percentComplete: null,
+        status: null,
+        assigneeIds: [],
+        priority: null,
+        dueDate: null,
+        startDate: null,
+        tags: [],
+        dependencies: [],
+        versionId: null,
+        cycleId: null,
+        phaseId,
+        externalLinks: [],
+        collapsed: false,
+        createdAt: '2026-07-19T00:00:00Z',
+        updatedAt: '2026-07-19T00:00:00Z',
+        claimedBySession: null,
+        claimedAt: null,
+        computedEffort: 0,
+        computedProgress: 0,
+        healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: {
+        id: 'm1',
+        rootNodeId: 'root',
+        phases: [
+          { id: 'ph-mvp', name: 'MVP', position: 0 },
+          { id: 'ph-later', name: 'Later', position: 1 },
+        ],
+      } as unknown as MapDetail['map'],
+      nodes: [
+        node('root', null, ['epic'], null),
+        node('epic', 'root', ['leaf-inherits', 'leaf-later'], 'ph-mvp'),
+        node('leaf-inherits', 'epic', [], null),
+        node('leaf-later', 'epic', [], 'ph-later'),
+      ],
+    };
+  }
+
+  it('inherits the ancestor phase, with an explicit child phase overriding', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildPhaseMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      phaseId: 'ph-mvp',
+    } as never);
+    expect(out).toContain('id: epic');
+    expect(out).toContain('id: leaf-inherits');
+    expect(out).not.toContain('id: leaf-later');
+    expect(out).not.toContain('id: root');
+  });
+
+  it('matches an explicitly-phased leaf under a differently-phased epic', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildPhaseMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      phaseId: 'ph-later',
+    } as never);
+    expect(out).toContain('id: leaf-later');
+    expect(out).not.toContain('id: epic');
+    expect(out).not.toContain('id: leaf-inherits');
+  });
+});
+
 // Requirements register — requirementId marks a node as a business
 // requirement (unique per map); requirementPriority is MoSCoW. Both must
 // round-trip through create_node AND update_node or the register is
