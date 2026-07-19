@@ -360,16 +360,17 @@ server.tool(
 
 server.tool(
   'remaining_work',
-  'Report how much work is left for a node/subtree/version. Returns remaining effort, incomplete leaf count, weighted % done, and count of leaves with no estimate. Answers "how much is left?" — the basic MI question. Scope with one of nodeId (subtree) or versionId; omit both to report on the whole map.',
+  'Report how much work is left for a node/subtree/version/phase. Returns remaining effort, incomplete leaf count, weighted % done, and count of leaves with no estimate. Answers "how much is left?" — the basic MI question. Scope with nodeId (subtree), versionId, or phaseId; omit all to report on the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
+    phaseId: z.string().optional().describe('Scope to leaves in this phase (nearest phaseId on the leaf→root path decides, like the UI phase filter)'),
   },
-  async ({ mapId, nodeId, versionId }) => {
+  async ({ mapId, nodeId, versionId, phaseId }) => {
     try {
       const data = await api.getMap(mapId);
-      const scope = scopedLeaves(data, { nodeId, versionId });
+      const scope = scopedLeaves(data, { nodeId, versionId, phaseId });
       if (!scope.ok) return toolError(scope.error);
       const { leaves, scopeLabel } = scope;
 
@@ -724,16 +725,17 @@ server.tool(
 
 server.tool(
   'completion_forecast',
-  'Forecast "when will it be done?" for a node/subtree/version. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version or node dueDates), and slip vs target. Scope with one of nodeId or versionId; omit both to forecast the whole map.',
+  'Forecast "when will it be done?" for a node/subtree/version/phase. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version/phase or node dueDates), and slip vs target. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
+    phaseId: z.string().optional().describe('Scope to leaves in this phase (nearest phaseId on the leaf→root path decides, like the UI phase filter)'),
   },
-  async ({ mapId, nodeId, versionId }) => {
+  async ({ mapId, nodeId, versionId, phaseId }) => {
     try {
       const data = await api.getMap(mapId);
-      const scope = scopedLeaves(data, { nodeId, versionId });
+      const scope = scopedLeaves(data, { nodeId, versionId, phaseId });
       if (!scope.ok) return toolError(scope.error);
       const { leaves, scopeLabel } = scope;
 
@@ -794,7 +796,7 @@ server.tool(
       // finish off the whole-map scheduler — its leaves land behind the entire
       // backlog there, so the date reflects the backlog, not the milestone.
       // Project the scope's own remaining effort against team capacity instead.
-      const scoped = Boolean(versionId || nodeId);
+      const scoped = Boolean(versionId || nodeId || phaseId);
       const workers = Math.max(1, Math.floor(sched.workerCount ?? 1));
       let plannedFinishCalendarDays: number;
       let velocityFinishCalendarDays: number;
@@ -862,6 +864,13 @@ server.tool(
           }
         } catch {
           /* fall through to node dueDates */
+        }
+      }
+      if (!targetDate && phaseId) {
+        const phase = (data.map.phases ?? []).find((p) => p.id === phaseId);
+        if (phase?.targetDate) {
+          targetDate = phase.targetDate.slice(0, 10);
+          targetSource = `phase "${phase.name}"`;
         }
       }
       if (!targetDate && targetDates.length > 0) {
@@ -935,11 +944,12 @@ server.tool(
 
 server.tool(
   'risk_scan',
-  'Surface project risks across a map/subtree/version: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early. Pass `category` to drill into one bucket; pass `limit` (default 20, max 1000) to see more than the top of each list.',
+  'Surface project risks across a map/subtree/version/phase: stalled in-progress work, leaves without estimates, in-flight overruns (actual > estimate), fragile critical-path nodes (on CP with problems), and unassigned P0/P1 leaves. Use this before planning sessions to catch problems early. Pass `category` to drill into one bucket; pass `limit` (default 20, max 1000) to see more than the top of each list.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version'),
+    phaseId: z.string().optional().describe('Scope to leaves in this phase (nearest phaseId on the leaf→root path decides, like the UI phase filter)'),
     stalledDays: z.number().int().min(1).default(7).describe('Days since last update before in-progress work is flagged as stalled (default 7)'),
     category: z
       .enum(['stalled', 'no_estimate', 'overruns', 'unassigned_high_prio', 'fragile_cp'])
@@ -953,10 +963,10 @@ server.tool(
       .default(20)
       .describe('Max items shown per category before the "… and N more" truncation footer (default 20, max 1000).'),
   },
-  async ({ mapId, nodeId, versionId, stalledDays, category, limit }) => {
+  async ({ mapId, nodeId, versionId, phaseId, stalledDays, category, limit }) => {
     try {
       const data = await api.getMap(mapId);
-      const scope = scopedLeaves(data, { nodeId, versionId });
+      const scope = scopedLeaves(data, { nodeId, versionId, phaseId });
       if (!scope.ok) return toolError(scope.error);
       const { leaves, scopeLabel } = scope;
 

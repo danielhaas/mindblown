@@ -6,7 +6,10 @@
  * - `nodeId` restricts to the leaves of that subtree.
  * - `versionId` filters by inherited tag: a leaf is in scope if it OR any
  *   ancestor carries the version. Combines with `nodeId` (intersection).
- * - Neither → all leaves of the map.
+ * - `phaseId` filters by effective phase: nearest non-null `phaseId` on the
+ *   leaf→root path decides (same explicit-assignment-wins semantics as the
+ *   frontend scopeFilter.ts walk). Combines with the others (intersection).
+ * - None → all leaves of the map.
  */
 import type { MapDetail, NodeWithComputed } from './api.js';
 
@@ -16,9 +19,9 @@ export type ScopeResult =
 
 export function scopedLeaves(
   data: MapDetail,
-  opts: { nodeId?: string; versionId?: string } = {},
+  opts: { nodeId?: string; versionId?: string; phaseId?: string } = {},
 ): ScopeResult {
-  const { nodeId, versionId } = opts;
+  const { nodeId, versionId, phaseId } = opts;
   const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
   const ancestorVersions = (leafId: string): Set<string> => {
@@ -59,6 +62,26 @@ export function scopedLeaves(
   if (versionId) {
     scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
     leaves = leaves.filter((n) => ancestorVersions(n.id).has(versionId));
+  }
+
+  if (phaseId) {
+    const phases = data.map.phases ?? [];
+    const phase = phases.find((p) => p.id === phaseId);
+    if (phases.length > 0 && !phase) {
+      const known = phases.map((p) => `"${p.name}" (${p.id})`).join(', ');
+      return { ok: false, error: `Phase ${phaseId} not found on map ${data.map.id}. Known phases: ${known}.` };
+    }
+    const phaseFragment = `phase ${phase ? `"${phase.name}"` : phaseId}`;
+    scopeLabel = scopeLabel === 'whole map' ? phaseFragment : `${phaseFragment} within ${scopeLabel}`;
+    const effectivePhase = (leafId: string): string | null => {
+      let cur = nodeById.get(leafId);
+      while (cur) {
+        if (cur.phaseId != null) return cur.phaseId;
+        cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+      }
+      return null;
+    };
+    leaves = leaves.filter((n) => effectivePhase(n.id) === phaseId);
   }
 
   return { ok: true, leaves, scopeLabel };

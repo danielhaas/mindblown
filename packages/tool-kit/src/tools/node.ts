@@ -294,7 +294,7 @@ export const clearBlockerTool = defineTool({
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
-    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/phaseId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
   schema: {
     mapId: z.string().describe('The map ID'),
     query: z
@@ -321,12 +321,16 @@ export const searchNodesTool = defineTool({
       .string()
       .optional()
       .describe('Filter by version. Matches nodes whose own versionId is this OR any ancestor on the path inherits it.'),
+    phaseId: z
+      .string()
+      .optional()
+      .describe('Filter by phase. Matches nodes whose effective phase is this — nearest non-null phaseId on the node→root path decides, like the UI phase filter.'),
     parentId: z
       .string()
       .optional()
       .describe('Filter to direct children of this node id. Combine with query="*" to enumerate the contents of a specific bucket — the only way to do so, since get_map truncates on large maps.'),
   },
-  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, parentId }) => {
+  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, phaseId, parentId }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
@@ -368,6 +372,21 @@ export const searchNodesTool = defineTool({
       };
       matches = matches.filter((n) => inVersion(n.id));
     }
+    if (phaseId) {
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      // Same explicit-assignment-wins walk as versionId above (and the
+      // frontend scopeFilter.ts): the nearest non-null phaseId on the
+      // node→root path decides membership.
+      const inPhase = (id: string): boolean => {
+        let cur = nodeById.get(id);
+        while (cur) {
+          if (cur.phaseId != null) return cur.phaseId === phaseId;
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return false;
+      };
+      matches = matches.filter((n) => inPhase(n.id));
+    }
 
     if (matches.length === 0) {
       const filters = [
@@ -378,6 +397,7 @@ export const searchNodesTool = defineTool({
         unestimated !== undefined && `unestimated=${unestimated}`,
         leavesOnly && `leavesOnly=true`,
         versionId && `versionId=${versionId}`,
+        phaseId && `phaseId=${phaseId}`,
         parentId && `parentId=${parentId}`,
       ].filter(Boolean);
       const filterStr = filters.length > 0 ? ` (filters: ${filters.join(', ')})` : '';
