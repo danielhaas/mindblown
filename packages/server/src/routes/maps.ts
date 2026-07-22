@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, analyzeRepoThroughput, netDeliveryRate, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -10,9 +10,7 @@ import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
-import { computeVelocity } from '../lib/velocity.js';
-import { getGitHubContextForMap } from '../lib/githubContext.js';
-import { fetchMergedPrsSince } from '../lib/repoThroughput.js';
+import { measureMapVelocity } from '../lib/velocityMeasure.js';
 import * as events from '../db/events.js';
 import {
   buildCalendarIcs,
@@ -711,10 +709,12 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       leaves = leaves.filter((n) => ancestorVersions(n.id).has(versionId));
     }
 
-    // ── Remaining effort ──
+    // ── Remaining effort + open-ticket count ──
     let remainingEffort = 0;
     let totalEffort = 0;
     let noEstimateLeaves = 0;
+    let remainingTickets = 0; // open leaves — the ticket model's numerator
+    let remainingTicketsUnestimated = 0; // open AND unestimated: invisible to the day model
     const leafDueDates: string[] = [];
     for (const leaf of leaves) {
       if (leaf.effortEstimate == null) noEstimateLeaves++;
@@ -722,6 +722,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       const prog = leaf.percentComplete ?? 0;
       totalEffort += est;
       remainingEffort += est * (1 - prog / 100);
+      if (prog < 99.5) {
+        remainingTickets++;
+        if (leaf.effortEstimate == null) remainingTicketsUnestimated++;
+      }
       if (leaf.dueDate) leafDueDates.push(leaf.dueDate);
     }
 
@@ -763,16 +767,16 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let maxScopedEnd = 0;
     const scoped = Boolean(versionId || nodeId);
     const workers = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
-    try {
-      const addCalendarDays = (base: Date, days: number): Date => {
-        const d = new Date(base.getTime());
-        d.setUTCDate(d.getUTCDate() + Math.ceil(days));
-        return d;
-      };
-      const today = new Date();
-      today.setUTCHours(0, 0, 0, 0);
-      const anchor = today > projectStart ? today : projectStart;
+    const addCalendarDays = (base: Date, days: number): Date => {
+      const d = new Date(base.getTime());
+      d.setUTCDate(d.getUTCDate() + Math.ceil(days));
+      return d;
+    };
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const anchor = today > projectStart ? today : projectStart;
 
+    try {
       if (scoped) {
         // A scoped forecast (version/milestone or subtree) must project the
         // scope's OWN remaining effort against capacity. Reading a finish off
@@ -824,6 +828,35 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       /* scheduler errors (e.g. circular deps) — leave dates null */
     }
 
+    // ── Measured rates: fold net effort rate into the velocity line, and
+    // run the independent ticket model (open leaves ÷ net ticket rate).
+    // Measurement beats knob: when the net rate is available it replaces
+    // the fudge/focus projection, matching the MCP surface (#232).
+    let velocityBasis: string = `fudge ${effectiveFudge.toFixed(2)}x, focus ${focusFactor.toFixed(2)}`;
+    let netEffortPerDay: number | null = null;
+    let netTicketsPerDay: number | null = null;
+    let ticketModelFinishDate: string | null = null;
+    let ratesWindowDays: number | null = null;
+    try {
+      const m = await measureMapVelocity(req.params.id, data, 56, req.log);
+      ratesWindowDays = m.rates.windowDays ?? null;
+      netEffortPerDay = m.rates.netEffortPerDay ?? null;
+      netTicketsPerDay = m.rates.netTicketsPerDay ?? null;
+      if (netEffortPerDay != null && netEffortPerDay > 0 && remainingEffort > 0) {
+        velocityAdjustedFinishDate = addCalendarDays(anchor, remainingEffort / netEffortPerDay)
+          .toISOString()
+          .slice(0, 10);
+        velocityBasis = `net rate ${netEffortPerDay.toFixed(2)}/day — measured ${ratesWindowDays}d`;
+      }
+      if (netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0) {
+        ticketModelFinishDate = addCalendarDays(anchor, remainingTickets / netTicketsPerDay)
+          .toISOString()
+          .slice(0, 10);
+      }
+    } catch (err) {
+      req.log.warn({ err }, 'velocity measurement failed — knob-based forecast only');
+    }
+
     // ── Target date resolution ──
     let targetDate: string | null = null;
     let targetSource: string | null = null;
@@ -851,6 +884,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       targetDate && velocityAdjustedFinishDate
         ? daysBetween(velocityAdjustedFinishDate, targetDate)
         : null;
+    const slipTicketDays =
+      targetDate && ticketModelFinishDate
+        ? daysBetween(ticketModelFinishDate, targetDate)
+        : null;
 
     return reply.send({
       scopeLabel,
@@ -858,11 +895,19 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       noEstimateLeaves,
       totalEffort,
       remainingEffort,
+      remainingTickets,
+      remainingTicketsUnestimated,
       effortUnit: data.map.effortUnit,
       fudgeFactor,
       focusFactor,
       calibrationLeafCount: calibration.sampleCount,
       calibrationNote: calibration.note,
+      velocityBasis,
+      netEffortPerDay,
+      netTicketsPerDay,
+      ratesWindowDays,
+      ticketModelFinishDate,
+      slipTicketDays,
       projectStartDate: projectStart.toISOString().slice(0, 10),
       plannedFinishDate,
       velocityAdjustedFinishDate,
@@ -894,71 +939,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const windowDays = req.query.windowDays
       ? Math.max(7, Math.min(365, Math.floor(Number(req.query.windowDays))))
       : 56; // default 8 weeks
-    const since = new Date(Date.now() - windowDays * 86_400_000);
 
-    // Current estimate per leaf — the weight for progress deltas (same proxy
-    // burnup uses; cross-time estimate drift is rare enough to ignore for v1).
-    const estimateByNodeId = new Map<string, number>();
-    for (const n of data.nodes) {
-      if ((n.childrenIds?.length ?? 0) === 0 && n.effortEstimate != null) {
-        estimateByNodeId.set(n.id, n.effortEstimate);
-      }
-    }
-
-    // High limit so a busy window isn't silently truncated; percentComplete
-    // events are far fewer than estimate edits, so this comfortably covers it.
-    const progressEvents = await events.listEvents({
-      mapId: req.params.id,
-      fieldName: 'percentComplete',
-      since,
-      limit: 10_000,
-    });
-
-    const unitsPerDay = data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
-    const workerCount = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
-
-    const result = computeVelocity({
-      windowDays,
-      unitsPerDay,
-      workerCount,
-      currentFocusFactor: data.map.focusFactor ?? 1,
-      estimateByNodeId,
-      progressEvents: progressEvents.map((e) => ({
-        nodeId: e.nodeId,
-        oldValue: e.oldValue,
-        newValue: e.newValue,
-        createdAt: e.createdAt,
-      })),
-    });
-
-    // ── Repo throughput: net-of-rework rate + review latency ──
-    // The MindBlown velocity above is *gross* completion. Live-read the
-    // connected repo's merged PRs to expose the *net* rate — gross overstates
-    // progress because a large share of merges are corrections of prior work.
-    // Only for GitHub-connected maps; null otherwise (net == gross).
-    let repoThroughput: Record<string, unknown> | null = null;
-    try {
-      const ctx = await getGitHubContextForMap(req.params.id);
-      if (ctx) {
-        const { prs, truncated: prTruncated } = await fetchMergedPrsSince(ctx, since.getTime());
-        const rt = analyzeRepoThroughput(prs);
-        repoThroughput = {
-          ...rt,
-          repo: `${ctx.owner}/${ctx.repo}`,
-          grossRatePerDay: result.deliveryRate,
-          netRatePerDay: netDeliveryRate(result.deliveryRate, rt.reworkFraction),
-          truncated: prTruncated,
-        };
-      }
-    } catch (err) {
-      req.log.warn({ err }, 'repo throughput fetch failed');
-    }
+    // Shared measurement (lib/velocityMeasure) — the same rates the
+    // completion/release forecasts and the snapshot job run on.
+    const m = await measureMapVelocity(req.params.id, data, windowDays, req.log);
 
     return reply.send({
-      ...result,
+      ...m.velocity,
       effortUnit: data.map.effortUnit,
-      truncated: progressEvents.length >= 10_000,
-      repoThroughput,
+      truncated: m.eventsTruncated,
+      repoThroughput: m.repoThroughput,
+      rates: m.rates,
     });
   });
 
@@ -986,7 +977,12 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
     // Compute current forecast via the shared helper — same code path
     // as the hourly snapshot job, so the two surfaces never disagree.
-    const forecast = computeReleaseForecast(data.map, data.nodes, allVersions);
+    // Measured rates power the velocity line + the ticket model; a failed
+    // measurement degrades to the knob-based projection, never to an error.
+    const rates = await measureMapVelocity(req.params.id, data, 56, req.log)
+      .then((m) => m.rates)
+      .catch(() => undefined);
+    const forecast = computeReleaseForecast(data.map, data.nodes, allVersions, new Date(), rates);
 
     // Optional manual refresh — writes today's snapshot before reading
     // deltas, so a button click produces a fresh history row.

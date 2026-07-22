@@ -69,3 +69,76 @@ describe('computeReleaseForecast — focusFactor', () => {
     expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-11');
   });
 });
+
+describe('computeReleaseForecast — measured rates', () => {
+  it('measured net effort rate replaces the knob-based velocity line', () => {
+    // focus 0.5 would say 20 cal days; the measured 0.5/day net rate says
+    // 10 ÷ 0.5 = 20 too — use a distinct rate to prove measurement wins:
+    // 1.25/day → 8 cal days → 2026-01-09.
+    const result = computeReleaseForecast(makeMap(0.5), [root, leaf], [version], NOW, {
+      netEffortPerDay: 1.25,
+    });
+    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-09');
+    expect(result.netEffortPerDay).toBe(1.25);
+  });
+
+  it('ticket model: open leaves ÷ net ticket rate, counting unestimated leaves', () => {
+    const unestimated: CoreNode = {
+      id: 'leaf-2',
+      parentId: 'root',
+      childrenIds: [],
+      effortEstimate: null, // invisible to the day model...
+      percentComplete: 0, // ...but an open ticket all the same
+      versionId: 'v1',
+    } as unknown as CoreNode;
+    const root2 = { ...root, childrenIds: ['leaf-1', 'leaf-2'] } as CoreNode;
+    const result = computeReleaseForecast(
+      makeMap(1),
+      [root2, leaf, unestimated],
+      [version],
+      NOW,
+      { netTicketsPerDay: 0.5 },
+    );
+    const row = result.releases[0];
+    expect(row.remainingTickets).toBe(2);
+    // 2 tickets ÷ 0.5/day = 4 cal days → 2026-01-05.
+    expect(row.ticketModelFinishDate).toBe('2026-01-05');
+  });
+
+  it('ticket model chains across sequential releases like the other cursors', () => {
+    const leafB: CoreNode = {
+      id: 'leaf-b',
+      parentId: 'root',
+      childrenIds: [],
+      effortEstimate: 2,
+      percentComplete: 0,
+      versionId: 'v2',
+    } as unknown as CoreNode;
+    const root2 = { ...root, childrenIds: ['leaf-1', 'leaf-b'] } as CoreNode;
+    const v2: Version = {
+      id: 'v2',
+      name: 'V2',
+      status: 'planning',
+      sortOrder: 1,
+      targetDate: null,
+    } as unknown as Version;
+    const result = computeReleaseForecast(
+      makeMap(1),
+      [root2, leaf, leafB],
+      [version, v2],
+      NOW,
+      { netTicketsPerDay: 1 },
+    );
+    // V1: 1 ticket ÷ 1/day → 01-02; V2 starts where V1's ticket cursor ended.
+    expect(result.releases[0].ticketModelFinishDate).toBe('2026-01-02');
+    expect(result.releases[1].ticketModelFinishDate).toBe('2026-01-03');
+  });
+
+  it('no rates → ticket date null, velocity falls back to knobs', () => {
+    const result = computeReleaseForecast(makeMap(0.5), [root, leaf], [version], NOW);
+    expect(result.releases[0].ticketModelFinishDate).toBeNull();
+    expect(result.releases[0].remainingTickets).toBe(1);
+    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-21');
+    expect(result.netTicketsPerDay).toBeNull();
+  });
+});

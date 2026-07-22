@@ -753,7 +753,7 @@ server.tool(
 
 server.tool(
   'completion_forecast',
-  'Forecast "when will it be done?" for a node/subtree/version/phase. Reports: planned finish date (scheduler-based, respects dependencies), velocity-adjusted finish date (scales by past estimation accuracy from get_estimation_accuracy), target date (from version/phase or node dueDates), and slip vs target. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
+  'Forecast "when will it be done?" for a node/subtree/version/phase. Reports THREE dates: planned finish (scheduler-based, respects dependencies), velocity-adjusted finish (remaining effort ÷ measured NET rate), and the independent ticket model (open leaves ÷ net ticket completion rate — counts tickets instead of summing estimates, so unestimated work still weighs in). Plus target date (from version/phase or node dueDates) and slip vs target per model. The day and ticket models disagreeing hard means the estimate scale has drifted from ticket granularity. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
@@ -775,6 +775,8 @@ server.tool(
       let remainingEffort = 0;
       let totalEffort = 0;
       let noEstimateLeaves = 0;
+      let remainingTickets = 0; // open leaves — the ticket model's numerator
+      let remainingTicketsUnestimated = 0; // open AND unestimated: invisible to the day model
       const targetDates: string[] = [];
       for (const leaf of leaves) {
         if (leaf.effortEstimate == null) noEstimateLeaves++;
@@ -782,6 +784,10 @@ server.tool(
         const progress = leaf.percentComplete ?? 0;
         totalEffort += estimate;
         remainingEffort += estimate * (1 - progress / 100);
+        if (progress < 99.5) {
+          remainingTickets++;
+          if (leaf.effortEstimate == null) remainingTicketsUnestimated++;
+        }
         if (leaf.dueDate) targetDates.push(leaf.dueDate);
       }
 
@@ -858,14 +864,32 @@ server.tool(
       // rework — use it directly: calendar days = remaining ÷ net rate.
       // Falls back to the focus-based line when unavailable.
       let velocityBasis = `fudge ${effectiveFudge.toFixed(2)}x${focusFactor < 1 ? `, focus ${focusFactor.toFixed(2)}` : ''}`;
-      if (remainingEffort > 0) {
+      // ── Independent ticket model: open leaves ÷ net ticket rate ──
+      // Counts tickets instead of summing estimates, so unestimated open
+      // work (invisible to the day model) still weighs in. The two models
+      // disagreeing hard is itself a signal: the estimate scale has
+      // drifted from the ticket granularity.
+      let ticketFinishDate: Date | null = null;
+      let netTicketsPerDay: number | null = null;
+      let ticketWindowDays: number | null = null;
+      if (remainingEffort > 0 || remainingTickets > 0) {
         try {
           const vel = await api.getVelocity(mapId);
           const rt = vel.repoThroughput;
-          if (rt && rt.netRatePerDay > 0) {
+          if (remainingEffort > 0 && rt && rt.netRatePerDay > 0) {
             velocityFinishCalendarDays = remainingEffort / rt.netRatePerDay;
             velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
             velocityBasis = `net rate ${rt.netRatePerDay.toFixed(2)} ${data.map.effortUnit ?? 'units'}/day, ${Math.round(rt.reworkFraction * 100)}% rework — measured ${vel.windowDays}d`;
+          }
+          const ticketsRate =
+            vel.rates?.netTicketsPerDay ??
+            (vel.completionEvents >= 3
+              ? (vel.completionEvents / vel.windowDays) * (1 - (rt?.reworkFraction ?? 0))
+              : null);
+          if (ticketsRate != null && ticketsRate > 0 && remainingTickets > 0) {
+            netTicketsPerDay = ticketsRate;
+            ticketWindowDays = vel.rates?.windowDays ?? vel.windowDays;
+            ticketFinishDate = addCalendarDays(anchor, remainingTickets / ticketsRate);
           }
         } catch {
           /* velocity/repo unavailable — keep the focus-based line */
@@ -936,6 +960,15 @@ server.tool(
       } else {
         lines.push(`Velocity-adjusted:   already complete`);
       }
+      if (ticketFinishDate != null && netTicketsPerDay != null) {
+        const unestNote =
+          remainingTicketsUnestimated > 0
+            ? `; counts ${remainingTicketsUnestimated} unestimated leaf(s) the day model can't see`
+            : '';
+        lines.push(`Ticket model:        ${iso(ticketFinishDate)} (${remainingTickets} open tickets ÷ ${netTicketsPerDay.toFixed(2)}/day — measured ${ticketWindowDays}d${unestNote})`);
+      } else if (remainingTickets > 0) {
+        lines.push(`Ticket model:        unavailable (${remainingTickets} open tickets; need ≥3 organic completions in the window)`);
+      }
 
       if (targetDate) {
         lines.push('');
@@ -948,6 +981,10 @@ server.tool(
         if (remainingEffort > 0) {
           const slipVel = daysBetween(velocityFinishDate, targetDateObj);
           lines.push(`Slip (velocity):     ${slipVel >= 0 ? '+' : ''}${slipVel} days`);
+        }
+        if (ticketFinishDate != null) {
+          const slipTicket = daysBetween(ticketFinishDate, targetDateObj);
+          lines.push(`Slip (ticket model): ${slipTicket >= 0 ? '+' : ''}${slipTicket} days`);
         }
       } else {
         lines.push('');

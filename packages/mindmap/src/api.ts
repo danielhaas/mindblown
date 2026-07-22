@@ -889,11 +889,16 @@ export interface ReleaseForecastRow {
   noEstimateLeaves: number;
   totalEffort: number;
   remainingEffort: number;
+  /** Open (progress < 99.5%) leaves in scope — the ticket model's numerator. */
+  remainingTickets: number;
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
+  /** Independent second model: open leaves ÷ net ticket rate, chained. */
+  ticketModelFinishDate: string | null;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
+  slipTicketDays: number | null;
   // 7-day trend — positive = slipped later, negative = pulled in.
   // null until the snapshot job has a row from 7 days ago.
   plannedFinishDeltaDays7d: number | null;
