@@ -99,6 +99,39 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /api/maps/:mapId/members — Assignable people ────────────
+  //
+  // The same rows as /permissions, minus the invite list and the admin
+  // gate. The assignee picker needs to know who can be assigned, and an
+  // editor who can set an assignee must be able to see the candidates —
+  // /permissions is admin-only because it exposes the sharing surface,
+  // which is a different question from "who works on this map".
+  app.get<{ Params: { mapId: string } }>('/api/maps/:mapId/members', async (req, reply) => {
+    const userId = req.userId;
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+
+    const callerPerm = await permDb.getPermission(req.params.mapId, userId);
+    if (!permDb.hasPermission(callerPerm, 'view')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'No access to this map' },
+      });
+    }
+
+    const rows = await permDb.listPermissions(req.params.mapId);
+    return reply.send({
+      members: rows.map((r) => ({
+        userId: r.userId,
+        name: r.userName,
+        email: r.userEmail,
+        permission: r.permission,
+      })),
+    });
+  });
+
   // ── DELETE /api/maps/:mapId/permissions/:userId — Revoke ────────
   app.delete<{ Params: { mapId: string; userId: string } }>(
     '/api/maps/:mapId/permissions/:userId',

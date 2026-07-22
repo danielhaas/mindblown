@@ -15,6 +15,12 @@ export const createNodeTool = defineTool({
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
+    assigneeIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Assignee user IDs — must be users with access to the map (same list the Assignees picker in the UI offers). Drives the Workload view and the assignee chips in Kanban/List/Calendar.',
+      ),
     autoProgress: z
       .enum(['off', 'children'])
       .optional()
@@ -116,7 +122,12 @@ export const updateNodeTool = defineTool({
       .describe(
         'Tags to remove from the existing set (no-op for tags not present). Use to clear a single bookkeeping tag like NEEDS-PRIORITY without touching the rest. Cannot be combined with `tags`.',
       ),
-    assigneeIds: z.array(z.string()).optional().describe('Assignee user IDs'),
+    assigneeIds: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Assignee user IDs (REPLACE mode — overwrites the existing set; pass [] to clear). Must be users with access to the map. Drives the Workload view and the assignee chips in Kanban/List/Calendar.',
+      ),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
     autoProgress: z
       .enum(['off', 'children'])

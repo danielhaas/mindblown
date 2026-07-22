@@ -211,6 +211,33 @@ describe('create_node tool', () => {
     expect(recorder.lastCreate?.fields).toMatchObject({ autoProgress: 'children' });
   });
 
+  // assigneeIds was settable on update_node but absent from create_node,
+  // and the DB create path hardcoded an empty array — so an agent could
+  // only assign work in a second call, and only ever discovered that by
+  // reading the round trip. Both halves are covered: schema accepts it,
+  // handler forwards it.
+  it('accepts assigneeIds in the schema (symmetry with update_node)', () => {
+    const schema = z.object(createNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'assigned task',
+      assigneeIds: ['u-dan', 'u-mike'],
+    });
+    expect(parsed.assigneeIds).toEqual(['u-dan', 'u-mike']);
+  });
+
+  it('forwards assigneeIds to the backend on create', async () => {
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'assigned task',
+      assigneeIds: ['u-dan'],
+    } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ assigneeIds: ['u-dan'] });
+  });
+
   // Bug 2bee313d — created nodes without an estimate were silently
   // shipped as unestimated leaves, breaking forecasts and ready-node
   // picks. The handler must flag missing estimates back to the caller.
@@ -238,6 +265,28 @@ describe('create_node tool', () => {
 });
 
 // ── Soft-delete / restore (#107) ────────────────────────────────
+
+describe('update_node tool — assigneeIds', () => {
+  it('forwards an assignee set to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      assigneeIds: ['u-dan', 'u-mike'],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({ assigneeIds: ['u-dan', 'u-mike'] });
+  });
+
+  it('forwards an empty array as a clear, not an omission', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      assigneeIds: [],
+    } as never);
+    expect(recorder.lastUpdate?.fields.assigneeIds).toEqual([]);
+  });
+});
 
 describe('restore_node tool', () => {
   it('forwards recursive: true through to the backend', async () => {
