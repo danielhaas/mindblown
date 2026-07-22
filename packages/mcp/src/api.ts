@@ -130,6 +130,8 @@ export interface NodeWithComputed {
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Set when the node's status entered a done-category (core Node field). */
+  completedAt: string | null;
   revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;
@@ -859,12 +861,15 @@ export interface BraindumpNode {
 }
 
 export interface AiEstimateResult {
+  /** Raw planning units — velocity corrections happen at forecast time. */
   estimate: number;
   rawEstimate: number;
   confidence: 'low' | 'medium' | 'high';
   notes?: string;
   samplesUsed: number;
-  fudgeFactor: number;
+  /** Evidence-gated; null = calibration below threshold, forecasts use 1.0. */
+  fudgeFactor: number | null;
+  calibrationNote: string | null;
   effortUnit: string;
 }
 

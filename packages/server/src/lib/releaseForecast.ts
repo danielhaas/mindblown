@@ -1,5 +1,10 @@
 import type { Node as CoreNode, MindMap, Version } from '@mindblown/core';
-import { clampFocusFactor, compareVersions } from '@mindblown/core';
+import {
+  assessCalibration,
+  calibrationSamplesFromNodes,
+  clampFocusFactor,
+  compareVersions,
+} from '@mindblown/core';
 
 /**
  * Release forecast row for a single version.
@@ -32,6 +37,8 @@ export interface ReleaseForecastResult {
   fudgeFactor: number | null;
   focusFactor: number;
   calibrationLeafCount: number;
+  /** Why the fudge factor is withheld (null when it is applied or no samples). */
+  calibrationNote: string | null;
   releases: ReleaseForecastRow[];
 }
 
@@ -89,16 +96,12 @@ export function computeReleaseForecast(
   // full-time worker. Mirrors unitsPerDay from the schedule route.
   const dailyCapacity = map.effortUnit === 'hours' ? (map.hoursPerDay ?? 8) : 1;
 
-  // ── Velocity fudge (all-time calibration) ──
-  const calibrationLeaves = nodes.filter(
-    (n) =>
-      (n.childrenIds?.length ?? 0) === 0 &&
-      n.effortEstimate != null &&
-      n.actualEffort != null,
-  );
-  const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-  const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-  const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
+  // ── Velocity fudge (all-time calibration, evidence-gated) ──
+  // assessCalibration withholds the factor (null → 1.0) when the sample is
+  // too thin or retrospectively bulk-entered — one anecdote must not scale
+  // every forecast on the map.
+  const calibration = assessCalibration(calibrationSamplesFromNodes(nodes));
+  const fudgeFactor = calibration.fudgeFactor;
   const effectiveFudge = fudgeFactor ?? 1.0;
 
   // ── Focus factor (capacity leakage) ──
@@ -197,7 +200,8 @@ export function computeReleaseForecast(
     dailyCapacity,
     fudgeFactor,
     focusFactor,
-    calibrationLeafCount: calibrationLeaves.length,
+    calibrationLeafCount: calibration.sampleCount,
+    calibrationNote: calibration.note,
     releases,
   };
 }

@@ -562,8 +562,10 @@ function PropertyPanelInner({
                 Suggested: {estimateResult.estimate} {estimateResult.effortUnit}
                 {' '}
                 <span style={{ fontWeight: 400, color: '#3b82f6' }}>
-                  ({estimateResult.confidence} confidence, {estimateResult.samplesUsed} samples,
-                  {' '}fudge ×{estimateResult.fudgeFactor})
+                  ({estimateResult.confidence} confidence, {estimateResult.samplesUsed} samples
+                  {estimateResult.fudgeFactor != null
+                    ? `, fudge ×${estimateResult.fudgeFactor} applied at forecast time`
+                    : ''})
                 </span>
               </div>
               {estimateResult.notes && (

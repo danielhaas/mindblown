@@ -13,7 +13,7 @@ import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
-import { computeTree, type Node as CoreNode } from '@mindblown/core';
+import { computeTree, assessCalibration, type Node as CoreNode } from '@mindblown/core';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -812,16 +812,18 @@ Parent node: "${parentNode.text}"`;
     }
   });
 
-  // ── POST /api/ai/estimate — calibrated effort estimate ────────
+  // ── POST /api/ai/estimate — effort estimate in raw planning units ──
   //
   // Request:  { mapId, text?, nodeId?, hint? }
-  // Response: { estimate, confidence, notes?, samplesUsed, fudgeFactor }
+  // Response: { estimate, confidence, notes?, samplesUsed, fudgeFactor,
+  //             calibrationNote }
   //
   // Uses the same calibration set as get_estimation_accuracy: completed
   // leaves with both an estimate and an actualEffort. The LLM gets the
-  // samples as context and returns a raw estimate; we then scale by the
-  // fudge factor so the prediction is in the same calibrated space as
-  // completion_forecast's velocity-adjusted dates.
+  // samples as context and returns a RAW estimate — the same scale humans
+  // plan in. The (evidence-gated) fudge factor is reported alongside but
+  // never multiplied in: forecasts apply it to remaining effort at read
+  // time, so baking it into stored estimates double-corrected (fudge²).
 
   app.post('/api/ai/estimate', async (req, reply) => {
     if (!requireOllama(reply)) return;
@@ -880,9 +882,18 @@ Parent node: "${parentNode.text}"`;
       .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
       .slice(0, 30);
 
-    const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-    const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-    const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : 1.0;
+    // Evidence-gated fudge — REPORTED to the caller, never multiplied into
+    // the estimate. Baking it in double-corrected: the forecast applies the
+    // fudge to remaining effort again, so AI-estimated nodes got fudge².
+    // Estimates are stored in raw planning units; corrections happen at
+    // forecast time only.
+    const calibration = assessCalibration(
+      calibrationLeaves.map((n) => ({
+        effortEstimate: n.effortEstimate as number,
+        actualEffort: n.actualEffort as number,
+        completedAt: n.completedAt ?? null,
+      })),
+    );
     const effortUnit = mapDetail.map.effortUnit ?? 'days';
 
     const samplesText = calibrationLeaves.length > 0
@@ -898,7 +909,7 @@ Parent node: "${parentNode.text}"`;
 
 Rules:
 - Return ONLY a JSON object: {"estimate": <number>, "confidence": "low" | "medium" | "high", "notes": "<one short sentence>"}
-- The raw estimate you produce should be in ${effortUnit}, in the SAME scale the team uses when planning (not calibrated — the caller applies the fudge factor)
+- The raw estimate you produce should be in ${effortUnit}, in the SAME scale the team uses when planning (uncalibrated — velocity corrections happen at forecast time, never in stored estimates)
 - Confidence is "high" when multiple samples strongly match, "medium" when you're inferring from loose analogies, "low" when calibration data is thin or the task is unusual
 - Notes should be one brief sentence justifying the estimate (e.g. "Similar to #3 and #7; added buffer for migration")
 - No preamble, no markdown fences, no explanation outside the JSON`;
@@ -947,17 +958,23 @@ Title: "${targetText}"`;
           : 'low';
       const notes = typeof parsed.notes === 'string' ? parsed.notes.trim() : undefined;
 
-      // Apply calibration: the LLM's output is in planning space; multiply by
-      // the fudge factor so the caller sees a velocity-corrected estimate.
-      const calibratedEstimate = Math.round(rawEstimate * fudgeFactor * 100) / 100;
+      // The LLM's output stays in raw planning space — the same scale humans
+      // estimate in. The gated fudge is reported for transparency but NOT
+      // multiplied in: forecasts apply it to remaining effort, so pre-baking
+      // it here double-corrected every AI-estimated node (fudge²).
+      const estimate = Math.round(rawEstimate * 100) / 100;
 
       return {
-        estimate: calibratedEstimate,
+        estimate,
         rawEstimate,
         confidence,
         notes,
         samplesUsed: calibrationLeaves.length,
-        fudgeFactor: Math.round(fudgeFactor * 100) / 100,
+        fudgeFactor:
+          calibration.fudgeFactor != null
+            ? Math.round(calibration.fudgeFactor * 100) / 100
+            : null,
+        calibrationNote: calibration.note,
         effortUnit,
       };
     } catch (err: any) {

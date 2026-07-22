@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, analyzeRepoThroughput, netDeliveryRate } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, analyzeRepoThroughput, netDeliveryRate, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -726,15 +726,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // ── Velocity fudge factor from all-time calibration leaves ──
-    const calibrationLeaves = data.nodes.filter(
-      (n) =>
-        (n.childrenIds?.length ?? 0) === 0 &&
-        n.effortEstimate != null &&
-        n.actualEffort != null,
-    );
-    const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-    const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-    const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
+    // Evidence-gated: null (→1.0) when the sample is thin or bulk-entered.
+    const calibration = assessCalibration(calibrationSamplesFromNodes(data.nodes));
+    const fudgeFactor = calibration.fudgeFactor;
     const effectiveFudge = fudgeFactor ?? 1.0;
 
     // ── Focus factor (capacity leakage) — velocity line only ──
@@ -867,7 +861,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       effortUnit: data.map.effortUnit,
       fudgeFactor,
       focusFactor,
-      calibrationLeafCount: calibrationLeaves.length,
+      calibrationLeafCount: calibration.sampleCount,
+      calibrationNote: calibration.note,
       projectStartDate: projectStart.toISOString().slice(0, 10),
       plannedFinishDate,
       velocityAdjustedFinishDate,
