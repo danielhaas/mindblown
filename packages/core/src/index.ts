@@ -88,6 +88,10 @@ export {
 export { compareVersions } from './versions.js';
 export type { VersionOrderFields } from './versions.js';
 
+// Requirements register helpers
+export { collectRequirementGhLinks } from './requirements.js';
+export type { GhLinkSource, RequirementGhLink } from './requirements.js';
+
 // Velocity & capacity helpers
 export {
   FOCUS_FACTOR_MIN,

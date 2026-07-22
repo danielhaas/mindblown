@@ -638,9 +638,24 @@ server.tool(
           status: statusOf(progress),
           remaining: n.computedEffort * (1 - progress / 100),
           unestimated: unestimatedLeaves(n.id),
-          ghLinks: (n.externalLinks ?? [])
-            .filter((l) => l.provider === 'github')
-            .map((l) => l.externalId),
+          // Own links first, then any on the work below — progress and effort
+          // already roll up from the descendants, so provenance must too.
+          ghLinks: (() => {
+            const ids = new Set<string>();
+            for (const l of n.externalLinks ?? []) {
+              if (l.provider === 'github') ids.add(l.externalId);
+            }
+            const stack = [...(n.childrenIds ?? [])];
+            while (stack.length) {
+              const c = nodeById.get(stack.pop()!);
+              if (!c) continue;
+              for (const l of c.externalLinks ?? []) {
+                if (l.provider === 'github') ids.add(l.externalId);
+              }
+              stack.push(...(c.childrenIds ?? []));
+            }
+            return [...ids];
+          })(),
         };
       });
 

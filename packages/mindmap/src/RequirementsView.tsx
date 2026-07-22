@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareVersions } from '@mindblown/core';
+import { compareVersions, collectRequirementGhLinks } from '@mindblown/core';
 import type { Node, Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -45,7 +45,7 @@ interface ReqRow {
   remaining: number;
   unestimated: number;
   health: string;
-  ghLinks: Array<{ id: string; url: string }>;
+  ghLinks: Array<{ id: string; url: string; inherited: boolean }>;
   /** Version set on the requirement node itself. */
   versionId: string | null;
   /** Distinct versions found below it — the requirement may be split across releases. */
@@ -178,9 +178,11 @@ export function RequirementsView() {
           remaining: (cv?.computedEffort ?? 0) * (1 - progress / 100),
           unestimated: countUnestimatedLeaves(node.id),
           health: cv?.healthSignal ?? 'on_track',
-          ghLinks: node.externalLinks
-            .filter((l) => l.provider === 'github')
-            .map((l) => ({ id: l.externalId, url: l.url })),
+          ghLinks: collectRequirementGhLinks((id) => nodes[id], node.id).map((l) => ({
+            id: l.externalId,
+            url: l.url,
+            inherited: l.inherited,
+          })),
           versionId: node.versionId ?? null,
           descendantVersionIds,
           effectiveVersionId:
@@ -868,7 +870,16 @@ function ChapterGroup({
                   target="_blank"
                   rel="noreferrer"
                   onClick={(e) => e.stopPropagation()}
-                  style={{ color: '#3b82f6', textDecoration: 'none', marginLeft: i > 0 ? 6 : 0 }}
+                  title={
+                    l.inherited
+                      ? 'Issue on work below this requirement, not on the requirement itself'
+                      : undefined
+                  }
+                  style={{
+                    color: l.inherited ? '#93c5fd' : '#3b82f6',
+                    textDecoration: 'none',
+                    marginLeft: i > 0 ? 6 : 0,
+                  }}
                 >
                   {l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id}
                 </a>
