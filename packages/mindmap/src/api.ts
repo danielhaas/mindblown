@@ -279,6 +279,22 @@ export function fetchPermissions(mapId: string): Promise<PermissionsResponse> {
   return request<PermissionsResponse>(`/api/maps/${mapId}/permissions`);
 }
 
+export interface MapMember {
+  userId: string;
+  name: string;
+  email: string;
+  permission: 'view' | 'edit' | 'admin';
+}
+
+/**
+ * People who can be assigned work on this map. Unlike fetchPermissions,
+ * readable by anyone with view access — the assignee picker needs the
+ * candidate list without exposing the sharing surface.
+ */
+export function fetchMapMembers(mapId: string): Promise<{ members: MapMember[] }> {
+  return request<{ members: MapMember[] }>(`/api/maps/${mapId}/members`);
+}
+
 export function shareMap(mapId: string, email: string, permission: string): Promise<Permission | PendingInvite> {
   return request<Permission | PendingInvite>(`/api/maps/${mapId}/share`, {
     method: 'POST',

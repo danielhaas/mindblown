@@ -99,6 +99,10 @@ export interface MindmapState {
   nodeActors: Map<string, { userId: string; userName: string }>;
   nodeActorsMapId: string | null;
 
+  // People who can be assigned work on this map (loaded on demand)
+  members: api.MapMember[];
+  membersMapId: string | null;
+
   // UI state
   activeView: ActiveView;
   loading: boolean;
@@ -155,6 +159,9 @@ export interface MindmapState {
 
   // Actions — workload attribution
   loadNodeActors: () => Promise<void>;
+
+  // Actions — map members (assignee picker)
+  loadMembers: () => Promise<void>;
 
   // Actions — layout
   setLayoutType: (layout: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart') => void;
@@ -225,6 +232,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   activePhaseFilter: null,
   nodeActors: new Map(),
   nodeActorsMapId: null,
+  members: [],
+  membersMapId: null,
   activeView: 'mindmap',
   loading: false,
   error: null,
@@ -592,6 +601,28 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       });
     } catch {
       set({ nodeActors: new Map(), nodeActorsMapId: mapId });
+    }
+  },
+
+  /**
+   * Fetch the assignable people for the current map. Cached per map id;
+   * on failure the list stays empty, which degrades the assignee picker
+   * to "show whatever ids the node already carries" rather than blocking
+   * the panel.
+   */
+  loadMembers: async () => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId) {
+      set({ members: [], membersMapId: null });
+      return;
+    }
+    if (state.membersMapId === mapId) return;
+    try {
+      const { members } = await api.fetchMapMembers(mapId);
+      set({ members, membersMapId: mapId });
+    } catch {
+      set({ members: [], membersMapId: mapId });
     }
   },
 

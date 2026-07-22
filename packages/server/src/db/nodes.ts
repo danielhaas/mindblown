@@ -245,6 +245,7 @@ export interface CreateNodeInput {
   phaseId?: string | null;
   verificationText?: string | null;
   verificationUrl?: string | null;
+  assigneeIds?: string[];
 }
 
 export async function createNode(
@@ -295,7 +296,7 @@ export async function createNode(
       phaseId: input.phaseId ?? null,
       verificationText: input.verificationText ?? null,
       verificationUrl: input.verificationUrl ?? null,
-      assigneeIds: [],
+      assigneeIds: input.assigneeIds ?? [],
       tags: [],
       customFields: {},
       dependencies: [],

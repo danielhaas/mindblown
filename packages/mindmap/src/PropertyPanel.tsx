@@ -675,6 +675,9 @@ function PropertyPanelInner({
           />
         </Field>
 
+        {/* Assignees */}
+        <AssigneeField nodeId={nodeId} assigneeIds={node.assigneeIds} />
+
         {/* Sprint / Cycle */}
         <CycleField nodeId={nodeId} currentCycleId={node.cycleId} />
 
@@ -694,6 +697,98 @@ function PropertyPanelInner({
         <CommentsPanel mapId={node.mapId} nodeId={nodeId} />
       </div>
     </div>
+  );
+}
+
+// ── Assignee Field ───────────────────────────────────────────────
+//
+// The write surface `assigneeIds` never had. Every other view already
+// renders assignees (Kanban avatars, List column, Calendar, Workload
+// bars) but nothing could set one, so the field was empty everywhere and
+// those surfaces silently degraded.
+//
+// Candidates come from the map's member list (everyone with a permission
+// on it). Ids already on a node that no longer resolve to a member — a
+// revoked collaborator, or an id written over MCP — are still listed and
+// still removable, so opening the panel can never silently drop data the
+// picker doesn't understand.
+
+function AssigneeField({ nodeId, assigneeIds }: { nodeId: string; assigneeIds: string[] }) {
+  const members = useMindmapStore((s) => s.members);
+  const loadMembers = useMindmapStore((s) => s.loadMembers);
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
+  const updateNode = useMindmapStore((s) => s.updateNode);
+
+  useEffect(() => {
+    void loadMembers();
+  }, [currentMapId, loadMembers]);
+
+  const toggle = useCallback(
+    (userId: string) => {
+      const next = assigneeIds.includes(userId)
+        ? assigneeIds.filter((id) => id !== userId)
+        : [...assigneeIds, userId];
+      updateNode(nodeId, { assigneeIds: next });
+    },
+    [nodeId, assigneeIds, updateNode],
+  );
+
+  const known = new Set(members.map((m) => m.userId));
+  const orphans = assigneeIds.filter((id) => !known.has(id));
+
+  return (
+    <Field label="Assignees">
+      {members.length === 0 && orphans.length === 0 ? (
+        <div style={{ fontSize: 12, color: '#94a3b8' }}>
+          Nobody has access to this map yet — share it to assign work.
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {members.map((m) => {
+            const active = assigneeIds.includes(m.userId);
+            return (
+              <button
+                key={m.userId}
+                onClick={() => toggle(m.userId)}
+                title={m.email}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: 999,
+                  border: active ? '1px solid #4f46e5' : '1px solid #e2e8f0',
+                  background: active ? '#eef2ff' : '#fff',
+                  color: active ? '#3730a3' : '#64748b',
+                  fontSize: 12,
+                  fontWeight: active ? 600 : 400,
+                  fontFamily: 'inherit',
+                  cursor: 'pointer',
+                }}
+              >
+                {m.name}
+              </button>
+            );
+          })}
+          {orphans.map((id) => (
+            <button
+              key={id}
+              onClick={() => toggle(id)}
+              title={`${id} — no longer has access to this map. Click to remove.`}
+              style={{
+                padding: '4px 10px',
+                borderRadius: 999,
+                border: '1px dashed #cbd5e1',
+                background: '#f8fafc',
+                color: '#94a3b8',
+                fontSize: 12,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+              }}
+            >
+              {id.length > 12 ? `${id.slice(0, 10)}…` : id} ✕
+            </button>
+          ))}
+        </div>
+      )}
+    </Field>
   );
 }
 
