@@ -520,6 +520,9 @@ export interface Version {
   status: 'planning' | 'active' | 'released' | 'archived';
   targetDate: string | null; // ISO 8601 date
   sortOrder: number; // display ordering
+  /** Ship-date ground truth — set on the transition into 'released',
+   *  cleared if the release is reopened. Anchors the forecast scorecard. */
+  releasedAt: string | null;
   createdAt: string;
 }
 

@@ -11,6 +11,7 @@ import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
+import { computeForecastScorecard } from '../lib/forecastScorecard.js';
 import * as events from '../db/events.js';
 import {
   buildCalendarIcs,
@@ -1070,6 +1071,41 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           ? latestSnapshot.createdAt.toISOString()
           : ((latestSnapshot?.createdAt as string | undefined) ?? null),
     });
+  });
+
+  // ── GET /api/maps/:id/forecast-scorecard — grade forecasts vs reality
+  //
+  // For every shipped version (released_at set), scores each historical
+  // snapshot's predicted dates against the actual ship date, bucketed by
+  // lead time. The empirical answer to "which forecast model do we trust?".
+  app.get<{ Params: { id: string } }>('/api/maps/:id/forecast-scorecard', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+
+    const allVersions = await versionDb.listVersions(data.map.id);
+    const rows = await db
+      .select()
+      .from(releaseSnapshots)
+      .where(eq(releaseSnapshots.mapId, req.params.id));
+
+    const scorecard = computeForecastScorecard(
+      allVersions
+        .filter((v) => v.releasedAt != null)
+        .map((v) => ({ id: v.id, name: v.name, releasedAt: v.releasedAt as string })),
+      rows.map((r) => ({
+        versionId: r.versionId,
+        snapshotDate: r.snapshotDate,
+        plannedFinishDate: r.plannedFinishDate,
+        velocityAdjustedFinishDate: r.velocityAdjustedFinishDate,
+        ticketModelFinishDate: r.ticketModelFinishDate ?? null,
+      })),
+    );
+
+    return reply.send(scorecard);
   });
 
   // ── GET /api/maps/:id/calendar-url — Subscribe URL helper

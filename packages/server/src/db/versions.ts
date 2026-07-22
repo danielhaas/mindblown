@@ -16,6 +16,10 @@ function dbVersionToCore(row: Record<string, unknown>): Version {
     status: get('status', 'status') as Version['status'],
     targetDate: (get('targetDate', 'target_date') as string) ?? null,
     sortOrder: (get('sortOrder', 'sort_order') as number) ?? 0,
+    releasedAt: (() => {
+      const v = get('releasedAt', 'released_at');
+      return v instanceof Date ? v.toISOString() : ((v as string) ?? null);
+    })(),
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
@@ -100,6 +104,20 @@ export async function updateVersion(id: string, input: UpdateVersionInput): Prom
   if (input.status !== undefined) updates.status = input.status;
   if (input.targetDate !== undefined) updates.targetDate = input.targetDate;
   if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+
+  // Ship-date ground truth for the forecast scorecard: stamp released_at
+  // on the transition INTO 'released'; clear it when a release is
+  // reopened (the old date would be a lie the scorecard trains on).
+  if (input.status !== undefined) {
+    const current = await getVersion(id);
+    if (current) {
+      if (input.status === 'released' && current.status !== 'released') {
+        updates.releasedAt = new Date();
+      } else if (input.status !== 'released' && current.status === 'released') {
+        updates.releasedAt = null;
+      }
+    }
+  }
 
   const [row] = await db.update(versions).set(updates).where(eq(versions.id, id)).returning();
   if (!row) return null;

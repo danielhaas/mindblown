@@ -213,6 +213,8 @@ export interface VersionInfo {
   status: string;
   targetDate: string | null;
   sortOrder: number;
+  /** Ship-date ground truth — stamped on the transition into 'released'. */
+  releasedAt?: string | null;
   createdAt: string;
 }
 
@@ -808,6 +810,23 @@ export interface VelocityResponse {
     netTicketsPerDay: number | null;
     windowDays?: number;
   };
+}
+
+export interface ForecastScorecardResponse {
+  versionsScored: Array<{ id: string; name: string; shippedOn: string; snapshots: number }>;
+  buckets: Array<{
+    label: string;
+    minLeadDays: number;
+    maxLeadDays: number;
+    planned: { samples: number; meanAbsErrorDays: number; biasDays: number } | null;
+    velocity: { samples: number; meanAbsErrorDays: number; biasDays: number } | null;
+    ticket: { samples: number; meanAbsErrorDays: number; biasDays: number } | null;
+  }>;
+  verdict: string | null;
+}
+
+export function getForecastScorecard(mapId: string): Promise<ForecastScorecardResponse> {
+  return request<ForecastScorecardResponse>(`/api/maps/${mapId}/forecast-scorecard`);
 }
 
 export function getVelocity(
