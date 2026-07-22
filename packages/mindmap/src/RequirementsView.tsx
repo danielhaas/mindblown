@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { Node } from '@mindblown/core';
+import { compareVersions } from '@mindblown/core';
+import type { Node, Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 
@@ -45,6 +46,12 @@ interface ReqRow {
   unestimated: number;
   health: string;
   ghLinks: Array<{ id: string; url: string }>;
+  /** Version set on the requirement node itself. */
+  versionId: string | null;
+  /** Distinct versions found below it — the requirement may be split across releases. */
+  descendantVersionIds: string[];
+  /** What the register treats as "the" release: own, else a unanimous descendant one. */
+  effectiveVersionId: string | null;
 }
 
 function statusOf(progress: number): ReqStatus {
@@ -70,6 +77,14 @@ export function RequirementsView() {
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
   const effortUnit = useMindmapStore((s) => s.currentMap?.effortUnit ?? 'days');
+  const versions = useMindmapStore((s) => s.versions);
+
+  const sortedVersions = useMemo(() => [...versions].sort(compareVersions), [versions]);
+  const versionById = useMemo(() => {
+    const m = new Map<string, Version>();
+    for (const v of versions) m.set(v.id, v);
+    return m;
+  }, [versions]);
 
   const user = useMindmapStore((s) => s.user);
   const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
@@ -100,6 +115,8 @@ export function RequirementsView() {
 
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
+  // '' = all, 'none' = no release (own or inherited), otherwise a versionId
+  const [versionFilter, setVersionFilter] = useState<string>('');
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createFields, setCreateFields] = useState({
@@ -127,10 +144,23 @@ export function RequirementsView() {
       return count;
     };
 
+    const descendantVersions = (id: string): string[] => {
+      const found = new Set<string>();
+      const stack = [...(nodes[id]?.childrenIds ?? [])];
+      while (stack.length) {
+        const n = nodes[stack.pop()!];
+        if (!n) continue;
+        if (n.versionId) found.add(n.versionId);
+        stack.push(...n.childrenIds);
+      }
+      return [...found];
+    };
+
     return Object.values(nodes)
       .filter((n) => n.requirementId != null)
       .map((node) => {
         const cv = computed.get(node.id);
+        const descendantVersionIds = descendantVersions(node.id);
         const isLeaf = node.childrenIds.length === 0;
         const progress = isLeaf ? (node.percentComplete ?? 0) : (cv?.computedProgress ?? 0);
         // Chapter = the requirement's parent node. In a doc-shaped map the
@@ -150,6 +180,11 @@ export function RequirementsView() {
           ghLinks: node.externalLinks
             .filter((l) => l.provider === 'github')
             .map((l) => ({ id: l.externalId, url: l.url })),
+          versionId: node.versionId ?? null,
+          descendantVersionIds,
+          effectiveVersionId:
+            node.versionId ??
+            (descendantVersionIds.length === 1 ? descendantVersionIds[0] : null),
         };
       });
   }, [nodes, computed]);
@@ -165,6 +200,15 @@ export function RequirementsView() {
       allRows.filter((r) => {
         if (statusFilter && r.status !== statusFilter) return false;
         if (priorityFilter && r.node.requirementPriority !== priorityFilter) return false;
+        if (versionFilter === 'none') {
+          // "No release" means nothing below it is scheduled either.
+          if (r.versionId || r.descendantVersionIds.length > 0) return false;
+        } else if (versionFilter) {
+          // A split requirement matches every release it touches.
+          if (r.versionId !== versionFilter && !r.descendantVersionIds.includes(versionFilter)) {
+            return false;
+          }
+        }
         if (acceptanceFilter) {
           const accs = accByNode.get(r.node.id) ?? [];
           if (acceptanceFilter === 'none' && accs.length > 0) return false;
@@ -177,7 +221,7 @@ export function RequirementsView() {
         }
         return true;
       }),
-    [allRows, statusFilter, priorityFilter, acceptanceFilter, accByNode, user],
+    [allRows, statusFilter, priorityFilter, versionFilter, acceptanceFilter, accByNode, user],
   );
 
   // Depth-first tree order — used to sort chapter groups so the register
@@ -306,7 +350,8 @@ export function RequirementsView() {
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
             {allRows.length} requirement{allRows.length === 1 ? '' : 's'} · {totals.done} done ·{' '}
             {totals.partial} partial · {totals.open} open
-            {(statusFilter || priorityFilter) && ` · showing ${filteredRows.length} (filtered)`}
+            {(statusFilter || priorityFilter || versionFilter) &&
+              ` · showing ${filteredRows.length} (filtered)`}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -331,6 +376,19 @@ export function RequirementsView() {
             <option value="must">Must</option>
             <option value="should">Should</option>
             <option value="could">Could</option>
+          </select>
+          <select
+            value={versionFilter}
+            onChange={(e) => setVersionFilter(e.target.value)}
+            style={filterSelectStyle}
+          >
+            <option value="">All releases</option>
+            <option value="none">No release</option>
+            {sortedVersions.map((v) => (
+              <option key={v.id} value={v.id}>
+                {v.name}
+              </option>
+            ))}
           </select>
           <select
             value={acceptanceFilter}
@@ -452,6 +510,7 @@ export function RequirementsView() {
                 <th style={{ ...thStyle, width: 110 }}>ID</th>
                 <th style={thStyle}>Requirement</th>
                 <th style={{ ...thStyle, width: 80 }}>Priority</th>
+                <th style={{ ...thStyle, width: 110 }}>Release</th>
                 <th style={{ ...thStyle, width: 80 }}>Status</th>
                 <th style={{ ...thStyle, width: 130 }}>Progress</th>
                 <th style={{ ...thStyle, width: 130, textAlign: 'right' }}>Remaining</th>
@@ -466,6 +525,8 @@ export function RequirementsView() {
                   chapterText={rows[0].chapterText}
                   rows={rows}
                   effortUnit={effortUnit}
+                  sortedVersions={sortedVersions}
+                  versionById={versionById}
                   isEditing={isEditing}
                   setEditingCell={setEditingCell}
                   updateNode={updateNode}
@@ -490,6 +551,8 @@ function ChapterGroup({
   chapterText,
   rows,
   effortUnit,
+  sortedVersions,
+  versionById,
   isEditing,
   setEditingCell,
   updateNode,
@@ -502,6 +565,8 @@ function ChapterGroup({
   chapterText: string;
   rows: ReqRow[];
   effortUnit: string;
+  sortedVersions: Version[];
+  versionById: Map<string, Version>;
   isEditing: (nodeId: string, field: string) => boolean;
   setEditingCell: (cell: { nodeId: string; field: string } | null) => void;
   updateNode: (id: string, updates: Partial<Node>) => void;
@@ -515,7 +580,7 @@ function ChapterGroup({
   return (
     <>
       <tr>
-        <td colSpan={8} style={groupHeaderStyle}>
+        <td colSpan={9} style={groupHeaderStyle}>
           {chapterText}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
             {rows.length} req · {done} done
@@ -648,6 +713,42 @@ function ChapterGroup({
               <option value="must">Must</option>
               <option value="should">Should</option>
               <option value="could">Could</option>
+            </select>
+          </td>
+
+          {/* Release — own versionId; falls back to what's tagged below it */}
+          <td style={tdStyle} onClick={(e) => e.stopPropagation()}>
+            <select
+              value={r.versionId ?? ''}
+              onChange={(e) => updateNode(r.node.id, { versionId: e.target.value || null })}
+              onKeyDown={(e) => e.stopPropagation()}
+              title={
+                r.versionId
+                  ? 'Release tagged on this requirement'
+                  : r.descendantVersionIds.length === 0
+                    ? 'Not scheduled for any release'
+                    : `Inherited from work below it: ${r.descendantVersionIds
+                        .map((id) => versionById.get(id)?.name ?? '?')
+                        .join(', ')}`
+              }
+              style={{
+                ...inlineSelectStyle,
+                color: r.versionId ? '#334155' : '#94a3b8',
+                fontStyle: r.versionId ? 'normal' : 'italic',
+              }}
+            >
+              <option value="">
+                {r.descendantVersionIds.length === 0
+                  ? '—'
+                  : r.descendantVersionIds.length === 1
+                    ? `↳ ${versionById.get(r.descendantVersionIds[0])?.name ?? '?'}`
+                    : `↳ ${r.descendantVersionIds.length} releases`}
+              </option>
+              {sortedVersions.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name}
+                </option>
+              ))}
             </select>
           </td>
 
