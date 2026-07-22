@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { compareVersions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -181,10 +182,12 @@ export function ReleasesView() {
 
   // Merge store versions (authoritative list, includes empty ones) with
   // the forecast rows (richer stats for versions that have linked leaves).
-  // We iterate over versions (sorted by sortOrder), attaching the forecast
-  // row when it exists — versions with 0 leaves show up as "no scope" rows.
+  // We iterate over versions in release order (compareVersions — target
+  // date ascending, undated last, same authority the forecast chain uses),
+  // attaching the forecast row when it exists — versions with 0 leaves
+  // show up as "no scope" rows.
   const sortedVersions = useMemo(
-    () => [...versions].sort((a, b) => a.sortOrder - b.sortOrder),
+    () => [...versions].sort(compareVersions),
     [versions],
   );
   const forecastById = useMemo(() => {
@@ -270,7 +273,7 @@ export function ReleasesView() {
             {displayVersions.length} version{displayVersions.length === 1 ? '' : 's'} · {totalLeaves} linked leaves
             {forecast && (
               <>
-                {' · sequential by sortOrder, '}
+                {' · sequential by target date, '}
                 {forecast.dailyCapacity} {unit}/day capacity
                 {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
                 {forecast.focusFactor < 1 && ` · ${Math.round(forecast.focusFactor * 100)}% focus`}

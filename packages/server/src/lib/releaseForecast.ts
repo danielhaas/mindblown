@@ -1,5 +1,5 @@
 import type { Node as CoreNode, MindMap, Version } from '@mindblown/core';
-import { clampFocusFactor } from '@mindblown/core';
+import { clampFocusFactor, compareVersions } from '@mindblown/core';
 
 /**
  * Release forecast row for a single version.
@@ -42,7 +42,8 @@ export interface ReleaseForecastResult {
  *   1. Capacity-constrained: plannedFinish = effStart +
  *      ceil(remainingEffort / dailyCapacity). Does NOT assume infinite
  *      parallelism.
- *   2. Sequential by sortOrder: non-shipped versions chain — each
+ *   2. Sequential by release order (target date, undated last):
+ *      non-shipped versions chain — each
  *      effective start is clamped to the previous release's finish.
  *   3. Wall-clock anchored: the first cursor starts at max(today,
  *      projectStartDate). If the project is already underway with
@@ -120,26 +121,10 @@ export function computeReleaseForecast(
   };
   const allLeaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
 
-  // ── Walk versions in sortOrder with two cursors ──
-  // Primary sort: sortOrder (user-controlled override).
-  // Secondary: parsed semver from the name — "V1", "V1.5", "V2", "V3:
-  // Verticals" → (1,0), (1,5), (2,0), (3,0). Stops new versions from
-  // landing wrong-place when they inherit a default sortOrder that
-  // ties with existing rows.
-  // Tertiary: name for stability.
-  const parseSemver = (name: string): [number, number] => {
-    const m = name.match(/^V(\d+)(?:\.(\d+))?/i);
-    if (!m) return [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
-    return [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0];
-  };
-  const sorted = [...versions].sort((a, b) => {
-    if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
-    const [aMaj, aMin] = parseSemver(a.name);
-    const [bMaj, bMin] = parseSemver(b.name);
-    if (aMaj !== bMaj) return aMaj - bMaj;
-    if (aMin !== bMin) return aMin - bMin;
-    return a.name.localeCompare(b.name);
-  });
+  // ── Walk versions in release order with two cursors ──
+  // compareVersions (core) is the single ordering authority — target
+  // date ascending, undated last, ties broken by sortOrder then semver.
+  const sorted = [...versions].sort(compareVersions);
   let plannedCursor = anchor;
   let velocityCursor = anchor;
 
