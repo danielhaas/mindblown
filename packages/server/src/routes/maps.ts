@@ -267,7 +267,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
       const computed = computeTree(data.nodes, data.map.healthThreshold);
       const acceptances = await listActiveAcceptances(req.params.id);
-      const register = buildRegisterData(data.map, data.nodes, computed, acceptances);
+      const versions = await versionDb.listVersions(req.params.id);
+      const register = buildRegisterData(data.map, data.nodes, computed, acceptances, versions);
       const format = (req.query as { format?: string }).format ?? 'md';
 
       if (format === 'docx') {

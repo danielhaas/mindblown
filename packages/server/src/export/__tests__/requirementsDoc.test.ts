@@ -109,6 +109,63 @@ describe('buildRegisterData — Abnahme verdicts', () => {
   });
 });
 
+describe('buildRegisterData — Release column', () => {
+  const versions = [
+    { id: 'v1', name: 'V1' },
+    { id: 'v2', name: 'V2' },
+  ] as Parameters<typeof buildRegisterData>[4];
+
+  const withChildren = (reqOverrides: Partial<Node>, childVersions: Array<string | null>) => {
+    const childIds = childVersions.map((_, i) => `c${i}`);
+    return [
+      makeNode({ id: 'root', childrenIds: ['ch'] }),
+      makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+      makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', childrenIds: childIds, ...reqOverrides }),
+      ...childVersions.map((v, i) => makeNode({ id: `c${i}`, parentId: 'r1', versionId: v })),
+    ];
+  };
+
+  const release = (nodes: Node[]) => {
+    const computed = new Map<NodeId, ComputedNodeValues>();
+    return buildRegisterData(map, nodes, computed, [], versions).chapters[0].rows[0].release;
+  };
+
+  it('uses the version tagged on the requirement itself', () => {
+    expect(release(withChildren({ versionId: 'v1' }, ['v2']))).toBe('V1');
+  });
+
+  it('inherits a unanimous version from the work below', () => {
+    expect(release(withChildren({}, ['v2', 'v2']))).toBe('↳ V2');
+  });
+
+  it('reports a count when the requirement is split across releases', () => {
+    expect(release(withChildren({}, ['v1', 'v2']))).toBe('↳ 2 Releases');
+  });
+
+  it('renders — when nothing below it is scheduled', () => {
+    expect(release(withChildren({}, [null]))).toBe('—');
+  });
+});
+
+describe('buildRegisterData — status detail', () => {
+  const req = (percentComplete: number | null) => [
+    makeNode({ id: 'root', childrenIds: ['ch'] }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+    makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', percentComplete }),
+  ];
+  const detail = (p: number | null) =>
+    buildRegisterData(map, req(p), new Map(), []).chapters[0].rows[0].statusDetail;
+
+  it('appends the derived percentage to partial rows', () => {
+    expect(detail(42)).toBe('Teilweise · 42 %');
+  });
+
+  it('leaves Umgesetzt and Offen without a percentage', () => {
+    expect(detail(100)).toBe('Umgesetzt');
+    expect(detail(null)).toBe('Offen');
+  });
+});
+
 describe('acceptanceIsStale', () => {
   it('flags revision drift and >1pt progress drift, tolerates rounding', () => {
     const acc = { ...baseAcc };
