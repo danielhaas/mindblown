@@ -183,9 +183,55 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
       );
       expect(branches.map((b) => b.node.id)).toEqual(['epicA', 'epicB']);
       expect(branches[0].hillPosition).toBe(30); // customFields passthrough
-      expect(branches[1].hillPosition).toBe(0); // default
+      expect(branches[0].isDerived).toBe(false);
+      // Never dragged → falls back to rolled-up progress (b1 2h@100% + b2 8h@0%)
+      expect(branches[1].hillPosition).toBe(20);
+      expect(branches[1].isDerived).toBe(true);
       // Aggregates come from computeTree, over the branch subtree
       expect(branches[0].computed.computedEffort).toBe(8); // a1 5h + a2 3h
+    });
+
+    it('spreads auto-placed dots that would otherwise pile up, leaving dragged ones anchored', () => {
+      // Both branches land on the same derived progress → the exact blob
+      // this fix exists for (14 dots on one point, on the real map).
+      patchNode('epicA', { customFields: {} });
+      patchNode('a1', { percentComplete: 20 });
+      patchNode('a2', { percentComplete: 20 });
+      useMindmapStore.setState({
+        computed: computeTree(Object.values(useMindmapStore.getState().nodes)),
+      });
+      const raw = useMindmapStore.getState().computed;
+      expect(raw.get('epicA')!.computedProgress).toBe(raw.get('epicB')!.computedProgress);
+      const branches = selectHillBranches(
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+        useMindmapStore.getState().computed,
+        10,
+      );
+      const [a, b] = branches;
+      expect(a.isDerived && b.isDerived).toBe(true);
+      expect(Math.abs(a.hillPosition - b.hillPosition)).toBeGreaterThanOrEqual(10);
+      expect(a.hillPosition).toBeGreaterThanOrEqual(0);
+      expect(b.hillPosition).toBeLessThanOrEqual(100);
+    });
+
+    it('never moves a dot the user dragged, even when a derived dot wants its spot', () => {
+      patchNode('epicA', { customFields: { hillPosition: 20 } }); // same as epicB's derived 20
+      const branches = selectHillBranches(
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+        useMindmapStore.getState().computed,
+        10,
+      );
+      expect(branches[0].hillPosition).toBe(20); // anchored
+      expect(Math.abs(branches[1].hillPosition - 20)).toBeGreaterThanOrEqual(10);
+    });
+
+    it('clamps an out-of-range manual position instead of drawing off-chart', () => {
+      patchNode('epicA', { customFields: { hillPosition: 340 } });
+      const branches = selectHillBranches(
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+        useMindmapStore.getState().computed,
+      );
+      expect(branches[0].hillPosition).toBe(100);
     });
 
     it('drops branches outside the active version filter', () => {
@@ -236,6 +282,52 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
       const w = workloadsNow();
       expect(w.map((x) => x.assigneeId)).toEqual(['alice']);
       expect(w[0]).toMatchObject({ todo: 0, inProgress: 0, done: 2, total: 2 });
+    });
+
+    it('falls back to the last editor when a leaf has no assignee and no claim', () => {
+      // The real-world case: no node anywhere has an assignee.
+      for (const id of ['a1', 'a2', 'b1', 'b2']) patchNode(id, { assigneeIds: [] });
+      const actors = new Map([
+        ['a1', { userId: 'u-dan', userName: 'Daniel Haas' }],
+        ['a2', { userId: 'u-mike', userName: 'Mike' }],
+        ['b1', { userId: 'u-dan', userName: 'Daniel Haas' }],
+        // b2 deliberately unattributed → drops out entirely
+      ]);
+      const w = computeWorkloads(
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+        workflow,
+        actors,
+      );
+      expect(w.map((x) => x.label)).toEqual(['Daniel Haas', 'Mike']);
+      expect(w[0]).toMatchObject({ source: 'author', todo: 5, done: 2, total: 7 });
+      expect(w[1]).toMatchObject({ source: 'author', inProgress: 3, total: 3 });
+    });
+
+    it('prefers an explicit assignee over the claim, and a claim over authorship', () => {
+      patchNode('a1', { assigneeIds: ['alice'], claimedBySession: 'sess-1' });
+      patchNode('a2', { assigneeIds: [], claimedBySession: 'sess-1' });
+      patchNode('b1', { assigneeIds: [] });
+      patchNode('b2', { assigneeIds: [] });
+      const actors = new Map([
+        ['a1', { userId: 'u-dan', userName: 'Daniel Haas' }],
+        ['a2', { userId: 'u-dan', userName: 'Daniel Haas' }],
+        ['b1', { userId: 'u-dan', userName: 'Daniel Haas' }],
+        ['b2', { userId: 'u-dan', userName: 'Daniel Haas' }],
+      ]);
+      const w = computeWorkloads(
+        useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY),
+        workflow,
+        actors,
+      );
+      const byId = Object.fromEntries(w.map((x) => [x.assigneeId, x]));
+      expect(byId['alice']).toMatchObject({ source: 'assignee', total: 5 }); // a1 only
+      expect(byId['sess-1']).toMatchObject({ source: 'claim', total: 3 }); // a2, claim beats author
+      expect(byId['u-dan']).toMatchObject({ source: 'author', total: 10 }); // b1 2h + b2 8h
+    });
+
+    it('without any attribution source, a leaf contributes to nobody', () => {
+      for (const id of ['a1', 'a2', 'b1', 'b2']) patchNode(id, { assigneeIds: [] });
+      expect(workloadsNow()).toEqual([]);
     });
 
     it('keeps aggregating ALL leaves under drill-down focus, depth limit, and collapse', () => {
