@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Node } from '@mindblown/core';
+import type { Node, Version } from '@mindblown/core';
 import * as api from '../api.js';
 import type { MapDetail, MapSummary, NodeWithComputed } from '../api.js';
 import { MobileListView } from './MobileListView.js';
@@ -45,11 +45,24 @@ export function MobileViewer({ map }: Props) {
   const [view, setView] = useState<ViewKey>(readDefaultView);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // Names for the Requirements release chips. Small payload, and versions
+  // don't change under an editing session — fetched once per map, not with
+  // the debounced node reload.
+  const [versions, setVersions] = useState<Version[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
     setError(null);
+    setVersions([]);
+    api
+      .fetchVersions(map.id)
+      .then((v) => {
+        if (!cancelled) setVersions(v);
+      })
+      .catch(() => {
+        // Release chips just stay empty — not worth failing the map load over.
+      });
     api
       .fetchMap(map.id, { omit: OMIT_FIELDS })
       .then((d) => {
@@ -208,6 +221,7 @@ export function MobileViewer({ map }: Props) {
             <MobileRequirementsView
               nodes={nodes}
               map={detail.map}
+              versions={versions}
               onSelect={setSelectedId}
             />
           )}

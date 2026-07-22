@@ -117,6 +117,7 @@ export function RequirementsView() {
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
   // '' = all, 'none' = no release (own or inherited), otherwise a versionId
   const [versionFilter, setVersionFilter] = useState<string>('');
+  const [hideDone, setHideDone] = useState(false);
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [createFields, setCreateFields] = useState({
@@ -198,6 +199,7 @@ export function RequirementsView() {
   const filteredRows = useMemo(
     () =>
       allRows.filter((r) => {
+        if (hideDone && r.status === 'done') return false;
         if (statusFilter && r.status !== statusFilter) return false;
         if (priorityFilter && r.node.requirementPriority !== priorityFilter) return false;
         if (versionFilter === 'none') {
@@ -221,7 +223,16 @@ export function RequirementsView() {
         }
         return true;
       }),
-    [allRows, statusFilter, priorityFilter, versionFilter, acceptanceFilter, accByNode, user],
+    [
+      allRows,
+      hideDone,
+      statusFilter,
+      priorityFilter,
+      versionFilter,
+      acceptanceFilter,
+      accByNode,
+      user,
+    ],
   );
 
   // Depth-first tree order — used to sort chapter groups so the register
@@ -350,14 +361,36 @@ export function RequirementsView() {
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
             {allRows.length} requirement{allRows.length === 1 ? '' : 's'} · {totals.done} done ·{' '}
             {totals.partial} partial · {totals.open} open
-            {(statusFilter || priorityFilter || versionFilter) &&
+            {(hideDone || statusFilter || priorityFilter || versionFilter) &&
               ` · showing ${filteredRows.length} (filtered)`}
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            onClick={() => setHideDone((v) => !v)}
+            aria-pressed={hideDone}
+            title={
+              hideDone
+                ? `${totals.done} done requirement${totals.done === 1 ? '' : 's'} hidden — click to show`
+                : 'Hide requirements that are 100% complete'
+            }
+            style={{
+              ...secondaryButtonStyle(false),
+              ...(hideDone
+                ? { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }
+                : {}),
+            }}
+          >
+            {hideDone ? `Done hidden (${totals.done})` : 'Hide done'}
+          </button>
           <select
             value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value as '' | ReqStatus)}
+            onChange={(e) => {
+              const v = e.target.value as '' | ReqStatus;
+              setStatusFilter(v);
+              // Asking for Done while hiding Done would show an empty table.
+              if (v === 'done') setHideDone(false);
+            }}
             style={filterSelectStyle}
           >
             <option value="">All statuses</option>
