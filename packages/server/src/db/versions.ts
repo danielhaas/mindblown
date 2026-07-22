@@ -1,6 +1,7 @@
-import { eq, asc } from 'drizzle-orm';
+import { eq, asc, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { versions, cycles, nodes, maps } from './schema.js';
+import { compareVersions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
 
 // ── Helpers ───────────────────────────────────────────────────────────
@@ -60,12 +61,17 @@ export async function createVersion(input: CreateVersionInput): Promise<Version>
 // ── List ──────────────────────────────────────────────────────────────
 
 export async function listVersions(mapId: string): Promise<Version[]> {
+  // Release order: target date ascending, undated last. Sorted in SQL so
+  // paging/streaming callers see the same order, then re-sorted through
+  // compareVersions so the semver tiebreak matches the forecast chain.
   const rows = await db.select()
     .from(versions)
     .where(eq(versions.mapId, mapId))
-    .orderBy(asc(versions.sortOrder));
+    .orderBy(sql`${versions.targetDate} asc nulls last`, asc(versions.sortOrder), asc(versions.name));
 
-  return rows.map((r) => dbVersionToCore(r as unknown as Record<string, unknown>));
+  return rows
+    .map((r) => dbVersionToCore(r as unknown as Record<string, unknown>))
+    .sort(compareVersions);
 }
 
 // ── Get ───────────────────────────────────────────────────────────────

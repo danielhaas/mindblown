@@ -84,6 +84,10 @@ export {
   buildTodoIds,
 } from './statusWorkflow.js';
 
+// Release ordering
+export { compareVersions } from './versions.js';
+export type { VersionOrderFields } from './versions.js';
+
 // Velocity & capacity helpers
 export {
   FOCUS_FACTOR_MIN,
