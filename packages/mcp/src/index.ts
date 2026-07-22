@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { httpBackend } from './backend.js';
@@ -303,6 +303,14 @@ server.tool(
       const totalEstimate = candidates.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
       const totalActual = candidates.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
       const fudgeFactor = totalEstimate > 0 ? totalActual / totalEstimate : 0;
+      // Evidence assessment: does this sample clear the bar forecasts require?
+      const calibration = assessCalibration(
+        candidates.map((n) => ({
+          effortEstimate: n.effortEstimate as number,
+          actualEffort: n.actualEffort as number,
+          completedAt: n.completedAt ?? null,
+        })),
+      );
 
       // Distribution buckets by ratio per node
       const buckets = { under: 0, onTarget: 0, over: 0, wayOver: 0 };
@@ -328,7 +336,12 @@ server.tool(
       lines.push(`Nodes with both estimate + actual: ${candidates.length}`);
       lines.push(`Total estimated: ${totalEstimate.toFixed(2)} ${unit}`);
       lines.push(`Total actual:    ${totalActual.toFixed(2)} ${unit}`);
-      lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x (multiply future estimates by this)`);
+      if (calibration.fudgeFactor != null) {
+        lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x — applied by forecasts (${calibration.organicCount} organic samples)`);
+      } else {
+        lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x (raw ratio — NOT applied by forecasts)`);
+        if (calibration.note) lines.push(`⚠ ${calibration.note}`);
+      }
       lines.push('');
       lines.push('Distribution (per node ratio = actual / estimate):');
       lines.push(`  Underestimated by user (<0.8x):   ${buckets.under}`);
@@ -772,16 +785,9 @@ server.tool(
         if (leaf.dueDate) targetDates.push(leaf.dueDate);
       }
 
-      // ── Fudge factor from estimation accuracy ──
-      const calibrationLeaves = data.nodes.filter(
-        (n) =>
-          (n.childrenIds?.length ?? 0) === 0 &&
-          n.effortEstimate != null &&
-          n.actualEffort != null,
-      );
-      const calibEstimate = calibrationLeaves.reduce((s, n) => s + (n.effortEstimate ?? 0), 0);
-      const calibActual = calibrationLeaves.reduce((s, n) => s + (n.actualEffort ?? 0), 0);
-      const fudgeFactor = calibEstimate > 0 ? calibActual / calibEstimate : null;
+      // ── Fudge factor from estimation accuracy (evidence-gated) ──
+      const calibration = assessCalibration(calibrationSamplesFromNodes(data.nodes));
+      const fudgeFactor = calibration.fudgeFactor;
       const effectiveFudge = fudgeFactor ?? 1.0;
 
       // ── Scheduler meta (project start, units, capacity, focus) ──
@@ -904,7 +910,9 @@ server.tool(
       lines.push(`Remaining:           ${remainingEffort.toFixed(2)} ${unit}`);
       lines.push('');
       if (fudgeFactor != null) {
-        lines.push(`Velocity calibration: ${calibrationLeaves.length} completed leaves, fudge = ${fudgeFactor.toFixed(2)}x`);
+        lines.push(`Velocity calibration: fudge = ${fudgeFactor.toFixed(2)}x (${calibration.organicCount} organic samples, ${calibration.organicDays.toFixed(1)} estimate-days)`);
+      } else if (calibration.note != null) {
+        lines.push(`Velocity calibration: ${calibration.note}`);
       } else {
         lines.push(`Velocity calibration: no data (need leaves with both estimate + actual); using 1.00x`);
       }
@@ -2877,7 +2885,7 @@ server.tool(
 
 server.tool(
   'ai_estimate',
-  'Generate a calibrated effort estimate for a task using the LLM. Uses up to 30 recently completed leaves (with both estimate and actual) as reference samples and applies a velocity fudge factor so the result is in the same calibrated space as the schedule projections. Pass either text (freeform) or nodeId (existing node — pulls its title, description, and ancestor path).',
+  'Generate an effort estimate for a task using the LLM, in RAW planning units — the same scale humans estimate in. Uses up to 30 recently completed leaves (with both estimate and actual) as reference samples. The velocity fudge factor is reported alongside but never multiplied into the estimate: forecasts apply it at read time, so stored estimates stay uncalibrated by design. Pass either text (freeform) or nodeId (existing node — pulls its title, description, and ancestor path).',
   {
     mapId: z.string().describe('The map ID'),
     text: z.string().optional().describe('Freeform text to estimate (alternative to nodeId)'),
@@ -2891,9 +2899,9 @@ server.tool(
       }
       const result = await api.aiEstimate(mapId, { text, nodeId, hint });
       const lines = [
-        `Estimate: ${result.estimate} ${result.effortUnit} (raw ${result.rawEstimate}, fudge ${result.fudgeFactor})`,
+        `Estimate: ${result.estimate} ${result.effortUnit} (raw planning units — forecasts apply velocity corrections at read time)`,
         `Confidence: ${result.confidence}`,
-        `Calibration samples: ${result.samplesUsed}`,
+        `Calibration samples: ${result.samplesUsed}${result.fudgeFactor != null ? `, fudge ${result.fudgeFactor}x (reported, not applied)` : ''}`,
       ];
       if (result.notes) lines.push(`Notes: ${result.notes}`);
       return toolResult(lines.join('\n'));

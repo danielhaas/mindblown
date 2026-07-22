@@ -855,6 +855,8 @@ export interface ForecastResult {
   effortUnit: string;
   fudgeFactor: number | null;
   calibrationLeafCount: number;
+  /** Why the fudge is withheld (evidence gate); null when applied or no samples. */
+  calibrationNote?: string | null;
   projectStartDate: string;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
@@ -906,6 +908,8 @@ export interface ReleaseForecastResponse {
   /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
   focusFactor: number;
   calibrationLeafCount: number;
+  /** Why the fudge is withheld (evidence gate); null when applied or no samples. */
+  calibrationNote?: string | null;
   releases: ReleaseForecastRow[];
   lastSnapshotAt: string | null;
 }
@@ -1058,12 +1062,15 @@ export function aiRefineStructureApply(
 }
 
 export interface EstimateResult {
+  /** Raw planning units — velocity corrections happen at forecast time. */
   estimate: number;
   rawEstimate: number;
   confidence: 'low' | 'medium' | 'high';
   notes?: string;
   samplesUsed: number;
-  fudgeFactor: number;
+  /** Evidence-gated; null = calibration below threshold, forecasts use 1.0. */
+  fudgeFactor: number | null;
+  calibrationNote: string | null;
   effortUnit: string;
 }
 

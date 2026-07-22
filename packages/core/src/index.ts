@@ -88,6 +88,16 @@ export {
 export { compareVersions } from './versions.js';
 export type { VersionOrderFields } from './versions.js';
 
+// Estimation-calibration evidence gate
+export {
+  assessCalibration,
+  calibrationSamplesFromNodes,
+  MIN_CALIBRATION_LEAVES,
+  MIN_CALIBRATION_DAYS,
+  CALIBRATION_BULK_THRESHOLD,
+} from './calibration.js';
+export type { CalibrationSample, CalibrationAssessment } from './calibration.js';
+
 // Requirements register helpers
 export { collectRequirementGhLinks } from './requirements.js';
 export type { GhLinkSource, RequirementGhLink } from './requirements.js';
