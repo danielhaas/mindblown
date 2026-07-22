@@ -1867,6 +1867,53 @@ server.tool(
 );
 
 server.tool(
+  'forecast_scorecard',
+  'Grade the forecast models against reality. For every version that actually shipped (status transitioned to released), scores each historical daily snapshot\'s predicted finish dates — planned, velocity-adjusted (day model) and ticket model — against the real ship date, bucketed by lead time (how far out the prediction was made). Reports mean absolute error and bias (signed: positive = model predicts too late) per model per bucket, plus a verdict naming the empirically better model. Needs at least one released version with snapshot history; until then it reports what is missing. This is the closed loop that turns "are our estimates good?" from opinion into measurement.',
+  {
+    mapId: z.string().describe('The map ID'),
+  },
+  async ({ mapId }) => {
+    try {
+      const sc = await api.getForecastScorecard(mapId);
+      const lines: string[] = [];
+      lines.push('Forecast scorecard — predictions vs actual ship dates');
+      lines.push('');
+      if (sc.versionsScored.length === 0) {
+        lines.push('No gradable history yet: needs at least one version whose status');
+        lines.push('transitioned to released (stamping released_at) AND daily snapshots');
+        lines.push('taken before that date. Snapshots are being written hourly — the');
+        lines.push('scorecard fills in by itself as releases ship.');
+        return toolResult(lines.join('\n'));
+      }
+      lines.push('Versions scored:');
+      for (const v of sc.versionsScored) {
+        lines.push(`  - ${v.name} shipped ${v.shippedOn} (${v.snapshots} snapshot(s) graded)`);
+      }
+      lines.push('');
+      lines.push('Lead time | model    | samples | mean abs error | bias (+ = predicted too late)');
+      for (const b of sc.buckets) {
+        const models: Array<['planned' | 'velocity' | 'ticket', typeof b.planned]> = [
+          ['planned', b.planned],
+          ['velocity', b.velocity],
+          ['ticket', b.ticket],
+        ];
+        for (const [name, m] of models) {
+          if (!m) continue;
+          lines.push(
+            `${b.label.padEnd(9)} | ${name.padEnd(8)} | ${String(m.samples).padStart(7)} | ${m.meanAbsErrorDays.toFixed(1).padStart(11)} d | ${m.biasDays >= 0 ? '+' : ''}${m.biasDays.toFixed(1)} d`,
+          );
+        }
+      }
+      lines.push('');
+      lines.push(sc.verdict ? `Verdict: ${sc.verdict}` : 'Verdict: not enough overlapping samples to compare the models yet.');
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'velocity_report',
   'Measure the empirical focus factor — the fraction of nominal capacity that actually reaches planned-ticket work — from completion history, and recommend a value for the map\'s focusFactor knob (settable via update_map). Reads estimate-weighted percentComplete deltas from change_events over a window (default 8 weeks), so it captures the drag of meetings/support/firefighting/unplanned work without inferring per-ticket duration. Batch writes (hygiene passes, sprint-close) are detected by shared timestamps and excluded from the clean rate. Read-only; it does not change the forecast — set the recommended value with update_map to apply it.',
   {
@@ -2277,7 +2324,7 @@ server.tool(
       const res = await api.listVersions(mapId);
       if (res.length === 0) return toolResult('No versions found.');
       const lines = res.map((v) =>
-        `- ${v.name} (id: ${v.id}) [${v.status}]${v.targetDate ? ` target: ${v.targetDate}` : ''}`,
+        `- ${v.name} (id: ${v.id}) [${v.status}]${v.targetDate ? ` target: ${v.targetDate}` : ''}${v.releasedAt ? ` shipped: ${v.releasedAt.slice(0, 10)}` : ''}`,
       );
       return toolResult(lines.join('\n'));
     } catch (err) {

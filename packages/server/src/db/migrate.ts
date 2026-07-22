@@ -872,5 +872,19 @@ export async function runMigrations(): Promise<void> {
     CREATE INDEX IF NOT EXISTS lint_dismissals_map_idx ON lint_dismissals (map_id)
   `);
 
+  // ── Forecast scoreboard (ticket model + ship-date ground truth) ──
+  // released_at is the empirical anchor: set when a version's status
+  // transitions into 'released', it lets the scorecard grade every
+  // historical snapshot's predictions against what actually happened.
+  await db.execute(sql`
+    ALTER TABLE versions ADD COLUMN IF NOT EXISTS released_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    ALTER TABLE release_snapshots ADD COLUMN IF NOT EXISTS ticket_model_finish_date DATE
+  `);
+  await db.execute(sql`
+    ALTER TABLE release_snapshots ADD COLUMN IF NOT EXISTS remaining_tickets REAL
+  `);
+
   console.log('[db] Migrations complete.');
 }

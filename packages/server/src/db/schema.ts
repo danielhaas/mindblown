@@ -333,6 +333,9 @@ export const versions = pgTable('versions', {
   status: text('status').notNull().default('planning'),
   targetDate: date('target_date'),
   sortOrder: real('sort_order').notNull().default(0),
+  // Ship-date ground truth for the forecast scorecard: set on the status
+  // transition into 'released', cleared when a release is reopened.
+  releasedAt: timestamp('released_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -356,6 +359,8 @@ export const releaseSnapshots = pgTable('release_snapshots', {
   targetDate: date('target_date'),
   plannedFinishDate: date('planned_finish_date'),
   velocityAdjustedFinishDate: date('velocity_adjusted_finish_date'),
+  ticketModelFinishDate: date('ticket_model_finish_date'),
+  remainingTickets: real('remaining_tickets'),
   remainingEffort: real('remaining_effort').notNull(),
   totalEffort: real('total_effort').notNull(),
   leaves: real('leaves').notNull(),
