@@ -636,4 +636,14 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     });
     return reply.send({ events: rows });
   });
+
+  // ── Who last touched each node (Workload view) ────────────────
+  //
+  // Returns one entry per live node of the map. The Workload view uses it
+  // as the last fallback for "whose work is this?", behind assigneeIds and
+  // claimedBySession — see `computeWorkloads`.
+  app.get<{ Params: { id: string } }>('/api/maps/:id/nodes/actors', async (req, reply) => {
+    const actors = await events.getLastActorByNode(req.params.id);
+    return reply.send({ actors });
+  });
 }

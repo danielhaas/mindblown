@@ -158,6 +158,7 @@ export function HillChart() {
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1e293b' }}>Hill Chart</h2>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: '#94a3b8' }}>
             Drag dots along the hill. Left = figuring it out, Right = making it happen.
+            Faded dots are auto-placed from rolled-up progress until you drag them.
           </p>
         </div>
         {/* Legend */}
@@ -262,8 +263,18 @@ export function HillChart() {
             const isDragging = branch.node.id === dragging;
             const isHovered = branch.node.id === hovered;
 
+            // Neighbours along the hill alternate label heights, so two
+            // dots that end up close together don't overprint each other.
+            const labelY = cy - r - (branch.rank % 2 === 0 ? 8 : 22);
+
             return (
               <g key={branch.node.id}>
+                <title>
+                  {branch.node.text}
+                  {branch.isDerived
+                    ? ` — auto-placed from ${Math.round(branch.computed.computedProgress)}% progress. Drag to set it yourself.`
+                    : ` — placed at ${Math.round(branch.hillPosition)}`}
+                </title>
                 {/* Drop shadow */}
                 {(isHovered || isDragging) && (
                   <circle cx={cx} cy={cy} r={r + 4} fill={color} opacity="0.2" />
@@ -282,14 +293,16 @@ export function HillChart() {
                   />
                 )}
 
-                {/* Main dot */}
+                {/* Main dot — auto-placed dots read as provisional */}
                 <circle
                   cx={cx}
                   cy={cy}
                   r={r}
                   fill={color}
+                  fillOpacity={branch.isDerived ? 0.65 : 1}
                   stroke="#fff"
                   strokeWidth="2"
+                  strokeDasharray={branch.isDerived ? '3,2' : undefined}
                   style={{ cursor: 'grab', transition: isDragging ? 'none' : 'cx 0.15s, cy 0.15s' }}
                   onPointerDown={(e) => handlePointerDown(branch.node.id, e)}
                   onPointerEnter={() => setHovered(branch.node.id)}
@@ -314,7 +327,7 @@ export function HillChart() {
                 {/* Label */}
                 <text
                   x={cx}
-                  y={cy - r - 8}
+                  y={labelY}
                   textAnchor="middle"
                   fill="#334155"
                   fontSize="11"

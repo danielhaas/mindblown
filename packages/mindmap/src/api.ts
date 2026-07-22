@@ -530,6 +530,17 @@ export function fetchNode(mapId: string, nodeId: string): Promise<Node> {
   return request<Node>(`/api/maps/${mapId}/nodes/${nodeId}`);
 }
 
+export interface NodeActor {
+  nodeId: string;
+  userId: string;
+  userName: string;
+}
+
+/** Who last touched each node — the Workload view's attribution fallback. */
+export function fetchNodeActors(mapId: string): Promise<{ actors: NodeActor[] }> {
+  return request<{ actors: NodeActor[] }>(`/api/maps/${mapId}/nodes/actors`);
+}
+
 export function createMap(name: string): Promise<MindMap> {
   // createdBy will be inferred from the auth token on the server,
   // but we send it as fallback for compatibility

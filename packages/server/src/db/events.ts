@@ -140,6 +140,48 @@ export async function listEvents(opts: ListEventsOptions): Promise<ChangeEvent[]
   }));
 }
 
+/**
+ * Who last touched each node of a map, from the change log.
+ *
+ * The Workload view needs a person per leaf. `assigneeIds` is the field
+ * built for that, but nothing writes it (no UI, and no MCP caller ever
+ * has), and `claimedBySession` only holds a value while work is in
+ * flight — so on a real map both are empty and the view has nothing to
+ * group by. Authorship is the one signal that is actually populated:
+ * whoever last edited a node is, in practice, the person carrying it.
+ *
+ * Falls back to `nodes.created_by` for nodes with no attributed event
+ * (imports, seeds, anything predating the change log). Nodes whose only
+ * events have a null `user_id` — MCP/agent writes without a session
+ * user — are omitted rather than bucketed under a fake actor.
+ */
+export async function getLastActorByNode(
+  mapId: string,
+): Promise<Array<{ nodeId: string; userId: string; userName: string }>> {
+  const rows = await db.execute(sql`
+    with attributed as (
+      select distinct on (e.node_id)
+        e.node_id, e.user_id
+      from change_events e
+      where e.map_id = ${mapId} and e.node_id is not null and e.user_id is not null
+      order by e.node_id, e.created_at desc
+    )
+    select n.id as node_id,
+           coalesce(a.user_id, n.created_by) as user_id,
+           u.name as user_name
+    from nodes n
+    left join attributed a on a.node_id = n.id
+    join users u on u.id = coalesce(a.user_id, n.created_by)
+    where n.map_id = ${mapId} and n.deleted_at is null
+  `);
+
+  return (rows.rows as Array<{ node_id: string; user_id: string; user_name: string }>).map((r) => ({
+    nodeId: r.node_id,
+    userId: r.user_id,
+    userName: r.user_name,
+  }));
+}
+
 /** Count events per event_type + field for a scope. Used by digest/burnup. */
 export async function countEventsByType(
   mapId: string,

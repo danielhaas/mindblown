@@ -95,6 +95,10 @@ export interface MindmapState {
   // Phase state (PhaseDefs live on currentMap.phases; only the filter is store state)
   activePhaseFilter: string | null;
 
+  // Workload attribution — who last touched each node (loaded on demand)
+  nodeActors: Map<string, { userId: string; userName: string }>;
+  nodeActorsMapId: string | null;
+
   // UI state
   activeView: ActiveView;
   loading: boolean;
@@ -148,6 +152,9 @@ export interface MindmapState {
 
   // Actions — phase
   setActivePhaseFilter: (phaseId: string | null) => void;
+
+  // Actions — workload attribution
+  loadNodeActors: () => Promise<void>;
 
   // Actions — layout
   setLayoutType: (layout: 'tree-lr' | 'tree-tb' | 'radial' | 'org-chart') => void;
@@ -216,6 +223,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   versions: [],
   activeVersionFilter: null,
   activePhaseFilter: null,
+  nodeActors: new Map(),
+  nodeActorsMapId: null,
   activeView: 'mindmap',
   loading: false,
   error: null,
@@ -556,6 +565,33 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       set({ versions });
     } catch (e: any) {
       set({ error: e.message ?? 'Failed to load versions' });
+    }
+  },
+
+  /**
+   * Fetch the per-node "who last touched this" map for the current map.
+   *
+   * Only the Workload view needs it, and it costs a query over the whole
+   * change log, so it is loaded on demand when that view mounts rather
+   * than as part of loadMap. Cached per map id; a failure leaves the map
+   * empty, which just degrades attribution back to assignees/claims.
+   */
+  loadNodeActors: async () => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId) {
+      set({ nodeActors: new Map(), nodeActorsMapId: null });
+      return;
+    }
+    if (state.nodeActorsMapId === mapId) return;
+    try {
+      const { actors } = await api.fetchNodeActors(mapId);
+      set({
+        nodeActors: new Map(actors.map((a) => [a.nodeId, { userId: a.userId, userName: a.userName }])),
+        nodeActorsMapId: mapId,
+      });
+    } catch {
+      set({ nodeActors: new Map(), nodeActorsMapId: mapId });
     }
   },
 

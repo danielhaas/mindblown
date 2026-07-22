@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import { computeWorkloads } from './viewScope.js';
 
@@ -28,6 +28,15 @@ export function WorkloadView() {
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const activeCycleFilter = useMindmapStore((s) => s.activeCycleFilter);
   const activePhaseFilter = useMindmapStore((s) => s.activePhaseFilter);
+  const nodeActors = useMindmapStore((s) => s.nodeActors);
+  const loadNodeActors = useMindmapStore((s) => s.loadNodeActors);
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
+
+  // Attribution fallback — fetched here rather than in loadMap because
+  // this is the only view that needs it and it queries the change log.
+  useEffect(() => {
+    void loadNodeActors();
+  }, [currentMapId, loadNodeActors]);
 
   const [capacity, setCapacity] = useState(40);
   const [editingCapacity, setEditingCapacity] = useState(false);
@@ -46,8 +55,9 @@ export function WorkloadView() {
       computeWorkloads(
         getVisibleNodes({ respectFocus: false, respectDepth: false, respectCollapsed: false }),
         statusWorkflow,
+        nodeActors,
       ),
-    [nodes, rootNodeId, getVisibleNodes, activeVersionFilter, activeCycleFilter, activePhaseFilter, statusWorkflow],
+    [nodes, rootNodeId, getVisibleNodes, activeVersionFilter, activeCycleFilter, activePhaseFilter, statusWorkflow, nodeActors],
   );
 
   const maxEffort = Math.max(capacity, ...workloads.map((w) => w.total));
@@ -93,7 +103,9 @@ export function WorkloadView() {
         <div>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1e293b' }}>Workload</h2>
           <p style={{ margin: '4px 0 0', fontSize: 12, color: '#94a3b8' }}>
-            Effort distribution by assignee. Click a bar segment to see tasks.
+            Effort distribution by person. Click a bar segment to see tasks.
+            Names marked <span style={{ color: '#94a3b8' }}>~</span> are inferred from who last
+            edited the work; assign a node to make it authoritative.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
@@ -176,7 +188,7 @@ export function WorkloadView() {
           >
             {activeVersionFilter || activeCycleFilter || activePhaseFilter
               ? 'No assigned tasks with effort estimates match the active filter.'
-              : 'No assigned tasks with effort estimates found. Assign tasks and add effort estimates to leaf nodes.'}
+              : 'No leaf nodes with effort estimates found. Add effort estimates to leaf nodes.'}
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -200,9 +212,20 @@ export function WorkloadView() {
                       textOverflow: 'ellipsis',
                       whiteSpace: 'nowrap',
                     }}
-                    title={w.assigneeId}
+                    title={
+                      w.source === 'assignee'
+                        ? `${w.label} — assigned`
+                        : w.source === 'claim'
+                          ? `${w.label} — claimed by this session`
+                          : `${w.label} — inferred from who last edited these nodes (nothing is assigned)`
+                    }
                   >
-                    {w.assigneeId}
+                    {w.label}
+                    {w.source !== 'assignee' && (
+                      <span style={{ color: '#cbd5e1', fontWeight: 400 }}>
+                        {w.source === 'claim' ? ' ⧗' : ' ~'}
+                      </span>
+                    )}
                   </div>
 
                   {/* Bar container */}
