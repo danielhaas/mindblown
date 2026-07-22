@@ -1,4 +1,10 @@
-import type { Node as CoreNode, MindMap, ComputedNodeValues, NodeId } from '@mindblown/core';
+import type {
+  Node as CoreNode,
+  MindMap,
+  ComputedNodeValues,
+  NodeId,
+  Version,
+} from '@mindblown/core';
 import {
   Document,
   HeadingLevel,
@@ -46,7 +52,11 @@ export interface RegisterRow {
   id: string;
   text: string;
   prio: string;
+  /** Version name, "↳ V2" when inherited from the work below, "—" when unscheduled. */
+  release: string;
   status: string;
+  /** Status with the derived percentage on partial rows, e.g. "Teilweise · 42 %". */
+  statusDetail: string;
   aufwand: string;
   rest: string;
   /** e.g. "D. Haas ✓ 15.07." — one entry per active acceptance, ⚠-suffixed when stale. */
@@ -77,6 +87,7 @@ export function buildRegisterData(
   nodes: CoreNode[],
   computed: Map<NodeId, ComputedNodeValues>,
   acceptances: Array<AcceptanceInfo & { nodeId: string }> = [],
+  versions: Version[] = [],
 ): RegisterData {
   const accByNode = new Map<string, Array<AcceptanceInfo & { nodeId: string }>>();
   for (const a of acceptances) {
@@ -91,6 +102,25 @@ export function buildRegisterData(
       : (n.percentComplete ?? 0);
   const statusOf = (p: number): string =>
     p >= 99.5 ? 'Umgesetzt' : p > 0 ? 'Teilweise' : 'Offen';
+
+  // Release label, mirroring the register UI: the version tagged on the
+  // requirement itself, else the one(s) carried by the work below it —
+  // requirements are usually scheduled through their children, not directly.
+  const versionName = new Map(versions.map((v) => [v.id, v.name]));
+  const releaseOf = (n: CoreNode): string => {
+    if (n.versionId) return versionName.get(n.versionId) ?? '—';
+    const below = new Set<string>();
+    const stack = [...n.childrenIds];
+    while (stack.length) {
+      const c = byId.get(stack.pop()!);
+      if (!c) continue;
+      if (c.versionId) below.add(c.versionId);
+      stack.push(...c.childrenIds);
+    }
+    if (below.size === 0) return '—';
+    if (below.size === 1) return `↳ ${versionName.get([...below][0]) ?? '—'}`;
+    return `↳ ${below.size} Releases`;
+  };
 
   // Depth-first order for chapter (= parent) sorting.
   const dfs = new Map<string, number>();
@@ -139,7 +169,11 @@ export function buildRegisterData(
             id: n.requirementId ?? '',
             text: (n.requirementText ?? n.text).replace(/\n/g, ' '),
             prio: PRIO[n.requirementPriority ?? ''] ?? '—',
+            release: releaseOf(n),
             status,
+            // "Teilweise" alone reads the same at 5 % and 95 % — the number
+            // is the whole point of a derived status.
+            statusDetail: status === 'Teilweise' ? `${status} · ${Math.round(p)} %` : status,
             aufwand: sizeOf(effort),
             rest: status === 'Umgesetzt' ? '—' : sizeOf(effort * (1 - p / 100)),
             abnahme,
@@ -160,7 +194,8 @@ export function buildRegisterData(
 
 const LEGEND = [
   '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
-  '**Status:** Umgesetzt · Teilweise · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)',
+  '**Release:** geplante Version · **↳** = aus den darunterliegenden Arbeitspaketen abgeleitet · «—» noch keiner Version zugeordnet',
+  '**Status:** Umgesetzt · Teilweise (mit Fortschritt) · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» bei Umgesetzt): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
   '**Abnahme:** ✓ abgenommen · ✗ abgelehnt (mit Begründung) · ⚠ seit dem Urteil geändert',
 ];
@@ -186,11 +221,11 @@ export function renderMarkdown(data: RegisterData): string {
     L.push('');
     L.push(`## ${i + 1}. ${ch.name}`);
     L.push('');
-    L.push('| ID | Anforderung | Priorität | Status | Aufwand | Rest | Abnahme |');
-    L.push('|---|---|---|---|---|---|---|');
+    L.push('| ID | Anforderung | Priorität | Release | Status | Aufwand | Rest | Abnahme |');
+    L.push('|---|---|---|---|---|---|---|---|');
     for (const r of ch.rows) {
       L.push(
-        `| ${r.id} | ${r.text.replace(/\|/g, '\\|')} | ${r.prio} | ${r.status} | ${r.aufwand} | ${r.rest} | ${r.abnahme.join(' · ') || '—'} |`,
+        `| ${r.id} | ${r.text.replace(/\|/g, '\\|')} | ${r.prio} | ${r.release} | ${r.statusDetail} | ${r.aufwand} | ${r.rest} | ${r.abnahme.join(' · ') || '—'} |`,
       );
     }
   });
@@ -206,11 +241,12 @@ const STATUS_FILL: Record<string, string> = {
   Offen: 'f1f5f9',
 };
 
-// Column widths as % of table width: ID, Anforderung, Priorität, Status,
-// Aufwand, Rest, Abnahme. LibreOffice ignores percentage widths that only
-// sit on header cells — the table needs an explicit grid (columnWidths, in
-// DXA) and fixed layout, and every cell must carry its column width.
-const COL_PCT = [9, 43, 9, 11, 7, 7, 14];
+// Column widths as % of table width: ID, Anforderung, Priorität, Release,
+// Status, Aufwand, Rest, Abnahme. LibreOffice ignores percentage widths that
+// only sit on header cells — the table needs an explicit grid (columnWidths,
+// in DXA) and fixed layout, and every cell must carry its column width.
+// Release is paid for out of Anforderung; Status widened for the "· 42 %".
+const COL_PCT = [8, 35, 8, 10, 13, 6, 6, 14];
 // Usable A4 portrait width with the docx default 1440-twip margins.
 const TABLE_DXA = 11906 - 2 * 1440;
 const COL_DXA = COL_PCT.map((p) => Math.round((TABLE_DXA * p) / 100));
@@ -279,10 +315,11 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
         cell('ID', { bold: true, fill: 'e2e8f0', width: COL_PCT[0] }),
         cell('Anforderung', { bold: true, fill: 'e2e8f0', width: COL_PCT[1] }),
         cell('Priorität', { bold: true, fill: 'e2e8f0', width: COL_PCT[2] }),
-        cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
-        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
-        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
-        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
+        cell('Release', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
+        cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
+        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
+        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
+        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[7] }),
       ],
     });
     const rows = ch.rows.map(
@@ -292,10 +329,11 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
             cell(r.id, { bold: true, width: COL_PCT[0] }),
             cell(r.text, { width: COL_PCT[1] }),
             cell(r.prio, { width: COL_PCT[2] }),
-            cell(r.status, { fill: STATUS_FILL[r.status], width: COL_PCT[3] }),
-            cell(r.aufwand, { width: COL_PCT[4] }),
-            cell(r.rest, { width: COL_PCT[5] }),
-            cell(r.abnahme.join('\n') || '—', { width: COL_PCT[6] }),
+            cell(r.release, { width: COL_PCT[3] }),
+            cell(r.statusDetail, { fill: STATUS_FILL[r.status], width: COL_PCT[4] }),
+            cell(r.aufwand, { width: COL_PCT[5] }),
+            cell(r.rest, { width: COL_PCT[6] }),
+            cell(r.abnahme.join('\n') || '—', { width: COL_PCT[7] }),
           ],
         }),
     );
