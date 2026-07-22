@@ -368,6 +368,7 @@ export function ReleasesView() {
                 <th style={thStyle}>Start</th>
                 <th style={thStyle}>Target</th>
                 <th style={thStyle}>Projected</th>
+                <th style={thStyle} title="Independent second model: open leaves ÷ net ticket completion rate. Counts tickets instead of summing estimates, so unestimated work still weighs in.">Ticket model</th>
                 <th style={thStyle}>Slip</th>
                 <th style={{ ...thStyle, width: 220 }}>Scope</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
@@ -454,6 +455,14 @@ export function ReleasesView() {
                           }
                           return null;
                         })()}
+                    </td>
+                    <td style={tdStyle}>
+                      <div>{formatDate(row?.ticketModelFinishDate ?? null)}</div>
+                      {row && row.ticketModelFinishDate && (
+                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                          {row.remainingTickets} open
+                        </div>
+                      )}
                     </td>
                     <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
                     <td style={tdStyle}>

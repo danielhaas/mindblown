@@ -23,11 +23,16 @@ export interface ReleaseForecastRow {
   noEstimateLeaves: number;
   totalEffort: number;
   remainingEffort: number;
+  /** Open (progress < 99.5%) leaves in scope — the ticket model's numerator. */
+  remainingTickets: number;
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
+  /** Independent second model: remainingTickets ÷ net ticket rate, chained. */
+  ticketModelFinishDate: string | null;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
+  slipTicketDays: number | null;
 }
 
 export interface ReleaseForecastResult {
@@ -39,6 +44,10 @@ export interface ReleaseForecastResult {
   calibrationLeafCount: number;
   /** Why the fudge factor is withheld (null when it is applied or no samples). */
   calibrationNote: string | null;
+  /** Measured net rates used, when provided (null = knob-based fallback). */
+  netEffortPerDay: number | null;
+  netTicketsPerDay: number | null;
+  ratesWindowDays: number | null;
   releases: ReleaseForecastRow[];
 }
 
@@ -61,11 +70,21 @@ export interface ReleaseForecastResult {
  * but do NOT advance the cumulative cursor — they represent shipped
  * work with no wall-clock cost on future releases.
  */
+export interface MeasuredRates {
+  /** Net effort units per calendar day (gross × (1 − rework)); null = unmeasured. */
+  netEffortPerDay?: number | null;
+  /** Net completed tickets per calendar day (organic events × (1 − rework)); null = unmeasured. */
+  netTicketsPerDay?: number | null;
+  /** Look-back window the rates were measured over, for display. */
+  windowDays?: number;
+}
+
 export function computeReleaseForecast(
   map: MindMap,
   nodes: CoreNode[],
   versions: Version[],
   now: Date = new Date(),
+  rates?: MeasuredRates,
 ): ReleaseForecastResult {
   // ── Constants ──
   const MS_PER_DAY = 86_400_000;
@@ -130,6 +149,16 @@ export function computeReleaseForecast(
   const sorted = [...versions].sort(compareVersions);
   let plannedCursor = anchor;
   let velocityCursor = anchor;
+  let ticketCursor = anchor;
+
+  // Measured rates (net of rework), when the caller could measure them.
+  // The velocity line prefers the measured effort rate over the manual
+  // fudge/focus knobs — measurement beats knob. The ticket model is a
+  // fully independent second opinion: it counts open leaves instead of
+  // summing estimates, so unestimated work (invisible to the day model)
+  // still weighs in.
+  const netEffortPerDay = rates?.netEffortPerDay ?? null;
+  const netTicketsPerDay = rates?.netTicketsPerDay ?? null;
 
   const releases: ReleaseForecastRow[] = sorted.map((v) => {
     const scopedLeaves = allLeaves.filter((l) => ancestorVersions(l.id).has(v.id));
@@ -137,18 +166,21 @@ export function computeReleaseForecast(
     let totalEffort = 0;
     let remainingEffort = 0;
     let noEstimateLeaves = 0;
+    let remainingTickets = 0;
     for (const leaf of scopedLeaves) {
       if (leaf.effortEstimate == null) noEstimateLeaves++;
       const est = leaf.effortEstimate ?? 0;
       const prog = leaf.percentComplete ?? 0;
       totalEffort += est;
       remainingEffort += est * (1 - prog / 100);
+      if (prog < 99.5) remainingTickets++;
     }
 
     const isSequenced = v.status !== 'released' && v.status !== 'archived';
     let effectiveStartDate: string | null = null;
     let plannedFinishDate: string | null = null;
     let velocityAdjustedFinishDate: string | null = null;
+    let ticketModelFinishDate: string | null = null;
 
     if (isSequenced && scopedLeaves.length > 0) {
       effectiveStartDate = iso(plannedCursor);
@@ -158,10 +190,19 @@ export function computeReleaseForecast(
       plannedFinishDate = iso(plannedFinish);
       plannedCursor = plannedFinish;
 
-      const velCalDays = (remainingEffort * effectiveFudge) / (dailyCapacity * focusFactor);
+      const velCalDays =
+        netEffortPerDay != null && netEffortPerDay > 0
+          ? remainingEffort / netEffortPerDay
+          : (remainingEffort * effectiveFudge) / (dailyCapacity * focusFactor);
       const velFinish = addCalendarDays(velocityCursor, velCalDays);
       velocityAdjustedFinishDate = iso(velFinish);
       velocityCursor = velFinish;
+
+      if (netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0) {
+        const ticketFinish = addCalendarDays(ticketCursor, remainingTickets / netTicketsPerDay);
+        ticketModelFinishDate = iso(ticketFinish);
+        ticketCursor = ticketFinish;
+      }
     }
 
     let slipPlannedDays: number | null = null;
@@ -186,11 +227,17 @@ export function computeReleaseForecast(
       noEstimateLeaves,
       totalEffort,
       remainingEffort,
+      remainingTickets,
       effectiveStartDate,
       plannedFinishDate,
       velocityAdjustedFinishDate,
+      ticketModelFinishDate,
       slipPlannedDays,
       slipVelocityDays,
+      slipTicketDays:
+        v.targetDate && ticketModelFinishDate
+          ? daysBetween(new Date(ticketModelFinishDate), new Date(v.targetDate))
+          : null,
     };
   });
 
@@ -202,6 +249,9 @@ export function computeReleaseForecast(
     focusFactor,
     calibrationLeafCount: calibration.sampleCount,
     calibrationNote: calibration.note,
+    netEffortPerDay,
+    netTicketsPerDay,
+    ratesWindowDays: rates?.windowDays ?? null,
     releases,
   };
 }

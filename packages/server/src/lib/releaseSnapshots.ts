@@ -4,6 +4,7 @@ import { releaseSnapshots, maps as mapsTable } from '../db/schema.js';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
 import { computeReleaseForecast } from './releaseForecast.js';
+import { measureMapVelocity } from './velocityMeasure.js';
 import type { ReleaseForecastResult } from './releaseForecast.js';
 
 /**
@@ -27,7 +28,13 @@ export async function snapshotReleaseForecastForMap(
     const data = await mapDb.getMap(mapId);
     if (!data) return 0;
     const versions = await versionDb.listVersions(data.map.id);
-    result = computeReleaseForecast(data.map, data.nodes, versions);
+    // Measured rates make the snapshot record what the forecast actually
+    // said (net-rate velocity + ticket model), not a knob-based shadow of
+    // it. Measurement failure degrades to knobs — never blocks the cron.
+    const rates = await measureMapVelocity(mapId, data, 56)
+      .then((m) => m.rates)
+      .catch(() => undefined);
+    result = computeReleaseForecast(data.map, data.nodes, versions, new Date(), rates);
   }
 
   const snapshotDate = new Date().toISOString().slice(0, 10);

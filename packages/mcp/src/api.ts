@@ -802,6 +802,12 @@ export interface VelocityResponse {
     netRatePerDay: number;
     truncated: boolean;
   } | null;
+  /** Distilled NET rates (evidence-gated null) — what the forecasts run on. */
+  rates?: {
+    netEffortPerDay: number | null;
+    netTicketsPerDay: number | null;
+    windowDays?: number;
+  };
 }
 
 export function getVelocity(
