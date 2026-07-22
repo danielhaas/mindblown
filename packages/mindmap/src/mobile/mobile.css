@@ -907,6 +907,16 @@ body.mobile {
   padding: 1px 8px;
 }
 
+.mb-req-release {
+  font-size: 11px;
+  color: #3730a3;
+  background: #eef2ff;
+  border: 1px solid #e0e7ff;
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
 .mb-req-text {
   font-size: 14px;
   color: #0f172a;
