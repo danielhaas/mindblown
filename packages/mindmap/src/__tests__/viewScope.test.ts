@@ -124,7 +124,6 @@ function setStoreState(overrides: Record<string, unknown> = {}) {
     rootNodeId: 'root',
     computed: computeTree(Object.values(nodes)),
     focusNodeId: null,
-    focusHistory: [],
     maxDepth: 0,
     activeVersionFilter: null,
     activeCycleFilter: null,

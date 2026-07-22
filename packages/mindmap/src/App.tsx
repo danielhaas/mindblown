@@ -26,6 +26,7 @@ import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { MapChatPanel } from './MapChatPanel.js';
 import { useMapChatUnread } from './useMapChatUnread.js';
+import { useUrlState } from './useUrlState.js';
 import { Breadcrumb } from './Breadcrumb.js';
 import { WorkspaceSettings } from './WorkspaceSettings.js';
 import { HelpOverlay } from './HelpOverlay.js';
@@ -1593,22 +1594,6 @@ export function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [currentMapId]);
 
-  // Mouse "back" button (XButton1) — pop one entry off the focus
-  // navigation history. When no history is available, the browser's
-  // default back navigation is preserved.
-  useEffect(() => {
-    if (!currentMapId) return;
-    const handler = (e: MouseEvent) => {
-      if (e.button !== 3) return;
-      const { focusHistory, popFocusHistory } = useMindmapStore.getState();
-      if (focusHistory.length === 0) return;
-      e.preventDefault();
-      popFocusHistory();
-    };
-    window.addEventListener('mousedown', handler);
-    return () => window.removeEventListener('mousedown', handler);
-  }, [currentMapId]);
-
   // Helper callbacks for command palette
   const handleFitToScreen = useCallback(() => {
     (window as any).__mindmapFitToScreen?.();
@@ -1633,42 +1618,11 @@ export function App() {
     }
   }, [currentMapId, loadCycles, loadVersions]);
 
-  // Auto-open if there's only one map
-  const autoOpened = useRef(false);
-
-  // URL → state: on first auth, open the map in ?map=<id> if present.
-  // Sets autoOpened so the single-map auto-opener doesn't race ahead.
-  const urlMapInitDone = useRef(false);
-  useEffect(() => {
-    if (!user || urlMapInitDone.current) return;
-    urlMapInitDone.current = true;
-    const mapId = new URLSearchParams(window.location.search).get('map');
-    if (mapId) {
-      autoOpened.current = true;
-      loadMap(mapId);
-    }
-  }, [user, loadMap]);
-
-  // State → URL: mirror currentMapId into ?map=<id> via replaceState so the
-  // URL is shareable / reload-safe without polluting browser history.
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    const current = url.searchParams.get('map');
-    if (currentMapId && current !== currentMapId) {
-      url.searchParams.set('map', currentMapId);
-      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
-    } else if (!currentMapId && current) {
-      url.searchParams.delete('map');
-      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
-    }
-  }, [currentMapId]);
-
-  useEffect(() => {
-    if (!autoOpened.current && !currentMapId && !loading && maps.length === 1) {
-      autoOpened.current = true;
-      loadMap(maps[0].id);
-    }
-  }, [maps, currentMapId, loading, loadMap]);
+  // URL ⇄ view state: which map, view, drill-down focus, selection, depth
+  // and scope filters — so a copied link or a reload lands where you were.
+  // Also owns opening the map (from ?map= or the single-map auto-open), so
+  // that logic lives in one place instead of racing effects here.
+  useUrlState();
 
   const handleCreateMap = useCallback(() => {
     const name = prompt('Map name:');

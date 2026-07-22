@@ -9,6 +9,7 @@ import { MobileMindmapView } from './MobileMindmapView.js';
 import { MobileRequirementsView } from './MobileRequirementsView.js';
 import { MobileNodeDetailSheet } from './MobileNodeDetailSheet.js';
 import { MobileAddNodeSheet } from './MobileAddNodeSheet.js';
+import { parseUrlState, serializeUrlState } from '../urlState.js';
 
 type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap' | 'requirements';
 
@@ -22,12 +23,34 @@ const VIEW_LABELS: Record<ViewKey, string> = {
   requirements: 'Reqs',
 };
 
+/**
+ * The URL wins over the sticky localStorage preference, so a shared link
+ * opens the tab it names. `view` uses the desktop param vocabulary, of
+ * which the mobile tabs are a subset — a desktop-only view (hill, workload)
+ * falls through to the remembered tab rather than rendering nothing.
+ */
 function readDefaultView(): ViewKey {
+  const fromUrl = parseUrlState(window.location.search).view;
+  if (fromUrl && fromUrl in VIEW_LABELS) return fromUrl as ViewKey;
   try {
     const v = localStorage.getItem(VIEW_KEY);
     if (v && v in VIEW_LABELS) return v as ViewKey;
   } catch {}
   return 'list';
+}
+
+/** Mirror the active tab into `?view=`, replacing so tabs don't stack up. */
+function writeViewParam(view: ViewKey): void {
+  const search = serializeUrlState(window.location.search, {
+    ...parseUrlState(window.location.search),
+    view,
+  });
+  if (search === window.location.search) return;
+  window.history.replaceState(
+    {},
+    '',
+    window.location.pathname + search + window.location.hash,
+  );
 }
 
 interface Props {
@@ -142,10 +165,18 @@ export function MobileViewer({ map }: Props) {
 
   const setViewPersist = (v: ViewKey) => {
     setView(v);
+    writeViewParam(v);
     try {
       localStorage.setItem(VIEW_KEY, v);
     } catch {}
   };
+
+  // Reflect the initial tab (URL or remembered) into the URL, so the link
+  // in the address bar is copy-ready without touching a tab first.
+  useEffect(() => {
+    writeViewParam(view);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const nodes: NodeWithComputed[] = detail?.nodes ?? [];
   const byId = new Map(nodes.map((n) => [n.id, n]));
