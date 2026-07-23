@@ -54,6 +54,7 @@ import { applyTriageLabel } from './triageLabelWriteback.js';
 import {
   triageIssue,
   TRIAGE_AUTO_APPLY_CONFIDENCE,
+  shouldAutoConfirmSkip,
   computeInputHash,
   isWithinDebounceWindow,
   markTriageDebounce,
@@ -906,6 +907,13 @@ async function ensureNodeForIssueViaTriage(
     const isTriageError = decision.reason.startsWith('triage_error');
     const nextInputHash: string | null = isTriageError ? null : incomingHash;
 
+    // Auto-confirm-skip lever: a high-confidence skip on a CLOSED issue
+    // is persisted already-reviewed so it never queues for the operator.
+    // decidedBy stays 'auto' — the operator-protect precheck above only
+    // shields decidedBy='operator' rows, so a later webhook can still
+    // overwrite this decision.
+    const autoConfirmSkip = shouldAutoConfirmSkip(decision, issue.state);
+
     const [decisionRow] = await tx
       .insert(triageDecisions)
       .values({
@@ -919,7 +927,8 @@ async function ensureNodeForIssueViaTriage(
         placedNodeId: null,
         suggestedParentNodeId,
         decidedBy: 'auto',
-        reviewed: false,
+        reviewed: autoConfirmSkip,
+        reviewedAt: autoConfirmSkip ? new Date() : null,
         lastInputHash: nextInputHash,
       })
       .onConflictDoUpdate({
@@ -937,7 +946,9 @@ async function ensureNodeForIssueViaTriage(
           suggestedParentNodeId,
           decidedAt: new Date(),
           decidedBy: 'auto',
-          reviewed: false,
+          reviewed: autoConfirmSkip,
+          reviewedAt: autoConfirmSkip ? new Date() : null,
+          reviewedBy: null,
           // Refresh the input hash on every successful LLM call so
           // the next webhook can short-circuit. On triage_error we
           // pass `null` to clear a stale hash — better to re-call

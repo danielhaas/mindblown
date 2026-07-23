@@ -431,6 +431,18 @@ vi.mock('../triage.js', () => ({
     return { ...triageMockResponse };
   }),
   TRIAGE_AUTO_APPLY_CONFIDENCE: 75,
+  TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE: 95,
+  // Mirror the real gate (skip + closed + conf >= 95) so ingest tests
+  // exercise the auto-confirm lever without importing the real module.
+  shouldAutoConfirmSkip: vi.fn(
+    (
+      decision: { decision: string; confidence: number },
+      issueState: 'open' | 'closed',
+    ) =>
+      decision.decision === 'skip' &&
+      issueState === 'closed' &&
+      decision.confidence >= 95,
+  ),
   // #142 cost-opt helpers. computeInputHash returns a deterministic
   // string derived from the issue inputs so hash-match tests can
   // pre-seed dbState.triageDecisions.lastInputHash with the same
@@ -1224,7 +1236,93 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(createNodeCalls.length).toBe(0);
     const rows = [...dbState.triageDecisions.values()];
     expect(rows.length).toBe(1);
-    expect(rows[0]).toMatchObject({ decision: 'skip' });
+    expect(rows[0]).toMatchObject({ decision: 'skip', reviewed: false });
+  });
+
+  it('skip ≥95 on a CLOSED issue → persisted already-reviewed (auto-confirm lever)', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'Pattern 1 (closed-no-fit): tactical PR below roadmap granularity',
+      confidence: 96,
+    };
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(104, { state: 'closed', closed_at: new Date().toISOString() }),
+      ctx,
+      { allowClosedWithinDays: 30 },
+    );
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls.length).toBe(0);
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    // reviewed=true at persist time, but decidedBy stays 'auto' so a
+    // later webhook or reclassify can still overwrite the row.
+    expect(rows[0]).toMatchObject({
+      decision: 'skip',
+      reviewed: true,
+      decidedBy: 'auto',
+    });
+    expect(rows[0].reviewedAt).toBeInstanceOf(Date);
+  });
+
+  it('skip ≥95 on an OPEN issue → still queues for review (lever is closed-only)', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'vendor coordination, not coding work',
+      confidence: 98,
+    };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(105), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ decision: 'skip', reviewed: false });
+  });
+
+  it('skip at 94 on a CLOSED issue → below threshold, queues for review', async () => {
+    dbState.maps.set('m1', {
+      rootNodeId: 'root-1',
+      inboxId: 'inbox-1',
+      createdBy: 'u1',
+      triageEnabled: true,
+    });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = {
+      decision: 'skip',
+      reason: 'probably noise but not certain',
+      confidence: 94,
+    };
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(106, { state: 'closed', closed_at: new Date().toISOString() }),
+      ctx,
+      { allowClosedWithinDays: 30 },
+    );
+
+    expect(result.status).toBe('triaged_skip');
+    const rows = [...dbState.triageDecisions.values()];
+    expect(rows.length).toBe(1);
+    expect(rows[0]).toMatchObject({ decision: 'skip', reviewed: false });
   });
 
   it('triage_enabled=true + uncertain → triage row persisted, no node created', async () => {

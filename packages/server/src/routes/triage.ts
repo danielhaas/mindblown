@@ -62,7 +62,11 @@ import { notDeleted } from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
 import { broadcast } from '../ws.js';
 import { buildMapContext } from '../sync/mapContext.js';
-import { triageIssue, clearTriageDebounce } from '../sync/triage.js';
+import {
+  triageIssue,
+  clearTriageDebounce,
+  shouldAutoConfirmSkip,
+} from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
@@ -1812,6 +1816,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       // (force is intentionally unused for now; documented in the
       // route comment above.)
       void req.query.force;
+      // Same auto-confirm-skip lever as the ingest path: a reclassify
+      // that lands on a high-confidence skip for a closed issue doesn't
+      // need to re-enter the operator queue.
+      const autoConfirmSkip = shouldAutoConfirmSkip(
+        decision,
+        row.issueState === 'closed' ? 'closed' : 'open',
+      );
       await db
         .update(triageDecisions)
         .set({
@@ -1821,8 +1832,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           suggestedParentNodeId: newSuggestedParentNodeId,
           decidedBy: 'auto',
           decidedAt: new Date(),
-          reviewed: false,
-          reviewedAt: null,
+          reviewed: autoConfirmSkip,
+          reviewedAt: autoConfirmSkip ? new Date() : null,
           reviewedBy: null,
           lastInputHash: null,
           ...(clearPlacedNode ? { placedNodeId: null } : {}),
