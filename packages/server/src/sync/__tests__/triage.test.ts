@@ -28,6 +28,8 @@ import {
   clearTriageDebounce,
   _resetDebounceWindow,
   _setDebounceWindowMs,
+  shouldAutoConfirmSkip,
+  TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE,
   type TriageProvider,
 } from '../triage.js';
 
@@ -534,5 +536,43 @@ describe('debounce window', () => {
     _resetDebounceWindow();
     expect(isWithinDebounceWindow('m1', 'o/r#1')).toBe(false);
     expect(isWithinDebounceWindow('m1', 'o/r#2')).toBe(false);
+  });
+});
+
+describe('shouldAutoConfirmSkip', () => {
+  it('fires for a closed-issue skip at/above the threshold', () => {
+    expect(
+      shouldAutoConfirmSkip(
+        { decision: 'skip', confidence: TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE },
+        'closed',
+      ),
+    ).toBe(true);
+    expect(
+      shouldAutoConfirmSkip({ decision: 'skip', confidence: 100 }, 'closed'),
+    ).toBe(true);
+  });
+
+  it('never fires for open issues, regardless of confidence', () => {
+    expect(
+      shouldAutoConfirmSkip({ decision: 'skip', confidence: 100 }, 'open'),
+    ).toBe(false);
+  });
+
+  it('never fires below the threshold', () => {
+    expect(
+      shouldAutoConfirmSkip(
+        { decision: 'skip', confidence: TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE - 1 },
+        'closed',
+      ),
+    ).toBe(false);
+  });
+
+  it('never fires for place or uncertain decisions', () => {
+    expect(
+      shouldAutoConfirmSkip({ decision: 'place', confidence: 100 }, 'closed'),
+    ).toBe(false);
+    expect(
+      shouldAutoConfirmSkip({ decision: 'uncertain', confidence: 100 }, 'closed'),
+    ).toBe(false);
   });
 });

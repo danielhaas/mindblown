@@ -91,10 +91,51 @@ export const TRIAGE_AUTO_APPLY_CONFIDENCE = parseConfidenceEnv(
   75,
 );
 
-function parseConfidenceEnv(raw: string | undefined, fallback: number): number {
+/**
+ * Confidence threshold at/above which a `skip` decision on a CLOSED
+ * issue is persisted as already-reviewed (reviewed=true), so it never
+ * enters the operator queue. `place` had this lever from day one
+ * (TRIAGE_AUTO_APPLY_CONFIDENCE); skip did not, so every high-confidence
+ * "closed tactical PR, no epic fit" row waited for a human ack — the
+ * dominant review-burden pattern in production (~85% of skips).
+ *
+ * Scope is deliberately narrow: open-issue skips always queue for
+ * review (a skipped open issue is potentially lost planning signal),
+ * and `decidedBy` stays 'auto' so a later webhook or reclassify can
+ * still overwrite the row — auto-confirm is not operator curation.
+ *
+ * Range 0-101; 101 disables the lever (confidence caps at 100).
+ */
+export const TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE = parseConfidenceEnv(
+  process.env.TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE,
+  95,
+  101,
+);
+
+/**
+ * Gate for the auto-confirm-skip lever. Callers pass the freshly
+ * decided (or re-decided) triage outcome plus the issue state captured
+ * at decision time.
+ */
+export function shouldAutoConfirmSkip(
+  decision: Pick<TriageDecision, 'decision' | 'confidence'>,
+  issueState: 'open' | 'closed',
+): boolean {
+  return (
+    decision.decision === 'skip' &&
+    issueState === 'closed' &&
+    decision.confidence >= TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE
+  );
+}
+
+function parseConfidenceEnv(
+  raw: string | undefined,
+  fallback: number,
+  max = 100,
+): number {
   if (!raw) return fallback;
   const n = parseInt(raw, 10);
-  if (!Number.isFinite(n) || n < 0 || n > 100) return fallback;
+  if (!Number.isFinite(n) || n < 0 || n > max) return fallback;
   return n;
 }
 

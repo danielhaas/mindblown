@@ -412,6 +412,17 @@ vi.mock('../../sync/triage.js', () => ({
   computeInputHash: vi.fn(() => 'mock-hash'),
   markTriageDebounce: vi.fn(),
   isWithinDebounceWindow: vi.fn(() => false),
+  // Mirror the real gate (skip + closed + conf >= 95) so the
+  // reclassify route's auto-confirm-skip branch is exercised.
+  shouldAutoConfirmSkip: vi.fn(
+    (
+      decision: { decision: string; confidence: number },
+      issueState: 'open' | 'closed',
+    ) =>
+      decision.decision === 'skip' &&
+      issueState === 'closed' &&
+      decision.confidence >= 95,
+  ),
 }));
 
 vi.mock('../../sync/mapContext.js', () => ({
@@ -1098,6 +1109,56 @@ describe('POST .../confirm', () => {
 // ── POST /reclassify ─────────────────────────────────────────────
 
 describe('POST .../reclassify', () => {
+  it('reclassify → skip ≥95 on a closed issue lands already-reviewed (auto-confirm lever)', async () => {
+    seedRow({
+      id: 'tr-1',
+      issueState: 'closed',
+      decision: 'uncertain',
+      confidence: 0,
+      reason: 'triage_error: old junk',
+    });
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip',
+      reason: 'closed tactical PR, no epic fit',
+      confidence: 97,
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    expect(row.decision).toBe('skip');
+    // decidedBy stays 'auto', but the row skips the operator queue.
+    expect(row.decidedBy).toBe('auto');
+    expect(row.reviewed).toBe(true);
+    expect(row.reviewedAt).toBeInstanceOf(Date);
+  });
+
+  it('reclassify → skip ≥95 on an OPEN issue still queues for review', async () => {
+    seedRow({ id: 'tr-1', issueState: 'open' });
+    triageIssueMock.mockResolvedValueOnce({
+      decision: 'skip',
+      reason: 'vendor chatter',
+      confidence: 99,
+    });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/tr-1/reclassify',
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const row = triageRows.get('tr-1')!;
+    expect(row.decision).toBe('skip');
+    expect(row.reviewed).toBe(false);
+    expect(row.reviewedAt).toBeNull();
+  });
+
   it('re-runs triageIssue and updates the row in place', async () => {
     seedRow({
       id: 'tr-1',
