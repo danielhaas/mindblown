@@ -559,6 +559,155 @@ describe('search_nodes tool — versionId ancestor-walk', () => {
   });
 });
 
+describe('search_nodes tool — unversioned filter (#189)', () => {
+  // Same fixture as the versionId ancestor-walk suite: root has no
+  // version anywhere on its path; everything under `epic` has an
+  // effective version (own or inherited).
+  function buildMixedVersionMap(): MapDetail {
+    const node = (
+      id: string,
+      parentId: string | null,
+      childrenIds: string[],
+      versionId: string | null,
+    ): NodeWithComputed =>
+      ({
+        id,
+        mapId: 'm1',
+        parentId,
+        childrenIds,
+        text: id,
+        description: null,
+        effortEstimate: null,
+        actualEffort: null,
+        percentComplete: null,
+        status: null,
+        assigneeIds: [],
+        priority: null,
+        dueDate: null,
+        startDate: null,
+        tags: [],
+        dependencies: [],
+        versionId,
+        cycleId: null,
+        externalLinks: [],
+        collapsed: false,
+        createdAt: '2026-07-23T00:00:00Z',
+        updatedAt: '2026-07-23T00:00:00Z',
+        claimedBySession: null,
+        claimedAt: null,
+        computedEffort: 0,
+        computedProgress: 0,
+        healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: { id: 'm1', rootNodeId: 'root' } as unknown as MapDetail['map'],
+      nodes: [
+        node('root', null, ['epic', 'orphan-leaf'], null),
+        node('epic', 'root', ['leaf-v2', 'leaf-inherits'], 'unversioned-uuid'),
+        node('leaf-v2', 'epic', [], 'v2-uuid'),
+        node('leaf-inherits', 'epic', [], null),
+        // The §8.1 target: no version on itself OR any ancestor.
+        node('orphan-leaf', 'root', [], null),
+      ],
+    };
+  }
+
+  it('matches only nodes with no effective version on the whole ancestor path', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildMixedVersionMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      unversioned: true,
+    } as never);
+    expect(out).toContain('id: orphan-leaf');
+    expect(out).toContain('id: root');
+    // Inheriting leaf is covered by its epic's version — must NOT be
+    // reported, or the §8.1 sweep would re-assign it every tick.
+    expect(out).not.toContain('id: leaf-inherits');
+    expect(out).not.toContain('id: leaf-v2');
+    expect(out).not.toContain('id: epic');
+  });
+
+  it('combines with leavesOnly for the §8.1 sweep shape', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => buildMixedVersionMap();
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      unversioned: true,
+      leavesOnly: true,
+    } as never);
+    expect(out).toContain('id: orphan-leaf');
+    expect(out).not.toContain('id: root');
+  });
+
+  it('reports the filter in the empty-result message', async () => {
+    const recorder = makeRecordingBackend();
+    const map = buildMixedVersionMap();
+    // Give every node an effective version → no unversioned nodes left.
+    map.nodes = map.nodes.map((n) =>
+      n.id === 'root' ? ({ ...n, versionId: 'v1-uuid' } as typeof n) : n,
+    );
+    recorder.backend.getMap = async () => map;
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      unversioned: true,
+    } as never);
+    expect(out).toContain('unversioned=true');
+    expect(out).toContain('No nodes');
+  });
+});
+
+describe('search_nodes tool — statusIsNull filter (#189 sibling, §8.5)', () => {
+  it('matches only nodes whose own status is null', async () => {
+    const recorder = makeRecordingBackend();
+    const base = {
+      mapId: 'm1',
+      description: null,
+      effortEstimate: null,
+      actualEffort: null,
+      percentComplete: null,
+      assigneeIds: [],
+      priority: null,
+      dueDate: null,
+      startDate: null,
+      tags: [],
+      dependencies: [],
+      versionId: null,
+      cycleId: null,
+      externalLinks: [],
+      collapsed: false,
+      createdAt: '2026-07-23T00:00:00Z',
+      updatedAt: '2026-07-23T00:00:00Z',
+      claimedBySession: null,
+      claimedAt: null,
+      computedEffort: 0,
+      computedProgress: 0,
+      healthSignal: 'on_track',
+    };
+    recorder.backend.getMap = async () =>
+      ({
+        map: { id: 'm1', rootNodeId: 'root' },
+        nodes: [
+          { ...base, id: 'root', parentId: null, childrenIds: ['a', 'b'], text: 'root', status: null },
+          { ...base, id: 'a', parentId: 'root', childrenIds: [], text: 'a', status: 'todo' },
+          { ...base, id: 'b', parentId: 'root', childrenIds: [], text: 'b', status: null },
+        ],
+      }) as unknown as MapDetail;
+    const out = await searchNodesTool.handler(recorder.backend, {
+      mapId: 'm1',
+      query: '*',
+      statusIsNull: true,
+      leavesOnly: true,
+    } as never);
+    expect(out).toContain('id: b');
+    expect(out).not.toContain('id: a');
+    expect(out).not.toContain('id: root');
+  });
+});
+
 describe('search_nodes tool — phaseId ancestor-walk', () => {
   function buildPhaseMap(): MapDetail {
     const node = (

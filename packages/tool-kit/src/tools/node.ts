@@ -305,7 +305,7 @@ export const clearBlockerTool = defineTool({
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
-    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/phaseId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight check: query="*", unestimated:true, versionId:"<id>" to find any V-N leaves still missing estimates.',
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/unversioned/statusIsNull/phaseId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight checks: query="*", unestimated:true, versionId:"<id>" to find V-N leaves still missing estimates; query="*", unversioned:true, leavesOnly:true to find leaves with no version assigned (the §8.1 sweep).',
   schema: {
     mapId: z.string().describe('The map ID'),
     query: z
@@ -332,6 +332,18 @@ export const searchNodesTool = defineTool({
       .string()
       .optional()
       .describe('Filter by version. Matches nodes whose own versionId is this OR any ancestor on the path inherits it.'),
+    unversioned: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, only nodes with NO effective version — versionId is null on the node AND on every ancestor up to the root (same inheritance walk as the versionId filter, so leaves under a versioned epic do NOT count as unversioned). The §8.1 unversioned sweep: query="*", unversioned:true, leavesOnly:true. Mutually exclusive with versionId — combining both matches nothing.',
+      ),
+    statusIsNull: z
+      .boolean()
+      .optional()
+      .describe(
+        'When true, only nodes whose status was never set (null). Status is not inherited, so this checks the node itself. The §8.5 STATUS-UNSET sweep: query="*", statusIsNull:true, leavesOnly:true.',
+      ),
     phaseId: z
       .string()
       .optional()
@@ -341,7 +353,7 @@ export const searchNodesTool = defineTool({
       .optional()
       .describe('Filter to direct children of this node id. Combine with query="*" to enumerate the contents of a specific bucket — the only way to do so, since get_map truncates on large maps.'),
   },
-  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, phaseId, parentId }) => {
+  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, unversioned, statusIsNull, phaseId, parentId }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
@@ -361,6 +373,24 @@ export const searchNodesTool = defineTool({
     if (parentId) matches = matches.filter((n) => n.parentId === parentId);
     if (unestimated === true) matches = matches.filter((n) => n.effortEstimate == null);
     else if (unestimated === false) matches = matches.filter((n) => n.effortEstimate != null);
+    if (statusIsNull) matches = matches.filter((n) => n.status == null);
+    if (unversioned) {
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+      // Effective-version walk, inverse of the versionId filter below:
+      // a node is unversioned only when NO node on its path to the root
+      // carries a versionId. A leaf under a versioned epic inherits that
+      // version and must not show up in the §8.1 sweep — otherwise the
+      // sweep would re-assign already-covered leaves every tick.
+      const hasEffectiveVersion = (id: string): boolean => {
+        let cur = nodeById.get(id);
+        while (cur) {
+          if (cur.versionId != null) return true;
+          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
+        }
+        return false;
+      };
+      matches = matches.filter((n) => !hasEffectiveVersion(n.id));
+    }
     if (versionId) {
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
       // Explicit-assignment-wins inheritance: walk up the ancestor chain
@@ -406,6 +436,8 @@ export const searchNodesTool = defineTool({
         priority && `priority=${priority}`,
         tag && `tag=${tag}`,
         unestimated !== undefined && `unestimated=${unestimated}`,
+        statusIsNull && `statusIsNull=true`,
+        unversioned && `unversioned=true`,
         leavesOnly && `leavesOnly=true`,
         versionId && `versionId=${versionId}`,
         phaseId && `phaseId=${phaseId}`,
