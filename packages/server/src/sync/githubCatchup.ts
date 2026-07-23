@@ -32,6 +32,7 @@ import {
   applyRollupForFetchedIssues,
 } from './parentEpicRollup.js';
 import { ingestNewIssuesForRepo } from './githubIngest.js';
+import { markWorkStarted } from './workStartSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
 
@@ -132,6 +133,11 @@ export interface ReconcileResult {
    * tick re-fetches the failed issues instead of orphaning them.
    */
   ingestErrored: number;
+  /**
+   * Nodes flipped to in-progress by the work-start backstop (#245).
+   * Absent on error-path results — the backstop never ran.
+   */
+  workStarted?: number;
   durationMs: number;
   since: string | null;
   error?: string;          // present when reconcile failed before completion
@@ -402,6 +408,34 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
   }
 
+  // ── Work-start backstop (#245) ───────────────────────────────────
+  // The webhook owns the realtime "PR opened / issue assigned →
+  // in_progress" transition; this pass heals assignments whose webhook
+  // was missed. Only the assigned signal is reconciled here — the
+  // already-fetched issue slice carries `assignees`, whereas PR-open
+  // drift would need an extra PR-list fetch per repo (and the
+  // `synchronize` webhook trigger re-covers open PRs on their next
+  // push anyway). Best-effort: a failure is logged but doesn't block
+  // the cursor — the transition is idempotent and an assigned issue
+  // stays assigned, so any later change to it retries naturally.
+  const assignedOpenIds = issues
+    .filter((i) => i.state === 'open' && (i.assignees?.length ?? 0) > 0)
+    .map((i) => `${target.owner}/${target.repo}#${i.number}`)
+    .filter((id) => linkIndex.has(id));
+  let workStarted = 0;
+  if (assignedOpenIds.length > 0) {
+    try {
+      workStarted = await markWorkStarted(assignedOpenIds, 'github_catchup');
+    } catch (err) {
+      console.warn(
+        '[catchup] work-start backstop failed for',
+        repoLabel,
+        ':',
+        err instanceof Error ? err.message : err,
+      );
+    }
+  }
+
   // ── Auto-ingest of new issues (gap-closer for between-import tickets) ─
   // For every map opted into auto-import on this repo, create a node for
   // any issue we haven't seen yet. Reuses the already-fetched `issues`
@@ -490,6 +524,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     stateSyncErrored,
     ingested: ingestCreated,
     ingestErrored,
+    workStarted,
     durationMs: Date.now() - startedAt.getTime(),
     since,
   };
