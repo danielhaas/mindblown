@@ -362,8 +362,10 @@ const mocks = vi.hoisted(() => ({
     parentId: newParentId,
   })),
   triageIssueMock: vi.fn(async () => ({
-    decision: 'place' as const,
-    parentNodeId: 'epic-1',
+    // Widened so mockResolvedValueOnce can return skip/uncertain too
+    // (the auto-confirm-skip reclassify tests feed a 'skip' decision).
+    decision: 'place' as 'place' | 'skip' | 'uncertain',
+    parentNodeId: 'epic-1' as string | undefined,
     reason: 'reclassified, now matches Frontend',
     confidence: 88,
   })),
@@ -1119,6 +1121,7 @@ describe('POST .../reclassify', () => {
     });
     triageIssueMock.mockResolvedValueOnce({
       decision: 'skip',
+      parentNodeId: undefined,
       reason: 'closed tactical PR, no epic fit',
       confidence: 97,
     });
@@ -1142,6 +1145,7 @@ describe('POST .../reclassify', () => {
     seedRow({ id: 'tr-1', issueState: 'open' });
     triageIssueMock.mockResolvedValueOnce({
       decision: 'skip',
+      parentNodeId: undefined,
       reason: 'vendor chatter',
       confidence: 99,
     });
