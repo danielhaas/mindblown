@@ -28,6 +28,7 @@ import {
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import * as PrSync from '../sync/prSync.js';
+import { markWorkStarted } from '../sync/workStartSync.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
@@ -1431,6 +1432,31 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // ── issues.assigned → node flips to in-progress (#245) ──────────
+    // The processWebhook fall-through below still applies the assignee
+    // list; this block only handles the status transition. Assignment
+    // is the human-flow work-start signal (the PR-open block above is
+    // the agent-flow one). Best-effort: a failure here must not stop
+    // the assignee sync.
+    if (
+      event === 'issues' &&
+      issuePayload?.number != null &&
+      repoFullName &&
+      payloadAction === 'assigned'
+    ) {
+      try {
+        await markWorkStarted(
+          [`${repoFullName}#${issuePayload.number}`],
+          'github_webhook_assigned',
+        );
+      } catch (err) {
+        console.warn(
+          '[work-start] assigned transition failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
     if (
       event === 'issues' &&
       issuePayload?.number != null &&
@@ -1570,6 +1596,43 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) {
         console.warn(
           '[pr-sync] handlePrSnapshot failed:',
+          err instanceof Error ? err.message : err,
+        );
+      }
+    }
+
+    // ── pull_request activity → linked-issue nodes flip to in-progress ─
+    //
+    // Work-start sync (#245): an open PR referencing `Closes #N` is the
+    // strongest inbound signal that work on the ticket has started, but
+    // until now nothing moved node status before the merge — actively
+    // worked tickets sat in the kanban's Unset/Todo columns until they
+    // jumped straight to Done. `synchronize` (new commits pushed) is
+    // included so PRs that predate this handler get picked up on their
+    // next push. Guards in markWorkStarted keep this idempotent and
+    // stop it from downgrading done/custom statuses.
+    if (
+      event === 'pull_request' &&
+      repoFullName &&
+      (payloadAction === 'opened' ||
+        payloadAction === 'reopened' ||
+        payloadAction === 'ready_for_review' ||
+        payloadAction === 'synchronize')
+    ) {
+      try {
+        const pr = payload.pull_request as
+          | { title?: string; body?: string | null }
+          | undefined;
+        const refs = extractClosingIssueRefs(`${pr?.title ?? ''} ${pr?.body ?? ''}`);
+        if (refs.length > 0) {
+          await markWorkStarted(
+            refs.map((n) => `${repoFullName}#${n}`),
+            'github_webhook_pr_open',
+          );
+        }
+      } catch (err) {
+        console.warn(
+          '[work-start] pr-activity transition failed:',
           err instanceof Error ? err.message : err,
         );
       }
