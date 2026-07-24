@@ -848,7 +848,7 @@ function ChapterGroup({
             ) : (
               `${r.remaining.toFixed(1)} ${effortUnit}`
             )}
-            {r.unestimated > 0 && (
+            {r.status !== 'done' && r.unestimated > 0 && (
               <span
                 title={`${r.unestimated} unestimated leaf/leaves under this requirement — remaining under-counts`}
                 style={{ color: '#d97706', marginLeft: 6, cursor: 'help' }}
