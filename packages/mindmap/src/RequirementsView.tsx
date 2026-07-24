@@ -85,6 +85,11 @@ export function RequirementsView() {
     for (const v of versions) m.set(v.id, v);
     return m;
   }, [versions]);
+  const versionRank = useMemo(() => {
+    const m = new Map<string, number>();
+    sortedVersions.forEach((v, i) => m.set(v.id, i));
+    return m;
+  }, [sortedVersions]);
 
   const user = useMindmapStore((s) => s.user);
   const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
@@ -115,8 +120,11 @@ export function RequirementsView() {
 
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
-  // '' = all, 'none' = no release (own or inherited), otherwise a versionId
-  const [versionFilter, setVersionFilter] = useState<string>('');
+  // Index into sortedVersions + 1; 0 = "All releases" (no restriction).
+  const [versionSliderIndex, setVersionSliderIndex] = useState(0);
+  // cumulative = "through this release", exact = "only this release".
+  const [versionFilterMode, setVersionFilterMode] = useState<'cumulative' | 'exact'>('cumulative');
+  const [showUnscheduledOnly, setShowUnscheduledOnly] = useState(false);
   const [hideDone, setHideDone] = useState(false);
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -198,19 +206,43 @@ export function RequirementsView() {
     return t;
   }, [allRows]);
 
+  // Clamp against a version having been deleted out from under the slider.
+  const selectedVersionIndex = Math.min(versionSliderIndex, sortedVersions.length);
+  const versionFilterActive = showUnscheduledOnly || selectedVersionIndex > 0;
+  const versionLabel = showUnscheduledOnly
+    ? 'No release'
+    : selectedVersionIndex === 0
+      ? 'All releases'
+      : `${versionFilterMode === 'exact' ? 'Only' : 'Through'} ${sortedVersions[selectedVersionIndex - 1]?.name ?? ''}`;
+
   const filteredRows = useMemo(
     () =>
       allRows.filter((r) => {
         if (hideDone && r.status === 'done') return false;
         if (statusFilter && r.status !== statusFilter) return false;
         if (priorityFilter && r.node.requirementPriority !== priorityFilter) return false;
-        if (versionFilter === 'none') {
+        if (showUnscheduledOnly) {
           // "No release" means nothing below it is scheduled either.
           if (r.versionId || r.descendantVersionIds.length > 0) return false;
-        } else if (versionFilter) {
-          // A split requirement matches every release it touches.
-          if (r.versionId !== versionFilter && !r.descendantVersionIds.includes(versionFilter)) {
-            return false;
+        } else if (selectedVersionIndex > 0) {
+          const selectedRank = selectedVersionIndex - 1;
+          if (versionFilterMode === 'exact') {
+            // A split requirement matches every release it touches.
+            const selectedId = sortedVersions[selectedRank].id;
+            if (r.versionId !== selectedId && !r.descendantVersionIds.includes(selectedId)) {
+              return false;
+            }
+          } else {
+            // Cumulative: matches if it (or a split-off descendant) is due
+            // by this release or earlier.
+            const ownRank = r.versionId ? versionRank.get(r.versionId) : undefined;
+            const touchesUpToHere =
+              (ownRank != null && ownRank <= selectedRank) ||
+              r.descendantVersionIds.some((id) => {
+                const rank = versionRank.get(id);
+                return rank != null && rank <= selectedRank;
+              });
+            if (!touchesUpToHere) return false;
           }
         }
         if (acceptanceFilter) {
@@ -230,7 +262,11 @@ export function RequirementsView() {
       hideDone,
       statusFilter,
       priorityFilter,
-      versionFilter,
+      showUnscheduledOnly,
+      selectedVersionIndex,
+      versionFilterMode,
+      sortedVersions,
+      versionRank,
       acceptanceFilter,
       accByNode,
       user,
@@ -363,7 +399,7 @@ export function RequirementsView() {
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
             {allRows.length} requirement{allRows.length === 1 ? '' : 's'} · {totals.done} done ·{' '}
             {totals.partial} partial · {totals.open} open
-            {(hideDone || statusFilter || priorityFilter || versionFilter) &&
+            {(hideDone || statusFilter || priorityFilter || versionFilterActive) &&
               ` · showing ${filteredRows.length} (filtered)`}
           </div>
         </div>
@@ -412,19 +448,59 @@ export function RequirementsView() {
             <option value="should">Should</option>
             <option value="could">Could</option>
           </select>
-          <select
-            value={versionFilter}
-            onChange={(e) => setVersionFilter(e.target.value)}
-            style={filterSelectStyle}
-          >
-            <option value="">All releases</option>
-            <option value="none">No release</option>
-            {sortedVersions.map((v) => (
-              <option key={v.id} value={v.id}>
-                {v.name}
-              </option>
-            ))}
-          </select>
+          <div style={versionSliderContainerStyle}>
+            {sortedVersions.length > 0 && (
+              <>
+                <button
+                  onClick={() =>
+                    setVersionFilterMode((m) => (m === 'cumulative' ? 'exact' : 'cumulative'))
+                  }
+                  disabled={showUnscheduledOnly || selectedVersionIndex === 0}
+                  title={
+                    versionFilterMode === 'cumulative'
+                      ? 'Showing everything due by the selected release — click to show only that release'
+                      : 'Showing only the selected release — click to include everything due by it'
+                  }
+                  style={secondaryButtonStyle(showUnscheduledOnly || selectedVersionIndex === 0)}
+                >
+                  {versionFilterMode === 'cumulative' ? 'Through' : 'Only'}
+                </button>
+                <input
+                  type="range"
+                  min={0}
+                  max={sortedVersions.length}
+                  value={selectedVersionIndex}
+                  disabled={showUnscheduledOnly}
+                  onChange={(e) => setVersionSliderIndex(Number(e.target.value))}
+                  style={{ width: 110 }}
+                  title={versionLabel}
+                />
+              </>
+            )}
+            <span
+              style={{
+                fontSize: 11,
+                color: versionFilterActive ? '#3730a3' : '#64748b',
+                minWidth: 80,
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {versionLabel}
+            </span>
+            <button
+              onClick={() => setShowUnscheduledOnly((v) => !v)}
+              aria-pressed={showUnscheduledOnly}
+              title="Show only requirements with no release assigned (own or inherited)"
+              style={{
+                ...secondaryButtonStyle(false),
+                ...(showUnscheduledOnly
+                  ? { background: '#eef2ff', borderColor: '#c7d2fe', color: '#3730a3' }
+                  : {}),
+              }}
+            >
+              No release
+            </button>
+          </div>
           <select
             value={acceptanceFilter}
             onChange={(e) =>
@@ -1091,6 +1167,15 @@ const inputStyle: React.CSSProperties = {
 const filterSelectStyle: React.CSSProperties = {
   ...inputStyle,
   padding: '5px 8px',
+};
+
+const versionSliderContainerStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 6,
+  padding: '4px 8px',
+  border: '1px solid #e2e8f0',
+  borderRadius: 6,
 };
 
 const inlineSelectStyle: React.CSSProperties = {
