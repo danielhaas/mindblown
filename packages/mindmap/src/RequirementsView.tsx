@@ -329,7 +329,7 @@ export function RequirementsView() {
       } else {
         if (
           row.status !== 'done' &&
-          !window.confirm(`Status ist ${STATUS_LABEL[row.status]} — trotzdem abnehmen?`)
+          !window.confirm(`Status is ${STATUS_LABEL[row.status]} — accept anyway?`)
         ) {
           return;
         }
@@ -345,7 +345,7 @@ export function RequirementsView() {
   const rejectRequirement = async (row: ReqRow) => {
     if (!currentMapId || !user) return;
     const comment = window.prompt(
-      `${row.node.requirementId} ablehnen — warum? (Begründung ist Pflicht)`,
+      `Reject ${row.node.requirementId} — why? (Reason required)`,
     );
     if (comment == null) return; // cancelled
     if (comment.trim() === '') return;
@@ -510,10 +510,10 @@ export function RequirementsView() {
             }
             style={filterSelectStyle}
           >
-            <option value="">Abnahme: alle</option>
-            <option value="none">Nicht abgenommen</option>
-            <option value="mine-open">Meine Abnahme offen</option>
-            <option value="rejected">Abgelehnt</option>
+            <option value="">Acceptance: all</option>
+            <option value="none">Not accepted</option>
+            <option value="mine-open">My acceptance pending</option>
+            <option value="rejected">Rejected</option>
           </select>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -628,7 +628,7 @@ export function RequirementsView() {
                 <th style={{ ...thStyle, width: 130 }}>Progress</th>
                 <th style={{ ...thStyle, width: 130, textAlign: 'right' }}>Remaining</th>
                 <th style={{ ...thStyle, width: 140 }}>GitHub</th>
-                <th style={{ ...thStyle, width: 170 }}>Abnahme</th>
+                <th style={{ ...thStyle, width: 170 }}>Acceptance</th>
               </tr>
             </thead>
             <tbody>
@@ -970,7 +970,7 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* Abnahme — per-user sign-off chips; own chip toggles */}
+          {/* Acceptance — per-user sign-off chips; own chip toggles */}
           <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
             {(accByNode.get(r.node.id) ?? []).map((a) => {
               const stale =
@@ -985,10 +985,10 @@ function ChapterGroup({
                   key={a.id}
                   onClick={own ? () => toggleAcceptance(r) : undefined}
                   title={
-                    (stale ? 'Seit dem Urteil geändert! ' : '') +
-                    `${a.userName}, ${rejected ? 'abgelehnt' : 'abgenommen'} ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)}%` +
-                    (rejected && a.comment ? ` — «${a.comment}»` : '') +
-                    (own ? ' — klicken zum Zurückziehen' : '')
+                    (stale ? 'Changed since sign-off! ' : '') +
+                    `${a.userName}, ${rejected ? 'rejected' : 'accepted'} ${a.acceptedAt.slice(0, 10)} at ${Math.round(a.progressAtAcceptance)}%` +
+                    (rejected && a.comment ? ` — "${a.comment}"` : '') +
+                    (own ? ' — click to withdraw' : '')
                   }
                   style={{
                     display: 'inline-block',
@@ -1012,7 +1012,7 @@ function ChapterGroup({
                 <>
                   <button
                     onClick={() => toggleAcceptance(r)}
-                    title="Requirement abnehmen (persönliche Abnahme, Status bleibt abgeleitet)"
+                    title="Accept requirement (personal sign-off, status stays derived)"
                     style={{
                       padding: '2px 8px',
                       borderRadius: 10,
@@ -1023,11 +1023,11 @@ function ChapterGroup({
                       cursor: 'pointer',
                     }}
                   >
-                    ✓ Abnehmen
+                    ✓ Accept
                   </button>
                   <button
                     onClick={() => rejectRequirement(r)}
-                    title="Requirement ablehnen — Begründung ist Pflicht"
+                    title="Reject requirement — reason required"
                     style={{
                       padding: '2px 8px',
                       marginLeft: 4,
