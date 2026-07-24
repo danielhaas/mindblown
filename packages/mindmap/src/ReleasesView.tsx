@@ -253,13 +253,9 @@ export function ReleasesView() {
     );
   }
 
-  if (loading && !forecast) {
-    return (
-      <div style={containerStyle}>
-        <div style={{ padding: 40, color: '#64748b', fontSize: 13 }}>Loading releases…</div>
-      </div>
-    );
-  }
+  // The version list comes from the store and renders immediately; only the
+  // forecast columns wait for the (potentially slow) forecast fetch.
+  const forecastPending = loading && !forecast;
 
   const unit = forecast?.effortUnit ?? 'days';
   const fudge = forecast?.fudgeFactor ?? null;
@@ -281,6 +277,7 @@ export function ReleasesView() {
                 {formatAge(forecast.lastSnapshotAt)}
               </>
             )}
+            {forecastPending && ' · loading forecast…'}
             {activeVersionFilter && ' · filtered'}
           </div>
         </div>
@@ -474,7 +471,9 @@ export function ReleasesView() {
                           </div>
                         </>
                       ) : (
-                        <span style={{ fontSize: 11, color: '#94a3b8' }}>No scope yet</span>
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>
+                          {forecastPending ? '…' : 'No scope yet'}
+                        </span>
                       )}
                     </td>
                     <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
@@ -490,6 +489,8 @@ export function ReleasesView() {
                             </div>
                           )}
                         </>
+                      ) : forecastPending ? (
+                        '…'
                       ) : (
                         '0'
                       )}

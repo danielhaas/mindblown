@@ -18,6 +18,20 @@ export interface FetchMergedPrsResult {
   truncated: boolean; // hit the page cap — window may be partially covered
 }
 
+// The crawl below costs up to `maxPages` sequential GitHub round-trips and
+// feeds a signal (rework share) that moves on a scale of weeks, so results
+// are cached in-process for an hour. The hourly snapshot cron passes
+// `bypassCache` and thereby keeps the cache warm for interactive loads.
+const CACHE_TTL_MS = 60 * 60 * 1000;
+const throughputCache = new Map<
+  string,
+  { fetchedAt: number; sinceMs: number; result: FetchMergedPrsResult }
+>();
+
+export function clearThroughputCache(): void {
+  throughputCache.clear();
+}
+
 /**
  * Page `GET /repos/:owner/:repo/pulls?state=closed` (sorted by most-recently
  * updated) and collect PRs whose `merged_at` falls on/after `sinceMs`. Stops
@@ -27,6 +41,35 @@ export async function fetchMergedPrsSince(
   ctx: GitHubMapContext,
   sinceMs: number,
   maxPages = 8,
+  opts?: { bypassCache?: boolean },
+): Promise<FetchMergedPrsResult> {
+  const cacheKey = `${ctx.owner}/${ctx.repo}`;
+  const cached = throughputCache.get(cacheKey);
+  if (
+    !opts?.bypassCache &&
+    cached &&
+    Date.now() - cached.fetchedAt < CACHE_TTL_MS &&
+    // Same look-back window: two calls with equal windowDays made within the
+    // TTL differ in sinceMs by < TTL; different windows differ by days.
+    Math.abs(cached.sinceMs - sinceMs) < CACHE_TTL_MS
+  ) {
+    return {
+      // The window's leading edge moved forward since the fetch — drop PRs
+      // that no longer fall inside it.
+      prs: cached.result.prs.filter((p) => Date.parse(p.mergedAt) >= sinceMs),
+      truncated: cached.result.truncated,
+    };
+  }
+
+  const result = await fetchMergedPrsUncached(ctx, sinceMs, maxPages);
+  throughputCache.set(cacheKey, { fetchedAt: Date.now(), sinceMs, result });
+  return result;
+}
+
+async function fetchMergedPrsUncached(
+  ctx: GitHubMapContext,
+  sinceMs: number,
+  maxPages: number,
 ): Promise<FetchMergedPrsResult> {
   const out: PrRecord[] = [];
   let page = 1;
@@ -70,11 +113,14 @@ export async function fetchMergedPrsSince(
       }
     }
 
+    // A partial page is the last page — no need to request the next one.
+    if (rows.length < PER_PAGE) break;
+
     // Once the whole page's activity predates the window, older pages can't
     // contain in-window merges (sorted by updated desc).
     const pageAllOld = rows.every((r) => Date.parse(r.updated_at) < sinceMs);
     if (pageAllOld) break;
-    if (page === maxPages && rows.length === PER_PAGE) truncated = true;
+    if (page === maxPages) truncated = true;
   }
 
   return { prs: out, truncated };

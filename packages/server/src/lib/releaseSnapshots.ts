@@ -31,7 +31,9 @@ export async function snapshotReleaseForecastForMap(
     // Measured rates make the snapshot record what the forecast actually
     // said (net-rate velocity + ticket model), not a knob-based shadow of
     // it. Measurement failure degrades to knobs — never blocks the cron.
-    const rates = await measureMapVelocity(mapId, data, 56)
+    const rates = await measureMapVelocity(mapId, data, 56, undefined, {
+      freshThroughput: true, // hourly cron re-crawls and keeps the cache warm
+    })
       .then((m) => m.rates)
       .catch(() => undefined);
     result = computeReleaseForecast(data.map, data.nodes, versions, new Date(), rates);

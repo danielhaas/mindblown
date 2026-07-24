@@ -47,6 +47,12 @@ export async function measureMapVelocity(
   data: { map: MindMap; nodes: CoreNode[] },
   windowDays = 56,
   log?: { warn: (obj: unknown, msg: string) => void },
+  opts?: {
+    /** Re-crawl the repo even if a fresh cached throughput result exists.
+     *  Passed by the hourly snapshot cron (keeps the cache warm) and by
+     *  the explicit ?refresh=1 flow. */
+    freshThroughput?: boolean;
+  },
 ): Promise<MapVelocityMeasurement> {
   const since = new Date(Date.now() - windowDays * 86_400_000);
 
@@ -87,7 +93,9 @@ export async function measureMapVelocity(
   try {
     const ctx = await getGitHubContextForMap(mapId);
     if (ctx) {
-      const { prs, truncated } = await fetchMergedPrsSince(ctx, since.getTime());
+      const { prs, truncated } = await fetchMergedPrsSince(ctx, since.getTime(), undefined, {
+        bypassCache: opts?.freshThroughput,
+      });
       const rt = analyzeRepoThroughput(prs);
       repoThroughput = {
         ...rt,
