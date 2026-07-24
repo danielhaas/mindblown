@@ -449,6 +449,7 @@ export function RequirementsView() {
             <option value="could">Could</option>
           </select>
           <div style={versionSliderContainerStyle}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: '#64748b' }}>Versions</span>
             {sortedVersions.length > 0 && (
               <>
                 <button
