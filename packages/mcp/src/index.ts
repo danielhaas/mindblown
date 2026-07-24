@@ -26,6 +26,7 @@ import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import { clampFocusFactor, scopedCapacityDays, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
+import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
 import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
 
@@ -622,21 +623,6 @@ server.tool(
         return dfsOrder.get(parentId) ?? Infinity;
       };
 
-      // Versions touched anywhere below a requirement (not just direct
-      // children) — a requirement can be split across releases.
-      const descendantVersionIds = (id: string): string[] => {
-        const found = new Set<string>();
-        const stack = [...(nodeById.get(id)?.childrenIds ?? [])];
-        while (stack.length) {
-          const cid = stack.pop()!;
-          const n = nodeById.get(cid);
-          if (!n) continue;
-          if (n.versionId) found.add(n.versionId);
-          stack.push(...(n.childrenIds ?? []));
-        }
-        return [...found];
-      };
-
       // Progress: rollup for parents, own percentComplete for leaves.
       const progressOf = (n: (typeof requirements)[number]): number =>
         (n.childrenIds?.length ?? 0) > 0 ? n.computedProgress : (n.percentComplete ?? 0);
@@ -704,7 +690,7 @@ server.tool(
         rows = rows.filter(
           (r) =>
             r.node.versionId === versionId ||
-            descendantVersionIds(r.node.id).includes(versionId),
+            descendantVersionIds(nodeById, r.node.id).includes(versionId),
         );
       }
 
