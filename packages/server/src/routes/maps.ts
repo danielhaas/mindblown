@@ -976,18 +976,24 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
     const allVersions = await versionDb.listVersions(data.map.id);
 
+    const wantRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+
     // Compute current forecast via the shared helper — same code path
     // as the hourly snapshot job, so the two surfaces never disagree.
     // Measured rates power the velocity line + the ticket model; a failed
     // measurement degrades to the knob-based projection, never to an error.
-    const rates = await measureMapVelocity(req.params.id, data, 56, req.log)
+    // Plain loads run on the cached repo throughput (warmed hourly by the
+    // snapshot cron); the explicit Refresh button re-crawls the repo.
+    const rates = await measureMapVelocity(req.params.id, data, 56, req.log, {
+      freshThroughput: wantRefresh,
+    })
       .then((m) => m.rates)
       .catch(() => undefined);
     const forecast = computeReleaseForecast(data.map, data.nodes, allVersions, new Date(), rates);
 
     // Optional manual refresh — writes today's snapshot before reading
     // deltas, so a button click produces a fresh history row.
-    if (req.query.refresh === '1' || req.query.refresh === 'true') {
+    if (wantRefresh) {
       await snapshotReleaseForecastForMap(req.params.id, forecast).catch((err) => {
         req.log.error({ err, mapId: req.params.id }, 'manual snapshot failed');
       });
