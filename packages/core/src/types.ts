@@ -60,6 +60,13 @@ export interface ExternalLink {
   lastSyncedAt: string | null; // ISO 8601
 
   /**
+   * The external item's own open/closed state, as of last sync. Absent
+   * on links written before this field existed — treat as unknown, not
+   * open, in that case.
+   */
+  state?: 'open' | 'closed';
+
+  /**
    * Node state captured the moment the external system drove the node
    * to "complete". Used to revert progress/status when the external
    * system reopens the item (e.g. GitHub issue reopened).

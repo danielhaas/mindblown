@@ -4,13 +4,19 @@ import { collectRequirementGhLinks } from '../requirements.js';
 type N = {
   id: string;
   childrenIds?: string[];
-  externalLinks?: Array<{ provider: string; externalId: string; url: string }>;
+  externalLinks?: Array<{
+    provider: string;
+    externalId: string;
+    url: string;
+    state?: 'open' | 'closed';
+  }>;
 };
 
-const gh = (n: number) => ({
+const gh = (n: number, state?: 'open' | 'closed') => ({
   provider: 'github',
   externalId: `FulcrumCRM/crm#${n}`,
   url: `https://github.com/FulcrumCRM/crm/issues/${n}`,
+  ...(state ? { state } : {}),
 });
 
 function lookup(nodes: N[]) {
@@ -90,5 +96,27 @@ describe('collectRequirementGhLinks', () => {
 
   it('tolerates a missing node id', () => {
     expect(collectRequirementGhLinks(lookup([]), 'nope')).toEqual([]);
+  });
+
+  it('carries the closed state through', () => {
+    const get = lookup([{ id: 'r', externalLinks: [gh(1, 'closed')] }]);
+    expect(collectRequirementGhLinks(get, 'r')).toEqual([
+      { externalId: 'FulcrumCRM/crm#1', url: expect.any(String), inherited: false, state: 'closed' },
+    ]);
+  });
+
+  it('leaves state undefined for links written before the field existed', () => {
+    const get = lookup([{ id: 'r', externalLinks: [gh(1)] }]);
+    expect(collectRequirementGhLinks(get, 'r')[0].state).toBeUndefined();
+  });
+
+  it('own link wins with its own state even if a child has a different one', () => {
+    const get = lookup([
+      { id: 'r', childrenIds: ['w'], externalLinks: [gh(5, 'open')] },
+      { id: 'w', externalLinks: [gh(5, 'closed')] },
+    ]);
+    const got = collectRequirementGhLinks(get, 'r');
+    expect(got).toHaveLength(1);
+    expect(got[0].state).toBe('open');
   });
 });

@@ -461,6 +461,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         url: issue.html_url,
         syncEnabled: true,
         lastSyncedAt: new Date().toISOString(),
+        state: issue.state,
       };
 
       // Add to existing external links
@@ -1514,6 +1515,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           previousPercentComplete: node.percentComplete,
           previousStatus: node.status,
           lastSyncedAt: new Date().toISOString(),
+          state: 'closed',
         };
         updates = {
           percentComplete: 100,
@@ -1530,6 +1532,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           previousPercentComplete: null,
           previousStatus: null,
           lastSyncedAt: new Date().toISOString(),
+          state: 'open',
         };
         updates = {
           percentComplete: savedPct !== undefined ? savedPct : null,

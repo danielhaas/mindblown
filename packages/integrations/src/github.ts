@@ -151,6 +151,7 @@ function buildExternalLink(
     url: issue.html_url,
     syncEnabled: true,
     lastSyncedAt: new Date().toISOString(),
+    state: issue.state,
   };
 }
 

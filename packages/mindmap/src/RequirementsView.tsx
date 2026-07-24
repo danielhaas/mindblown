@@ -45,7 +45,7 @@ interface ReqRow {
   remaining: number;
   unestimated: number;
   health: string;
-  ghLinks: Array<{ id: string; url: string; inherited: boolean }>;
+  ghLinks: Array<{ id: string; url: string; inherited: boolean; state?: 'open' | 'closed' }>;
   /** Version set on the requirement node itself. */
   versionId: string | null;
   /** Distinct versions found below it — the requirement may be split across releases. */
@@ -190,6 +190,7 @@ export function RequirementsView() {
             id: l.externalId,
             url: l.url,
             inherited: l.inherited,
+            state: l.state,
           })),
           versionId: node.versionId ?? null,
           descendantVersionIds,
@@ -940,27 +941,32 @@ function ChapterGroup({
             {r.ghLinks.length === 0 ? (
               <span style={{ color: '#cbd5e1' }}>—</span>
             ) : (
-              r.ghLinks.map((l, i) => (
-                <a
-                  key={l.id}
-                  href={l.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  onClick={(e) => e.stopPropagation()}
-                  title={
-                    l.inherited
-                      ? 'Issue on work below this requirement, not on the requirement itself'
-                      : undefined
-                  }
-                  style={{
-                    color: l.inherited ? '#93c5fd' : '#3b82f6',
-                    textDecoration: 'none',
-                    marginLeft: i > 0 ? 6 : 0,
-                  }}
-                >
-                  {l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id}
-                </a>
-              ))
+              r.ghLinks.map((l, i) => {
+                const titleParts = [
+                  l.inherited
+                    ? 'Issue on work below this requirement, not on the requirement itself'
+                    : null,
+                  l.state === 'closed' ? 'Issue is closed' : null,
+                ].filter(Boolean);
+                return (
+                  <a
+                    key={l.id}
+                    href={l.url}
+                    target="_blank"
+                    rel="noreferrer"
+                    onClick={(e) => e.stopPropagation()}
+                    title={titleParts.length > 0 ? titleParts.join(' — ') : undefined}
+                    style={{
+                      color: l.inherited ? '#93c5fd' : '#3b82f6',
+                      opacity: l.state === 'closed' ? 0.5 : 1,
+                      textDecoration: 'none',
+                      marginLeft: i > 0 ? 6 : 0,
+                    }}
+                  >
+                    {l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id}
+                  </a>
+                );
+              })
             )}
           </td>
 

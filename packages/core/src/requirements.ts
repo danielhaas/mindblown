@@ -11,7 +11,12 @@
  * requirement and on a child, it is reported once, as not-inherited.
  */
 export interface GhLinkSource {
-  externalLinks?: Array<{ provider: string; externalId: string; url: string }> | null;
+  externalLinks?: Array<{
+    provider: string;
+    externalId: string;
+    url: string;
+    state?: 'open' | 'closed';
+  }> | null;
   childrenIds?: string[] | null;
 }
 
@@ -20,6 +25,8 @@ export interface RequirementGhLink {
   url: string;
   /** true = found on a descendant, not on the requirement node itself */
   inherited: boolean;
+  /** Absent when the link predates the state field, or provider isn't synced */
+  state?: 'open' | 'closed';
 }
 
 export function collectRequirementGhLinks<T extends GhLinkSource>(
@@ -32,7 +39,12 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
   const byId = new Map<string, RequirementGhLink>();
   for (const l of node.externalLinks ?? []) {
     if (l.provider === 'github' && !byId.has(l.externalId)) {
-      byId.set(l.externalId, { externalId: l.externalId, url: l.url, inherited: false });
+      byId.set(l.externalId, {
+        externalId: l.externalId,
+        url: l.url,
+        inherited: false,
+        state: l.state,
+      });
     }
   }
 
@@ -48,7 +60,12 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
     if (!child) continue;
     for (const l of child.externalLinks ?? []) {
       if (l.provider === 'github' && !byId.has(l.externalId)) {
-        byId.set(l.externalId, { externalId: l.externalId, url: l.url, inherited: true });
+        byId.set(l.externalId, {
+          externalId: l.externalId,
+          url: l.url,
+          inherited: true,
+          state: l.state,
+        });
       }
     }
     queue.push(...(child.childrenIds ?? []));
