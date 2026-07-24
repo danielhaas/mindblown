@@ -573,8 +573,14 @@ server.tool(
       .enum(['must', 'should', 'could'])
       .optional()
       .describe('Only requirements with this MoSCoW priority'),
+    versionId: z
+      .string()
+      .optional()
+      .describe(
+        'Only requirements scheduled for this release — matches a requirement whose own versionId is this, OR any descendant node below it carries this versionId (a split requirement touches every release its parts are scheduled for). Same semantics as the Requirements view\'s release filter/slider. Use list_versions to find the id.',
+      ),
   },
-  async ({ mapId, status, requirementPriority }) => {
+  async ({ mapId, status, requirementPriority, versionId }) => {
     try {
       const data = await api.getMap(mapId);
       const { acceptances } = await api.getAcceptances(mapId).catch(() => ({ acceptances: [] }));
@@ -614,6 +620,21 @@ server.tool(
         const parentId = nodeById.get(id)?.parentId;
         if (!parentId) return Infinity;
         return dfsOrder.get(parentId) ?? Infinity;
+      };
+
+      // Versions touched anywhere below a requirement (not just direct
+      // children) — a requirement can be split across releases.
+      const descendantVersionIds = (id: string): string[] => {
+        const found = new Set<string>();
+        const stack = [...(nodeById.get(id)?.childrenIds ?? [])];
+        while (stack.length) {
+          const cid = stack.pop()!;
+          const n = nodeById.get(cid);
+          if (!n) continue;
+          if (n.versionId) found.add(n.versionId);
+          stack.push(...(n.childrenIds ?? []));
+        }
+        return [...found];
       };
 
       // Progress: rollup for parents, own percentComplete for leaves.
@@ -679,6 +700,13 @@ server.tool(
       if (requirementPriority) {
         rows = rows.filter((r) => r.node.requirementPriority === requirementPriority);
       }
+      if (versionId) {
+        rows = rows.filter(
+          (r) =>
+            r.node.versionId === versionId ||
+            descendantVersionIds(r.node.id).includes(versionId),
+        );
+      }
 
       const byId = (a: (typeof rows)[number], b: (typeof rows)[number]) =>
         (a.node.requirementId ?? '').localeCompare(b.node.requirementId ?? '', undefined, {
@@ -700,10 +728,16 @@ server.tool(
       lines.push(
         `${requirements.length} requirement(s): ${totalByStatus.done} done / ${totalByStatus.partial} partial / ${totalByStatus.open} open`,
       );
-      if (status || requirementPriority) {
+      if (status || requirementPriority || versionId) {
+        let versionLabel = versionId;
+        if (versionId) {
+          const versions = await api.listVersions(mapId).catch(() => []);
+          versionLabel = versions.find((v) => v.id === versionId)?.name ?? versionId;
+        }
         const filters = [
           status ? `status=${status}` : null,
           requirementPriority ? `requirementPriority=${requirementPriority}` : null,
+          versionId ? `versionId=${versionLabel}` : null,
         ].filter(Boolean);
         lines.push(`Showing ${rows.length} after filter (${filters.join(', ')})`);
       }
