@@ -722,7 +722,7 @@ server.tool(
           if (r.status !== 'done' && r.remaining > 0) {
             parts.push(`· ${r.remaining.toFixed(1)} ${unit} remaining`);
           }
-          if (r.unestimated > 0) {
+          if (r.status !== 'done' && r.unestimated > 0) {
             parts.push(`· ⚠ ${r.unestimated} unestimated leaf(s) — effort under-counts`);
           }
           if (r.ghLinks.length > 0) {
