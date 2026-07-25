@@ -63,6 +63,8 @@ function readStoreUrlState(): UrlState {
     version: s.activeVersionFilter,
     sprint: s.activeCycleFilter,
     phase: s.activePhaseFilter,
+    reqVersion: s.reqVersionFilter,
+    reqVersionMode: s.reqVersionMode === 'exact' ? 'exact' : null,
   };
 }
 
@@ -78,6 +80,8 @@ function applyToStore(state: UrlState): void {
   s.setActiveVersionFilter(state.version);
   s.setActiveCycleFilter(state.sprint);
   s.setActivePhaseFilter(state.phase);
+  s.setReqVersionFilter(state.reqVersion);
+  s.setReqVersionMode(state.reqVersionMode === 'exact' ? 'exact' : 'cumulative');
   s.setFocusNode(state.focus);
   s.selectNode(state.node);
 }

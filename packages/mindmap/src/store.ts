@@ -92,6 +92,13 @@ export interface MindmapState {
   versions: Version[];
   activeVersionFilter: string | null;
 
+  // Requirements register release filter (shareable via URL, hence store
+  // state rather than component state). A version id, 'none' for "no
+  // release assigned", or null for all releases.
+  reqVersionFilter: string | null;
+  /** cumulative = "through this release", exact = "only this release". */
+  reqVersionMode: 'cumulative' | 'exact';
+
   // Phase state (PhaseDefs live on currentMap.phases; only the filter is store state)
   activePhaseFilter: string | null;
 
@@ -153,6 +160,8 @@ export interface MindmapState {
   updateVersion: (id: string, fields: Partial<api.CreateVersionFields>) => Promise<void>;
   deleteVersion: (id: string) => Promise<void>;
   setActiveVersionFilter: (versionId: string | null) => void;
+  setReqVersionFilter: (versionId: string | null) => void;
+  setReqVersionMode: (mode: 'cumulative' | 'exact') => void;
 
   // Actions — phase
   setActivePhaseFilter: (phaseId: string | null) => void;
@@ -229,6 +238,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   activeCycleFilter: null,
   versions: [],
   activeVersionFilter: null,
+  reqVersionFilter: null,
+  reqVersionMode: 'cumulative' as const,
   activePhaseFilter: null,
   nodeActors: new Map(),
   nodeActorsMapId: null,
@@ -395,6 +406,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       maxDepth: 1,
       versions: [],
       activeVersionFilter: null,
+      reqVersionFilter: null,
+      reqVersionMode: 'cumulative',
       activePhaseFilter: null,
       wsConnected: false,
       presence: {},
@@ -663,6 +676,9 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     if (state.activeVersionFilter === id) {
       set({ activeVersionFilter: null });
     }
+    if (state.reqVersionFilter === id) {
+      set({ reqVersionFilter: null });
+    }
     try {
       await api.deleteVersion(id);
     } catch (e: any) {
@@ -671,6 +687,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   },
 
   setActiveVersionFilter: (versionId) => set({ activeVersionFilter: versionId }),
+
+  setReqVersionFilter: (versionId) => set({ reqVersionFilter: versionId }),
+
+  setReqVersionMode: (mode) => set({ reqVersionMode: mode }),
 
   // ── Phase actions ────────────────────────────────────────────
 

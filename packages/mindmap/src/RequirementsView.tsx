@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { compareVersions, collectRequirementGhLinks } from '@mindblown/core';
 import type { Node, Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { REQ_VERSION_NONE } from './urlState.js';
 import * as api from './api.js';
 
 // ── Derived requirement status ───────────────────────────────────
@@ -120,11 +121,13 @@ export function RequirementsView() {
 
   const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
-  // Index into sortedVersions + 1; 0 = "All releases" (no restriction).
-  const [versionSliderIndex, setVersionSliderIndex] = useState(0);
-  // cumulative = "through this release", exact = "only this release".
-  const [versionFilterMode, setVersionFilterMode] = useState<'cumulative' | 'exact'>('cumulative');
-  const [showUnscheduledOnly, setShowUnscheduledOnly] = useState(false);
+  // Release filter lives in the store (mirrored to ?rv= / ?rvm= by
+  // useUrlState) so the selection survives a copied link.
+  const reqVersionFilter = useMindmapStore((s) => s.reqVersionFilter);
+  const versionFilterMode = useMindmapStore((s) => s.reqVersionMode);
+  const setReqVersionFilter = useMindmapStore((s) => s.setReqVersionFilter);
+  const setVersionFilterMode = useMindmapStore((s) => s.setReqVersionMode);
+  const showUnscheduledOnly = reqVersionFilter === REQ_VERSION_NONE;
   const [hideDone, setHideDone] = useState(false);
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
@@ -207,8 +210,12 @@ export function RequirementsView() {
     return t;
   }, [allRows]);
 
-  // Clamp against a version having been deleted out from under the slider.
-  const selectedVersionIndex = Math.min(versionSliderIndex, sortedVersions.length);
+  // Slider position derived from the selected version id; an id that no
+  // longer resolves (deleted version, stale link) falls back to 0 = all.
+  const selectedVersionIndex =
+    reqVersionFilter && reqVersionFilter !== REQ_VERSION_NONE
+      ? (versionRank.get(reqVersionFilter) ?? -1) + 1
+      : 0;
   const versionFilterActive = showUnscheduledOnly || selectedVersionIndex > 0;
   const versionLabel = showUnscheduledOnly
     ? 'No release'
@@ -455,7 +462,7 @@ export function RequirementsView() {
               <>
                 <button
                   onClick={() =>
-                    setVersionFilterMode((m) => (m === 'cumulative' ? 'exact' : 'cumulative'))
+                    setVersionFilterMode(versionFilterMode === 'cumulative' ? 'exact' : 'cumulative')
                   }
                   disabled={showUnscheduledOnly || selectedVersionIndex === 0}
                   title={
@@ -473,7 +480,10 @@ export function RequirementsView() {
                   max={sortedVersions.length}
                   value={selectedVersionIndex}
                   disabled={showUnscheduledOnly}
-                  onChange={(e) => setVersionSliderIndex(Number(e.target.value))}
+                  onChange={(e) => {
+                    const i = Number(e.target.value);
+                    setReqVersionFilter(i === 0 ? null : (sortedVersions[i - 1]?.id ?? null));
+                  }}
                   style={{ width: 110 }}
                   title={versionLabel}
                 />
@@ -490,7 +500,9 @@ export function RequirementsView() {
               {versionLabel}
             </span>
             <button
-              onClick={() => setShowUnscheduledOnly((v) => !v)}
+              onClick={() =>
+                setReqVersionFilter(showUnscheduledOnly ? null : REQ_VERSION_NONE)
+              }
               aria-pressed={showUnscheduledOnly}
               title="Show only requirements with no release assigned (own or inherited)"
               style={{
@@ -528,7 +540,15 @@ export function RequirementsView() {
               try {
                 // Word is what business consumers open — the Markdown
                 // variant stays available via ?format=md and the MCP tool.
-                const blob = await api.exportRequirementsDocx(currentMapId);
+                // The active filter bar travels along: you export what you see.
+                const blob = await api.exportRequirementsDocx(currentMapId, {
+                  status: statusFilter || undefined,
+                  priority: priorityFilter || undefined,
+                  release: reqVersionFilter ?? undefined,
+                  releaseMode: versionFilterMode === 'exact' ? 'exact' : undefined,
+                  hideDone: hideDone || undefined,
+                  acceptance: acceptanceFilter || undefined,
+                });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
                 a.download = `anforderungsdokument-${new Date().toISOString().slice(0, 10)}.docx`;
@@ -539,7 +559,7 @@ export function RequirementsView() {
               }
             }}
             disabled={exporting}
-            title="Als Anforderungsdokument (Word) exportieren"
+            title="Als Anforderungsdokument (Word) exportieren — aktive Filter werden übernommen"
             style={secondaryButtonStyle(exporting)}
           >
             {exporting ? 'Exporting…' : 'Export Word'}

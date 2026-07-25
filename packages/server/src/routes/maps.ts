@@ -244,7 +244,22 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // buckets. ?format=md (default, text/markdown) or ?format=docx
   // (Word download for business consumers). Rendering lives in
   // ../export/requirementsDoc.ts.
-  app.get<{ Params: { id: string }; Querystring: { format?: string } }>(
+  //
+  // Filter params mirror the Requirements view's filter bar so the export
+  // matches what's on screen: ?status=, ?priority=, ?release=<versionId|none>,
+  // ?releaseMode=cumulative|exact, ?hideDone=1, ?acceptance=none|mine-open|rejected.
+  app.get<{
+    Params: { id: string };
+    Querystring: {
+      format?: string;
+      status?: string;
+      priority?: string;
+      release?: string;
+      releaseMode?: string;
+      hideDone?: string;
+      acceptance?: string;
+    };
+  }>(
     '/api/maps/:id/requirements-export',
     async (req, reply) => {
       const userId = req.userId;
@@ -267,8 +282,49 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       const computed = computeTree(data.nodes, data.map.healthThreshold);
       const acceptances = await listActiveAcceptances(req.params.id);
       const versions = await versionDb.listVersions(req.params.id);
-      const register = buildRegisterData(data.map, data.nodes, computed, acceptances, versions);
-      const format = (req.query as { format?: string }).format ?? 'md';
+
+      const q = req.query;
+      const oneOf = <T extends string>(value: string | undefined, allowed: readonly T[]): T | undefined =>
+        value !== undefined && (allowed as readonly string[]).includes(value)
+          ? (value as T)
+          : undefined;
+      for (const [key, allowed] of [
+        ['status', ['open', 'partial', 'done']],
+        ['priority', ['must', 'should', 'could']],
+        ['releaseMode', ['cumulative', 'exact']],
+        ['acceptance', ['none', 'mine-open', 'rejected']],
+      ] as const) {
+        const value = q[key];
+        if (value !== undefined && !(allowed as readonly string[]).includes(value)) {
+          return reply.status(400).send({
+            error: {
+              code: 'VALIDATION_ERROR',
+              message: `Unknown ${key} "${value}" — use ${allowed.join(', ')}`,
+            },
+          });
+        }
+      }
+      // A stale release id must fail loudly: silently exporting an empty
+      // document would look like the requirements vanished.
+      if (q.release && q.release !== 'none' && !versions.some((v) => v.id === q.release)) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: `Unknown release "${q.release}" — use a version id from this map, or "none"`,
+          },
+        });
+      }
+
+      const register = buildRegisterData(data.map, data.nodes, computed, acceptances, versions, {
+        status: oneOf(q.status, ['open', 'partial', 'done']),
+        priority: oneOf(q.priority, ['must', 'should', 'could']),
+        release: q.release,
+        releaseMode: oneOf(q.releaseMode, ['cumulative', 'exact']),
+        hideDone: q.hideDone === '1' || q.hideDone === 'true',
+        acceptance: oneOf(q.acceptance, ['none', 'mine-open', 'rejected']),
+        currentUserId: req.userId ?? null,
+      });
+      const format = q.format ?? 'md';
 
       if (format === 'docx') {
         const buf = await renderDocx(register);

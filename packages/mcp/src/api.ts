@@ -371,8 +371,25 @@ export function revokeAcceptance(mapId: string, nodeId: string): Promise<{ succe
   });
 }
 
-export function exportRequirements(mapId: string): Promise<string> {
-  return requestText(`/api/maps/${mapId}/requirements-export`);
+export interface RequirementsExportFilter {
+  status?: 'open' | 'partial' | 'done';
+  priority?: 'must' | 'should' | 'could';
+  /** Version id, or 'none' for "no release assigned (own or inherited)". */
+  release?: string;
+  releaseMode?: 'cumulative' | 'exact';
+}
+
+export function exportRequirements(
+  mapId: string,
+  filter: RequirementsExportFilter = {},
+): Promise<string> {
+  const params = new URLSearchParams();
+  if (filter.status) params.set('status', filter.status);
+  if (filter.priority) params.set('priority', filter.priority);
+  if (filter.release) params.set('release', filter.release);
+  if (filter.releaseMode) params.set('releaseMode', filter.releaseMode);
+  const q = params.toString();
+  return requestText(`/api/maps/${mapId}/requirements-export${q ? `?${q}` : ''}`);
 }
 
 // ── Maps ────────────────────────────────────────────────────────

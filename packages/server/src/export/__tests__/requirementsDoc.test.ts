@@ -166,6 +166,104 @@ describe('buildRegisterData — status detail', () => {
   });
 });
 
+describe('buildRegisterData — filters (export mirrors the filter bar)', () => {
+  const versions = [
+    { id: 'v2', name: 'V2', sortOrder: 1, targetDate: null },
+    { id: 'v1', name: 'V1', sortOrder: 0, targetDate: null },
+  ] as Parameters<typeof buildRegisterData>[4];
+
+  // MAN-01 done+v1 · MAN-02 partial+v2 · MAN-03 open, v1 via child ·
+  // MAN-04 open, unscheduled, priority could.
+  const nodes = [
+    makeNode({ id: 'root', childrenIds: ['ch'] }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1', 'r2', 'r3', 'r4'], text: 'Bereich' }),
+    makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', requirementPriority: 'must', percentComplete: 100, versionId: 'v1' }),
+    makeNode({ id: 'r2', parentId: 'ch', requirementId: 'MAN-02', requirementPriority: 'must', percentComplete: 50, versionId: 'v2' }),
+    makeNode({ id: 'r3', parentId: 'ch', requirementId: 'MAN-03', childrenIds: ['r3c'] }),
+    makeNode({ id: 'r3c', parentId: 'r3', versionId: 'v1', percentComplete: 0 }),
+    makeNode({ id: 'r4', parentId: 'ch', requirementId: 'MAN-04', requirementPriority: 'could', percentComplete: 0 }),
+  ];
+
+  const acceptances = [
+    { ...baseAcc, nodeId: 'r1', userId: 'u1', decision: 'accepted' as const, nodeRevisionAtAcceptance: 0 },
+    { ...baseAcc, nodeId: 'r2', userId: 'u2', decision: 'rejected' as const, comment: 'Falsche Maske', nodeRevisionAtAcceptance: 0 },
+  ];
+
+  const buildF = (filter: Parameters<typeof buildRegisterData>[5]) =>
+    buildRegisterData(map, nodes, new Map(), acceptances, versions, filter);
+  const ids = (filter: Parameters<typeof buildRegisterData>[5]) =>
+    buildF(filter).chapters.flatMap((c) => c.rows.map((r) => r.id));
+
+  it('includes everything and no label when unfiltered', () => {
+    const data = buildF({});
+    expect(data.total).toBe(4);
+    expect(data.totalAll).toBe(4);
+    expect(data.filterLabel).toBeNull();
+  });
+
+  it('filters by derived status', () => {
+    expect(ids({ status: 'done' })).toEqual(['MAN-01']);
+    expect(ids({ status: 'partial' })).toEqual(['MAN-02']);
+    expect(ids({ status: 'open' })).toEqual(['MAN-03', 'MAN-04']);
+  });
+
+  it('hideDone drops implemented requirements', () => {
+    expect(ids({ hideDone: true })).toEqual(['MAN-02', 'MAN-03', 'MAN-04']);
+  });
+
+  it('filters by MoSCoW priority', () => {
+    expect(ids({ priority: 'could' })).toEqual(['MAN-04']);
+  });
+
+  it('release exact matches own and descendant versions', () => {
+    expect(ids({ release: 'v1', releaseMode: 'exact' })).toEqual(['MAN-01', 'MAN-03']);
+  });
+
+  it('release cumulative includes everything due by that release, and is the default', () => {
+    expect(ids({ release: 'v2', releaseMode: 'cumulative' })).toEqual(['MAN-01', 'MAN-02', 'MAN-03']);
+    expect(ids({ release: 'v1' })).toEqual(['MAN-01', 'MAN-03']);
+  });
+
+  it('release "none" keeps only requirements unscheduled through their whole subtree', () => {
+    expect(ids({ release: 'none' })).toEqual(['MAN-04']);
+  });
+
+  it('acceptance filters mirror the register UI', () => {
+    expect(ids({ acceptance: 'rejected' })).toEqual(['MAN-02']);
+    expect(ids({ acceptance: 'none' })).toEqual(['MAN-03', 'MAN-04']);
+    expect(ids({ acceptance: 'mine-open', currentUserId: 'u1' })).toEqual(['MAN-02', 'MAN-03', 'MAN-04']);
+  });
+
+  it('counts reflect the filtered set, totalAll the whole register', () => {
+    const data = buildF({ hideDone: true });
+    expect(data.total).toBe(3);
+    expect(data.totalAll).toBe(4);
+    expect(data.counts).toEqual({ Umgesetzt: 0, Teilweise: 1, Offen: 2 });
+  });
+
+  it('describes the active filter in German', () => {
+    expect(buildF({ release: 'v2' }).filterLabel).toBe('Release: bis V2');
+    expect(buildF({ release: 'v1', releaseMode: 'exact' }).filterLabel).toBe('Release: nur V1');
+    expect(buildF({ release: 'none' }).filterLabel).toBe('Release: ohne Zuordnung');
+    expect(buildF({ status: 'open', hideDone: true, priority: 'must' }).filterLabel).toBe(
+      'Status: Offen · ohne Umgesetzte · Priorität: Muss',
+    );
+  });
+
+  it('marks the rendered Markdown as a filtered Auszug with X von Y', () => {
+    const md = renderMarkdown(buildF({ release: 'none' }));
+    expect(md).toContain('Gefilterter Auszug');
+    expect(md).toContain('Release: ohne Zuordnung');
+    expect(md).toContain('**Stand:** 1 von 4 Anforderungen');
+  });
+
+  it('renders an unfiltered document without the Auszug banner', () => {
+    const md = renderMarkdown(buildF({}));
+    expect(md).not.toContain('Gefilterter Auszug');
+    expect(md).toContain('**Stand:** 4 Anforderungen');
+  });
+});
+
 describe('acceptanceIsStale', () => {
   it('flags revision drift and >1pt progress drift, tolerates rounding', () => {
     const acc = { ...baseAcc };

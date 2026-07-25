@@ -38,7 +38,15 @@ const PARAM = {
   version: 'v',
   sprint: 's',
   phase: 'p',
+  // Requirements register release filter — distinct from `v` (the canvas
+  // scope filter): a version id, or 'none' for "no release assigned".
+  reqVersion: 'rv',
+  // 'exact' = "only this release"; absent = cumulative ("through").
+  reqVersionMode: 'rvm',
 } as const;
+
+/** The literal `rv` value meaning "only requirements with no release". */
+export const REQ_VERSION_NONE = 'none';
 
 /** Every param this module owns — used to clear stale keys on write. */
 const OWNED_PARAMS: readonly string[] = Object.values(PARAM);
@@ -79,6 +87,10 @@ export interface UrlState {
   version: string | null;
   sprint: string | null;
   phase: string | null;
+  /** Requirements register release filter: version id, 'none', or absent. */
+  reqVersion: string | null;
+  /** 'exact' when the register shows only the selected release; null = cumulative. */
+  reqVersionMode: 'exact' | null;
 }
 
 export const EMPTY_URL_STATE: UrlState = {
@@ -90,6 +102,8 @@ export const EMPTY_URL_STATE: UrlState = {
   version: null,
   sprint: null,
   phase: null,
+  reqVersion: null,
+  reqVersionMode: null,
 };
 
 /** Keys that count as navigation — these push a history entry. */
@@ -132,6 +146,8 @@ export function parseUrlState(search: string): UrlState {
     version: readId(params, PARAM.version),
     sprint: readId(params, PARAM.sprint),
     phase: readId(params, PARAM.phase),
+    reqVersion: readId(params, PARAM.reqVersion),
+    reqVersionMode: readId(params, PARAM.reqVersionMode) === 'exact' ? 'exact' : null,
   };
 }
 
@@ -159,6 +175,14 @@ export function serializeUrlState(search: string, state: UrlState): string {
   if (state.version) params.set(PARAM.version, state.version);
   if (state.sprint) params.set(PARAM.sprint, state.sprint);
   if (state.phase) params.set(PARAM.phase, state.phase);
+  if (state.reqVersion) {
+    params.set(PARAM.reqVersion, state.reqVersion);
+    // Mode only matters alongside a concrete release — 'none' and "all
+    // releases" ignore it, so don't let it linger in the URL.
+    if (state.reqVersionMode === 'exact' && state.reqVersion !== REQ_VERSION_NONE) {
+      params.set(PARAM.reqVersionMode, state.reqVersionMode);
+    }
+  }
 
   const str = params.toString();
   return str === '' ? '' : `?${str}`;
@@ -199,6 +223,12 @@ export function validateUrlState(state: UrlState, ctx: UrlStateContext): UrlStat
     version: state.version && ctx.versionIds.has(state.version) ? state.version : null,
     sprint: state.sprint && ctx.sprintIds.has(state.sprint) ? state.sprint : null,
     phase: state.phase && ctx.phaseIds.has(state.phase) ? state.phase : null,
+    reqVersion:
+      state.reqVersion &&
+      (state.reqVersion === REQ_VERSION_NONE || ctx.versionIds.has(state.reqVersion))
+        ? state.reqVersion
+        : null,
+    reqVersionMode: state.reqVersionMode,
   };
 }
 
