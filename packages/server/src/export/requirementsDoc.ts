@@ -16,6 +16,7 @@ import {
   TableCell,
   TableRow,
   TextRun,
+  VerticalAlign,
   WidthType,
   BorderStyle,
   TableLayoutType,
@@ -357,8 +358,9 @@ const ZEBRA_FILL = 'f8fafc';
 // Status, Fortschritt, Aufwand, Rest, Abnahme. LibreOffice ignores
 // percentage widths that only sit on header cells — the table needs an
 // explicit grid (columnWidths, in DXA) and fixed layout, and every cell
-// must carry its column width.
-const COL_PCT = [7, 34, 6, 8, 10, 10, 5, 5, 15];
+// must carry its column width. Fortschritt is sized so bar + percentage
+// stay on ONE line, Aufwand/Rest so their headers don't wrap.
+const COL_PCT = [7, 33, 6, 8, 10, 12, 6, 6, 12];
 // Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
 const PAGE_MARGIN = 1134;
 const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
@@ -367,13 +369,15 @@ const COL_DXA = COL_PCT.map((p) => Math.round((TABLE_DXA * p) / 100));
 /**
  * Text progress bar for the Fortschritt column — the docx stand-in for the
  * register UI's bar. Block glyphs are equal-width in Calibri, so the bars
- * align across rows without a monospace font.
+ * align across rows without a monospace font. Non-breaking spaces keep the
+ * percentage on the same line as the bar — with a regular space Word wraps
+ * it below and doubles every row's height.
  */
 function progressBar(percent: number): { text: string; color: string } {
   const clamped = Math.min(100, Math.max(0, percent));
-  const filled = Math.round(clamped / 10);
+  const filled = Math.round(clamped / 12.5);
   return {
-    text: `${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${clamped} %`,
+    text: `${'█'.repeat(filled)}${'░'.repeat(8 - filled)} ${clamped} %`,
     color: clamped >= 100 ? '10b981' : clamped > 0 ? '3b82f6' : '94a3b8',
   };
 }
@@ -386,6 +390,7 @@ function cell(
     shading: opts.fill ? { fill: opts.fill } : undefined,
     width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
     margins: { top: 60, bottom: 60, left: 100, right: 100 },
+    verticalAlign: VerticalAlign.CENTER,
     children: [
       new Paragraph({
         children: [
