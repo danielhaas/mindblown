@@ -10,6 +10,7 @@ import {
   Document,
   HeadingLevel,
   Packer,
+  PageOrientation,
   Paragraph,
   Table,
   TableCell,
@@ -58,6 +59,8 @@ export interface RegisterRow {
   status: string;
   /** Status with the derived percentage on partial rows, e.g. "Teilweise · 42 %". */
   statusDetail: string;
+  /** Derived progress 0–100, rounded — feeds the docx progress bar. */
+  progress: number;
   aufwand: string;
   rest: string;
   /** e.g. "D. Haas ✓ 15.07." — one entry per active acceptance, ⚠-suffixed when stale. */
@@ -273,6 +276,7 @@ export function buildRegisterData(
             // "Teilweise" alone reads the same at 5 % and 95 % — the number
             // is the whole point of a derived status.
             statusDetail: status === 'Teilweise' ? `${status} · ${Math.round(p)} %` : status,
+            progress: Math.round(p),
             aufwand: sizeOf(effort),
             rest: status === 'Umgesetzt' ? '—' : sizeOf(effort * (1 - p / 100)),
             abnahme,
@@ -346,24 +350,47 @@ const STATUS_FILL: Record<string, string> = {
   Offen: 'f1f5f9',
 };
 
+/** Subtle alternate-row fill, mirroring the register UI's hover tone. */
+const ZEBRA_FILL = 'f8fafc';
+
 // Column widths as % of table width: ID, Anforderung, Priorität, Release,
-// Status, Aufwand, Rest, Abnahme. LibreOffice ignores percentage widths that
-// only sit on header cells — the table needs an explicit grid (columnWidths,
-// in DXA) and fixed layout, and every cell must carry its column width.
-// Release is paid for out of Anforderung; Status widened for the "· 42 %".
-const COL_PCT = [8, 35, 8, 10, 13, 6, 6, 14];
-// Usable A4 portrait width with the docx default 1440-twip margins.
-const TABLE_DXA = 11906 - 2 * 1440;
+// Status, Fortschritt, Aufwand, Rest, Abnahme. LibreOffice ignores
+// percentage widths that only sit on header cells — the table needs an
+// explicit grid (columnWidths, in DXA) and fixed layout, and every cell
+// must carry its column width.
+const COL_PCT = [7, 34, 6, 8, 10, 10, 5, 5, 15];
+// Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
+const PAGE_MARGIN = 1134;
+const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
 const COL_DXA = COL_PCT.map((p) => Math.round((TABLE_DXA * p) / 100));
 
-function cell(text: string, opts: { bold?: boolean; fill?: string; width?: number } = {}): TableCell {
+/**
+ * Text progress bar for the Fortschritt column — the docx stand-in for the
+ * register UI's bar. Block glyphs are equal-width in Calibri, so the bars
+ * align across rows without a monospace font.
+ */
+function progressBar(percent: number): { text: string; color: string } {
+  const clamped = Math.min(100, Math.max(0, percent));
+  const filled = Math.round(clamped / 10);
+  return {
+    text: `${'█'.repeat(filled)}${'░'.repeat(10 - filled)} ${clamped} %`,
+    color: clamped >= 100 ? '10b981' : clamped > 0 ? '3b82f6' : '94a3b8',
+  };
+}
+
+function cell(
+  text: string,
+  opts: { bold?: boolean; fill?: string; width?: number; color?: string } = {},
+): TableCell {
   return new TableCell({
     shading: opts.fill ? { fill: opts.fill } : undefined,
     width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
     margins: { top: 60, bottom: 60, left: 100, right: 100 },
     children: [
       new Paragraph({
-        children: [new TextRun({ text, bold: opts.bold ?? false, size: 18 })],
+        children: [
+          new TextRun({ text, bold: opts.bold ?? false, size: 18, color: opts.color }),
+        ],
       }),
     ],
   });
@@ -421,11 +448,21 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
   );
 
   data.chapters.forEach((ch, i) => {
+    const doneInChapter = ch.rows.filter((r) => r.status === 'Umgesetzt').length;
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_1,
         spacing: { before: 320, after: 120 },
-        children: [new TextRun(`${i + 1}. ${ch.name}`)],
+        children: [
+          new TextRun(`${i + 1}. ${ch.name}`),
+          // Same at-a-glance counts as the register UI's group header rows.
+          new TextRun({
+            text: `   ${ch.rows.length} Anforderung${ch.rows.length === 1 ? '' : 'en'} · ${doneInChapter} umgesetzt`,
+            bold: false,
+            size: 18,
+            color: '64748b',
+          }),
+        ],
       }),
     );
     const header = new TableRow({
@@ -436,26 +473,29 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
         cell('Priorität', { bold: true, fill: 'e2e8f0', width: COL_PCT[2] }),
         cell('Release', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
         cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
-        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
-        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
-        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[7] }),
+        cell('Fortschritt', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
+        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
+        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[7] }),
+        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[8] }),
       ],
     });
-    const rows = ch.rows.map(
-      (r) =>
-        new TableRow({
-          children: [
-            cell(r.id, { bold: true, width: COL_PCT[0] }),
-            cell(r.text, { width: COL_PCT[1] }),
-            cell(r.prio, { width: COL_PCT[2] }),
-            cell(r.release, { width: COL_PCT[3] }),
-            cell(r.statusDetail, { fill: STATUS_FILL[r.status], width: COL_PCT[4] }),
-            cell(r.aufwand, { width: COL_PCT[5] }),
-            cell(r.rest, { width: COL_PCT[6] }),
-            cell(r.abnahme.join('\n') || '—', { width: COL_PCT[7] }),
-          ],
-        }),
-    );
+    const rows = ch.rows.map((r, rowIndex) => {
+      const zebra = rowIndex % 2 === 1 ? ZEBRA_FILL : undefined;
+      const bar = progressBar(r.progress);
+      return new TableRow({
+        children: [
+          cell(r.id, { bold: true, width: COL_PCT[0], fill: zebra }),
+          cell(r.text, { width: COL_PCT[1], fill: zebra }),
+          cell(r.prio, { width: COL_PCT[2], fill: zebra, bold: r.prio === 'Muss' }),
+          cell(r.release, { width: COL_PCT[3], fill: zebra }),
+          cell(r.statusDetail, { fill: STATUS_FILL[r.status], width: COL_PCT[4] }),
+          cell(bar.text, { width: COL_PCT[5], fill: zebra, color: bar.color }),
+          cell(r.aufwand, { width: COL_PCT[6], fill: zebra }),
+          cell(r.rest, { width: COL_PCT[7], fill: zebra }),
+          cell(r.abnahme.join('\n') || '—', { width: COL_PCT[8], fill: zebra }),
+        ],
+      });
+    });
     children.push(
       new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
@@ -474,6 +514,26 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
     );
   });
 
-  const doc = new Document({ sections: [{ children }] });
+  const doc = new Document({
+    sections: [
+      {
+        properties: {
+          page: {
+            // A4 landscape — 8 columns plus a progress bar don't breathe in
+            // portrait. docx swaps width/height for LANDSCAPE, so pass the
+            // portrait A4 dimensions here.
+            size: { width: 11906, height: 16838, orientation: PageOrientation.LANDSCAPE },
+            margin: {
+              top: PAGE_MARGIN,
+              right: PAGE_MARGIN,
+              bottom: PAGE_MARGIN,
+              left: PAGE_MARGIN,
+            },
+          },
+        },
+        children,
+      },
+    ],
+  });
   return Packer.toBuffer(doc);
 }
