@@ -93,6 +93,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
     dispatchGate: (get('dispatchGate', 'dispatch_gate') as string[]) ?? [],
     dispatchPolicy: (get('dispatchPolicy', 'dispatch_policy') as string[]) ?? [],
+    profilePolicy: (get('profilePolicy', 'profile_policy') as MindMap['profilePolicy']) ?? null,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

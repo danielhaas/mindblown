@@ -61,6 +61,14 @@ export interface NodeWithComputed {
   healthSignal: string;
 }
 
+/** Pull-queue profile routing thresholds (mirrors core ProfilePolicy, #262). */
+export interface ProfilePolicy {
+  /** Heavy-class floor in hours. Omitted = one day (the map's hoursPerDay). */
+  heavyMinHours?: number;
+  /** Light-eligible ceiling in hours. Omitted = 2. */
+  lightMaxHours?: number;
+}
+
 /** Project phase definition (mirrors core PhaseDef; statusWorkflow idiom). */
 export interface PhaseDef {
   id: string;

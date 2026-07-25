@@ -3,7 +3,7 @@ import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
-import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy } from '@mindblown/core';
 import { clampFocusFactor } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -130,6 +130,8 @@ export interface UpdateMapInput {
   dispatchGate?: string[];
   /** Pull-queue ranking keys (bugs|priority|size|age). Empty = default. */
   dispatchPolicy?: string[];
+  /** Profile routing table (#262); null clears = profile-blind queue. */
+  profilePolicy?: ProfilePolicy | null;
   githubInstallationId?: string | null;
   githubRepoOwner?: string | null;
   githubRepoName?: string | null;
@@ -158,6 +160,7 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.maxActiveClaims !== undefined) updates.maxActiveClaims = Math.max(0, Math.floor(input.maxActiveClaims));
   if (input.dispatchGate !== undefined) updates.dispatchGate = input.dispatchGate;
   if (input.dispatchPolicy !== undefined) updates.dispatchPolicy = input.dispatchPolicy;
+  if (input.profilePolicy !== undefined) updates.profilePolicy = input.profilePolicy;
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;

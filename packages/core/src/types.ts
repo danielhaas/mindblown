@@ -347,6 +347,30 @@ export interface StatusDef {
   position: number; // sort order
 }
 
+/**
+ * Pull-queue profile routing thresholds (#262). Presence of this object
+ * on a map ACTIVATES profile-based eligibility in `get_next_ticket`;
+ * `profilePolicy: null` (the default) keeps the queue profile-blind.
+ *
+ * Class rules built from signals that already exist (no difficulty tag):
+ * - heavy-class ticket: P0 OR effort ≥ `heavyMinHours` — reserved for
+ *   `profile: "heavy"` pullers (first refusal).
+ * - light-eligible ticket: effort ≤ `lightMaxHours` AND priority P2/P3.
+ * - unestimated tickets are eligible to EVERY profile (never starve).
+ * - unknown/absent puller profile = standard (fail open).
+ *
+ * Thresholds are hours; node estimates are normalized from the map's
+ * effortUnit via `hoursPerDay` before comparison. On `points` maps the
+ * effort triggers are inert (points aren't time) — only the P0 heavy
+ * trigger applies.
+ */
+export interface ProfilePolicy {
+  /** Heavy-class floor in hours. Omitted = one day (`hoursPerDay`). */
+  heavyMinHours?: number;
+  /** Light-eligible ceiling in hours. Omitted = 2. */
+  lightMaxHours?: number;
+}
+
 /** A baseline snapshot for plan-vs-actual comparison. */
 export interface Baseline {
   id: string;
@@ -466,6 +490,14 @@ export interface MindMap {
    * an ordered list is the whole policy language.
    */
   dispatchPolicy: string[];
+  /**
+   * Profile routing table for `get_next_ticket(sessionId, profile)`.
+   * null (default) = profile-blind queue — the parameter stays inert
+   * exactly as before #262. See {@link ProfilePolicy} for the rules.
+   * Routing only FILTERS eligibility; dispatchPolicy ranking is
+   * untouched.
+   */
+  profilePolicy: ProfilePolicy | null;
 
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;

@@ -8,7 +8,7 @@
  * Adding a new backend method requires adding it to both implementations.
  */
 
-import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef } from './types.js';
+import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
 // Mirrors the persisted `triage_decisions` row, plus the per-request
@@ -253,6 +253,7 @@ export interface ToolBackend {
       maxActiveClaims?: number;
       dispatchGate?: string[];
       dispatchPolicy?: string[];
+      profilePolicy?: ProfilePolicy | null;
       autoImportNewIssues?: boolean;
       phases?: PhaseDef[];
     },

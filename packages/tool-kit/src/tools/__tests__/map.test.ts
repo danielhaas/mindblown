@@ -164,3 +164,42 @@ describe('update_map tool — phases', () => {
     expect('phases' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
   });
 });
+
+// Profile routing table (#262) — update_map is how an operator activates
+// (or clears) profile-based pull eligibility; null must round-trip so the
+// queue can be returned to profile-blind.
+describe('update_map tool — profilePolicy', () => {
+  const schema = z.object(updateMapTool.schema);
+
+  it('accepts a threshold object, a partial one, and null', () => {
+    expect(schema.parse({ mapId: 'm1', profilePolicy: { heavyMinHours: 8, lightMaxHours: 2 } }).profilePolicy)
+      .toEqual({ heavyMinHours: 8, lightMaxHours: 2 });
+    expect(schema.parse({ mapId: 'm1', profilePolicy: {} }).profilePolicy).toEqual({});
+    expect(schema.parse({ mapId: 'm1', profilePolicy: null }).profilePolicy).toBeNull();
+  });
+
+  it('rejects unknown keys and non-positive thresholds', () => {
+    expect(() => schema.parse({ mapId: 'm1', profilePolicy: { heavyMinDays: 1 } })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', profilePolicy: { heavyMinHours: 0 } })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', profilePolicy: { lightMaxHours: -2 } })).toThrow();
+  });
+
+  it('forwards the object — and an explicit null clear — to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      profilePolicy: { heavyMinHours: 16 },
+    } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ profilePolicy: { heavyMinHours: 16 } });
+
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', profilePolicy: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ profilePolicy: null });
+  });
+
+  it('omitting the field does not touch it (no accidental clears)', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', name: 'renamed' } as never);
+    expect('profilePolicy' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+  });
+});
+

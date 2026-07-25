@@ -20,6 +20,7 @@ export type {
   CustomFieldDef,
   StatusDef,
   PhaseDef,
+  ProfilePolicy,
   Baseline,
   MindMap,
   User,

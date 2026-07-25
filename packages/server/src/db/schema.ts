@@ -149,6 +149,10 @@ export const maps = pgTable('maps', {
   // Ordered ranking keys for the gated ready set (bugs|priority|size|age).
   // Empty array = default ["bugs","priority","age"].
   dispatchPolicy: jsonb('dispatch_policy').notNull().default([]), // string[]
+  // Profile routing table (#262): {heavyMinHours?, lightMaxHours?}.
+  // NULL = profile-blind queue (the pre-#262 behavior) — deliberately
+  // nullable with no default object so existing maps stay untouched.
+  profilePolicy: jsonb('profile_policy'), // ProfilePolicy | null
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
