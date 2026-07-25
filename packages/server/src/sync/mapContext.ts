@@ -90,43 +90,11 @@ export function _clearMapContextCacheForTests(): void {
 
 // ── ProseMirror description → plain text ──────────────────────────
 
-/**
- * Map node descriptions are stored as ProseMirror JSON (rich text), but
- * the triage prompt only needs plain text. Walk the doc and concatenate
- * every leaf `text` node, joining paragraphs with a single newline so
- * Claude sees something readable without HTML/JSON noise.
- *
- * Strings pass through unchanged so we tolerate legacy nodes whose
- * description was saved as a raw string before the ProseMirror migration.
- * Returns empty string for null/undefined/unknown shapes.
- */
-export function proseMirrorToPlainText(description: unknown): string {
-  if (description == null) return '';
-  if (typeof description === 'string') return description;
-  if (typeof description !== 'object') return '';
-
-  const lines: string[] = [];
-  const walk = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const obj = node as { type?: string; text?: unknown; content?: unknown };
-    if (obj.type === 'text' && typeof obj.text === 'string') {
-      lines.push(obj.text);
-      return;
-    }
-    if (Array.isArray(obj.content)) {
-      const before = lines.length;
-      for (const child of obj.content) walk(child);
-      // Treat block-level nodes as paragraph breaks. We don't try to
-      // recreate exact formatting; the triage prompt only needs the gist.
-      const isBlock = obj.type !== undefined && obj.type !== 'text' && obj.type !== 'doc';
-      if (isBlock && lines.length > before) {
-        lines.push('\n');
-      }
-    }
-  };
-  walk(description);
-  return lines.join('').replace(/\n{3,}/g, '\n\n').trim();
-}
+// Moved to @mindblown/core (richtext.ts) so packages/integrations can
+// render issue bodies with the same walk. Re-exported here for the
+// existing server-side import sites.
+import { proseMirrorToPlainText } from '@mindblown/core';
+export { proseMirrorToPlainText };
 
 // ── Builder ───────────────────────────────────────────────────────
 

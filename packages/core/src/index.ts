@@ -98,6 +98,9 @@ export {
 } from './calibration.js';
 export type { CalibrationSample, CalibrationAssessment } from './calibration.js';
 
+// Rich-text rendering
+export { proseMirrorToPlainText } from './richtext.js';
+
 // Requirements register helpers
 export { collectRequirementGhLinks } from './requirements.js';
 export type { GhLinkSource, RequirementGhLink } from './requirements.js';

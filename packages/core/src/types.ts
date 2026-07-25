@@ -441,6 +441,32 @@ export interface MindMap {
    */
   focusFactor: number;
 
+  // ── Pull queue (Leidang) ──────────────────────────────────
+  /**
+   * Fleet-wide cap on concurrently claimed nodes for the pull queue
+   * (`get_next_ticket`). Counted across ALL sessions — the constraint it
+   * models (CI capacity) is shared, not per-worker. 0 = hold: the queue
+   * grants nothing and the fleet drains naturally. Default 0 so a map
+   * must opt in before workers can pull from it.
+   */
+  maxActiveClaims: number;
+  /**
+   * AND-filter fencing what `get_next_ticket` may hand out. Tiny
+   * deliberate vocabulary: `version:<versionId>` (effective version via
+   * the explicit-assignment-wins ancestor walk) and `type:bug` (node
+   * tagged "bug"). Empty = no fence. A ticket outside the gate is
+   * invisible to the pull queue, not deprioritized.
+   */
+  dispatchGate: string[];
+  /**
+   * Ordered sort keys ranking the gated ready set: `bugs` (bug-tagged
+   * first), `priority` (priorityRank then P0–P3), `size` (effort
+   * estimate ascending, nulls last), `age` (oldest first). Empty =
+   * default `["bugs", "priority", "age"]`. No weights, no expressions —
+   * an ordered list is the whole policy language.
+   */
+  dispatchPolicy: string[];
+
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;
   updatedAt: string;

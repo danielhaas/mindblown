@@ -124,6 +124,12 @@ export interface UpdateMapInput {
   hoursPerDay?: number;
   workerCount?: number;
   focusFactor?: number;
+  /** Pull-queue claim cap (int ≥ 0; 0 = hold). */
+  maxActiveClaims?: number;
+  /** Pull-queue AND-filter: `version:<id>` / `type:bug`. Empty = open. */
+  dispatchGate?: string[];
+  /** Pull-queue ranking keys (bugs|priority|size|age). Empty = default. */
+  dispatchPolicy?: string[];
   githubInstallationId?: string | null;
   githubRepoOwner?: string | null;
   githubRepoName?: string | null;
@@ -149,6 +155,9 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
   if (input.hoursPerDay !== undefined) updates.hoursPerDay = input.hoursPerDay;
   if (input.workerCount !== undefined) updates.workerCount = input.workerCount;
   if (input.focusFactor !== undefined) updates.focusFactor = clampFocusFactor(input.focusFactor);
+  if (input.maxActiveClaims !== undefined) updates.maxActiveClaims = Math.max(0, Math.floor(input.maxActiveClaims));
+  if (input.dispatchGate !== undefined) updates.dispatchGate = input.dispatchGate;
+  if (input.dispatchPolicy !== undefined) updates.dispatchPolicy = input.dispatchPolicy;
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;

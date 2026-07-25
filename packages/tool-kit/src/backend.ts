@@ -177,6 +177,52 @@ export interface DuplicateLinkGroup {
   }>;
 }
 
+// ── Pull queue: get_next_ticket (Leidang) ──────────────────────────
+
+/**
+ * Self-contained work brief handed to a pulling session. The receiving
+ * worker has a fresh context and no memory — everything it needs to
+ * start must be in here (or one hop away via the GitHub links).
+ */
+export interface TicketBrief {
+  id: string;
+  mapId: string;
+  text: string;
+  /** Description rendered to plain text (ProseMirror walked). */
+  description: string;
+  priority: string | null;
+  priorityRank: number | null;
+  tags: string[];
+  scopes: string[];
+  /** Effective version (own or ancestor-inherited). */
+  versionId: string | null;
+  effortEstimate: number | null;
+  githubLinks: Array<{ externalId: string; url: string }>;
+  claimedAt: string | null;
+}
+
+export interface SkippedTicket {
+  id: string;
+  text: string;
+  reason: 'needs-brief';
+}
+
+export interface GetNextTicketResult {
+  granted: boolean;
+  /**
+   * Set when granted is false: `hold` = cap is 0 (fleet hold), `cap` =
+   * active claims have reached the cap, `empty` = nothing dispatchable
+   * inside the gate.
+   */
+  reason?: 'hold' | 'cap' | 'empty';
+  /** Currently claimed node count (incl. the fresh claim when granted). */
+  active: number;
+  cap: number;
+  ticket?: TicketBrief;
+  /** Ready nodes refused for having no brief (auto-tagged needs-brief). */
+  skipped: SkippedTicket[];
+}
+
 export interface ConflictScanResult {
   /** null in map-wide mode (no candidate given). */
   candidateId: string | null;
@@ -204,6 +250,9 @@ export interface ToolBackend {
       hoursPerDay?: number;
       workerCount?: number;
       focusFactor?: number;
+      maxActiveClaims?: number;
+      dispatchGate?: string[];
+      dispatchPolicy?: string[];
       autoImportNewIssues?: boolean;
       phases?: PhaseDef[];
     },
@@ -276,6 +325,7 @@ export interface ToolBackend {
     opts?: { limit?: number; scopeFilter?: string[] },
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
+  getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
   releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
 }

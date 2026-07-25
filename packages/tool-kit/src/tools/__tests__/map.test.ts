@@ -57,6 +57,43 @@ describe('update_map tool — focusFactor', () => {
   });
 });
 
+// Leidang pull-queue knobs — update_map is the orchestrator's one-write
+// control surface for the get_next_ticket queue (cap, fence, ranking).
+describe('update_map tool — dispatch knobs', () => {
+  const schema = z.object(updateMapTool.schema);
+
+  it('accepts the three knobs and forwards them', async () => {
+    const parsed = schema.parse({
+      mapId: 'm1',
+      maxActiveClaims: 12,
+      dispatchGate: ['version:v-mvp', 'type:bug'],
+      dispatchPolicy: ['bugs', 'size', 'priority', 'age'],
+    });
+    expect(parsed.maxActiveClaims).toBe(12);
+
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      maxActiveClaims: 0,
+      dispatchGate: [],
+      dispatchPolicy: [],
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      maxActiveClaims: 0,
+      dispatchGate: [],
+      dispatchPolicy: [],
+    });
+  });
+
+  it('rejects negative/fractional caps, off-vocabulary gates, unknown policy keys', () => {
+    expect(() => schema.parse({ mapId: 'm1', maxActiveClaims: -1 })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', maxActiveClaims: 2.5 })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['sprint:s1'] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['version:'] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['chaos'] })).toThrow();
+  });
+});
+
 // Phase column — update_map is the write surface for the map's PhaseDef
 // list (add / rename / reorder in REPLACE mode). The handler normalizes:
 // missing ids are generated, missing positions default to the array index.

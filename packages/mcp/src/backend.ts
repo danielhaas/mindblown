@@ -28,6 +28,7 @@ export const httpBackend: ToolBackend = {
   listNotInMindBlown: (mapId, filters) => api.listNotInMindBlown(mapId, filters),
   // ── Orchestration substrate (#111) ──────────────────────────────
   readyNodes: (mapId, opts) => api.readyNodes(mapId, opts),
+  getNextTicket: (mapId, sessionId, profile) => api.getNextTicket(mapId, sessionId, profile),
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),

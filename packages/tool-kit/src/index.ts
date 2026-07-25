@@ -12,6 +12,10 @@ export type {
   ReleaseNodeResult,
   ConflictEntry,
   ConflictScanResult,
+  // Pull queue (Leidang)
+  TicketBrief,
+  SkippedTicket,
+  GetNextTicketResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';

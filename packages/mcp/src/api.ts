@@ -419,6 +419,9 @@ export function updateMap(
     hoursPerDay?: number;
     workerCount?: number;
     focusFactor?: number;
+    maxActiveClaims?: number;
+    dispatchGate?: string[];
+    dispatchPolicy?: string[];
     autoImportNewIssues?: boolean;
     phases?: PhaseDef[];
   },
@@ -1219,6 +1222,40 @@ export function readyNodes(
   }
   const qs = params.toString();
   return request<ReadyNodesResultApi>(`/api/maps/${mapId}/nodes/ready${qs ? `?${qs}` : ''}`);
+}
+
+/** Mirrors tool-kit's GetNextTicketResult (this file stays import-free). */
+export interface GetNextTicketResultApi {
+  granted: boolean;
+  reason?: 'hold' | 'cap' | 'empty';
+  active: number;
+  cap: number;
+  ticket?: {
+    id: string;
+    mapId: string;
+    text: string;
+    description: string;
+    priority: string | null;
+    priorityRank: number | null;
+    tags: string[];
+    scopes: string[];
+    versionId: string | null;
+    effortEstimate: number | null;
+    githubLinks: Array<{ externalId: string; url: string }>;
+    claimedAt: string | null;
+  };
+  skipped: Array<{ id: string; text: string; reason: 'needs-brief' }>;
+}
+
+export function getNextTicket(
+  mapId: string,
+  sessionId: string,
+  profile?: string,
+): Promise<GetNextTicketResultApi> {
+  return request<GetNextTicketResultApi>(
+    `/api/maps/${mapId}/pull-next`,
+    { method: 'POST', body: JSON.stringify({ sessionId, ...(profile ? { profile } : {}) }) },
+  );
 }
 
 export function claimNode(

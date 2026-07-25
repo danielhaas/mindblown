@@ -12,7 +12,7 @@
  * (HTTP status codes for the routes, propagated to the LLM for the chat).
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes, maps } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
@@ -25,6 +25,7 @@ import {
   buildIsDonePredicate,
   buildInProgressIds,
   buildTodoIds,
+  proseMirrorToPlainText,
 } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap } from '@mindblown/core';
 import type {
@@ -32,6 +33,8 @@ import type {
   ClaimNodeResult,
   ReleaseNodeResult,
   ConflictScanResult,
+  GetNextTicketResult,
+  TicketBrief,
 } from '@mindblown/tool-kit';
 
 // ── Errors ──────────────────────────────────────────────────────
@@ -96,17 +99,12 @@ export async function readyNodes(
     ? ready.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
     : ready;
 
-  // Group by parent → sort each group by resolved sibling order → flatten.
-  const byParent = new Map<string | null, CoreNode[]>();
-  for (const n of filtered) {
-    const key = n.parentId;
-    if (!byParent.has(key)) byParent.set(key, []);
-    byParent.get(key)!.push(n);
-  }
-  const sorted: CoreNode[] = [];
-  for (const [, siblings] of byParent) {
-    sorted.push(...resolvedSiblingOrder(siblings));
-  }
+  // Global priorityRank ASC NULLS LAST → priority (P0–P3) → createdAt ASC,
+  // exactly what the ready_nodes tool description promises. (Used to group
+  // by parent and only order within sibling groups, which made the overall
+  // list order depend on Map-iteration order of the parents — doc/impl
+  // drift fixed alongside the Leidang pull queue.)
+  const sorted = resolvedSiblingOrder(filtered);
 
   const page = sorted.slice(0, limit);
   return {
@@ -244,6 +242,308 @@ export async function releaseNode(
     node: { id: updatedNode.id, text: updatedNode.text },
     released: true,
   };
+}
+
+// ── getNextTicket (Leidang pull queue) ──────────────────────────
+
+export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
+
+/** Tag auto-applied to ready nodes the pull queue refuses to hand out. */
+export const NEEDS_BRIEF_TAG = 'needs-brief';
+
+/**
+ * Effective version of a node: its own versionId, or the nearest
+ * ancestor's (explicit-assignment-wins walk — same semantics as the
+ * search_nodes versionId filter and the lint engine).
+ */
+function effectiveVersionId(node: CoreNode, nodeMap: NodeMap): string | null {
+  const seen = new Set<string>();
+  let cur: CoreNode | undefined = node;
+  while (cur) {
+    if (cur.versionId != null) return cur.versionId;
+    if (cur.parentId === null || seen.has(cur.parentId)) return null;
+    seen.add(cur.parentId);
+    cur = nodeMap.get(cur.parentId);
+  }
+  return null;
+}
+
+/** Bug detection for gate/policy purposes: node carries the "bug" tag
+ *  (node.tags mirrors GitHub labels, so a GH `bug` label counts). */
+function isBugNode(node: CoreNode): boolean {
+  return node.tags.some((t) => t.toLowerCase() === 'bug');
+}
+
+/**
+ * AND-filter over the map's dispatchGate. Vocabulary is deliberately
+ * tiny: `version:<versionId>` and `type:bug`. Empty gate = no fence.
+ * Unknown entries match NOTHING (fail-closed): a typo in the gate
+ * empties the queue loudly instead of silently opening the fence.
+ */
+export function matchesDispatchGate(
+  node: CoreNode,
+  gate: string[],
+  nodeMap: NodeMap,
+): boolean {
+  return gate.every((entry) => {
+    if (entry === 'type:bug') return isBugNode(node);
+    if (entry.startsWith('version:')) {
+      return effectiveVersionId(node, nodeMap) === entry.slice('version:'.length);
+    }
+    return false;
+  });
+}
+
+const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+
+/**
+ * Sort the gated ready set by the map's dispatchPolicy — an ordered list
+ * of sort keys, compared left to right: `bugs` (bug-tagged first),
+ * `priority` (priorityRank ASC NULLS LAST, then P0–P3), `size` (effort
+ * estimate ascending, nulls last), `age` (oldest createdAt first).
+ * Ties after all keys fall back to createdAt, then id (stable output).
+ */
+export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): CoreNode[] {
+  const compareBy = (key: string, a: CoreNode, b: CoreNode): number => {
+    switch (key) {
+      case 'bugs':
+        return Number(isBugNode(b)) - Number(isBugNode(a));
+      case 'priority': {
+        const ra = a.priorityRank;
+        const rb = b.priorityRank;
+        if (ra !== null || rb !== null) {
+          if (ra === null) return 1;
+          if (rb === null) return -1;
+          if (ra !== rb) return ra - rb;
+        }
+        const pa = a.priority !== null ? (PRIORITY_ORDER[a.priority] ?? 4) : 4;
+        const pb = b.priority !== null ? (PRIORITY_ORDER[b.priority] ?? 4) : 4;
+        return pa - pb;
+      }
+      case 'size': {
+        const ea = a.effortEstimate;
+        const eb = b.effortEstimate;
+        if (ea === null && eb === null) return 0;
+        if (ea === null) return 1;
+        if (eb === null) return -1;
+        return ea - eb;
+      }
+      case 'age':
+        return a.createdAt.localeCompare(b.createdAt);
+      default:
+        return 0; // unknown keys are inert — validated at the tool layer
+    }
+  };
+  return [...candidates].sort((a, b) => {
+    for (const key of policy) {
+      const cmp = compareBy(key, a, b);
+      if (cmp !== 0) return cmp;
+    }
+    const byAge = a.createdAt.localeCompare(b.createdAt);
+    if (byAge !== 0) return byAge;
+    return a.id.localeCompare(b.id);
+  });
+}
+
+/**
+ * Empty-brief guard: a ticket is dispatchable only if the worker gets a
+ * self-contained brief — a non-empty description, or a linked GitHub
+ * issue it can read (inbound sync copies issue bodies into the
+ * description, so a linked node normally carries the text locally too).
+ */
+export function hasBrief(node: CoreNode): boolean {
+  if (proseMirrorToPlainText(node.description).trim() !== '') return true;
+  return node.externalLinks.some((l) => l.provider === 'github');
+}
+
+interface PullDecision {
+  active: number;
+  cap: number;
+  reason?: 'hold' | 'cap';
+  /** Ranked, gated, dispatchable candidates in claim-attempt order. */
+  ranked: CoreNode[];
+  /** Ready-but-empty-brief nodes to tag `needs-brief` and report. */
+  skipped: CoreNode[];
+}
+
+/**
+ * Pure decision core of getNextTicket: cap gate → dispatch gate →
+ * policy sort → empty-brief guard. No I/O; the transactional shell
+ * applies the claim. Exported for direct unit testing.
+ */
+export function selectPullCandidates(
+  allNodes: CoreNode[],
+  opts: { workflow: StatusDef[]; cap: number; gate: string[]; policy: string[] },
+): PullDecision {
+  const active = allNodes.filter((n) => n.claimedBySession !== null).length;
+  const cap = Math.max(0, Math.floor(opts.cap));
+  if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [] };
+  if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [] };
+
+  const isDone = buildIsDonePredicate(opts.workflow);
+  const todoIds = buildTodoIds(opts.workflow);
+  const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  const ready = allNodes.filter(
+    (n) =>
+      n.parentId !== null && // the root is not a ticket
+      (n.status === null || todoIds.has(n.status)) &&
+      n.claimedBySession === null &&
+      isReady(n, nodeMap, isDone),
+  );
+  const gated = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
+  const rankedAll = sortByDispatchPolicy(gated, policy);
+
+  return {
+    active,
+    cap,
+    ranked: rankedAll.filter(hasBrief),
+    skipped: rankedAll.filter((n) => !hasBrief(n)),
+  };
+}
+
+/**
+ * Atomic pull: hand the calling session the next ticket per the map's
+ * cap / gate / policy, claiming it in the same transaction.
+ *
+ * The whole read-decide-claim sequence is serialized per map with
+ * `pg_advisory_xact_lock(hashtext(mapId))` — traffic is a few pulls per
+ * minute, so the lock is free and structurally kills every
+ * count-then-claim race between concurrent pulls. `claim_node` bypasses
+ * this lock (row-level FOR UPDATE only), so the claim itself is still a
+ * conditional UPDATE … WHERE claimed_by_session IS NULL: unlike
+ * claim_node's deliberate transfer semantics (orchestrator reclaims),
+ * the pull path NEVER steals a claim — if a candidate got claimed in
+ * between, we move on to the next one.
+ *
+ * `profile` is reserved-but-dormant in v1: accepted, ignored.
+ */
+export async function getNextTicket(
+  mapId: string,
+  sessionId: string,
+  _profile?: string,
+): Promise<GetNextTicketResult> {
+  const now = new Date();
+
+  const { result, taggedNodes, winnerNode } = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${mapId}))`);
+
+    const [mapRow] = await tx.select().from(maps).where(eq(maps.id, mapId));
+    if (!mapRow) throw new OrchestrationNotFoundError(`Map ${mapId} not found`);
+
+    const allRows = await tx
+      .select()
+      .from(nodes)
+      .where(and(eq(nodes.mapId, mapId), notDeleted));
+    const allNodes = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+    const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+    const decision = selectPullCandidates(allNodes, {
+      workflow: ((mapRow.statusWorkflow as StatusDef[]) ?? []),
+      cap: (mapRow.maxActiveClaims as number) ?? 0,
+      gate: ((mapRow.dispatchGate as string[]) ?? []),
+      policy: ((mapRow.dispatchPolicy as string[]) ?? []),
+    });
+
+    // Tag empty-brief nodes `needs-brief` so the queue starves loudly.
+    // Only write when the tag is new — repeat pulls stay read-only.
+    const tagged: CoreNode[] = [];
+    for (const n of decision.skipped) {
+      if (n.tags.includes(NEEDS_BRIEF_TAG)) continue;
+      const [row] = await tx
+        .update(nodes)
+        .set({ tags: [...n.tags, NEEDS_BRIEF_TAG], updatedAt: now })
+        .where(and(eq(nodes.id, n.id), notDeleted))
+        .returning();
+      if (row) tagged.push(dbNodeToCore(row as unknown as Record<string, unknown>));
+    }
+
+    const skipped = decision.skipped.map((n) => ({
+      id: n.id,
+      text: n.text,
+      reason: 'needs-brief' as const,
+    }));
+
+    if (decision.reason !== undefined) {
+      return {
+        result: {
+          granted: false as const,
+          reason: decision.reason,
+          active: decision.active,
+          cap: decision.cap,
+          skipped,
+        },
+        taggedNodes: tagged,
+        winnerNode: null,
+      };
+    }
+
+    for (const candidate of decision.ranked) {
+      const [row] = await tx
+        .update(nodes)
+        .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+        .where(and(eq(nodes.id, candidate.id), notDeleted, isNull(nodes.claimedBySession)))
+        .returning();
+      if (!row) continue; // claimed out from under us via claim_node — next
+
+      const winner = dbNodeToCore(row as unknown as Record<string, unknown>);
+      const ticket: TicketBrief = {
+        id: winner.id,
+        mapId,
+        text: winner.text,
+        description: proseMirrorToPlainText(winner.description),
+        priority: winner.priority,
+        priorityRank: winner.priorityRank,
+        tags: winner.tags,
+        scopes: winner.scopes,
+        versionId: effectiveVersionId(winner, nodeMap),
+        effortEstimate: winner.effortEstimate,
+        githubLinks: winner.externalLinks
+          .filter((l) => l.provider === 'github')
+          .map((l) => ({ externalId: l.externalId, url: l.url })),
+        claimedAt: winner.claimedAt,
+      };
+      return {
+        result: {
+          granted: true as const,
+          active: decision.active + 1,
+          cap: decision.cap,
+          ticket,
+          skipped,
+        },
+        taggedNodes: tagged,
+        winnerNode: winner,
+      };
+    }
+
+    return {
+      result: {
+        granted: false as const,
+        reason: 'empty' as const,
+        active: decision.active,
+        cap: decision.cap,
+        skipped,
+      },
+      taggedNodes: tagged,
+      winnerNode: null,
+    };
+  });
+
+  // Broadcasts after commit, mirroring claimNode.
+  for (const n of taggedNodes) {
+    broadcast(mapId, { type: 'node:updated', nodeId: n.id, fields: ['tags'], node: n });
+  }
+  if (winnerNode) {
+    broadcast(mapId, {
+      type: 'node:updated',
+      nodeId: winnerNode.id,
+      fields: ['claimedBySession', 'claimedAt'],
+      node: winnerNode,
+    });
+  }
+
+  return result;
 }
 
 // ── conflictScan ────────────────────────────────────────────────
