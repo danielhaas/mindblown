@@ -27,7 +27,7 @@ import {
   buildTodoIds,
   proseMirrorToPlainText,
 } from '@mindblown/core';
-import type { Node as CoreNode, StatusDef, NodeMap } from '@mindblown/core';
+import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
 import type {
   ReadyNodesResult,
   ClaimNodeResult,
@@ -356,6 +356,53 @@ export function hasBrief(node: CoreNode): boolean {
   return node.externalLinks.some((l) => l.provider === 'github');
 }
 
+/** Puller profiles the routing table recognizes. Anything else = standard. */
+export type PullProfile = 'heavy' | 'standard' | 'light';
+
+/** Unknown or absent profile strings fail OPEN to standard (#262). */
+export function resolveProfile(profile: string | undefined): PullProfile {
+  return profile === 'heavy' || profile === 'light' ? profile : 'standard';
+}
+
+/**
+ * Profile eligibility filter (#262). Only consulted when the map carries
+ * a profilePolicy — a null policy never reaches this function, so the
+ * pre-#262 profile-blind behavior is preserved by the caller.
+ *
+ * Estimates are normalized to hours from the map's effortUnit
+ * (`days` × hoursPerDay). On `points` maps the effort triggers are inert
+ * (points aren't time): only the P0 heavy trigger applies.
+ *
+ * - unestimated → eligible to every profile (never starves)
+ * - heavy-class (P0 OR ≥ heavyMinHours) → heavy pullers only
+ * - light pullers → additionally need ≤ lightMaxHours AND P2/P3
+ */
+export function isProfileEligible(
+  node: CoreNode,
+  profile: PullProfile,
+  policy: ProfilePolicy,
+  effortUnit: EffortUnit,
+  hoursPerDay: number,
+): boolean {
+  if (profile === 'heavy') return true; // heavy takes anything
+  if (node.effortEstimate === null) return true; // unestimated routes standard — granted to everyone
+
+  const hours =
+    effortUnit === 'hours'
+      ? node.effortEstimate
+      : effortUnit === 'days'
+        ? node.effortEstimate * hoursPerDay
+        : null; // points: not a time unit
+
+  const heavyMin = policy.heavyMinHours ?? hoursPerDay; // spec default: one day
+  const lightMax = policy.lightMaxHours ?? 2;
+
+  const heavyClass = node.priority === 'P0' || (hours !== null && hours >= heavyMin);
+  if (heavyClass) return false; // first refusal: reserved for heavy pullers
+  if (profile === 'standard') return true;
+  return hours !== null && hours <= lightMax && (node.priority === 'P2' || node.priority === 'P3');
+}
+
 interface PullDecision {
   active: number;
   cap: number;
@@ -368,12 +415,24 @@ interface PullDecision {
 
 /**
  * Pure decision core of getNextTicket: cap gate → dispatch gate →
- * policy sort → empty-brief guard. No I/O; the transactional shell
- * applies the claim. Exported for direct unit testing.
+ * profile eligibility (#262) → policy sort → empty-brief guard. No I/O;
+ * the transactional shell applies the claim. Exported for direct unit
+ * testing.
  */
 export function selectPullCandidates(
   allNodes: CoreNode[],
-  opts: { workflow: StatusDef[]; cap: number; gate: string[]; policy: string[] },
+  opts: {
+    workflow: StatusDef[];
+    cap: number;
+    gate: string[];
+    policy: string[];
+    /** Profile routing (#262) — all four optional; omitted or a null
+     *  profilePolicy keeps the queue profile-blind (pre-#262 behavior). */
+    profilePolicy?: ProfilePolicy | null;
+    profile?: string;
+    effortUnit?: EffortUnit;
+    hoursPerDay?: number;
+  },
 ): PullDecision {
   const active = allNodes.filter((n) => n.claimedBySession !== null).length;
   const cap = Math.max(0, Math.floor(opts.cap));
@@ -392,8 +451,23 @@ export function selectPullCandidates(
       isReady(n, nodeMap, isDone),
   );
   const gated = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  // Profile routing (#262): a configured policy FILTERS eligibility here;
+  // ranking below is untouched. No policy = no filter = pre-#262 behavior.
+  const profilePolicy = opts.profilePolicy ?? null;
+  const eligible =
+    profilePolicy === null
+      ? gated
+      : gated.filter((n) =>
+          isProfileEligible(
+            n,
+            resolveProfile(opts.profile),
+            profilePolicy,
+            opts.effortUnit ?? 'days',
+            opts.hoursPerDay ?? 8,
+          ),
+        );
   const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
-  const rankedAll = sortByDispatchPolicy(gated, policy);
+  const rankedAll = sortByDispatchPolicy(eligible, policy);
 
   return {
     active,
@@ -417,12 +491,16 @@ export function selectPullCandidates(
  * the pull path NEVER steals a claim — if a candidate got claimed in
  * between, we move on to the next one.
  *
- * `profile` is reserved-but-dormant in v1: accepted, ignored.
+ * `profile` (#262): when the map carries a `profilePolicy`, the puller's
+ * profile filters which tickets it may be granted (heavy / standard /
+ * light — see `isProfileEligible`). Maps without a policy stay
+ * profile-blind: the parameter is accepted and ignored, exactly the
+ * pre-#262 contract.
  */
 export async function getNextTicket(
   mapId: string,
   sessionId: string,
-  _profile?: string,
+  profile?: string,
 ): Promise<GetNextTicketResult> {
   const now = new Date();
 
@@ -444,6 +522,10 @@ export async function getNextTicket(
       cap: (mapRow.maxActiveClaims as number) ?? 0,
       gate: ((mapRow.dispatchGate as string[]) ?? []),
       policy: ((mapRow.dispatchPolicy as string[]) ?? []),
+      profilePolicy: (mapRow.profilePolicy as ProfilePolicy | null) ?? null,
+      profile,
+      effortUnit: (mapRow.effortUnit as EffortUnit) ?? 'days',
+      hoursPerDay: (mapRow.hoursPerDay as number) ?? 8,
     });
 
     // Tag empty-brief nodes `needs-brief` so the queue starves loudly.

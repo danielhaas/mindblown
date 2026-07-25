@@ -51,7 +51,7 @@ describe('POST /api/maps/:id/pull-next', () => {
     expect(mocks.getNextTicket).not.toHaveBeenCalled();
   });
 
-  it('forwards mapId, sessionId, and the dormant profile to the service', async () => {
+  it('forwards mapId, sessionId, and the profile to the service', async () => {
     const result = {
       granted: true,
       active: 1,

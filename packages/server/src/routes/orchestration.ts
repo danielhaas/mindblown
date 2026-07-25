@@ -110,7 +110,8 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /api/maps/:id/pull-next — get_next_ticket ────────────
   // Atomic pull for the Leidang fleet: cap gate → dispatch gate →
-  // policy sort → empty-brief guard → claim, all serialized per map.
+  // profile eligibility → policy sort → empty-brief guard → claim,
+  // all serialized per map.
   app.post<{ Params: { id: string } }>(
     '/api/maps/:id/pull-next',
     async (req, reply) => {

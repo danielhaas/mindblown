@@ -901,5 +901,13 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_policy JSONB NOT NULL DEFAULT '[]'
   `);
 
+  // ── Pull queue: profile routing table (#262) ───────────────────
+  // profile_policy: {heavyMinHours?, lightMaxHours?}. NULL (the default)
+  // keeps get_next_ticket profile-blind — existing maps, including the
+  // live prod map, see zero behavior change until an operator sets it.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS profile_policy JSONB
+  `);
+
   console.log('[db] Migrations complete.');
 }

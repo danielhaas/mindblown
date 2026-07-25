@@ -1,7 +1,7 @@
 /**
  * get_next_ticket — MCP surface tests (Leidang pull queue).
  *
- * Pins the zod schema (sessionId required, profile optional/dormant)
+ * Pins the zod schema (sessionId required, profile optional)
  * and the handler's rendering of grants, refusals, and needs-brief
  * skips, so pull-fleet workers see the full self-contained brief.
  */

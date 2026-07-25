@@ -22,6 +22,8 @@ import {
   matchesDispatchGate,
   sortByDispatchPolicy,
   hasBrief,
+  isProfileEligible,
+  resolveProfile,
   DEFAULT_DISPATCH_POLICY,
 } from '../orchestration.js';
 
@@ -84,13 +86,25 @@ const root = makeNode({ id: 'root', parentId: null, description: null });
 
 function select(
   nodes: CoreNode[],
-  opts: Partial<{ cap: number; gate: string[]; policy: string[] }> = {},
+  opts: Partial<{
+    cap: number;
+    gate: string[];
+    policy: string[];
+    profilePolicy: import('@mindblown/core').ProfilePolicy | null;
+    profile: string;
+    effortUnit: import('@mindblown/core').EffortUnit;
+    hoursPerDay: number;
+  }> = {},
 ) {
   return selectPullCandidates([root, ...nodes], {
     workflow: WORKFLOW,
     cap: opts.cap ?? 10,
     gate: opts.gate ?? [],
     policy: opts.policy ?? [],
+    profilePolicy: opts.profilePolicy,
+    profile: opts.profile,
+    effortUnit: opts.effortUnit,
+    hoursPerDay: opts.hoursPerDay,
   });
 }
 
@@ -262,3 +276,135 @@ describe('empty-brief guard', () => {
     expect(hasBrief(makeNode({ id: 'y', description: 'real text' }))).toBe(true);
   });
 });
+
+// ── Profile routing (#262) ─────────────────────────────────────────
+//
+// A configured profilePolicy FILTERS the gated ready set by the puller's
+// profile; ranking is untouched. No policy (null/omitted) = the queue
+// stays profile-blind regardless of what profile string arrives.
+
+describe('profilePolicy routing', () => {
+  // Map default: effortUnit days, hoursPerDay 8 → spec thresholds
+  // heavy ≥ 1d (8h), light ≤ 2h.
+  const POLICY = {}; // empty object = active with spec defaults
+
+  it('absent policy = zero behavior change, whatever profile is sent', () => {
+    const heavyTicket = makeNode({ id: 'p0', priority: 'P0' });
+    for (const profile of [undefined, 'standard', 'light', 'heavy', 'gibberish']) {
+      const d = select([heavyTicket], { profilePolicy: null, profile });
+      expect(d.ranked.map((n) => n.id)).toEqual(['p0']);
+    }
+  });
+
+  it('heavy-class ticket (P0) is reserved for heavy pullers', () => {
+    const p0 = makeNode({ id: 'p0', priority: 'P0', effortEstimate: 0.1 });
+    expect(select([p0], { profilePolicy: POLICY, profile: 'standard' }).ranked).toHaveLength(0);
+    expect(select([p0], { profilePolicy: POLICY, profile: 'light' }).ranked).toHaveLength(0);
+    expect(select([p0], { profilePolicy: POLICY, profile: 'heavy' }).ranked.map((n) => n.id)).toEqual(['p0']);
+  });
+
+  it('heavy-class ticket (estimate ≥ 1 day) is reserved for heavy pullers', () => {
+    const big = makeNode({ id: 'big', effortEstimate: 1, priority: 'P2' }); // 1 day = 8h ≥ heavyMin
+    expect(select([big], { profilePolicy: POLICY, profile: 'standard' }).ranked).toHaveLength(0);
+    expect(select([big], { profilePolicy: POLICY, profile: 'heavy' }).ranked.map((n) => n.id)).toEqual(['big']);
+  });
+
+  it('normalizes estimates from the map effortUnit before comparing', () => {
+    // 0.5 days × 8 h/day = 4h → below the 8h heavy floor → standard-class.
+    const halfDay = makeNode({ id: 'half', effortEstimate: 0.5, priority: 'P1' });
+    expect(select([halfDay], { profilePolicy: POLICY, profile: 'standard' }).ranked.map((n) => n.id)).toEqual(['half']);
+    // Same numeric estimate on an hours map: 0.5h → still standard-class…
+    expect(
+      select([halfDay], { profilePolicy: POLICY, profile: 'standard', effortUnit: 'hours' }).ranked,
+    ).toHaveLength(1);
+    // …but 8 on an hours map is 8h → heavy-class.
+    const eightHours = makeNode({ id: 'eight', effortEstimate: 8, priority: 'P1' });
+    expect(
+      select([eightHours], { profilePolicy: POLICY, profile: 'standard', effortUnit: 'hours' }).ranked,
+    ).toHaveLength(0);
+  });
+
+  it('unestimated tickets are granted to every profile — never starve', () => {
+    const bare = makeNode({ id: 'bare' });
+    const bareP0 = makeNode({ id: 'bare-p0', priority: 'P0' });
+    for (const profile of ['heavy', 'standard', 'light', undefined]) {
+      const d = select([bare], { profilePolicy: POLICY, profile });
+      expect(d.ranked.map((n) => n.id)).toEqual(['bare']);
+    }
+    // Unestimated P0: eligible to everyone (unestimated wins over the P0
+    // heavy trigger — reserving it could starve it in a heavy-less fleet).
+    expect(select([bareP0], { profilePolicy: POLICY, profile: 'light' }).ranked).toHaveLength(1);
+  });
+
+  it('light pullers get only small P2/P3 tickets (plus unestimated)', () => {
+    const smallP3 = makeNode({ id: 'small-p3', effortEstimate: 0.25, priority: 'P3' }); // 2h
+    const smallP1 = makeNode({ id: 'small-p1', effortEstimate: 0.25, priority: 'P1' });
+    const smallNoPrio = makeNode({ id: 'small-none', effortEstimate: 0.25 });
+    const mediumP2 = makeNode({ id: 'medium-p2', effortEstimate: 0.5, priority: 'P2' }); // 4h > 2h
+    const d = select([smallP3, smallP1, smallNoPrio, mediumP2], { profilePolicy: POLICY, profile: 'light' });
+    expect(d.ranked.map((n) => n.id)).toEqual(['small-p3']);
+    // The same set is fully available to a standard puller (none are heavy-class).
+    const ds = select([smallP3, smallP1, smallNoPrio, mediumP2], { profilePolicy: POLICY, profile: 'standard' });
+    expect(ds.ranked).toHaveLength(4);
+  });
+
+  it('unknown or absent profile fails open to standard', () => {
+    const p0 = makeNode({ id: 'p0', priority: 'P0', effortEstimate: 0.1 });
+    const normal = makeNode({ id: 'normal', effortEstimate: 0.5, priority: 'P1' });
+    for (const profile of [undefined, 'turbo', '']) {
+      const d = select([p0, normal], { profilePolicy: POLICY, profile });
+      expect(d.ranked.map((n) => n.id)).toEqual(['normal']);
+    }
+    expect(resolveProfile(undefined)).toBe('standard');
+    expect(resolveProfile('turbo')).toBe('standard');
+    expect(resolveProfile('heavy')).toBe('heavy');
+  });
+
+  it('thresholds are configurable, not hardcoded', () => {
+    const big = makeNode({ id: 'big', effortEstimate: 1, priority: 'P2' }); // 8h
+    // Raise the heavy floor to 16h: an 8h ticket is standard-class again.
+    expect(
+      select([big], { profilePolicy: { heavyMinHours: 16 }, profile: 'standard' }).ranked,
+    ).toHaveLength(1);
+    // Raise the light ceiling to 8h: the same ticket becomes light-eligible.
+    expect(
+      select([big], { profilePolicy: { heavyMinHours: 16, lightMaxHours: 8 }, profile: 'light' }).ranked,
+    ).toHaveLength(1);
+  });
+
+  it('filters eligibility only — dispatchPolicy ranking is untouched', () => {
+    const bug = makeNode({ id: 'bug', tags: ['bug'], effortEstimate: 0.5, priority: 'P2', createdAt: '2026-03-01T00:00:00Z' });
+    const older = makeNode({ id: 'older', effortEstimate: 0.5, priority: 'P1', createdAt: '2026-01-01T00:00:00Z' });
+    const heavy = makeNode({ id: 'heavy', priority: 'P0', effortEstimate: 2, createdAt: '2026-02-01T00:00:00Z' });
+    const d = select([older, heavy, bug], { profilePolicy: POLICY, profile: 'standard' });
+    // heavy-class filtered out; survivors keep default bugs→priority→age order.
+    expect(d.ranked.map((n) => n.id)).toEqual(['bug', 'older']);
+  });
+
+  it('points maps: effort triggers are inert, only the P0 trigger applies', () => {
+    const fivePoints = makeNode({ id: 'pts', effortEstimate: 5, priority: 'P3' });
+    const p0Points = makeNode({ id: 'pts-p0', effortEstimate: 5, priority: 'P0' });
+    // Estimated-in-points → standard-class: standard yes, light no.
+    expect(
+      select([fivePoints], { profilePolicy: POLICY, profile: 'standard', effortUnit: 'points' }).ranked,
+    ).toHaveLength(1);
+    expect(
+      select([fivePoints], { profilePolicy: POLICY, profile: 'light', effortUnit: 'points' }).ranked,
+    ).toHaveLength(0);
+    // P0 still routes heavy.
+    expect(
+      select([p0Points], { profilePolicy: POLICY, profile: 'standard', effortUnit: 'points' }).ranked,
+    ).toHaveLength(0);
+    expect(
+      select([p0Points], { profilePolicy: POLICY, profile: 'heavy', effortUnit: 'points' }).ranked,
+    ).toHaveLength(1);
+  });
+
+  it('isProfileEligible exposes the same semantics directly', () => {
+    const big = makeNode({ id: 'big', effortEstimate: 2 }); // 2 days = 16h
+    expect(isProfileEligible(big, 'heavy', {}, 'days', 8)).toBe(true);
+    expect(isProfileEligible(big, 'standard', {}, 'days', 8)).toBe(false);
+    expect(isProfileEligible(makeNode({ id: 'u' }), 'light', {}, 'days', 8)).toBe(true);
+  });
+});
+

@@ -99,7 +99,7 @@ export const getNextTicketTool = defineTool({
     profile: z
       .string()
       .optional()
-      .describe('Worker profile label (e.g. "standard", "heavy"). Reserved for future eligibility routing — accepted and ignored in v1.'),
+      .describe('Worker profile: "heavy" | "standard" | "light". On maps with a profilePolicy this filters eligibility — heavy gets first refusal on P0/big tickets, light gets only small P2/P3 tickets, standard (also unknown/absent — fail open) gets everything else; unestimated tickets go to every profile. Maps without a profilePolicy ignore it.'),
   },
   handler: async (backend, { mapId, sessionId, profile }) => {
     const result = await backend.getNextTicket(mapId, sessionId, profile);
