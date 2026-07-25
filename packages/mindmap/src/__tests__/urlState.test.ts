@@ -72,6 +72,48 @@ describe('parseUrlState', () => {
   });
 });
 
+describe('requirements release filter (rv / rvm)', () => {
+  it('parses a version id and the exact mode', () => {
+    expect(parseUrlState('?rv=v1&rvm=exact')).toEqual(
+      state({ reqVersion: 'v1', reqVersionMode: 'exact' }),
+    );
+  });
+
+  it('parses the "none" sentinel', () => {
+    expect(parseUrlState('?rv=none').reqVersion).toBe('none');
+  });
+
+  it('drops an unknown rvm value rather than trusting it', () => {
+    expect(parseUrlState('?rv=v1&rvm=sideways').reqVersionMode).toBeNull();
+  });
+
+  it('round-trips through serialize', () => {
+    const original = state({ map: 'm1', reqVersion: 'v1', reqVersionMode: 'exact' });
+    expect(parseUrlState(serializeUrlState('', original))).toEqual(original);
+  });
+
+  it('omits the mode without a selected release, and for "none"', () => {
+    expect(serializeUrlState('', state({ reqVersionMode: 'exact' }))).toBe('');
+    expect(serializeUrlState('', state({ reqVersion: 'none', reqVersionMode: 'exact' }))).toBe(
+      '?rv=none',
+    );
+  });
+
+  it('validate keeps a resolving id and the "none" sentinel', () => {
+    const c = ctx({ versionIds: ['v1'] });
+    expect(validateUrlState(state({ reqVersion: 'v1' }), c).reqVersion).toBe('v1');
+    expect(validateUrlState(state({ reqVersion: 'none' }), c).reqVersion).toBe('none');
+  });
+
+  it('validate clears a deleted version instead of rendering an empty register', () => {
+    expect(validateUrlState(state({ reqVersion: 'gone' }), ctx()).reqVersion).toBeNull();
+  });
+
+  it('is a lens change, not navigation', () => {
+    expect(isNavChange(state(), state({ reqVersion: 'v1', reqVersionMode: 'exact' }))).toBe(false);
+  });
+});
+
 describe('serializeUrlState', () => {
   it('round-trips through parse', () => {
     const original = state({

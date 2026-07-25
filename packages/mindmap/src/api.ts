@@ -585,9 +585,42 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
  * Fetch the requirements register as a Word document (docx) — the
  * format business consumers actually open. Returns a Blob for download.
  */
-export async function exportRequirementsDocx(mapId: string): Promise<Blob> {
+/**
+ * Filter mirror of the Requirements view's filter bar — forwarded to the
+ * export route so the document matches what's on screen.
+ */
+export interface RequirementsExportFilter {
+  status?: 'open' | 'partial' | 'done';
+  priority?: 'must' | 'should' | 'could';
+  /** Version id, or 'none' for "no release assigned". */
+  release?: string;
+  releaseMode?: 'cumulative' | 'exact';
+  hideDone?: boolean;
+  acceptance?: 'none' | 'mine-open' | 'rejected';
+}
+
+function requirementsExportQuery(format: string, filter: RequirementsExportFilter): string {
+  const params = new URLSearchParams({ format });
+  if (filter.status) params.set('status', filter.status);
+  if (filter.priority) params.set('priority', filter.priority);
+  if (filter.release) {
+    params.set('release', filter.release);
+    if (filter.releaseMode === 'exact' && filter.release !== 'none') {
+      params.set('releaseMode', 'exact');
+    }
+  }
+  if (filter.hideDone) params.set('hideDone', '1');
+  if (filter.acceptance) params.set('acceptance', filter.acceptance);
+  return `?${params.toString()}`;
+}
+
+export async function exportRequirementsDocx(
+  mapId: string,
+  filter: RequirementsExportFilter = {},
+): Promise<Blob> {
   const token = getToken();
-  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/requirements-export?format=docx`, {
+  const query = requirementsExportQuery('docx', filter);
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/requirements-export${query}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) throw new Error(`Export failed: HTTP ${res.status}`);

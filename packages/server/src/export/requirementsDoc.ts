@@ -5,6 +5,7 @@ import type {
   NodeId,
   Version,
 } from '@mindblown/core';
+import { compareVersions } from '@mindblown/core';
 import {
   Document,
   HeadingLevel,
@@ -67,11 +68,34 @@ export interface RegisterData {
   title: string;
   generatedAt: string; // YYYY-MM-DD
   total: number;
+  /** Requirement count before filtering — equals `total` on an unfiltered export. */
+  totalAll: number;
+  /** Human-readable description of the active filter, null when unfiltered. */
+  filterLabel: string | null;
   counts: { Umgesetzt: number; Teilweise: number; Offen: number };
   chapters: Array<{ name: string; rows: RegisterRow[] }>;
 }
 
+/**
+ * Mirror of the Requirements view's filter bar, so "Export" gives you the
+ * document for exactly what's on screen. Semantics match RequirementsView's
+ * `filteredRows` predicate one for one.
+ */
+export interface RegisterFilter {
+  status?: 'open' | 'partial' | 'done';
+  priority?: 'must' | 'should' | 'could';
+  /** A version id, or 'none' for "no release anywhere in the subtree". */
+  release?: string;
+  /** cumulative = due by this release or earlier; exact = only this release. */
+  releaseMode?: 'cumulative' | 'exact';
+  hideDone?: boolean;
+  acceptance?: 'none' | 'mine-open' | 'rejected';
+  /** Needed by acceptance: 'mine-open' — whose verdict counts as "mine". */
+  currentUserId?: string | null;
+}
+
 const PRIO: Record<string, string> = { must: 'Muss', should: 'Soll', could: 'Kann' };
+const STATUS_DE: Record<string, string> = { open: 'Offen', partial: 'Teilweise', done: 'Umgesetzt' };
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
@@ -88,27 +112,26 @@ export function buildRegisterData(
   computed: Map<NodeId, ComputedNodeValues>,
   acceptances: Array<AcceptanceInfo & { nodeId: string }> = [],
   versions: Version[] = [],
+  filter: RegisterFilter = {},
 ): RegisterData {
   const accByNode = new Map<string, Array<AcceptanceInfo & { nodeId: string }>>();
   for (const a of acceptances) {
     (accByNode.get(a.nodeId) ?? accByNode.set(a.nodeId, []).get(a.nodeId)!).push(a);
   }
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const requirements = nodes.filter((n) => n.requirementId != null);
+  const allRequirements = nodes.filter((n) => n.requirementId != null);
 
   const progressOf = (n: CoreNode): number =>
     n.childrenIds.length > 0
       ? (computed.get(n.id)?.computedProgress ?? 0)
       : (n.percentComplete ?? 0);
-  const statusOf = (p: number): string =>
-    p >= 99.5 ? 'Umgesetzt' : p > 0 ? 'Teilweise' : 'Offen';
+  const statusEnOf = (p: number): 'open' | 'partial' | 'done' =>
+    p >= 99.5 ? 'done' : p > 0 ? 'partial' : 'open';
+  const statusOf = (p: number): string => STATUS_DE[statusEnOf(p)];
 
-  // Release label, mirroring the register UI: the version tagged on the
-  // requirement itself, else the one(s) carried by the work below it —
-  // requirements are usually scheduled through their children, not directly.
-  const versionName = new Map(versions.map((v) => [v.id, v.name]));
-  const releaseOf = (n: CoreNode): string => {
-    if (n.versionId) return versionName.get(n.versionId) ?? '—';
+  // A requirement is usually scheduled through its children, not directly —
+  // and can be split across releases, so this is a full descendant walk.
+  const descendantVersionsOf = (n: CoreNode): string[] => {
     const below = new Set<string>();
     const stack = [...n.childrenIds];
     while (stack.length) {
@@ -117,10 +140,86 @@ export function buildRegisterData(
       if (c.versionId) below.add(c.versionId);
       stack.push(...c.childrenIds);
     }
-    if (below.size === 0) return '—';
-    if (below.size === 1) return `↳ ${versionName.get([...below][0]) ?? '—'}`;
-    return `↳ ${below.size} Releases`;
+    return [...below];
   };
+
+  // Release label, mirroring the register UI: the version tagged on the
+  // requirement itself, else the one(s) carried by the work below it.
+  const versionName = new Map(versions.map((v) => [v.id, v.name]));
+  const releaseOf = (n: CoreNode): string => {
+    if (n.versionId) return versionName.get(n.versionId) ?? '—';
+    const below = descendantVersionsOf(n);
+    if (below.length === 0) return '—';
+    if (below.length === 1) return `↳ ${versionName.get(below[0]) ?? '—'}`;
+    return `↳ ${below.length} Releases`;
+  };
+
+  // Release order for the cumulative ("due by V1") mode.
+  const versionRank = new Map(
+    [...versions].sort(compareVersions).map((v, i) => [v.id, i] as const),
+  );
+
+  const matchesFilter = (n: CoreNode): boolean => {
+    const st = statusEnOf(progressOf(n));
+    if (filter.hideDone && st === 'done') return false;
+    if (filter.status && st !== filter.status) return false;
+    if (filter.priority && n.requirementPriority !== filter.priority) return false;
+    if (filter.release === 'none') {
+      // "No release" means nothing below it is scheduled either.
+      if (n.versionId || descendantVersionsOf(n).length > 0) return false;
+    } else if (filter.release) {
+      if (filter.releaseMode === 'exact') {
+        // A split requirement matches every release it touches.
+        if (n.versionId !== filter.release && !descendantVersionsOf(n).includes(filter.release)) {
+          return false;
+        }
+      } else {
+        const selectedRank = versionRank.get(filter.release);
+        if (selectedRank == null) return false;
+        const ownRank = n.versionId ? versionRank.get(n.versionId) : undefined;
+        const touchesUpToHere =
+          (ownRank != null && ownRank <= selectedRank) ||
+          descendantVersionsOf(n).some((id) => {
+            const rank = versionRank.get(id);
+            return rank != null && rank <= selectedRank;
+          });
+        if (!touchesUpToHere) return false;
+      }
+    }
+    if (filter.acceptance) {
+      const accs = accByNode.get(n.id) ?? [];
+      if (filter.acceptance === 'none' && accs.length > 0) return false;
+      if (
+        filter.acceptance === 'mine-open' &&
+        accs.some((a) => a.userId === filter.currentUserId)
+      ) {
+        return false;
+      }
+      if (filter.acceptance === 'rejected' && !accs.some((a) => a.decision === 'rejected')) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const requirements = allRequirements.filter(matchesFilter);
+
+  // Spell the filter out in the document itself: a filtered Auszug that
+  // looks like the complete Anforderungsdokument is worse than no export.
+  const filterParts: string[] = [];
+  if (filter.release === 'none') filterParts.push('Release: ohne Zuordnung');
+  else if (filter.release) {
+    filterParts.push(
+      `Release: ${filter.releaseMode === 'exact' ? 'nur' : 'bis'} ${versionName.get(filter.release) ?? filter.release}`,
+    );
+  }
+  if (filter.status) filterParts.push(`Status: ${STATUS_DE[filter.status]}`);
+  if (filter.hideDone) filterParts.push('ohne Umgesetzte');
+  if (filter.priority) filterParts.push(`Priorität: ${PRIO[filter.priority]}`);
+  if (filter.acceptance === 'none') filterParts.push('Abnahme: ohne Urteil');
+  if (filter.acceptance === 'mine-open') filterParts.push('Abnahme: eigenes Urteil ausstehend');
+  if (filter.acceptance === 'rejected') filterParts.push('Abnahme: abgelehnt');
+  const filterLabel = filterParts.length > 0 ? filterParts.join(' · ') : null;
 
   // Depth-first order for chapter (= parent) sorting.
   const dfs = new Map<string, number>();
@@ -185,6 +284,8 @@ export function buildRegisterData(
     title: `${map.name} — Anforderungsdokument`,
     generatedAt: new Date().toISOString().slice(0, 10),
     total: requirements.length,
+    totalAll: allRequirements.length,
+    filterLabel,
     counts,
     chapters: orderedChapters,
   };
@@ -207,13 +308,17 @@ export function renderMarkdown(data: RegisterData): string {
   L.push(
     `*Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.*`,
   );
+  if (data.filterLabel) {
+    L.push('');
+    L.push(`**Gefilterter Auszug** — ${data.filterLabel}. Nicht das vollständige Dokument.`);
+  }
   for (const line of LEGEND) {
     L.push('');
     L.push(line);
   }
   L.push('');
   L.push(
-    `**Stand:** ${data.total} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
+    `**Stand:** ${data.total}${data.filterLabel ? ` von ${data.totalAll}` : ''} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
   );
   L.push('');
   L.push('---');
@@ -279,6 +384,20 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
       ],
     }),
   );
+  if (data.filterLabel) {
+    children.push(
+      new Paragraph({
+        spacing: { before: 120 },
+        children: [
+          new TextRun({
+            text: `Gefilterter Auszug — ${data.filterLabel}. Nicht das vollständige Dokument.`,
+            bold: true,
+            size: 18,
+          }),
+        ],
+      }),
+    );
+  }
   for (const line of LEGEND) {
     // Strip the markdown bold markers for the docx paragraphs.
     children.push(
@@ -293,7 +412,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
       spacing: { before: 160, after: 240 },
       children: [
         new TextRun({
-          text: `Stand: ${data.total} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
+          text: `Stand: ${data.total}${data.filterLabel ? ` von ${data.totalAll}` : ''} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
           bold: true,
           size: 20,
         }),

@@ -548,13 +548,40 @@ server.tool(
 
 server.tool(
   'requirements_export',
-  'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
+  'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Gefilterter Auszug" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
   {
     mapId: z.string().describe('The map ID'),
+    status: z
+      .enum(['open', 'partial', 'done'])
+      .optional()
+      .describe('Only requirements in this derived status'),
+    requirementPriority: z
+      .enum(['must', 'should', 'could'])
+      .optional()
+      .describe('Only requirements with this MoSCoW priority'),
+    versionId: z
+      .string()
+      .optional()
+      .describe(
+        'Only requirements scheduled for a release: a version id (use list_versions), or the literal "none" for requirements with no release assigned anywhere in their subtree. Matches a requirement whose own versionId is this OR any descendant carries it — same semantics as requirements_overview and the Requirements view.',
+      ),
+    versionMode: z
+      .enum(['cumulative', 'exact'])
+      .optional()
+      .describe(
+        'With versionId: "cumulative" (default) includes everything due by that release or earlier; "exact" only that release. Ignored for versionId "none".',
+      ),
   },
-  async ({ mapId }) => {
+  async ({ mapId, status, requirementPriority, versionId, versionMode }) => {
     try {
-      return toolResult(await api.exportRequirements(mapId));
+      return toolResult(
+        await api.exportRequirements(mapId, {
+          status,
+          priority: requirementPriority,
+          release: versionId,
+          releaseMode: versionMode,
+        }),
+      );
     } catch (err) {
       return toolError(err);
     }
