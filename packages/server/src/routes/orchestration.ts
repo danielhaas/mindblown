@@ -17,6 +17,7 @@ import {
   claimNode,
   releaseNode,
   conflictScan,
+  getNextTicket,
   ClaimOwnershipError,
   OrchestrationNotFoundError,
 } from '../services/orchestration.js';
@@ -100,6 +101,30 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
 
       try {
         const result = await releaseNode(mapId, nodeId, body.sessionId);
+        return reply.status(200).send(result);
+      } catch (err) {
+        return handleOrchestrationError(err, reply);
+      }
+    },
+  );
+
+  // ── POST /api/maps/:id/pull-next — get_next_ticket ────────────
+  // Atomic pull for the Leidang fleet: cap gate → dispatch gate →
+  // policy sort → empty-brief guard → claim, all serialized per map.
+  app.post<{ Params: { id: string } }>(
+    '/api/maps/:id/pull-next',
+    async (req, reply) => {
+      const mapId = req.params.id;
+      const body = req.body as { sessionId?: string; profile?: string };
+
+      if (!body.sessionId || typeof body.sessionId !== 'string') {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'sessionId is required' },
+        });
+      }
+
+      try {
+        const result = await getNextTicket(mapId, body.sessionId, body.profile);
         return reply.status(200).send(result);
       } catch (err) {
         return handleOrchestrationError(err, reply);

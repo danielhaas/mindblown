@@ -138,6 +138,17 @@ export const maps = pgTable('maps', {
   // Discounts the velocity-adjusted completion forecast to absorb meetings /
   // support / firefighting / unplanned work. Default 1 = no leakage.
   focusFactor: real('focus_factor').notNull().default(1),
+
+  // ── Pull queue (Leidang) ────────────────────────────────────────
+  // Fleet-wide cap on concurrently claimed nodes for get_next_ticket.
+  // 0 = hold (grants nothing) — the safe default until a map opts in.
+  maxActiveClaims: integer('max_active_claims').notNull().default(0),
+  // AND-filter fencing the pull queue: `version:<id>` / `type:bug`.
+  // Empty array = no fence.
+  dispatchGate: jsonb('dispatch_gate').notNull().default([]), // string[]
+  // Ordered ranking keys for the gated ready set (bugs|priority|size|age).
+  // Empty array = default ["bugs","priority","age"].
+  dispatchPolicy: jsonb('dispatch_policy').notNull().default([]), // string[]
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

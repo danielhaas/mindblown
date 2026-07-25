@@ -1,11 +1,12 @@
 /**
  * Orchestration substrate MCP tools (#111).
  *
- * Implements the 4 new tools that turn MindBlown into a work-queue +
+ * Implements the tools that turn MindBlown into a work-queue +
  * soft-conflict detector for parallel Claude coding sessions:
  *
  *   ready_nodes     — list nodes ready to be claimed + dispatched
- *   claim_node      — claim a node for a session
+ *   get_next_ticket — atomic pull: pick + claim the next ticket (Leidang)
+ *   claim_node      — claim a node for a session (orchestrator/manual)
  *   release_node    — release a claim (rejects if caller doesn't own it)
  *   conflict_scan   — detect in-flight nodes that share scopes with a candidate
  */
@@ -64,6 +65,80 @@ export const readyNodesTool = defineTool({
   },
 });
 
+export const getNextTicketTool = defineTool({
+  name: 'get_next_ticket',
+  description: [
+    'Pull the next ticket from a map\'s work queue — the one call a worker needs.',
+    'Atomically picks the best ready node per the map\'s dispatch settings and',
+    'claims it for your session, all serialized per map (no pull races).',
+    '',
+    'Selection pipeline (configured via update_map):',
+    '  1. Cap gate: if the map\'s active claims >= maxActiveClaims, the pull is',
+    '     refused with reason "cap" (reason "hold" when the cap is 0 — the fleet hold).',
+    '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug";',
+    '     empty = no fence). Tickets outside the gate are invisible, not deprioritized.',
+    '  3. dispatchPolicy orders what\'s left (default ["bugs","priority","age"]).',
+    '  4. Empty-brief guard: ready nodes with no description and no linked GitHub',
+    '     issue are refused, auto-tagged "needs-brief", and listed in skipped[].',
+    '',
+    'On success you get the full self-contained brief: title, plain-text',
+    'description, priority, scopes, tags, effective version, GitHub links.',
+    'Finish with set_status("done") (auto-releases the claim) or release_node',
+    'to hand the ticket back. Unlike claim_node, a pull NEVER steals an',
+    'existing claim.',
+    '',
+    'reason values when granted=false: "hold" (cap 0), "cap" (at capacity),',
+    '"empty" (nothing dispatchable inside the gate — if skipped[] is non-empty,',
+    'the queue has work that needs briefs written first).',
+  ].join('\n'),
+  schema: {
+    mapId: z.string().describe('The map ID to pull from'),
+    sessionId: z
+      .string()
+      .describe('Session identifier of the pulling worker (e.g. "claudia:worker-3:acct1"). Opaque to MindBlown; used as the claim owner.'),
+    profile: z
+      .string()
+      .optional()
+      .describe('Worker profile label (e.g. "standard", "heavy"). Reserved for future eligibility routing — accepted and ignored in v1.'),
+  },
+  handler: async (backend, { mapId, sessionId, profile }) => {
+    const result = await backend.getNextTicket(mapId, sessionId, profile);
+
+    const lines: string[] = [];
+    if (result.granted && result.ticket) {
+      const t = result.ticket;
+      lines.push(`Ticket granted to session "${sessionId}" (${result.active}/${result.cap} claims active):`);
+      lines.push('');
+      lines.push(`  id: ${t.id}`);
+      lines.push(`  title: ${t.text}`);
+      if (t.priority || t.priorityRank !== null) {
+        lines.push(`  priority: ${t.priority ?? '—'}${t.priorityRank !== null ? ` (rank ${t.priorityRank})` : ''}`);
+      }
+      if (t.effortEstimate !== null) lines.push(`  estimate: ${t.effortEstimate}`);
+      if (t.versionId) lines.push(`  version: ${t.versionId}`);
+      if (t.tags.length > 0) lines.push(`  tags: [${t.tags.join(', ')}]`);
+      if (t.scopes.length > 0) lines.push(`  scopes: [${t.scopes.join(', ')}]`);
+      for (const l of t.githubLinks) lines.push(`  github: ${l.externalId} — ${l.url}`);
+      lines.push('');
+      lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked GitHub issue)');
+    } else {
+      const why =
+        result.reason === 'hold'
+          ? 'the map is on hold (maxActiveClaims = 0)'
+          : result.reason === 'cap'
+            ? `the claim cap is reached (${result.active}/${result.cap} active)`
+            : 'no dispatchable ticket inside the dispatch gate';
+      lines.push(`No ticket granted — ${why}.`);
+    }
+    if (result.skipped.length > 0) {
+      lines.push('');
+      lines.push(`Skipped ${result.skipped.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
+      for (const s of result.skipped) lines.push(`  - ${s.id} "${s.text}"`);
+    }
+    return lines.join('\n');
+  },
+});
+
 export const claimNodeTool = defineTool({
   name: 'claim_node',
   description: [
@@ -73,6 +148,8 @@ export const claimNodeTool = defineTool({
     'claimed by a different session, the call succeeds but returns a soft warning',
     '(the claim is transferred to the new session — this is intentional: if the',
     'original session crashed, the orchestrator should be able to reclaim).',
+    'Because of these transfer semantics this is a manual/orchestrator tool —',
+    'pull-fleet workers should use get_next_ticket, which never steals claims.',
     '',
     'After claiming, dispatch your coding agent and let it call set_status("done")',
     'when it finishes — that automatically clears the claim.',
@@ -222,6 +299,7 @@ export const conflictScanTool = defineTool({
 
 export const orchestrationTools = [
   readyNodesTool,
+  getNextTicketTool,
   claimNodeTool,
   releaseNodeTool,
   conflictScanTool,

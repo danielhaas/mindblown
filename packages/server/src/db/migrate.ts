@@ -886,5 +886,20 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE release_snapshots ADD COLUMN IF NOT EXISTS remaining_tickets REAL
   `);
 
+  // ── Pull queue: Leidang dispatch knobs ─────────────────────────
+  // max_active_claims: fleet-wide claim cap for get_next_ticket; 0 = hold
+  // (grants nothing) so existing maps stay closed until they opt in.
+  // dispatch_gate: AND-filter (`version:<id>` / `type:bug`), empty = open.
+  // dispatch_policy: ordered ranking keys, empty = default bugs,priority,age.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS max_active_claims INTEGER NOT NULL DEFAULT 0
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_gate JSONB NOT NULL DEFAULT '[]'
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_policy JSONB NOT NULL DEFAULT '[]'
+  `);
+
   console.log('[db] Migrations complete.');
 }

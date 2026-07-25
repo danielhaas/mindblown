@@ -252,6 +252,7 @@ export function createChatBackend(userId: string): ToolBackend {
     // Delegates to packages/server/src/services/orchestration.ts so the
     // chat backend and the HTTP routes share one implementation.
     readyNodes: (mapId, opts) => orchestrationService.readyNodes(mapId, opts),
+    getNextTicket: (mapId, sessionId, profile?) => orchestrationService.getNextTicket(mapId, sessionId, profile),
     claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
     releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),

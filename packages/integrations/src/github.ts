@@ -6,6 +6,7 @@
  */
 
 import type { Node, ExternalLink, Priority } from '@mindblown/core';
+import { proseMirrorToPlainText } from '@mindblown/core';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -172,12 +173,10 @@ export async function createGitHubIssue(
   const priorityLabel = priorityToLabel(node.priority);
   if (priorityLabel) labels.push(priorityLabel);
 
-  // Build body from description
-  const body = typeof node.description === 'string'
-    ? node.description
-    : node.description
-      ? JSON.stringify(node.description)
-      : '';
+  // Render the ProseMirror description to plain text for the issue body.
+  // (Used to JSON.stringify non-string descriptions — the root cause of
+  // garbage issue bodies from create_github_issue_from_node.)
+  const body = proseMirrorToPlainText(node.description);
 
   const issue = await githubFetch<GitHubIssue>(
     `/repos/${repoOwner}/${repoName}/issues`,
@@ -221,11 +220,8 @@ export async function updateGitHubIssue(
   const priorityLabel = priorityToLabel(node.priority);
   if (priorityLabel) labels.push(priorityLabel);
 
-  const body = typeof node.description === 'string'
-    ? node.description
-    : node.description
-      ? JSON.stringify(node.description)
-      : undefined;
+  const renderedBody = proseMirrorToPlainText(node.description);
+  const body = renderedBody || undefined;
 
   const patchBody: Record<string, unknown> = {
     title: node.text,

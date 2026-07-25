@@ -67,7 +67,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, or GitHub auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, or GitHub auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps concurrently claimed nodes fleet-wide (0 = hold, grants nothing — the default); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\"; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]). Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -95,6 +95,20 @@ export const updateMapTool = defineTool({
       .max(1)
       .optional()
       .describe('Fraction of calendar time reaching planned-ticket work (0.05–1.0, default 1). Below 1 stretches the velocity-adjusted completion forecast to absorb meetings/support/unplanned work (0.5 = half of each day reaches planned work).'),
+    maxActiveClaims: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe('Fleet-wide cap on concurrently claimed nodes for the get_next_ticket pull queue. 0 = hold: the queue grants nothing and in-flight work drains naturally (default 0).'),
+    dispatchGate: z
+      .array(z.string().regex(/^(version:.+|type:bug)$/, 'gate entries must be "version:<versionId>" or "type:bug"'))
+      .optional()
+      .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug"). Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket.'),
+    dispatchPolicy: z
+      .array(z.enum(['bugs', 'priority', 'size', 'age']))
+      .optional()
+      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"].'),
     autoImportNewIssues: z
       .boolean()
       .optional()
@@ -124,7 +138,7 @@ export const updateMapTool = defineTool({
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, autoImportNewIssues, phases }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, autoImportNewIssues, phases }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -133,6 +147,9 @@ export const updateMapTool = defineTool({
       hoursPerDay?: number;
       workerCount?: number;
       focusFactor?: number;
+      maxActiveClaims?: number;
+      dispatchGate?: string[];
+      dispatchPolicy?: string[];
       autoImportNewIssues?: boolean;
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
     } = {};
@@ -143,6 +160,9 @@ export const updateMapTool = defineTool({
     if (hoursPerDay !== undefined) fields.hoursPerDay = hoursPerDay;
     if (workerCount !== undefined) fields.workerCount = workerCount;
     if (focusFactor !== undefined) fields.focusFactor = focusFactor;
+    if (maxActiveClaims !== undefined) fields.maxActiveClaims = maxActiveClaims;
+    if (dispatchGate !== undefined) fields.dispatchGate = dispatchGate;
+    if (dispatchPolicy !== undefined) fields.dispatchPolicy = dispatchPolicy;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the

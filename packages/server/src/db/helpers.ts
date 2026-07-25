@@ -90,6 +90,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     hoursPerDay: (get('hoursPerDay', 'hours_per_day') as number) ?? 8,
     workerCount: (get('workerCount', 'worker_count') as number) ?? 1,
     focusFactor: (get('focusFactor', 'focus_factor') as number) ?? 1,
+    maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
+    dispatchGate: (get('dispatchGate', 'dispatch_gate') as string[]) ?? [],
+    dispatchPolicy: (get('dispatchPolicy', 'dispatch_policy') as string[]) ?? [],
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
