@@ -977,6 +977,81 @@ export function fetchReleaseForecast(
   return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast${suffix}`);
 }
 
+// ── Release composition ────────────────────────────────────────
+//
+// The forecast says when a release lands. This says what it is made of:
+// the split between work implementing a requirement and everything else.
+
+export interface CompositionBucket {
+  count: number;
+  openCount: number;
+  effort: number;
+  doneEffort: number;
+  unestimated: number;
+}
+
+export interface RequirementShare {
+  nodeId: string;
+  requirementId: string | null;
+  text: string;
+  count: number;
+  openCount: number;
+  effort: number;
+  doneEffort: number;
+}
+
+export interface ClassificationShare {
+  label: string;
+  count: number;
+  openCount: number;
+  effort: number;
+}
+
+export interface UnattributedItem {
+  nodeId: string;
+  text: string;
+  effort: number | null;
+  progress: number;
+  externalId: string | null;
+  url: string | null;
+  label: string;
+}
+
+export interface ReleaseCompositionRow {
+  versionId: string;
+  versionName: string;
+  versionStatus: string;
+  targetDate: string | null;
+  /** Ticket-based share attributing to a requirement; null on an empty release. */
+  coveragePct: number | null;
+  requirementWork: CompositionBucket;
+  otherWork: CompositionBucket;
+  byRequirement: RequirementShare[];
+  byClassification: ClassificationShare[];
+  /** Capped by the `limit` query param — `unattributedTotal` is the truth. */
+  unattributed: UnattributedItem[];
+  unattributedTotal: number;
+}
+
+export interface ReleaseCompositionResponse {
+  mapId: string;
+  effortUnit: string;
+  releases: ReleaseCompositionRow[];
+}
+
+export function fetchReleaseComposition(
+  mapId: string,
+  opts: { versionId?: string; limit?: number } = {},
+): Promise<ReleaseCompositionResponse> {
+  const params = new URLSearchParams();
+  if (opts.versionId) params.set('versionId', opts.versionId);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  const query = params.toString();
+  return request<ReleaseCompositionResponse>(
+    `/api/maps/${mapId}/release-composition${query ? `?${query}` : ''}`,
+  );
+}
+
 // ── Calendar subscribe URL ─────────────────────────────────────
 
 export type CalendarIcsView = 'full' | 'milestones' | 'owned';
