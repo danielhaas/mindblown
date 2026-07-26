@@ -10,8 +10,11 @@ import {
  * Release forecast row for a single version.
  *
  * All dates are ISO 8601 date strings (YYYY-MM-DD). The cumulative
- * chain uses two independent cursors — planned vs velocity-adjusted —
- * so the two timelines diverge cleanly as velocity drifts from estimate.
+ * chain uses three independent cursors — planned, velocity-adjusted and
+ * ticket-model — so the timelines diverge cleanly as velocity drifts
+ * from estimate. Each *FinishDate stays on its own cursor; only
+ * `effectiveStartDate` is shared, and it rides the velocity cursor
+ * because that is the line the UI presents as "Projected".
  */
 export interface ReleaseForecastRow {
   versionId: string;
@@ -25,6 +28,12 @@ export interface ReleaseForecastRow {
   remainingEffort: number;
   /** Open (progress < 99.5%) leaves in scope — the ticket model's numerator. */
   remainingTickets: number;
+  /**
+   * Where this release's projected span begins: the previous sequenced
+   * release's velocityAdjustedFinishDate (the anchor for the first one).
+   * Deliberately on the same cursor as `velocityAdjustedFinishDate` so
+   * Start and Projected form one readable chain in the UI.
+   */
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
@@ -59,8 +68,8 @@ export interface ReleaseForecastResult {
  *      ceil(remainingEffort / dailyCapacity). Does NOT assume infinite
  *      parallelism.
  *   2. Sequential by release order (target date, undated last):
- *      non-shipped versions chain — each
- *      effective start is clamped to the previous release's finish.
+ *      non-shipped versions chain — each effective start is clamped to
+ *      the previous release's velocity-adjusted finish.
  *   3. Wall-clock anchored: the first cursor starts at max(today,
  *      projectStartDate). If the project is already underway with
  *      incomplete work, the remaining effort projects forward from
@@ -183,7 +192,13 @@ export function computeReleaseForecast(
     let ticketModelFinishDate: string | null = null;
 
     if (isSequenced && scopedLeaves.length > 0) {
-      effectiveStartDate = iso(plannedCursor);
+      // Start tracks the VELOCITY cursor, not the planned one, because the
+      // UI renders velocityAdjustedFinishDate as "Projected". Reading Start
+      // off the planned cursor made each row's start disagree with the
+      // previous row's projected finish — the two cursors advance at
+      // different rates, so the gap grew down the table and looked like a
+      // buffer. It was just two timelines pasted side by side.
+      effectiveStartDate = iso(velocityCursor);
 
       const plannedCalDays = remainingEffort / dailyCapacity;
       const plannedFinish = addCalendarDays(plannedCursor, plannedCalDays);

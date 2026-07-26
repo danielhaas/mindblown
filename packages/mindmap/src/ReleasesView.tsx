@@ -362,11 +362,11 @@ export function ReleasesView() {
               <tr>
                 <th style={thStyle}>Release</th>
                 <th style={thStyle}>Status</th>
-                <th style={thStyle}>Start</th>
-                <th style={thStyle}>Target</th>
-                <th style={thStyle}>Projected</th>
-                <th style={thStyle} title="Independent second model: open leaves ÷ net ticket completion rate. Counts tickets instead of summing estimates, so unestimated work still weighs in.">Ticket model</th>
-                <th style={thStyle}>Slip</th>
+                <th style={thStyle} title="Projected start — where the release above it is projected to finish. Releases chain because they share one team: nothing starts until the previous one is done.">Start</th>
+                <th style={thStyle} title="The date you committed to. Set by hand (edit action or update_version) — never derived from scope. Compare it against Projected to see whether the plan is covered by the numbers.">Target</th>
+                <th style={thStyle} title="Velocity-adjusted finish: remaining effort ÷ measured net rate, chained across releases in target-date order. The net rate is measured from real history and already includes rework and idle days — it is not the raw estimate sum.">Projected (velocity)</th>
+                <th style={thStyle} title="Independent second model: open leaves ÷ net ticket completion rate. Counts tickets instead of summing estimates, so unestimated work still weighs in. Diverging hard from the velocity column means the estimate scale has drifted from ticket granularity.">Ticket model</th>
+                <th style={thStyle} title="Projected (velocity) minus Target. Green = ahead of the committed date, red = late.">Slip</th>
                 <th style={{ ...thStyle, width: 220 }}>Scope</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
                 <th style={{ ...thStyle, width: 92, textAlign: 'right' }}>Actions</th>

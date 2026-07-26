@@ -142,3 +142,48 @@ describe('computeReleaseForecast — measured rates', () => {
     expect(result.netTicketsPerDay).toBeNull();
   });
 });
+
+describe('computeReleaseForecast — effectiveStartDate rides the velocity cursor', () => {
+  // The UI shows velocityAdjustedFinishDate under "Projected". If Start came
+  // off the planned cursor instead, every row's Start would contradict the
+  // row above it's Projected, and the gap would widen down the table.
+  const leafB: CoreNode = {
+    id: 'leaf-b',
+    parentId: 'root',
+    childrenIds: [],
+    effortEstimate: 2,
+    percentComplete: 0,
+    versionId: 'v2',
+  } as unknown as CoreNode;
+  const root2 = { ...root, childrenIds: ['leaf-1', 'leaf-b'] } as CoreNode;
+  const v2: Version = {
+    id: 'v2',
+    name: 'V2',
+    status: 'planning',
+    sortOrder: 1,
+    targetDate: null,
+  } as unknown as Version;
+
+  it("chains each start onto the previous release's projected finish", () => {
+    // focusFactor 0.5 pulls the two cursors apart: planned finishes V1 on
+    // 01-11, velocity on 01-21. Only one of those may be V2's start.
+    const result = computeReleaseForecast(makeMap(0.5), [root2, leaf, leafB], [version, v2], NOW);
+    const [v1Row, v2Row] = result.releases;
+
+    expect(v1Row.effectiveStartDate).toBe('2026-01-01'); // the anchor
+    expect(v1Row.plannedFinishDate).toBe('2026-01-11');
+    expect(v1Row.velocityAdjustedFinishDate).toBe('2026-01-21');
+
+    expect(v2Row.effectiveStartDate).toBe(v1Row.velocityAdjustedFinishDate);
+    expect(v2Row.effectiveStartDate).not.toBe(v1Row.plannedFinishDate);
+    // 2 days ÷ (1 × 0.5) = 4 cal days on from 01-21.
+    expect(v2Row.velocityAdjustedFinishDate).toBe('2026-01-25');
+  });
+
+  it('keeps the planned cursor independent of the shared start', () => {
+    const result = computeReleaseForecast(makeMap(0.5), [root2, leaf, leafB], [version, v2], NOW);
+    // V2's planned line still chains off V1's *planned* finish (01-11 + 2d),
+    // so the two models stay independent second opinions.
+    expect(result.releases[1].plannedFinishDate).toBe('2026-01-13');
+  });
+});
