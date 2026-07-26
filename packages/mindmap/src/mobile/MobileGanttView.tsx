@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import * as api from '../api.js';
 import type { NodeWithComputed, ScheduleResponse } from '../api.js';
+import { collectDoneNodeIds } from '../viewScope.js';
 
 interface Props {
   nodes: NodeWithComputed[];
@@ -150,14 +151,22 @@ export function MobileGanttView({ nodes, map, onSelect }: Props) {
     const critical = new Set(schedule.criticalPath.path);
     const treeOrder = flattenTreeIds(nodes, map.rootNodeId);
 
+    // Done-ness is status-category OR 100%, rolled up through parents —
+    // node.percentComplete alone is null on parents and stale on leaves
+    // closed via status.
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const doneIds = hideDone
+      ? collectDoneNodeIds((id) => byId.get(id), map.rootNodeId, map.statusWorkflow)
+      : new Set<string>();
+
     const dated: { node: NodeWithComputed; start: Date; end: Date }[] = [];
     for (const id of treeOrder) {
       const d = dateById.get(id);
       if (!d) continue;
-      const node = nodes.find((n) => n.id === id);
+      const node = byId.get(id);
       if (!node) continue;
       if (d.end <= d.start) continue;
-      if (hideDone && (node.percentComplete ?? 0) >= 100) continue;
+      if (hideDone && doneIds.has(id)) continue;
       dated.push({ node, start: d.start, end: d.end });
     }
 

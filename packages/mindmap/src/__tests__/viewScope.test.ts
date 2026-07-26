@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { computeTree } from '@mindblown/core';
 import type { Node } from '@mindblown/core';
-import { selectHillBranches, computeWorkloads } from '../viewScope.js';
+import {
+  selectHillBranches,
+  computeWorkloads,
+  collectDoneNodeIds,
+  collectRequirementKeepIds,
+} from '../viewScope.js';
 
 // The store module reads localStorage at import time (auth-token bootstrap);
 // shim it for the node test environment BEFORE the dynamic import below.
@@ -160,6 +165,129 @@ const workflow = [
 
 const workloadsNow = () =>
   computeWorkloads(useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY), workflow);
+
+describe('collectDoneNodeIds — the Gantt "hide done" oracle', () => {
+  const lookupFrom = (nodes: Record<string, Node>) => (id: string) => nodes[id];
+
+  it('marks a leaf done via percentComplete AND via a done status', () => {
+    const nodes: Record<string, Node> = {
+      root: makeNode('root', null, { childrenIds: ['byPct', 'byStatus', 'open'] }),
+      byPct: makeNode('byPct', 'root', { percentComplete: 100 }),
+      // Closed via set_status only — percentComplete stays null, which is
+      // exactly what the old `percentComplete >= 100` test missed.
+      byStatus: makeNode('byStatus', 'root', { status: 'done' }),
+      open: makeNode('open', 'root', { percentComplete: 40 }),
+    };
+    const done = collectDoneNodeIds(lookupFrom(nodes), 'root', workflow);
+    expect(done.has('byPct')).toBe(true);
+    expect(done.has('byStatus')).toBe(true);
+    expect(done.has('open')).toBe(false);
+    expect(done.has('root')).toBe(false);
+  });
+
+  it('rolls up: a parent whose children are all done is done, even with percentComplete null', () => {
+    const nodes: Record<string, Node> = {
+      root: makeNode('root', null, { childrenIds: ['epic'] }),
+      epic: makeNode('epic', 'root', { childrenIds: ['c1', 'c2'] }),
+      c1: makeNode('c1', 'epic', { percentComplete: 100 }),
+      c2: makeNode('c2', 'epic', { status: 'done' }),
+    };
+    const done = collectDoneNodeIds(lookupFrom(nodes), 'root', workflow);
+    expect([...done].sort()).toEqual(['c1', 'c2', 'epic', 'root']);
+  });
+
+  it('a single open child keeps the parent visible but still hides its done siblings', () => {
+    const nodes: Record<string, Node> = {
+      root: makeNode('root', null, { childrenIds: ['epic'] }),
+      epic: makeNode('epic', 'root', { childrenIds: ['c1', 'c2'] }),
+      c1: makeNode('c1', 'epic', { percentComplete: 100 }),
+      c2: makeNode('c2', 'epic', { percentComplete: 10 }),
+    };
+    const done = collectDoneNodeIds(lookupFrom(nodes), 'root', workflow);
+    expect([...done]).toEqual(['c1']);
+  });
+
+  it('falls back to the name heuristic when the status is not in the workflow', () => {
+    const nodes: Record<string, Node> = {
+      root: makeNode('root', null, { childrenIds: ['a'] }),
+      a: makeNode('a', 'root', { status: 'Closed' }),
+    };
+    expect(collectDoneNodeIds(lookupFrom(nodes), 'root', []).has('a')).toBe(true);
+  });
+
+  it('survives a cyclic parent/child link without recursing forever', () => {
+    const nodes: Record<string, Node> = {
+      root: makeNode('root', null, { childrenIds: ['a'] }),
+      a: makeNode('a', 'root', { childrenIds: ['root'] }),
+    };
+    expect(() => collectDoneNodeIds(lookupFrom(nodes), 'root', workflow)).not.toThrow();
+  });
+});
+
+describe('collectRequirementKeepIds — the Gantt "requirements only" rows', () => {
+  /**
+   * Doc-shaped map:
+   *   root
+   *   ├─ kapitel3            (chapter, no REQ-ID)
+   *   │   ├─ MAN-01          requirement, decomposed into work
+   *   │   │   ├─ w1          plain task
+   *   │   │   └─ w2          plain task
+   *   │   └─ MAN-02          requirement, still a leaf
+   *   └─ infra               no requirement anywhere below
+   *       └─ i1
+   */
+  const docMap = (): Record<string, Node> => ({
+    root: makeNode('root', null, { childrenIds: ['kapitel3', 'infra'] }),
+    kapitel3: makeNode('kapitel3', 'root', { childrenIds: ['man01', 'man02'] }),
+    man01: makeNode('man01', 'kapitel3', {
+      childrenIds: ['w1', 'w2'],
+      requirementId: 'MAN-01',
+    }),
+    w1: makeNode('w1', 'man01'),
+    w2: makeNode('w2', 'man01'),
+    man02: makeNode('man02', 'kapitel3', { requirementId: 'MAN-02' }),
+    infra: makeNode('infra', 'root', { childrenIds: ['i1'] }),
+    i1: makeNode('i1', 'infra'),
+  });
+
+  it('keeps requirements plus their connecting ancestors, and nothing else', () => {
+    expect([...collectRequirementKeepIds(docMap())].sort()).toEqual([
+      'kapitel3',
+      'man01',
+      'man02',
+      'root',
+    ]);
+  });
+
+  it('drops the work a requirement decomposes into — it belongs to the rolled-up bar', () => {
+    const keep = collectRequirementKeepIds(docMap());
+    expect(keep.has('w1')).toBe(false);
+    expect(keep.has('w2')).toBe(false);
+  });
+
+  it('drops whole branches that carry no requirement', () => {
+    const keep = collectRequirementKeepIds(docMap());
+    expect(keep.has('infra')).toBe(false);
+    expect(keep.has('i1')).toBe(false);
+  });
+
+  it('keeps a requirement nested under another requirement', () => {
+    const nodes = docMap();
+    nodes.w1 = makeNode('w1', 'man01', { requirementId: 'MAN-01.1' });
+    const keep = collectRequirementKeepIds(nodes);
+    expect(keep.has('w1')).toBe(true);
+    expect(keep.has('man01')).toBe(true);
+    expect(keep.has('w2')).toBe(false);
+  });
+
+  it('returns an empty set on a map that never adopted the register', () => {
+    const nodes = docMap();
+    delete (nodes.man01 as { requirementId?: string | null }).requirementId;
+    nodes.man01 = makeNode('man01', 'kapitel3', { childrenIds: ['w1', 'w2'] });
+    nodes.man02 = makeNode('man02', 'kapitel3');
+    expect(collectRequirementKeepIds(nodes).size).toBe(0);
+  });
+});
 
 describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadView', () => {
   beforeEach(() => setStoreState());

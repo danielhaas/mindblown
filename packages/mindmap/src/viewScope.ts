@@ -181,6 +181,79 @@ export function statusCategory(
 }
 
 /**
+ * Every node in the tree that counts as "done" for a hide-done filter.
+ *
+ * A leaf is done when its status sits in a `done` workflow category OR its
+ * `percentComplete` reached 100 — the same either/or the server uses when it
+ * stamps `completedAt` (see `updateNode` in server/src/db/nodes.ts). A parent
+ * is done when every one of its children is, because a parent holds no
+ * progress of its own — the rollup does.
+ *
+ * Both Gantt views used to test `node.percentComplete >= 100` alone, which
+ * missed two whole classes of finished work: leaves closed by status (their
+ * raw `percentComplete` is never touched) and every parent above them (a
+ * parent's raw `percentComplete` is null — the 100 lives in the rollup).
+ *
+ * @param lookup - resolves a node id; views hold either a Record or an array.
+ */
+export function collectDoneNodeIds(
+  lookup: (id: string) => Node | undefined,
+  rootId: string,
+  statusWorkflow: StatusWorkflowStep[],
+): Set<string> {
+  const done = new Set<string>();
+  const seen = new Set<string>();
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return done.has(id); // cycle guard on malformed trees
+    seen.add(id);
+    const node = lookup(id);
+    if (!node) return false;
+    let isDone: boolean;
+    if (node.childrenIds.length === 0) {
+      isDone =
+        (node.percentComplete ?? 0) >= 100 ||
+        statusCategory(node, statusWorkflow) === 'done';
+    } else {
+      // Descend into every child regardless of the running verdict — a
+      // done child under a not-done parent still has to land in the set.
+      let all = true;
+      for (const cid of node.childrenIds) {
+        if (!visit(cid)) all = false;
+      }
+      isDone = all;
+    }
+    if (isDone) done.add(id);
+    return isDone;
+  };
+  visit(rootId);
+  return done;
+}
+
+/**
+ * The rows a "requirements only" chart keeps: every node carrying a
+ * `requirementId`, plus the ancestors that connect them to the root.
+ *
+ * The ancestors stay so the chapters still group the rows and the
+ * indentation keeps meaning — a flat list of REQ-IDs loses which Bereich
+ * each one belongs to. Everything a requirement decomposes into is left
+ * out on purpose: that work is already inside the requirement's rolled-up
+ * bar, which is what makes the chart one row per REQ-ID.
+ */
+export function collectRequirementKeepIds(nodes: Record<string, Node>): Set<string> {
+  const keep = new Set<string>();
+  for (const n of Object.values(nodes)) {
+    if (n.requirementId == null) continue;
+    let cur: string | null | undefined = n.id;
+    // Stops at the first already-kept ancestor — its own chain is in already.
+    while (cur && !keep.has(cur)) {
+      keep.add(cur);
+      cur = nodes[cur]?.parentId;
+    }
+  }
+  return keep;
+}
+
+/**
  * Who a leaf's effort should count against, strongest signal first.
  *
  * `assigneeIds` is the field the model intends for this, but nothing
