@@ -39,6 +39,31 @@ function formatDateRange(start: string | null, end: string | null): string {
   return `${days} calendar day${days === 1 ? '' : 's'}`;
 }
 
+const CONFIDENCE_STYLE: Record<
+  ReleaseForecastRow['confidence']['level'],
+  { label: string; icon: string; color: string }
+> = {
+  agree: { label: 'models agree', icon: '✓', color: '#10b981' },
+  caution: { label: 'read with care', icon: '⚠', color: '#f59e0b' },
+  unmeasured: { label: 'unverified', icon: '·', color: '#94a3b8' },
+};
+
+/**
+ * The one-line under-label. Deliberately the *cause*, not a restatement of
+ * the badge — the badge says how much to trust the date, this says why.
+ */
+function summariseConfidence(c: ReleaseForecastRow['confidence']): string {
+  if (c.unestimatedOpenLeaves > 0) {
+    return `${c.unestimatedOpenLeaves} open leaf${c.unestimatedOpenLeaves === 1 ? '' : 'es'} unestimated`;
+  }
+  if (c.divergenceDays != null && c.level === 'caution') {
+    const dir = c.divergenceDays > 0 ? 'later' : 'earlier';
+    return `ticket model ${Math.abs(c.divergenceDays)}d ${dir}`;
+  }
+  if (c.level === 'unmeasured') return 'no cross-check available';
+  return 'every open leaf estimated';
+}
+
 function formatSlip(days: number | null): { text: string; color: string } {
   if (days == null) return { text: '—', color: '#94a3b8' };
   if (days === 0) return { text: 'on target', color: '#f59e0b' };
@@ -365,7 +390,7 @@ export function ReleasesView() {
                 <th style={thStyle} title="Projected start — where the release above it is projected to finish. Releases chain because they share one team: nothing starts until the previous one is done.">Start</th>
                 <th style={thStyle} title="The date you committed to. Set by hand (edit action or update_version) — never derived from scope. Compare it against Projected to see whether the plan is covered by the numbers.">Target</th>
                 <th style={thStyle} title="Velocity-adjusted finish: remaining effort ÷ measured net rate, chained across releases in target-date order. The net rate is measured from real history and already includes rework and idle days — it is not the raw estimate sum.">Projected (velocity)</th>
-                <th style={thStyle} title="Independent second model: open leaves ÷ net ticket completion rate. Counts tickets instead of summing estimates, so unestimated work still weighs in. Diverging hard from the velocity column means the estimate scale has drifted from ticket granularity.">Ticket model</th>
+                <th style={thStyle} title="How much to trust the projected date. Cross-checks it against an independent model that counts open tickets instead of summing estimates, and flags open work that carries no estimate at all. Hover a row's badge for the reason.">Confidence</th>
                 <th style={thStyle} title="Projected (velocity) minus Target. Green = ahead of the committed date, red = late.">Slip</th>
                 <th style={{ ...thStyle, width: 220 }}>Scope</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
@@ -454,11 +479,32 @@ export function ReleasesView() {
                         })()}
                     </td>
                     <td style={tdStyle}>
-                      <div>{formatDate(row?.ticketModelFinishDate ?? null)}</div>
-                      {row && row.ticketModelFinishDate && (
-                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                          {row.remainingTickets} open
-                        </div>
+                      {row ? (
+                        (() => {
+                          const c = CONFIDENCE_STYLE[row.confidence.level];
+                          return (
+                            <div title={row.confidence.note}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: c.color + '20',
+                                  color: c.color,
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {c.icon} {c.label}
+                              </span>
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                                {summariseConfidence(row.confidence)}
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
                       )}
                     </td>
                     <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>

@@ -1,6 +1,7 @@
-import type { Node as CoreNode, MindMap, Version } from '@mindblown/core';
+import type { ForecastConfidence, Node as CoreNode, MindMap, Version } from '@mindblown/core';
 import {
   assessCalibration,
+  assessForecastConfidence,
   calibrationSamplesFromNodes,
   clampFocusFactor,
   compareVersions,
@@ -37,8 +38,17 @@ export interface ReleaseForecastRow {
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
-  /** Independent second model: remainingTickets ÷ net ticket rate, chained. */
+  /**
+   * Independent second model: remainingTickets ÷ net ticket rate, chained.
+   * Kept in the payload as a diagnostic — the Releases table shows
+   * `confidence` instead, because two competing dates side by side asked
+   * the reader to arbitrate with nothing to arbitrate on.
+   */
   ticketModelFinishDate: string | null;
+  /** Open leaves with no estimate — the ones remainingEffort cannot see. */
+  unestimatedOpenLeaves: number;
+  /** How much to trust `velocityAdjustedFinishDate`, and why not more. */
+  confidence: ForecastConfidence;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;
@@ -176,13 +186,18 @@ export function computeReleaseForecast(
     let remainingEffort = 0;
     let noEstimateLeaves = 0;
     let remainingTickets = 0;
+    // Open AND unestimated: the leaves remainingEffort cannot see at all.
+    let unestimatedOpenLeaves = 0;
     for (const leaf of scopedLeaves) {
       if (leaf.effortEstimate == null) noEstimateLeaves++;
       const est = leaf.effortEstimate ?? 0;
       const prog = leaf.percentComplete ?? 0;
       totalEffort += est;
       remainingEffort += est * (1 - prog / 100);
-      if (prog < 99.5) remainingTickets++;
+      if (prog < 99.5) {
+        remainingTickets++;
+        if (leaf.effortEstimate == null) unestimatedOpenLeaves++;
+      }
     }
 
     const isSequenced = v.status !== 'released' && v.status !== 'archived';
@@ -190,6 +205,11 @@ export function computeReleaseForecast(
     let plannedFinishDate: string | null = null;
     let velocityAdjustedFinishDate: string | null = null;
     let ticketModelFinishDate: string | null = null;
+    // Horizons (calendar days for THIS release's own scope) feed the
+    // confidence verdict — the chained dates can't, since each cursor
+    // starts somewhere different.
+    let velocityHorizonDays: number | null = null;
+    let ticketHorizonDays: number | null = null;
 
     if (isSequenced && scopedLeaves.length > 0) {
       // Start tracks the VELOCITY cursor, not the planned one, because the
@@ -212,13 +232,22 @@ export function computeReleaseForecast(
       const velFinish = addCalendarDays(velocityCursor, velCalDays);
       velocityAdjustedFinishDate = iso(velFinish);
       velocityCursor = velFinish;
+      velocityHorizonDays = velCalDays;
 
       if (netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0) {
-        const ticketFinish = addCalendarDays(ticketCursor, remainingTickets / netTicketsPerDay);
+        ticketHorizonDays = remainingTickets / netTicketsPerDay;
+        const ticketFinish = addCalendarDays(ticketCursor, ticketHorizonDays);
         ticketModelFinishDate = iso(ticketFinish);
         ticketCursor = ticketFinish;
       }
     }
+
+    const confidence = assessForecastConfidence({
+      velocityHorizonDays,
+      ticketHorizonDays,
+      unestimatedOpenLeaves,
+      openLeaves: remainingTickets,
+    });
 
     let slipPlannedDays: number | null = null;
     let slipVelocityDays: number | null = null;
@@ -247,6 +276,8 @@ export function computeReleaseForecast(
       plannedFinishDate,
       velocityAdjustedFinishDate,
       ticketModelFinishDate,
+      unestimatedOpenLeaves,
+      confidence,
       slipPlannedDays,
       slipVelocityDays,
       slipTicketDays:

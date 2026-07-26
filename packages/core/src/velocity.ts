@@ -186,3 +186,128 @@ export function netDeliveryRate(grossRatePerDay: number, reworkFraction: number)
   const f = Math.min(1, Math.max(0, reworkFraction));
   return Math.max(0, grossRatePerDay) * (1 - f);
 }
+
+// ── Forecast confidence ────────────────────────────────────────────
+//
+// The day model (remaining effort ÷ net effort rate) and the ticket model
+// (open leaves ÷ net ticket rate) answer the same question from different
+// data. Surfacing both as competing DATES asks the reader to arbitrate
+// between two numbers with no basis for choosing — and the day model is
+// the one every slip calculation already uses, so the second date was
+// never an answer, only a diagnostic wearing an answer's clothes.
+//
+// This collapses the pair into one verdict about the *primary* forecast:
+// how much to trust it, and why not more.
+
+/** Absolute floor so short horizons don't flip on a day of noise. */
+export const CONFIDENCE_DIVERGENCE_FLOOR_DAYS = 7;
+/** …and a relative band, so long horizons aren't judged by the same 7 days. */
+export const CONFIDENCE_DIVERGENCE_RATIO = 0.25;
+
+export type ForecastConfidenceLevel = 'agree' | 'caution' | 'unmeasured';
+
+export interface ForecastConfidenceInput {
+  /** Calendar days the day model projects for the remaining scope. */
+  velocityHorizonDays: number | null;
+  /** Calendar days the ticket model projects for the same scope. */
+  ticketHorizonDays: number | null;
+  /** Open leaves (progress < 99.5%) carrying no estimate — invisible to the day model. */
+  unestimatedOpenLeaves: number;
+  /** All open leaves in scope, estimated or not. */
+  openLeaves: number;
+}
+
+export interface ForecastConfidence {
+  level: ForecastConfidenceLevel;
+  /** ticketHorizon − velocityHorizon in days; null when the ticket model is unavailable. */
+  divergenceDays: number | null;
+  unestimatedOpenLeaves: number;
+  /** One sentence naming what drove the level. Safe to render verbatim. */
+  note: string;
+}
+
+/**
+ * Judge how much to trust the velocity-adjusted forecast for a scope.
+ *
+ * Two independent things erode confidence, and either alone is enough to
+ * warrant caution:
+ *   1. **Model divergence** — the ticket model lands materially apart from
+ *      the day model, which means the estimate scale has drifted from
+ *      ticket granularity.
+ *   2. **Unestimated open work** — leaves the day model literally cannot
+ *      see, so its remaining-effort total is a floor, not an estimate.
+ *
+ * Deliberately NOT a numeric score: a percentage would invite the same
+ * false precision the two-date display already caused.
+ */
+export function assessForecastConfidence(input: ForecastConfidenceInput): ForecastConfidence {
+  const { velocityHorizonDays, ticketHorizonDays, unestimatedOpenLeaves, openLeaves } = input;
+
+  if (openLeaves <= 0) {
+    return {
+      level: 'agree',
+      divergenceDays: null,
+      unestimatedOpenLeaves: 0,
+      note: 'No open work in scope.',
+    };
+  }
+
+  const unestimatedNote = `${unestimatedOpenLeaves} of ${openLeaves} open leaves carry no estimate — remaining effort is a floor`;
+
+  // No second opinion available: unestimated work is the only signal left.
+  if (velocityHorizonDays == null || ticketHorizonDays == null) {
+    return unestimatedOpenLeaves > 0
+      ? {
+          level: 'caution',
+          divergenceDays: null,
+          unestimatedOpenLeaves,
+          note: `${unestimatedNote}. No ticket model to cross-check against.`,
+        }
+      : {
+          level: 'unmeasured',
+          divergenceDays: null,
+          unestimatedOpenLeaves,
+          note: 'No ticket model available to cross-check the forecast.',
+        };
+  }
+
+  const divergenceDays = Math.round(ticketHorizonDays - velocityHorizonDays);
+  const threshold = Math.max(
+    CONFIDENCE_DIVERGENCE_FLOOR_DAYS,
+    CONFIDENCE_DIVERGENCE_RATIO * velocityHorizonDays,
+  );
+  const diverging = Math.abs(divergenceDays) > threshold;
+
+  if (diverging && unestimatedOpenLeaves > 0) {
+    const dir = divergenceDays > 0 ? 'longer' : 'shorter';
+    return {
+      level: 'caution',
+      divergenceDays,
+      unestimatedOpenLeaves,
+      note: `Ticket model runs ${Math.abs(divergenceDays)}d ${dir}; ${unestimatedNote}.`,
+    };
+  }
+  if (diverging) {
+    const dir = divergenceDays > 0 ? 'longer' : 'shorter';
+    return {
+      level: 'caution',
+      divergenceDays,
+      unestimatedOpenLeaves,
+      note: `Ticket model runs ${Math.abs(divergenceDays)}d ${dir} — the estimate scale has drifted from ticket granularity.`,
+    };
+  }
+  if (unestimatedOpenLeaves > 0) {
+    return {
+      level: 'caution',
+      divergenceDays,
+      unestimatedOpenLeaves,
+      note: `${unestimatedNote}, though both models agree within ${Math.abs(divergenceDays)}d.`,
+    };
+  }
+  return {
+    level: 'agree',
+    divergenceDays,
+    unestimatedOpenLeaves: 0,
+    note: `Both models agree within ${Math.abs(divergenceDays)}d and every open leaf is estimated.`,
+  };
+}

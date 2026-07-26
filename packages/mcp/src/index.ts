@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { descendantVersionIds } from './requirementScope.js';
@@ -1016,6 +1016,22 @@ server.tool(
       } else if (remainingTickets > 0) {
         lines.push(`Ticket model:        unavailable (${remainingTickets} open tickets; need ≥3 organic completions in the window)`);
       }
+
+      // Verdict on the PRIMARY (velocity) line. Same helper the Releases
+      // table renders as its Confidence badge, so agents and humans read
+      // one judgement instead of arbitrating two dates themselves.
+      const confidence = assessForecastConfidence({
+        velocityHorizonDays: remainingEffort > 0 ? velocityFinishCalendarDays : null,
+        ticketHorizonDays:
+          netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0
+            ? remainingTickets / netTicketsPerDay
+            : null,
+        unestimatedOpenLeaves: remainingTicketsUnestimated,
+        openLeaves: remainingTickets,
+      });
+      const confidenceIcon =
+        confidence.level === 'agree' ? '✓' : confidence.level === 'caution' ? '⚠' : '·';
+      lines.push(`Confidence:          ${confidenceIcon} ${confidence.level} — ${confidence.note}`);
 
       if (targetDate) {
         lines.push('');
