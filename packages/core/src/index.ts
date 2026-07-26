@@ -106,6 +106,18 @@ export { proseMirrorToPlainText } from './richtext.js';
 export { collectRequirementGhLinks } from './requirements.js';
 export type { GhLinkSource, RequirementGhLink } from './requirements.js';
 
+// Release composition — requirement work vs. everything else in a release
+export { computeReleaseComposition } from './releaseComposition.js';
+export type {
+  CompositionNode,
+  CompositionBucket,
+  CompositionOptions,
+  RequirementShare,
+  ClassificationShare,
+  UnattributedItem,
+  ReleaseComposition,
+} from './releaseComposition.js';
+
 // Velocity & capacity helpers
 export {
   FOCUS_FACTOR_MIN,

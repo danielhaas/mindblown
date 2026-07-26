@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, computeReleaseComposition, compareVersions } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -1143,6 +1143,76 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           ? latestSnapshot.createdAt.toISOString()
           : ((latestSnapshot?.createdAt as string | undefined) ?? null),
     });
+  });
+
+  // ── GET /api/maps/:id/release-composition — what is in a release
+  //
+  // The forecast above answers "when does V1 land". This answers "what
+  // is V1 made of": the split between work that implements a
+  // requirement and everything else — bugs, infra, cleanup, features
+  // nobody ever specified. On a real map the second pile is the
+  // majority, so a release view built on requirements alone reports on
+  // a fraction of the release.
+  //
+  // The math lives in core/releaseComposition.ts, shared with the MCP
+  // tool, so an agent and the UI can never quote different coverage.
+  //
+  // ?versionId=  restrict to one release
+  // ?limit=      unattributed items returned per release (default 25)
+  app.get<{
+    Params: { id: string };
+    Querystring: { versionId?: string; limit?: string };
+  }>('/api/maps/:id/release-composition', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+
+    const parsedLimit = Number.parseInt(req.query.limit ?? '', 10);
+    const limit = Number.isFinite(parsedLimit)
+      ? Math.min(Math.max(parsedLimit, 0), 500)
+      : 25;
+
+    const allVersions = await versionDb.listVersions(data.map.id);
+    const wanted = req.query.versionId
+      ? allVersions.filter((v) => v.id === req.query.versionId)
+      : allVersions;
+
+    if (req.query.versionId && wanted.length === 0) {
+      return reply.status(404).send({
+        error: {
+          code: 'VERSION_NOT_FOUND',
+          message: `Version ${req.query.versionId} not found on map ${req.params.id}`,
+        },
+      });
+    }
+
+    const releases = wanted
+      .slice()
+      .sort(compareVersions)
+      .map((version) => {
+        const c = computeReleaseComposition(data.nodes, version.id);
+        return {
+          versionId: version.id,
+          versionName: version.name,
+          versionStatus: version.status,
+          targetDate: version.targetDate ?? null,
+          coveragePct: c.coveragePct,
+          requirementWork: c.requirementWork,
+          otherWork: c.otherWork,
+          byRequirement: c.byRequirement,
+          byClassification: c.byClassification,
+          // Truncated for the overview; the drill-down re-requests one
+          // release with a higher limit rather than shipping every leaf
+          // of every release on first paint.
+          unattributed: c.unattributed.slice(0, limit),
+          unattributedTotal: c.unattributed.length,
+        };
+      });
+
+    return reply.send({ mapId: data.map.id, effortUnit: data.map.effortUnit, releases });
   });
 
   // ── GET /api/maps/:id/forecast-scorecard — grade forecasts vs reality
