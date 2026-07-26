@@ -100,12 +100,15 @@ describe('scopedLeaves', () => {
     expect(res.leaves.map((l) => l.id)).toEqual(['b1']);
   });
 
-  it('scopes by version with ancestor inheritance', () => {
-    // a1 inherits v1 from parent a; a2 carries v2 directly but also inherits v1.
+  it('scopes by version with nearest-tagged-ancestor semantics', () => {
+    // a1 inherits v1 from parent a. a2 sits under the same v1 parent but
+    // carries v2 directly — the explicit assignment wins, so it belongs to
+    // v2 ONLY. Counting it into both (the previous behaviour) double-spent
+    // its effort in the chained release forecast.
     const v1 = scopedLeaves(makeMap(), { versionId: 'v1' });
     expect(v1.ok).toBe(true);
     if (!v1.ok) return;
-    expect(v1.leaves.map((l) => l.id).sort()).toEqual(['a1', 'a2']);
+    expect(v1.leaves.map((l) => l.id)).toEqual(['a1']);
 
     const v2 = scopedLeaves(makeMap(), { versionId: 'v2' });
     expect(v2.ok).toBe(true);

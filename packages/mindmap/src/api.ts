@@ -958,6 +958,13 @@ export interface ReleaseForecastResponse {
   calibrationLeafCount: number;
   /** Why the fudge is withheld (evidence gate); null when applied or no samples. */
   calibrationNote?: string | null;
+  /**
+   * Measured net rates. When `netEffortPerDay` is set it DRIVES the velocity
+   * line and `focusFactor` is inert — measurement beats knob.
+   */
+  netEffortPerDay?: number | null;
+  netTicketsPerDay?: number | null;
+  ratesWindowDays?: number | null;
   releases: ReleaseForecastRow[];
   lastSnapshotAt: string | null;
 }

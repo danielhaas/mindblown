@@ -86,8 +86,8 @@ export {
 } from './statusWorkflow.js';
 
 // Release ordering
-export { compareVersions } from './versions.js';
-export type { VersionOrderFields } from './versions.js';
+export { compareVersions, effectiveVersionId } from './versions.js';
+export type { VersionOrderFields, VersionMembershipNode } from './versions.js';
 
 // Estimation-calibration evidence gate
 export {

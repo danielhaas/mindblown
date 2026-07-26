@@ -398,12 +398,19 @@ server.tool(
       let completeLeaves = 0;
       let incompleteLeaves = 0;
       let noEstimateLeaves = 0;
+      // Only the OPEN unestimated ones distort the remaining total. Closed
+      // work with no estimate (imported tickets, requirement statements that
+      // were never decomposed) is harmless but used to dominate the warning.
+      let unestimatedOpen = 0;
       const remainingDetails: Array<{ id: string; text: string; remaining: number; progress: number }> = [];
 
       for (const leaf of leaves) {
         const estimate = leaf.effortEstimate ?? 0;
         const progress = leaf.percentComplete ?? 0;
-        if (leaf.effortEstimate == null) noEstimateLeaves++;
+        if (leaf.effortEstimate == null) {
+          noEstimateLeaves++;
+          if (progress < 100) unestimatedOpen++;
+        }
         totalEffort += estimate;
         doneEffort += estimate * (progress / 100);
         const leafRemaining = estimate * (1 - progress / 100);
@@ -429,10 +436,17 @@ server.tool(
       const lines: string[] = [];
       lines.push(`Remaining work — ${scopeLabel}`);
       lines.push('');
-      lines.push(`Leaves in scope:     ${leaves.length}`);
+      lines.push(`Tasks in scope:      ${leaves.length}`);
       lines.push(`  Complete:          ${completeLeaves}`);
       lines.push(`  Incomplete:        ${incompleteLeaves}`);
-      lines.push(`  Without estimate:  ${noEstimateLeaves}${noEstimateLeaves > 0 ? ' ⚠' : ''}`);
+      lines.push(
+        `  Without estimate:  ${noEstimateLeaves}` +
+          (noEstimateLeaves > 0
+            ? unestimatedOpen > 0
+              ? ` (${unestimatedOpen} still open ⚠)`
+              : ' (all complete — no effect on the remaining total)'
+            : ''),
+      );
       lines.push('');
       lines.push(`Total estimated:     ${totalEffort.toFixed(2)} ${unit}`);
       lines.push(`Done:                ${doneEffort.toFixed(2)} ${unit}`);
@@ -448,9 +462,9 @@ server.tool(
         }
       }
 
-      if (noEstimateLeaves > 0) {
+      if (unestimatedOpen > 0) {
         lines.push('');
-        lines.push(`⚠ ${noEstimateLeaves} leaf(s) in scope have no estimate — remaining total excludes them.`);
+        lines.push(`⚠ ${unestimatedOpen} OPEN task(s) have no estimate — the remaining total is a floor, not a point estimate.`);
       }
 
       return toolResult(lines.join('\n'));
@@ -975,8 +989,15 @@ server.tool(
       const lines: string[] = [];
       lines.push(`Completion forecast — ${scopeLabel}`);
       lines.push('');
-      lines.push(`Leaves in scope:     ${leaves.length}`);
-      lines.push(`  Without estimate:  ${noEstimateLeaves}${noEstimateLeaves > 0 ? ' ⚠' : ''}`);
+      lines.push(`Tasks in scope:      ${leaves.length}`);
+      lines.push(
+        `  Without estimate:  ${noEstimateLeaves}` +
+          (noEstimateLeaves > 0
+            ? remainingTicketsUnestimated > 0
+              ? ` (${remainingTicketsUnestimated} still open ⚠)`
+              : ' (all complete — no effect on the forecast)'
+            : ''),
+      );
       lines.push(`Total estimated:     ${totalEffort.toFixed(2)} ${unit}`);
       lines.push(`Remaining:           ${remainingEffort.toFixed(2)} ${unit}`);
       lines.push('');
@@ -1054,9 +1075,9 @@ server.tool(
         lines.push(`Target:              (no target date set)`);
       }
 
-      if (noEstimateLeaves > 0) {
+      if (remainingTicketsUnestimated > 0) {
         lines.push('');
-        lines.push(`⚠ ${noEstimateLeaves} leaf(s) in scope have no estimate — excluded from remaining-effort math.`);
+        lines.push(`⚠ ${remainingTicketsUnestimated} OPEN task(s) have no estimate — excluded from the day model, but the ticket model counts them.`);
       }
       return toolResult(lines.join('\n'));
     } catch (err) {

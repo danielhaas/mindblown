@@ -143,6 +143,61 @@ describe('computeReleaseForecast — measured rates', () => {
   });
 });
 
+describe('computeReleaseForecast — one leaf belongs to one release', () => {
+  // A leaf explicitly tagged v2 sitting under an epic tagged v1. The old
+  // collect-every-ancestor walk put it in BOTH, so its effort was spent
+  // twice in the chain and showed in both releases' remaining totals.
+  const epic: CoreNode = {
+    id: 'epic-v1',
+    parentId: 'root',
+    childrenIds: ['leaf-shared'],
+    versionId: 'v1',
+  } as unknown as CoreNode;
+  const shared: CoreNode = {
+    id: 'leaf-shared',
+    parentId: 'epic-v1',
+    childrenIds: [],
+    effortEstimate: 5,
+    percentComplete: 0,
+    versionId: 'v2', // explicit assignment — pulled out of v1 into v2
+  } as unknown as CoreNode;
+  const rootWithEpic = { ...root, childrenIds: ['epic-v1'] } as CoreNode;
+  const v2: Version = {
+    id: 'v2',
+    name: 'V2',
+    status: 'planning',
+    sortOrder: 1,
+    targetDate: null,
+  } as unknown as Version;
+
+  it('counts the leaf only in the release it is explicitly assigned to', () => {
+    const result = computeReleaseForecast(
+      makeMap(1),
+      [rootWithEpic, epic, shared],
+      [version, v2],
+      NOW,
+    );
+    const [v1Row, v2Row] = result.releases;
+
+    expect(v1Row.remainingEffort).toBe(0);
+    expect(v1Row.leaves).toBe(0);
+    expect(v2Row.remainingEffort).toBe(5);
+    expect(v2Row.leaves).toBe(1);
+  });
+
+  it('inherits from the nearest tagged ancestor when the leaf has none', () => {
+    const untagged = { ...shared, versionId: null } as CoreNode;
+    const result = computeReleaseForecast(
+      makeMap(1),
+      [rootWithEpic, epic, untagged],
+      [version, v2],
+      NOW,
+    );
+    expect(result.releases[0].remainingEffort).toBe(5); // v1, via the epic
+    expect(result.releases[1].remainingEffort).toBe(0);
+  });
+});
+
 describe('computeReleaseForecast — effectiveStartDate rides the velocity cursor', () => {
   // The UI shows velocityAdjustedFinishDate under "Projected". If Start came
   // off the planned cursor instead, every row's Start would contradict the

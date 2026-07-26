@@ -5,6 +5,7 @@ import {
   calibrationSamplesFromNodes,
   clampFocusFactor,
   compareVersions,
+  effectiveVersionId,
 } from '@mindblown/core';
 
 /**
@@ -148,18 +149,11 @@ export function computeReleaseForecast(
   // effort spans proportionally more calendar days.
   const focusFactor = clampFocusFactor(map.focusFactor);
 
-  // ── Ancestor-inherited version tags ──
-  // A leaf belongs to version V if itself or any ancestor is tagged V.
+  // ── Inherited version membership (nearest tag wins) ──
+  // One leaf, one release. Collecting every tagged ancestor instead used
+  // to put the same leaf in two releases, which spent its effort twice in
+  // the chained forecast below. See effectiveVersionId in core.
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  const ancestorVersions = (leafId: string): Set<string> => {
-    const tagged = new Set<string>();
-    let cur: CoreNode | undefined = nodeById.get(leafId);
-    while (cur) {
-      if (cur.versionId) tagged.add(cur.versionId);
-      cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-    }
-    return tagged;
-  };
   const allLeaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
 
   // ── Walk versions in release order with two cursors ──
@@ -180,7 +174,7 @@ export function computeReleaseForecast(
   const netTicketsPerDay = rates?.netTicketsPerDay ?? null;
 
   const releases: ReleaseForecastRow[] = sorted.map((v) => {
-    const scopedLeaves = allLeaves.filter((l) => ancestorVersions(l.id).has(v.id));
+    const scopedLeaves = allLeaves.filter((l) => effectiveVersionId(l.id, nodeById) === v.id);
 
     let totalEffort = 0;
     let remainingEffort = 0;
