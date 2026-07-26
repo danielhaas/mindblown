@@ -39,6 +39,31 @@ function formatDateRange(start: string | null, end: string | null): string {
   return `${days} calendar day${days === 1 ? '' : 's'}`;
 }
 
+const CONFIDENCE_STYLE: Record<
+  ReleaseForecastRow['confidence']['level'],
+  { label: string; icon: string; color: string }
+> = {
+  agree: { label: 'models agree', icon: '✓', color: '#10b981' },
+  caution: { label: 'read with care', icon: '⚠', color: '#f59e0b' },
+  unmeasured: { label: 'unverified', icon: '·', color: '#94a3b8' },
+};
+
+/**
+ * The one-line under-label. Deliberately the *cause*, not a restatement of
+ * the badge — the badge says how much to trust the date, this says why.
+ */
+function summariseConfidence(c: ReleaseForecastRow['confidence']): string {
+  if (c.unestimatedOpenLeaves > 0) {
+    return `${c.unestimatedOpenLeaves} open task${c.unestimatedOpenLeaves === 1 ? '' : 's'} unestimated`;
+  }
+  if (c.divergenceDays != null && c.level === 'caution') {
+    const dir = c.divergenceDays > 0 ? 'later' : 'earlier';
+    return `ticket model ${Math.abs(c.divergenceDays)}d ${dir}`;
+  }
+  if (c.level === 'unmeasured') return 'no cross-check available';
+  return 'every open leaf estimated';
+}
+
 function formatSlip(days: number | null): { text: string; color: string } {
   if (days == null) return { text: '—', color: '#94a3b8' };
   if (days === 0) return { text: 'on target', color: '#f59e0b' };
@@ -119,6 +144,15 @@ export function ReleasesView() {
   // the velocity-adjusted finish dates). Mirrors the server value on load.
   const [focusInput, setFocusInput] = useState<number>(1);
   const [savingFocus, setSavingFocus] = useState(false);
+  // Compact by default: the table answers "when does it ship and are we on
+  // track". Everything that only explains WHY the number is what it is sits
+  // behind the toggle.
+  const [showDetail, setShowDetail] = useState<boolean>(
+    () => globalThis.localStorage?.getItem('mb.releases.detail') === '1',
+  );
+  useEffect(() => {
+    globalThis.localStorage?.setItem('mb.releases.detail', showDetail ? '1' : '0');
+  }, [showDetail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -200,6 +234,9 @@ export function ReleasesView() {
     return sortedVersions.filter((v) => v.id === activeVersionFilter);
   }, [sortedVersions, activeVersionFilter]);
 
+  /** True when a measured net rate drives the forecast — the focus knob is then inert. */
+  const measuredRateActive = (forecast?.netEffortPerDay ?? 0) > 0;
+
   const totalLeaves = useMemo(
     () =>
       displayVersions.reduce((sum, v) => sum + (forecastById.get(v.id)?.leaves ?? 0), 0),
@@ -266,13 +303,15 @@ export function ReleasesView() {
         <div>
           <h2 style={{ margin: 0, fontSize: 16, color: '#1e293b' }}>Releases</h2>
           <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-            {displayVersions.length} version{displayVersions.length === 1 ? '' : 's'} · {totalLeaves} linked leaves
+            {displayVersions.length} version{displayVersions.length === 1 ? '' : 's'} · {totalLeaves} linked tasks
             {forecast && (
               <>
                 {' · sequential by target date, '}
-                {forecast.dailyCapacity} {unit}/day capacity
-                {fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
-                {forecast.focusFactor < 1 && ` · ${Math.round(forecast.focusFactor * 100)}% focus`}
+                {measuredRateActive
+                  ? `${forecast.netEffortPerDay!.toFixed(2)} ${unit}/day measured`
+                  : `${forecast.dailyCapacity} ${unit}/day capacity`}
+                {showDetail && fudge != null && ` · ${fudge.toFixed(2)}× velocity`}
+                {showDetail && forecast.focusFactor < 1 && ` · ${Math.round(forecast.focusFactor * 100)}% focus`}
                 {' · snapshot '}
                 {formatAge(forecast.lastSnapshotAt)}
               </>
@@ -282,11 +321,44 @@ export function ReleasesView() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-          <label
-            title="Focus factor — fraction of calendar time reaching planned work. Below 100% stretches the velocity-adjusted finish to absorb meetings, support and unplanned work."
-            style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, color: '#64748b', fontWeight: 600 }}
+          <button
+            onClick={() => setShowDetail((v) => !v)}
+            title={
+              showDetail
+                ? 'Hide the columns that explain how the projection was derived.'
+                : 'Show start dates, the ticket model, planned finish and task counts.'
+            }
+            style={{
+              padding: '4px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              color: showDetail ? '#2563eb' : '#64748b',
+              background: showDetail ? '#eff6ff' : '#fff',
+              border: `1px solid ${showDetail ? '#bfdbfe' : '#cbd5e1'}`,
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
           >
-            Focus
+            {showDetail ? '▾ Detail' : '▸ Detail'}
+          </button>
+          {showDetail && (
+          <label
+            title={
+              measuredRateActive
+                ? 'Focus factor — INACTIVE on this map. A measured delivery rate is available, and measurement overrides the knob; this value changes nothing until the rate can no longer be measured.'
+                : 'Focus factor — fraction of calendar time reaching planned work. Below 100% stretches the velocity-adjusted finish to absorb meetings, support and unplanned work.'
+            }
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              fontSize: 11,
+              color: '#64748b',
+              fontWeight: 600,
+              opacity: measuredRateActive ? 0.55 : 1,
+            }}
+          >
+            Focus{measuredRateActive && ' (inactive)'}
             <input
               type="number"
               min={5}
@@ -313,6 +385,7 @@ export function ReleasesView() {
             />
             <span>%</span>
           </label>
+          )}
           <button
             onClick={startCreate}
             disabled={formState !== null}
@@ -362,13 +435,18 @@ export function ReleasesView() {
               <tr>
                 <th style={thStyle}>Release</th>
                 <th style={thStyle}>Status</th>
-                <th style={thStyle}>Start</th>
-                <th style={thStyle}>Target</th>
-                <th style={thStyle}>Projected</th>
-                <th style={thStyle} title="Independent second model: open leaves ÷ net ticket completion rate. Counts tickets instead of summing estimates, so unestimated work still weighs in.">Ticket model</th>
-                <th style={thStyle}>Slip</th>
+                {showDetail && (
+                  <th style={thStyle} title="Projected start — where the release above it is projected to finish. Releases chain because they share one team: nothing starts until the previous one is done.">Start</th>
+                )}
+                <th style={thStyle} title="The date you committed to. Set by hand (edit action or update_version) — never derived from scope. Compare it against Projected to see whether the plan is covered by the numbers.">Target</th>
+                <th style={thStyle} title="Velocity-adjusted finish: remaining effort ÷ measured net rate, chained across releases in target-date order. The net rate is measured from real history and already includes rework and idle days — it is not the raw estimate sum.">Projected (velocity)</th>
+                <th style={thStyle} title="How much to trust the projected date. Cross-checks it against an independent model that counts open tasks instead of summing estimates, and flags open work that carries no estimate at all. Hover a row's badge for the reason.">Confidence</th>
+                {showDetail && (
+                  <th style={thStyle} title="The independent second model, as a date: open tasks ÷ net task completion rate. Counts tasks instead of summing estimates, so unestimated work still weighs in. The Confidence column is the verdict this feeds.">Ticket model</th>
+                )}
+                <th style={thStyle} title="Projected (velocity) minus Target. Green = ahead of the committed date, red = late.">Slip</th>
                 <th style={{ ...thStyle, width: 220 }}>Scope</th>
-                <th style={{ ...thStyle, textAlign: 'right' }}>Leaves</th>
+                {showDetail && <th style={{ ...thStyle, textAlign: 'right' }}>Tasks</th>}
                 <th style={{ ...thStyle, width: 92, textAlign: 'right' }}>Actions</th>
               </tr>
             </thead>
@@ -420,7 +498,9 @@ export function ReleasesView() {
                         {VERSION_STATUS_LABEL[v.status]}
                       </span>
                     </td>
-                    <td style={tdStyle}>{formatDate(row?.effectiveStartDate ?? null)}</td>
+                    {showDetail && (
+                      <td style={tdStyle}>{formatDate(row?.effectiveStartDate ?? null)}</td>
+                    )}
                     <td style={tdStyle}>{formatDate(v.targetDate)}</td>
                     <td style={tdStyle}>
                       <div>{formatDate(projected)}</div>
@@ -454,13 +534,44 @@ export function ReleasesView() {
                         })()}
                     </td>
                     <td style={tdStyle}>
-                      <div>{formatDate(row?.ticketModelFinishDate ?? null)}</div>
-                      {row && row.ticketModelFinishDate && (
-                        <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                          {row.remainingTickets} open
-                        </div>
+                      {row ? (
+                        (() => {
+                          const c = CONFIDENCE_STYLE[row.confidence.level];
+                          return (
+                            <div title={row.confidence.note}>
+                              <span
+                                style={{
+                                  fontSize: 10,
+                                  fontWeight: 600,
+                                  padding: '2px 8px',
+                                  borderRadius: 4,
+                                  background: c.color + '20',
+                                  color: c.color,
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {c.icon} {c.label}
+                              </span>
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                                {summariseConfidence(row.confidence)}
+                              </div>
+                            </div>
+                          );
+                        })()
+                      ) : (
+                        <span style={{ fontSize: 11, color: '#94a3b8' }}>—</span>
                       )}
                     </td>
+                    {showDetail && (
+                      <td style={tdStyle}>
+                        <div>{formatDate(row?.ticketModelFinishDate ?? null)}</div>
+                        {row && row.ticketModelFinishDate && (
+                          <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
+                            {row.remainingTickets} open
+                          </div>
+                        )}
+                      </td>
+                    )}
                     <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
                     <td style={tdStyle}>
                       {row ? (
@@ -476,25 +587,29 @@ export function ReleasesView() {
                         </span>
                       )}
                     </td>
-                    <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
-                      {row ? (
-                        <>
-                          {row.leaves}
-                          {row.noEstimateLeaves > 0 && (
-                            <div
-                              style={{ fontSize: 10, color: '#f59e0b' }}
-                              title={`${row.noEstimateLeaves} leaves without estimate`}
-                            >
-                              {row.noEstimateLeaves} unest.
-                            </div>
-                          )}
-                        </>
-                      ) : forecastPending ? (
-                        '…'
-                      ) : (
-                        '0'
-                      )}
-                    </td>
+                    {showDetail && (
+                      <td style={{ ...tdStyle, textAlign: 'right', color: '#64748b', fontSize: 11 }}>
+                        {row ? (
+                          <>
+                            {row.leaves}
+                            {/* Only OPEN unestimated work distorts anything — closed
+                                tasks with no estimate are noise in this warning. */}
+                            {row.unestimatedOpenLeaves > 0 && (
+                              <div
+                                style={{ fontSize: 10, color: '#f59e0b' }}
+                                title={`${row.unestimatedOpenLeaves} open task(s) without estimate — remaining effort is a floor. (${row.noEstimateLeaves} unestimated in total, the rest are already complete.)`}
+                              >
+                                {row.unestimatedOpenLeaves} unest. open
+                              </div>
+                            )}
+                          </>
+                        ) : forecastPending ? (
+                          '…'
+                        ) : (
+                          '0'
+                        )}
+                      </td>
+                    )}
                     <td style={{ ...tdStyle, textAlign: 'right' }}>
                       <div style={{ display: 'inline-flex', gap: 4 }}>
                         <button

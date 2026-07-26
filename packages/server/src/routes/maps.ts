@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, calibrationSamplesFromNodes } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -723,15 +723,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const { nodeId, versionId } = req.query;
     const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-    const ancestorVersions = (leafId: string): Set<string> => {
-      const versions = new Set<string>();
-      let cur: CoreNode | undefined = nodeById.get(leafId);
-      while (cur) {
-        if (cur.versionId) versions.add(cur.versionId);
-        cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-      }
-      return versions;
-    };
+    // Version membership is nearest-tag-wins (see effectiveVersionId in
+    // core) — one leaf belongs to exactly one release, so its effort is
+    // never counted into two of them.
 
     // ── Determine scope ──
     let leaves: CoreNode[];
@@ -763,7 +757,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
     if (versionId) {
       scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
-      leaves = leaves.filter((n) => ancestorVersions(n.id).has(versionId));
+      leaves = leaves.filter((n) => effectiveVersionId(n.id, nodeById) === versionId);
     }
 
     // ── Remaining effort + open-ticket count ──
@@ -946,6 +940,21 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         ? daysBetween(ticketModelFinishDate, targetDate)
         : null;
 
+    // Verdict on the velocity line — same helper the Releases table and the
+    // MCP completion_forecast render, so all three surfaces agree.
+    const confidence = assessForecastConfidence({
+      velocityHorizonDays:
+        remainingEffort > 0 && netEffortPerDay != null && netEffortPerDay > 0
+          ? remainingEffort / netEffortPerDay
+          : null,
+      ticketHorizonDays:
+        netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0
+          ? remainingTickets / netTicketsPerDay
+          : null,
+      unestimatedOpenLeaves: remainingTicketsUnestimated,
+      openLeaves: remainingTickets,
+    });
+
     return reply.send({
       scopeLabel,
       leaves: leaves.length,
@@ -954,6 +963,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       remainingEffort,
       remainingTickets,
       remainingTicketsUnestimated,
+      confidence,
       effortUnit: data.map.effortUnit,
       fudgeFactor,
       focusFactor,

@@ -42,3 +42,49 @@ export function compareVersions(a: VersionOrderFields, b: VersionOrderFields): n
   if (aMin !== bMin) return aMin - bMin;
   return a.name.localeCompare(b.name);
 }
+
+// ── Effective version membership ───────────────────────────────────
+//
+// Which release does a node belong to? The tree is organised by *what*
+// (functional area), releases are an orthogonal tag, so membership has to
+// be inherited down the tree. The only real question is what happens when
+// more than one ancestor carries a tag.
+//
+// NEAREST WINS. Walking up from the node, the first non-null versionId
+// decides — an explicit assignment on a leaf overrides the epic above it,
+// which is the whole point of being able to pull one item out of a release.
+//
+// The alternative (collect every tagged ancestor into a set, node belongs
+// to all of them) was in use on the effort surfaces and is wrong for any
+// kind of accounting: the same leaf got counted into two releases, so its
+// effort was spent twice in the chained forecast and it showed up in both
+// releases' remaining-work totals. You only do the work once.
+
+/** Minimal node shape for the membership walk. */
+export interface VersionMembershipNode {
+  parentId: string | null;
+  versionId?: string | null;
+}
+
+/**
+ * The single release a node belongs to: the first non-null `versionId`
+ * on its path to the root, or null when nothing on the path is tagged.
+ *
+ * Cycle-guarded — a malformed parent chain returns null rather than
+ * hanging the request.
+ */
+export function effectiveVersionId<T extends VersionMembershipNode>(
+  nodeId: string,
+  nodeById: Map<string, T>,
+): string | null {
+  const seen = new Set<string>();
+  let cur: T | undefined = nodeById.get(nodeId);
+  while (cur) {
+    if (cur.versionId != null) return cur.versionId;
+    const parentId: string | null = cur.parentId;
+    if (parentId == null || seen.has(parentId)) return null;
+    seen.add(parentId);
+    cur = nodeById.get(parentId);
+  }
+  return null;
+}

@@ -4,13 +4,16 @@
  *
  * Scope rules:
  * - `nodeId` restricts to the leaves of that subtree.
- * - `versionId` filters by inherited tag: a leaf is in scope if it OR any
- *   ancestor carries the version. Combines with `nodeId` (intersection).
+ * - `versionId` filters by inherited tag, nearest-wins: the first non-null
+ *   `versionId` on the leaf→root path decides, so an explicit assignment on
+ *   the leaf beats the epic above it and a leaf never belongs to two
+ *   releases at once. Combines with `nodeId` (intersection).
  * - `phaseId` filters by effective phase: nearest non-null `phaseId` on the
  *   leaf→root path decides (same explicit-assignment-wins semantics as the
  *   frontend scopeFilter.ts walk). Combines with the others (intersection).
  * - None → all leaves of the map.
  */
+import { effectiveVersionId } from '@mindblown/core';
 import type { MapDetail, NodeWithComputed } from './api.js';
 
 export type ScopeResult =
@@ -24,15 +27,9 @@ export function scopedLeaves(
   const { nodeId, versionId, phaseId } = opts;
   const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
 
-  const ancestorVersions = (leafId: string): Set<string> => {
-    const versions = new Set<string>();
-    let cur = nodeById.get(leafId);
-    while (cur) {
-      if (cur.versionId) versions.add(cur.versionId);
-      cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-    }
-    return versions;
-  };
+  // Nearest-tag-wins membership (effectiveVersionId in core) — the same
+  // rule search_nodes and the orchestrator use, so every surface agrees
+  // which release a leaf belongs to.
 
   let leaves: NodeWithComputed[];
   let scopeLabel = 'whole map';
@@ -61,7 +58,7 @@ export function scopedLeaves(
 
   if (versionId) {
     scopeLabel = `version ${versionId}` + (nodeId ? ` within ${scopeLabel}` : '');
-    leaves = leaves.filter((n) => ancestorVersions(n.id).has(versionId));
+    leaves = leaves.filter((n) => effectiveVersionId(n.id, nodeById) === versionId);
   }
 
   if (phaseId) {

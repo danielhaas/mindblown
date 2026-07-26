@@ -86,8 +86,8 @@ export {
 } from './statusWorkflow.js';
 
 // Release ordering
-export { compareVersions } from './versions.js';
-export type { VersionOrderFields } from './versions.js';
+export { compareVersions, effectiveVersionId } from './versions.js';
+export type { VersionOrderFields, VersionMembershipNode } from './versions.js';
 
 // Estimation-calibration evidence gate
 export {
@@ -116,5 +116,13 @@ export {
   analyzeRepoThroughput,
   netDeliveryRate,
   OFFLINE_MERGE_HOURS,
+  assessForecastConfidence,
+  CONFIDENCE_DIVERGENCE_FLOOR_DAYS,
+  CONFIDENCE_DIVERGENCE_RATIO,
 } from './velocity.js';
 export type { ScopedCapacityInput, PrRecord, RepoThroughput } from './velocity.js';
+export type {
+  ForecastConfidence,
+  ForecastConfidenceInput,
+  ForecastConfidenceLevel,
+} from './velocity.js';

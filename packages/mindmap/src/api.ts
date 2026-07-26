@@ -924,11 +924,21 @@ export interface ReleaseForecastRow {
   remainingEffort: number;
   /** Open (progress < 99.5%) leaves in scope — the ticket model's numerator. */
   remainingTickets: number;
+  /** Where the projected span begins: the previous release's projected finish. */
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
-  /** Independent second model: open leaves ÷ net ticket rate, chained. */
+  /** Diagnostic only — the table renders `confidence` instead of a second date. */
   ticketModelFinishDate: string | null;
+  /** Open leaves with no estimate — invisible to the day model. */
+  unestimatedOpenLeaves: number;
+  /** How much to trust velocityAdjustedFinishDate, and why not more. */
+  confidence: {
+    level: 'agree' | 'caution' | 'unmeasured';
+    divergenceDays: number | null;
+    unestimatedOpenLeaves: number;
+    note: string;
+  };
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;
@@ -948,6 +958,13 @@ export interface ReleaseForecastResponse {
   calibrationLeafCount: number;
   /** Why the fudge is withheld (evidence gate); null when applied or no samples. */
   calibrationNote?: string | null;
+  /**
+   * Measured net rates. When `netEffortPerDay` is set it DRIVES the velocity
+   * line and `focusFactor` is inert — measurement beats knob.
+   */
+  netEffortPerDay?: number | null;
+  netTicketsPerDay?: number | null;
+  ratesWindowDays?: number | null;
   releases: ReleaseForecastRow[];
   lastSnapshotAt: string | null;
 }

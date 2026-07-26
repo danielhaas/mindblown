@@ -1,17 +1,22 @@
-import type { Node as CoreNode, MindMap, Version } from '@mindblown/core';
+import type { ForecastConfidence, Node as CoreNode, MindMap, Version } from '@mindblown/core';
 import {
   assessCalibration,
+  assessForecastConfidence,
   calibrationSamplesFromNodes,
   clampFocusFactor,
   compareVersions,
+  effectiveVersionId,
 } from '@mindblown/core';
 
 /**
  * Release forecast row for a single version.
  *
  * All dates are ISO 8601 date strings (YYYY-MM-DD). The cumulative
- * chain uses two independent cursors — planned vs velocity-adjusted —
- * so the two timelines diverge cleanly as velocity drifts from estimate.
+ * chain uses three independent cursors — planned, velocity-adjusted and
+ * ticket-model — so the timelines diverge cleanly as velocity drifts
+ * from estimate. Each *FinishDate stays on its own cursor; only
+ * `effectiveStartDate` is shared, and it rides the velocity cursor
+ * because that is the line the UI presents as "Projected".
  */
 export interface ReleaseForecastRow {
   versionId: string;
@@ -25,11 +30,26 @@ export interface ReleaseForecastRow {
   remainingEffort: number;
   /** Open (progress < 99.5%) leaves in scope — the ticket model's numerator. */
   remainingTickets: number;
+  /**
+   * Where this release's projected span begins: the previous sequenced
+   * release's velocityAdjustedFinishDate (the anchor for the first one).
+   * Deliberately on the same cursor as `velocityAdjustedFinishDate` so
+   * Start and Projected form one readable chain in the UI.
+   */
   effectiveStartDate: string | null;
   plannedFinishDate: string | null;
   velocityAdjustedFinishDate: string | null;
-  /** Independent second model: remainingTickets ÷ net ticket rate, chained. */
+  /**
+   * Independent second model: remainingTickets ÷ net ticket rate, chained.
+   * Kept in the payload as a diagnostic — the Releases table shows
+   * `confidence` instead, because two competing dates side by side asked
+   * the reader to arbitrate with nothing to arbitrate on.
+   */
   ticketModelFinishDate: string | null;
+  /** Open leaves with no estimate — the ones remainingEffort cannot see. */
+  unestimatedOpenLeaves: number;
+  /** How much to trust `velocityAdjustedFinishDate`, and why not more. */
+  confidence: ForecastConfidence;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;
@@ -59,8 +79,8 @@ export interface ReleaseForecastResult {
  *      ceil(remainingEffort / dailyCapacity). Does NOT assume infinite
  *      parallelism.
  *   2. Sequential by release order (target date, undated last):
- *      non-shipped versions chain — each
- *      effective start is clamped to the previous release's finish.
+ *      non-shipped versions chain — each effective start is clamped to
+ *      the previous release's velocity-adjusted finish.
  *   3. Wall-clock anchored: the first cursor starts at max(today,
  *      projectStartDate). If the project is already underway with
  *      incomplete work, the remaining effort projects forward from
@@ -129,18 +149,11 @@ export function computeReleaseForecast(
   // effort spans proportionally more calendar days.
   const focusFactor = clampFocusFactor(map.focusFactor);
 
-  // ── Ancestor-inherited version tags ──
-  // A leaf belongs to version V if itself or any ancestor is tagged V.
+  // ── Inherited version membership (nearest tag wins) ──
+  // One leaf, one release. Collecting every tagged ancestor instead used
+  // to put the same leaf in two releases, which spent its effort twice in
+  // the chained forecast below. See effectiveVersionId in core.
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  const ancestorVersions = (leafId: string): Set<string> => {
-    const tagged = new Set<string>();
-    let cur: CoreNode | undefined = nodeById.get(leafId);
-    while (cur) {
-      if (cur.versionId) tagged.add(cur.versionId);
-      cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-    }
-    return tagged;
-  };
   const allLeaves = nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
 
   // ── Walk versions in release order with two cursors ──
@@ -161,19 +174,24 @@ export function computeReleaseForecast(
   const netTicketsPerDay = rates?.netTicketsPerDay ?? null;
 
   const releases: ReleaseForecastRow[] = sorted.map((v) => {
-    const scopedLeaves = allLeaves.filter((l) => ancestorVersions(l.id).has(v.id));
+    const scopedLeaves = allLeaves.filter((l) => effectiveVersionId(l.id, nodeById) === v.id);
 
     let totalEffort = 0;
     let remainingEffort = 0;
     let noEstimateLeaves = 0;
     let remainingTickets = 0;
+    // Open AND unestimated: the leaves remainingEffort cannot see at all.
+    let unestimatedOpenLeaves = 0;
     for (const leaf of scopedLeaves) {
       if (leaf.effortEstimate == null) noEstimateLeaves++;
       const est = leaf.effortEstimate ?? 0;
       const prog = leaf.percentComplete ?? 0;
       totalEffort += est;
       remainingEffort += est * (1 - prog / 100);
-      if (prog < 99.5) remainingTickets++;
+      if (prog < 99.5) {
+        remainingTickets++;
+        if (leaf.effortEstimate == null) unestimatedOpenLeaves++;
+      }
     }
 
     const isSequenced = v.status !== 'released' && v.status !== 'archived';
@@ -181,9 +199,20 @@ export function computeReleaseForecast(
     let plannedFinishDate: string | null = null;
     let velocityAdjustedFinishDate: string | null = null;
     let ticketModelFinishDate: string | null = null;
+    // Horizons (calendar days for THIS release's own scope) feed the
+    // confidence verdict — the chained dates can't, since each cursor
+    // starts somewhere different.
+    let velocityHorizonDays: number | null = null;
+    let ticketHorizonDays: number | null = null;
 
     if (isSequenced && scopedLeaves.length > 0) {
-      effectiveStartDate = iso(plannedCursor);
+      // Start tracks the VELOCITY cursor, not the planned one, because the
+      // UI renders velocityAdjustedFinishDate as "Projected". Reading Start
+      // off the planned cursor made each row's start disagree with the
+      // previous row's projected finish — the two cursors advance at
+      // different rates, so the gap grew down the table and looked like a
+      // buffer. It was just two timelines pasted side by side.
+      effectiveStartDate = iso(velocityCursor);
 
       const plannedCalDays = remainingEffort / dailyCapacity;
       const plannedFinish = addCalendarDays(plannedCursor, plannedCalDays);
@@ -197,13 +226,22 @@ export function computeReleaseForecast(
       const velFinish = addCalendarDays(velocityCursor, velCalDays);
       velocityAdjustedFinishDate = iso(velFinish);
       velocityCursor = velFinish;
+      velocityHorizonDays = velCalDays;
 
       if (netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0) {
-        const ticketFinish = addCalendarDays(ticketCursor, remainingTickets / netTicketsPerDay);
+        ticketHorizonDays = remainingTickets / netTicketsPerDay;
+        const ticketFinish = addCalendarDays(ticketCursor, ticketHorizonDays);
         ticketModelFinishDate = iso(ticketFinish);
         ticketCursor = ticketFinish;
       }
     }
+
+    const confidence = assessForecastConfidence({
+      velocityHorizonDays,
+      ticketHorizonDays,
+      unestimatedOpenLeaves,
+      openLeaves: remainingTickets,
+    });
 
     let slipPlannedDays: number | null = null;
     let slipVelocityDays: number | null = null;
@@ -232,6 +270,8 @@ export function computeReleaseForecast(
       plannedFinishDate,
       velocityAdjustedFinishDate,
       ticketModelFinishDate,
+      unestimatedOpenLeaves,
+      confidence,
       slipPlannedDays,
       slipVelocityDays,
       slipTicketDays:
