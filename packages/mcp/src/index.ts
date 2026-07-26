@@ -1058,17 +1058,23 @@ server.tool(
         lines.push('');
         lines.push(`Target:              ${targetDate} (${targetSource})`);
         const targetDateObj = new Date(targetDate);
+        // A negative slip is BUFFER — unspent room between the projection and
+        // the committed date — not evidence the release is running early.
+        // Name it so, or readers spend it.
+        const slipLine = (label: string, days: number) =>
+          days > 0
+            ? `${label.padEnd(20)} ${days} days late`
+            : days < 0
+              ? `${label.padEnd(20)} ${Math.abs(days)} days buffer`
+              : `${label.padEnd(20)} exactly on target (no buffer)`;
         if (hasSchedulableEffort) {
-          const slipPlanned = daysBetween(plannedFinishDate, targetDateObj);
-          lines.push(`Slip (planned):      ${slipPlanned >= 0 ? '+' : ''}${slipPlanned} days`);
+          lines.push(slipLine('Planned vs target:', daysBetween(plannedFinishDate, targetDateObj)));
         }
         if (remainingEffort > 0) {
-          const slipVel = daysBetween(velocityFinishDate, targetDateObj);
-          lines.push(`Slip (velocity):     ${slipVel >= 0 ? '+' : ''}${slipVel} days`);
+          lines.push(slipLine('Velocity vs target:', daysBetween(velocityFinishDate, targetDateObj)));
         }
         if (ticketFinishDate != null) {
-          const slipTicket = daysBetween(ticketFinishDate, targetDateObj);
-          lines.push(`Slip (ticket model): ${slipTicket >= 0 ? '+' : ''}${slipTicket} days`);
+          lines.push(slipLine('Ticket vs target:', daysBetween(ticketFinishDate, targetDateObj)));
         }
       } else {
         lines.push('');
