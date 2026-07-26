@@ -64,10 +64,16 @@ function summariseConfidence(c: ReleaseForecastRow['confidence']): string {
   return 'every open leaf estimated';
 }
 
+/**
+ * Negative slip is BUFFER, not "ahead". "Ahead" claims the release is
+ * running early — a statement about progress. All the number actually says
+ * is that the committed date sits later than the projection, which is room
+ * you deliberately left yourself. Calling it "ahead" invites spending it.
+ */
 function formatSlip(days: number | null): { text: string; color: string } {
   if (days == null) return { text: '—', color: '#94a3b8' };
-  if (days === 0) return { text: 'on target', color: '#f59e0b' };
-  if (days < 0) return { text: `${Math.abs(days)}d ahead`, color: '#10b981' };
+  if (days === 0) return { text: 'no buffer', color: '#f59e0b' };
+  if (days < 0) return { text: `Buffer ${Math.abs(days)}d`, color: '#10b981' };
   return { text: `${days}d late`, color: '#ef4444' };
 }
 
@@ -444,7 +450,7 @@ export function ReleasesView() {
                 {showDetail && (
                   <th style={thStyle} title="The independent second model, as a date: open tasks ÷ net task completion rate. Counts tasks instead of summing estimates, so unestimated work still weighs in. The Confidence column is the verdict this feeds.">Ticket model</th>
                 )}
-                <th style={thStyle} title="Projected (velocity) minus Target. Green = ahead of the committed date, red = late.">Slip</th>
+                <th style={thStyle} title="Target minus Projected (velocity). Green = buffer, the room left between the projection and the date you committed to. Red = the projection has already passed the target. Buffer is not progress — it is unspent room.">Buffer / Slip</th>
                 <th style={{ ...thStyle, width: 220 }}>Scope</th>
                 {showDetail && <th style={{ ...thStyle, textAlign: 'right' }}>Tasks</th>}
                 <th style={{ ...thStyle, width: 92, textAlign: 'right' }}>Actions</th>
