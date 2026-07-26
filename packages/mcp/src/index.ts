@@ -813,6 +813,110 @@ server.tool(
 );
 
 server.tool(
+  'release_composition',
+  'What a release actually holds: the split between work implementing a requirement and everything else — bugs, infra, cleanup, features nobody specified. requirements_overview answers "which requirements ship in V1"; this answers "what IS V1", usually a much larger set. Attribution is structural (a requirement sits above the task) OR by shared GitHub issue, so a ticket filed under a functional area still counts towards the requirement it implements. Coverage is counted in tasks, not effort — completed work often loses its estimate, and an effort-weighted number would understate whatever already shipped.',
+  {
+    mapId: z.string().describe('The map ID'),
+    versionId: z
+      .string()
+      .optional()
+      .describe('Restrict to one release. Use list_versions to find the id.'),
+    limit: z
+      .number()
+      .optional()
+      .describe('Unattributed tasks listed per release (default 12, max 500).'),
+  },
+  async ({ mapId, versionId, limit }) => {
+    try {
+      const listCap = Math.min(Math.max(limit ?? 12, 0), 500);
+      const data = await api.getReleaseComposition(mapId, { versionId, limit: listCap });
+      const unit = data.effortUnit ?? 'units';
+
+      if (data.releases.length === 0) {
+        return toolResult(
+          `No releases on map ${mapId}. Create one with create_version, then tag nodes with it.`,
+        );
+      }
+
+      const lines: string[] = [`Release composition — map ${mapId}`];
+
+      for (const r of data.releases) {
+        const total = r.requirementWork.count + r.otherWork.count;
+        lines.push('');
+        lines.push(
+          `## ${r.versionName}${r.targetDate ? ` (target ${r.targetDate})` : ''} — ${total} task(s)`,
+        );
+
+        if (total === 0) {
+          lines.push('  nothing scheduled yet — no coverage to report');
+          continue;
+        }
+
+        lines.push(
+          `  Requirement work: ${r.requirementWork.count} task(s), ` +
+            `${r.requirementWork.openCount} open, ${r.requirementWork.effort.toFixed(1)} ${unit}` +
+            (r.requirementWork.unestimated > 0
+              ? ` (⚠ ${r.requirementWork.unestimated} unestimated)`
+              : ''),
+        );
+        lines.push(
+          `  Other work:       ${r.otherWork.count} task(s), ` +
+            `${r.otherWork.openCount} open, ${r.otherWork.effort.toFixed(1)} ${unit}` +
+            (r.otherWork.unestimated > 0 ? ` (⚠ ${r.otherWork.unestimated} unestimated)` : ''),
+        );
+        lines.push(`  Requirement coverage: ${r.coveragePct}% of tasks`);
+
+        if (r.byRequirement.length > 0) {
+          const top = r.byRequirement.slice(0, 10);
+          lines.push(`  Requirements touched (${r.byRequirement.length}):`);
+          for (const q of top) {
+            lines.push(
+              `    ${q.requirementId ?? '—'} ${q.text.slice(0, 70)} · ${q.count} task(s), ${q.openCount} open`,
+            );
+          }
+          if (r.byRequirement.length > top.length) {
+            lines.push(`    … and ${r.byRequirement.length - top.length} more`);
+          }
+        }
+
+        if (r.byClassification.length > 0) {
+          lines.push('  Other work by type tag:');
+          for (const c of r.byClassification) {
+            const note =
+              c.label === 'unclassified'
+                ? ' (no type: label — classification is never guessed from the title)'
+                : '';
+            lines.push(
+              `    ${c.label}: ${c.count} task(s), ${c.openCount} open, ${c.effort.toFixed(1)} ${unit}${note}`,
+            );
+          }
+        }
+
+        if (r.unattributed.length > 0) {
+          lines.push(`  Unattributed, worst first (${r.unattributedTotal} total):`);
+          for (const u of r.unattributed) {
+            const eff = u.effort == null ? 'unest.' : `${u.effort} ${unit}`;
+            lines.push(
+              `    ${u.progress}% · ${eff} · ${u.text.slice(0, 80)}` +
+                `${u.externalId ? ` [${u.externalId}]` : ''} (id: ${u.nodeId})`,
+            );
+          }
+          if (r.unattributedTotal > r.unattributed.length) {
+            lines.push(
+              `    … and ${r.unattributedTotal - r.unattributed.length} more — raise limit to see them`,
+            );
+          }
+        }
+      }
+
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'completion_forecast',
   'Forecast "when will it be done?" for a node/subtree/version/phase. Reports THREE dates: planned finish (scheduler-based, respects dependencies), velocity-adjusted finish (remaining effort ÷ measured NET rate), and the independent ticket model (open leaves ÷ net ticket completion rate — counts tickets instead of summing estimates, so unestimated work still weighs in). Plus target date (from version/phase or node dueDates) and slip vs target per model. The day and ticket models disagreeing hard means the estimate scale has drifted from ticket granularity. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
   {
