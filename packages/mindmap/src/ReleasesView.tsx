@@ -1,9 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { compareVersions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import type { ReleaseForecastResponse, ReleaseForecastRow } from './api.js';
+import type {
+  ReleaseForecastResponse,
+  ReleaseForecastRow,
+  ReleaseCompositionResponse,
+  ReleaseCompositionRow,
+} from './api.js';
 
 // ── Colors ───────────────────────────────────────────────────────
 
@@ -159,6 +164,54 @@ export function ReleasesView() {
   useEffect(() => {
     globalThis.localStorage?.setItem('mb.releases.detail', showDetail ? '1' : '0');
   }, [showDetail]);
+
+  // Composition — what the release holds besides its requirements.
+  // Off by default and fetched only once switched on: the table above
+  // answers "when does it ship", and that question must not get slower
+  // because a second one exists.
+  const [showComposition, setShowComposition] = useState<boolean>(
+    () => globalThis.localStorage?.getItem('mb.releases.composition') === '1',
+  );
+  useEffect(() => {
+    globalThis.localStorage?.setItem('mb.releases.composition', showComposition ? '1' : '0');
+  }, [showComposition]);
+  const [composition, setComposition] = useState<ReleaseCompositionResponse | null>(null);
+  const [compositionLoading, setCompositionLoading] = useState(false);
+  const [compositionError, setCompositionError] = useState<string | null>(null);
+  const [expandedComposition, setExpandedComposition] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!showComposition || !currentMapId) return;
+    let cancelled = false;
+    setCompositionLoading(true);
+    setCompositionError(null);
+    api
+      .fetchReleaseComposition(currentMapId, { limit: 40 })
+      .then((r) => {
+        if (!cancelled) setComposition(r);
+      })
+      .catch((e) => {
+        if (!cancelled) {
+          setCompositionError(e instanceof Error ? e.message : 'Failed to load composition');
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCompositionLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [showComposition, currentMapId, versions, refreshNonce]);
+
+  const compositionById = useMemo(() => {
+    const m = new Map<string, ReleaseCompositionRow>();
+    for (const r of composition?.releases ?? []) m.set(r.versionId, r);
+    return m;
+  }, [composition]);
+
+  // Release, Status, Target, Projected, Confidence, Buffer/Slip, Scope,
+  // Actions — plus Start, Ticket model and Tasks when Detail is on.
+  const columnCount = 8 + (showDetail ? 3 : 0);
 
   useEffect(() => {
     let cancelled = false;
@@ -347,6 +400,26 @@ export function ReleasesView() {
           >
             {showDetail ? '▾ Detail' : '▸ Detail'}
           </button>
+          <button
+            onClick={() => setShowComposition((v) => !v)}
+            title={
+              showComposition
+                ? 'Hide the requirement / other-work split.'
+                : 'Show what each release holds besides its requirements — bugs, infra, cleanup and features nobody specified.'
+            }
+            style={{
+              padding: '4px 10px',
+              fontSize: 11,
+              fontWeight: 600,
+              color: showComposition ? '#2563eb' : '#64748b',
+              background: showComposition ? '#eff6ff' : '#fff',
+              border: `1px solid ${showComposition ? '#bfdbfe' : '#cbd5e1'}`,
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            {showComposition ? '▾ Composition' : '▸ Composition'}
+          </button>
           {showDetail && (
           <label
             title={
@@ -473,8 +546,8 @@ export function ReleasesView() {
                 const duration = formatDateRange(row?.effectiveStartDate ?? null, projected);
 
                 return (
+                  <Fragment key={v.id}>
                   <tr
-                    key={v.id}
                     style={{
                       borderBottom: '1px solid #f1f5f9',
                       opacity: isArchived || isReleased ? 0.55 : 1,
@@ -637,6 +710,25 @@ export function ReleasesView() {
                       </div>
                     </td>
                   </tr>
+                  {showComposition && (
+                    <CompositionRow
+                      colSpan={columnCount}
+                      unit={unit}
+                      row={compositionById.get(v.id) ?? null}
+                      loading={compositionLoading}
+                      error={compositionError}
+                      expanded={expandedComposition.has(v.id)}
+                      onToggle={() =>
+                        setExpandedComposition((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(v.id)) next.delete(v.id);
+                          else next.add(v.id);
+                          return next;
+                        })
+                      }
+                    />
+                  )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -648,6 +740,328 @@ export function ReleasesView() {
 }
 
 // ── Sub-components ───────────────────────────────────────────────
+
+const REQ_COLOR = '#2563eb';
+const OTHER_COLOR = '#e0871a';
+
+/**
+ * The composition strip under a release row: how much of the release
+ * implements a requirement, and what the rest is.
+ *
+ * The bar is scaled by TICKET COUNT, not effort. Effort would be the
+ * better unit if the estimates were complete; they are not, and a bar
+ * that silently drops every unestimated ticket would understate exactly
+ * the pile this strip exists to show. Effort is printed next to the
+ * counts instead, with its own unestimated warning.
+ */
+function CompositionRow({
+  colSpan,
+  unit,
+  row,
+  loading,
+  error,
+  expanded,
+  onToggle,
+}: {
+  colSpan: number;
+  unit: string;
+  row: ReleaseCompositionRow | null;
+  loading: boolean;
+  error: string | null;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const cell: React.CSSProperties = {
+    padding: '10px 12px 14px',
+    borderBottom: '1px solid #f1f5f9',
+    background: '#fafbfc',
+  };
+
+  if (error) {
+    return (
+      <tr>
+        <td colSpan={colSpan} style={{ ...cell, fontSize: 11, color: '#dc2626' }}>
+          Composition unavailable: {error}
+        </td>
+      </tr>
+    );
+  }
+
+  if (!row) {
+    return (
+      <tr>
+        <td colSpan={colSpan} style={{ ...cell, fontSize: 11, color: '#94a3b8' }}>
+          {loading ? 'Loading composition…' : 'No composition data'}
+        </td>
+      </tr>
+    );
+  }
+
+  const reqCount = row.requirementWork.count;
+  const otherCount = row.otherWork.count;
+  const total = reqCount + otherCount;
+
+  if (total === 0) {
+    return (
+      <tr>
+        <td colSpan={colSpan} style={{ ...cell, fontSize: 11, color: '#94a3b8' }}>
+          Nothing scheduled for this release yet — no coverage to report.
+        </td>
+      </tr>
+    );
+  }
+
+  const reqPct = (reqCount / total) * 100;
+  const reqDonePct = reqCount ? ((reqCount - row.requirementWork.openCount) / reqCount) * 100 : 0;
+  const otherDonePct = otherCount
+    ? ((otherCount - row.otherWork.openCount) / otherCount) * 100
+    : 0;
+  const totalEffort = row.requirementWork.effort + row.otherWork.effort;
+  const unestimated = row.requirementWork.unestimated + row.otherWork.unestimated;
+
+  return (
+    <tr>
+      {/* The strip is a reading surface, not a data grid — past ~1100px
+          the label/number pairs drift so far apart they stop reading as
+          pairs. Cap it and let the rest of the row breathe. */}
+      <td colSpan={colSpan} style={cell}>
+        <div style={{ maxWidth: 1100 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginBottom: 6 }}>
+          <button
+            onClick={onToggle}
+            style={{
+              padding: 0,
+              border: 'none',
+              background: 'none',
+              cursor: 'pointer',
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#475569',
+            }}
+          >
+            {expanded ? '▾' : '▸'} Composition
+          </button>
+          <span
+            style={{ fontSize: 11, color: '#64748b' }}
+            title="Share of this release's tasks that implement a requirement — either sitting beneath one, or sharing its GitHub issue."
+          >
+            <b style={{ color: row.coveragePct != null && row.coveragePct < 50 ? '#b45309' : '#166534' }}>
+              {row.coveragePct}%
+            </b>{' '}
+            requirement coverage
+          </span>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>
+            {total} tasks · {totalEffort.toFixed(0)} {unit} estimated
+            {unestimated > 0 && ` · ${unestimated} unestimated`}
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'flex',
+            height: 20,
+            borderRadius: 4,
+            overflow: 'hidden',
+            background: '#e2e8f0',
+          }}
+        >
+          <Segment
+            widthPct={reqPct}
+            donePct={reqDonePct}
+            color={REQ_COLOR}
+            label={`Requirements · ${reqCount}`}
+            title={`${reqCount} task(s) implementing a requirement — ${row.requirementWork.openCount} still open, ${row.requirementWork.effort.toFixed(1)} ${unit} estimated.`}
+          />
+          <Segment
+            widthPct={100 - reqPct}
+            donePct={otherDonePct}
+            color={OTHER_COLOR}
+            label={`Other work · ${otherCount}`}
+            title={`${otherCount} task(s) attributing to no requirement — ${row.otherWork.openCount} still open, ${row.otherWork.effort.toFixed(1)} ${unit} estimated.`}
+          />
+        </div>
+
+        {expanded && (
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'minmax(0, 1fr) minmax(0, 1fr)',
+              gap: 20,
+              marginTop: 14,
+            }}
+          >
+            <div>
+              <ColumnHeading>Requirements in this release</ColumnHeading>
+              {row.byRequirement.length === 0 ? (
+                <Muted>None — every task here attributes to no requirement.</Muted>
+              ) : (
+                row.byRequirement.slice(0, 10).map((r) => (
+                  <div key={r.nodeId} style={{ display: 'flex', gap: 8, fontSize: 11, padding: '2px 0' }}>
+                    <span style={{ fontWeight: 600, color: '#475569', minWidth: 62 }}>
+                      {r.requirementId ?? '—'}
+                    </span>
+                    <span
+                      style={{
+                        flex: 1,
+                        minWidth: 0,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                        color: '#334155',
+                      }}
+                      title={r.text}
+                    >
+                      {r.text}
+                    </span>
+                    <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                      {r.count} · {r.openCount} open
+                    </span>
+                  </div>
+                ))
+              )}
+              {row.byRequirement.length > 10 && (
+                <Muted>+ {row.byRequirement.length - 10} more requirements</Muted>
+              )}
+            </div>
+
+            <div>
+              <ColumnHeading>Other work — what is it?</ColumnHeading>
+              {row.byClassification.map((c) => (
+                <div key={c.label} style={{ display: 'flex', gap: 8, fontSize: 11, padding: '2px 0' }}>
+                  <span
+                    style={{ flex: 1, color: c.label === 'unclassified' ? '#94a3b8' : '#334155' }}
+                    title={
+                      c.label === 'unclassified'
+                        ? 'No `type:` tag on these tasks. Classification comes from GitHub labels, never from guessing at the title — so untagged work stays honestly unlabelled.'
+                        : undefined
+                    }
+                  >
+                    {c.label}
+                  </span>
+                  <span style={{ color: '#94a3b8', whiteSpace: 'nowrap' }}>
+                    {c.count} · {c.effort.toFixed(1)} {unit} · {c.openCount} open
+                  </span>
+                </div>
+              ))}
+
+              <ColumnHeading style={{ marginTop: 12 }}>
+                Unattributed, worst first
+              </ColumnHeading>
+              {row.unattributed.slice(0, 12).map((u) => (
+                <div key={u.nodeId} style={{ display: 'flex', gap: 6, fontSize: 11, padding: '2px 0' }}>
+                  <span style={{ color: '#94a3b8', minWidth: 30, textAlign: 'right' }}>
+                    {u.progress}%
+                  </span>
+                  <span
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      color: '#334155',
+                    }}
+                    title={u.text}
+                  >
+                    {u.text}
+                  </span>
+                  {u.url && (
+                    <a
+                      href={u.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      style={{ color: '#2563eb', textDecoration: 'none', whiteSpace: 'nowrap' }}
+                    >
+                      {u.externalId?.split('#')[1] ? `#${u.externalId.split('#')[1]}` : 'issue'}
+                    </a>
+                  )}
+                </div>
+              ))}
+              {row.unattributedTotal > Math.min(12, row.unattributed.length) && (
+                <Muted>
+                  + {row.unattributedTotal - Math.min(12, row.unattributed.length)} more unattributed
+                </Muted>
+              )}
+            </div>
+          </div>
+        )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+/** One half of the split bar; the saturated part is what is already done. */
+function Segment({
+  widthPct,
+  donePct,
+  color,
+  label,
+  title,
+}: {
+  widthPct: number;
+  donePct: number;
+  color: string;
+  label: string;
+  title: string;
+}) {
+  if (widthPct <= 0) return null;
+  return (
+    <div
+      title={title}
+      style={{ position: 'relative', width: `${widthPct}%`, background: `${color}33`, minWidth: 2 }}
+    >
+      <div
+        style={{ position: 'absolute', inset: 0, right: 'auto', width: `${donePct}%`, background: color }}
+      />
+      {widthPct > 14 && (
+        <div
+          style={{
+            position: 'relative',
+            fontSize: 10,
+            fontWeight: 600,
+            color: '#fff',
+            lineHeight: '20px',
+            padding: '0 6px',
+            whiteSpace: 'nowrap',
+            overflow: 'hidden',
+            textShadow: '0 1px 2px rgba(0,0,0,.35)',
+          }}
+        >
+          {label}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ColumnHeading({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: React.CSSProperties;
+}) {
+  return (
+    <div
+      style={{
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: 'uppercase',
+        letterSpacing: 0.5,
+        color: '#94a3b8',
+        marginBottom: 4,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function Muted({ children }: { children: React.ReactNode }) {
+  return <div style={{ fontSize: 11, color: '#94a3b8', padding: '2px 0' }}>{children}</div>;
+}
 
 function VersionForm({
   mode,

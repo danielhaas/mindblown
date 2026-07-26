@@ -410,6 +410,75 @@ export function getMap(mapId: string): Promise<MapDetail> {
   return request<MapDetail>(`/api/maps/${mapId}`);
 }
 
+// ── Release composition ─────────────────────────────────────────
+//
+// Deliberately a server call rather than a local recomputation: the
+// point of the tool is that an agent and the Releases view quote the
+// same coverage number, and two implementations of one attribution
+// rule drift apart eventually.
+
+export interface CompositionBucket {
+  count: number;
+  openCount: number;
+  effort: number;
+  doneEffort: number;
+  unestimated: number;
+}
+
+export interface ReleaseCompositionRow {
+  versionId: string;
+  versionName: string;
+  versionStatus: string;
+  targetDate: string | null;
+  coveragePct: number | null;
+  requirementWork: CompositionBucket;
+  otherWork: CompositionBucket;
+  byRequirement: Array<{
+    nodeId: string;
+    requirementId: string | null;
+    text: string;
+    count: number;
+    openCount: number;
+    effort: number;
+    doneEffort: number;
+  }>;
+  byClassification: Array<{
+    label: string;
+    count: number;
+    openCount: number;
+    effort: number;
+  }>;
+  unattributed: Array<{
+    nodeId: string;
+    text: string;
+    effort: number | null;
+    progress: number;
+    externalId: string | null;
+    url: string | null;
+    label: string;
+  }>;
+  unattributedTotal: number;
+}
+
+export interface ReleaseCompositionResponse {
+  mapId: string;
+  effortUnit: string;
+  releases: ReleaseCompositionRow[];
+}
+
+export function getReleaseComposition(
+  mapId: string,
+  opts: { versionId?: string; limit?: number } = {},
+): Promise<ReleaseCompositionResponse> {
+  const params = new URLSearchParams();
+  if (opts.versionId) params.set('versionId', opts.versionId);
+  if (opts.limit != null) params.set('limit', String(opts.limit));
+  const q = params.toString();
+  return request<ReleaseCompositionResponse>(
+    `/api/maps/${mapId}/release-composition${q ? `?${q}` : ''}`,
+  );
+}
+
 export function createMap(name: string, description?: string, workspaceId = 'default'): Promise<any> {
   return request('/api/maps', {
     method: 'POST',
