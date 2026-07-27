@@ -477,25 +477,45 @@ const STATUS_FILL: Record<RequirementStage, string> = Object.fromEntries(
 /** Subtle alternate-row fill, mirroring the register UI's hover tone. */
 const ZEBRA_FILL = 'f8fafc';
 
-// Column widths as % of table width: ID, Anforderung, Prio, Release,
-// Status, Code %, Aufwand, Rest, Abnahme. LibreOffice ignores percentage
-// widths that only sit on header cells — the table needs an explicit grid
-// (columnWidths, in DXA) and fixed layout, and every cell must carry its
-// column width.
-//
-// Widening the short columns to stop their BOLD headers wrapping squeezed
-// Anforderung — the one column carrying real prose — down to a third of
-// the page. So the fix runs the other way now: shorten the headers, then
-// take the width back.
-//
-//   Priorität → Prio   (values are Muss/Soll/Kann; the header was the only
-//                       thing needing 9 characters, and it wrapped too)
-//   Code-Fortschritt → Code %   (the legend spells it out in full)
-//
-// Status keeps a modest 8: "Zurückgewiesen" wraps there, but wrapped VALUES
-// are normal — it was the headers that looked broken. Code % is sized so
-// the bar and the percentage stay on one line (see progressBar).
-const COL_PCT = [6, 40, 5, 7, 8, 10, 7, 5, 12];
+/**
+ * The table's columns: header label and width, deliberately in ONE list.
+ *
+ * These two have to be tuned against each other — a header is bold, so it
+ * wraps a character earlier than a width calculation suggests, and the fix
+ * is either a shorter label or a wider column. Keeping the labels in the
+ * header row and the widths in a separate array let exactly that pairing
+ * drift: the columns were narrowed for short labels that never landed, so
+ * the long ones wrapped in shipped documents.
+ *
+ * Widening everything to fit the bold headers had squeezed Anforderung —
+ * the one column carrying real prose — down to a third of the page, so the
+ * short columns pay with their labels instead:
+ *
+ *   Priorität → Prio     (values are Muss/Soll/Kann; only the header
+ *                         needed nine characters, and it wrapped too)
+ *   Code-Fortschritt → Code %   (the legend spells it out in full)
+ *
+ * Status keeps a modest 8: "Zurückgewiesen" wraps there, but wrapped
+ * VALUES are normal — it was the headers that looked broken. Code % is
+ * sized so the bar and its percentage stay on one line (see progressBar).
+ *
+ * LibreOffice ignores percentage widths that only sit on header cells, so
+ * the table also needs an explicit grid (columnWidths, in DXA) and fixed
+ * layout, and every cell must carry its column width.
+ */
+const COLUMNS = [
+  { header: 'ID', pct: 6 },
+  { header: 'Anforderung', pct: 40 },
+  { header: 'Prio', pct: 5 },
+  { header: 'Release', pct: 7 },
+  { header: 'Status', pct: 8 },
+  { header: 'Code %', pct: 10 },
+  { header: 'Aufwand', pct: 7 },
+  { header: 'Rest', pct: 5 },
+  { header: 'Abnahme', pct: 12 },
+] as const;
+
+const COL_PCT = COLUMNS.map((c) => c.pct);
 // Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
 const PAGE_MARGIN = 1134;
 const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
@@ -612,19 +632,13 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
         ],
       }),
     );
+    // Built from COLUMNS so a label can never drift away from the width it
+    // was chosen to fit — that drift is what shipped wrapped headers.
     const header = new TableRow({
       tableHeader: true,
-      children: [
-        cell('ID', { bold: true, fill: 'e2e8f0', width: COL_PCT[0] }),
-        cell('Anforderung', { bold: true, fill: 'e2e8f0', width: COL_PCT[1] }),
-        cell('Priorität', { bold: true, fill: 'e2e8f0', width: COL_PCT[2] }),
-        cell('Release', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
-        cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
-        cell('Code-Fortschritt', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
-        cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
-        cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[7] }),
-        cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[8] }),
-      ],
+      children: COLUMNS.map((c) =>
+        cell(c.header, { bold: true, fill: 'e2e8f0', width: c.pct }),
+      ),
     });
     const rows = ch.rows.map((r, rowIndex) => {
       const zebra = rowIndex % 2 === 1 ? ZEBRA_FILL : undefined;
