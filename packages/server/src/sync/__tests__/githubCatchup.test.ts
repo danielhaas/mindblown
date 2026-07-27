@@ -46,12 +46,18 @@ vi.mock('../../db/schema.js', () => ({
   githubRepoSync: {},
 }));
 
+// Rows the mocked `db.select(...)` hands back. Defaults to empty so
+// `discoverTargets` sees zero repos (the original behaviour every test
+// below relied on); the link-state cases push node rows in and clear
+// them again afterwards.
+const dbRows = vi.hoisted(() => ({ current: [] as unknown[] }));
+
 vi.mock('../../db/connection.js', () => ({
   db: {
     select: () => ({
       from: () => ({
-        where: async () => [], // discoverTargets → empty
-        then: (resolve: (v: unknown) => unknown) => Promise.resolve([]).then(resolve),
+        where: async () => dbRows.current, // discoverTargets → empty by default
+        then: (resolve: (v: unknown) => unknown) => Promise.resolve(dbRows.current).then(resolve),
       }),
     }),
     execute: async () => undefined,
@@ -61,6 +67,8 @@ vi.mock('../../db/connection.js', () => ({
 vi.mock('../../db/nodes.js', () => ({
   getNode: vi.fn(),
   updateNode: vi.fn(),
+  setExternalLinkState: vi.fn(),
+  notDeleted: { __pred: true },
 }));
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
@@ -121,11 +129,14 @@ import {
   pushCatchupHeartbeat,
   isHealthyTick,
   reconcileRepo,
+  computeStateUpdates,
   _resetAuthFailureCountersForTests,
   _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
 import { fetchChangedIssues, GitHubApiError } from '@mindblown/integrations';
+import type { ExternalLink } from '@mindblown/core';
+import * as nodeDb from '../../db/nodes.js';
 
 // Re-aliased for readability in tests: this is the mock class from
 // the `vi.mock` factory above, not the real one.
@@ -138,6 +149,7 @@ function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
     applied: 0,
     skipped: 0,
     noTransition: 0,
+    mirrorRepaired: 0,
     stateSyncErrored: 0,
     ingested: 0,
     ingestErrored: 0,
@@ -651,5 +663,122 @@ describe('reconcileRepo → 401 auth-failure escalation, token-resolution path (
 
     expect(pushKumaMock).not.toHaveBeenCalled();
     expect(_getAuthFailureCountForTests('o/r')).toBe(0);
+  });
+});
+
+// ── Link `state` mirror ───────────────────────────────────────────
+//
+// The requirements view dims closed issues off `externalLinks[].state`.
+// Before this was fixed, only the webhook close/reopen handler ever
+// wrote that field, so ~91% of prod links carried no `state` at all and
+// rendered as if open. Two halves: transitions carry the mirror, and the
+// catchup repairs links whose node needs no transition.
+
+describe('computeStateUpdates → link state mirror', () => {
+  const link = (over: Partial<ExternalLink> = {}): ExternalLink => ({
+    provider: 'github',
+    externalId: 'o/r#14',
+    url: 'https://github.com/o/r/issues/14',
+    syncEnabled: true,
+    lastSyncedAt: null,
+    ...over,
+  });
+
+  it('stamps state=closed on the link when applying a close transition', () => {
+    const updates = computeStateUpdates(
+      { percentComplete: 40, status: 'in_progress', externalLinks: [link()] },
+      { state: 'closed' },
+      'o/r#14',
+    );
+    expect(updates?.externalLinks?.[0].state).toBe('closed');
+  });
+
+  it('stamps state=open on the link when applying a reopen transition', () => {
+    const updates = computeStateUpdates(
+      {
+        percentComplete: 100,
+        status: 'done',
+        externalLinks: [link({ state: 'closed', previousPercentComplete: 40, previousStatus: 'in_progress' })],
+      },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.externalLinks?.[0].state).toBe('open');
+  });
+
+  it('still returns null for a mirror-only drift, so no revision bump happens', () => {
+    // Node already done, issue already closed — but the link never got a
+    // `state`. Repairing that must not go through updateNode, which would
+    // bump revision and stale every requirement acceptance on the node.
+    expect(
+      computeStateUpdates(
+        { percentComplete: 100, status: 'done', externalLinks: [link()] },
+        { state: 'closed' },
+        'o/r#14',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('reconcileRepo → repairs absent/stale link state', () => {
+  beforeEach(() => {
+    _resetAuthFailureCountersForTests();
+    fetchChangedIssuesMock.mockReset();
+    vi.mocked(nodeDb.getNode).mockReset();
+    vi.mocked(nodeDb.updateNode).mockReset();
+    vi.mocked(nodeDb.setExternalLinkState).mockReset();
+    vi.mocked(nodeDb.setExternalLinkState).mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    dbRows.current = [];
+  });
+
+  function issue(number: number, state: 'open' | 'closed') {
+    return { number, state, title: `#${number}`, html_url: `https://github.com/o/r/issues/${number}` };
+  }
+
+  function nodeWithLink(externalId: string, over: Partial<ExternalLink> = {}) {
+    return {
+      id: 'n1',
+      mapId: 'm1',
+      percentComplete: 100,
+      status: 'done',
+      externalLinks: [
+        {
+          provider: 'github',
+          externalId,
+          url: 'https://github.com/o/r/issues/14',
+          syncEnabled: true,
+          lastSyncedAt: null,
+          ...over,
+        },
+      ],
+    };
+  }
+
+  it('backfills state on a done node whose closed issue link has none', async () => {
+    fetchChangedIssuesMock.mockResolvedValue([issue(14, 'closed')] as never);
+    dbRows.current = [nodeWithLink('o/r#14')];
+    vi.mocked(nodeDb.getNode).mockResolvedValue(nodeWithLink('o/r#14') as never);
+
+    const res = await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#14', 'closed');
+    expect(nodeDb.updateNode).not.toHaveBeenCalled(); // no revision bump
+    expect(res.mirrorRepaired).toBe(1);
+  });
+
+  it('leaves an already-correct mirror alone', async () => {
+    fetchChangedIssuesMock.mockResolvedValue([issue(14, 'closed')] as never);
+    dbRows.current = [nodeWithLink('o/r#14', { state: 'closed' })];
+    vi.mocked(nodeDb.getNode).mockResolvedValue(
+      nodeWithLink('o/r#14', { state: 'closed' }) as never,
+    );
+
+    const res = await reconcileRepo(makeTarget('o', 'r'));
+
+    expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
+    expect(res.mirrorRepaired).toBe(0);
   });
 });

@@ -977,6 +977,7 @@ async function ensureNodeForIssueViaTriage(
       url: issue.html_url,
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
+      state: issue.state,
     };
     // Same milestone-based version routing as the non-triage path —
     // keeps Jenna's Unversioned bucket from refilling after the LLM
@@ -1254,6 +1255,7 @@ export async function ensureNodeForIssue(
       url: issue.html_url,
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
+      state: issue.state,
     };
     // Route the new node to its milestone-derived version when one
     // resolves on this map, so it doesn't land in the Unversioned

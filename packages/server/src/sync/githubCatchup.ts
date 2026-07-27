@@ -118,6 +118,13 @@ export interface ReconcileResult {
   skipped: number;         // issues with no linked node
   noTransition: number;    // linked node already in correct state
   /**
+   * Links whose cached open/closed mirror was absent or stale and got
+   * repaired in place (no revision bump). Expect a large number on the
+   * first tick after deploy — most links predate the `state` field — then
+   * near-zero steady state.
+   */
+  mirrorRepaired: number;
+  /**
    * Count of node-update errors hit during the state-sync loop. Surfaced
    * alongside `ingestErrored` so partial failures are observable.
    */
@@ -172,6 +179,12 @@ export interface ReconcileResult {
  * The webhook path snapshots unconditionally because each webhook event
  * is a single transition; we get the same effect by gating on "is the
  * node already in the target state?".
+ *
+ * When a transition *does* fire, the link's own `state` mirror rides
+ * along on the same write. The mirror-only case — node already
+ * consistent but `state` absent or stale — deliberately still returns
+ * null here, because repairing it must not bump the node's revision —
+ * the reconcile loop handles that case via `setExternalLinkState`.
  */
 export function computeStateUpdates(
   node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks'>,
@@ -190,9 +203,15 @@ export function computeStateUpdates(
     (link.previousPercentComplete !== undefined && link.previousPercentComplete !== null) ||
     (link.previousStatus !== undefined && link.previousStatus !== null);
 
+  const ghState: 'open' | 'closed' = isClosedOnGitHub ? 'closed' : 'open';
+
   let nextPct: number | null = node.percentComplete ?? null;
   let nextStatus: string | null = node.status ?? null;
-  const nextLink: ExternalLink = { ...link, lastSyncedAt: new Date().toISOString() };
+  const nextLink: ExternalLink = {
+    ...link,
+    lastSyncedAt: new Date().toISOString(),
+    state: ghState,
+  };
   let stateChanged = false;
 
   if (isClosedOnGitHub && !looksDoneInMB) {
@@ -308,7 +327,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -347,7 +366,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -368,6 +387,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   let applied = 0;
   let skipped = 0;
   let noTransition = 0;
+  let mirrorRepaired = 0;
   let stateSyncErrored = 0;
 
   for (const issue of issues) {
@@ -380,7 +400,22 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       if (!node) { skipped++; continue; }
 
       const updates = computeStateUpdates(node, issue, externalId);
-      if (!updates) { noTransition++; continue; }
+      if (!updates) {
+        // No progress/status transition, but the link's cached open/closed
+        // mirror may still be absent (most links were created without it)
+        // or stale. Repair it in place — no revision bump, no broadcast,
+        // since nothing the user authored has changed.
+        const link = node.externalLinks.find(
+          (l) => l.provider === 'github' && l.externalId === externalId,
+        );
+        const ghState = issue.state === 'closed' ? 'closed' : 'open';
+        if (link && link.state !== ghState) {
+          await nodeDb.setExternalLinkState(hit.nodeId, externalId, ghState);
+          mirrorRepaired++;
+        }
+        noTransition++;
+        continue;
+      }
 
       const updated = await nodeDb.updateNode(hit.nodeId, updates);
       if (updated) {
@@ -521,6 +556,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     applied,
     skipped,
     noTransition,
+    mirrorRepaired,
     stateSyncErrored,
     ingested: ingestCreated,
     ingestErrored,
@@ -618,7 +654,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),

@@ -614,6 +614,48 @@ export async function updateNode(
   return null;
 }
 
+/**
+ * Refresh the cached open/closed `state` on a single GitHub external link
+ * without touching anything else on the node.
+ *
+ * Deliberately NOT routed through updateNode: that bumps `revision` and
+ * `updatedAt` on every call. `state` is a mirror of GitHub, not user
+ * content, and the catchup repairs it in bulk — a revision bump there
+ * would mark every requirement acceptance on those nodes as stale (the
+ * requirements view compares node.revision against the revision captured
+ * at sign-off) and would churn updatedAt for thousands of untouched
+ * nodes. So this writes the jsonb column alone.
+ *
+ * Returns false when the node is gone or carries no such link.
+ */
+export async function setExternalLinkState(
+  nodeId: string,
+  externalId: string,
+  state: 'open' | 'closed',
+  handle: DbHandle = db,
+): Promise<boolean> {
+  const [row] = await handle
+    .select({ externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
+  if (!row) return false;
+
+  const links = (row.externalLinks as ExternalLink[]) ?? [];
+  let found = false;
+  const next = links.map((l) => {
+    if (l.provider !== 'github' || l.externalId !== externalId) return l;
+    found = true;
+    return { ...l, state };
+  });
+  if (!found) return false;
+
+  await handle
+    .update(nodes)
+    .set({ externalLinks: next })
+    .where(and(eq(nodes.id, nodeId), notDeleted));
+  return true;
+}
+
 // ── Delete (with descendants) ──────────────────────────────────────
 
 /**
