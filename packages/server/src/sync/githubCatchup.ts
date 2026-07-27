@@ -18,6 +18,7 @@ import { eq, and, isNotNull, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
 import {
   fetchChangedIssues,
+  getGitHubIssue,
   mintInstallationToken,
   GitHubApiError,
 } from '@mindblown/integrations';
@@ -121,9 +122,15 @@ export interface ReconcileResult {
    * Links whose cached open/closed mirror was absent or stale and got
    * repaired in place (no revision bump). Expect a large number on the
    * first tick after deploy — most links predate the `state` field — then
-   * near-zero steady state.
+   * near-zero steady state. Includes `directResolved`.
    */
   mirrorRepaired: number;
+  /**
+   * Subset of `mirrorRepaired` resolved by the one-by-one pass rather
+   * than the issue list — PR-numbered links and links older than the
+   * sync cursor, which the list structurally never returns.
+   */
+  directResolved: number;
   /**
    * Count of node-update errors hit during the state-sync loop. Surfaced
    * alongside `ingestErrored` so partial failures are observable.
@@ -243,6 +250,76 @@ export function computeStateUpdates(
   };
 }
 
+// ── Direct-resolve sweep for links the issue list never surfaces ──
+
+/**
+ * How many unresolved links to resolve per repo per tick. One GitHub API
+ * call each, so this is a deliberate trickle: the common case is zero
+ * candidates, and a repo with a real backlog drains over several ticks
+ * rather than spending its whole rate limit in one.
+ */
+const UNRESOLVED_LINK_BUDGET = 25;
+
+/**
+ * Resolve `state` for links the main loop structurally cannot reach.
+ *
+ * `fetchChangedIssues` drops pull requests (`!i.pull_request`), so a node
+ * linked to a PR number — GitHub shares one number space between issues
+ * and PRs — is never visited, and its `state` stays absent forever. The
+ * single-item endpoint has no such blind spot: `/issues/{n}` happily
+ * returns a PR, carrying both `state` and a `pull_request` marker.
+ *
+ * A 404 (deleted, transferred, or simply a typo'd number) leaves the link
+ * untouched, so it comes back as a candidate next tick. That's bounded
+ * waste — at most one call per permanently-dead link per tick — and it's
+ * logged, so a growing count is visible rather than silent.
+ */
+export async function resolveUnlistedLinks(
+  target: RepoTarget,
+  token: string,
+  budget: number = UNRESOLVED_LINK_BUDGET,
+): Promise<{ resolved: number; unresolvable: number }> {
+  const repoFullName = `${target.owner}/${target.repo}`;
+  const candidates = await nodeDb.findLinksMissingState(repoFullName, budget);
+  if (candidates.length === 0) return { resolved: 0, unresolvable: 0 };
+
+  let resolved = 0;
+  let unresolvable = 0;
+
+  for (const c of candidates) {
+    const number = parseInt(c.externalId.slice(repoFullName.length + 1), 10);
+    if (!Number.isFinite(number)) { unresolvable++; continue; }
+
+    try {
+      const item = await getGitHubIssue(target.owner, target.repo, number, token);
+      await nodeDb.setExternalLinkState(
+        c.nodeId,
+        c.externalId,
+        item.state === 'closed' ? 'closed' : 'open',
+        item.pull_request != null,
+      );
+      resolved++;
+    } catch (err) {
+      // 404 is the expected shape here (dead/typo'd reference), not an
+      // outage — don't let it fail the tick.
+      unresolvable++;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!/404/.test(msg)) {
+        console.warn(`[catchup] direct resolve failed for ${c.externalId}:`, msg);
+      }
+    }
+  }
+
+  if (unresolvable > 0) {
+    console.warn(
+      `[catchup] ${repoFullName}: ${unresolvable} link(s) could not be resolved ` +
+        `(deleted, transferred, or bad number) — they stay candidates next tick.`,
+    );
+  }
+
+  return { resolved, unresolvable };
+}
+
 // ── Per-repo reconcile ────────────────────────────────────────────
 
 async function findNodesByExternalIds(
@@ -327,7 +404,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -366,7 +443,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -441,6 +518,26 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         err instanceof Error ? err.message : err,
       );
     }
+  }
+
+  // ── Direct-resolve pass for links the list can't reach ───────────
+  // PR-numbered links and links to issues older than the sync cursor are
+  // never returned by `fetchChangedIssues`, so the loop above cannot
+  // repair them however many times it runs. Resolve a bounded slice of
+  // them one-by-one. Best-effort: a failure here must not fail the tick
+  // or hold the cursor, since the candidates are re-derived next time.
+  let directResolved = 0;
+  try {
+    const r = await resolveUnlistedLinks(target, token);
+    directResolved = r.resolved;
+    mirrorRepaired += r.resolved;
+  } catch (err) {
+    console.warn(
+      '[catchup] direct-resolve pass failed for',
+      repoLabel,
+      ':',
+      err instanceof Error ? err.message : err,
+    );
   }
 
   // ── Work-start backstop (#245) ───────────────────────────────────
@@ -557,6 +654,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     skipped,
     noTransition,
     mirrorRepaired,
+    directResolved,
     stateSyncErrored,
     ingested: ingestCreated,
     ingestErrored,
@@ -654,7 +752,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),

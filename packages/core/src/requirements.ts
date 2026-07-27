@@ -16,6 +16,7 @@ export interface GhLinkSource {
     externalId: string;
     url: string;
     state?: 'open' | 'closed';
+    isPullRequest?: boolean;
   }> | null;
   childrenIds?: string[] | null;
 }
@@ -27,6 +28,8 @@ export interface RequirementGhLink {
   inherited: boolean;
   /** Absent when the link predates the state field, or provider isn't synced */
   state?: 'open' | 'closed';
+  /** True when the linked number is a pull request, not an issue */
+  isPullRequest?: boolean;
 }
 
 export function collectRequirementGhLinks<T extends GhLinkSource>(
@@ -44,6 +47,7 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
         url: l.url,
         inherited: false,
         state: l.state,
+        isPullRequest: l.isPullRequest,
       });
     }
   }
@@ -65,6 +69,7 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
           url: l.url,
           inherited: true,
           state: l.state,
+          isPullRequest: l.isPullRequest,
         });
       }
     }
