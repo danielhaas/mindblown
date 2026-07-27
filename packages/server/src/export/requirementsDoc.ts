@@ -314,8 +314,8 @@ const LEGEND = [
  */
 function scopeLine(data: RegisterData): string {
   return data.filterLabel
-    ? `**Umfang:** ${data.total} der insgesamt ${data.totalAll} Anforderungen dieser Map — gefilterter Auszug (${data.filterLabel})`
-    : `**Umfang:** alle ${data.totalAll} Anforderungen dieser Map`;
+    ? `**Umfang:** ${data.total} der insgesamt ${data.totalAll} Anforderungen dieses Projekts — gefilterter Auszug (${data.filterLabel})`
+    : `**Umfang:** alle ${data.totalAll} Anforderungen dieses Projekts`;
 }
 
 function standLine(data: RegisterData): string {
