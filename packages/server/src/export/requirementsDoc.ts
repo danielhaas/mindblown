@@ -378,8 +378,9 @@ export function buildRegisterData(
 const LEGEND = [
   '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
   '**Release:** geplante Version · **↳** = aus den darunterliegenden Arbeitspaketen abgeleitet · «—» noch keiner Version zugeordnet',
-  '**Status:** Offen · In Umsetzung (mit Fortschritt) · **Gebaut** (Code fertig, noch niemand hat es geprüft) · **IT-geprüft** (Abnahme durch die Fachseite steht aus) · **Abgenommen** (Fachseite hat unterschrieben) · **Zurückgewiesen** (mit Begründung)',
-  '**Gebaut ist nicht abgenommen.** Offen/In Umsetzung/Gebaut leiten sich aus dem Projektfortschritt ab; IT-geprüft, Abgenommen und Zurückgewiesen entstehen ausschliesslich aus einem namentlichen Urteil.',
+  '**Status:** Offen · In Umsetzung (mit Code-Fortschritt) · **Gebaut** (Code fertig, noch niemand hat es geprüft) · **IT-geprüft** (Abnahme durch die Fachseite steht aus) · **Abgenommen** (Fachseite hat unterschrieben) · **Zurückgewiesen** (mit Begründung)',
+  '**Gebaut ist nicht abgenommen.** Offen/In Umsetzung/Gebaut leiten sich aus dem Code-Fortschritt ab; IT-geprüft, Abgenommen und Zurückgewiesen entstehen ausschliesslich aus einem namentlichen Urteil.',
+  '**Code-Fortschritt:** Anteil der erledigten Arbeitspakete unter einer Anforderung. Misst, wie viel Software gebaut wurde — **nicht**, ob das Ergebnis fachlich stimmt. 100 % bedeutet «Gebaut», nicht «Abgenommen».',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» ab Gebaut): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
   '**Abnahme:** zwei Stufen — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt · ✗ zurückgewiesen (mit Begründung) · ⚠ seit dem Urteil geändert',
 ];
@@ -414,7 +415,7 @@ export function renderMarkdown(data: RegisterData): string {
   L.push(`# ${data.title}`);
   L.push('');
   L.push(
-    `*Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.*`,
+    `*Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Code-Fortschritt und den erteilten Abnahmen, nicht manuell gepflegt.*`,
   );
   if (data.filterLabel) {
     L.push('');
@@ -517,7 +518,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
     new Paragraph({
       children: [
         new TextRun({
-          text: `Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Projektstand (Rollup), nicht manuell gepflegt.`,
+          text: `Generiert aus MindBlown am ${data.generatedAt} — Status abgeleitet aus dem Code-Fortschritt und den erteilten Abnahmen, nicht manuell gepflegt.`,
           italics: true,
           size: 18,
         }),
