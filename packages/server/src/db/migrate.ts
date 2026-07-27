@@ -840,6 +840,27 @@ export async function runMigrations(): Promise<void> {
   await db.execute(sql`
     ALTER TABLE requirement_acceptances ADD COLUMN IF NOT EXISTS comment TEXT
   `);
+  // gate: 'it' | 'business' — which question the verdict answers. Every
+  // pre-split row was a business sign-off (that was the only kind), so the
+  // DEFAULT backfills them correctly with no data migration.
+  await db.execute(sql`
+    ALTER TABLE requirement_acceptances
+      ADD COLUMN IF NOT EXISTS gate TEXT NOT NULL DEFAULT 'business'
+  `);
+  // Widen the active-verdict invariant to (node, user, gate): one live
+  // verdict per gate, so the same person can sign IT and Business
+  // separately. Create the wider index BEFORE dropping the narrower one —
+  // the other order leaves a window on every API restart where concurrent
+  // accepts are unprotected. The old index is stricter, so both coexist
+  // happily for the moment in between.
+  await db.execute(sql`
+    CREATE UNIQUE INDEX IF NOT EXISTS requirement_acceptances_active_gate_unique
+      ON requirement_acceptances (node_id, user_id, gate)
+      WHERE revoked_at IS NULL
+  `);
+  await db.execute(sql`
+    DROP INDEX IF EXISTS requirement_acceptances_active_unique
+  `);
 
   // ── Phase column (nodes.phase_id + maps.phases) ────────────────
   // maps.phases: PhaseDef[] jsonb — {id, name, position, color?,

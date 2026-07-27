@@ -76,6 +76,8 @@ export interface AcceptanceInfo {
   acceptedAt: string;
   progressAtAcceptance: number;
   nodeRevisionAtAcceptance: number;
+  /** Which gate went stale. Absent on pre-split rows, which were business. */
+  gate?: 'it' | 'business';
 }
 
 export interface LintOptions {
@@ -416,7 +418,9 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       .map(({ a, node }) =>
         finding(
           node,
-          `accepted by ${a.userName} on ${a.acceptedAt.slice(0, 10)} at ${a.progressAtAcceptance.toFixed(0)}% (rev ${a.nodeRevisionAtAcceptance}) — now ${progressOf(node).toFixed(0)}% (rev ${node.revision})`,
+          // Name the gate: with two verdicts per node, "re-review with the
+          // acceptor" is only actionable if you know which one went stale.
+          `${a.gate ?? 'business'} gate signed by ${a.userName} on ${a.acceptedAt.slice(0, 10)} at ${a.progressAtAcceptance.toFixed(0)}% (rev ${a.nodeRevisionAtAcceptance}) — now ${progressOf(node).toFixed(0)}% (rev ${node.revision})`,
         ),
       ),
     skipped: opts.acceptances == null ? 'acceptance data unavailable' : undefined,

@@ -5,7 +5,16 @@ import type {
   NodeId,
   Version,
 } from '@mindblown/core';
-import { compareVersions } from '@mindblown/core';
+import {
+  compareVersions,
+  requirementStage,
+  stageCounts,
+  BUILT_THRESHOLD,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  STAGE_COLOR,
+} from '@mindblown/core';
+import type { RequirementGate, RequirementStage } from '@mindblown/core';
 import {
   Document,
   HeadingLevel,
@@ -34,6 +43,8 @@ export interface AcceptanceInfo {
   decision?: 'accepted' | 'rejected';
   /** Reviewer comment; always present on rejections. */
   comment?: string | null;
+  /** Gate answered — optional so pre-split callers/rows read as 'business'. */
+  gate?: RequirementGate;
 }
 
 /**
@@ -57,14 +68,17 @@ export interface RegisterRow {
   prio: string;
   /** Version name, "↳ V2" when inherited from the work below, "—" when unscheduled. */
   release: string;
+  /** Derived lifecycle stage — progress rollup folded with the sign-off verdicts. */
+  stage: RequirementStage;
+  /** Stage label, e.g. "Gebaut". */
   status: string;
-  /** Status with the derived percentage on partial rows, e.g. "Teilweise · 42 %". */
+  /** Stage with the derived percentage while in progress, e.g. "In Umsetzung · 42 %". */
   statusDetail: string;
   /** Derived progress 0–100, rounded — feeds the docx progress bar. */
   progress: number;
   aufwand: string;
   rest: string;
-  /** e.g. "D. Haas ✓ 15.07." — one entry per active acceptance, ⚠-suffixed when stale. */
+  /** e.g. "IT: D. Haas ✓ 15.07." — one entry per active verdict, ⚠-suffixed when stale. */
   abnahme: string[];
 }
 
@@ -76,7 +90,12 @@ export interface RegisterData {
   totalAll: number;
   /** Human-readable description of the active filter, null when unfiltered. */
   filterLabel: string | null;
-  counts: { Umgesetzt: number; Teilweise: number; Offen: number };
+  /**
+   * Requirements per lifecycle stage. Replaces the old
+   * {Umgesetzt, Teilweise, Offen} triple, which could only ever describe
+   * how much code had landed.
+   */
+  counts: Record<RequirementStage, number>;
   chapters: Array<{ name: string; rows: RegisterRow[] }>;
 }
 
@@ -86,20 +105,48 @@ export interface RegisterData {
  * `filteredRows` predicate one for one.
  */
 export interface RegisterFilter {
-  status?: 'open' | 'partial' | 'done';
+  /**
+   * A lifecycle stage, or one of the legacy progress buckets
+   * ('partial' / 'done') that `?status=` links and older MCP calls still
+   * send. Legacy values keep filtering on progress alone.
+   */
+  status?: RequirementStage | 'partial' | 'done';
   priority?: 'must' | 'should' | 'could';
   /** A version id, or 'none' for "no release anywhere in the subtree". */
   release?: string;
   /** cumulative = due by this release or earlier; exact = only this release. */
   releaseMode?: 'cumulative' | 'exact';
   hideDone?: boolean;
-  acceptance?: 'none' | 'mine-open' | 'rejected';
+  acceptance?: AcceptanceFilter;
   /** Needed by acceptance: 'mine-open' — whose verdict counts as "mine". */
   currentUserId?: string | null;
 }
 
+/**
+ * 'it-open' / 'business-open' are the review queues: what is built enough
+ * to judge but still waiting on that gate's verdict.
+ */
+export type AcceptanceFilter =
+  | 'none'
+  | 'mine-open'
+  | 'rejected'
+  | 'it-open'
+  | 'business-open';
+
 const PRIO: Record<string, string> = { must: 'Muss', should: 'Soll', could: 'Kann' };
-const STATUS_DE: Record<string, string> = { open: 'Offen', partial: 'Teilweise', done: 'Umgesetzt' };
+
+/** Legacy progress buckets, still accepted by the status filter. */
+const LEGACY_STATUS_DE: Record<string, string> = {
+  partial: 'Teilweise',
+  done: 'Umgesetzt',
+};
+
+function statusFilterLabel(status: string): string {
+  return LEGACY_STATUS_DE[status] ?? STAGE_LABEL[status as RequirementStage] ?? status;
+}
+
+/** Gate prefix in the Abnahme cell — short, because the column is narrow. */
+const GATE_SHORT: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
@@ -129,9 +176,8 @@ export function buildRegisterData(
     n.childrenIds.length > 0
       ? (computed.get(n.id)?.computedProgress ?? 0)
       : (n.percentComplete ?? 0);
-  const statusEnOf = (p: number): 'open' | 'partial' | 'done' =>
-    p >= 99.5 ? 'done' : p > 0 ? 'partial' : 'open';
-  const statusOf = (p: number): string => STATUS_DE[statusEnOf(p)];
+  const stageOf = (n: CoreNode): RequirementStage =>
+    requirementStage(progressOf(n), accByNode.get(n.id) ?? []);
 
   // A requirement is usually scheduled through its children, not directly —
   // and can be split across releases, so this is a full descendant walk.
@@ -164,9 +210,22 @@ export function buildRegisterData(
   );
 
   const matchesFilter = (n: CoreNode): boolean => {
-    const st = statusEnOf(progressOf(n));
-    if (filter.hideDone && st === 'done') return false;
-    if (filter.status && st !== filter.status) return false;
+    const p = progressOf(n);
+    const stage = stageOf(n);
+    // "Hide done" hides what is finished from the plan's point of view —
+    // built or better. A rejected requirement is never hidden: it is the
+    // one row that most needs to stay on screen.
+    const isBuiltOrBeyond = stage !== 'rejected' && p >= BUILT_THRESHOLD;
+    if (filter.hideDone && isBuiltOrBeyond) return false;
+    if (filter.status) {
+      if (filter.status === 'done') {
+        if (!isBuiltOrBeyond) return false;
+      } else if (filter.status === 'partial') {
+        if (!(p > 0 && p < BUILT_THRESHOLD)) return false;
+      } else if (stage !== filter.status) {
+        return false;
+      }
+    }
     if (filter.priority && n.requirementPriority !== filter.priority) return false;
     if (filter.release === 'none') {
       // "No release" means nothing below it is scheduled either.
@@ -202,6 +261,17 @@ export function buildRegisterData(
       if (filter.acceptance === 'rejected' && !accs.some((a) => a.decision === 'rejected')) {
         return false;
       }
+      // The two review queues: only what is far enough along to judge.
+      // Listing 0 %-progress requirements as "IT-Prüfung offen" would bury
+      // the handful that are actually waiting.
+      if (filter.acceptance === 'it-open') {
+        if (!isBuiltOrBeyond) return false;
+        if (accs.some((a) => (a.gate ?? 'business') === 'it')) return false;
+      }
+      if (filter.acceptance === 'business-open') {
+        if (!isBuiltOrBeyond) return false;
+        if (accs.some((a) => (a.gate ?? 'business') === 'business')) return false;
+      }
     }
     return true;
   };
@@ -217,12 +287,14 @@ export function buildRegisterData(
       `Release: ${filter.releaseMode === 'exact' ? 'nur' : 'bis'} ${versionName.get(filter.release) ?? filter.release}`,
     );
   }
-  if (filter.status) filterParts.push(`Status: ${STATUS_DE[filter.status]}`);
-  if (filter.hideDone) filterParts.push('ohne Umgesetzte');
+  if (filter.status) filterParts.push(`Status: ${statusFilterLabel(filter.status)}`);
+  if (filter.hideDone) filterParts.push('ohne Gebaute');
   if (filter.priority) filterParts.push(`Priorität: ${PRIO[filter.priority]}`);
   if (filter.acceptance === 'none') filterParts.push('Abnahme: ohne Urteil');
   if (filter.acceptance === 'mine-open') filterParts.push('Abnahme: eigenes Urteil ausstehend');
-  if (filter.acceptance === 'rejected') filterParts.push('Abnahme: abgelehnt');
+  if (filter.acceptance === 'rejected') filterParts.push('Abnahme: zurückgewiesen');
+  if (filter.acceptance === 'it-open') filterParts.push('IT-Prüfung offen');
+  if (filter.acceptance === 'business-open') filterParts.push('Abnahme offen');
   const filterLabel = filterParts.length > 0 ? filterParts.join(' · ') : null;
 
   // Depth-first order for chapter (= parent) sorting.
@@ -242,8 +314,7 @@ export function buildRegisterData(
     (chapters.get(key) ?? chapters.set(key, []).get(key)!).push(n);
   }
 
-  const counts = { Umgesetzt: 0, Teilweise: 0, Offen: 0 };
-  for (const n of requirements) counts[statusOf(progressOf(n)) as keyof typeof counts]++;
+  const counts = stageCounts(requirements.map(stageOf));
 
   const orderedChapters = [...chapters.entries()]
     .sort((a, b) => (dfs.get(a[0]) ?? Infinity) - (dfs.get(b[0]) ?? Infinity))
@@ -257,29 +328,35 @@ export function buildRegisterData(
         )
         .map((n) => {
           const p = progressOf(n);
-          const status = statusOf(p);
+          const stage = stageOf(n);
+          const status = STAGE_LABEL[stage];
           const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
           const abnahme = (accByNode.get(n.id) ?? []).map((a) => {
             const d = a.acceptedAt.slice(5, 10).split('-').reverse().join('.');
             const stale = acceptanceIsStale(a, p, n.revision) ? ' ⚠' : '';
+            // Prefix the gate: two ✓ from the same person on the same row
+            // are otherwise indistinguishable.
+            const who = `${GATE_SHORT[a.gate ?? 'business']}: ${a.userName}`;
             if (a.decision === 'rejected') {
               const why = a.comment ? ` («${truncate(a.comment, 60)}»)` : '';
-              return `${a.userName} ✗ ${d}.${why}${stale}`;
+              return `${who} ✗ ${d}.${why}${stale}`;
             }
-            return `${a.userName} ✓ ${d}.${stale}`;
+            return `${who} ✓ ${d}.${stale}`;
           });
           return {
             id: n.requirementId ?? '',
             text: (n.requirementText ?? n.text).replace(/\n/g, ' '),
             prio: PRIO[n.requirementPriority ?? ''] ?? '—',
             release: releaseOf(n),
+            stage,
             status,
-            // "Teilweise" alone reads the same at 5 % and 95 % — the number
-            // is the whole point of a derived status.
-            statusDetail: status === 'Teilweise' ? `${status} · ${Math.round(p)} %` : status,
+            // "In Umsetzung" alone reads the same at 5 % and 95 % — the
+            // number is the whole point of a derived status. Past the
+            // build line the percentage says nothing the stage doesn't.
+            statusDetail: stage === 'in_progress' ? `${status} · ${Math.round(p)} %` : status,
             progress: Math.round(p),
             aufwand: sizeOf(effort),
-            rest: status === 'Umgesetzt' ? '—' : sizeOf(effort * (1 - p / 100)),
+            rest: p >= BUILT_THRESHOLD ? '—' : sizeOf(effort * (1 - p / 100)),
             abnahme,
           };
         }),
@@ -301,9 +378,10 @@ export function buildRegisterData(
 const LEGEND = [
   '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
   '**Release:** geplante Version · **↳** = aus den darunterliegenden Arbeitspaketen abgeleitet · «—» noch keiner Version zugeordnet',
-  '**Status:** Umgesetzt · Teilweise (mit Fortschritt) · Offen (abgeleitet: 100 % / >0 % / 0 % Fortschritt)',
-  '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» bei Umgesetzt): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
-  '**Abnahme:** ✓ abgenommen · ✗ abgelehnt (mit Begründung) · ⚠ seit dem Urteil geändert',
+  '**Status:** Offen · In Umsetzung (mit Fortschritt) · **Gebaut** (Code fertig, noch niemand hat es geprüft) · **IT-geprüft** (Abnahme durch die Fachseite steht aus) · **Abgenommen** (Fachseite hat unterschrieben) · **Zurückgewiesen** (mit Begründung)',
+  '**Gebaut ist nicht abgenommen.** Offen/In Umsetzung/Gebaut leiten sich aus dem Projektfortschritt ab; IT-geprüft, Abgenommen und Zurückgewiesen entstehen ausschliesslich aus einem namentlichen Urteil.',
+  '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» ab Gebaut): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
+  '**Abnahme:** zwei Stufen — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt · ✗ zurückgewiesen (mit Begründung) · ⚠ seit dem Urteil geändert',
 ];
 
 /**
@@ -318,9 +396,17 @@ function scopeLine(data: RegisterData): string {
     : `**Umfang:** alle ${data.totalAll} Anforderungen dieses Projekts`;
 }
 
+/**
+ * The funnel, not a single "done" number. Stages with a count of 0 are
+ * dropped so the line stays readable — except the first: "0 Abgenommen"
+ * is precisely the fact a reader must not be able to miss.
+ */
 function standLine(data: RegisterData): string {
   const subject = data.total === 1 ? 'dieser Anforderung' : `dieser ${data.total} Anforderungen`;
-  return `**Stand ${subject}:** ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`;
+  const parts = STAGE_ORDER.filter(
+    (s) => data.counts[s] > 0 || s === 'accepted',
+  ).map((s) => `${data.counts[s]} ${STAGE_LABEL[s]}`);
+  return `**Stand ${subject}:** ${parts.join(' · ')}`;
 }
 
 export function renderMarkdown(data: RegisterData): string {
@@ -362,11 +448,14 @@ export function renderMarkdown(data: RegisterData): string {
 
 // ── DOCX renderer ─────────────────────────────────────────────────
 
-const STATUS_FILL: Record<string, string> = {
-  Umgesetzt: 'd1fae5',
-  Teilweise: 'fef3c7',
-  Offen: 'f1f5f9',
-};
+/**
+ * Cell shading per stage, from the shared palette. Green belongs to the
+ * two signed-off stages only — leaving "Gebaut" green would have made the
+ * rename cosmetic, since a skimming reader goes by the colour.
+ */
+const STATUS_FILL: Record<RequirementStage, string> = Object.fromEntries(
+  STAGE_ORDER.map((s) => [s, STAGE_COLOR[s].bg.replace('#', '')]),
+) as Record<RequirementStage, string>;
 
 /** Subtle alternate-row fill, mirroring the register UI's hover tone. */
 const ZEBRA_FILL = 'f8fafc';
@@ -472,7 +561,8 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
   );
 
   data.chapters.forEach((ch, i) => {
-    const doneInChapter = ch.rows.filter((r) => r.status === 'Umgesetzt').length;
+    const builtInChapter = ch.rows.filter((r) => r.progress >= BUILT_THRESHOLD).length;
+    const acceptedInChapter = ch.rows.filter((r) => r.stage === 'accepted').length;
     children.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_1,
@@ -481,7 +571,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
           new TextRun(`${i + 1}. ${ch.name}`),
           // Same at-a-glance counts as the register UI's group header rows.
           new TextRun({
-            text: `   ${ch.rows.length} Anforderung${ch.rows.length === 1 ? '' : 'en'} · ${doneInChapter} umgesetzt`,
+            text: `   ${ch.rows.length} Anforderung${ch.rows.length === 1 ? '' : 'en'} · ${builtInChapter} gebaut · ${acceptedInChapter} abgenommen`,
             bold: false,
             size: 18,
             color: '64748b',
@@ -512,7 +602,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
           cell(r.text, { width: COL_PCT[1], fill: zebra }),
           cell(r.prio, { width: COL_PCT[2], fill: zebra, bold: r.prio === 'Muss' }),
           cell(r.release, { width: COL_PCT[3], fill: zebra }),
-          cell(r.statusDetail, { fill: STATUS_FILL[r.status], width: COL_PCT[4] }),
+          cell(r.statusDetail, { fill: STATUS_FILL[r.stage], width: COL_PCT[4] }),
           cell(bar.text, { width: COL_PCT[5], fill: zebra, color: bar.color }),
           cell(r.aufwand, { width: COL_PCT[6], fill: zebra }),
           cell(r.rest, { width: COL_PCT[7], fill: zebra }),

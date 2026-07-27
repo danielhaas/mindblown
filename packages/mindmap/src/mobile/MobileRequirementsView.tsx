@@ -1,26 +1,22 @@
 import { useMemo, useState } from 'react';
-import type { MindMap, Version } from '@mindblown/core';
-import type { NodeWithComputed } from '../api.js';
+import {
+  requirementStage,
+  stageCounts,
+  BUILT_THRESHOLD,
+  STAGE_LABEL,
+  STAGE_COLOR,
+} from '@mindblown/core';
+import type { MindMap, Version, RequirementStage } from '@mindblown/core';
+import type { AcceptanceRow, NodeWithComputed } from '../api.js';
 
-// Requirement status is never stored — always derived from the progress
-// rollup, mirroring the desktop RequirementsView.
+// The stage is never stored — derived from the progress rollup folded
+// with the sign-off verdicts, mirroring the desktop RequirementsView.
+// "Gebaut" ≠ "Abgenommen" here too: same words, same colours, one source
+// in @mindblown/core.
 
-type ReqStatus = 'open' | 'partial' | 'done';
-// 'todo' is the "hide done" button — open + partial in one tap, which is
-// what you want on a phone far more often than any single status.
-type Filter = 'all' | 'todo' | ReqStatus;
-
-const STATUS_LABEL: Record<ReqStatus, string> = {
-  done: 'Done',
-  partial: 'Partial',
-  open: 'Open',
-};
-
-const STATUS_COLOR: Record<ReqStatus, { bg: string; fg: string }> = {
-  done: { bg: '#d1fae5', fg: '#065f46' },
-  partial: { bg: '#fef3c7', fg: '#92400e' },
-  open: { bg: '#f1f5f9', fg: '#475569' },
-};
+// 'todo' is the "hide built" button — everything not yet built in one
+// tap, which is what you want on a phone more often than any single stage.
+type Filter = 'all' | 'todo' | RequirementStage;
 
 const PRIORITY_LABEL: Record<string, string> = {
   must: 'Must',
@@ -32,12 +28,15 @@ interface Props {
   nodes: NodeWithComputed[];
   map: MindMap;
   versions: Version[];
+  acceptances: AcceptanceRow[];
   onSelect: (nodeId: string) => void;
 }
 
 interface ReqRow {
   node: NodeWithComputed;
-  status: ReqStatus;
+  stage: RequirementStage;
+  /** Progress alone — drives the "todo" filter and the % suffix. */
+  built: boolean;
   chapterText: string;
   /** Release label; null when neither the requirement nor its subtree is scheduled. */
   releaseLabel: string | null;
@@ -45,16 +44,24 @@ interface ReqRow {
   releaseInherited: boolean;
 }
 
-function statusOf(progress: number): ReqStatus {
-  return progress >= 100 ? 'done' : progress > 0 ? 'partial' : 'open';
-}
-
-export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props) {
+export function MobileRequirementsView({
+  nodes,
+  map,
+  versions,
+  acceptances,
+  onSelect,
+}: Props) {
   const [filter, setFilter] = useState<Filter>('all');
 
   const rows = useMemo<ReqRow[]>(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const versionName = new Map(versions.map((v) => [v.id, v.name]));
+    const accByNode = new Map<string, AcceptanceRow[]>();
+    for (const a of acceptances) {
+      const list = accByNode.get(a.nodeId) ?? [];
+      list.push(a);
+      accByNode.set(a.nodeId, list);
+    }
 
     // Requirements are usually tagged only on the work below them, so an
     // untagged one falls back to what its subtree carries (desktop parity).
@@ -75,9 +82,11 @@ export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props
       .map((n) => {
         const parent = n.parentId ? byId.get(n.parentId) : undefined;
         const below = n.versionId ? [] : descendantVersions(n.id);
+        const progress = n.computedProgress ?? 0;
         return {
           node: n,
-          status: statusOf(n.computedProgress ?? 0),
+          stage: requirementStage(progress, accByNode.get(n.id) ?? []),
+          built: progress >= BUILT_THRESHOLD,
           chapterText: parent && parent.id !== map.rootNodeId ? parent.text : '',
           releaseLabel: n.versionId
             ? (versionName.get(n.versionId) ?? '?')
@@ -94,23 +103,24 @@ export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props
           numeric: true,
         }),
       );
-  }, [nodes, map.rootNodeId, versions]);
+  }, [nodes, map.rootNodeId, versions, acceptances]);
 
-  const counts = useMemo(() => {
-    const c = { all: rows.length, todo: 0, open: 0, partial: 0, done: 0 };
-    for (const r of rows) {
-      c[r.status] += 1;
-      if (r.status !== 'done') c.todo += 1;
-    }
-    return c;
-  }, [rows]);
+  const counts = useMemo(
+    () => ({
+      ...stageCounts(rows.map((r) => r.stage)),
+      all: rows.length,
+      todo: rows.filter((r) => !r.built).length,
+      built: rows.filter((r) => r.built).length,
+    }),
+    [rows],
+  );
 
   const filtered =
     filter === 'all'
       ? rows
       : filter === 'todo'
-        ? rows.filter((r) => r.status !== 'done')
-        : rows.filter((r) => r.status === filter);
+        ? rows.filter((r) => !r.built)
+        : rows.filter((r) => r.stage === filter);
 
   if (rows.length === 0) {
     return (
@@ -125,18 +135,27 @@ export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props
 
   return (
     <div className="mb-body" style={{ paddingTop: 8 }}>
+      {/* Lead with the accepted count — the whole point of the stage split
+          is that "gebaut" must not read as the finish line. */}
+      <div style={{ padding: '0 12px 8px', fontSize: 12, color: '#64748b' }}>
+        <b style={{ fontSize: 17, color: '#047857' }}>{counts.accepted}</b> von {rows.length}{' '}
+        abgenommen · {counts.built} gebaut
+      </div>
       <div className="mb-filter-row">
-        {(['all', 'todo', 'open', 'partial', 'done'] as const).map((f) => (
-          <button
-            key={f}
-            className="mb-filter-chip"
-            aria-pressed={filter === f}
-            onClick={() => setFilter(f)}
-          >
-            {f === 'all' ? 'All' : f === 'todo' ? 'Hide done' : STATUS_LABEL[f]}
-            <span className="mb-filter-count">{counts[f]}</span>
-          </button>
-        ))}
+        {(['all', 'todo', 'accepted', 'it_verified', 'built', 'in_progress', 'open', 'rejected'] as const)
+          // Rejected is a chip only when there is something to show.
+          .filter((f) => f !== 'rejected' || counts.rejected > 0)
+          .map((f) => (
+            <button
+              key={f}
+              className="mb-filter-chip"
+              aria-pressed={filter === f}
+              onClick={() => setFilter(f)}
+            >
+              {f === 'all' ? 'Alle' : f === 'todo' ? 'Offene Arbeit' : STAGE_LABEL[f]}
+              <span className="mb-filter-count">{counts[f]}</span>
+            </button>
+          ))}
       </div>
 
       {filtered.length === 0 && (
@@ -145,8 +164,8 @@ export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props
         </div>
       )}
 
-      {filtered.map(({ node, status, chapterText, releaseLabel, releaseInherited }) => {
-        const sc = STATUS_COLOR[status];
+      {filtered.map(({ node, stage, chapterText, releaseLabel, releaseInherited }) => {
+        const sc = STAGE_COLOR[stage];
         const pct = Math.round(node.computedProgress ?? 0);
         return (
           <button key={node.id} className="mb-req-card" onClick={() => onSelect(node.id)}>
@@ -156,8 +175,8 @@ export function MobileRequirementsView({ nodes, map, versions, onSelect }: Props
                 className="mb-status-pill"
                 style={{ background: sc.bg, color: sc.fg, borderColor: sc.bg }}
               >
-                {STATUS_LABEL[status]}
-                {status === 'partial' ? ` · ${pct}%` : ''}
+                {STAGE_LABEL[stage]}
+                {stage === 'in_progress' ? ` · ${pct}%` : ''}
               </span>
               {node.requirementPriority && (
                 <span className="mb-req-priority">

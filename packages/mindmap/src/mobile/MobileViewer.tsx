@@ -72,12 +72,16 @@ export function MobileViewer({ map }: Props) {
   // don't change under an editing session — fetched once per map, not with
   // the debounced node reload.
   const [versions, setVersions] = useState<Version[]>([]);
+  // Sign-off verdicts, for the Requirements tab's derived stage. Same
+  // deal as versions: one small fetch per map, not per node reload.
+  const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
 
   useEffect(() => {
     let cancelled = false;
     setDetail(null);
     setError(null);
     setVersions([]);
+    setAcceptances([]);
     api
       .fetchVersions(map.id)
       .then((v) => {
@@ -85,6 +89,15 @@ export function MobileViewer({ map }: Props) {
       })
       .catch(() => {
         // Release chips just stay empty — not worth failing the map load over.
+      });
+    api
+      .fetchAcceptances(map.id)
+      .then((r) => {
+        if (!cancelled) setAcceptances(r.acceptances);
+      })
+      .catch(() => {
+        // Without verdicts the register degrades to "Gebaut" at 100 % —
+        // under-claiming, which is the safe direction to fail in.
       });
     api
       .fetchMap(map.id, { omit: OMIT_FIELDS })
@@ -253,6 +266,7 @@ export function MobileViewer({ map }: Props) {
               nodes={nodes}
               map={detail.map}
               versions={versions}
+              acceptances={acceptances}
               onSelect={setSelectedId}
             />
           )}
