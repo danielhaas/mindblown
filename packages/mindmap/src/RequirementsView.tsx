@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { compareVersions, collectRequirementGhLinks } from '@mindblown/core';
 import type { Node, Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { linkColor, linkWeight } from './ghLinkStyle.js';
 import { REQ_VERSION_NONE } from './urlState.js';
 import * as api from './api.js';
 
@@ -1029,8 +1030,19 @@ function ChapterGroup({
                     onClick={(e) => e.stopPropagation()}
                     title={titleParts.length > 0 ? titleParts.join(' — ') : undefined}
                     style={{
-                      color: l.inherited ? '#93c5fd' : '#3b82f6',
-                      opacity: l.state === 'closed' ? 0.5 : 1,
+                      // Two signals, one channel. Colour family = issue
+                      // state, shade within it = own vs inherited.
+                      //
+                      // Opacity used to carry "closed", back when the
+                      // `state` field was almost never written and so
+                      // nothing actually dimmed. Once it was populated
+                      // ~90% of links turned out to be closed, which made
+                      // dimming the default and stacked it with the pale
+                      // inherited blue into a near-invisible tier. Marking
+                      // the majority is backwards — open is the exception
+                      // worth the eye, so it gets the colour and weight.
+                      color: linkColor(l.state, l.inherited),
+                      fontWeight: linkWeight(l.state),
                       textDecoration: 'none',
                       marginLeft: i > 0 ? 6 : 0,
                     }}
@@ -1276,6 +1288,7 @@ const numericCellStyle: React.CSSProperties = {
 
 /** Issue links shown before collapsing the rest into a "+N" hint. */
 const GH_LINK_CAP = 2;
+
 
 const groupHeaderStyle: React.CSSProperties = {
   padding: '10px 16px',
