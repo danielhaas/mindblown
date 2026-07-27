@@ -250,17 +250,23 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     );
   });
 
-  it('marks the rendered Markdown as a filtered Auszug with X von Y', () => {
+  it('marks the rendered Markdown as a filtered Auszug and separates scope from Stand', () => {
     const md = renderMarkdown(buildF({ release: 'none' }));
     expect(md).toContain('Gefilterter Auszug');
     expect(md).toContain('Release: ohne Zuordnung');
-    expect(md).toContain('**Stand:** 1 von 4 Anforderungen');
+    expect(md).toContain(
+      '**Umfang:** 1 der insgesamt 4 Anforderungen dieser Map — gefilterter Auszug (Release: ohne Zuordnung)',
+    );
+    expect(md).toContain('**Stand dieser Anforderung:**');
   });
 
   it('renders an unfiltered document without the Auszug banner', () => {
     const md = renderMarkdown(buildF({}));
     expect(md).not.toContain('Gefilterter Auszug');
-    expect(md).toContain('**Stand:** 4 Anforderungen');
+    expect(md).toContain('**Umfang:** alle 4 Anforderungen dieser Map');
+    expect(md).toContain(
+      '**Stand dieser 4 Anforderungen:** 1 Umgesetzt · 1 Teilweise · 2 Offen',
+    );
   });
 });
 
