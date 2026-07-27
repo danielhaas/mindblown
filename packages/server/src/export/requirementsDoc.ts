@@ -392,11 +392,11 @@ export function buildRegisterData(
 // ── Markdown renderer ─────────────────────────────────────────────
 
 const LEGEND = [
-  '**Priorität:** Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
+  '**Prio** (Priorität): Muss — Kernfunktion (MVP) · Soll — wichtig, nicht MVP-blockierend · Kann — wünschenswert',
   '**Release:** geplante Version · **↳** = aus den darunterliegenden Arbeitspaketen abgeleitet · «—» noch keiner Version zugeordnet',
   '**Status:** Offen · In Umsetzung (mit Code-Fortschritt) · **Gebaut** (Code fertig, noch niemand hat es geprüft) · **IT-geprüft** (Abnahme durch die Fachseite steht aus) · **Abgenommen** (Fachseite hat unterschrieben) · **Zurückgewiesen** (mit Begründung)',
   '**Gebaut ist nicht abgenommen.** Offen/In Umsetzung/Gebaut leiten sich aus dem Code-Fortschritt ab; IT-geprüft, Abgenommen und Zurückgewiesen entstehen ausschliesslich aus einem namentlichen Urteil.',
-  '**Code-Fortschritt:** Anteil der erledigten Arbeitspakete unter einer Anforderung. Misst, wie viel Software gebaut wurde — **nicht**, ob das Ergebnis fachlich stimmt. 100 % bedeutet «Gebaut», nicht «Abgenommen».',
+  '**Code %** (Code-Fortschritt): Anteil der erledigten Arbeitspakete unter einer Anforderung. Misst, wie viel Software gebaut wurde — **nicht**, ob das Ergebnis fachlich stimmt. 100 % bedeutet «Gebaut», nicht «Abgenommen».',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» ab Gebaut): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
   '**Abnahme:** zwei Stufen, je eine Zeile — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt, mit Name und Datum · ✗ zurückgewiesen (mit Begründung) · «offen» = gebaut, aber diese Unterschrift fehlt noch · ⚠ seit dem Urteil geändert · «—» noch nicht so weit',
 ];
@@ -477,20 +477,25 @@ const STATUS_FILL: Record<RequirementStage, string> = Object.fromEntries(
 /** Subtle alternate-row fill, mirroring the register UI's hover tone. */
 const ZEBRA_FILL = 'f8fafc';
 
-// Column widths as % of table width: ID, Anforderung, Priorität, Release,
-// Status, Code-Fortschritt, Aufwand, Rest, Abnahme. LibreOffice ignores
-// percentage widths that only sit on header cells — the table needs an
-// explicit grid (columnWidths, in DXA) and fixed layout, and every cell
-// must carry its column width. Code-Fortschritt is sized so bar +
-// percentage stay on ONE line and the (longer) header doesn't wrap.
+// Column widths as % of table width: ID, Anforderung, Prio, Release,
+// Status, Code %, Aufwand, Rest, Abnahme. LibreOffice ignores percentage
+// widths that only sit on header cells — the table needs an explicit grid
+// (columnWidths, in DXA) and fixed layout, and every cell must carry its
+// column width.
 //
-// Headers are BOLD, which is what makes them wrap a character earlier than
-// a width calculation suggests — so the narrow ones get real slack rather
-// than a hairline fit: "Aufwand" 6 → 8, "Code-Fortschritt" 14 → 15,
-// "Abnahme" 12 → 14 (it now carries a line per gate, "Business: offen").
-// The room comes from Anforderung: body prose wrapping is normal and
-// expected, a wrapped column HEADER just looks broken.
-const COL_PCT = [7, 26, 6, 8, 10, 15, 8, 6, 14];
+// Widening the short columns to stop their BOLD headers wrapping squeezed
+// Anforderung — the one column carrying real prose — down to a third of
+// the page. So the fix runs the other way now: shorten the headers, then
+// take the width back.
+//
+//   Priorität → Prio   (values are Muss/Soll/Kann; the header was the only
+//                       thing needing 9 characters, and it wrapped too)
+//   Code-Fortschritt → Code %   (the legend spells it out in full)
+//
+// Status keeps a modest 8: "Zurückgewiesen" wraps there, but wrapped VALUES
+// are normal — it was the headers that looked broken. Code % is sized so
+// the bar and the percentage stay on one line (see progressBar).
+const COL_PCT = [6, 40, 5, 7, 8, 10, 7, 5, 12];
 // Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
 const PAGE_MARGIN = 1134;
 const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
@@ -505,9 +510,13 @@ const COL_DXA = COL_PCT.map((p) => Math.round((TABLE_DXA * p) / 100));
  */
 function progressBar(percent: number): { text: string; color: string } {
   const clamped = Math.min(100, Math.max(0, percent));
-  const filled = Math.round(clamped / 12.5);
+  // Five segments, not eight: the column gave width back to Anforderung,
+  // and the bar plus its percentage are one non-breaking run — too narrow
+  // a column would overflow it rather than wrap it. 20 % per block still
+  // reads fine at a glance.
+  const filled = Math.round(clamped / 20);
   return {
-    text: `${'█'.repeat(filled)}${'░'.repeat(8 - filled)} ${clamped} %`,
+    text: `${'█'.repeat(filled)}${'░'.repeat(5 - filled)} ${clamped} %`,
     color: clamped >= 100 ? '10b981' : clamped > 0 ? '3b82f6' : '94a3b8',
   };
 }
