@@ -255,7 +255,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     expect(md).toContain('Gefilterter Auszug');
     expect(md).toContain('Release: ohne Zuordnung');
     expect(md).toContain(
-      '**Umfang:** 1 der insgesamt 4 Anforderungen dieser Map — gefilterter Auszug (Release: ohne Zuordnung)',
+      '**Umfang:** 1 der insgesamt 4 Anforderungen dieses Projekts — gefilterter Auszug (Release: ohne Zuordnung)',
     );
     expect(md).toContain('**Stand dieser Anforderung:**');
   });
@@ -263,7 +263,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
   it('renders an unfiltered document without the Auszug banner', () => {
     const md = renderMarkdown(buildF({}));
     expect(md).not.toContain('Gefilterter Auszug');
-    expect(md).toContain('**Umfang:** alle 4 Anforderungen dieser Map');
+    expect(md).toContain('**Umfang:** alle 4 Anforderungen dieses Projekts');
     expect(md).toContain(
       '**Stand dieser 4 Anforderungen:** 1 Umgesetzt · 1 Teilweise · 2 Offen',
     );
