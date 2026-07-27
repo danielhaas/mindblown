@@ -638,17 +638,32 @@ export function RequirementsView() {
       ) : (
         <div style={{ overflow: 'auto', flex: 1 }}>
           <table style={tableStyle}>
+            {/* Fixed layout + colgroup: without it the browser sizes columns
+                from their widest cell, so changing the release filter (which
+                changes which selects/chips/links are on screen) reshuffles
+                every column width. */}
+            <colgroup>
+              <col style={{ width: 100 }} />
+              <col /> {/* Requirement — absorbs the remaining width */}
+              <col style={{ width: 90 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 90 }} />
+              <col style={{ width: 140 }} />
+              <col style={{ width: 120 }} />
+              <col style={{ width: 145 }} />
+              <col style={{ width: 180 }} />
+            </colgroup>
             <thead>
               <tr>
-                <th style={{ ...thStyle, width: 110 }}>ID</th>
+                <th style={thStyle}>ID</th>
                 <th style={thStyle}>Requirement</th>
-                <th style={{ ...thStyle, width: 80 }}>Priority</th>
-                <th style={{ ...thStyle, width: 110 }}>Release</th>
-                <th style={{ ...thStyle, width: 80 }}>Status</th>
-                <th style={{ ...thStyle, width: 130 }}>Progress</th>
-                <th style={{ ...thStyle, width: 130, textAlign: 'right' }}>Remaining</th>
-                <th style={{ ...thStyle, width: 140 }}>GitHub</th>
-                <th style={{ ...thStyle, width: 170 }}>Acceptance</th>
+                <th style={thStyle}>Priority</th>
+                <th style={thStyle}>Release</th>
+                <th style={thStyle}>Status</th>
+                <th style={thStyle}>Progress</th>
+                <th style={{ ...thStyle, textAlign: 'right' }}>Remaining</th>
+                <th style={thStyle}>GitHub</th>
+                <th style={thStyle}>Acceptance</th>
               </tr>
             </thead>
             <tbody>
@@ -720,14 +735,18 @@ function ChapterGroup({
           </span>
         </td>
       </tr>
-      {rows.map((r) => (
+      {rows.map((r, i) => (
         <tr
           key={r.node.id}
           onClick={() => jumpToNode(r.node)}
-          onMouseEnter={(e) => (e.currentTarget.style.background = '#f8fafc')}
-          onMouseLeave={(e) => (e.currentTarget.style.background = '')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = stripeFor(i))}
           title="Open in mindmap"
-          style={{ borderBottom: '1px solid #f1f5f9', cursor: 'pointer' }}
+          style={{
+            background: stripeFor(i),
+            borderBottom: '1px solid #f1f5f9',
+            cursor: 'pointer',
+          }}
         >
           {/* REQ-ID — inline editable (stopPropagation so editing doesn't navigate) */}
           <td
@@ -795,23 +814,36 @@ function ChapterGroup({
                 style={{ ...inputStyle, width: '100%', padding: '2px 6px' }}
               />
             ) : (
-              <span style={{ cursor: 'text' }}>
+              <span style={{ cursor: 'text', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <span
                   style={{
-                    display: 'inline-block',
+                    flexShrink: 0,
                     width: 7,
                     height: 7,
+                    marginTop: 5,
                     borderRadius: '50%',
                     background: HEALTH_COLOR[r.health] ?? '#94a3b8',
-                    marginRight: 8,
                   }}
                   title={`Health: ${r.health}`}
                 />
+                {/* Requirement statements are sentences — wrap to two lines
+                    rather than truncating mid-clause. */}
                 <span
+                  style={{
+                    // Shrink-to-fit, not grow — keeps ↗ next to the title
+                    // instead of stranding it at the far edge of a wide column.
+                    flex: '0 1 auto',
+                    minWidth: 0,
+                    display: '-webkit-box',
+                    WebkitBoxOrient: 'vertical',
+                    WebkitLineClamp: 2,
+                    overflow: 'hidden',
+                    lineHeight: 1.4,
+                  }}
                   title={
                     r.node.requirementText != null && r.node.requirementText !== r.node.text
                       ? `Node: ${r.node.text}`
-                      : undefined
+                      : (r.node.requirementText ?? r.node.text)
                   }
                 >
                   {r.node.requirementText ?? r.node.text}
@@ -866,6 +898,10 @@ function ChapterGroup({
               }
               style={{
                 ...inlineSelectStyle,
+                // A select is as wide as its widest <option>, and the
+                // placeholder differs per row ("—" / "↳ V2" / "↳ 3 releases").
+                // Pinning it to the column stops that leaking into layout.
+                width: '100%',
                 color: r.versionId ? '#334155' : '#94a3b8',
                 fontStyle: r.versionId ? 'normal' : 'italic',
               }}
@@ -940,7 +976,7 @@ function ChapterGroup({
           </td>
 
           {/* Remaining effort + unestimated warning */}
-          <td style={{ ...tdStyle, textAlign: 'right', whiteSpace: 'nowrap' }}>
+          <td style={{ ...tdStyle, ...numericCellStyle }}>
             {r.status === 'done' ? (
               <span style={{ color: '#94a3b8' }}>—</span>
             ) : (
@@ -956,12 +992,13 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* GitHub links */}
-          <td style={{ ...tdStyle, whiteSpace: 'nowrap' }}>
+          {/* GitHub links — capped so a heavily-linked requirement can't widen
+              the column relative to a sparse one */}
+          <td style={{ ...tdStyle, ...clippedCellStyle }}>
             {r.ghLinks.length === 0 ? (
               <span style={{ color: '#cbd5e1' }}>—</span>
             ) : (
-              r.ghLinks.map((l, i) => {
+              r.ghLinks.slice(0, GH_LINK_CAP).map((l, i) => {
                 const titleParts = [
                   l.inherited
                     ? 'Issue on work below this requirement, not on the requirement itself'
@@ -988,10 +1025,21 @@ function ChapterGroup({
                 );
               })
             )}
+            {r.ghLinks.length > GH_LINK_CAP && (
+              <span
+                title={r.ghLinks
+                  .slice(GH_LINK_CAP)
+                  .map((l) => (l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id))
+                  .join(', ')}
+                style={{ color: '#94a3b8', marginLeft: 6, cursor: 'help' }}
+              >
+                +{r.ghLinks.length - GH_LINK_CAP}
+              </span>
+            )}
           </td>
 
           {/* Acceptance — per-user sign-off chips; own chip toggles */}
-          <td style={{ ...tdStyle, whiteSpace: 'nowrap' }} onClick={(e) => e.stopPropagation()}>
+          <td style={{ ...tdStyle, ...wrappingCellStyle }} onClick={(e) => e.stopPropagation()}>
             {(accByNode.get(r.node.id) ?? []).map((a) => {
               const stale =
                 Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
@@ -1014,6 +1062,7 @@ function ChapterGroup({
                     display: 'inline-block',
                     padding: '2px 8px',
                     marginRight: 4,
+                    marginBottom: 2,
                     borderRadius: 10,
                     fontSize: 11,
                     fontWeight: 600,
@@ -1089,7 +1138,15 @@ function ProgressBar({ percent, editable }: { percent: number; editable: boolean
           }}
         />
       </div>
-      <span style={{ fontSize: 11, color: '#64748b', minWidth: 32, textAlign: 'right' }}>
+      <span
+        style={{
+          fontSize: 11,
+          color: '#64748b',
+          minWidth: 32,
+          textAlign: 'right',
+          fontVariantNumeric: 'tabular-nums',
+        }}
+      >
         {clamped}%
       </span>
     </div>
@@ -1145,6 +1202,10 @@ const createFormStyle: React.CSSProperties = {
 
 const tableStyle: React.CSSProperties = {
   width: '100%',
+  // Fixed columns total 985px; below this the requirement title would be
+  // crushed, so the wrapper scrolls horizontally instead.
+  minWidth: 1280,
+  tableLayout: 'fixed',
   borderCollapse: 'collapse',
   fontSize: 12,
 };
@@ -1161,8 +1222,12 @@ const thStyle: React.CSSProperties = {
   background: '#f8fafc',
   position: 'sticky',
   top: 0,
-  zIndex: 1,
+  // Above the (also sticky) chapter header rows.
+  zIndex: 2,
 };
+
+/** Height of the sticky <thead> row — chapter headers park directly below it. */
+const HEAD_HEIGHT = 33;
 
 const tdStyle: React.CSSProperties = {
   padding: '8px 16px',
@@ -1171,6 +1236,32 @@ const tdStyle: React.CSSProperties = {
   verticalAlign: 'middle',
 };
 
+/** Under table-layout: fixed, nowrap content spills unless the cell clips. */
+const clippedCellStyle: React.CSSProperties = {
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+};
+
+/**
+ * Two sign-offs don't fit on one line at this column width, and dropping the
+ * second to an ellipsis loses who signed. The column width is fixed either
+ * way, so wrapping costs nothing but row height.
+ */
+const wrappingCellStyle: React.CSSProperties = {
+  whiteSpace: 'normal',
+  overflow: 'hidden',
+};
+
+const numericCellStyle: React.CSSProperties = {
+  ...clippedCellStyle,
+  textAlign: 'right',
+  fontVariantNumeric: 'tabular-nums',
+};
+
+/** Issue links shown before collapsing the rest into a "+N" hint. */
+const GH_LINK_CAP = 2;
+
 const groupHeaderStyle: React.CSSProperties = {
   padding: '10px 16px',
   fontSize: 12,
@@ -1178,7 +1269,15 @@ const groupHeaderStyle: React.CSSProperties = {
   color: '#3730a3',
   background: '#eef2ff',
   borderBottom: '1px solid #e0e7ff',
+  // Keeps the chapter visible while scrolling a long register. Sticky goes on
+  // the <td>, not the <tr> — Chrome/Safari ignore it on table rows.
+  position: 'sticky',
+  top: HEAD_HEIGHT,
+  zIndex: 1,
 };
+
+/** Alternating row background — striping survives hover via onMouseLeave. */
+const stripeFor = (i: number) => (i % 2 === 1 ? '#fbfcfe' : '#ffffff');
 
 const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
@@ -1216,7 +1315,7 @@ const inlineSelectStyle: React.CSSProperties = {
 };
 
 const jumpButtonStyle: React.CSSProperties = {
-  marginLeft: 8,
+  flexShrink: 0,
   border: 'none',
   background: 'transparent',
   color: '#94a3b8',
