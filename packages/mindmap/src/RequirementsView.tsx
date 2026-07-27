@@ -23,11 +23,13 @@ import * as api from './api.js';
 // @mindblown/core because the Word export and the MCP overview have to
 // say exactly the same thing.
 //
-// The word matters: 100 % progress is "Gebaut", not "Done" — the rollup
-// only knows that code merged. Green is reserved for the two stages that
-// required a human verdict.
+// The word matters: 100 % code progress is "Built", not "Done" — the
+// rollup only knows that code merged. Green is reserved for the two
+// stages that required a human verdict. (The German wording lives in
+// core too, but only the Anforderungsdokument uses it — the app is
+// English throughout.)
 
-/** The register speaks German because its readers are the business side. */
+/** Gate names. Same two words in the app and in the German export. */
 const GATE_LABEL: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };
 
 const HEALTH_COLOR: Record<string, string> = {
@@ -378,9 +380,9 @@ export function RequirementsView() {
         if (
           !row.built &&
           !window.confirm(
-            `${row.node.requirementId} steht auf «${STAGE_LABEL[row.stage]}» — trotzdem ${
-              gate === 'it' ? 'als IT-geprüft markieren' : 'abnehmen'
-            }?`,
+            `${row.node.requirementId} is "${STAGE_LABEL[row.stage]}" — ${
+              gate === 'it' ? 'mark it IT-verified' : 'accept it'
+            } anyway?`,
           )
         ) {
           return;
@@ -397,7 +399,7 @@ export function RequirementsView() {
   const rejectRequirement = async (row: ReqRow, gate: RequirementGate) => {
     if (!currentMapId || !user) return;
     const comment = window.prompt(
-      `${row.node.requirementId} zurückweisen (${GATE_LABEL[gate]}) — warum? (Begründung erforderlich)`,
+      `Reject ${row.node.requirementId} at the ${GATE_LABEL[gate]} gate — why? (Reason required)`,
     );
     if (comment == null) return; // cancelled
     if (comment.trim() === '') return;
@@ -458,10 +460,10 @@ export function RequirementsView() {
               {totals.accepted}
             </span>
             <span style={{ fontSize: 11, color: '#64748b' }}>
-              von {allRows.length} abgenommen · {totals.built} gebaut, davon{' '}
-              {totals.built - totals.accepted} ohne Abnahme
+              of {allRows.length} accepted · {totals.built} built, {totals.built - totals.accepted}{' '}
+              of them without sign-off
               {(hideDone || statusFilter || priorityFilter || versionFilterActive) &&
-                ` · ${filteredRows.length} angezeigt (gefiltert)`}
+                ` · showing ${filteredRows.length} (filtered)`}
             </span>
           </div>
           <StageFunnel counts={totals} total={allRows.length} />
@@ -472,8 +474,8 @@ export function RequirementsView() {
             aria-pressed={hideDone}
             title={
               hideDone
-                ? `${totals.built} gebaute Anforderung${totals.built === 1 ? '' : 'en'} ausgeblendet — klicken zum Anzeigen`
-                : 'Gebaute Anforderungen ausblenden (100 % Fortschritt; Zurückgewiesene bleiben sichtbar)'
+                ? `${totals.built} built requirement${totals.built === 1 ? '' : 's'} hidden — click to show`
+                : 'Hide requirements whose code is complete (rejected ones stay visible)'
             }
             style={{
               ...secondaryButtonStyle(false),
@@ -482,7 +484,7 @@ export function RequirementsView() {
                 : {}),
             }}
           >
-            {hideDone ? `Gebaute versteckt (${totals.built})` : 'Gebaute ausblenden'}
+            {hideDone ? `Built hidden (${totals.built})` : 'Hide built'}
           </button>
           <select
             value={statusFilter}
@@ -495,7 +497,7 @@ export function RequirementsView() {
             }}
             style={filterSelectStyle}
           >
-            <option value="">Alle Stufen</option>
+            <option value="">All stages</option>
             {STAGE_ORDER.map((s) => (
               <option key={s} value={s}>
                 {STAGE_LABEL[s]}
@@ -578,12 +580,12 @@ export function RequirementsView() {
             onChange={(e) => setAcceptanceFilter(e.target.value as '' | api.AcceptanceFilter)}
             style={filterSelectStyle}
           >
-            <option value="">Abnahme: alle</option>
-            <option value="it-open">IT-Prüfung offen ({totals.itOpen})</option>
-            <option value="business-open">Abnahme offen ({totals.businessOpen})</option>
-            <option value="none">Ohne Urteil</option>
-            <option value="mine-open">Mein Urteil ausstehend</option>
-            <option value="rejected">Zurückgewiesen</option>
+            <option value="">Acceptance: all</option>
+            <option value="it-open">IT review pending ({totals.itOpen})</option>
+            <option value="business-open">Sign-off pending ({totals.businessOpen})</option>
+            <option value="none">No verdict yet</option>
+            <option value="mine-open">My verdict pending</option>
+            <option value="rejected">Rejected</option>
           </select>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -718,7 +720,10 @@ export function RequirementsView() {
                 <th style={thStyle}>Priority</th>
                 <th style={thStyle}>Release</th>
                 <th style={thStyle}>Status</th>
-                <th style={thStyle}>Progress</th>
+                {/* "Code Progress", not "Progress": the number is the share
+                    of merged work, which is exactly what "Built" reports
+                    and exactly what a sign-off does NOT follow from. */}
+                <th style={thStyle}>Code Progress</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Remaining</th>
                 <th style={thStyle}>GitHub</th>
                 <th style={thStyle}>Acceptance</th>
@@ -787,7 +792,7 @@ function ChapterGroup({
         <td colSpan={9} style={groupHeaderStyle}>
           {chapterText}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
-            {rows.length} req · {built} gebaut · {accepted} abgenommen
+            {rows.length} req · {built} built · {accepted} accepted
           </span>
         </td>
       </tr>
@@ -982,8 +987,8 @@ function ChapterGroup({
             <span
               title={
                 r.built
-                  ? 'Abgeleitet aus Fortschritt + Abnahme-Urteilen. «Gebaut» heisst: Code fertig, noch niemand hat unterschrieben.'
-                  : 'Abgeleitet aus dem Fortschritts-Rollup — die darunterliegende Arbeit abschliessen, um das zu ändern'
+                  ? 'Derived from code progress + sign-off verdicts. "Built" means the code is complete and nobody has signed off yet.'
+                  : 'Derived from the progress rollup — finish the work underneath to change it'
               }
               style={{
                 padding: '2px 8px',
@@ -1118,7 +1123,7 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* Abnahme — one slot per gate. Two ✓ from the same person would
+          {/* Acceptance — one slot per gate. Two ✓ from the same person would
               be indistinguishable without the gate label above them. */}
           <td style={{ ...tdStyle, ...wrappingCellStyle }} onClick={(e) => e.stopPropagation()}>
             <div style={{ display: 'flex', gap: 10 }}>
@@ -1184,10 +1189,10 @@ function GateSlot({
         <span
           onClick={own ? () => onToggle(row, gate) : undefined}
           title={
-            (stale ? 'Seit dem Urteil geändert! ' : '') +
-            `${a.userName}, ${rejected ? 'zurückgewiesen' : 'erteilt'} ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)} %` +
-            (rejected && a.comment ? ` — «${a.comment}»` : '') +
-            (own ? ' — klicken zum Zurückziehen' : '')
+            (stale ? 'Changed since this verdict! ' : '') +
+            `${a.userName}, ${rejected ? 'rejected' : 'signed off'} ${a.acceptedAt.slice(0, 10)} at ${Math.round(a.progressAtAcceptance)}%` +
+            (rejected && a.comment ? ` — "${a.comment}"` : '') +
+            (own ? ' — click to withdraw' : '')
           }
           style={{
             display: 'inline-block',
@@ -1211,8 +1216,8 @@ function GateSlot({
             onClick={() => onToggle(row, gate)}
             title={
               gate === 'it'
-                ? 'IT-Prüfung erteilen — funktioniert wie gebaut'
-                : 'Abnehmen — ist das, was bestellt wurde'
+                ? 'Mark IT-verified — it works as built'
+                : 'Accept — this is what was asked for'
             }
             style={ghostChipStyle('#cbd5e1', '#64748b')}
           >
@@ -1220,7 +1225,7 @@ function GateSlot({
           </button>
           <button
             onClick={() => onReject(row, gate)}
-            title="Zurückweisen — Begründung erforderlich"
+            title="Reject — reason required"
             style={ghostChipStyle('#fca5a5', '#b91c1c')}
           >
             ✗

@@ -58,13 +58,27 @@ export function requirementStage(
 }
 
 /**
- * German labels — the register, the Word export and the MCP overview all
- * speak to the same (German-speaking) business readers, so the wording
- * lives in one place. "Gebaut" rather than "Umgesetzt"/"Done": at 100 %
- * progress the only thing the system actually knows is that the code
- * landed. "Abgenommen" is reserved for a real verdict.
+ * Labels for the product UI, which is English throughout.
+ *
+ * "Built" rather than "Done": at 100 % progress the only thing the system
+ * actually knows is that the code landed. "Accepted" is reserved for a
+ * real verdict.
  */
 export const STAGE_LABEL: Record<RequirementStage, string> = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  built: 'Built',
+  it_verified: 'IT Verified',
+  accepted: 'Accepted',
+  rejected: 'Rejected',
+};
+
+/**
+ * Labels for the Anforderungsdokument (Markdown + Word), which is written
+ * for German-speaking business readers and has always been German. Kept
+ * next to the English set so the two can't drift apart.
+ */
+export const STAGE_LABEL_DE: Record<RequirementStage, string> = {
   open: 'Offen',
   in_progress: 'In Umsetzung',
   built: 'Gebaut',

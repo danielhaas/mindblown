@@ -10,7 +10,7 @@ import {
   requirementStage,
   stageCounts,
   BUILT_THRESHOLD,
-  STAGE_LABEL,
+  STAGE_LABEL_DE,
   STAGE_ORDER,
   STAGE_COLOR,
 } from '@mindblown/core';
@@ -142,7 +142,7 @@ const LEGACY_STATUS_DE: Record<string, string> = {
 };
 
 function statusFilterLabel(status: string): string {
-  return LEGACY_STATUS_DE[status] ?? STAGE_LABEL[status as RequirementStage] ?? status;
+  return LEGACY_STATUS_DE[status] ?? STAGE_LABEL_DE[status as RequirementStage] ?? status;
 }
 
 /** Gate prefix in the Abnahme cell — short, because the column is narrow. */
@@ -329,7 +329,7 @@ export function buildRegisterData(
         .map((n) => {
           const p = progressOf(n);
           const stage = stageOf(n);
-          const status = STAGE_LABEL[stage];
+          const status = STAGE_LABEL_DE[stage];
           const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
           const abnahme = (accByNode.get(n.id) ?? []).map((a) => {
             const d = a.acceptedAt.slice(5, 10).split('-').reverse().join('.');
@@ -405,7 +405,7 @@ function standLine(data: RegisterData): string {
   const subject = data.total === 1 ? 'dieser Anforderung' : `dieser ${data.total} Anforderungen`;
   const parts = STAGE_ORDER.filter(
     (s) => data.counts[s] > 0 || s === 'accepted',
-  ).map((s) => `${data.counts[s]} ${STAGE_LABEL[s]}`);
+  ).map((s) => `${data.counts[s]} ${STAGE_LABEL_DE[s]}`);
   return `**Stand ${subject}:** ${parts.join(' · ')}`;
 }
 
@@ -461,12 +461,14 @@ const STATUS_FILL: Record<RequirementStage, string> = Object.fromEntries(
 const ZEBRA_FILL = 'f8fafc';
 
 // Column widths as % of table width: ID, Anforderung, Priorität, Release,
-// Status, Fortschritt, Aufwand, Rest, Abnahme. LibreOffice ignores
+// Status, Code-Fortschritt, Aufwand, Rest, Abnahme. LibreOffice ignores
 // percentage widths that only sit on header cells — the table needs an
 // explicit grid (columnWidths, in DXA) and fixed layout, and every cell
-// must carry its column width. Fortschritt is sized so bar + percentage
-// stay on ONE line, Aufwand/Rest so their headers don't wrap.
-const COL_PCT = [7, 33, 6, 8, 10, 12, 6, 6, 12];
+// must carry its column width. Code-Fortschritt is sized so bar +
+// percentage stay on ONE line and the (longer) header doesn't wrap;
+// Aufwand/Rest likewise. The 2 points it gained came from Anforderung,
+// which has the most slack.
+const COL_PCT = [7, 31, 6, 8, 10, 14, 6, 6, 12];
 // Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
 const PAGE_MARGIN = 1134;
 const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
@@ -587,7 +589,7 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
         cell('Priorität', { bold: true, fill: 'e2e8f0', width: COL_PCT[2] }),
         cell('Release', { bold: true, fill: 'e2e8f0', width: COL_PCT[3] }),
         cell('Status', { bold: true, fill: 'e2e8f0', width: COL_PCT[4] }),
-        cell('Fortschritt', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
+        cell('Code-Fortschritt', { bold: true, fill: 'e2e8f0', width: COL_PCT[5] }),
         cell('Aufwand', { bold: true, fill: 'e2e8f0', width: COL_PCT[6] }),
         cell('Rest', { bold: true, fill: 'e2e8f0', width: COL_PCT[7] }),
         cell('Abnahme', { bold: true, fill: 'e2e8f0', width: COL_PCT[8] }),
