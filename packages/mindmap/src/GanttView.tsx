@@ -8,6 +8,7 @@ import {
 } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
+import { collectDoneNodeIds, collectRequirementKeepIds } from './viewScope.js';
 import { fetchSchedule, updateMap as updateMapApi } from './api.js';
 
 // ── Schedule response shape (from GET /api/maps/:id/schedule) ────
@@ -29,6 +30,7 @@ const MAX_TASK_LIST_WIDTH = 1200;
 // Bumped whenever the default changes so users with cached widths
 // pick up the new default on next load.
 const TASK_WIDTH_STORAGE_KEY = 'mindblown_gantt_task_width_v3';
+const REQ_ONLY_STORAGE_KEY = 'mindblown_gantt_req_only';
 const ROW_HEIGHT = 36;
 const HEADER_HEIGHT = 48;
 const HEALTH_COLORS: Record<string, string> = {
@@ -283,6 +285,18 @@ export function GanttView() {
   const [workersInput, setWorkersInput] = useState<number>(1);
   const [savingWorkers, setSavingWorkers] = useState(false);
   const [showBehindOnly, setShowBehindOnly] = useState(false);
+  // Requirements-only mode: the chart collapses to the requirement register
+  // (nodes carrying a requirementId) instead of every task in the tree.
+  // Persisted like hideDone — it is a way of reading the plan, not a
+  // one-off lookup.
+  const [showReqOnly, setShowReqOnly] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(REQ_ONLY_STORAGE_KEY) === '1';
+  });
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(REQ_ONLY_STORAGE_KEY, showReqOnly ? '1' : '0');
+  }, [showReqOnly]);
   // Hide done items from the Gantt — persisted per-user in localStorage so
   // the choice survives page refresh and tab switches.
   const [hideDone, setHideDone] = useState<boolean>(() => {
@@ -419,6 +433,29 @@ export function GanttView() {
   // if a parent is tagged V1, its untagged children inherit V1. A subtree
   // is shown only if the current node matches the active filter (shared
   // walk in scopeFilter.ts, same semantics as getVisibleNodes).
+  // Done-ness for the hide-done filter: status category OR 100%, rolled up
+  // through parents (see collectDoneNodeIds).
+  const doneSet = useMemo(() => {
+    if (!rootNodeId || !hideDone) return new Set<string>();
+    return collectDoneNodeIds(
+      (id) => nodes[id],
+      rootNodeId,
+      currentMap?.statusWorkflow ?? [],
+    );
+  }, [nodes, rootNodeId, hideDone, currentMap?.statusWorkflow]);
+
+  // How many requirements the map carries at all — gates the toggle so it
+  // isn't a dead button on maps that never adopted the register.
+  const requirementCount = useMemo(
+    () => Object.values(nodes).filter((n) => n.requirementId != null).length,
+    [nodes],
+  );
+  // The stored preference is per-user, not per-map. On a map without
+  // requirements it would filter the chart down to nothing while the
+  // toggle sits disabled — so it only takes effect where it can mean
+  // something.
+  const reqOnlyActive = showReqOnly && requirementCount > 0;
+
   const rows = useMemo(() => {
     if (!rootNodeId || !nodes[rootNodeId]) return [];
 
@@ -453,26 +490,55 @@ export function GanttView() {
       }
     }
 
+    // "Requirements only" — requirement nodes + their connecting ancestors,
+    // so the chart reads as one bar per REQ-ID (see collectRequirementKeepIds).
+    const reqKeep = reqOnlyActive ? collectRequirementKeepIds(nodes) : new Set<string>();
+
+    // Does this node produce a row of its own? (Collapse state aside — that
+    // is the walk's business.) hideDone is handled separately because it
+    // prunes the whole subtree rather than skipping one level.
+    const emitsRow = (nodeId: string): boolean => {
+      if (scopeFilterActive && !inScope.has(nodeId)) return false;
+      if (showBehindOnly && !behindKeep.has(nodeId)) return false;
+      if (reqOnlyActive && !reqKeep.has(nodeId)) return false;
+      return true;
+    };
+
+    // A row only earns an expand chevron when something below it actually
+    // survives the filters. Without this, "Requirements only" leaves every
+    // requirement with a chevron that expands into nothing (its children
+    // are all filtered out).
+    const hasVisibleDescendant = new Set<string>();
+    const scan = (nodeId: string): boolean => {
+      const node = nodes[nodeId];
+      if (!node) return false;
+      if (hideDone && doneSet.has(nodeId)) return false;
+      let below = false;
+      for (const cid of node.childrenIds) {
+        if (scan(cid)) below = true;
+      }
+      if (below) hasVisibleDescendant.add(nodeId);
+      return below || emitsRow(nodeId);
+    };
+    scan(rootNodeId);
+
     const result: FlatRow[] = [];
     const walk = (nodeId: string, depth: number) => {
       const node = nodes[nodeId];
       if (!node) return;
-      if (scopeFilterActive && !inScope.has(nodeId)) {
-        // Skip this node but still descend — a tagged leaf can live under
-        // an untagged parent.
-        for (const cid of node.childrenIds) walk(cid, depth);
-        return;
-      }
-      if (showBehindOnly && !behindKeep.has(nodeId)) {
-        for (const cid of node.childrenIds) walk(cid, depth);
-        return;
-      }
       // Hide done items — both done leaves AND parents whose subtree is
-      // entirely done (percentComplete >= 100 propagates via rollup).
-      if (hideDone && (node.percentComplete ?? 0) >= 100) {
+      // entirely done. Never test node.percentComplete here: it is null on
+      // parents and untouched on leaves closed via status.
+      if (hideDone && doneSet.has(nodeId)) {
         return;
       }
-      const hasChildren = node.childrenIds.length > 0;
+      if (!emitsRow(nodeId)) {
+        // Skip this node but still descend — a tagged leaf can live under
+        // an untagged parent, a requirement under a plain chapter.
+        for (const cid of node.childrenIds) walk(cid, depth);
+        return;
+      }
+      const hasChildren = hasVisibleDescendant.has(nodeId);
       const isExpanded = !collapsedSet.has(nodeId);
       result.push({
         node,
@@ -487,6 +553,7 @@ export function GanttView() {
     walk(rootNodeId, 0);
     return result;
   }, [
+    reqOnlyActive,
     nodes,
     rootNodeId,
     collapsedSet,
@@ -495,6 +562,7 @@ export function GanttView() {
     activePhaseFilter,
     showBehindOnly,
     hideDone,
+    doneSet,
     computed,
   ]);
 
@@ -1090,6 +1158,34 @@ export function GanttView() {
           </span>
         )}
 
+        {/* Requirements-only toggle */}
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+        <button
+          onClick={() => requirementCount > 0 && setShowReqOnly((v) => !v)}
+          disabled={requirementCount === 0}
+          aria-pressed={reqOnlyActive}
+          title={
+            requirementCount === 0
+              ? 'This map has no requirements yet — give a node a requirement ID to use this'
+              : reqOnlyActive
+                ? `Showing the ${requirementCount} requirement${requirementCount === 1 ? '' : 's'} only. Click to show every task again.`
+                : `Collapse the chart to the ${requirementCount} requirement${requirementCount === 1 ? '' : 's'} — one bar per REQ-ID, spanning its whole subtree.`
+          }
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #c7d2fe',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: requirementCount === 0 ? 'not-allowed' : 'pointer',
+            background: reqOnlyActive ? '#4f46e5' : '#fff',
+            color: reqOnlyActive ? '#fff' : requirementCount === 0 ? '#cbd5e1' : '#4338ca',
+          }}
+        >
+          {reqOnlyActive ? `Requirements ✓ (${requirementCount})` : 'Requirements only'}
+        </button>
+
         {/* Hide done toggle */}
         <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
         <button
@@ -1214,6 +1310,15 @@ export function GanttView() {
               overflowX: 'hidden',
             }}
           >
+            {rows.length === 0 && (
+              <div style={{ padding: '16px 12px', fontSize: 11, color: '#94a3b8', lineHeight: 1.5 }}>
+                {reqOnlyActive && hideDone
+                  ? 'Every requirement is done. Turn off "Hide done" to see them.'
+                  : reqOnlyActive
+                    ? 'No requirement matches the active filters.'
+                    : 'Nothing matches the active filters.'}
+              </div>
+            )}
             <div style={{ height: totalHeight, position: 'relative' }}>
               {dropIndicatorY != null && (
                 <div
@@ -1338,6 +1443,24 @@ export function GanttView() {
                         <div style={{ width: 16, flexShrink: 0 }} />
                       )}
 
+                      {row.node.requirementId && (
+                        <span
+                          title={`Requirement ${row.node.requirementId}`}
+                          style={{
+                            flexShrink: 0,
+                            marginRight: 6,
+                            padding: '1px 5px',
+                            borderRadius: 3,
+                            background: '#eef2ff',
+                            color: '#4338ca',
+                            fontSize: 10,
+                            fontWeight: 700,
+                            fontVariantNumeric: 'tabular-nums',
+                          }}
+                        >
+                          {row.node.requirementId}
+                        </span>
+                      )}
                       <span
                         style={{
                           overflow: 'hidden',

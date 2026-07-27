@@ -306,6 +306,23 @@ const LEGEND = [
   '**Abnahme:** ✓ abgenommen · ✗ abgelehnt (mit Begründung) · ⚠ seit dem Urteil geändert',
 ];
 
+/**
+ * The header used to read "Stand: 44 von 163 Anforderungen — 12 Umgesetzt …",
+ * which readers took as "44 of 163 done". Scope (how much of the register this
+ * document covers) and Stand (how far that scope is along) are two different
+ * numbers, so they get two lines. Markers are stripped for the docx renderer.
+ */
+function scopeLine(data: RegisterData): string {
+  return data.filterLabel
+    ? `**Umfang:** ${data.total} der insgesamt ${data.totalAll} Anforderungen dieser Map — gefilterter Auszug (${data.filterLabel})`
+    : `**Umfang:** alle ${data.totalAll} Anforderungen dieser Map`;
+}
+
+function standLine(data: RegisterData): string {
+  const subject = data.total === 1 ? 'dieser Anforderung' : `dieser ${data.total} Anforderungen`;
+  return `**Stand ${subject}:** ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`;
+}
+
 export function renderMarkdown(data: RegisterData): string {
   const L: string[] = [];
   L.push(`# ${data.title}`);
@@ -322,9 +339,9 @@ export function renderMarkdown(data: RegisterData): string {
     L.push(line);
   }
   L.push('');
-  L.push(
-    `**Stand:** ${data.total}${data.filterLabel ? ` von ${data.totalAll}` : ''} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
-  );
+  L.push(scopeLine(data));
+  L.push('');
+  L.push(standLine(data));
   L.push('');
   L.push('---');
   data.chapters.forEach((ch, i) => {
@@ -441,13 +458,15 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
   }
   children.push(
     new Paragraph({
-      spacing: { before: 160, after: 240 },
+      spacing: { before: 160 },
       children: [
-        new TextRun({
-          text: `Stand: ${data.total}${data.filterLabel ? ` von ${data.totalAll}` : ''} Anforderungen — ${data.counts.Umgesetzt} Umgesetzt · ${data.counts.Teilweise} Teilweise · ${data.counts.Offen} Offen`,
-          bold: true,
-          size: 20,
-        }),
+        new TextRun({ text: scopeLine(data).replace(/\*\*/g, ''), bold: true, size: 20 }),
+      ],
+    }),
+    new Paragraph({
+      spacing: { before: 60, after: 240 },
+      children: [
+        new TextRun({ text: standLine(data).replace(/\*\*/g, ''), bold: true, size: 20 }),
       ],
     }),
   );
