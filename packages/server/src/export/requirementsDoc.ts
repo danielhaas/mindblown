@@ -505,14 +505,18 @@ const ZEBRA_FILL = 'f8fafc';
  */
 const COLUMNS = [
   { header: 'ID', pct: 6 },
-  { header: 'Anforderung', pct: 40 },
+  { header: 'Anforderung', pct: 42 },
   { header: 'Prio', pct: 5 },
   { header: 'Release', pct: 7 },
   { header: 'Status', pct: 8 },
   { header: 'Code %', pct: 10 },
   { header: 'Aufwand', pct: 7 },
   { header: 'Rest', pct: 5 },
-  { header: 'Abnahme', pct: 12 },
+  // 10 rather than 12: once the two gates got real line breaks, the widest
+  // thing the cell has to hold is "Business: offen", not both gates in a
+  // row. Signed verdicts ("Business: T. Muster ✓ 17.07.") wrap onto a
+  // second line, which is fine — those are values, and there are few.
+  { header: 'Abnahme', pct: 10 },
 ] as const;
 
 const COL_PCT = COLUMNS.map((c) => c.pct);
@@ -541,10 +545,20 @@ function progressBar(percent: number): { text: string; color: string } {
   };
 }
 
+/**
+ * Pass an array for a multi-line cell.
+ *
+ * A "\n" inside a TextRun does nothing in Word — the newline has to be a
+ * real <w:br/>, which the library emits for `break: 1` (before that run's
+ * text). Joining the Abnahme lines with "\n" therefore ran both gates
+ * together on one line, and made the column look like it needed twice the
+ * width it actually does.
+ */
 function cell(
-  text: string,
+  text: string | string[],
   opts: { bold?: boolean; fill?: string; width?: number; color?: string } = {},
 ): TableCell {
+  const lines = Array.isArray(text) ? text : [text];
   return new TableCell({
     shading: opts.fill ? { fill: opts.fill } : undefined,
     width: opts.width ? { size: opts.width, type: WidthType.PERCENTAGE } : undefined,
@@ -552,9 +566,16 @@ function cell(
     verticalAlign: VerticalAlign.CENTER,
     children: [
       new Paragraph({
-        children: [
-          new TextRun({ text, bold: opts.bold ?? false, size: 18, color: opts.color }),
-        ],
+        children: lines.map(
+          (line, i) =>
+            new TextRun({
+              text: line,
+              bold: opts.bold ?? false,
+              size: 18,
+              color: opts.color,
+              ...(i > 0 ? { break: 1 } : {}),
+            }),
+        ),
       }),
     ],
   });
@@ -653,7 +674,8 @@ export async function renderDocx(data: RegisterData): Promise<Buffer> {
           cell(bar.text, { width: COL_PCT[5], fill: zebra, color: bar.color }),
           cell(r.aufwand, { width: COL_PCT[6], fill: zebra }),
           cell(r.rest, { width: COL_PCT[7], fill: zebra }),
-          cell(r.abnahme.join('\n') || '—', { width: COL_PCT[8], fill: zebra }),
+          // One real line per gate — see cell() on why "\n" would not do.
+          cell(r.abnahme.length > 0 ? r.abnahme : '—', { width: COL_PCT[8], fill: zebra }),
         ],
       });
     });
