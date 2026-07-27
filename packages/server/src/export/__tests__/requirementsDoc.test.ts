@@ -76,7 +76,10 @@ describe('buildRegisterData — Abnahme verdicts', () => {
 
   it('renders an acceptance as ✓ without comment', () => {
     const data = build(nodes, [{ ...baseAcc, nodeId: 'r1', decision: 'accepted' }]);
-    expect(data.chapters[0].rows[0].abnahme).toEqual(['Business: T. Muster ✓ 17.07.']);
+    expect(data.chapters[0].rows[0].abnahme).toEqual([
+      'IT: offen',
+      'Business: T. Muster ✓ 17.07.',
+    ]);
   });
 
   it('renders a rejection as ✗ with the truncated comment', () => {
@@ -84,20 +87,21 @@ describe('buildRegisterData — Abnahme verdicts', () => {
       { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'Rollen-Dropdown speichert nicht' },
     ]);
     expect(data.chapters[0].rows[0].abnahme).toEqual([
+      'IT: offen',
       'Business: T. Muster ✗ 17.07. («Rollen-Dropdown speichert nicht»)',
     ]);
   });
 
   it('treats rows without a decision (pre-migration shape) as accepted', () => {
     const data = build(nodes, [{ ...baseAcc, nodeId: 'r1' }]);
-    expect(data.chapters[0].rows[0].abnahme[0]).toContain('✓');
+    expect(data.chapters[0].rows[0].abnahme.join(' ')).toContain('✓');
   });
 
   it('suffixes ⚠ when the requirement changed after the verdict', () => {
     const data = build(nodes, [
       { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'kaputt', nodeRevisionAtAcceptance: 1 },
     ]);
-    expect(data.chapters[0].rows[0].abnahme[0]).toMatch(/⚠$/);
+    expect(data.chapters[0].rows[0].abnahme.at(-1)).toMatch(/⚠$/);
   });
 
   it('renders verdicts into the markdown table', () => {
@@ -284,6 +288,19 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
       'Business: T. Muster ✓ 17.07.',
     ]);
     expect(row.stage).toBe('accepted');
+  });
+
+  it('names the gates still outstanding on built requirements', () => {
+    // An empty cell read as "no signature expected". Spelling out which
+    // gate is missing is the whole point of the column on a built row.
+    const rows = buildF({}).chapters.flatMap((c) => c.rows);
+    expect(rows.find((r) => r.id === 'MAN-01')!.abnahme).toEqual([
+      'IT: offen',
+      'Business: T. Muster ✓ 17.07.',
+    ]);
+    // MAN-03/04 sit at 0 %: nothing is outstanding yet, so the cell stays
+    // empty rather than accusing anyone of a missing signature.
+    expect(rows.find((r) => r.id === 'MAN-03')!.abnahme).toEqual([]);
   });
 
   it('counts reflect the filtered set, totalAll the whole register', () => {
