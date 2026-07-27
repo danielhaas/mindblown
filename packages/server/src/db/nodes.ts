@@ -632,6 +632,7 @@ export async function setExternalLinkState(
   nodeId: string,
   externalId: string,
   state: 'open' | 'closed',
+  isPullRequest?: boolean,
   handle: DbHandle = db,
 ): Promise<boolean> {
   const [row] = await handle
@@ -645,7 +646,7 @@ export async function setExternalLinkState(
   const next = links.map((l) => {
     if (l.provider !== 'github' || l.externalId !== externalId) return l;
     found = true;
-    return { ...l, state };
+    return isPullRequest === undefined ? { ...l, state } : { ...l, state, isPullRequest };
   });
   if (!found) return false;
 
@@ -654,6 +655,39 @@ export async function setExternalLinkState(
     .set({ externalLinks: next })
     .where(and(eq(nodes.id, nodeId), notDeleted));
   return true;
+}
+
+/**
+ * GitHub links for `owner/repo` that still carry no `state` mirror.
+ *
+ * The catchup's main loop iterates the issues GitHub *lists* as changed,
+ * so it can only repair links it happens to encounter. Two kinds of link
+ * are never listed: pull requests (filtered out of the issues list) and
+ * issues that haven't changed since the sync cursor. This query finds
+ * them so they can be resolved directly, one API call each.
+ *
+ * Bounded by `limit` — this is a repair trickle running on every tick,
+ * not a bulk backfill, and it must not blow the repo's API budget.
+ */
+export async function findLinksMissingState(
+  repoFullName: string,
+  limit: number,
+): Promise<Array<{ nodeId: string; externalId: string }>> {
+  const rows = await db
+    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(and(isNotNull(nodes.externalLinks), notDeleted));
+
+  const out: Array<{ nodeId: string; externalId: string }> = [];
+  for (const row of rows) {
+    for (const l of (row.externalLinks as ExternalLink[]) ?? []) {
+      if (l.provider !== 'github' || l.state !== undefined) continue;
+      if (!l.externalId.startsWith(`${repoFullName}#`)) continue;
+      out.push({ nodeId: row.id, externalId: l.externalId });
+      if (out.length >= limit) return out;
+    }
+  }
+  return out;
 }
 
 // ── Delete (with descendants) ──────────────────────────────────────

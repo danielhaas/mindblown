@@ -46,7 +46,13 @@ interface ReqRow {
   remaining: number;
   unestimated: number;
   health: string;
-  ghLinks: Array<{ id: string; url: string; inherited: boolean; state?: 'open' | 'closed' }>;
+  ghLinks: Array<{
+    id: string;
+    url: string;
+    inherited: boolean;
+    state?: 'open' | 'closed';
+    isPullRequest?: boolean;
+  }>;
   /** Version set on the requirement node itself. */
   versionId: string | null;
   /** Distinct versions found below it — the requirement may be split across releases. */
@@ -194,6 +200,7 @@ export function RequirementsView() {
             url: l.url,
             inherited: l.inherited,
             state: l.state,
+            isPullRequest: l.isPullRequest,
           })),
           versionId: node.versionId ?? null,
           descendantVersionIds,
@@ -999,11 +1006,19 @@ function ChapterGroup({
               <span style={{ color: '#cbd5e1' }}>—</span>
             ) : (
               r.ghLinks.slice(0, GH_LINK_CAP).map((l, i) => {
+                // GitHub shares one number space between issues and PRs, so
+                // a link can point at either. Say which — a merged PR
+                // reported as a closed "issue" reads as done work that was
+                // never tracked.
+                const kind = l.isPullRequest ? 'Pull request' : 'Issue';
                 const titleParts = [
+                  // Always say so, even when nothing else applies — an
+                  // open PR link would otherwise carry no tooltip at all.
+                  l.isPullRequest ? 'Links a pull request, not an issue' : null,
                   l.inherited
-                    ? 'Issue on work below this requirement, not on the requirement itself'
+                    ? `${kind} on work below this requirement, not on the requirement itself`
                     : null,
-                  l.state === 'closed' ? 'Issue is closed' : null,
+                  l.state === 'closed' ? `${kind} is closed` : null,
                 ].filter(Boolean);
                 return (
                   <a

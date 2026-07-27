@@ -9,6 +9,7 @@ type N = {
     externalId: string;
     url: string;
     state?: 'open' | 'closed';
+    isPullRequest?: boolean;
   }>;
 };
 
@@ -103,6 +104,29 @@ describe('collectRequirementGhLinks', () => {
     expect(collectRequirementGhLinks(get, 'r')).toEqual([
       { externalId: 'FulcrumCRM/crm#1', url: expect.any(String), inherited: false, state: 'closed' },
     ]);
+  });
+
+  it('carries the pull-request flag through, own and inherited', () => {
+    // GitHub shares a number space between issues and PRs, so a link can
+    // point at either; the column must not call a PR an issue.
+    const get = lookup([
+      {
+        id: 'r',
+        childrenIds: ['w'],
+        externalLinks: [{ ...gh(856, 'closed'), isPullRequest: true }],
+      },
+      { id: 'w', externalLinks: [{ ...gh(857, 'open'), isPullRequest: true }] },
+    ]);
+    const got = collectRequirementGhLinks(get, 'r');
+    expect(got.map((l) => [l.externalId, l.inherited, l.isPullRequest])).toEqual([
+      ['FulcrumCRM/crm#856', false, true],
+      ['FulcrumCRM/crm#857', true, true],
+    ]);
+  });
+
+  it('leaves isPullRequest undefined for links that were never resolved', () => {
+    const get = lookup([{ id: 'r', externalLinks: [gh(1, 'closed')] }]);
+    expect(collectRequirementGhLinks(get, 'r')[0].isPullRequest).toBeUndefined();
   });
 
   it('leaves state undefined for links written before the field existed', () => {

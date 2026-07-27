@@ -67,6 +67,16 @@ export interface ExternalLink {
   state?: 'open' | 'closed';
 
   /**
+   * True when this "issue" link actually points at a pull request.
+   * GitHub shares one number space between issues and PRs, so a node can
+   * end up linked to `owner/repo#856` where 856 is a PR. Those links are
+   * invisible to `fetchChangedIssues` (it filters PRs out of the list),
+   * so they need the direct-resolve path — and the UI should not claim
+   * they're issues. Absent = unknown / not yet resolved.
+   */
+  isPullRequest?: boolean;
+
+  /**
    * Node state captured the moment the external system drove the node
    * to "complete". Used to revert progress/status when the external
    * system reopens the item (e.g. GitHub issue reopened).

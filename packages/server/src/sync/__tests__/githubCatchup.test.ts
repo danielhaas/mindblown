@@ -68,6 +68,9 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: vi.fn(),
   updateNode: vi.fn(),
   setExternalLinkState: vi.fn(),
+  // Default: no unresolved links, so the direct-resolve pass is a no-op
+  // for every pre-existing case in this file.
+  findLinksMissingState: vi.fn(async () => []),
   notDeleted: { __pred: true },
 }));
 
@@ -91,6 +94,7 @@ vi.mock('@mindblown/integrations', () => {
   }
   return {
     fetchChangedIssues: vi.fn(async () => []),
+    getGitHubIssue: vi.fn(async () => ({ number: 0, state: 'open' })),
     mintInstallationToken: vi.fn(async () => 'tok'),
     GitHubApiError: MockGitHubApiError,
   };
@@ -129,12 +133,13 @@ import {
   pushCatchupHeartbeat,
   isHealthyTick,
   reconcileRepo,
+  resolveUnlistedLinks,
   computeStateUpdates,
   _resetAuthFailureCountersForTests,
   _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
-import { fetchChangedIssues, GitHubApiError } from '@mindblown/integrations';
+import { fetchChangedIssues, getGitHubIssue, GitHubApiError } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import * as nodeDb from '../../db/nodes.js';
 
@@ -150,6 +155,7 @@ function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
     skipped: 0,
     noTransition: 0,
     mirrorRepaired: 0,
+    directResolved: 0,
     stateSyncErrored: 0,
     ingested: 0,
     ingestErrored: 0,
@@ -780,5 +786,96 @@ describe('reconcileRepo → repairs absent/stale link state', () => {
 
     expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
     expect(res.mirrorRepaired).toBe(0);
+  });
+});
+
+// ── PR-numbered links (the blind spot in the issue list) ──────────
+//
+// GitHub shares one number space between issues and PRs. A node linked
+// to `owner/repo#856` where 856 is a PR is never returned by
+// `fetchChangedIssues` (it filters PRs out), so the main loop cannot
+// reach it however many times it runs. The direct-resolve pass exists
+// solely for those, and for links older than the sync cursor.
+
+describe('resolveUnlistedLinks', () => {
+  const getIssueMock = vi.mocked(getGitHubIssue);
+
+  beforeEach(() => {
+    getIssueMock.mockReset();
+    vi.mocked(nodeDb.findLinksMissingState).mockReset();
+    vi.mocked(nodeDb.setExternalLinkState).mockReset();
+    vi.mocked(nodeDb.setExternalLinkState).mockResolvedValue(true);
+  });
+
+  it('resolves a PR-numbered link and flags it as a pull request', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([
+      { nodeId: 'n1', externalId: 'o/r#856' },
+    ]);
+    getIssueMock.mockResolvedValue({
+      number: 856,
+      state: 'closed',
+      pull_request: { merged_at: '2026-05-10T01:24:14Z' },
+    } as never);
+
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+
+    expect(getIssueMock).toHaveBeenCalledWith('o', 'r', 856, 'tok');
+    expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#856', 'closed', true);
+    expect(res).toEqual({ resolved: 1, unresolvable: 0 });
+  });
+
+  it('flags a plain issue as not-a-PR', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([
+      { nodeId: 'n1', externalId: 'o/r#14' },
+    ]);
+    getIssueMock.mockResolvedValue({ number: 14, state: 'closed' } as never);
+
+    await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+
+    expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#14', 'closed', false);
+  });
+
+  it('counts a 404 as unresolvable and leaves the link untouched', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([
+      { nodeId: 'n1', externalId: 'o/r#9999' },
+    ]);
+    getIssueMock.mockRejectedValue(new MockGitHubApiError(404, 'Not Found'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    warnSpy.mockRestore();
+
+    expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
+    expect(res).toEqual({ resolved: 0, unresolvable: 1 });
+  });
+
+  it('one dead link does not stop the rest of the batch', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([
+      { nodeId: 'n1', externalId: 'o/r#1' },
+      { nodeId: 'n2', externalId: 'o/r#2' },
+    ]);
+    getIssueMock
+      .mockRejectedValueOnce(new MockGitHubApiError(404, 'Not Found'))
+      .mockResolvedValueOnce({ number: 2, state: 'open' } as never);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    warnSpy.mockRestore();
+
+    expect(res).toEqual({ resolved: 1, unresolvable: 1 });
+    expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n2', 'o/r#2', 'open', false);
+  });
+
+  it('passes the per-tick budget through to the candidate query', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([]);
+    await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok', 7);
+    expect(nodeDb.findLinksMissingState).toHaveBeenCalledWith('o/r', 7);
+  });
+
+  it('makes no API call when there is nothing to resolve', async () => {
+    vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([]);
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    expect(getIssueMock).not.toHaveBeenCalled();
+    expect(res).toEqual({ resolved: 0, unresolvable: 0 });
   });
 });
