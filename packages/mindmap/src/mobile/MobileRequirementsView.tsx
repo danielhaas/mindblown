@@ -11,7 +11,7 @@ import type { AcceptanceRow, NodeWithComputed } from '../api.js';
 
 // The stage is never stored — derived from the progress rollup folded
 // with the sign-off verdicts, mirroring the desktop RequirementsView.
-// "Gebaut" ≠ "Abgenommen" here too: same words, same colours, one source
+// "Built" ≠ "Accepted" here too: same words, same colours, one source
 // in @mindblown/core.
 
 // 'todo' is the "hide built" button — everything not yet built in one
@@ -138,8 +138,8 @@ export function MobileRequirementsView({
       {/* Lead with the accepted count — the whole point of the stage split
           is that "gebaut" must not read as the finish line. */}
       <div style={{ padding: '0 12px 8px', fontSize: 12, color: '#64748b' }}>
-        <b style={{ fontSize: 17, color: '#047857' }}>{counts.accepted}</b> von {rows.length}{' '}
-        abgenommen · {counts.built} gebaut
+        <b style={{ fontSize: 17, color: '#047857' }}>{counts.accepted}</b> of {rows.length}{' '}
+        accepted · {counts.built} built
       </div>
       <div className="mb-filter-row">
         {(['all', 'todo', 'accepted', 'it_verified', 'built', 'in_progress', 'open', 'rejected'] as const)
@@ -152,7 +152,7 @@ export function MobileRequirementsView({
               aria-pressed={filter === f}
               onClick={() => setFilter(f)}
             >
-              {f === 'all' ? 'Alle' : f === 'todo' ? 'Offene Arbeit' : STAGE_LABEL[f]}
+              {f === 'all' ? 'All' : f === 'todo' ? 'Open work' : STAGE_LABEL[f]}
               <span className="mb-filter-count">{counts[f]}</span>
             </button>
           ))}

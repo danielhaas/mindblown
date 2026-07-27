@@ -4,6 +4,7 @@ import {
   requirementStage,
   stageCounts,
   STAGE_LABEL,
+  STAGE_LABEL_DE,
   STAGE_COLOR,
   STAGE_ORDER,
 } from '../requirements.js';
@@ -63,11 +64,19 @@ describe('requirementStage', () => {
 
 describe('stage presentation', () => {
   it('reserves green for the two signed-off stages', () => {
-    // The whole point of renaming "Done" to "Gebaut": if built stayed
+    // The whole point of renaming "Done" to "Built": if built stayed
     // green, a skimming reader would still read it as finished.
     expect(STAGE_COLOR.built.bg).not.toBe(STAGE_COLOR.accepted.bg);
-    expect(STAGE_LABEL.built).toBe('Gebaut');
-    expect(STAGE_LABEL.accepted).toBe('Abgenommen');
+    expect(STAGE_LABEL.built).toBe('Built');
+    expect(STAGE_LABEL.accepted).toBe('Accepted');
+  });
+
+  it('keeps the German document wording in step with the English UI', () => {
+    // The app is English; only the Anforderungsdokument is German. Both
+    // sets live in core so a new stage can't reach one and miss the other.
+    expect(Object.keys(STAGE_LABEL_DE).sort()).toEqual(Object.keys(STAGE_LABEL).sort());
+    expect(STAGE_LABEL_DE.built).toBe('Gebaut');
+    expect(STAGE_LABEL_DE.accepted).toBe('Abgenommen');
   });
 
   it('orders the funnel from most to least complete', () => {

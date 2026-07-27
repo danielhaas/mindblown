@@ -96,7 +96,7 @@ export function MobileViewer({ map }: Props) {
         if (!cancelled) setAcceptances(r.acceptances);
       })
       .catch(() => {
-        // Without verdicts the register degrades to "Gebaut" at 100 % —
+        // Without verdicts the register degrades to "Built" at 100 % —
         // under-claiming, which is the safe direction to fail in.
       });
     api
