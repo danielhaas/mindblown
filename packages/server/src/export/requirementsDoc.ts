@@ -148,6 +148,9 @@ function statusFilterLabel(status: string): string {
 /** Gate prefix in the Abnahme cell — short, because the column is narrow. */
 const GATE_SHORT: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };
 
+/** Fixed render order, so the two lines never swap between rows. */
+const GATES: RequirementGate[] = ['it', 'business'];
+
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : `${s.slice(0, max - 1)}…`;
 }
@@ -331,18 +334,31 @@ export function buildRegisterData(
           const stage = stageOf(n);
           const status = STAGE_LABEL_DE[stage];
           const effort = computed.get(n.id)?.computedEffort ?? n.effortEstimate ?? 0;
-          const abnahme = (accByNode.get(n.id) ?? []).map((a) => {
+          // One line per gate, always in the same order — and an explicit
+          // "offen" for a gate that COULD have been judged but wasn't.
+          // Rendering only the verdicts made the column read as unchanged
+          // while every cell was empty: a reader could not tell that two
+          // signatures are now missing rather than none being expected.
+          // Below the build line nothing is outstanding yet, so those rows
+          // stay "—" instead of accusing anybody.
+          const accs = accByNode.get(n.id) ?? [];
+          const abnahme: string[] = [];
+          for (const gate of GATES) {
+            const a = accs.find((x) => (x.gate ?? 'business') === gate);
+            if (!a) {
+              if (p >= BUILT_THRESHOLD) abnahme.push(`${GATE_SHORT[gate]}: offen`);
+              continue;
+            }
             const d = a.acceptedAt.slice(5, 10).split('-').reverse().join('.');
             const stale = acceptanceIsStale(a, p, n.revision) ? ' ⚠' : '';
-            // Prefix the gate: two ✓ from the same person on the same row
-            // are otherwise indistinguishable.
-            const who = `${GATE_SHORT[a.gate ?? 'business']}: ${a.userName}`;
+            const who = `${GATE_SHORT[gate]}: ${a.userName}`;
             if (a.decision === 'rejected') {
               const why = a.comment ? ` («${truncate(a.comment, 60)}»)` : '';
-              return `${who} ✗ ${d}.${why}${stale}`;
+              abnahme.push(`${who} ✗ ${d}.${why}${stale}`);
+            } else {
+              abnahme.push(`${who} ✓ ${d}.${stale}`);
             }
-            return `${who} ✓ ${d}.${stale}`;
-          });
+          }
           return {
             id: n.requirementId ?? '',
             text: (n.requirementText ?? n.text).replace(/\n/g, ' '),
@@ -382,7 +398,7 @@ const LEGEND = [
   '**Gebaut ist nicht abgenommen.** Offen/In Umsetzung/Gebaut leiten sich aus dem Code-Fortschritt ab; IT-geprüft, Abgenommen und Zurückgewiesen entstehen ausschliesslich aus einem namentlichen Urteil.',
   '**Code-Fortschritt:** Anteil der erledigten Arbeitspakete unter einer Anforderung. Misst, wie viel Software gebaut wurde — **nicht**, ob das Ergebnis fachlich stimmt. 100 % bedeutet «Gebaut», nicht «Abgenommen».',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» ab Gebaut): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
-  '**Abnahme:** zwei Stufen — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt · ✗ zurückgewiesen (mit Begründung) · ⚠ seit dem Urteil geändert',
+  '**Abnahme:** zwei Stufen, je eine Zeile — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt, mit Name und Datum · ✗ zurückgewiesen (mit Begründung) · «offen» = gebaut, aber diese Unterschrift fehlt noch · ⚠ seit dem Urteil geändert · «—» noch nicht so weit',
 ];
 
 /**
@@ -466,10 +482,15 @@ const ZEBRA_FILL = 'f8fafc';
 // percentage widths that only sit on header cells — the table needs an
 // explicit grid (columnWidths, in DXA) and fixed layout, and every cell
 // must carry its column width. Code-Fortschritt is sized so bar +
-// percentage stay on ONE line and the (longer) header doesn't wrap;
-// Aufwand/Rest likewise. The 2 points it gained came from Anforderung,
-// which has the most slack.
-const COL_PCT = [7, 31, 6, 8, 10, 14, 6, 6, 12];
+// percentage stay on ONE line and the (longer) header doesn't wrap.
+//
+// Headers are BOLD, which is what makes them wrap a character earlier than
+// a width calculation suggests — so the narrow ones get real slack rather
+// than a hairline fit: "Aufwand" 6 → 8, "Code-Fortschritt" 14 → 15,
+// "Abnahme" 12 → 14 (it now carries a line per gate, "Business: offen").
+// The room comes from Anforderung: body prose wrapping is normal and
+// expected, a wrapped column HEADER just looks broken.
+const COL_PCT = [7, 26, 6, 8, 10, 15, 8, 6, 14];
 // Usable A4 LANDSCAPE width with 2 cm (1134 twip) margins.
 const PAGE_MARGIN = 1134;
 const TABLE_DXA = 16838 - 2 * PAGE_MARGIN;
