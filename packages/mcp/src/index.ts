@@ -23,7 +23,8 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER } from '@mindblown/core';
+import type { RequirementStage } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { descendantVersionIds } from './requirementScope.js';
@@ -476,13 +477,19 @@ server.tool(
 
 server.tool(
   'accept_requirement',
-  "Record the calling user's acceptance (Abnahme) of a requirement — a human sign-off, orthogonal to the derived status. Snapshots current progress + node revision so later changes flag the acceptance as stale. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
+  "Record the calling user's sign-off on a requirement — the only thing that moves it past \"built\" in the register. Two independent gates: gate='it' (does it actually work?) and gate='business' (is it what we asked for?). Snapshots current progress + node revision so later changes flag the verdict as stale. One active verdict per user PER GATE — revoke_acceptance first to change one. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
   {
     mapId: z.string().describe('The map ID'),
     requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
     nodeId: z.string().optional().describe('Node ID (alternative to requirementId)'),
+    gate: z
+      .enum(['it', 'business'])
+      .optional()
+      .describe(
+        "Which gate to sign: 'it' = verified it works (dev/QA side), 'business' = accepted as delivered (the Abnahme). Defaults to 'business'.",
+      ),
   },
-  async ({ mapId, requirementId, nodeId }) => {
+  async ({ mapId, requirementId, nodeId, gate }) => {
     try {
       let id = nodeId;
       if (!id) {
@@ -492,9 +499,9 @@ server.tool(
         if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
         id = hit.id;
       }
-      const a = await api.acceptRequirement(mapId, id);
+      const a = await api.acceptRequirement(mapId, id, { gate });
       return toolResult(
-        `Accepted ${requirementId ?? id} as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}).`,
+        `Accepted ${requirementId ?? id} at the ${a.gate} gate as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}).`,
       );
     } catch (err) {
       return toolError(err);
@@ -504,7 +511,7 @@ server.tool(
 
 server.tool(
   'reject_requirement',
-  "Record the calling user's REJECTION of a requirement with a mandatory comment explaining why — the counterpart to accept_requirement. Shows as ✗ in the register, overview and exports so the objection is visible data. One active verdict per user per requirement: revoke_acceptance first to change an existing verdict. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
+  "Record the calling user's REJECTION of a requirement with a mandatory comment explaining why — the counterpart to accept_requirement. A rejection outranks every other stage in the register: the row reads \"rejected\" no matter how complete the rollup says it is. Same two gates as accept_requirement. One active verdict per user per gate: revoke_acceptance first to change an existing one. Identify the requirement by requirementId (e.g. MAN-01) or nodeId.",
   {
     mapId: z.string().describe('The map ID'),
     requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
@@ -513,8 +520,14 @@ server.tool(
       .string()
       .min(1)
       .describe('Why the requirement is rejected — what is wrong or missing (mandatory)'),
+    gate: z
+      .enum(['it', 'business'])
+      .optional()
+      .describe(
+        "Which gate is rejecting: 'it' = does not work as built, 'business' = not what was asked for. Defaults to 'business'.",
+      ),
   },
-  async ({ mapId, requirementId, nodeId, comment }) => {
+  async ({ mapId, requirementId, nodeId, comment, gate }) => {
     try {
       let id = nodeId;
       if (!id) {
@@ -524,9 +537,13 @@ server.tool(
         if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
         id = hit.id;
       }
-      const a = await api.acceptRequirement(mapId, id, { decision: 'rejected', comment });
+      const a = await api.acceptRequirement(mapId, id, {
+        decision: 'rejected',
+        comment,
+        gate,
+      });
       return toolResult(
-        `Rejected ${requirementId ?? id} as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}): «${comment}»`,
+        `Rejected ${requirementId ?? id} at the ${a.gate} gate as ${a.userName} at ${a.acceptedAt} (progress ${Math.round(a.progressAtAcceptance)}%, revision ${a.nodeRevisionAtAcceptance}): «${comment}»`,
       );
     } catch (err) {
       return toolError(err);
@@ -536,13 +553,17 @@ server.tool(
 
 server.tool(
   'revoke_acceptance',
-  "Revoke the calling user's active verdict (acceptance OR rejection) on a requirement. History is preserved (append-only); a later re-acceptance/re-rejection is a new sign-off row.",
+  "Revoke the calling user's active verdict (acceptance OR rejection) on ONE gate of a requirement. Gate-scoped: withdrawing the IT verdict leaves the business sign-off standing. History is preserved (append-only); a later re-acceptance/re-rejection is a new sign-off row.",
   {
     mapId: z.string().describe('The map ID'),
     requirementId: z.string().optional().describe('Requirement ID, e.g. "MAN-01"'),
     nodeId: z.string().optional().describe('Node ID (alternative to requirementId)'),
+    gate: z
+      .enum(['it', 'business'])
+      .optional()
+      .describe("Which gate's verdict to withdraw. Defaults to 'business'."),
   },
-  async ({ mapId, requirementId, nodeId }) => {
+  async ({ mapId, requirementId, nodeId, gate }) => {
     try {
       let id = nodeId;
       if (!id) {
@@ -552,8 +573,8 @@ server.tool(
         if (!hit) return toolError(`No node with requirementId ${requirementId} in map ${mapId}.`);
         id = hit.id;
       }
-      await api.revokeAcceptance(mapId, id);
-      return toolResult(`Revoked verdict on ${requirementId ?? id}.`);
+      await api.revokeAcceptance(mapId, id, gate);
+      return toolResult(`Revoked ${gate ?? 'business'} verdict on ${requirementId ?? id}.`);
     } catch (err) {
       return toolError(err);
     }
@@ -604,13 +625,24 @@ server.tool(
 
 server.tool(
   'requirements_overview',
-  'Business-facing requirements register: every node carrying a requirementId, grouped by top-level branch (chapter). Per requirement: MoSCoW priority, derived status (done ≙ Umgesetzt / partial ≙ Teilweise / open ≙ Offen — from progress rollup, never stored), progress %, remaining effort, and linked GitHub issues. Answers "which requirements exist and where do they stand?" without the full get_map dump.',
+  'Business-facing requirements register: every node carrying a requirementId, grouped by parent (chapter). Per requirement: MoSCoW priority, derived lifecycle stage, progress %, remaining effort, linked GitHub issues and the sign-off verdicts. IMPORTANT — "built" is NOT "done": 100% progress only means the code merged. The stage folds the progress rollup together with the per-gate verdicts: open → in_progress → built → it_verified → accepted, and rejected (any active ✗) outranks all of them. Only accept_requirement/reject_requirement can move a requirement past "built"; nothing about the stage is stored.',
   {
     mapId: z.string().describe('The map ID'),
     status: z
-      .enum(['open', 'partial', 'done'])
+      .enum([
+        'open',
+        'in_progress',
+        'built',
+        'it_verified',
+        'accepted',
+        'rejected',
+        'partial',
+        'done',
+      ])
       .optional()
-      .describe('Only requirements in this derived status'),
+      .describe(
+        'Only requirements in this derived stage. "partial"/"done" are the pre-gate progress buckets, still accepted: they filter on progress alone (done = built or beyond).',
+      ),
     requirementPriority: z
       .enum(['must', 'should', 'could'])
       .optional()
@@ -668,8 +700,9 @@ server.tool(
       const progressOf = (n: (typeof requirements)[number]): number =>
         (n.childrenIds?.length ?? 0) > 0 ? n.computedProgress : (n.percentComplete ?? 0);
 
-      const statusOf = (progress: number): 'open' | 'partial' | 'done' =>
-        progress >= 100 ? 'done' : progress > 0 ? 'partial' : 'open';
+      // Stage, not just progress — see requirementStage in @mindblown/core.
+      const stageOf = (nodeId: string, progress: number): RequirementStage =>
+        requirementStage(progress, accByNode.get(nodeId) ?? []);
 
       // Unestimated leaves in a requirement's subtree — flags where the
       // effort/remaining numbers under-count (null leaves carry 0 effort
@@ -696,7 +729,8 @@ server.tool(
           chapter: chapterOf(n.id),
           chapterOrder: chapterOrderOf(n.id),
           progress,
-          status: statusOf(progress),
+          stage: stageOf(n.id, progress),
+          built: progress >= BUILT_THRESHOLD,
           remaining: n.computedEffort * (1 - progress / 100),
           unestimated: unestimatedLeaves(n.id),
           // Own links first, then any on the work below — progress and effort
@@ -720,10 +754,11 @@ server.tool(
         };
       });
 
-      const totalByStatus = { done: 0, partial: 0, open: 0 };
-      for (const r of rows) totalByStatus[r.status]++;
+      const totals = stageCounts(rows.map((r) => r.stage));
 
-      if (status) rows = rows.filter((r) => r.status === status);
+      if (status === 'done') rows = rows.filter((r) => r.built);
+      else if (status === 'partial') rows = rows.filter((r) => r.progress > 0 && !r.built);
+      else if (status) rows = rows.filter((r) => r.stage === status);
       if (requirementPriority) {
         rows = rows.filter((r) => r.node.requirementPriority === requirementPriority);
       }
@@ -752,8 +787,17 @@ server.tool(
 
       const lines: string[] = [];
       lines.push(`Requirements register — ${data.map.name}`);
+      // The funnel, not a single "done" count: the gap between built and
+      // accepted is the number this tool exists to make impossible to miss.
       lines.push(
-        `${requirements.length} requirement(s): ${totalByStatus.done} done / ${totalByStatus.partial} partial / ${totalByStatus.open} open`,
+        `${requirements.length} requirement(s): ${STAGE_ORDER.filter(
+          (s) => totals[s] > 0 || s === 'accepted',
+        )
+          .map((s) => `${totals[s]} ${s}`)
+          .join(' / ')}`,
+      );
+      lines.push(
+        '("built" = code merged, nobody signed off yet — only "accepted" means the business side confirmed it)',
       );
       if (status || requirementPriority || versionId) {
         let versionLabel = versionId;
@@ -769,21 +813,31 @@ server.tool(
         lines.push(`Showing ${rows.length} after filter (${filters.join(', ')})`);
       }
 
-      const statusMark = { done: '✓ done', partial: '◐ partial', open: '○ open' } as const;
+      const stageMark: Record<RequirementStage, string> = {
+        accepted: '✓✓ accepted',
+        it_verified: '✓ it_verified',
+        built: '▣ built',
+        in_progress: '◐ in_progress',
+        open: '○ open',
+        rejected: '✗ REJECTED',
+      };
       for (const [chapter, list] of chapters) {
-        const doneCount = list.filter((r) => r.status === 'done').length;
+        const builtCount = list.filter((r) => r.built).length;
+        const acceptedCount = list.filter((r) => r.stage === 'accepted').length;
         lines.push('');
-        lines.push(`## ${chapter} (${list.length} req, ${doneCount} done)`);
+        lines.push(
+          `## ${chapter} (${list.length} req, ${builtCount} built, ${acceptedCount} accepted)`,
+        );
         for (const r of list) {
           const prio = r.node.requirementPriority ? ` [${r.node.requirementPriority}]` : '';
           const parts = [
-            `${r.node.requirementId}${prio} ${statusMark[r.status]} ${r.progress.toFixed(0)}%`,
+            `${r.node.requirementId}${prio} ${stageMark[r.stage]} ${r.progress.toFixed(0)}%`,
             `— ${r.node.text} (id: ${r.node.id})`,
           ];
-          if (r.status !== 'done' && r.remaining > 0) {
+          if (!r.built && r.remaining > 0) {
             parts.push(`· ${r.remaining.toFixed(1)} ${unit} remaining`);
           }
-          if (r.status !== 'done' && r.unestimated > 0) {
+          if (!r.built && r.unestimated > 0) {
             parts.push(`· ⚠ ${r.unestimated} unestimated leaf(s) — effort under-counts`);
           }
           if (r.ghLinks.length > 0) {
@@ -797,7 +851,7 @@ server.tool(
                 r.node.revision !== a.nodeRevisionAtAcceptance;
               const mark = a.decision === 'rejected' ? ' ✗' : '';
               const why = a.decision === 'rejected' && a.comment ? ` («${a.comment}»)` : '';
-              return `${a.userName}${mark}${why}${stale ? ' ⚠stale' : ''}`;
+              return `${a.gate ?? 'business'}/${a.userName}${mark}${why}${stale ? ' ⚠stale' : ''}`;
             });
             parts.push(`· Abnahme: ${fmt.join(', ')}`);
           }

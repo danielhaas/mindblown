@@ -513,6 +513,11 @@ export const requirementAcceptances = pgTable('requirement_acceptances', {
   decision: text('decision').notNull().default('accepted'),
   // Reviewer comment — mandatory for 'rejected' (enforced in the route).
   comment: text('comment'),
+  // Which gate this verdict answers: 'it' (does it work?) or 'business'
+  // (is it what we asked for?). Default 'business' so pre-split rows keep
+  // meaning what they meant. The active-unique index spans the gate, so a
+  // user holds at most one live verdict PER GATE per node.
+  gate: text('gate').notNull().default('business'),
 });
 
 // ── Lint dismissals (plan-health panel, docs/plan-linter.md) ───────

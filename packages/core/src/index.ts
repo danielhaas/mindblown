@@ -103,8 +103,22 @@ export type { CalibrationSample, CalibrationAssessment } from './calibration.js'
 export { proseMirrorToPlainText } from './richtext.js';
 
 // Requirements register helpers
-export { collectRequirementGhLinks } from './requirements.js';
-export type { GhLinkSource, RequirementGhLink } from './requirements.js';
+export {
+  collectRequirementGhLinks,
+  requirementStage,
+  stageCounts,
+  BUILT_THRESHOLD,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  STAGE_COLOR,
+} from './requirements.js';
+export type {
+  GhLinkSource,
+  RequirementGhLink,
+  RequirementGate,
+  RequirementStage,
+  RequirementVerdict,
+} from './requirements.js';
 
 // Velocity & capacity helpers
 export {

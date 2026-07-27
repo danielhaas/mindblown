@@ -5,6 +5,8 @@ import type {
   Version,
   ScheduledNode,
   CriticalPathResult,
+  RequirementGate,
+  RequirementStage,
 } from '@mindblown/core';
 
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
@@ -590,14 +592,22 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
  * export route so the document matches what's on screen.
  */
 export interface RequirementsExportFilter {
-  status?: 'open' | 'partial' | 'done';
+  status?: RequirementStage;
   priority?: 'must' | 'should' | 'could';
   /** Version id, or 'none' for "no release assigned". */
   release?: string;
   releaseMode?: 'cumulative' | 'exact';
   hideDone?: boolean;
-  acceptance?: 'none' | 'mine-open' | 'rejected';
+  acceptance?: AcceptanceFilter;
 }
+
+/** Mirrors the server's RegisterFilter['acceptance']. */
+export type AcceptanceFilter =
+  | 'none'
+  | 'mine-open'
+  | 'rejected'
+  | 'it-open'
+  | 'business-open';
 
 function requirementsExportQuery(format: string, filter: RequirementsExportFilter): string {
   const params = new URLSearchParams({ format });
@@ -646,6 +656,8 @@ export interface AcceptanceRow {
   nodeRevisionAtAcceptance: number;
   decision: 'accepted' | 'rejected';
   comment: string | null;
+  /** Optional: rows written before the gate split read as 'business'. */
+  gate?: RequirementGate;
 }
 
 export function fetchAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
@@ -655,7 +667,11 @@ export function fetchAcceptances(mapId: string): Promise<{ acceptances: Acceptan
 export function acceptRequirement(
   mapId: string,
   nodeId: string,
-  verdict?: { decision: 'accepted' | 'rejected'; comment?: string },
+  verdict?: {
+    decision?: 'accepted' | 'rejected';
+    comment?: string;
+    gate?: RequirementGate;
+  },
 ): Promise<AcceptanceRow> {
   return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
     method: 'POST',
@@ -663,8 +679,16 @@ export function acceptRequirement(
   });
 }
 
-export function revokeAcceptance(mapId: string, nodeId: string): Promise<void> {
-  return request<void>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, { method: 'DELETE' });
+export function revokeAcceptance(
+  mapId: string,
+  nodeId: string,
+  gate?: RequirementGate,
+): Promise<void> {
+  // Gate as a query param: the route rejects a DELETE body.
+  const qs = gate ? `?gate=${gate}` : '';
+  return request<void>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance${qs}`, {
+    method: 'DELETE',
+  });
 }
 
 // ── Nodes ────────────────────────────────────────────────────────

@@ -25,6 +25,29 @@ import { workspaces, users, releaseSnapshots } from '../db/schema.js';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'mindblown-dev-secret-change-in-production';
 
+/**
+ * Accepted `?status=` values on the requirements export: the six lifecycle
+ * stages, plus the two pre-split progress buckets that older links send.
+ */
+const STATUS_FILTER_VALUES = [
+  'open',
+  'in_progress',
+  'built',
+  'it_verified',
+  'accepted',
+  'rejected',
+  'partial',
+  'done',
+] as const;
+
+const ACCEPTANCE_FILTER_VALUES = [
+  'none',
+  'mine-open',
+  'rejected',
+  'it-open',
+  'business-open',
+] as const;
+
 interface MapProjection {
   totalScope: number;
   totalDone: number;
@@ -247,7 +270,12 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   //
   // Filter params mirror the Requirements view's filter bar so the export
   // matches what's on screen: ?status=, ?priority=, ?release=<versionId|none>,
-  // ?releaseMode=cumulative|exact, ?hideDone=1, ?acceptance=none|mine-open|rejected.
+  // ?releaseMode=cumulative|exact, ?hideDone=1, ?acceptance=…
+  //
+  // ?status= takes a lifecycle stage (open, in_progress, built, it_verified,
+  // accepted, rejected). 'partial' and 'done' stay accepted so links and
+  // bookmarks from before the stage split keep working — they filter on
+  // progress alone, which is what they always meant.
   app.get<{
     Params: { id: string };
     Querystring: {
@@ -289,10 +317,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           ? (value as T)
           : undefined;
       for (const [key, allowed] of [
-        ['status', ['open', 'partial', 'done']],
+        ['status', STATUS_FILTER_VALUES],
         ['priority', ['must', 'should', 'could']],
         ['releaseMode', ['cumulative', 'exact']],
-        ['acceptance', ['none', 'mine-open', 'rejected']],
+        ['acceptance', ACCEPTANCE_FILTER_VALUES],
       ] as const) {
         const value = q[key];
         if (value !== undefined && !(allowed as readonly string[]).includes(value)) {
@@ -316,12 +344,12 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const register = buildRegisterData(data.map, data.nodes, computed, acceptances, versions, {
-        status: oneOf(q.status, ['open', 'partial', 'done']),
+        status: oneOf(q.status, STATUS_FILTER_VALUES),
         priority: oneOf(q.priority, ['must', 'should', 'could']),
         release: q.release,
         releaseMode: oneOf(q.releaseMode, ['cumulative', 'exact']),
         hideDone: q.hideDone === '1' || q.hideDone === 'true',
-        acceptance: oneOf(q.acceptance, ['none', 'mine-open', 'rejected']),
+        acceptance: oneOf(q.acceptance, ACCEPTANCE_FILTER_VALUES),
         currentUserId: req.userId ?? null,
       });
       const format = q.format ?? 'md';

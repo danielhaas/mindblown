@@ -13,6 +13,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { RequirementGate } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -356,6 +357,8 @@ export interface AcceptanceRow {
   nodeRevisionAtAcceptance: number;
   decision: 'accepted' | 'rejected';
   comment: string | null;
+  /** Optional: rows written before the gate split read as 'business'. */
+  gate?: RequirementGate;
 }
 
 export function getAcceptances(mapId: string): Promise<{ acceptances: AcceptanceRow[] }> {
@@ -365,7 +368,11 @@ export function getAcceptances(mapId: string): Promise<{ acceptances: Acceptance
 export function acceptRequirement(
   mapId: string,
   nodeId: string,
-  verdict?: { decision: 'accepted' | 'rejected'; comment?: string },
+  verdict?: {
+    decision?: 'accepted' | 'rejected';
+    comment?: string;
+    gate?: RequirementGate;
+  },
 ): Promise<AcceptanceRow> {
   return request<AcceptanceRow>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
     method: 'POST',
@@ -373,10 +380,17 @@ export function acceptRequirement(
   });
 }
 
-export function revokeAcceptance(mapId: string, nodeId: string): Promise<{ success: boolean }> {
-  return request<{ success: boolean }>(`/api/maps/${mapId}/nodes/${nodeId}/acceptance`, {
-    method: 'DELETE',
-  });
+export function revokeAcceptance(
+  mapId: string,
+  nodeId: string,
+  gate?: RequirementGate,
+): Promise<{ success: boolean }> {
+  // Gate rides in the query string — the route rejects a DELETE body.
+  const qs = gate ? `?gate=${gate}` : '';
+  return request<{ success: boolean }>(
+    `/api/maps/${mapId}/nodes/${nodeId}/acceptance${qs}`,
+    { method: 'DELETE' },
+  );
 }
 
 export interface RequirementsExportFilter {

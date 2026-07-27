@@ -40,7 +40,7 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
           error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
         });
       }
-      const body = (req.body ?? {}) as { decision?: string; comment?: string };
+      const body = (req.body ?? {}) as { decision?: string; comment?: string; gate?: string };
       const decision = body.decision ?? 'accepted';
       if (decision !== 'accepted' && decision !== 'rejected') {
         return reply.status(400).send({
@@ -48,6 +48,14 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
             code: 'INVALID_DECISION',
             message: "decision must be 'accepted' or 'rejected'",
           },
+        });
+      }
+      // Default 'business': a body-less POST is the #218 acceptance, which
+      // was always the business sign-off.
+      const gate = body.gate ?? 'business';
+      if (gate !== 'it' && gate !== 'business') {
+        return reply.status(400).send({
+          error: { code: 'INVALID_GATE', message: "gate must be 'it' or 'business'" },
         });
       }
       const comment = typeof body.comment === 'string' ? body.comment.trim() : '';
@@ -98,13 +106,13 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
         node.revision,
         decision,
         comment.length > 0 ? comment : null,
+        gate,
       );
       if (!acceptance) {
         return reply.status(409).send({
           error: {
             code: 'ALREADY_ACCEPTED',
-            message:
-              'You already have an active verdict on this requirement — revoke it first to change it',
+            message: `You already have an active ${gate} verdict on this requirement — revoke it first to change it`,
           },
         });
       }
@@ -115,7 +123,9 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
   );
 
   // ── DELETE /api/maps/:id/nodes/:nodeId/acceptance — revoke own ─
-  app.delete<{ Params: { id: string; nodeId: string } }>(
+  // Gate travels as a query param, not a body: a DELETE with a JSON body
+  // is the shape Fastify 400s on when the header and body disagree.
+  app.delete<{ Params: { id: string; nodeId: string }; Querystring: { gate?: string } }>(
     '/api/maps/:id/nodes/:nodeId/acceptance',
     async (req, reply) => {
       const userId = req.userId;
@@ -124,16 +134,25 @@ export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
           error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
         });
       }
+      const gate = req.query.gate ?? 'business';
+      if (gate !== 'it' && gate !== 'business') {
+        return reply.status(400).send({
+          error: { code: 'INVALID_GATE', message: "gate must be 'it' or 'business'" },
+        });
+      }
       const perm = await permDb.getPermission(req.params.id, userId);
       if (!permDb.hasPermission(perm, 'view')) {
         return reply.status(403).send({
           error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
         });
       }
-      const revoked = await acceptanceDb.revoke(req.params.nodeId, userId);
+      const revoked = await acceptanceDb.revoke(req.params.nodeId, userId, gate);
       if (!revoked) {
         return reply.status(404).send({
-          error: { code: 'NO_ACTIVE_ACCEPTANCE', message: 'No active acceptance to revoke' },
+          error: {
+            code: 'NO_ACTIVE_ACCEPTANCE',
+            message: `No active ${gate} verdict to revoke`,
+          },
         });
       }
       broadcast(req.params.id, { type: 'acceptance:changed', nodeId: req.params.nodeId });

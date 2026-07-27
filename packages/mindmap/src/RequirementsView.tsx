@@ -1,29 +1,34 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareVersions, collectRequirementGhLinks } from '@mindblown/core';
-import type { Node, Version } from '@mindblown/core';
+import {
+  compareVersions,
+  collectRequirementGhLinks,
+  requirementStage,
+  stageCounts,
+  BUILT_THRESHOLD,
+  STAGE_LABEL,
+  STAGE_ORDER,
+  STAGE_COLOR,
+} from '@mindblown/core';
+import type { Node, Version, RequirementGate, RequirementStage } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { linkColor, linkWeight } from './ghLinkStyle.js';
 import { REQ_VERSION_NONE } from './urlState.js';
 import * as api from './api.js';
 
-// ── Derived requirement status ───────────────────────────────────
+// ── Derived requirement stage ────────────────────────────────────
 //
-// Never stored — always derived from progress rollup so the register
-// can't drift from the plan (the whole point of the feature).
+// Never stored — derived from the progress rollup folded together with
+// the per-gate sign-off verdicts, so the register can't drift from the
+// plan (the whole point of the feature). The labels and colours live in
+// @mindblown/core because the Word export and the MCP overview have to
+// say exactly the same thing.
+//
+// The word matters: 100 % progress is "Gebaut", not "Done" — the rollup
+// only knows that code merged. Green is reserved for the two stages that
+// required a human verdict.
 
-type ReqStatus = 'open' | 'partial' | 'done';
-
-const STATUS_LABEL: Record<ReqStatus, string> = {
-  done: 'Done',
-  partial: 'Partial',
-  open: 'Open',
-};
-
-const STATUS_COLOR: Record<ReqStatus, { bg: string; fg: string }> = {
-  done: { bg: '#d1fae5', fg: '#065f46' },
-  partial: { bg: '#fef3c7', fg: '#92400e' },
-  open: { bg: '#f1f5f9', fg: '#475569' },
-};
+/** The register speaks German because its readers are the business side. */
+const GATE_LABEL: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };
 
 const HEALTH_COLOR: Record<string, string> = {
   on_track: '#10b981',
@@ -43,7 +48,11 @@ interface ReqRow {
   chapterText: string;
   isLeaf: boolean;
   progress: number;
-  status: ReqStatus;
+  stage: RequirementStage;
+  /** Progress alone says the code landed — kept for "hide done" and Rest. */
+  built: boolean;
+  /** Active verdicts on this requirement, split by gate. */
+  verdicts: Record<RequirementGate, api.AcceptanceRow | undefined>;
   remaining: number;
   unestimated: number;
   health: string;
@@ -60,10 +69,6 @@ interface ReqRow {
   descendantVersionIds: string[];
   /** What the register treats as "the" release: own, else a unanimous descendant one. */
   effectiveVersionId: string | null;
-}
-
-function statusOf(progress: number): ReqStatus {
-  return progress >= 100 ? 'done' : progress > 0 ? 'partial' : 'open';
 }
 
 function compareReqIds(a: ReqRow, b: ReqRow): number {
@@ -101,7 +106,7 @@ export function RequirementsView() {
 
   const user = useMindmapStore((s) => s.user);
   const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
-  const [acceptanceFilter, setAcceptanceFilter] = useState<'' | 'none' | 'mine-open' | 'rejected'>('');
+  const [acceptanceFilter, setAcceptanceFilter] = useState<'' | api.AcceptanceFilter>('');
   const [exporting, setExporting] = useState(false);
 
   useEffect(() => {
@@ -126,7 +131,7 @@ export function RequirementsView() {
     return m;
   }, [acceptances]);
 
-  const [statusFilter, setStatusFilter] = useState<'' | ReqStatus>('');
+  const [statusFilter, setStatusFilter] = useState<'' | RequirementStage>('');
   const [priorityFilter, setPriorityFilter] = useState<'' | 'must' | 'should' | 'could'>('');
   // Release filter lives in the store (mirrored to ?rv= / ?rvm= by
   // useUrlState) so the selection survives a copied link.
@@ -186,13 +191,22 @@ export function RequirementsView() {
         // requirements sit directly under their Bereich node, so the parent
         // IS the chapter; this also matches ListView's group-by-parent.
         const chapter = node.parentId ? nodes[node.parentId] : null;
+        // One active verdict per gate is a DB invariant, so first-wins is
+        // exact rather than a heuristic.
+        const accs = accByNode.get(node.id) ?? [];
+        const verdicts = {
+          it: accs.find((a) => a.gate === 'it'),
+          business: accs.find((a) => (a.gate ?? 'business') === 'business'),
+        };
         return {
           node,
           chapterId: chapter?.id ?? null,
           chapterText: chapter?.text ?? '(root)',
           isLeaf,
           progress,
-          status: statusOf(progress),
+          stage: requirementStage(progress, accs),
+          built: progress >= BUILT_THRESHOLD,
+          verdicts,
           remaining: (cv?.computedEffort ?? 0) * (1 - progress / 100),
           unestimated: countUnestimatedLeaves(node.id),
           health: cv?.healthSignal ?? 'on_track',
@@ -210,12 +224,19 @@ export function RequirementsView() {
             (descendantVersionIds.length === 1 ? descendantVersionIds[0] : null),
         };
       });
-  }, [nodes, computed]);
+  }, [nodes, computed, accByNode]);
 
   const totals = useMemo(() => {
-    const t = { done: 0, partial: 0, open: 0 };
-    for (const r of allRows) t[r.status]++;
-    return t;
+    const counts = stageCounts(allRows.map((r) => r.stage));
+    return {
+      ...counts,
+      built: allRows.filter((r) => r.built).length,
+      // The two review queues. Not derivable from the stage counts: a
+      // business-accepted requirement can still be missing its IT verdict
+      // (every pre-split row was backfilled as business).
+      itOpen: allRows.filter((r) => r.built && !r.verdicts.it).length,
+      businessOpen: allRows.filter((r) => r.built && !r.verdicts.business).length,
+    };
   }, [allRows]);
 
   // Slider position derived from the selected version id; an id that no
@@ -234,8 +255,10 @@ export function RequirementsView() {
   const filteredRows = useMemo(
     () =>
       allRows.filter((r) => {
-        if (hideDone && r.status === 'done') return false;
-        if (statusFilter && r.status !== statusFilter) return false;
+        // A rejected requirement is never hidden — it is the row that most
+        // needs to stay visible, however green the rollup looks.
+        if (hideDone && r.built && r.stage !== 'rejected') return false;
+        if (statusFilter && r.stage !== statusFilter) return false;
         if (priorityFilter && r.node.requirementPriority !== priorityFilter) return false;
         if (showUnscheduledOnly) {
           // "No release" means nothing below it is scheduled either.
@@ -269,6 +292,12 @@ export function RequirementsView() {
           }
           if (acceptanceFilter === 'rejected' && !accs.some((a) => a.decision === 'rejected')) {
             return false;
+          }
+          // Review queues: only what is far enough along to actually judge.
+          if (acceptanceFilter === 'it-open' || acceptanceFilter === 'business-open') {
+            if (!r.built) return false;
+            const gate: RequirementGate = acceptanceFilter === 'it-open' ? 'it' : 'business';
+            if (accs.some((a) => (a.gate ?? 'business') === gate)) return false;
           }
         }
         return true;
@@ -334,21 +363,29 @@ export function RequirementsView() {
       : [];
   }, [allRows, nodes, rootNodeId, dfsOrder]);
 
-  const toggleAcceptance = async (row: ReqRow) => {
+  const toggleAcceptance = async (row: ReqRow, gate: RequirementGate) => {
     if (!currentMapId || !user) return;
-    const mine = (accByNode.get(row.node.id) ?? []).find((a) => a.userId === user.id);
+    const mine = (accByNode.get(row.node.id) ?? []).find(
+      (a) => a.userId === user.id && (a.gate ?? 'business') === gate,
+    );
     try {
       if (mine) {
-        await api.revokeAcceptance(currentMapId, row.node.id);
+        await api.revokeAcceptance(currentMapId, row.node.id, gate);
         setAcceptances((prev) => prev.filter((a) => a.id !== mine.id));
       } else {
+        // Signing off on something that isn't built yet is legitimate
+        // ("good enough, we'll take it") but should never be a slip.
         if (
-          row.status !== 'done' &&
-          !window.confirm(`Status is ${STATUS_LABEL[row.status]} — accept anyway?`)
+          !row.built &&
+          !window.confirm(
+            `${row.node.requirementId} steht auf «${STAGE_LABEL[row.stage]}» — trotzdem ${
+              gate === 'it' ? 'als IT-geprüft markieren' : 'abnehmen'
+            }?`,
+          )
         ) {
           return;
         }
-        const created = await api.acceptRequirement(currentMapId, row.node.id);
+        const created = await api.acceptRequirement(currentMapId, row.node.id, { gate });
         setAcceptances((prev) => [...prev, created]);
       }
     } catch {
@@ -357,10 +394,10 @@ export function RequirementsView() {
     }
   };
 
-  const rejectRequirement = async (row: ReqRow) => {
+  const rejectRequirement = async (row: ReqRow, gate: RequirementGate) => {
     if (!currentMapId || !user) return;
     const comment = window.prompt(
-      `Reject ${row.node.requirementId} — why? (Reason required)`,
+      `${row.node.requirementId} zurückweisen (${GATE_LABEL[gate]}) — warum? (Begründung erforderlich)`,
     );
     if (comment == null) return; // cancelled
     if (comment.trim() === '') return;
@@ -368,6 +405,7 @@ export function RequirementsView() {
       const created = await api.acceptRequirement(currentMapId, row.node.id, {
         decision: 'rejected',
         comment: comment.trim(),
+        gate,
       });
       setAcceptances((prev) => [...prev, created]);
     } catch {
@@ -412,12 +450,21 @@ export function RequirementsView() {
       <div style={headerStyle}>
         <div>
           <h2 style={{ margin: 0, fontSize: 16, color: '#1e293b' }}>Requirements</h2>
-          <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-            {allRows.length} requirement{allRows.length === 1 ? '' : 's'} · {totals.done} done ·{' '}
-            {totals.partial} partial · {totals.open} open
-            {(hideDone || statusFilter || priorityFilter || versionFilterActive) &&
-              ` · showing ${filteredRows.length} (filtered)`}
+          {/* The headline number is the ACCEPTED one. Leading with "116
+              done" was the whole problem: that count only ever meant code
+              had merged, and business read it as delivered. */}
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 7, marginTop: 3 }}>
+            <span style={{ fontSize: 20, fontWeight: 700, color: '#047857', lineHeight: 1 }}>
+              {totals.accepted}
+            </span>
+            <span style={{ fontSize: 11, color: '#64748b' }}>
+              von {allRows.length} abgenommen · {totals.built} gebaut, davon{' '}
+              {totals.built - totals.accepted} ohne Abnahme
+              {(hideDone || statusFilter || priorityFilter || versionFilterActive) &&
+                ` · ${filteredRows.length} angezeigt (gefiltert)`}
+            </span>
           </div>
+          <StageFunnel counts={totals} total={allRows.length} />
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
           <button
@@ -425,8 +472,8 @@ export function RequirementsView() {
             aria-pressed={hideDone}
             title={
               hideDone
-                ? `${totals.done} done requirement${totals.done === 1 ? '' : 's'} hidden — click to show`
-                : 'Hide requirements that are 100% complete'
+                ? `${totals.built} gebaute Anforderung${totals.built === 1 ? '' : 'en'} ausgeblendet — klicken zum Anzeigen`
+                : 'Gebaute Anforderungen ausblenden (100 % Fortschritt; Zurückgewiesene bleiben sichtbar)'
             }
             style={{
               ...secondaryButtonStyle(false),
@@ -435,22 +482,25 @@ export function RequirementsView() {
                 : {}),
             }}
           >
-            {hideDone ? `Done hidden (${totals.done})` : 'Hide done'}
+            {hideDone ? `Gebaute versteckt (${totals.built})` : 'Gebaute ausblenden'}
           </button>
           <select
             value={statusFilter}
             onChange={(e) => {
-              const v = e.target.value as '' | ReqStatus;
+              const v = e.target.value as '' | RequirementStage;
               setStatusFilter(v);
-              // Asking for Done while hiding Done would show an empty table.
-              if (v === 'done') setHideDone(false);
+              // Asking for a built-or-beyond stage while hiding those would
+              // show an empty table.
+              if (v === 'built' || v === 'it_verified' || v === 'accepted') setHideDone(false);
             }}
             style={filterSelectStyle}
           >
-            <option value="">All statuses</option>
-            <option value="open">Open</option>
-            <option value="partial">Partial</option>
-            <option value="done">Done</option>
+            <option value="">Alle Stufen</option>
+            {STAGE_ORDER.map((s) => (
+              <option key={s} value={s}>
+                {STAGE_LABEL[s]}
+              </option>
+            ))}
           </select>
           <select
             value={priorityFilter}
@@ -525,15 +575,15 @@ export function RequirementsView() {
           </div>
           <select
             value={acceptanceFilter}
-            onChange={(e) =>
-              setAcceptanceFilter(e.target.value as '' | 'none' | 'mine-open' | 'rejected')
-            }
+            onChange={(e) => setAcceptanceFilter(e.target.value as '' | api.AcceptanceFilter)}
             style={filterSelectStyle}
           >
-            <option value="">Acceptance: all</option>
-            <option value="none">Not accepted</option>
-            <option value="mine-open">My acceptance pending</option>
-            <option value="rejected">Rejected</option>
+            <option value="">Abnahme: alle</option>
+            <option value="it-open">IT-Prüfung offen ({totals.itOpen})</option>
+            <option value="business-open">Abnahme offen ({totals.businessOpen})</option>
+            <option value="none">Ohne Urteil</option>
+            <option value="mine-open">Mein Urteil ausstehend</option>
+            <option value="rejected">Zurückgewiesen</option>
           </select>
           <button
             onClick={() => setShowCreate((v) => !v)}
@@ -687,7 +737,6 @@ export function RequirementsView() {
                   setEditingCell={setEditingCell}
                   updateNode={updateNode}
                   jumpToNode={jumpToNode}
-                  accByNode={accByNode}
                   currentUserId={user?.id ?? null}
                   toggleAcceptance={toggleAcceptance}
                   rejectRequirement={rejectRequirement}
@@ -713,7 +762,6 @@ function ChapterGroup({
   setEditingCell,
   updateNode,
   jumpToNode,
-  accByNode,
   currentUserId,
   toggleAcceptance,
   rejectRequirement,
@@ -727,19 +775,19 @@ function ChapterGroup({
   setEditingCell: (cell: { nodeId: string; field: string } | null) => void;
   updateNode: (id: string, updates: Partial<Node>) => void;
   jumpToNode: (node: Node) => void;
-  accByNode: Map<string, api.AcceptanceRow[]>;
   currentUserId: string | null;
-  toggleAcceptance: (row: ReqRow) => void;
-  rejectRequirement: (row: ReqRow) => void;
+  toggleAcceptance: (row: ReqRow, gate: RequirementGate) => void;
+  rejectRequirement: (row: ReqRow, gate: RequirementGate) => void;
 }) {
-  const done = rows.filter((r) => r.status === 'done').length;
+  const built = rows.filter((r) => r.built).length;
+  const accepted = rows.filter((r) => r.stage === 'accepted').length;
   return (
     <>
       <tr>
         <td colSpan={9} style={groupHeaderStyle}>
           {chapterText}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
-            {rows.length} req · {done} done
+            {rows.length} req · {built} gebaut · {accepted} abgenommen
           </span>
         </td>
       </tr>
@@ -929,20 +977,25 @@ function ChapterGroup({
             </select>
           </td>
 
-          {/* Derived status — read-only by design */}
+          {/* Derived stage — read-only by design */}
           <td style={tdStyle}>
             <span
-              title="Derived from progress rollup — complete the underlying work to change it"
+              title={
+                r.built
+                  ? 'Abgeleitet aus Fortschritt + Abnahme-Urteilen. «Gebaut» heisst: Code fertig, noch niemand hat unterschrieben.'
+                  : 'Abgeleitet aus dem Fortschritts-Rollup — die darunterliegende Arbeit abschliessen, um das zu ändern'
+              }
               style={{
                 padding: '2px 8px',
                 borderRadius: 10,
                 fontSize: 11,
                 fontWeight: 600,
-                background: STATUS_COLOR[r.status].bg,
-                color: STATUS_COLOR[r.status].fg,
+                whiteSpace: 'nowrap',
+                background: STAGE_COLOR[r.stage].bg,
+                color: STAGE_COLOR[r.stage].fg,
               }}
             >
-              {STATUS_LABEL[r.status]}
+              {STAGE_LABEL[r.stage]}
             </span>
           </td>
 
@@ -985,12 +1038,12 @@ function ChapterGroup({
 
           {/* Remaining effort + unestimated warning */}
           <td style={{ ...tdStyle, ...numericCellStyle }}>
-            {r.status === 'done' ? (
+            {r.built ? (
               <span style={{ color: '#94a3b8' }}>—</span>
             ) : (
               `${r.remaining.toFixed(1)} ${effortUnit}`
             )}
-            {r.status !== 'done' && r.unestimated > 0 && (
+            {!r.built && r.unestimated > 0 && (
               <span
                 title={`${r.unestimated} unestimated leaf/leaves under this requirement — remaining under-counts`}
                 style={{ color: '#d97706', marginLeft: 6, cursor: 'help' }}
@@ -1065,80 +1118,21 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* Acceptance — per-user sign-off chips; own chip toggles */}
+          {/* Abnahme — one slot per gate. Two ✓ from the same person would
+              be indistinguishable without the gate label above them. */}
           <td style={{ ...tdStyle, ...wrappingCellStyle }} onClick={(e) => e.stopPropagation()}>
-            {(accByNode.get(r.node.id) ?? []).map((a) => {
-              const stale =
-                Math.abs(r.progress - a.progressAtAcceptance) > 1 ||
-                r.node.revision !== a.nodeRevisionAtAcceptance;
-              const own = a.userId === currentUserId;
-              const rejected = a.decision === 'rejected';
-              const mark = rejected ? '✗' : '✓';
-              const label = `${a.userName.split(' ')[0]} ${mark} ${a.acceptedAt.slice(5, 10).split('-').reverse().join('.')}.`;
-              return (
-                <span
-                  key={a.id}
-                  onClick={own ? () => toggleAcceptance(r) : undefined}
-                  title={
-                    (stale ? 'Changed since sign-off! ' : '') +
-                    `${a.userName}, ${rejected ? 'rejected' : 'accepted'} ${a.acceptedAt.slice(0, 10)} at ${Math.round(a.progressAtAcceptance)}%` +
-                    (rejected && a.comment ? ` — "${a.comment}"` : '') +
-                    (own ? ' — click to withdraw' : '')
-                  }
-                  style={{
-                    display: 'inline-block',
-                    padding: '2px 8px',
-                    marginRight: 4,
-                    marginBottom: 2,
-                    borderRadius: 10,
-                    fontSize: 11,
-                    fontWeight: 600,
-                    cursor: own ? 'pointer' : 'default',
-                    background: rejected ? '#fee2e2' : stale ? '#fef3c7' : '#d1fae5',
-                    color: rejected ? '#991b1b' : stale ? '#92400e' : '#065f46',
-                  }}
-                >
-                  {stale ? '⚠ ' : ''}
-                  {label}
-                </span>
-              );
-            })}
-            {currentUserId &&
-              !(accByNode.get(r.node.id) ?? []).some((a) => a.userId === currentUserId) && (
-                <>
-                  <button
-                    onClick={() => toggleAcceptance(r)}
-                    title="Accept requirement (personal sign-off, status stays derived)"
-                    style={{
-                      padding: '2px 8px',
-                      borderRadius: 10,
-                      fontSize: 11,
-                      border: '1px dashed #cbd5e1',
-                      background: 'transparent',
-                      color: '#64748b',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ✓ Accept
-                  </button>
-                  <button
-                    onClick={() => rejectRequirement(r)}
-                    title="Reject requirement — reason required"
-                    style={{
-                      padding: '2px 8px',
-                      marginLeft: 4,
-                      borderRadius: 10,
-                      fontSize: 11,
-                      border: '1px dashed #fca5a5',
-                      background: 'transparent',
-                      color: '#b91c1c',
-                      cursor: 'pointer',
-                    }}
-                  >
-                    ✗
-                  </button>
-                </>
-              )}
+            <div style={{ display: 'flex', gap: 10 }}>
+              {(['it', 'business'] as const).map((gate) => (
+                <GateSlot
+                  key={gate}
+                  gate={gate}
+                  row={r}
+                  currentUserId={currentUserId}
+                  onToggle={toggleAcceptance}
+                  onReject={rejectRequirement}
+                />
+              ))}
+            </div>
           </td>
         </tr>
       ))}
@@ -1147,6 +1141,171 @@ function ChapterGroup({
 }
 
 // ── Small pieces ─────────────────────────────────────────────────
+
+/**
+ * One gate's verdict slot. Either the standing verdict (own chip clicks
+ * to withdraw) or the ✓/✗ pair to record one.
+ */
+function GateSlot({
+  gate,
+  row,
+  currentUserId,
+  onToggle,
+  onReject,
+}: {
+  gate: RequirementGate;
+  row: ReqRow;
+  currentUserId: string | null;
+  onToggle: (row: ReqRow, gate: RequirementGate) => void;
+  onReject: (row: ReqRow, gate: RequirementGate) => void;
+}) {
+  const a = row.verdicts[gate];
+  const own = a != null && a.userId === currentUserId;
+  const stale =
+    a != null &&
+    (Math.abs(row.progress - a.progressAtAcceptance) > 1 ||
+      row.node.revision !== a.nodeRevisionAtAcceptance);
+  const rejected = a?.decision === 'rejected';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2, minWidth: 70 }}>
+      <span
+        style={{
+          fontSize: 9,
+          letterSpacing: '0.08em',
+          textTransform: 'uppercase',
+          color: '#94a3b8',
+          fontWeight: 700,
+        }}
+      >
+        {GATE_LABEL[gate]}
+      </span>
+      {a ? (
+        <span
+          onClick={own ? () => onToggle(row, gate) : undefined}
+          title={
+            (stale ? 'Seit dem Urteil geändert! ' : '') +
+            `${a.userName}, ${rejected ? 'zurückgewiesen' : 'erteilt'} ${a.acceptedAt.slice(0, 10)} bei ${Math.round(a.progressAtAcceptance)} %` +
+            (rejected && a.comment ? ` — «${a.comment}»` : '') +
+            (own ? ' — klicken zum Zurückziehen' : '')
+          }
+          style={{
+            display: 'inline-block',
+            padding: '2px 8px',
+            borderRadius: 10,
+            fontSize: 11,
+            fontWeight: 600,
+            whiteSpace: 'nowrap',
+            cursor: own ? 'pointer' : 'default',
+            background: rejected ? '#fee2e2' : stale ? '#fef3c7' : '#d1fae5',
+            color: rejected ? '#991b1b' : stale ? '#92400e' : '#065f46',
+          }}
+        >
+          {stale ? '⚠ ' : ''}
+          {a.userName.split(' ')[0]} {rejected ? '✗' : '✓'}{' '}
+          {a.acceptedAt.slice(5, 10).split('-').reverse().join('.')}.
+        </span>
+      ) : currentUserId ? (
+        <span style={{ display: 'flex', gap: 3 }}>
+          <button
+            onClick={() => onToggle(row, gate)}
+            title={
+              gate === 'it'
+                ? 'IT-Prüfung erteilen — funktioniert wie gebaut'
+                : 'Abnehmen — ist das, was bestellt wurde'
+            }
+            style={ghostChipStyle('#cbd5e1', '#64748b')}
+          >
+            ✓
+          </button>
+          <button
+            onClick={() => onReject(row, gate)}
+            title="Zurückweisen — Begründung erforderlich"
+            style={ghostChipStyle('#fca5a5', '#b91c1c')}
+          >
+            ✗
+          </button>
+        </span>
+      ) : (
+        <span style={{ color: '#cbd5e1', fontSize: 11 }}>—</span>
+      )}
+    </div>
+  );
+}
+
+function ghostChipStyle(borderColor: string, color: string): React.CSSProperties {
+  return {
+    padding: '2px 7px',
+    borderRadius: 10,
+    fontSize: 11,
+    border: `1px dashed ${borderColor}`,
+    background: 'transparent',
+    color,
+    cursor: 'pointer',
+  };
+}
+
+/**
+ * The funnel bar under the header. Its job is to make the gap between
+ * "gebaut" and "abgenommen" impossible to skip past — a single green
+ * percentage never showed it.
+ */
+function StageFunnel({
+  counts,
+  total,
+}: {
+  counts: Record<RequirementStage, number>;
+  total: number;
+}) {
+  if (total === 0) return null;
+  const segments = STAGE_ORDER.filter((s) => counts[s] > 0);
+  return (
+    <div style={{ marginTop: 6, maxWidth: 460 }}>
+      <div
+        style={{
+          display: 'flex',
+          height: 8,
+          borderRadius: 4,
+          overflow: 'hidden',
+          background: '#f1f5f9',
+        }}
+      >
+        {segments.map((s) => (
+          <div
+            key={s}
+            title={`${counts[s]} ${STAGE_LABEL[s]}`}
+            style={{ width: `${(counts[s] / total) * 100}%`, background: STAGE_COLOR[s].fg }}
+          />
+        ))}
+      </div>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: '2px 12px',
+          marginTop: 5,
+          fontSize: 10,
+          color: '#64748b',
+        }}
+      >
+        {STAGE_ORDER.filter((s) => counts[s] > 0 || s === 'accepted').map((s) => (
+          <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <i
+              style={{
+                width: 7,
+                height: 7,
+                borderRadius: 2,
+                background: STAGE_COLOR[s].fg,
+                display: 'inline-block',
+              }}
+            />
+            {STAGE_LABEL[s]} <b style={{ color: '#334155' }}>{counts[s]}</b>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function ProgressBar({ percent, editable }: { percent: number; editable: boolean }) {
   const clamped = Math.min(100, Math.max(0, Math.round(percent)));

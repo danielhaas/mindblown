@@ -1,4 +1,5 @@
 import { and, eq, isNull } from 'drizzle-orm';
+import type { RequirementGate } from '@mindblown/core';
 import { db } from './connection.js';
 import { requirementAcceptances, users } from './schema.js';
 
@@ -27,6 +28,8 @@ export interface Acceptance {
   decision: AcceptanceDecision;
   /** Reviewer comment — always present on rejections (route-enforced). */
   comment: string | null;
+  /** Which gate this verdict answers. Pre-split rows read as 'business'. */
+  gate: RequirementGate;
 }
 
 function toIso(v: unknown): string {
@@ -47,6 +50,7 @@ export async function listActiveAcceptances(mapId: string): Promise<Acceptance[]
       nodeRevisionAtAcceptance: requirementAcceptances.nodeRevisionAtAcceptance,
       decision: requirementAcceptances.decision,
       comment: requirementAcceptances.comment,
+      gate: requirementAcceptances.gate,
     })
     .from(requirementAcceptances)
     .innerJoin(users, eq(users.id, requirementAcceptances.userId))
@@ -55,16 +59,17 @@ export async function listActiveAcceptances(mapId: string): Promise<Acceptance[]
     ...r,
     acceptedAt: toIso(r.acceptedAt),
     decision: (r.decision as AcceptanceDecision) ?? 'accepted',
+    gate: (r.gate as RequirementGate) ?? 'business',
   }));
 }
 
 /**
- * Record a verdict (accept or reject) on a requirement node. Snapshots
- * the derived progress and node revision the reviewer saw. Returns the
- * new row, or null when this user already has an ACTIVE verdict on the
- * node (idempotent — the 23505 on the partial unique index is mapped to
- * null so a double click never errors). Switching verdict = revoke the
- * old row first, then record the new one.
+ * Record a verdict (accept or reject) on a requirement node for one gate.
+ * Snapshots the derived progress and node revision the reviewer saw.
+ * Returns the new row, or null when this user already has an ACTIVE
+ * verdict on the node FOR THAT GATE (idempotent — the 23505 on the
+ * partial unique index is mapped to null so a double click never errors).
+ * Switching verdict = revoke the old row first, then record the new one.
  */
 export async function accept(
   mapId: string,
@@ -74,11 +79,21 @@ export async function accept(
   nodeRevisionAtAcceptance: number,
   decision: AcceptanceDecision = 'accepted',
   comment: string | null = null,
+  gate: RequirementGate = 'business',
 ): Promise<Acceptance | null> {
   try {
     const [row] = await db
       .insert(requirementAcceptances)
-      .values({ mapId, nodeId, userId, progressAtAcceptance, nodeRevisionAtAcceptance, decision, comment })
+      .values({
+        mapId,
+        nodeId,
+        userId,
+        progressAtAcceptance,
+        nodeRevisionAtAcceptance,
+        decision,
+        comment,
+        gate,
+      })
       .returning();
     const [u] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId));
     return {
@@ -92,10 +107,17 @@ export async function accept(
       nodeRevisionAtAcceptance: row.nodeRevisionAtAcceptance,
       decision: (row.decision as AcceptanceDecision) ?? 'accepted',
       comment: row.comment ?? null,
+      gate: (row.gate as RequirementGate) ?? 'business',
     };
   } catch (err) {
     const e = err as { code?: string; constraint?: string };
-    if (e?.code === '23505' && e?.constraint === 'requirement_acceptances_active_unique') {
+    // Both names: the pre-gate index and the widened one. A rolling deploy
+    // can hit either between migration and restart.
+    if (
+      e?.code === '23505' &&
+      (e?.constraint === 'requirement_acceptances_active_gate_unique' ||
+        e?.constraint === 'requirement_acceptances_active_unique')
+    ) {
       return null;
     }
     throw err;
@@ -103,10 +125,16 @@ export async function accept(
 }
 
 /**
- * Revoke the caller's active acceptance on a node. Returns true when a
- * row was revoked, false when there was none (idempotent).
+ * Revoke the caller's active verdict on a node for one gate. Returns true
+ * when a row was revoked, false when there was none (idempotent).
+ * Gate-scoped on purpose: withdrawing the IT verdict must not silently
+ * take the business sign-off with it.
  */
-export async function revoke(nodeId: string, userId: string): Promise<boolean> {
+export async function revoke(
+  nodeId: string,
+  userId: string,
+  gate: RequirementGate = 'business',
+): Promise<boolean> {
   const rows = await db
     .update(requirementAcceptances)
     .set({ revokedAt: new Date() })
@@ -114,6 +142,7 @@ export async function revoke(nodeId: string, userId: string): Promise<boolean> {
       and(
         eq(requirementAcceptances.nodeId, nodeId),
         eq(requirementAcceptances.userId, userId),
+        eq(requirementAcceptances.gate, gate),
         isNull(requirementAcceptances.revokedAt),
       ),
     )

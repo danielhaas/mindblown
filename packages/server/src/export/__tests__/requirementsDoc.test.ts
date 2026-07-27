@@ -76,7 +76,7 @@ describe('buildRegisterData — Abnahme verdicts', () => {
 
   it('renders an acceptance as ✓ without comment', () => {
     const data = build(nodes, [{ ...baseAcc, nodeId: 'r1', decision: 'accepted' }]);
-    expect(data.chapters[0].rows[0].abnahme).toEqual(['T. Muster ✓ 17.07.']);
+    expect(data.chapters[0].rows[0].abnahme).toEqual(['Business: T. Muster ✓ 17.07.']);
   });
 
   it('renders a rejection as ✗ with the truncated comment', () => {
@@ -84,7 +84,7 @@ describe('buildRegisterData — Abnahme verdicts', () => {
       { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'Rollen-Dropdown speichert nicht' },
     ]);
     expect(data.chapters[0].rows[0].abnahme).toEqual([
-      'T. Muster ✗ 17.07. («Rollen-Dropdown speichert nicht»)',
+      'Business: T. Muster ✗ 17.07. («Rollen-Dropdown speichert nicht»)',
     ]);
   });
 
@@ -105,7 +105,7 @@ describe('buildRegisterData — Abnahme verdicts', () => {
       { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'kaputt' },
     ]);
     const md = renderMarkdown(data);
-    expect(md).toContain('T. Muster ✗ 17.07. («kaputt»)');
+    expect(md).toContain('Business: T. Muster ✗ 17.07. («kaputt»)');
   });
 });
 
@@ -157,11 +157,11 @@ describe('buildRegisterData — status detail', () => {
     buildRegisterData(map, req(p), new Map(), []).chapters[0].rows[0].statusDetail;
 
   it('appends the derived percentage to partial rows', () => {
-    expect(detail(42)).toBe('Teilweise · 42 %');
+    expect(detail(42)).toBe('In Umsetzung · 42 %');
   });
 
-  it('leaves Umgesetzt and Offen without a percentage', () => {
-    expect(detail(100)).toBe('Umgesetzt');
+  it('leaves Gebaut and Offen without a percentage', () => {
+    expect(detail(100)).toBe('Gebaut');
     expect(detail(null)).toBe('Offen');
   });
 });
@@ -234,11 +234,63 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     expect(ids({ acceptance: 'mine-open', currentUserId: 'u1' })).toEqual(['MAN-02', 'MAN-03', 'MAN-04']);
   });
 
+  it('the review queues only list what is far enough along to judge', () => {
+    // MAN-01 is built and carries a (backfilled) business verdict but no
+    // IT one, so it is exactly the IT queue. MAN-03/04 sit at 0 % and must
+    // not show up in either queue — they would bury the real work.
+    expect(ids({ acceptance: 'it-open' })).toEqual(['MAN-01']);
+    expect(ids({ acceptance: 'business-open' })).toEqual([]);
+  });
+
+  it('status accepts a stage, and still honours the pre-split buckets', () => {
+    expect(ids({ status: 'accepted' })).toEqual(['MAN-01']);
+    expect(ids({ status: 'rejected' })).toEqual(['MAN-02']);
+    // 'done'/'partial' are progress-only, which is what they always meant:
+    // MAN-01 is accepted but still counts as done, MAN-02 is rejected at 50 %.
+    expect(ids({ status: 'done' })).toEqual(['MAN-01']);
+    expect(ids({ status: 'partial' })).toEqual(['MAN-02']);
+  });
+
+  it('hideDone keeps rejections on screen', () => {
+    // A ✗ at 100 % is the row that most needs looking at; hiding it with
+    // the rest of the built work is how an objection gets lost.
+    const rejectedAt100 = [
+      ...nodes.slice(0, 3),
+      makeNode({
+        id: 'r2',
+        parentId: 'ch',
+        requirementId: 'MAN-02',
+        requirementPriority: 'must',
+        percentComplete: 100,
+        versionId: 'v2',
+      }),
+      ...nodes.slice(4),
+    ];
+    const data = buildRegisterData(map, rejectedAt100, new Map(), acceptances, versions, {
+      hideDone: true,
+    });
+    expect(data.chapters.flatMap((c) => c.rows.map((r) => r.id))).toContain('MAN-02');
+  });
+
+  it('labels each verdict with its gate', () => {
+    // Two ✓ from the same person are otherwise indistinguishable.
+    const data = buildRegisterData(map, nodes, new Map(), [
+      { ...baseAcc, nodeId: 'r1', userId: 'u1', decision: 'accepted' as const, gate: 'it' as const, nodeRevisionAtAcceptance: 0 },
+      { ...baseAcc, nodeId: 'r1', userId: 'u1', decision: 'accepted' as const, gate: 'business' as const, nodeRevisionAtAcceptance: 0 },
+    ], versions, {});
+    const row = data.chapters[0].rows.find((r) => r.id === 'MAN-01')!;
+    expect(row.abnahme).toEqual([
+      'IT: T. Muster ✓ 17.07.',
+      'Business: T. Muster ✓ 17.07.',
+    ]);
+    expect(row.stage).toBe('accepted');
+  });
+
   it('counts reflect the filtered set, totalAll the whole register', () => {
     const data = buildF({ hideDone: true });
     expect(data.total).toBe(3);
     expect(data.totalAll).toBe(4);
-    expect(data.counts).toEqual({ Umgesetzt: 0, Teilweise: 1, Offen: 2 });
+    expect(data.counts).toMatchObject({ accepted: 0, rejected: 1, open: 2 });
   });
 
   it('describes the active filter in German', () => {
@@ -246,7 +298,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     expect(buildF({ release: 'v1', releaseMode: 'exact' }).filterLabel).toBe('Release: nur V1');
     expect(buildF({ release: 'none' }).filterLabel).toBe('Release: ohne Zuordnung');
     expect(buildF({ status: 'open', hideDone: true, priority: 'must' }).filterLabel).toBe(
-      'Status: Offen · ohne Umgesetzte · Priorität: Muss',
+      'Status: Offen · ohne Gebaute · Priorität: Muss',
     );
   });
 
@@ -265,7 +317,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     expect(md).not.toContain('Gefilterter Auszug');
     expect(md).toContain('**Umfang:** alle 4 Anforderungen dieses Projekts');
     expect(md).toContain(
-      '**Stand dieser 4 Anforderungen:** 1 Umgesetzt · 1 Teilweise · 2 Offen',
+      '**Stand dieser 4 Anforderungen:** 1 Abgenommen · 2 Offen · 1 Zurückgewiesen',
     );
   });
 });
