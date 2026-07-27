@@ -991,6 +991,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           url: buildIssueUrlFromExternalId(externalId),
           syncEnabled: true,
           lastSyncedAt: new Date().toISOString(),
+          state: isClosed ? 'closed' : 'open',
         };
         const updated = await nodeDb.updateNode(
           node.id,
@@ -1609,6 +1610,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             url: buildIssueUrlFromExternalId(row.externalId),
             syncEnabled: true,
             lastSyncedAt: new Date().toISOString(),
+            state: isClosed ? 'closed' : 'open',
           };
           const updated = await nodeDb.updateNode(
             node.id,
@@ -2346,6 +2348,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 url: buildIssueUrlFromExternalId(row.externalId),
                 syncEnabled: true,
                 lastSyncedAt: new Date().toISOString(),
+                state: isClosed ? 'closed' : 'open',
               };
               const updated = await nodeDb.updateNode(
                 node.id,

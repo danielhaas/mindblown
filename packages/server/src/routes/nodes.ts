@@ -91,6 +91,7 @@ async function autoLinkNodeFromTitle(
     url: issue.html_url,
     syncEnabled: true,
     lastSyncedAt: new Date().toISOString(),
+    state: issue.state,
   };
 
   const updated = await nodeDb.updateNode(nodeId, {
