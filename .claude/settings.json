@@ -1,0 +1,49 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__mindblown__search_nodes",
+      "mcp__mindblown__get_map",
+      "mcp__mindblown__list_maps",
+      "mcp__mindblown__list_versions",
+      "mcp__mindblown__list_cycles",
+      "mcp__mindblown__get_schedule",
+      "mcp__mindblown__github_sync_overview",
+      "mcp__mindblown__list_triage_decisions",
+      "mcp__mindblown__get_wip_status",
+      "mcp__mindblown__requirements_overview",
+      "mcp__mindblown__status_digest",
+      "mcp__mindblown__remaining_work",
+      "mcp__fulcrum-manager__get_job_logs",
+      "mcp__fulcrum-manager__list_jobs",
+      "mcp__fulcrum-manager__container_status",
+      "mcp__fulcrum-manager__get_tenant",
+      "mcp__fulcrum-manager__health_check",
+      "Bash(systemctl --user show *)",
+      "Bash(systemctl --user status *)",
+      "Bash(systemctl --user is-active *)",
+      "Bash(systemctl --user list-units *)",
+      "Bash(systemctl show *)",
+      "Bash(systemctl status *)",
+      "Bash(systemctl is-active *)",
+      "Bash(systemctl list-units *)",
+      "Bash(pnpm turbo typecheck)",
+      "Bash(pnpm turbo typecheck *)",
+      "Bash(pnpm turbo test)",
+      "Bash(pnpm turbo test *)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-main-worktree.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
