@@ -1116,7 +1116,10 @@ function ChapterGroup({
                   .slice(GH_LINK_CAP)
                   .map((l) => (l.id.includes('#') ? `#${l.id.split('#')[1]}` : l.id))
                   .join(', ')}
-                style={{ color: '#94a3b8', marginLeft: 6, cursor: 'help' }}
+                // Not #94a3b8: that is exactly the inherited-closed link
+                // colour, so the overflow count read as one more link of
+                // the same kind rather than a count of hidden ones.
+                style={{ color: '#475569', marginLeft: 6, cursor: 'help' }}
               >
                 +{r.ghLinks.length - GH_LINK_CAP}
               </span>
