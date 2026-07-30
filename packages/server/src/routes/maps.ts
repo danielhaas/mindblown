@@ -556,6 +556,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           phaseId: null,
           verificationText: null,
           verificationUrl: null,
+          verificationVideoUrl: null,
           // Orchestration substrate (#111)
           claimedBySession: null,
           claimedAt: null,

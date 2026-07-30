@@ -39,6 +39,15 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'cycleId',
   'assigneeIds',
   'phaseId',
+  // The Abnahme surface. The Prüfanleitung is the text a customer's
+  // signature refers to at a sign-off, and the two URLs are where he was
+  // told to look — so an edit after the fact has to leave a trace. The
+  // verdicts themselves are already append-only; without these three the
+  // register can say who accepted what, but not what "what" said at the
+  // time. Not noise either: they're written once and then rarely touched.
+  'verificationText',
+  'verificationUrl',
+  'verificationVideoUrl',
 ]);
 
 function valuesDiffer(a: unknown, b: unknown): boolean {

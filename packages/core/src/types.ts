@@ -272,6 +272,15 @@ export interface Node {
    */
   verificationUrl: string | null;
 
+  /**
+   * Link to a short demo video showing the requirement in action (e.g. a
+   * screen recording). Rendered as a "watch video" button on the review
+   * surface next to `verificationUrl`. Optional companion to the written
+   * Prüfanleitung — a non-technical reviewer who can't follow the steps
+   * can watch instead. Like the other two, NOT in the GitHub SYNC_FIELDS.
+   */
+  verificationVideoUrl: string | null;
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this

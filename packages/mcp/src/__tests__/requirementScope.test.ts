@@ -41,6 +41,7 @@ function makeNode(overrides: Partial<NodeWithComputed> & { id: string }): NodeWi
     phaseId: null,
     verificationText: null,
     verificationUrl: null,
+    verificationVideoUrl: null,
     claimedBySession: null,
     claimedAt: null,
     computedEffort: 0,
