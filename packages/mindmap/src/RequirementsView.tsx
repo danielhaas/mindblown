@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
   compareVersions,
@@ -14,6 +14,7 @@ import {
 import type { Node, Version, RequirementGate, RequirementStage } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { linkColor, linkWeight } from './ghLinkStyle.js';
+import { isHttpUrl, verificationOf, type Verification } from './verification.js';
 import { REQ_VERSION_NONE } from './urlState.js';
 import * as api from './api.js';
 
@@ -75,32 +76,22 @@ interface ReqRow {
   effectiveVersionId: string | null;
 }
 
-/**
- * The three review-surface fields a non-technical reviewer needs before
- * pressing ✓ or ✗: how to check it, where to check it, and the demo video.
- * Whitespace-only counts as unset — the property panel writes `null` on
- * clear, but older rows can still carry a stray space.
- */
-interface Verification {
-  text: string | null;
-  url: string | null;
-  videoUrl: string | null;
-}
-
-/** null when the requirement carries none of the three — the row then looks exactly as before. */
-function verificationOf(node: Node): Verification | null {
-  const text = node.verificationText?.trim() || null;
-  const url = node.verificationUrl?.trim() || null;
-  const videoUrl = node.verificationVideoUrl?.trim() || null;
-  if (text == null && url == null && videoUrl == null) return null;
-  return { text, url, videoUrl };
-}
-
 function compareReqIds(a: ReqRow, b: ReqRow): number {
   return (a.node.requirementId ?? '').localeCompare(b.node.requirementId ?? '', undefined, {
     numeric: true,
   });
 }
+
+/**
+ * Width of the requirements table, in columns — the `<colgroup>` and
+ * `<thead>` below must list exactly this many.
+ *
+ * Every full-width row (the chapter header, the Abnahme card) spans it. A
+ * mismatch after someone adds a column doesn't crash, it just renders a
+ * card one column short, so the number lives in one place rather than
+ * being repeated at each `colSpan`.
+ */
+const REQ_COLUMN_COUNT = 9;
 
 // ── Component ────────────────────────────────────────────────────
 
@@ -736,7 +727,10 @@ export function RequirementsView() {
             {/* Fixed layout + colgroup: without it the browser sizes columns
                 from their widest cell, so changing the release filter (which
                 changes which selects/chips/links are on screen) reshuffles
-                every column width. */}
+                every column width.
+
+                Adding or removing a <col> here means bumping
+                REQ_COLUMN_COUNT above and adding the matching <th>. */}
             <colgroup>
               <col style={{ width: 100 }} />
               <col /> {/* Requirement — absorbs the remaining width */}
@@ -831,7 +825,7 @@ function ChapterGroup({
   return (
     <>
       <tr>
-        <td colSpan={9} style={groupHeaderStyle}>
+        <td colSpan={REQ_COLUMN_COUNT} style={groupHeaderStyle}>
           {chapterText}
           <span style={{ fontWeight: 400, color: '#64748b', marginLeft: 8 }}>
             {rows.length} req · {built} built · {accepted} accepted
@@ -1212,7 +1206,7 @@ function ChapterGroup({
           // acceptance column: a numbered Anleitung needs the full width, and
           // a tall cell would otherwise stretch every sibling cell in the row.
           <tr style={{ background: stripeFor(i) }} onClick={(e) => e.stopPropagation()}>
-            <td colSpan={9} style={verificationRowStyle}>
+            <td colSpan={REQ_COLUMN_COUNT} style={verificationRowStyle}>
               <VerificationPanel v={verification} />
             </td>
           </tr>
@@ -1231,6 +1225,13 @@ function ChapterGroup({
  * field is unset (no empty placeholder boxes, no `href="#"`).
  */
 function VerificationPanel({ v }: { v: Verification }) {
+  // Both URLs come from free-text columns with no server-side validation,
+  // and this card is the first place in the product that renders them as an
+  // href. A URL that isn't http(s) gets no button at all — linking it to
+  // "#" would look live and do nothing, and rendering it as-is would hand a
+  // `javascript:` payload a click target on the acceptance surface.
+  const appUrl = isHttpUrl(v.url) ? v.url : null;
+  const videoUrl = isHttpUrl(v.videoUrl) ? v.videoUrl : null;
   return (
     <div style={verificationPanelStyle}>
       <div
@@ -1247,15 +1248,15 @@ function VerificationPanel({ v }: { v: Verification }) {
         </span>
         {/* Kept on the header line so they stay reachable without scrolling
             past a long Anleitung. */}
-        {(v.url != null || v.videoUrl != null) && (
+        {(appUrl != null || videoUrl != null) && (
           <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {v.url != null && (
-              <a href={v.url} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
+            {appUrl != null && (
+              <a href={appUrl} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
                 In der Anwendung öffnen ↗
               </a>
             )}
-            {v.videoUrl != null && (
-              <a href={v.videoUrl} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
+            {videoUrl != null && (
+              <a href={videoUrl} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
                 ▶ Video ansehen
               </a>
             )}
@@ -1268,12 +1269,35 @@ function VerificationPanel({ v }: { v: Verification }) {
         // skips the steps. Capped in height so one essay-length Anleitung
         // can't push the links and the rest of the register off-screen.
         <div className="mb-verification-md" style={verificationMarkdownStyle}>
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{v.text}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={verificationMarkdownComponents}>
+            {v.text}
+          </ReactMarkdown>
         </div>
       )}
     </div>
   );
 }
+
+/**
+ * Links inside the Prüfanleitung open in a new tab, like the two buttons on
+ * the card's header line.
+ *
+ * react-markdown emits a bare `<a href>` with no target, so without this a
+ * reviewer who clicks a link in step 3 navigates the application away and
+ * loses every open card and filter on the way back. GFM autolinks make that
+ * likely: a naked `https://…` typed into an Anleitung becomes a link
+ * whether the author meant it to or not.
+ *
+ * No isHttpUrl() guard here — react-markdown already runs every href
+ * through defaultUrlTransform, which rewrites `javascript:` and `data:` to
+ * an empty href. The header-line buttons need the guard because nothing
+ * sanitizes those.
+ *
+ * `node` is react-markdown's hast node; it must not reach the DOM.
+ */
+const verificationMarkdownComponents: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer" />,
+};
 
 // ── Small pieces ─────────────────────────────────────────────────
 
