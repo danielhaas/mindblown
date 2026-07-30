@@ -68,6 +68,11 @@ export const createNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Deep link to where the requirement is verified (e.g. a staging URL). Rendered as an "open" button on the review surface.'),
+    verificationVideoUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Link to a short demo video showing this requirement in action. Rendered as a "watch video" button on the review surface next to the verification link.'),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -176,6 +181,11 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Deep link to where the requirement is verified (e.g. a staging URL). null clears it.'),
+    verificationVideoUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Link to a short demo video showing this requirement in action, shown as a "watch video" button on the review surface. null clears it.'),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())

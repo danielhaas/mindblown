@@ -245,6 +245,7 @@ export interface CreateNodeInput {
   phaseId?: string | null;
   verificationText?: string | null;
   verificationUrl?: string | null;
+  verificationVideoUrl?: string | null;
   assigneeIds?: string[];
 }
 
@@ -296,6 +297,7 @@ export async function createNode(
       phaseId: input.phaseId ?? null,
       verificationText: input.verificationText ?? null,
       verificationUrl: input.verificationUrl ?? null,
+      verificationVideoUrl: input.verificationVideoUrl ?? null,
       assigneeIds: input.assigneeIds ?? [],
       tags: [],
       customFields: {},
@@ -391,6 +393,7 @@ export interface UpdateNodeInput {
   phaseId?: string | null;
   verificationText?: string | null;
   verificationUrl?: string | null;
+  verificationVideoUrl?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -512,6 +515,8 @@ export async function updateNode(
   if (input.phaseId !== undefined) updates.phaseId = input.phaseId;
   if (input.verificationText !== undefined) updates.verificationText = input.verificationText;
   if (input.verificationUrl !== undefined) updates.verificationUrl = input.verificationUrl;
+  if (input.verificationVideoUrl !== undefined)
+    updates.verificationVideoUrl = input.verificationVideoUrl;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

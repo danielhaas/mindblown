@@ -143,6 +143,7 @@ export interface NodeWithComputed {
   phaseId: string | null;
   verificationText: string | null;
   verificationUrl: string | null;
+  verificationVideoUrl: string | null;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;

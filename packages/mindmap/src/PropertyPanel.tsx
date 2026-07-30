@@ -205,6 +205,7 @@ function PropertyPanelInner({
   const [requirementId, setRequirementId] = useState(node.requirementId ?? '');
   const [verificationText, setVerificationText] = useState(node.verificationText ?? '');
   const [verificationUrl, setVerificationUrl] = useState(node.verificationUrl ?? '');
+  const [verificationVideoUrl, setVerificationVideoUrl] = useState(node.verificationVideoUrl ?? '');
 
   // Sync local state when node changes externally
   useEffect(() => { setTitle(node.text); }, [node.text]);
@@ -218,6 +219,7 @@ function PropertyPanelInner({
   useEffect(() => { setRequirementId(node.requirementId ?? ''); }, [node.requirementId]);
   useEffect(() => { setVerificationText(node.verificationText ?? ''); }, [node.verificationText]);
   useEffect(() => { setVerificationUrl(node.verificationUrl ?? ''); }, [node.verificationUrl]);
+  useEffect(() => { setVerificationVideoUrl(node.verificationVideoUrl ?? ''); }, [node.verificationVideoUrl]);
 
   const allNodes = useMindmapStore((s) => s.nodes);
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
@@ -496,6 +498,22 @@ function PropertyPanelInner({
                 onKeyDown={(e) => e.stopPropagation()}
                 style={inputStyle}
                 placeholder="https://staging… (wo wird geprüft?)"
+              />
+            </Field>
+            <Field label="Video-Link">
+              <input
+                value={verificationVideoUrl}
+                onChange={(e) => setVerificationVideoUrl(e.target.value)}
+                onBlur={() => {
+                  const trimmed = verificationVideoUrl.trim();
+                  const persisted = node.verificationVideoUrl ?? '';
+                  if (trimmed !== persisted) {
+                    directUpdate(nodeId, { verificationVideoUrl: trimmed || null });
+                  }
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={inputStyle}
+                placeholder="https://… (kurzes Demo-Video)"
               />
             </Field>
           </>

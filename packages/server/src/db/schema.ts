@@ -221,10 +221,11 @@ export const nodes = pgTable('nodes', {
   requirementPriority: text('requirement_priority'),
   // Business phrasing for register/doc export; NOT GitHub-synced.
   requirementText: text('requirement_text'),
-  // How to verify (Prüfanleitung, markdown) + deep link for the review
-  // surface. Like requirement_text, NOT GitHub-synced.
+  // How to verify (Prüfanleitung, markdown) + deep link + demo video for
+  // the review surface. Like requirement_text, NOT GitHub-synced.
   verificationText: text('verification_text'),
   verificationUrl: text('verification_url'),
+  verificationVideoUrl: text('verification_video_url'),
 
   // ── Phase ─────────────────────────────────────────────────────
   // References a PhaseDef.id from maps.phases (statusWorkflow idiom,

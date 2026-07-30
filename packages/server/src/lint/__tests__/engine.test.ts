@@ -40,6 +40,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     phaseId: null,
     verificationText: null,
     verificationUrl: null,
+    verificationVideoUrl: null,
     claimedBySession: null,
     claimedAt: null,
     revision: 0,

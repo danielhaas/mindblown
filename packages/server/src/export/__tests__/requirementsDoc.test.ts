@@ -39,6 +39,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     requirementText: null,
     verificationText: null,
     verificationUrl: null,
+    verificationVideoUrl: null,
     claimedBySession: null,
     claimedAt: null,
     revision: 0,

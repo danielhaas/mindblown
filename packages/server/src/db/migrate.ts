@@ -796,12 +796,17 @@ export async function runMigrations(): Promise<void> {
   `);
   // verification_text: how to verify (Prüfanleitung, markdown) rendered on
   // the review surface. verification_url: deep link (e.g. staging URL).
-  // Both business prose like requirement_text — never GitHub-synced.
+  // verification_video_url: short demo recording for reviewers who would
+  // rather watch than read. All three business prose like requirement_text
+  // — never GitHub-synced.
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_text TEXT
   `);
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_url TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_video_url TEXT
   `);
 
   // ── Requirement acceptances (Abnahme) ──────────────────────────

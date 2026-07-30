@@ -877,11 +877,62 @@ describe('requirement fields', () => {
       nodeId: 'n1',
       verificationText: '1. Einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar',
       verificationUrl: 'https://staging.example.com/mandates',
+      verificationVideoUrl: 'https://videos.example.com/man-14.mp4',
     } as never);
     expect(recorder.lastUpdate?.fields).toMatchObject({
       verificationText: '1. Einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar',
       verificationUrl: 'https://staging.example.com/mandates',
+      verificationVideoUrl: 'https://videos.example.com/man-14.mp4',
     });
+  });
+
+  // The MCP setter is how the Prüfanleitung, the deep link and the demo
+  // video actually get onto a requirement — an agent-written register with
+  // no way to set the video field leaves the review surface half-empty.
+  //
+  // Asserted against the zod shape, not just the handler: the handler
+  // spreads `...fields` through verbatim, so it forwards a field that the
+  // schema never declared — and the schema is the entire MCP surface an
+  // agent sees. A handler-only test passes with layer 6 missing.
+  it('declares verificationVideoUrl on the update_node schema', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      nodeId: 'n1',
+      verificationText: '1. Einloggen\n2. Prüfen',
+      verificationUrl: 'https://staging.example.com/mandates',
+      verificationVideoUrl: 'https://videos.example.com/man-14.mp4',
+    });
+    expect(parsed.verificationText).toBe('1. Einloggen\n2. Prüfen');
+    expect(parsed.verificationUrl).toBe('https://staging.example.com/mandates');
+    expect(parsed.verificationVideoUrl).toBe('https://videos.example.com/man-14.mp4');
+  });
+
+  it('declares verificationVideoUrl on the create_node schema', () => {
+    const schema = z.object(createNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'Neue Anforderung',
+      verificationVideoUrl: 'https://videos.example.com/admin-demo.mp4',
+    });
+    expect(parsed.verificationVideoUrl).toBe('https://videos.example.com/admin-demo.mp4');
+  });
+
+  it('accepts null on verificationVideoUrl to clear it', () => {
+    const schema = z.object(updateNodeTool.schema);
+    expect(schema.parse({ mapId: 'm1', nodeId: 'n1', verificationVideoUrl: null })
+      .verificationVideoUrl).toBeNull();
+  });
+
+  it('clears verificationVideoUrl when explicitly set to null', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      verificationVideoUrl: null,
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({ verificationVideoUrl: null });
   });
 
   it('forwards verification fields on create', async () => {
@@ -892,10 +943,12 @@ describe('requirement fields', () => {
       text: 'Neue Anforderung',
       verificationText: 'Prüfen im Admin-Panel',
       verificationUrl: 'https://staging.example.com/admin',
+      verificationVideoUrl: 'https://videos.example.com/admin-demo.mp4',
     } as never);
     expect(recorder.lastCreate?.fields).toMatchObject({
       verificationText: 'Prüfen im Admin-Panel',
       verificationUrl: 'https://staging.example.com/admin',
+      verificationVideoUrl: 'https://videos.example.com/admin-demo.mp4',
     });
   });
 
@@ -910,6 +963,7 @@ describe('requirement fields', () => {
     expect('requirementPriority' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
     expect('verificationText' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
     expect('verificationUrl' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
+    expect('verificationVideoUrl' in (recorder.lastUpdate?.fields ?? {})).toBe(false);
   });
 });
 

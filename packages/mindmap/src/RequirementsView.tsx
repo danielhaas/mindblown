@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import {
   compareVersions,
   collectRequirementGhLinks,
@@ -73,6 +75,27 @@ interface ReqRow {
   effectiveVersionId: string | null;
 }
 
+/**
+ * The three review-surface fields a non-technical reviewer needs before
+ * pressing ✓ or ✗: how to check it, where to check it, and the demo video.
+ * Whitespace-only counts as unset — the property panel writes `null` on
+ * clear, but older rows can still carry a stray space.
+ */
+interface Verification {
+  text: string | null;
+  url: string | null;
+  videoUrl: string | null;
+}
+
+/** null when the requirement carries none of the three — the row then looks exactly as before. */
+function verificationOf(node: Node): Verification | null {
+  const text = node.verificationText?.trim() || null;
+  const url = node.verificationUrl?.trim() || null;
+  const videoUrl = node.verificationVideoUrl?.trim() || null;
+  if (text == null && url == null && videoUrl == null) return null;
+  return { text, url, videoUrl };
+}
+
 function compareReqIds(a: ReqRow, b: ReqRow): number {
   return (a.node.requirementId ?? '').localeCompare(b.node.requirementId ?? '', undefined, {
     numeric: true,
@@ -110,6 +133,18 @@ export function RequirementsView() {
   const [acceptances, setAcceptances] = useState<api.AcceptanceRow[]>([]);
   const [acceptanceFilter, setAcceptanceFilter] = useState<'' | api.AcceptanceFilter>('');
   const [exporting, setExporting] = useState(false);
+
+  // Which rows have their Prüfanleitung panel unfolded. A set, not a single
+  // id: a reviewer working down a chapter compares two requirements against
+  // each other, and collapsing the previous one out from under him loses his
+  // place. Collapsed by default so a register of 60 rows stays scannable.
+  const [openVerification, setOpenVerification] = useState<Set<string>>(() => new Set());
+  const toggleVerification = (nodeId: string) =>
+    setOpenVerification((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(nodeId)) next.add(nodeId);
+      return next;
+    });
 
   useEffect(() => {
     if (!currentMapId) return;
@@ -745,12 +780,15 @@ export function RequirementsView() {
                   currentUserId={user?.id ?? null}
                   toggleAcceptance={toggleAcceptance}
                   rejectRequirement={rejectRequirement}
+                  openVerification={openVerification}
+                  toggleVerification={toggleVerification}
                 />
               ))}
             </tbody>
           </table>
         </div>
       )}
+      <style>{verificationMarkdownCss}</style>
     </div>
   );
 }
@@ -770,6 +808,8 @@ function ChapterGroup({
   currentUserId,
   toggleAcceptance,
   rejectRequirement,
+  openVerification,
+  toggleVerification,
 }: {
   chapterText: string;
   rows: ReqRow[];
@@ -783,6 +823,8 @@ function ChapterGroup({
   currentUserId: string | null;
   toggleAcceptance: (row: ReqRow, gate: RequirementGate) => void;
   rejectRequirement: (row: ReqRow, gate: RequirementGate) => void;
+  openVerification: Set<string>;
+  toggleVerification: (nodeId: string) => void;
 }) {
   const built = rows.filter((r) => r.built).length;
   const accepted = rows.filter((r) => r.stage === 'accepted').length;
@@ -796,9 +838,12 @@ function ChapterGroup({
           </span>
         </td>
       </tr>
-      {rows.map((r, i) => (
+      {rows.map((r, i) => {
+        const verification = verificationOf(r.node);
+        const verificationOpen = verification != null && openVerification.has(r.node.id);
+        return (
+        <Fragment key={r.node.id}>
         <tr
-          key={r.node.id}
           onClick={() => jumpToNode(r.node)}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
           onMouseLeave={(e) => (e.currentTarget.style.background = stripeFor(i))}
@@ -1141,10 +1186,92 @@ function ChapterGroup({
                 />
               ))}
             </div>
+            {/* The reviewer pressing ✓/✗ is the one who needs to know how to
+                check it — so the handle sits in this cell, not in a column of
+                its own. Rows without any of the three fields get nothing, so
+                a register that was never annotated looks unchanged. */}
+            {verification && (
+              <button
+                onClick={() => toggleVerification(r.node.id)}
+                aria-expanded={verificationOpen}
+                title={
+                  verificationOpen
+                    ? 'Prüfanleitung einklappen'
+                    : 'Prüfanleitung, Prüf-Link und Video einblenden'
+                }
+                style={verificationToggleStyle(verificationOpen)}
+              >
+                {verificationOpen ? '▾' : '▸'}{' '}
+                {verification.text != null ? 'Prüfanleitung' : 'Prüfen'}
+              </button>
+            )}
           </td>
         </tr>
-      ))}
+        {verificationOpen && (
+          // Own row spanning the table rather than a box inside the 180px
+          // acceptance column: a numbered Anleitung needs the full width, and
+          // a tall cell would otherwise stretch every sibling cell in the row.
+          <tr style={{ background: stripeFor(i) }} onClick={(e) => e.stopPropagation()}>
+            <td colSpan={9} style={verificationRowStyle}>
+              <VerificationPanel v={verification} />
+            </td>
+          </tr>
+        )}
+        </Fragment>
+        );
+      })}
     </>
+  );
+}
+
+/**
+ * The Abnahme card: what a non-technical reviewer needs in front of him
+ * before he presses ✓ or ✗ — the written steps, the deep link into the
+ * running application, and the demo video. Each part is omitted when its
+ * field is unset (no empty placeholder boxes, no `href="#"`).
+ */
+function VerificationPanel({ v }: { v: Verification }) {
+  return (
+    <div style={verificationPanelStyle}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 8,
+        }}
+      >
+        <span style={verificationLabelStyle}>
+          {v.text != null ? 'Prüfanleitung' : 'Prüfen'}
+        </span>
+        {/* Kept on the header line so they stay reachable without scrolling
+            past a long Anleitung. */}
+        {(v.url != null || v.videoUrl != null) && (
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {v.url != null && (
+              <a href={v.url} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
+                In der Anwendung öffnen ↗
+              </a>
+            )}
+            {v.videoUrl != null && (
+              <a href={v.videoUrl} target="_blank" rel="noreferrer" style={verificationLinkStyle}>
+                ▶ Video ansehen
+              </a>
+            )}
+          </span>
+        )}
+      </div>
+      {v.text != null && (
+        // Markdown, not raw text: the field is written as "1. … 2. …" and a
+        // reviewer reading literal asterisks and digits is a reviewer who
+        // skips the steps. Capped in height so one essay-length Anleitung
+        // can't push the links and the rest of the register off-screen.
+        <div className="mb-verification-md" style={verificationMarkdownStyle}>
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{v.text}</ReactMarkdown>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1473,6 +1600,110 @@ const groupHeaderStyle: React.CSSProperties = {
 
 /** Alternating row background — striping survives hover via onMouseLeave. */
 const stripeFor = (i: number) => (i % 2 === 1 ? '#fbfcfe' : '#ffffff');
+
+// ── Abnahme card (Prüfanleitung / Prüf-Link / Video) ─────────────
+
+/** Ghost chip, same family as the ✓/✗ pair it sits under. */
+function verificationToggleStyle(open: boolean): React.CSSProperties {
+  return {
+    marginTop: 6,
+    padding: '2px 7px',
+    borderRadius: 10,
+    fontSize: 11,
+    fontFamily: 'inherit',
+    border: `1px ${open ? 'solid' : 'dashed'} ${open ? '#a5b4fc' : '#cbd5e1'}`,
+    background: open ? '#eef2ff' : 'transparent',
+    color: open ? '#3730a3' : '#64748b',
+    cursor: 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
+
+const verificationRowStyle: React.CSSProperties = {
+  padding: '0 16px 12px',
+  // The <td> the panel hangs under is the last cell of the row above it;
+  // the row border would otherwise cut between the two.
+  borderBottom: '1px solid #f1f5f9',
+};
+
+const verificationPanelStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 8,
+  padding: '10px 14px',
+  borderRadius: 8,
+  // Indigo, matching the chapter header — this belongs to the register
+  // chrome, not to the requirement's own status colours.
+  background: '#f5f7ff',
+  borderLeft: '3px solid #a5b4fc',
+};
+
+const verificationLabelStyle: React.CSSProperties = {
+  fontSize: 9,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+  color: '#6366f1',
+  fontWeight: 700,
+};
+
+const verificationLinkStyle: React.CSSProperties = {
+  padding: '4px 10px',
+  borderRadius: 6,
+  fontSize: 11.5,
+  fontWeight: 600,
+  border: '1px solid #c7d2fe',
+  background: '#ffffff',
+  color: '#4338ca',
+  textDecoration: 'none',
+  whiteSpace: 'nowrap',
+};
+
+const verificationMarkdownStyle: React.CSSProperties = {
+  fontSize: 12.5,
+  lineHeight: 1.55,
+  color: '#334155',
+  maxWidth: 860,
+  maxHeight: 320,
+  overflowY: 'auto',
+};
+
+/**
+ * index.html applies `* { margin: 0; padding: 0 }`, which strips the
+ * indent an <ol> needs to show its numbers — the whole point of rendering
+ * the Prüfanleitung as markdown. Scoped to this panel, same approach as
+ * HelpOverlay's `.help-markdown`.
+ */
+const verificationMarkdownCss = `
+  .mb-verification-md > :first-child { margin-top: 0; }
+  .mb-verification-md > :last-child { margin-bottom: 0; }
+  .mb-verification-md p { margin: 0 0 8px; }
+  .mb-verification-md ol { margin: 0 0 8px; padding-left: 22px; list-style: decimal outside; }
+  .mb-verification-md ul { margin: 0 0 8px; padding-left: 22px; list-style: disc outside; }
+  .mb-verification-md li { margin-bottom: 3px; }
+  .mb-verification-md h1, .mb-verification-md h2, .mb-verification-md h3 {
+    font-size: 13px; font-weight: 700; margin: 12px 0 6px; color: #0f172a;
+  }
+  .mb-verification-md a { color: #4f46e5; }
+  .mb-verification-md strong { font-weight: 700; color: #0f172a; }
+  .mb-verification-md code {
+    font-family: Menlo, Monaco, monospace; font-size: 11.5px;
+    background: #e8ecf7; padding: 1px 4px; border-radius: 3px;
+  }
+  .mb-verification-md pre {
+    background: #0f172a; color: #e2e8f0; padding: 10px 12px;
+    border-radius: 6px; overflow-x: auto; margin: 0 0 8px;
+  }
+  .mb-verification-md pre code { background: none; padding: 0; color: inherit; }
+  .mb-verification-md blockquote {
+    border-left: 3px solid #c7d2fe; margin: 0 0 8px;
+    padding: 2px 10px; color: #475569;
+  }
+  .mb-verification-md table { border-collapse: collapse; font-size: 12px; margin: 0 0 8px; }
+  .mb-verification-md th, .mb-verification-md td {
+    border: 1px solid #e2e8f0; padding: 4px 8px; text-align: left;
+  }
+  .mb-verification-md th { background: #eef2ff; font-weight: 600; }
+`;
 
 const inputStyle: React.CSSProperties = {
   boxSizing: 'border-box',
