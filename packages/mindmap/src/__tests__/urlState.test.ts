@@ -57,6 +57,26 @@ describe('parseUrlState', () => {
     expect(parseUrlState('?view=nonsense').view).toBeNull();
   });
 
+  it('accepts every view the switcher offers', () => {
+    // A view missing from VIEW_IDS survives neither a reload nor a shared
+    // link: it parses to null and silently resolves back to the mindmap.
+    // Cheap to forget when adding a tab, invisible until someone shares one.
+    for (const view of [
+      'mindmap',
+      'kanban',
+      'gantt',
+      'list',
+      'calendar',
+      'hill',
+      'workload',
+      'releases',
+      'requirements',
+      'guide',
+    ]) {
+      expect(parseUrlState(`?view=${view}`).view).toBe(view === 'mindmap' ? 'mindmap' : view);
+    }
+  });
+
   it('treats blank values as absent', () => {
     expect(parseUrlState('?map=&focus=%20')).toEqual(EMPTY_URL_STATE);
   });
