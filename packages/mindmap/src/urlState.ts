@@ -69,6 +69,7 @@ const VIEW_IDS: ReadonlySet<string> = new Set<ActiveView>([
   'workload',
   'releases',
   'requirements',
+  'guide',
 ]);
 
 // ── Shape ──────────────────────────────────────────────────────

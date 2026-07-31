@@ -19,6 +19,7 @@ import { HillChart } from './HillChart.js';
 import { WorkloadView } from './WorkloadView.js';
 import { ReleasesView } from './ReleasesView.js';
 import { RequirementsView } from './RequirementsView.js';
+import { GuideView } from './GuideView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
@@ -861,6 +862,10 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'gantt', label: 'Gantt', enabled: true },
   { id: 'releases', label: 'Releases', enabled: true },
   { id: 'requirements', label: 'Requirements', enabled: true },
+  // Reads the same requirement nodes as the register, for the opposite
+  // reader: "how do I check this?" rather than "where does this stand?".
+  // Sits next to it so the switch between the two is one click.
+  { id: 'guide', label: 'Anwender', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -2176,6 +2181,7 @@ export function App() {
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'releases' && <ReleasesView />}
           {activeView === 'requirements' && <RequirementsView />}
+          {activeView === 'guide' && <GuideView />}
           {activeView === 'list' && <ListView />}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}
@@ -2195,7 +2201,15 @@ export function App() {
             mapId={currentMapId}
             onClose={() => setPlanHealthPanelOpen(false)}
           />
-        ) : (
+        ) : activeView === 'guide' ? null : (
+          /* The Anwenderansicht keeps its own selection in `selectedNodeId`
+             (that is what makes a link to one criterion shareable), and the
+             property panel opens on any selection. Docking a 320px editor
+             of estimates, statuses and blocked-reasons beside a view whose
+             entire premise is "three facts, not nine" would undo it — so
+             that one view suppresses the panel and offers "Anleitung
+             bearbeiten" instead, which jumps to the mindmap where the panel
+             belongs. Every other view is untouched. */
           <PropertyPanel />
         )}
       </div>
