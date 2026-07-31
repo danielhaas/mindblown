@@ -646,6 +646,75 @@ export async function exportRequirements(mapId: string): Promise<string> {
   return res.text();
 }
 
+// ── Media uploads ────────────────────────────────────────────────
+
+export interface UploadedMedia {
+  id: string;
+  /** Absolute URL — this is what goes into `verificationVideoUrl`. */
+  url: string;
+  filename: string;
+  contentType: string;
+  size: number;
+}
+
+/**
+ * Upload one file and get back the URL it is reachable at.
+ *
+ * XMLHttpRequest rather than `fetch` for the one thing `fetch` still
+ * cannot do: report upload progress. A 90 MB clip over a domestic uplink
+ * is a minute of silence otherwise, and users re-click buttons that look
+ * dead.
+ *
+ * `Content-Type` is deliberately not set — the browser has to supply the
+ * multipart boundary along with it, and setting the header by hand strips
+ * the boundary and leaves the server unable to parse the body.
+ */
+export function uploadMedia(
+  file: File,
+  onProgress?: (fraction: number) => void,
+): Promise<UploadedMedia> {
+  return new Promise((resolve, reject) => {
+    const form = new FormData();
+    form.append('file', file);
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${BASE_URL}/api/media`);
+    const token = getToken();
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total);
+    });
+
+    xhr.addEventListener('load', () => {
+      let body: { error?: { message?: string; code?: string } } = {};
+      try {
+        body = JSON.parse(xhr.responseText);
+      } catch {
+        // Non-JSON body (a proxy error page, say) — fall through to the
+        // status-code message below.
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as unknown as UploadedMedia);
+      } else {
+        reject(
+          new ApiError(
+            xhr.status,
+            body?.error?.message ?? `Upload fehlgeschlagen (HTTP ${xhr.status})`,
+            body?.error?.code,
+            body?.error as Record<string, unknown> | undefined,
+          ),
+        );
+      }
+    });
+
+    xhr.addEventListener('error', () => reject(new ApiError(0, 'Netzwerkfehler beim Hochladen')));
+    xhr.addEventListener('abort', () => reject(new ApiError(0, 'Upload abgebrochen')));
+
+    xhr.send(form);
+  });
+}
+
 export interface AcceptanceRow {
   id: string;
   nodeId: string;

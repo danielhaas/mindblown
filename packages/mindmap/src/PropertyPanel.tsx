@@ -3,6 +3,7 @@ import type { Node, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { GitHubNodeSection } from './GitHubPanel.js';
+import { MediaUploadButton } from './MediaUploadButton.js';
 import * as api from './api.js';
 import type { EstimateResult } from './api.js';
 
@@ -514,6 +515,20 @@ function PropertyPanelInner({
                 onKeyDown={(e) => e.stopPropagation()}
                 style={inputStyle}
                 placeholder="https://… (kurzes Demo-Video)"
+              />
+              {/* The field still takes a pasted URL — YouTube, a link from
+                  somewhere else. The upload is the second way in, for the
+                  common case where the clip only exists on the recorder's
+                  own machine. Writing straight through `directUpdate`
+                  rather than waiting for a blur: the user never typed
+                  anything, so there is no blur to wait for. */}
+              <MediaUploadButton
+                accept="video/*"
+                label="Video hochladen…"
+                onUploaded={(media) => {
+                  setVerificationVideoUrl(media.url);
+                  directUpdate(nodeId, { verificationVideoUrl: media.url });
+                }}
               />
             </Field>
           </>

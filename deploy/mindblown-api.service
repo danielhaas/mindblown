@@ -52,5 +52,15 @@ RestrictSUIDSGID=true
 LockPersonality=true
 ReadWritePaths=/opt/mindblown
 
+# Uploaded media (#286). StateDirectory creates /var/lib/mindblown owned by
+# the service user and adds it to the writable set — required, because
+# ProtectSystem=strict above makes the rest of the filesystem read-only, so
+# without this the first upload fails with EROFS. Point MEDIA_DIR at
+# /var/lib/mindblown/media in api.env; the server creates the subdirectory.
+#
+# Deliberately outside /opt/mindblown: a release runs `git pull && pnpm
+# build`, and the build rewrites packages/mindmap/dist wholesale.
+StateDirectory=mindblown
+
 [Install]
 WantedBy=multi-user.target

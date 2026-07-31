@@ -6,3 +6,7 @@ backups/
 .env
 .env.local
 *.pem
+
+# Local media uploads (MEDIA_DIR default) — production points this at
+# /var/lib/mindblown/media, outside the checkout.
+.media/

@@ -606,4 +606,38 @@ systemctl restart mindblown-api
 
 Proxmox container snapshots cover the whole rootfs (code, configs, Postgres data). The systemd timer also dumps the DB nightly to `/var/backups/mindblown/`. The dumps are kept for 30 days; copy them off-host periodically if you care about disaster recovery beyond a single Proxmox node.
 
-Nothing in MindBlown writes to disk outside of Postgres — no upload directories, no local caches.
+**The nightly dump is Postgres only.** Since #286 there is a second place with state in it: `MEDIA_DIR` (see below). A restore from `mindblown-*.sql.gz` brings back the `verification_video_url` values but not the files they point at — those ride on the Proxmox snapshot, and nothing else. If you care about the clips, either add `MEDIA_DIR` to whatever copies the dumps off-host, or accept that they're only as safe as the container.
+
+## Uploaded media (#286)
+
+Users attach files — mostly short verification clips — through the web UI. `POST /api/media` stores them; `GET /api/media/<id>/<name>` serves them back. Caddy needs no new block: both live under the `/api/*` prefix it already proxies.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `MEDIA_DIR` | `.media` under the server's working directory | **Set this in production.** `/var/lib/mindblown/media` — created by the unit's `StateDirectory=mindblown`. |
+| `MEDIA_MAX_BYTES` | `104857600` (100 MB) | Per-file ceiling. Oversized uploads get a 413 and nothing is kept. |
+| `MEDIA_PUBLIC_BASE_URL` | falls back to `FRONTEND_URL` | Only needed if media is served from a different origin than the app. |
+
+Add to `/etc/mindblown/api.env`:
+
+```bash
+MEDIA_DIR=/var/lib/mindblown/media
+```
+
+The unit change matters as much as the env var: `ProtectSystem=strict` makes the filesystem read-only apart from `ReadWritePaths`, so without `StateDirectory=mindblown` the first upload fails with `EROFS`. After copying the new unit file: `systemctl daemon-reload && systemctl restart mindblown-api`.
+
+### Why the directory is outside the checkout
+
+A release is `git pull && pnpm build`, and the build rewrites `packages/mindmap/dist` in full. Anything stored under the checkout is a deploy away from being gone.
+
+### Who can read an uploaded file
+
+**Anyone with the link.** Uploading requires a login; playback does not. The URL carries 160 bits of randomness and that is the whole of the access control — a `<video src=…>` cannot send an `Authorization` header, and the app keeps its JWT in localStorage rather than a cookie, so the alternatives are an expiring signed URL (which rots inside the `verification_video_url` column) or buffering the clip as a blob (which loses seeking).
+
+On a public host like `mind.project.li` that means an uploaded clip is one leaked URL away from being public. It is the right trade for demo recordings of a feature; it is the wrong trade for anything with customer data in it, and the UI does not stop a user from uploading the latter. If that changes, the route stays and gains a per-request signature — the URLs get re-rendered at view time rather than stored.
+
+### Housekeeping
+
+Files are not deleted when the node referencing them is. Node deletion is a soft delete with a restore path and a 30-day GC, so removing the file eagerly would break restore; and a URL, once pasted, can be referenced from more than one place. Orphaned files therefore accumulate — slowly, at clip scale, on a 16 GB rootfs. Watch `du -sh /var/lib/mindblown/media` rather than assuming; a sweep tied to the existing trash GC is the obvious follow-up if it ever matters.

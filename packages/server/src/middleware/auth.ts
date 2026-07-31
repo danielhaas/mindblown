@@ -77,6 +77,16 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
       return;
     }
 
+    // Uploaded media plays back without a credential: a `<video src=…>`
+    // cannot send an Authorization header, and the app holds its JWT in
+    // localStorage rather than a cookie. The 160-bit id in the path is the
+    // access control — see the note in lib/media.ts. Scoped to GET/HEAD so
+    // `POST /api/media` still goes through auth and only a logged-in user
+    // can put bytes on the disk.
+    if ((req.method === 'GET' || req.method === 'HEAD') && url.startsWith('/api/media/')) {
+      return;
+    }
+
     // /mcp does its own auth + returns JSON-RPC-shaped errors. We skip the
     // generic middleware so a 401 there isn't the {error:{code,message}}
     // shape that confuses MCP clients.
