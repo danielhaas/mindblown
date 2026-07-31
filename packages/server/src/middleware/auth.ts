@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { verifyToken } from '../auth.js';
 import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
+import { isMediaPlaybackPath } from '../lib/media.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -73,6 +74,22 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
       // query string — external calendar clients (Google, Apple,
       // Outlook) can't send Bearer headers.
       /\/api\/maps\/[^/]+\/calendar\.ics(\?|$)/.test(url)
+    ) {
+      return;
+    }
+
+    // Uploaded media plays back without a credential: a `<video src=…>`
+    // cannot send an Authorization header, and the app holds its JWT in
+    // localStorage rather than a cookie. The 160-bit id in the path is the
+    // access control — see the note in lib/media.ts.
+    //
+    // Two narrowings, both load-bearing: GET/HEAD only, so `POST
+    // /api/media` still goes through auth and only a logged-in user can
+    // put bytes on the disk; and the exact minted-URL shape, so a route
+    // added under this prefix later isn't public by accident.
+    if (
+      (req.method === 'GET' || req.method === 'HEAD') &&
+      isMediaPlaybackPath(url)
     ) {
       return;
     }

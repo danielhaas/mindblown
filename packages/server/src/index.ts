@@ -30,6 +30,7 @@ import { aiRoutes } from './routes/ai.js';
 import { feedbackRoutes } from './routes/feedback.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
 import { mcpRoutes } from './routes/mcp.js';
+import { mediaRoutes } from './routes/media.js';
 import { orchestrationRoutes } from './routes/orchestration.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
@@ -95,6 +96,7 @@ async function main(): Promise<void> {
   await app.register(feedbackRoutes);
   await app.register(apiKeyRoutes);
   await app.register(mcpRoutes);
+  await app.register(mediaRoutes);
   await app.register(orchestrationRoutes);
   await app.register(prRoutes);
   await app.register(systemRoutes);
