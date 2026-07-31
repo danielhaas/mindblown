@@ -392,6 +392,27 @@ describe('POST /api/media over a real connection', () => {
     expect(stored).toBe('abcdef');
   });
 
+  it('answers when the parser kills the file stream before the handler sees it', async () => {
+    // The deterministic form of the whole failure class. Every limit
+    // @fastify/multipart enforces is enforced by destroying the file
+    // stream; exceed `fields` and the stream is dead before `req.file()`
+    // resolves, so the handler is handed something that will never emit
+    // again. Without the `destroyed` guard this hangs — no response, ever
+    // — and leaves a 0-byte file. Eleven fields against a limit of ten, no
+    // timing involved.
+    const fields = Array.from(
+      { length: 11 },
+      (_, i) => `--${BOUND}\r\nContent-Disposition: form-data; name="f${i}"\r\n\r\nv\r\n`,
+    ).join('');
+
+    const response = await send(fields + filePart('clip.mp4', 'abcdef') + `--${BOUND}--\r\n`);
+
+    expect(response).not.toBe('__NO_RESPONSE__');
+    expect(response).toContain('400');
+    expect(response).toContain('UPLOAD_ABORTED');
+    expect(await readdir(dir)).toEqual([]);
+  });
+
   it('cleans up after a client that disconnects mid-upload', async () => {
     // Read this as a smoke test, not a regression pin — and don't let the
     // next person mistake it for one. The abort race it targets (the
@@ -402,7 +423,11 @@ describe('POST /api/media over a real connection', () => {
     // the ordinary abort path — user closes the tab mid-upload — answers
     // and leaves nothing behind, which is the case the progress bar exists
     // to make survivable, and which no inject-based test can reach at all.
-    for (const delay of [0, 1, 2, 3, 5, 8, 12, 20]) {
+    //
+    // Two delays, not a sweep: a longer sweep implies a search that found
+    // something, and neither our probes nor the review's found anything an
+    // early and a late abort don't already cover.
+    for (const delay of [0, 20]) {
       await new Promise<void>((resolve) => {
         const socket = net.connect(port, '127.0.0.1', () => {
           socket.write(

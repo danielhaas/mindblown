@@ -24,6 +24,10 @@ import {
   safeFilename,
 } from '../lib/media.js';
 
+/** Thrown and caught inside the handler so the `finally` cleanup runs on
+ *  the abort path without the abort escaping as a 500. */
+class AbortedUpload extends Error {}
+
 export interface UploadedMedia {
   id: string;
   url: string;
@@ -124,21 +128,28 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
     const dir = path.join(root, id);
     const dest = path.join(dir, filename);
 
-    // Synchronous on purpose, and the guard below with it. An `await`
-    // here yields the event loop, and the thing that can run in that gap
-    // is @fastify/multipart's `request.on('close')` cleanup destroying the
-    // file stream — after which `pipeline()` waits forever on a stream
-    // that will never emit `end` or `error` again.
+    // The invariant this code depends on, stated once because it is what
+    // a future edit here will break:
     //
-    // Honest about the evidence: that window was observed once under a
-    // standalone abort probe (five of six disconnects left an orphaned
-    // directory and a hung request) and independently in review, but it is
-    // timing-sensitive enough that neither the test below nor a repeat of
-    // the probe reproduces it on demand. So this is not a fix pinned by a
-    // failing test — it is a cheap close of a window that provably exists
-    // in the same code path as the `fields: 0` hang above, which is
-    // reproducible every time. Removing either line costs nothing to keep
-    // and reopens something nobody can reliably detect.
+    //   **No `await` between the `destroyed` check below and `pipeline()`
+    //   attaching to the stream.**
+    //
+    // Any limit @fastify/multipart enforces — `fields`, `parts`, `files` —
+    // is handled by destroying the file stream. A destroyed stream emits
+    // neither `end` nor `error`, so a `pipeline()` that attaches to one
+    // never settles: the request hangs forever, holding a socket and an
+    // fd, and whatever cleanup was supposed to run never does. Every
+    // limit is therefore a door to the same failure, and the guard is what
+    // turns "hangs forever" into an answer. Eleven text fields ahead of
+    // the file is the deterministic way in — the socket test named
+    // "answers when the parser kills the file stream" pins exactly that,
+    // and removing the guard hangs it every time.
+    //
+    // `mkdirSync` rather than `await mkdir` is belt-and-braces: the guard
+    // already sits after it and covers the same window, so this is not
+    // load-bearing on its own. It stays because an `await` on this line is
+    // the most natural way for someone to reintroduce the gap without
+    // noticing.
     mkdirSync(dir, { recursive: true });
 
     // Nothing is sent from inside the try block on purpose. `reply.send()`
@@ -150,10 +161,15 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
     // guarantee rather than a near-certainty.
     let stored = false;
     let tooLarge = false;
+    let aborted = false;
     try {
-      if (part.file.destroyed) {
-        throw new Error('upload stream closed before it could be written');
-      }
+      // Not a thrown 500: the stream dying before we could write it is a
+      // client-side condition — an abandoned upload, or a request that
+      // tripped one of the parser's limits — and a 500 would both page
+      // someone and reach the user as a bare "HTTP 500" instead of the
+      // app's error shape that `uploadMedia()` knows how to unwrap.
+      aborted = part.file.destroyed;
+      if (aborted) throw new AbortedUpload();
       await pipeline(part.file, createWriteStream(dest));
 
       // @fastify/multipart enforces the ceiling by truncating the stream,
@@ -161,10 +177,18 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
       // stored silently corrupted at exactly `limit` bytes.
       tooLarge = part.file.truncated;
       stored = !tooLarge;
+    } catch (err) {
+      if (!(err instanceof AbortedUpload)) throw err;
     } finally {
       // Every exit that isn't a stored file takes its directory with it:
-      // the 413, a thrown pipeline error, an aborted connection.
+      // the 413, the abort, a thrown pipeline error.
       if (!stored) await rm(dir, { recursive: true, force: true });
+    }
+
+    if (aborted) {
+      return reply.status(400).send({
+        error: { code: 'UPLOAD_ABORTED', message: 'Upload wurde unterbrochen' },
+      });
     }
 
     if (tooLarge) {
