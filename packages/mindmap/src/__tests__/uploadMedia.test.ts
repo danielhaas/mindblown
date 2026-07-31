@@ -100,8 +100,8 @@ afterEach(() => {
 });
 
 /** A stand-in for a File — FormData.append only needs a Blob or a string. */
-function fakeFile(name = 'clip.mp4'): File {
-  return new Blob(['xxx'], { type: 'video/mp4' }) as unknown as File & { name: string };
+function fakeFile(): File {
+  return new Blob(['xxx'], { type: 'video/mp4' }) as unknown as File;
 }
 
 const OK_BODY = JSON.stringify({

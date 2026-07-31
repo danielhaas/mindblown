@@ -16,6 +16,7 @@ import path from 'node:path';
 import {
   ALLOWED_MEDIA_TYPES,
   isMediaId,
+  isMediaPlaybackPath,
   maxUploadBytes,
   mediaBaseUrl,
   mediaDir,
@@ -91,9 +92,7 @@ describe('safeFilename', () => {
   });
 
   it('caps the stem so a pathological name cannot blow the filesystem limit', () => {
-    const out = safeFilename('a'.repeat(500) + '.mp4', 'video/mp4');
-    expect(out).toBe('a'.repeat(80) + '.mp4');
-    expect(out.length).toBeLessThan(255);
+    expect(safeFilename('a'.repeat(500) + '.mp4', 'video/mp4')).toBe('a'.repeat(80) + '.mp4');
   });
 
   it('refuses a type outside the allowlist rather than inventing an extension', () => {
@@ -125,6 +124,33 @@ describe('newMediaId / isMediaId', () => {
     expect(isMediaId('ABCDEF'.repeat(7))).toBe(false); // uppercase
     expect(isMediaId('a'.repeat(39))).toBe(false);
     expect(isMediaId('a'.repeat(41))).toBe(false);
+  });
+});
+
+describe('isMediaPlaybackPath', () => {
+  const ID = 'a'.repeat(40);
+
+  it('matches a URL we minted, with or without a query string', () => {
+    expect(isMediaPlaybackPath(`/api/media/${ID}/demo.mp4`)).toBe(true);
+    expect(isMediaPlaybackPath(`/api/media/${ID}/a%20b.mp4`)).toBe(true);
+    expect(isMediaPlaybackPath(`/api/media/${ID}/demo.mp4?t=3`)).toBe(true);
+  });
+
+  it('refuses anything else under the prefix — this is what keeps a future route private', () => {
+    // Each of these would be silently public under a `startsWith` check.
+    expect(isMediaPlaybackPath('/api/media/usage')).toBe(false);
+    expect(isMediaPlaybackPath(`/api/media/${ID}/meta/raw`)).toBe(false);
+    expect(isMediaPlaybackPath('/api/media/')).toBe(false);
+    expect(isMediaPlaybackPath('/api/media')).toBe(false);
+    expect(isMediaPlaybackPath(`/api/media/${ID}`)).toBe(false);
+    expect(isMediaPlaybackPath(`/api/media/${ID}/`)).toBe(false);
+  });
+
+  it('refuses an id it did not mint', () => {
+    expect(isMediaPlaybackPath('/api/media/../maps/x.mp4')).toBe(false);
+    expect(isMediaPlaybackPath(`/api/media/${'A'.repeat(40)}/x.mp4`)).toBe(false);
+    expect(isMediaPlaybackPath(`/api/media/${'a'.repeat(39)}/x.mp4`)).toBe(false);
+    expect(isMediaPlaybackPath('//api/media/' + ID + '/x.mp4')).toBe(false);
   });
 });
 

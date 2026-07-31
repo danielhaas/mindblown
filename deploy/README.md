@@ -616,17 +616,18 @@ Users attach files — mostly short verification clips — through the web UI. `
 
 | Variable | Default | Notes |
 |---|---|---|
-| `MEDIA_DIR` | `.media` under the server's working directory | **Set this in production.** `/var/lib/mindblown/media` — created by the unit's `StateDirectory=mindblown`. |
+| `MEDIA_DIR` | `.media` under the server's working directory | Set **in the unit file**, not `api.env` — see below. Production: `/var/lib/mindblown/media`. |
 | `MEDIA_MAX_BYTES` | `104857600` (100 MB) | Per-file ceiling. Oversized uploads get a 413 and nothing is kept. |
 | `MEDIA_PUBLIC_BASE_URL` | falls back to `FRONTEND_URL` | Only needed if media is served from a different origin than the app. |
 
-Add to `/etc/mindblown/api.env`:
+There is nothing to add to `/etc/mindblown/api.env`. Copy the new unit file and `systemctl daemon-reload && systemctl restart mindblown-api` — that's the whole change.
 
-```bash
-MEDIA_DIR=/var/lib/mindblown/media
-```
+Two lines in the unit do the work, and both are easy to drop on a rebuild:
 
-The unit change matters as much as the env var: `ProtectSystem=strict` makes the filesystem read-only apart from `ReadWritePaths`, so without `StateDirectory=mindblown` the first upload fails with `EROFS`. After copying the new unit file: `systemctl daemon-reload && systemctl restart mindblown-api`.
+- `StateDirectory=mindblown` creates `/var/lib/mindblown` owned by the service user and adds it to the writable set. `ProtectSystem=strict` makes the rest of the filesystem read-only, so without it the first upload fails with `EROFS`.
+- `Environment=MEDIA_DIR=%S/mindblown/media` points the server at it. This deliberately does **not** live in `api.env`, because forgetting it there wouldn't fail — the default resolves against `WorkingDirectory` to `/opt/mindblown/packages/server/.media`, which is inside `ReadWritePaths` and gitignored. Uploads would work, files would pile up in the checkout, and the loss would surface months later on a re-clone. Keeping the path next to the sandbox rule that makes it writable means the two can't drift apart.
+
+If `MEDIA_DIR` points somewhere unwritable, the server fails to start rather than accepting uploads it can't keep: the directory is created at plugin-registration time, before `app.listen()`, so `Type=notify` never sees `READY=1` and systemd restarts on a loop. Check `journalctl -u mindblown-api` for an `EACCES`/`EROFS` on the media path before suspecting Postgres.
 
 ### Why the directory is outside the checkout
 

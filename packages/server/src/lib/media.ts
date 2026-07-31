@@ -117,6 +117,21 @@ export function isMediaId(value: string): boolean {
   return /^[0-9a-f]{40}$/.test(value);
 }
 
+/**
+ * Does this request URL address a stored file — the one thing under
+ * `/api/media` that is served without a credential?
+ *
+ * Deliberately narrower than `url.startsWith('/api/media/')`. The auth
+ * exemption and the route table would otherwise be two independent
+ * things that happen to agree today: a later `GET /api/media/usage`
+ * would be silently public, with no test failing. Matching the exact
+ * shape of a minted URL — id, then one path segment — means anything
+ * else added under the prefix is authenticated by default.
+ */
+export function isMediaPlaybackPath(url: string): boolean {
+  return /^\/api\/media\/[0-9a-f]{40}\/[^/?#]+(?:[?#]|$)/.test(url);
+}
+
 const MAX_STEM_LENGTH = 80;
 
 /**

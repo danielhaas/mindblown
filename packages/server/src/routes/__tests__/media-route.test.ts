@@ -18,6 +18,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { mkdtemp, rm, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import net from 'node:net';
+import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 
 import { mediaRoutes } from '../media.js';
@@ -277,12 +279,149 @@ describe('GET /api/media/*', () => {
   it('does not list the media directory', async () => {
     await upload('demo.mp4', 'x');
     const res = await app.inject({ method: 'GET', url: '/api/media/' });
-    expect(res.statusCode).not.toBe(200);
+    expect(res.statusCode).toBe(403);
   });
 
   it('refuses to traverse out of the media root', async () => {
-    const res = await app.inject({ method: 'GET', url: '/api/media/../../../etc/passwd' });
-    expect(res.statusCode).not.toBe(200);
+    const up = await upload('demo.mp4', 'x');
+
+    // Percent-encoded on purpose. A literal `../` is normalised away by
+    // light-my-request before Fastify sees it, so the plain form tests
+    // nothing — it 404s in the router without ever reaching @fastify/static,
+    // and would keep passing even if `root` were `/`. The encoded form is
+    // what an attacker sends and what survives every intermediary.
+    const res = await app.inject({
+      method: 'GET',
+      url: `/api/media/${up.id}/..%2f..%2f..%2fetc%2fpasswd`,
+    });
+
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('serves a PDF as a download rather than a page on our own origin', async () => {
+    const up = await upload('spec.pdf', '%PDF-1.4', 'application/pdf');
+
+    const res = await app.inject({ method: 'GET', url: `/api/media/${up.id}/${up.filename}` });
+
+    expect(res.headers['content-disposition']).toBe('attachment');
+  });
+
+  it('leaves video playable inline — the disposition is PDF-only', async () => {
+    const up = await upload('demo.mp4', 'x');
+
+    const res = await app.inject({ method: 'GET', url: `/api/media/${up.id}/${up.filename}` });
+
+    expect(res.headers['content-disposition']).toBeUndefined();
+  });
+});
+
+// ── Failures that only exist on a real socket ─────────────────────
+
+describe('POST /api/media over a real connection', () => {
+  // `app.inject()` cannot express these two: it delivers a complete,
+  // well-formed request and never disconnects. Both cases below shipped as
+  // hangs — the handler never returned at all — and an inject-based suite
+  // is structurally blind to that, because every failure it can produce is
+  // one where the handler *responds*.
+  let server: FastifyInstance;
+  let port: number;
+
+  beforeEach(async () => {
+    server = Fastify();
+    server.addHook('preHandler', async (req) => {
+      (req as { userId?: string }).userId = 'user-1';
+    });
+    await server.register(mediaRoutes);
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    port = (server.server.address() as AddressInfo).port;
+  });
+
+  afterEach(async () => {
+    await server.close();
+  });
+
+  const BOUND = '----socket';
+  const filePart = (name: string, body: string) =>
+    `--${BOUND}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n` +
+    `Content-Type: video/mp4\r\n\r\n${body}\r\n`;
+
+  function send(body: string, timeoutMs = 4000): Promise<string> {
+    return new Promise((resolve) => {
+      const payload = Buffer.from(body);
+      const socket = net.connect(port, '127.0.0.1', () => {
+        socket.write(
+          `POST /api/media HTTP/1.1\r\nHost: localhost\r\n` +
+            `Content-Type: multipart/form-data; boundary=${BOUND}\r\n` +
+            `Content-Length: ${payload.length}\r\nConnection: close\r\n\r\n`,
+        );
+        socket.write(payload);
+      });
+      let received = '';
+      socket.on('data', (chunk) => (received += chunk));
+      socket.on('error', () => {});
+      const timer = setTimeout(() => {
+        socket.destroy();
+        resolve('__NO_RESPONSE__');
+      }, timeoutMs);
+      socket.on('close', () => {
+        clearTimeout(timer);
+        resolve(received);
+      });
+    });
+  }
+
+  it('answers an upload that carries a text field alongside the file', async () => {
+    // Regression: with `fields: 0`, the parser's limit handler destroyed
+    // the file stream before `req.file()` resolved. A destroyed stream
+    // emits neither `end` nor `error`, so `pipeline()` never settled — the
+    // request hung forever, pinning a socket and an fd, and left a 0-byte
+    // file behind. The trigger is one line away from ordinary: appending a
+    // nodeId to the FormData would have done it.
+    const response = await send(
+      `--${BOUND}\r\nContent-Disposition: form-data; name="note"\r\n\r\nhallo\r\n` +
+        filePart('clip.mp4', 'abcdef') +
+        `--${BOUND}--\r\n`,
+    );
+
+    expect(response).not.toBe('__NO_RESPONSE__');
+    expect(response).toContain('201');
+
+    const dirs = await readdir(dir);
+    expect(dirs).toHaveLength(1);
+    const stored = await readFile(path.join(dir, dirs[0], 'clip.mp4'), 'utf8');
+    expect(stored).toBe('abcdef');
+  });
+
+  it('cleans up after a client that disconnects mid-upload', async () => {
+    // Read this as a smoke test, not a regression pin — and don't let the
+    // next person mistake it for one. The abort race it targets (the
+    // parser destroying the file stream while the handler is between
+    // taking the part and attaching the pipe) was observed once under a
+    // standalone probe, but it is timing-sensitive enough that this test
+    // passes against the pre-fix code too. What it does earn: it proves
+    // the ordinary abort path — user closes the tab mid-upload — answers
+    // and leaves nothing behind, which is the case the progress bar exists
+    // to make survivable, and which no inject-based test can reach at all.
+    for (const delay of [0, 1, 2, 3, 5, 8, 12, 20]) {
+      await new Promise<void>((resolve) => {
+        const socket = net.connect(port, '127.0.0.1', () => {
+          socket.write(
+            `POST /api/media HTTP/1.1\r\nHost: localhost\r\n` +
+              `Content-Type: multipart/form-data; boundary=${BOUND}\r\n` +
+              `Content-Length: 999999\r\n\r\n` +
+              `--${BOUND}\r\nContent-Disposition: form-data; name="file"; filename="big.mp4"\r\n` +
+              `Content-Type: video/mp4\r\n\r\n`,
+          );
+          socket.write(Buffer.alloc(2048, 0x41));
+          setTimeout(() => socket.destroy(), delay);
+        });
+        socket.on('error', () => {});
+        setTimeout(resolve, 250);
+      });
+    }
+    await new Promise((r) => setTimeout(r, 500));
+
+    expect(await readdir(dir)).toEqual([]);
   });
 });
 
@@ -313,7 +452,11 @@ describe('auth middleware exemption', () => {
     guarded.post('/api/media', async (req) => ({
       userId: (req as { userId?: string }).userId ?? null,
     }));
-    guarded.get('/api/maps', async () => ({ ok: true }));
+    // Stands in for a route someone adds under this prefix later. It must
+    // NOT inherit the playback exemption.
+    guarded.get('/api/media/usage', async (req) => ({
+      userId: (req as { userId?: string }).userId ?? null,
+    }));
     await guarded.ready();
   });
 
@@ -329,6 +472,19 @@ describe('auth middleware exemption', () => {
       url: `/api/media/${'a'.repeat(40)}/demo.mp4`,
     });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('does not exempt a future route that merely shares the prefix', async () => {
+    // The exemption matches the shape of a minted URL, not the prefix. A
+    // broader `startsWith('/api/media/')` would make this route silently
+    // public the day someone adds it — the failure mode nobody notices,
+    // because nothing breaks.
+    const res = await guarded.inject({
+      method: 'GET',
+      url: '/api/media/usage',
+      headers: { authorization: 'Bearer valid-token' },
+    });
+    expect(res.json().userId).toBe('user-1');
   });
 
   it('does not extend that exemption to POST — the token still gets resolved', async () => {
