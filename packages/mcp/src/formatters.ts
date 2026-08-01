@@ -384,6 +384,18 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
     }
   }
 
+  // Files and links a person hung on the node. This renderer is curated
+  // field by field with no raw-JSON fallback, so a field not listed here
+  // does not reach an agent at all — carrying it on the type is only half
+  // the job, and the half that isn't visible from a green suite.
+  if (node.attachments?.length > 0) {
+    lines.push('');
+    lines.push('## Attachments');
+    for (const a of node.attachments) {
+      lines.push(`- **${a.title}** (${a.kind}) — ${a.url}`);
+    }
+  }
+
   if (node.description) {
     lines.push('');
     lines.push('## Description');

@@ -858,7 +858,12 @@ export async function removeAttachment(
     .set({
       attachments: sql`COALESCE((SELECT jsonb_agg(e)
         FROM jsonb_array_elements(${nodes.attachments}) e
-        WHERE e->>'id' <> ${attachmentId}), '[]'::jsonb)`,
+        -- IS DISTINCT FROM, not <>: an element with a missing or null id
+        -- would compare NULL, which is not TRUE, so <> would silently drop
+        -- it on every removal. Unreachable today (buildAttachment always
+        -- assigns a uuid and is the only write path) — this is the line
+        -- that keeps it unreachable.
+        WHERE e->>'id' IS DISTINCT FROM ${attachmentId}), '[]'::jsonb)`,
       updatedAt: new Date(),
     })
     .where(

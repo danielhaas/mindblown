@@ -2,7 +2,6 @@ import pg from 'pg';
 import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { DATABASE_URL } from './connection.js';
-import * as schema from './schema.js';
 
 const { Pool } = pg;
 
@@ -21,12 +20,6 @@ export async function runMigrations(): Promise<void> {
   // that takes the whole agent fleet down. A timeout turns that into a
   // loud, fast, retryable failure instead of a silent hang.
   //
-  // Set on the pool rather than by issuing `SET lock_timeout`: that is a
-  // session-scoped statement, and `db.execute()` acquires a connection,
-  // runs, and releases it. It would bind to whichever connection happened
-  // to serve that one statement and hold for the rest only by the accident
-  // of LIFO reuse — degrading, silently, to "wait forever", which is the
-  // exact failure this is here to prevent.
   // A pool of its own, with the timeout applied at connect time. `SET
   // lock_timeout` would not do: it is session-scoped, and `db.execute()`
   // acquires a connection, runs, and releases it — the setting would bind
