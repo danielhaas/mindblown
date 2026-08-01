@@ -177,7 +177,7 @@ export function GuideView() {
       <style>{guideCss}</style>
 
       <div style={headerStyle}>
-        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>So prüfst du das</h2>
+        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>Prüfanleitungen</h2>
         <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>
           {entries.length} Kriterien · {withGuide} mit Prüfanleitung · {withVideo} mit Video
         </div>
