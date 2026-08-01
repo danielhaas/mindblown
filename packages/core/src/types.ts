@@ -316,6 +316,25 @@ export interface Node {
    */
   verificationVideoUrl: string | null;
 
+  /**
+   * Still image shown in the player before the clip is started — the
+   * `poster` attribute of the `<video>` on the review surface.
+   *
+   * Not cosmetic, and not something `preload="metadata"` already covers:
+   * the browser paints frame 0, and frame 0 of a screen recording is the
+   * blank page the recorder was still waiting on. Measured against the two
+   * clips that exist: MAN-01 is blank white for ~1 s, PEN-01 for ~3 s. A
+   * `#t=N` media fragment would paint a later frame, but it also *moves
+   * the playhead*, so pressing play would skip the start of the very
+   * instructions the clip exists to give.
+   *
+   * Meaningless without `verificationVideoUrl` — a poster with no video is
+   * not rendered anywhere, and `verificationOf` does not count it as
+   * documentation on its own. Like the other verification fields, NOT in
+   * the GitHub SYNC_FIELDS.
+   */
+  verificationVideoPosterUrl: string | null;
+
   // ── Auto-progress (parent-epic rollup) ────────────────────
   /**
    * When set to `'children'`, the server auto-computes percentComplete on this

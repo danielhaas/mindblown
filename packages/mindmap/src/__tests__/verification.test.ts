@@ -11,9 +11,15 @@ import { isDocumented, isHttpUrl, verificationOf } from '../verification.js';
  * an older write is the way it happens.
  */
 
-/** Only the three fields matter here; the rest of Node never gets read. */
+/** Only the four fields matter here; the rest of Node never gets read. */
 function node(v: Partial<Node>): Node {
-  return { verificationText: null, verificationUrl: null, verificationVideoUrl: null, ...v } as Node;
+  return {
+    verificationText: null,
+    verificationUrl: null,
+    verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
+    ...v,
+  } as Node;
 }
 
 describe('verificationOf', () => {
@@ -41,16 +47,19 @@ describe('verificationOf', () => {
       text: '1. Einloggen',
       url: null,
       videoUrl: null,
+      videoPosterUrl: null,
     });
     expect(verificationOf(node({ verificationUrl: 'https://staging.example.com/x' }))).toEqual({
       text: null,
       url: 'https://staging.example.com/x',
       videoUrl: null,
+      videoPosterUrl: null,
     });
     expect(verificationOf(node({ verificationVideoUrl: 'https://v.example.com/a.mp4' }))).toEqual({
       text: null,
       url: null,
       videoUrl: 'https://v.example.com/a.mp4',
+      videoPosterUrl: null,
     });
   });
 
@@ -62,13 +71,25 @@ describe('verificationOf', () => {
           verificationText: '  1. Einloggen\n2. Mandat öffnen  ',
           verificationUrl: ' https://staging.example.com/x \n',
           verificationVideoUrl: '\thttps://v.example.com/a.mp4 ',
+          verificationVideoPosterUrl: ' https://v.example.com/a.jpg\n',
         }),
       ),
     ).toEqual({
       text: '1. Einloggen\n2. Mandat öffnen',
       url: 'https://staging.example.com/x',
       videoUrl: 'https://v.example.com/a.mp4',
+      videoPosterUrl: 'https://v.example.com/a.jpg',
     });
+  });
+
+  // The poster is the one field that does NOT make the card exist. A still
+  // with no clip behind it is nothing a reviewer can act on, and counting
+  // it would give the register row a marker promising a video that isn't
+  // there.
+  it('does not make a card out of a poster on its own', () => {
+    expect(
+      verificationOf(node({ verificationVideoPosterUrl: 'https://v.example.com/a.jpg' })),
+    ).toBeNull();
   });
 });
 

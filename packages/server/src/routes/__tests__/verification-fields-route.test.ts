@@ -60,6 +60,7 @@ const NODE_ID = 'nnnn-nnnn-nnnn-nnnn';
 const ANLEITUNG = '1. Als Treuhänder einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar';
 const PRUEF_URL = 'https://staging.example.com/mandates/42';
 const VIDEO_URL = 'https://videos.example.com/abnahme/man-14.mp4';
+const POSTER_URL = 'https://videos.example.com/abnahme/man-14-poster.jpg';
 
 /** Minimal CoreNode-shaped stub the routes can broadcast/sync safely. */
 function stubNode(overrides: Record<string, unknown> = {}): Record<string, unknown> {
@@ -74,6 +75,7 @@ function stubNode(overrides: Record<string, unknown> = {}): Record<string, unkno
     verificationText: null,
     verificationUrl: null,
     verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
     ...overrides,
   };
 }
@@ -171,6 +173,65 @@ describe('PUT /api/maps/:id/nodes/:nodeId — verification fields round-trip', (
     await app.close();
 
     expect('verificationVideoUrl' in (updateNodeMock.mock.calls[0][1] as object)).toBe(false);
+  });
+
+  // The poster URL rides the same wiring, and has the same failure mode:
+  // the route body type is hand-maintained, so a field missing from it is
+  // dropped between the client and the DB layer with a 200 and a green
+  // suite. These pin the round trip on both write routes.
+  it('forwards verificationVideoPosterUrl on update and echoes it back', async () => {
+    updateNodeMock.mockResolvedValueOnce(stubNode({ verificationVideoPosterUrl: POSTER_URL }));
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/maps/${MAP_ID}/nodes/${NODE_ID}`,
+      payload: { verificationVideoPosterUrl: POSTER_URL },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(updateNodeMock.mock.calls[0][1]).toEqual({ verificationVideoPosterUrl: POSTER_URL });
+    expect(res.json().verificationVideoPosterUrl).toBe(POSTER_URL);
+  });
+
+  it('forwards verificationVideoPosterUrl: null (clear)', async () => {
+    updateNodeMock.mockResolvedValueOnce(stubNode({ verificationVideoPosterUrl: null }));
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/maps/${MAP_ID}/nodes/${NODE_ID}`,
+      payload: { verificationVideoPosterUrl: null },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(updateNodeMock.mock.calls[0][1]).toEqual({ verificationVideoPosterUrl: null });
+    expect(res.json().verificationVideoPosterUrl).toBeNull();
+  });
+
+  it('forwards verificationVideoPosterUrl on create', async () => {
+    createNodeMock.mockResolvedValueOnce(
+      stubNode({ verificationVideoUrl: VIDEO_URL, verificationVideoPosterUrl: POSTER_URL }),
+    );
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: `/api/maps/${MAP_ID}/nodes`,
+      payload: {
+        parentId: 'pppp-pppp',
+        text: 'stub node',
+        verificationVideoUrl: VIDEO_URL,
+        verificationVideoPosterUrl: POSTER_URL,
+      },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(201);
+    expect(createNodeMock.mock.calls[0][0]).toMatchObject({
+      verificationVideoUrl: VIDEO_URL,
+      verificationVideoPosterUrl: POSTER_URL,
+    });
+    expect(res.json().verificationVideoPosterUrl).toBe(POSTER_URL);
   });
 });
 

@@ -975,6 +975,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       verificationText: null,
       verificationUrl: null,
       verificationVideoUrl: null,
+      verificationVideoPosterUrl: null,
       // Orchestration substrate (#111)
       claimedBySession: null,
       claimedAt: null,

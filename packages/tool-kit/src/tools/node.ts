@@ -73,6 +73,11 @@ export const createNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Link to a short demo video showing this requirement in action. Rendered as a "watch video" button on the review surface next to the verification link.'),
+    verificationVideoPosterUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Still image shown in the video player before playback starts (the <video> poster). Only used when verificationVideoUrl is also set. Without it the player shows the recording\'s own first frame, which for a screen capture is usually a blank page.'),
   },
   handler: async (backend, { mapId, parentId, text, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
@@ -186,6 +191,11 @@ export const updateNodeTool = defineTool({
       .nullable()
       .optional()
       .describe('Link to a short demo video showing this requirement in action, shown as a "watch video" button on the review surface. null clears it.'),
+    verificationVideoPosterUrl: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Still image shown in the video player before playback starts (the <video> poster). Only used when verificationVideoUrl is also set. null clears it, and the player falls back to the recording\'s own first frame.'),
     // Orchestration substrate (#111)
     scopes: z
       .array(z.string())

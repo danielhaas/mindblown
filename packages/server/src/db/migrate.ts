@@ -841,6 +841,13 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_video_url TEXT
   `);
+  // verification_video_poster_url: still frame the player shows before the
+  // clip is started. Nullable with no backfill on purpose — the two rows
+  // that carry a video today keep working without one (they just show the
+  // recording's own first frame, which is what they do now).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_video_poster_url TEXT
+  `);
 
   // attachments: files and links a person hung on the node. Deliberately
   // not external_links — the GitHub sync owns that column and rewrites it,

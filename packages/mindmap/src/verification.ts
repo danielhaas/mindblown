@@ -24,15 +24,30 @@ export interface Verification {
   text: string | null;
   url: string | null;
   videoUrl: string | null;
+  /**
+   * Still image for the clip's player. A fourth field rather than a fourth
+   * *review surface* — it says nothing about how to check the requirement,
+   * it only decides what the player looks like while it sits there.
+   */
+  videoPosterUrl: string | null;
 }
 
-/** null when the requirement carries none of the three — the register row then shows no marker. */
+/**
+ * null when the requirement carries none of the three — the register row
+ * then shows no marker.
+ *
+ * The poster is deliberately outside that test. It is not something a
+ * reviewer can act on: a still with no clip behind it is nothing, and
+ * counting it would give a row a marker promising a video that isn't
+ * there.
+ */
 export function verificationOf(node: Node): Verification | null {
   const text = node.verificationText?.trim() || null;
   const url = node.verificationUrl?.trim() || null;
   const videoUrl = node.verificationVideoUrl?.trim() || null;
   if (text == null && url == null && videoUrl == null) return null;
-  return { text, url, videoUrl };
+  const videoPosterUrl = node.verificationVideoPosterUrl?.trim() || null;
+  return { text, url, videoUrl, videoPosterUrl };
 }
 
 /**

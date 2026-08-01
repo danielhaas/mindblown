@@ -46,6 +46,12 @@ export interface GuideEntry {
   /** Validated http(s) link to the demo clip. */
   videoUrl: string | null;
   /**
+   * Validated http(s) still image for the clip's player. null whenever
+   * `videoUrl` is null — a poster with nothing to play is not a thing the
+   * view can render, so it never reaches the component.
+   */
+  posterUrl: string | null;
+  /**
    * Whether the feature exists yet. Progress-only, exactly like the
    * register's "Built" — deliberately NOT the sign-off stage: a reader
    * asking "how do I check this?" cares whether the screen is there, not
@@ -103,6 +109,9 @@ export function buildGuideEntries(
     if (node.requirementId == null) continue;
     const chapter = node.parentId ? nodes[node.parentId] : undefined;
     const verification = verificationOf(node);
+    const videoUrl = isHttpUrl(verification?.videoUrl)
+      ? (verification?.videoUrl ?? null)
+      : null;
     // The description is ProseMirror JSON (older rows: a raw string). Only
     // its first non-empty line is used — the field is a free-form note, and
     // an essay pasted into it must not push the steps below the fold.
@@ -121,7 +130,13 @@ export function buildGuideEntries(
       verification,
       guideText: verification?.text ?? null,
       appUrl: isHttpUrl(verification?.url) ? (verification?.url ?? null) : null,
-      videoUrl: isHttpUrl(verification?.videoUrl) ? (verification?.videoUrl ?? null) : null,
+      videoUrl,
+      // Gated on `videoUrl` and not just on its own validity: the poster is
+      // an attribute of a player that only exists when there is a clip.
+      posterUrl:
+        videoUrl != null && isHttpUrl(verification?.videoPosterUrl)
+          ? (verification?.videoPosterUrl ?? null)
+          : null,
       available: progressOf(node) >= BUILT_THRESHOLD,
     });
   }

@@ -48,6 +48,11 @@ export const TRACKED_FIELDS = new Set<keyof CoreNode>([
   'verificationText',
   'verificationUrl',
   'verificationVideoUrl',
+  // The poster is decoration rather than evidence, but it is tracked for
+  // the same reason as its video: it is written once and then rarely
+  // touched, so it costs the history nothing, and a swapped still is the
+  // cheapest way to make a clip look like it shows something it doesn't.
+  'verificationVideoPosterUrl',
 ]);
 
 function valuesDiffer(a: unknown, b: unknown): boolean {

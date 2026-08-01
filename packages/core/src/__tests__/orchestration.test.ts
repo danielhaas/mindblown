@@ -48,6 +48,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     verificationText: null,
     verificationUrl: null,
     verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
     // Orchestration substrate (#111)
     claimedBySession: null,
     claimedAt: null,

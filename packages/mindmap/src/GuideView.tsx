@@ -429,9 +429,17 @@ function GuideCard({
       {entry.videoUrl && (
         <div style={{ marginBottom: 24 }}>
           {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+          {/* `poster` falls back to the recording's own first frame when
+              none is stored — which is what every clip did before the
+              field existed, and why the player looked empty: frame 0 of a
+              screen capture is the blank page the recorder was waiting on.
+              `preload="metadata"` is what paints that fallback frame, so
+              it stays even with a poster set; it is also what fills in the
+              duration under the scrubber. */}
           <video
             src={entry.videoUrl}
             controls
+            poster={entry.posterUrl ?? undefined}
             preload="metadata"
             style={{
               width: '100%',
