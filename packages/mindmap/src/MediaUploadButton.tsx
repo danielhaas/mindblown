@@ -13,8 +13,9 @@ import { uploadMedia, type UploadedMedia } from './api.js';
 
 interface Props {
   onUploaded: (media: UploadedMedia) => void;
-  /** `accept` attribute for the file dialog. Narrows what the OS offers;
-   *  the server's allowlist is the actual gate. */
+  /** `accept` attribute for the file dialog. Narrows what the OS offers as
+   *  a convenience only — the server takes any type and decides how to
+   *  serve it back (see lib/media.ts). Default: everything. */
   accept?: string;
   label?: string;
   disabled?: boolean;
@@ -27,7 +28,7 @@ type Status =
 
 export function MediaUploadButton({
   onUploaded,
-  accept = 'video/*,image/*,application/pdf',
+  accept = '*/*',
   label = 'Datei hochladen…',
   disabled = false,
 }: Props) {

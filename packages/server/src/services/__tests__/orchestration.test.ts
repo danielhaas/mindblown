@@ -124,6 +124,7 @@ function nodeRow(overrides: Partial<{
     percentComplete: null,
     scopes: [],
     externalLinks: [],
+    attachments: [],
     assigneeIds: [],
     dependencies: [],
     tags: [],

@@ -610,7 +610,18 @@ Proxmox container snapshots cover the whole rootfs (code, configs, Postgres data
 
 ## Uploaded media (#286)
 
-Users attach files — mostly short verification clips — through the web UI. `POST /api/media` stores them; `GET /api/media/<id>/<name>` serves them back. Caddy needs no new block: both live under the `/api/*` prefix it already proxies.
+Users attach files through the web UI — verification clips, and since #291 anything else they want to hang on a node. `POST /api/media` stores them; `GET /api/media/<id>/<name>` serves them back. Caddy needs no new block: both live under the `/api/*` prefix it already proxies.
+
+**Any file type is accepted.** How it comes back out depends on the type:
+
+| | stored as | served as |
+|---|---|---|
+| video / image / PDF | `clip.mp4` | its real Content-Type, playable in place |
+| everything else | `bericht.xlsx.bin` | `application/octet-stream` + `Content-Disposition: attachment; filename="bericht.xlsx"` |
+
+The `.bin` is not cosmetic — it is the security boundary. `@fastify/static` derives Content-Type from the extension and writes it *after* the `setHeaders` hook, so nothing in application code can override it; the extension on disk decides. A stored `.html` under its own extension would be stored XSS against every logged-in user. Do not "clean up" the `.bin` suffix.
+
+The guarantee is about the browser. `Content-Disposition` restores the real name on download, so `payload.exe.bin` lands on the recipient's disk as `payload.exe` — that is deliberate and it is what every file host does, but it means **this endpoint can distribute executables**. Combined with the unauthenticated-playback decision below, that is worth knowing before pointing anyone at it.
 
 ### Configuration
 
@@ -637,7 +648,7 @@ A release is `git pull && pnpm build`, and the build rewrites `packages/mindmap/
 
 **Anyone with the link.** Uploading requires a login; playback does not. The URL carries 160 bits of randomness and that is the whole of the access control — a `<video src=…>` cannot send an `Authorization` header, and the app keeps its JWT in localStorage rather than a cookie, so the alternatives are an expiring signed URL (which rots inside the `verification_video_url` column) or buffering the clip as a blob (which loses seeking).
 
-On a public host like `mind.project.li` that means an uploaded clip is one leaked URL away from being public. It is the right trade for demo recordings of a feature; it is the wrong trade for anything with customer data in it, and the UI does not stop a user from uploading the latter. If that changes, the route stays and gains a per-request signature — the URLs get re-rendered at view time rather than stored.
+On a public host like `mind.project.li` that means an uploaded file is one leaked URL away from being public — and since #291 that file can be of any type, so the exposure is no longer limited to demo recordings. Any account, and any fleet API key, is an upload credential. It is the right trade for demo recordings of a feature; it is the wrong trade for anything with customer data in it, and the UI does not stop a user from uploading the latter. If that changes, the route stays and gains a per-request signature — the URLs get re-rendered at view time rather than stored.
 
 ### Housekeeping
 

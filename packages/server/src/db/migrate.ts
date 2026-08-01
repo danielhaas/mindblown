@@ -1,6 +1,9 @@
+import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { db } from './connection.js';
-import * as schema from './schema.js';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { DATABASE_URL } from './connection.js';
+
+const { Pool } = pg;
 
 /**
  * Ensure all tables exist by running a simple create-if-not-exists approach.
@@ -9,6 +12,36 @@ import * as schema from './schema.js';
  */
 export async function runMigrations(): Promise<void> {
   console.log('[db] Running migrations...');
+
+  // Every DDL below takes ACCESS EXCLUSIVE. If anything else holds a lock
+  // on the table when one fires — the nightly pg_dump, a psql someone left
+  // open — the ALTER blocks and every query queues behind it, so the API
+  // never finishes booting and systemd restart-loops. On mind.project.li
+  // that takes the whole agent fleet down. A timeout turns that into a
+  // loud, fast, retryable failure instead of a silent hang.
+  //
+  // A pool of its own, with the timeout applied at connect time. `SET
+  // lock_timeout` would not do: it is session-scoped, and `db.execute()`
+  // acquires a connection, runs, and releases it — the setting would bind
+  // to whichever connection served that one statement and survive only by
+  // the accident of LIFO reuse, degrading silently to "wait forever",
+  // which is the exact failure it is here to prevent. Scoped to migrations
+  // rather than set on the app pool, because a 3 s ceiling on every lock
+  // wait is a different decision than this one.
+  const migrationPool = new Pool({
+    connectionString: DATABASE_URL,
+    max: 1,
+    options: '-c lock_timeout=3s',
+  });
+  const db = drizzle(migrationPool);
+  try {
+    await runDdl(db);
+  } finally {
+    await migrationPool.end();
+  }
+}
+
+async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
 
   // Create tables using raw SQL (matching the Drizzle schema)
   // This is the pragmatic approach for a dev setup — drizzle-kit push
@@ -807,6 +840,13 @@ export async function runMigrations(): Promise<void> {
   `);
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_video_url TEXT
+  `);
+
+  // attachments: files and links a person hung on the node. Deliberately
+  // not external_links — the GitHub sync owns that column and rewrites it,
+  // so a pasted URL there would be walked over by the next sync pass.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'
   `);
 
   // ── Requirement acceptances (Abnahme) ──────────────────────────

@@ -60,6 +60,7 @@ function makeNode(overrides: Partial<CoreNode> & { id: string }): CoreNode {
     versionId: null,
     cycleId: null,
     externalLinks: [],
+    attachments: [],
     autoProgress: 'off',
     priorityRank: null,
     completedAt: null,

@@ -652,7 +652,10 @@ export interface UploadedMedia {
   id: string;
   /** Absolute URL — this is what goes into `verificationVideoUrl`. */
   url: string;
+  /** Name on disk — carries `.bin` for anything served as a download. */
   filename: string;
+  /** Name to show a person. Use this, not `filename`. */
+  displayName: string;
   contentType: string;
   size: number;
 }
@@ -808,6 +811,45 @@ export function deleteNode(mapId: string, nodeId: string): Promise<void> {
   return request<void>(`/api/maps/${mapId}/nodes/${nodeId}`, {
     method: 'DELETE',
   });
+}
+
+// ── Attachments ──────────────────────────────────────────────────
+
+export interface NewAttachment {
+  kind: 'file' | 'link';
+  url: string;
+  title?: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+}
+
+/**
+ * Hang a file or link on a node. Returns the updated node.
+ *
+ * Its own endpoint rather than `updateNode({ attachments })` so two people
+ * adding at the same time don't overwrite each other with the list each
+ * last read.
+ */
+export function addAttachment(
+  mapId: string,
+  nodeId: string,
+  attachment: NewAttachment,
+): Promise<Node> {
+  return request<Node>(`/api/maps/${mapId}/nodes/${nodeId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify(attachment),
+  });
+}
+
+export function removeAttachment(
+  mapId: string,
+  nodeId: string,
+  attachmentId: string,
+): Promise<Node> {
+  return request<Node>(
+    `/api/maps/${mapId}/nodes/${nodeId}/attachments/${attachmentId}`,
+    { method: 'DELETE' },
+  );
 }
 
 export function moveNode(

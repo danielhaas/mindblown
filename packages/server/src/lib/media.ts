@@ -29,25 +29,46 @@
  *    path if that stops being acceptable: keep the route, add a
  *    per-request signature, and re-render the src at view time.
  *
- * 3. **The stored extension comes from our allowlist, never from the
- *    client.** The file is served from the same origin as the app, so a
- *    stored `.html` would be stored XSS. Deriving the extension from the
- *    accepted MIME type means the set of things on disk is closed, and
- *    none of them is script-executable in a browsing context.
+ * 3. **The stored extension is the security boundary, and it is two-tier.**
+ *    Files are served from the same origin as the app, so a stored `.html`
+ *    returned as `text/html` would be stored XSS. The extension decides
+ *    that, and nothing downstream can repair it: @fastify/static derives
+ *    Content-Type from the extension and writes it *after* `setHeaders`
+ *    runs, so a hook cannot override it (measured — a stored `evil.html`
+ *    comes back as `text/html; charset=utf-8` whatever the hook sets).
+ *
+ *    So: a type in `INLINE_MEDIA_TYPES` takes its extension from our own
+ *    table, never the client, and is served with its real Content-Type.
+ *    **Every other type is accepted** and stored as `<name>.<ext>.bin` —
+ *    last extension `.bin`, which is `application/octet-stream`, with the
+ *    inner one surviving only to rebuild a `Content-Disposition` filename
+ *    (that header *can* be set from the hook). This used to be an
+ *    allowlist that refused everything else, which bought the same safety
+ *    at the cost of every ordinary file — a spec, a spreadsheet, an
+ *    export.
+ *
+ *    Scope of the guarantee, precisely: **the browser** never parses or
+ *    executes such a file, and it never runs in our origin. The *operating
+ *    system* is a different matter — `downloadName()` deliberately strips
+ *    the `.bin`, so `payload.exe.bin` lands on disk as `payload.exe`. That
+ *    is what every file host does and it is the right product behaviour,
+ *    but `Content-Disposition: attachment` protects this origin, not the
+ *    person who double-clicks the download.
  */
 
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 
 /**
- * Accepted upload types → the extension we store them under.
+ * Types the browser is allowed to render in place, and the extension each
+ * is stored under.
  *
- * Videos are the point; images ride along because a screenshot is the
- * cheap version of a clip and users will try it. PDF is here for spec
- * hand-offs. Everything else is refused rather than stored under a generic
- * extension — see the module note on why the extension set stays closed.
+ * Membership here is a permission, not a filter: these are the files we
+ * hand back with their real Content-Type, so a browser will play, show or
+ * display them. Everything else is still accepted — see
+ * `INLINE_SAFE_FALLBACK` — it just doesn't get that privilege.
  */
-export const ALLOWED_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({
+export const INLINE_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freeze({
   'video/mp4': 'mp4',
   'video/webm': 'webm',
   'video/quicktime': 'mov',
@@ -57,6 +78,34 @@ export const ALLOWED_MEDIA_TYPES: Readonly<Record<string, string>> = Object.free
   'image/webp': 'webp',
   'application/pdf': 'pdf',
 });
+
+/**
+ * What every other type is stored and served as.
+ *
+ * The original allowlist existed for one reason: files are served from the
+ * same origin as the app, so a stored `.html` or `.svg` would be stored
+ * XSS. Refusing unknown types was the cheap way to guarantee that. It is
+ * not the only way, and it cost users the ordinary case — a spec, a
+ * spreadsheet, an export, a zip.
+ *
+ * So: anything outside the inline set is stored with `.bin` appended, which
+ * makes this its Content-Type, and served with
+ * `Content-Disposition: attachment`. A browser handed those two headers
+ * downloads the file rather than parsing it, and it never runs in our
+ * origin. That holds regardless of what the bytes contain or what the
+ * client claimed the type was — a stronger guarantee than an allowlist of
+ * MIME strings the client picks, and one that doesn't cost the user every
+ * ordinary document.
+ *
+ * The guarantee is about the browser. What the recipient's operating system
+ * does with the downloaded file is outside it — see the module header.
+ */
+export const INLINE_SAFE_FALLBACK = 'application/octet-stream';
+
+/** True when we'll hand this type back with its real Content-Type. */
+export function isInlineType(mimeType: string): boolean {
+  return mimeType in INLINE_MEDIA_TYPES;
+}
 
 /** URL prefix the upload response builds on, and the static mount point. */
 export const MEDIA_ROUTE_PREFIX = '/api/media';
@@ -132,6 +181,10 @@ export function isMediaPlaybackPath(url: string): boolean {
   return /^\/api\/media\/[0-9a-f]{40}\/[^/?#]+(?:[?#]|$)/.test(url);
 }
 
+/** Extension every non-inline upload is stored under. `.bin` resolves to
+ *  `application/octet-stream`, which is the whole point. */
+export const DOWNLOAD_EXTENSION = 'bin';
+
 const MAX_STEM_LENGTH = 80;
 
 /**
@@ -140,20 +193,35 @@ const MAX_STEM_LENGTH = 80;
  * The name is cosmetic — it's what the browser offers on "save as" and
  * what makes the URL readable — so it is rewritten aggressively rather
  * than validated: directory components dropped, anything outside
- * `[A-Za-z0-9_-]` replaced, length capped, and the extension replaced with
- * the one our allowlist assigns to the accepted MIME type.
+ * `[A-Za-z0-9_-]` replaced, length capped.
  *
- * Dots inside the stem go too, so the result carries exactly one
- * extension. `index.html.mp4` would be served as `video/mp4` by both Caddy
- * and @fastify/static — they read the last extension — but a name that
- * still contains `.html` is one proxy or one content-scanner away from
- * being read the other way round, and `index-html.mp4` costs nothing.
+ * The extension is where the two cases part, and the split is forced by a
+ * measured fact: **`setHeaders` cannot override Content-Type.**
+ * @fastify/static derives it from the stored extension and writes it after
+ * the hook runs — a probe confirmed a stored `evil.html` comes back as
+ * `text/html; charset=utf-8` no matter what the hook sets. (The same trap
+ * that made `Cache-Control` read `max-age=0` in #286.) So the extension on
+ * disk *is* the security boundary; nothing downstream can repair it.
+ *
+ * Inline types therefore take their extension from our own table, never
+ * the client. Everything else is stored as `<name>.<clientext>.bin`: the
+ * last extension is `.bin`, which is `application/octet-stream`, and the
+ * inner one survives only to rebuild a usable "save as" name in the
+ * `Content-Disposition` header — which *can* be set from the hook. A
+ * `.html`, `.svg` or `.js` upload thus lands as `….html.bin` and is
+ * downloaded rather than parsed — by the browser. See the module header
+ * for where that guarantee stops (it stops at the browser).
+ *
+ * Dots inside the stem go either way, so an inline file carries exactly
+ * one extension. `index.html.mp4` would be served as `video/mp4` by both
+ * Caddy and @fastify/static — they read the last extension — but a name
+ * that still contains `.html` is one proxy or one content-scanner away
+ * from being read the other way round, and `index-html.mp4` costs nothing.
  */
 export function safeFilename(original: string | undefined, mimeType: string): string {
-  const ext = ALLOWED_MEDIA_TYPES[mimeType];
-  if (!ext) throw new Error(`Unsupported media type: ${mimeType}`);
-
   const base = path.basename(original ?? '').trim();
+  const clientExt = /\.([A-Za-z0-9]{1,12})$/.exec(base)?.[1]?.toLowerCase();
+
   const stem = base.replace(/\.[^.]*$/, '');
   const cleaned = stem
     .replace(/[^A-Za-z0-9_-]+/g, '-')
@@ -161,8 +229,28 @@ export function safeFilename(original: string | undefined, mimeType: string): st
     .replace(/-{2,}/g, '-')
     .replace(/-+$/, '')
     .slice(0, MAX_STEM_LENGTH);
+  const name = cleaned || 'datei';
 
-  return `${cleaned || 'datei'}.${ext}`;
+  const inlineExt = INLINE_MEDIA_TYPES[mimeType];
+  if (inlineExt) return `${name}.${inlineExt}`;
+
+  return clientExt ? `${name}.${clientExt}.${DOWNLOAD_EXTENSION}` : `${name}.${DOWNLOAD_EXTENSION}`;
+}
+
+/** True for a file we stored as a forced download. */
+export function isDownloadOnly(storedName: string): boolean {
+  return storedName.endsWith(`.${DOWNLOAD_EXTENSION}`);
+}
+
+/**
+ * The name a download should land under — the stored name without the
+ * `.bin` we appended, so `bericht.xlsx.bin` saves as `bericht.xlsx` and
+ * the user's machine opens it with the right application.
+ */
+export function downloadName(storedName: string): string {
+  return isDownloadOnly(storedName)
+    ? storedName.slice(0, -(DOWNLOAD_EXTENSION.length + 1))
+    : storedName;
 }
 
 /**

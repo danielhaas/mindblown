@@ -37,6 +37,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     versionId: null,
     cycleId: null,
     externalLinks: [],
+    attachments: [],
     autoProgress: 'off',
     priorityRank: null,
     completedAt: null,

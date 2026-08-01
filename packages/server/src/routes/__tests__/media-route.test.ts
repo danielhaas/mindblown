@@ -140,20 +140,32 @@ describe('POST /api/media', () => {
     expect(await readFile(path.join(dir, second.json().id, 'demo.mp4'), 'utf8')).toBe('two');
   });
 
-  it('rejects a type outside the allowlist and writes nothing', async () => {
+  it('accepts a type it will not render, and stores it as a download', async () => {
+    // The 415 this replaces was how "nothing script-executable is ever
+    // stored" used to be bought, and it cost users every ordinary file — a
+    // spec, a spreadsheet, an export. The guarantee moved to the stored
+    // extension; the playback tests below are what prove it still holds.
     const res = await app.inject({
       method: 'POST',
       url: '/api/media',
       ...multipart({
-        filename: 'evil.html',
-        contentType: 'text/html',
-        content: '<script>alert(1)</script>',
+        filename: 'Quartalsbericht.xlsx',
+        contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        content: 'spreadsheet-bytes',
       }),
     });
 
-    expect(res.statusCode).toBe(415);
-    expect(res.json().error.code).toBe('UNSUPPORTED_MEDIA_TYPE');
-    expect(await readdir(dir)).toEqual([]);
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.filename).toBe('Quartalsbericht.xlsx.bin');
+    // What a person is shown, and what the file saves as: the stored `.bin`
+    // is our business, not theirs. Returned by the server so no caller has
+    // to know the rule — the first one that didn't put
+    // "Anforderungen.txt.bin" in front of a user.
+    expect(body.displayName).toBe('Quartalsbericht.xlsx');
+    expect(await readFile(path.join(dir, body.id, body.filename), 'utf8')).toBe(
+      'spreadsheet-bytes',
+    );
   });
 
   it('accepts a charset-suffixed content type', async () => {
@@ -224,7 +236,7 @@ describe('GET /api/media/*', () => {
       ...multipart({ filename, content, contentType }),
     });
     expect(res.statusCode).toBe(201);
-    return res.json() as { id: string; filename: string; url: string };
+    return res.json() as { id: string; filename: string; displayName: string; url: string };
   }
 
   it('serves the stored bytes with the allowlisted content type', async () => {
@@ -296,6 +308,43 @@ describe('GET /api/media/*', () => {
     });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  it('never serves an uploaded HTML file as HTML on our own origin', async () => {
+    // The single most important assertion in this file. A stored `.html`
+    // returned as `text/html` from the app's own hostname is stored XSS
+    // against every logged-in user. Since arbitrary types are now accepted,
+    // the only thing preventing it is that the file lands under `.bin` —
+    // `setHeaders` demonstrably cannot override the Content-Type
+    // @fastify/static derives from the extension.
+    const up = await upload('evil.html', '<script>alert(1)</script>', 'text/html');
+
+    expect(up.filename).toBe('evil.html.bin');
+    expect(up.displayName).toBe('evil.html');
+
+    const res = await app.inject({ method: 'GET', url: `/api/media/${up.id}/${up.filename}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toContain('application/octet-stream');
+    expect(res.headers['content-type']).not.toContain('text/html');
+    expect(res.headers['content-disposition']).toContain('attachment');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('gives a download back its real name, so the file opens on the other end', async () => {
+    const up = await upload(
+      'Quartalsbericht.xlsx',
+      'x',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+
+    const res = await app.inject({ method: 'GET', url: `/api/media/${up.id}/${up.filename}` });
+
+    // Stored as `.bin` so the Content-Type is inert; the disposition is
+    // what carries the name a user's machine needs to pick an application.
+    expect(res.headers['content-disposition']).toBe(
+      'attachment; filename="Quartalsbericht.xlsx"',
+    );
   });
 
   it('serves a PDF as a download rather than a page on our own origin', async () => {

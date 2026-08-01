@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
@@ -303,6 +304,7 @@ export async function createNode(
       customFields: {},
       dependencies: [],
       externalLinks: [],
+      attachments: [],
       createdAt: now,
       updatedAt: now,
       createdBy: input.createdBy,
@@ -660,6 +662,220 @@ export async function setExternalLinkState(
     .set({ externalLinks: next })
     .where(and(eq(nodes.id, nodeId), notDeleted));
   return true;
+}
+
+// ── Attachments ──────────────────────────────────────────────────
+
+export class AttachmentValidationError extends Error {}
+
+/** Only `http:`/`https:`, parsed rather than prefix-matched. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const MAX_ATTACHMENTS_PER_NODE = 50;
+const MAX_URL_LENGTH = 2048;
+const MAX_TITLE_LENGTH = 200;
+
+export interface NewAttachment {
+  kind: "file" | "link";
+  url: string;
+  title?: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+}
+
+/**
+ * Validate one attachment request and turn it into the row we store.
+ *
+ * Pure, and exported, because every rule worth arguing about lives here —
+ * which schemes may become an `<a href>`, how a title is derived when the
+ * caller gave none, that a link never carries a file's size. `addAttachment`
+ * below is this plus one SQL statement, and a stub-handle test cannot see
+ * into SQL. Keeping the rules on this side of the line is what keeps them
+ * verifiable.
+ */
+export function buildAttachment(
+  input: NewAttachment,
+  addedBy: string | null = null,
+  now: Date = new Date(),
+): CoreNode["attachments"][number] {
+  // `typeof` rather than truthiness: the route only checks that the field
+  // is present, so `{"url": 5}` reaches here, and `.trim()` on a number is
+  // a TypeError — a 500 for what is plainly a bad request.
+  if (typeof input.url !== "string") {
+    throw new AttachmentValidationError("url muss Text sein");
+  }
+  if (input.title !== undefined && typeof input.title !== "string") {
+    throw new AttachmentValidationError("title muss Text sein");
+  }
+  if (input.kind !== "file" && input.kind !== "link") {
+    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
+  }
+
+  const raw = input.url.trim();
+  if (!isHttpUrl(raw)) {
+    throw new AttachmentValidationError(
+      "URL muss mit http:// oder https:// beginnen",
+    );
+  }
+
+  // Store what the parser resolved rather than the raw string. The two
+  // differ for inputs a browser would normalise anyway (stray control
+  // characters, backslashes), and storing the canonical form means no
+  // consumer has to wonder which one it got.
+  const parsed = new URL(raw);
+
+  // Measured on `href`, not on the input: percent-encoding expands a URL
+  // of multi-byte characters roughly sixfold, so a 2048-char input can
+  // store as ~12k. Capping the raw string would let 50 attachments put
+  // ~600 KB of jsonb on one node while the number looked like 100.
+  if (parsed.href.length > MAX_URL_LENGTH) {
+    throw new AttachmentValidationError(
+      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
+    );
+  }
+
+  // A title always renders, so derive one rather than showing a raw URL:
+  // the filename for something we host, the host for a link elsewhere.
+  const last = decodeURIComponent(
+    parsed.pathname.split("/").filter(Boolean).pop() ?? "",
+  );
+  const fallbackTitle = input.kind === "file" && last ? last : parsed.host;
+
+  return {
+    id: randomUUID(),
+    kind: input.kind,
+    url: parsed.href,
+    // Control characters stripped before the cap: Postgres rejects \u0000
+    // inside a jsonb string, so a NUL in the title would reach the
+    // `::jsonb` cast and come back as a 500 for what is a bad request.
+    // (`url` needs no such guard — the URL parser percent-encodes it.)
+    title: ((input.title ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim() ||
+      fallbackTitle).slice(0, MAX_TITLE_LENGTH),
+    mimeType: input.kind === "file" ? (input.mimeType ?? null) : null,
+    sizeBytes: input.kind === "file" ? (input.sizeBytes ?? null) : null,
+    addedAt: now.toISOString(),
+    addedBy,
+  };
+}
+
+/**
+ * Append one attachment.
+ *
+ * Its own function rather than a field on `updateNode`, and — the part that
+ * actually earns that — the append happens **in Postgres**, as
+ * `attachments || '[…]'::jsonb`, with the per-node ceiling as a predicate
+ * on the same statement.
+ *
+ * The first cut read the array, appended in JS, and wrote it back. That
+ * narrows the lost-update window from a user's whole editing session to a
+ * DB round-trip, which is better but is not "avoided": two fleet agents
+ * appending to the same node inside one tick still interleave, and one
+ * attachment vanishes behind a 201. jsonb concat closes it outright, and
+ * the ceiling predicate closes the same race on the limit check.
+ *
+ * Zero rows back means the WHERE matched nothing — either the node is gone
+ * or it is full. One extra read on that path tells the two apart, so the
+ * caller gets a message worth reading.
+ */
+export async function addAttachment(
+  nodeId: string,
+  input: NewAttachment,
+  addedBy: string | null = null,
+  handle: DbHandle = db,
+): Promise<CoreNode> {
+  const attachment = buildAttachment(input, addedBy);
+
+  const [updated] = await handle
+    .update(nodes)
+    .set({
+      attachments: sql`${nodes.attachments} || ${JSON.stringify([attachment])}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        sql`jsonb_array_length(${nodes.attachments}) < ${MAX_ATTACHMENTS_PER_NODE}`,
+      ),
+    )
+    .returning();
+
+  if (!updated) {
+    const [row] = await handle
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    throw new AttachmentValidationError(
+      row
+        ? `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`
+        : `Node ${nodeId} not found`,
+    );
+  }
+
+  return dbNodeToCore(updated);
+}
+
+/**
+ * Drop one attachment by id.
+ *
+ * One statement, like `addAttachment`, and for a reason that is easy to
+ * get wrong: the first cut left this as read-modify-write on the grounds
+ * that removal is idempotent, so only remove-vs-remove could lose and that
+ * costs a re-click. That analysis enumerated the wrong pair. Once the
+ * append became atomic, **remove-vs-add** was the losable case, and it is
+ * silent:
+ *
+ *   t0  remove reads [X, Z]
+ *   t1  add runs `|| '[Y]'`, commits, answers 201 — the adder sees Y
+ *   t2  remove writes [Z] wholesale — Y is gone, no error, nothing to retry
+ *
+ * That is exactly the failure the jsonb concat was introduced to remove,
+ * re-entering through the other door — and the fleet hits it the moment an
+ * agent attaches material while someone prunes the same node. So the
+ * removal rebuilds the array in Postgres too, and the `@>` predicate
+ * reproduces the old null semantics exactly: zero rows means the node is
+ * gone *or* the attachment was not there, which is the 404 either way.
+ *
+ * The stored file, if any, is deliberately left on disk — see the
+ * housekeeping note in deploy/README.md. Removing it here would break the
+ * case where the same URL was pasted onto a second node, and node deletion
+ * is a soft delete with a restore path regardless.
+ */
+export async function removeAttachment(
+  nodeId: string,
+  attachmentId: string,
+  handle: DbHandle = db,
+): Promise<CoreNode | null> {
+  const [updated] = await handle
+    .update(nodes)
+    .set({
+      attachments: sql`COALESCE((SELECT jsonb_agg(e)
+        FROM jsonb_array_elements(${nodes.attachments}) e
+        -- IS DISTINCT FROM, not <>: an element with a missing or null id
+        -- would compare NULL, which is not TRUE, so <> would silently drop
+        -- it on every removal. Unreachable today (buildAttachment always
+        -- assigns a uuid and is the only write path) — this is the line
+        -- that keeps it unreachable.
+        WHERE e->>'id' IS DISTINCT FROM ${attachmentId}), '[]'::jsonb)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        sql`${nodes.attachments} @> ${JSON.stringify([{ id: attachmentId }])}::jsonb`,
+      ),
+    )
+    .returning();
+
+  return updated ? dbNodeToCore(updated) : null;
 }
 
 /**

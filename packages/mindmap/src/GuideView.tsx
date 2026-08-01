@@ -474,6 +474,49 @@ function GuideCard({
         )
       )}
 
+      {/* Whatever someone hung on the criterion — a spec, an export, a
+          screenshot, a link to a ticket. Rendered after the steps rather
+          than before: a reader is here to follow instructions, and the
+          material is what they reach for when a step doesn't match. The
+          block disappears entirely when there is nothing, same rule as
+          the video. */}
+      {(entry.node.attachments ?? []).length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={sectionLabelStyle}>Material</div>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
+            {(entry.node.attachments ?? []).map((a) => (
+              <li key={a.id}>
+                <a
+                  className="mb-guide-btn"
+                  href={a.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={{
+                    ...quietBtnStyle,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    textDecoration: 'none',
+                    maxWidth: '100%',
+                  }}
+                >
+                  <span aria-hidden>{a.kind === 'file' ? '📎' : '🔗'}</span>
+                  <span
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {a.title}
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div style={actionsStyle}>
         {/* No URL, no button — a dead link that looks live is worse than an
             absent one, and `verificationUrl` is unvalidated free text. */}

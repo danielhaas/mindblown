@@ -144,6 +144,23 @@ export interface NodeWithComputed {
   verificationText: string | null;
   verificationUrl: string | null;
   verificationVideoUrl: string | null;
+  /**
+   * Files and links hung on the node. Present here — this type is a
+   * hand-maintained mirror, so it does not inherit from core — because MCP
+   * is how agents read a map: leaving it out would make anything a person
+   * attached invisible to exactly the readers who most need to see it,
+   * with a green suite.
+   */
+  attachments: Array<{
+    id: string;
+    kind: 'file' | 'link';
+    url: string;
+    title: string;
+    mimeType?: string | null;
+    sizeBytes?: number | null;
+    addedAt: string;
+    addedBy?: string | null;
+  }>;
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;

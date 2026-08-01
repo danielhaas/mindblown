@@ -3,6 +3,7 @@ import type { Node, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { GitHubNodeSection } from './GitHubPanel.js';
+import { AttachmentsSection } from './AttachmentsSection.js';
 import { MediaUploadButton } from './MediaUploadButton.js';
 import * as api from './api.js';
 import type { EstimateResult } from './api.js';
@@ -222,6 +223,7 @@ function PropertyPanelInner({
   useEffect(() => { setVerificationUrl(node.verificationUrl ?? ''); }, [node.verificationUrl]);
   useEffect(() => { setVerificationVideoUrl(node.verificationVideoUrl ?? ''); }, [node.verificationVideoUrl]);
 
+  const applyServerNode = useMindmapStore((s) => s.applyServerNode);
   const allNodes = useMindmapStore((s) => s.nodes);
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
     .map((pid) => allNodes[pid]?.text ?? pid);
@@ -718,6 +720,25 @@ function PropertyPanelInner({
 
         {/* Phase */}
         <PhaseField nodeId={nodeId} currentPhaseId={node.phaseId} />
+
+        {/* Divider */}
+        <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+
+        {/* Attachments — files and links, on every node, not just
+            requirements. Unlike the verification block above, this doesn't
+            wait for a Requirement ID: hanging a document on a task is
+            useful long before that task is a formally tracked requirement. */}
+        <Field label="Anhänge">
+          <AttachmentsSection
+            attachments={node.attachments ?? []}
+            onAdd={async (attachment) => {
+              applyServerNode(await api.addAttachment(node.mapId, nodeId, attachment));
+            }}
+            onRemove={async (attachmentId) => {
+              applyServerNode(await api.removeAttachment(node.mapId, nodeId, attachmentId));
+            }}
+          />
+        </Field>
 
         {/* Divider */}
         <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />

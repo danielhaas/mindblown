@@ -445,6 +445,94 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── POST /api/maps/:id/nodes/:nodeId/attachments — Hang a file or link ──
+  //
+  // A sub-resource rather than a field on PUT, for the same reason
+  // dependencies are: adding one attachment shouldn't mean sending the
+  // whole array back, where two people adding at once each overwrite the
+  // other's entry with the list they last read. `addAttachment` then does
+  // the append as jsonb concat in one statement, so the narrower race that
+  // remains at this level is closed in the database rather than argued
+  // away — see the note there.
+  app.post<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/attachments',
+    async (req, reply) => {
+      const body = (req.body ?? {}) as {
+        kind?: 'file' | 'link';
+        url?: string;
+        title?: string;
+        mimeType?: string | null;
+        sizeBytes?: number | null;
+      };
+
+      if (!body.url || !body.kind) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'kind and url are required' },
+        });
+      }
+
+      try {
+        const updated = await nodeDb.addAttachment(
+          req.params.nodeId,
+          {
+            kind: body.kind,
+            url: body.url,
+            title: body.title,
+            mimeType: body.mimeType,
+            sizeBytes: body.sizeBytes,
+          },
+          (req as { userId?: string }).userId ?? null,
+        );
+
+        broadcast(req.params.id, {
+          type: 'node:updated',
+          nodeId: req.params.nodeId,
+          fields: ['attachments'],
+          node: updated,
+        });
+
+        return reply.status(201).send(updated);
+      } catch (err) {
+        if (err instanceof nodeDb.AttachmentValidationError) {
+          return reply.status(400).send({
+            error: { code: 'ATTACHMENT_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // ── DELETE /api/maps/:id/nodes/:nodeId/attachments/:attachmentId ──
+  app.delete<{ Params: { id: string; nodeId: string; attachmentId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/attachments/:attachmentId',
+    async (req, reply) => {
+      const updated = await nodeDb.removeAttachment(
+        req.params.nodeId,
+        req.params.attachmentId,
+      );
+
+      if (!updated) {
+        // `removeAttachment` answers null for both "no such node" and "no
+        // such attachment"; say so rather than asserting the second, which
+        // sends someone hunting for an attachment on a node that isn't
+        // there.
+        return reply.status(404).send({
+          error: { code: 'NOT_FOUND', message: 'Node or attachment not found' },
+        });
+      }
+
+      broadcast(req.params.id, {
+        type: 'node:updated',
+        nodeId: req.params.nodeId,
+        fields: ['attachments'],
+        node: updated,
+      });
+
+      return reply.send(updated);
+    },
+  );
+
   // ── DELETE /api/maps/:id/nodes/:nodeId — Delete a node ────────
   app.delete<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId',

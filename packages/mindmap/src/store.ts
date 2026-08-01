@@ -183,6 +183,13 @@ export interface MindmapState {
   startEditing: (id: string | null) => void;
   addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }, fields?: Partial<Node>) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
+  /**
+   * Replace a node with what the server just returned, without writing
+   * back. For sub-resource endpoints (attachments, dependencies) that have
+   * already persisted the change and answered with the whole node —
+   * `updateNode` would POST it a second time, and with a stale revision.
+   */
+  applyServerNode: (node: Node) => void;
   deleteNode: (id: string) => void;
   moveNode: (nodeId: string, newParentId: string, index: number) => void;
   reorderChildren: (parentId: string, childrenIds: string[]) => void;
@@ -957,6 +964,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       versionId: null,
       cycleId: null,
       externalLinks: [],
+      attachments: [],
       autoProgress: 'off',
       priorityRank: null,
     completedAt: null,
@@ -1063,6 +1071,13 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
 
     return tempId;
+  },
+
+  applyServerNode: (node) => {
+    const state = get();
+    if (!state.nodes[node.id]) return;
+    const nodes = { ...state.nodes, [node.id]: node };
+    set({ nodes, computed: recomputeValues(nodes) });
   },
 
   updateNode: (id, updates) => {

@@ -125,6 +125,37 @@ export interface LinkedPrState {
   lastSyncedAt: string;
 }
 
+// ── Attachment ──────────────────────────────────────────────────
+
+/**
+ * A file or a link somebody hung on a node.
+ *
+ * Kept apart from `ExternalLink` on purpose. That type is integration
+ * state — sync flags, the remote's open/closed status, whether a GitHub
+ * number turned out to be a PR — and the sync jobs both read and write
+ * it. A URL a person pasted has none of that and must not be walked over
+ * by a sync pass, so it lives here.
+ *
+ * `kind` is the only structural difference between the two cases: a file
+ * is something we host and therefore know the size and type of, a link
+ * points somewhere we know nothing about. Everything else is shared, so
+ * the UI renders one list rather than two.
+ */
+export interface Attachment {
+  id: string;
+  kind: 'file' | 'link';
+  /** Absolute URL. For files, the one `POST /api/media` minted. */
+  url: string;
+  /** What the list shows. Defaults to the filename or the host. */
+  title: string;
+  /** Files only — what the server accepted it as. */
+  mimeType?: string | null;
+  /** Files only. */
+  sizeBytes?: number | null;
+  addedAt: string;
+  addedBy?: UserId | null;
+}
+
 // ── Node ────────────────────────────────────────────────────────
 
 /**
@@ -172,6 +203,10 @@ export interface Node {
 
   // ── Integrations ──────────────────────────────────────────
   externalLinks: ExternalLink[];
+
+  // ── Attachments ───────────────────────────────────────────
+  /** Files and links a person hung on this node. See `Attachment`. */
+  attachments: Attachment[];
 
   // ── Sibling ordering (Gantt slice 1) ─────────────────────────
   /**

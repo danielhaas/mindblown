@@ -62,6 +62,7 @@ function makeNode(id: string, parentId: string | null, overrides: Partial<Node> 
     cycleId: null,
     phaseId: null,
     externalLinks: [],
+    attachments: [],
     priorityRank: null,
     completedAt: null,
     claimedBySession: null,

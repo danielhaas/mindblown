@@ -42,6 +42,7 @@ export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; 
     customFields: {},
     dependencies: [],
     externalLinks: [],
+    attachments: [],
     createdAt: now,
     updatedAt: now,
     createdBy: input.createdBy,

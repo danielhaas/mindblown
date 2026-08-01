@@ -537,6 +537,7 @@ vi.mock('../../db/nodes.js', () => ({
       versionId: null,
       cycleId: null,
       externalLinks: [],
+      attachments: [],
       autoProgress: 'off' as const,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

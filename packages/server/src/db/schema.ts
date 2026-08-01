@@ -182,6 +182,11 @@ export const nodes = pgTable('nodes', {
   versionId: uuid('version_id'),
   cycleId: uuid('cycle_id'),
   externalLinks: jsonb('external_links').notNull().default([]), // ExternalLink[]
+  // Files and links a person hung on the node. jsonb rather than its own
+  // table because that is how every other list on a node is stored here
+  // (dependencies, tags, externalLinks, scopes), and because the node
+  // payload the API already ships whole is where the UI wants them.
+  attachments: jsonb('attachments').notNull().default([]), // Attachment[]
   // Parent-epic auto-progress rollup. 'off' (default) = manual progress is
   // authoritative; 'children' = computed from linked GitHub child PRs via
   // parentEpicRollup. See packages/server/src/sync/parentEpicRollup.ts.
