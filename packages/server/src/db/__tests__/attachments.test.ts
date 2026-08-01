@@ -17,6 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import type { UpdateNodeInput } from '../nodes.js';
 import {
   addAttachment,
   buildAttachment,
@@ -130,6 +131,22 @@ describe('buildAttachment', () => {
     });
     expect(a.mimeType).toBeNull();
     expect(a.sizeBytes).toBeNull();
+  });
+
+  it('strips control characters from the title so the jsonb cast survives', () => {
+    // Postgres rejects \u0000 inside a jsonb string value, and the title
+    // goes into the statement as JSON. Without this the NUL reaches the
+    // `::jsonb` cast and comes back as a 500 for what is a bad request —
+    // the same class the typeof guards were added for.
+    const a = buildAttachment({ kind: 'link', url: 'https://x.example', title: 'a\u0000b' });
+    expect(a.title).toBe('ab');
+    expect(JSON.stringify(a)).not.toContain('u0000');
+
+    // A title that is *only* control characters falls back rather than
+    // storing an empty string.
+    expect(
+      buildAttachment({ kind: 'link', url: 'https://x.example', title: '\u0000\u0007' }).title,
+    ).toBe('x.example');
   });
 
   it('records who added it and when', () => {
@@ -266,67 +283,49 @@ describe('addAttachment', () => {
 
 // ── Removal ───────────────────────────────────────────────────────
 
-function removalHandle(initial: Attachment[] | null): {
-  handle: DbHandle;
-  written: () => Attachment[] | undefined;
-  updateCalls: () => number;
-} {
-  let written: Attachment[] | undefined;
-  let updates = 0;
-  const row = initial === null ? undefined : { attachments: initial };
-
-  const handle = {
-    select: () => ({ from: () => ({ where: () => Promise.resolve(row ? [row] : []) }) }),
-    update: () => ({
-      set: (values: Record<string, unknown>) => {
-        updates += 1;
-        written = values.attachments as Attachment[];
-        return {
-          where: () => ({
-            returning: () =>
-              Promise.resolve([{ id: 'n1', mapId: 'm1', attachments: written, externalLinks: [] }]),
-          }),
-        };
-      },
-    }),
-  } as unknown as DbHandle;
-
-  return { handle, written: () => written, updateCalls: () => updates };
-}
-
-const existing = (n: number): Attachment[] =>
-  Array.from({ length: n }, (_, i) => ({
-    id: `att-${i}`,
-    kind: 'link' as const,
-    url: `https://example.com/${i}`,
-    title: `Link ${i}`,
-    addedAt: '2026-08-01T00:00:00.000Z',
-  }));
-
 describe('removeAttachment', () => {
-  // Removal stays read-modify-write on purpose: it is idempotent, so a
-  // concurrent remove of a *different* id is the only losable case, and
-  // that costs a re-click rather than silent data loss.
-  it('removes exactly one and leaves its neighbours in order', async () => {
-    const { handle, written } = removalHandle(existing(3));
+  // Removal is one statement now, like the append. The first cut left it
+  // as read-modify-write on the grounds that removal is idempotent so only
+  // remove-vs-remove could lose — which enumerated the wrong pair. Once
+  // the append became atomic, a remove that reads [X, Z], races an add of
+  // Y, and writes [Z] wholesale drops Y silently, behind a 201 the adder
+  // has already seen. That is the failure the concat was introduced to
+  // remove, coming back through the other door.
+  //
+  // So the same two things are pinned here as for the append: the array is
+  // rebuilt in SQL rather than computed here, and the "did it match
+  // anything" branch maps to null.
+
+  it('rebuilds the array in SQL rather than writing one it computed', async () => {
+    const { handle, setValues } = stubHandle({ matched: true });
 
     await removeAttachment('n1', 'att-1', handle);
 
-    expect(written()!.map((a) => a.id)).toEqual(['att-0', 'att-2']);
+    const written = setValues()!.attachments;
+    // A plain array here is the read-modify-write shape — the one that
+    // drops a concurrent add.
+    expect(Array.isArray(written)).toBe(false);
+    expect(sqlText(written)).toContain('jsonb_array_elements');
   });
 
-  it('returns null for an id this node does not carry, and writes nothing', async () => {
-    // Without this the route answers 200 for a delete that deleted
-    // nothing, and the UI removes a row that is still in the database.
-    const { handle, updateCalls } = removalHandle(existing(2));
+  it('scopes the write to a node that actually carries the attachment', async () => {
+    const { handle, whereConditions } = stubHandle({ matched: true });
+
+    await removeAttachment('n1', 'att-1', handle);
+
+    // The containment predicate is what makes "not there" distinguishable
+    // from "removed", without a prior read to race against.
+    expect(sqlText(whereConditions())).toContain('att-1');
+  });
+
+  it('returns null when the write matched nothing', async () => {
+    // One null for both "no such node" and "no such attachment" — the
+    // route turns either into a 404, and without it a delete that deleted
+    // nothing would answer 200 and the UI would drop a row that is still
+    // in the database.
+    const { handle } = stubHandle({ matched: false });
 
     expect(await removeAttachment('n1', 'att-does-not-exist', handle)).toBeNull();
-    expect(updateCalls()).toBe(0);
-  });
-
-  it('returns null for a node that is not there', async () => {
-    const { handle } = removalHandle(null);
-    expect(await removeAttachment('gone', 'att-0', handle)).toBeNull();
   });
 });
 
@@ -342,9 +341,23 @@ describe('the generic update path cannot write attachments', () => {
    * That property is held entirely by the absence of a line. Someone adds
    * `attachments?: Attachment[]` next quarter for a bulk import, the
    * `javascript:` door opens at both render sites, and nothing else in the
-   * suite notices. This is the test that notices.
+   * suite notices. These are what notice.
    */
+  it('has no attachments field on UpdateNodeInput', () => {
+    // Compile-time rather than source-text: this resolves to `never` the
+    // moment the key exists, so adding the field fails `tsc` with a
+    // readable error in the same step that would otherwise ship it.
+    type NoAttachments<T> = 'attachments' extends keyof T ? never : T;
+    const pin: NoAttachments<UpdateNodeInput> = {} as UpdateNodeInput;
+
+    expect(pin).toBeDefined();
+  });
+
   it('has no attachments line in updateNode', async () => {
+    // The mapping half can't be typed — `updates` is Record<string,
+    // unknown> — so this one does read the source. Second choice, not
+    // first: it survives neither a rename nor a move. If `updateNode`
+    // becomes stubbable end to end, assert on the written keys instead.
     const source = await readFile(new URL('../nodes.ts', import.meta.url), 'utf8');
 
     const start = source.indexOf('export async function updateNode');
@@ -352,21 +365,11 @@ describe('the generic update path cannot write attachments', () => {
     const end = source.indexOf('\nexport ', start + 1);
     const body = source.slice(start, end === -1 ? undefined : end);
 
-    // If you are here because this failed: adding attachments to the
+    // If you are here because this failed: putting attachments on the
     // generic update path means the URL scheme check is no longer a
     // boundary. Route the write through `addAttachment`, or validate in
     // `updateNode` too — do not just delete this test.
     expect(body).not.toMatch(/updates\.attachments\s*=/);
     expect(body).not.toMatch(/input\.attachments/);
-  });
-
-  it('has no attachments field on UpdateNodeInput', async () => {
-    const source = await readFile(new URL('../nodes.ts', import.meta.url), 'utf8');
-
-    const start = source.indexOf('export interface UpdateNodeInput');
-    expect(start).toBeGreaterThan(-1);
-    const shape = source.slice(start, source.indexOf('}', start));
-
-    expect(shape).not.toMatch(/\battachments\b/);
   });
 });

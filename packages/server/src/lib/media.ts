@@ -237,7 +237,6 @@ export function safeFilename(original: string | undefined, mimeType: string): st
   return clientExt ? `${name}.${clientExt}.${DOWNLOAD_EXTENSION}` : `${name}.${DOWNLOAD_EXTENSION}`;
 }
 
-
 /** True for a file we stored as a forced download. */
 export function isDownloadOnly(storedName: string): boolean {
   return storedName.endsWith(`.${DOWNLOAD_EXTENSION}`);

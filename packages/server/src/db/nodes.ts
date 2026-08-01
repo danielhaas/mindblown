@@ -724,17 +724,22 @@ export function buildAttachment(
       "URL muss mit http:// oder https:// beginnen",
     );
   }
-  if (raw.length > MAX_URL_LENGTH) {
-    throw new AttachmentValidationError(
-      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
-    );
-  }
 
   // Store what the parser resolved rather than the raw string. The two
   // differ for inputs a browser would normalise anyway (stray control
   // characters, backslashes), and storing the canonical form means no
   // consumer has to wonder which one it got.
   const parsed = new URL(raw);
+
+  // Measured on `href`, not on the input: percent-encoding expands a URL
+  // of multi-byte characters roughly sixfold, so a 2048-char input can
+  // store as ~12k. Capping the raw string would let 50 attachments put
+  // ~600 KB of jsonb on one node while the number looked like 100.
+  if (parsed.href.length > MAX_URL_LENGTH) {
+    throw new AttachmentValidationError(
+      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
+    );
+  }
 
   // A title always renders, so derive one rather than showing a raw URL:
   // the filename for something we host, the host for a link elsewhere.
@@ -747,10 +752,12 @@ export function buildAttachment(
     id: randomUUID(),
     kind: input.kind,
     url: parsed.href,
-    title: ((input.title ?? "").trim() || fallbackTitle).slice(
-      0,
-      MAX_TITLE_LENGTH,
-    ),
+    // Control characters stripped before the cap: Postgres rejects \u0000
+    // inside a jsonb string, so a NUL in the title would reach the
+    // `::jsonb` cast and come back as a 500 for what is a bad request.
+    // (`url` needs no such guard — the URL parser percent-encodes it.)
+    title: ((input.title ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim() ||
+      fallbackTitle).slice(0, MAX_TITLE_LENGTH),
     mimeType: input.kind === "file" ? (input.mimeType ?? null) : null,
     sizeBytes: input.kind === "file" ? (input.sizeBytes ?? null) : null,
     addedAt: now.toISOString(),
@@ -818,33 +825,52 @@ export async function addAttachment(
 /**
  * Drop one attachment by id.
  *
+ * One statement, like `addAttachment`, and for a reason that is easy to
+ * get wrong: the first cut left this as read-modify-write on the grounds
+ * that removal is idempotent, so only remove-vs-remove could lose and that
+ * costs a re-click. That analysis enumerated the wrong pair. Once the
+ * append became atomic, **remove-vs-add** was the losable case, and it is
+ * silent:
+ *
+ *   t0  remove reads [X, Z]
+ *   t1  add runs `|| '[Y]'`, commits, answers 201 — the adder sees Y
+ *   t2  remove writes [Z] wholesale — Y is gone, no error, nothing to retry
+ *
+ * That is exactly the failure the jsonb concat was introduced to remove,
+ * re-entering through the other door — and the fleet hits it the moment an
+ * agent attaches material while someone prunes the same node. So the
+ * removal rebuilds the array in Postgres too, and the `@>` predicate
+ * reproduces the old null semantics exactly: zero rows means the node is
+ * gone *or* the attachment was not there, which is the 404 either way.
+ *
  * The stored file, if any, is deliberately left on disk — see the
  * housekeeping note in deploy/README.md. Removing it here would break the
- * case where the same URL was pasted onto a second node, and node
- * deletion is a soft delete with a restore path regardless.
+ * case where the same URL was pasted onto a second node, and node deletion
+ * is a soft delete with a restore path regardless.
  */
 export async function removeAttachment(
   nodeId: string,
   attachmentId: string,
   handle: DbHandle = db,
 ): Promise<CoreNode | null> {
-  const [row] = await handle
-    .select({ attachments: nodes.attachments })
-    .from(nodes)
-    .where(and(eq(nodes.id, nodeId), notDeleted));
-  if (!row) return null;
-
-  const existing = (row.attachments as CoreNode["attachments"]) ?? [];
-  const next = existing.filter((a) => a.id !== attachmentId);
-  if (next.length === existing.length) return null;
-
   const [updated] = await handle
     .update(nodes)
-    .set({ attachments: next, updatedAt: new Date() })
-    .where(and(eq(nodes.id, nodeId), notDeleted))
+    .set({
+      attachments: sql`COALESCE((SELECT jsonb_agg(e)
+        FROM jsonb_array_elements(${nodes.attachments}) e
+        WHERE e->>'id' <> ${attachmentId}), '[]'::jsonb)`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        sql`${nodes.attachments} @> ${JSON.stringify([{ id: attachmentId }])}::jsonb`,
+      ),
+    )
     .returning();
 
-  return dbNodeToCore(updated);
+  return updated ? dbNodeToCore(updated) : null;
 }
 
 /**

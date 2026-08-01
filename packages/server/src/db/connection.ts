@@ -4,7 +4,7 @@ import * as schema from './schema.js';
 
 const { Pool } = pg;
 
-const DATABASE_URL =
+export const DATABASE_URL =
   process.env.DATABASE_URL ??
   'postgresql://mindblown:mindblown@localhost:5433/mindblown';
 

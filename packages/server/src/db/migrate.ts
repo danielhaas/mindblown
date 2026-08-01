@@ -1,6 +1,10 @@
+import pg from 'pg';
 import { sql } from 'drizzle-orm';
-import { db } from './connection.js';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { DATABASE_URL } from './connection.js';
 import * as schema from './schema.js';
+
+const { Pool } = pg;
 
 /**
  * Ensure all tables exist by running a simple create-if-not-exists approach.
@@ -16,7 +20,35 @@ export async function runMigrations(): Promise<void> {
   // never finishes booting and systemd restart-loops. On mind.project.li
   // that takes the whole agent fleet down. A timeout turns that into a
   // loud, fast, retryable failure instead of a silent hang.
-  await db.execute(sql`SET lock_timeout = '3s'`);
+  //
+  // Set on the pool rather than by issuing `SET lock_timeout`: that is a
+  // session-scoped statement, and `db.execute()` acquires a connection,
+  // runs, and releases it. It would bind to whichever connection happened
+  // to serve that one statement and hold for the rest only by the accident
+  // of LIFO reuse — degrading, silently, to "wait forever", which is the
+  // exact failure this is here to prevent.
+  // A pool of its own, with the timeout applied at connect time. `SET
+  // lock_timeout` would not do: it is session-scoped, and `db.execute()`
+  // acquires a connection, runs, and releases it — the setting would bind
+  // to whichever connection served that one statement and survive only by
+  // the accident of LIFO reuse, degrading silently to "wait forever",
+  // which is the exact failure it is here to prevent. Scoped to migrations
+  // rather than set on the app pool, because a 3 s ceiling on every lock
+  // wait is a different decision than this one.
+  const migrationPool = new Pool({
+    connectionString: DATABASE_URL,
+    max: 1,
+    options: '-c lock_timeout=3s',
+  });
+  const db = drizzle(migrationPool);
+  try {
+    await runDdl(db);
+  } finally {
+    await migrationPool.end();
+  }
+}
+
+async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
 
   // Create tables using raw SQL (matching the Drizzle schema)
   // This is the pragmatic approach for a dev setup — drizzle-kit push
