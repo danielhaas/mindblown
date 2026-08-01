@@ -1,10 +1,15 @@
 /**
- * The Abnahme card's data rules: which of the three review-surface fields
+ * The Prüf-felder's data rules: which of the three review-surface fields
  * are set, and which URLs are safe to render as a link.
  *
- * Kept out of RequirementsView.tsx so it can be unit-tested without
- * dragging in the zustand store, which the component module creates at
- * import time — same reason ghLinkStyle.ts lives on its own.
+ * Two callers, two questions. `guide.ts` builds the Prüfanleitungen view
+ * out of these; the register uses `verificationOf` only to decide whether a
+ * row carries documentation at all, and so earns the marker that jumps
+ * over there.
+ *
+ * Kept out of the component modules so it can be unit-tested without
+ * dragging in the zustand store, which they create at import time — same
+ * reason ghLinkStyle.ts lives on its own.
  */
 
 import type { Node } from '@mindblown/core';
@@ -21,7 +26,7 @@ export interface Verification {
   videoUrl: string | null;
 }
 
-/** null when the requirement carries none of the three — the row then looks exactly as before. */
+/** null when the requirement carries none of the three — the register row then shows no marker. */
 export function verificationOf(node: Node): Verification | null {
   const text = node.verificationText?.trim() || null;
   const url = node.verificationUrl?.trim() || null;
@@ -31,10 +36,25 @@ export function verificationOf(node: Node): Verification | null {
 }
 
 /**
+ * Whether the criterion carries something that answers *how do I check
+ * this* — the written steps or the clip. Drives the register's marker.
+ *
+ * A bare `verificationUrl` deliberately does not count. It answers "where",
+ * not "how", and it is the one part of the Prüf-felder the register should
+ * not advertise: a link out of the application is an invitation to leave
+ * the view its reader is standing in. It belongs on the Prüfanleitung,
+ * where the reader has already decided to go and check.
+ */
+export function isDocumented(node: Node): boolean {
+  const v = verificationOf(node);
+  return v != null && (v.text != null || v.videoUrl != null);
+}
+
+/**
  * True only for absolute `http:`/`https:` URLs.
  *
  * `verificationUrl` / `verificationVideoUrl` are free-text columns with no
- * server-side validation, and the Abnahme card is the first place in the
+ * server-side validation, and the Prüfanleitung is the only place in the
  * product that renders them as an `href`. Anything else — `javascript:`,
  * `data:`, `vbscript:`, a bare relative path — is refused, and the caller
  * drops the button rather than emitting a dead or dangerous link.

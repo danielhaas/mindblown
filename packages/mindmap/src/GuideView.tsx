@@ -20,9 +20,9 @@ import {
  * (never inside) the requirements register. The register is a controlling
  * instrument: nine columns, six filters, one row per requirement. Five of
  * those nine columns are noise to a reader whose only question is "how do I
- * verify this myself?", and the Prüfanleitung squeezed into its Abnahme
- * cell was unreadable at that width. So this view drops everything the
- * question doesn't need:
+ * verify this myself?", and the Prüfanleitung briefly squeezed into its
+ * Abnahme cell was unreadable at that width. So this view drops everything
+ * the question doesn't need:
  *
  * - **Left: three facts.** Kürzel, title, one marker. Nothing else.
  * - **Right: the criterion whole.** Steps at full reading width, the clip
@@ -32,8 +32,11 @@ import {
  * job; conflating "I understand how to check this" with "I hereby accept
  * it" is exactly the confusion the two-gate model was built to prevent.
  *
- * RequirementsView.tsx is untouched by this file — same store, same
- * derivation rules (chapter = parent node, REQ-ID order), separate surface.
+ * Same store as RequirementsView.tsx and the same derivation rules (chapter
+ * = parent node, REQ-ID order), but a separate surface. The two are linked
+ * in both directions through `selectedNodeId` alone: the register's marker
+ * sets it and switches here, "Im Register ansehen" does the reverse. No
+ * shared state beyond the selection the URL already carries.
  */
 
 // ── Palette ──────────────────────────────────────────────────────
@@ -161,6 +164,18 @@ export function GuideView() {
     );
   };
 
+  /**
+   * Back to the register, on this criterion — the return leg of the marker
+   * that got the reader here. "How do I check this?" and "where does this
+   * stand?" are two questions about the same row, and answering the second
+   * should not cost a scroll through 168 of them: the register reads the
+   * same `selectedNodeId` and scrolls the row into view.
+   */
+  const showInRegister = (node: Node) => {
+    setActiveView('requirements');
+    selectNode(node.id);
+  };
+
   if (!rootNodeId) {
     return (
       <div style={containerStyle}>
@@ -229,7 +244,11 @@ export function GuideView() {
           {/* ── Detail ────────────────────────────────────────── */}
           <main className="mb-guide-detail" ref={detailRef}>
             {selected ? (
-              <GuideCard entry={selected} onEdit={() => editGuide(selected.node)} />
+              <GuideCard
+                entry={selected}
+                onEdit={() => editGuide(selected.node)}
+                onShowInRegister={() => showInRegister(selected.node)}
+              />
             ) : (
               <Placeholder
                 title="Wähle links ein Kriterium"
@@ -366,7 +385,15 @@ function Marker({ marker }: { marker: ReturnType<typeof guideMarker> }) {
 
 // ── Detail card ──────────────────────────────────────────────────
 
-function GuideCard({ entry, onEdit }: { entry: GuideEntry; onEdit: () => void }) {
+function GuideCard({
+  entry,
+  onEdit,
+  onShowInRegister,
+}: {
+  entry: GuideEntry;
+  onEdit: () => void;
+  onShowInRegister: () => void;
+}) {
   return (
     <div style={cardStyle}>
       <div style={eyebrowStyle}>
@@ -469,17 +496,24 @@ function GuideCard({ entry, onEdit }: { entry: GuideEntry; onEdit: () => void })
         >
           Anleitung bearbeiten
         </button>
+        <button
+          className="mb-guide-btn"
+          onClick={onShowInRegister}
+          title="Zeigt dieses Kriterium im Anforderungsregister — Status, Release, Abnahme"
+          style={quietBtnStyle}
+        >
+          Im Register ansehen
+        </button>
       </div>
     </div>
   );
 }
 
 /**
- * Links inside the Anleitung open in a new tab — same reason the register's
- * Abnahme card sets it: react-markdown emits a bare `<a href>`, and GFM
- * autolinks turn a naked URL typed into an Anleitung into one whether the
- * author meant it or not. Navigating the app away mid-check loses the
- * reader's place.
+ * Links inside the Anleitung open in a new tab: react-markdown emits a bare
+ * `<a href>`, and GFM autolinks turn a naked URL typed into an Anleitung
+ * into one whether the author meant it or not. Navigating the app away
+ * mid-check loses the reader's place.
  *
  * No isHttpUrl() guard: react-markdown's defaultUrlTransform already
  * empties `javascript:` and `data:` hrefs. The two buttons above need the
@@ -763,21 +797,24 @@ const guideCss = `
     list-style: none;
     counter-reset: mbstep;
   }
+  /* The chip is positioned out of flow rather than made a grid column.
+     A grid li turns every child into a grid item — including the inline
+     <strong> and <em> that markdown puts *inside* a sentence, and the bare
+     text around them into anonymous items. A step reading
+     "öffne **Mandate → Übersicht** und prüfe …" then broke into three
+     stacked blocks, the last of them wrapping one word per line in the
+     26px marker column. Out-of-flow keeps the step a paragraph. */
   .mb-guide-md ol > li {
     counter-increment: mbstep;
-    display: grid;
-    grid-template-columns: 26px minmax(0, 1fr);
-    gap: 13px;
-    align-items: start;
+    position: relative;
+    padding-left: 39px;
     margin-bottom: 12px;
   }
-  /* Every child of the step goes in column 2, under the previous one. A
-     step written as two paragraphs ("do X" / "then Y happens") otherwise
-     drops its second paragraph into the 26px marker column, where it wraps
-     one word per line. */
-  .mb-guide-md ol > li > * { grid-column: 2; }
   .mb-guide-md ol > li::before {
     content: counter(mbstep);
+    position: absolute;
+    left: 0;
+    top: 1px;
     font-family: ${MONO};
     font-size: 11px;
     color: ${ACCENT};
@@ -788,15 +825,15 @@ const guideCss = `
     height: 26px;
     display: grid;
     place-items: center;
-    margin-top: 1px;
   }
   /* Nested lists fall back to ordinary markers — chips inside chips read as
-     a second numbering scheme rather than a sub-step. */
+     a second numbering scheme rather than a sub-step. The padding the chip
+     reserved has to go back too, or every sub-step sits 39px in. */
   .mb-guide-md ol ol, .mb-guide-md ul ol {
     padding-left: 20px; list-style: decimal outside; counter-reset: none;
   }
   .mb-guide-md ol ol > li, .mb-guide-md ul ol > li {
-    display: list-item; margin-bottom: 4px;
+    display: list-item; position: static; padding-left: 0; margin-bottom: 4px;
   }
   .mb-guide-md ol ol > li::before, .mb-guide-md ul ol > li::before { content: none; }
   .mb-guide-md ul { margin: 0 0 12px; padding-left: 20px; list-style: disc outside; }

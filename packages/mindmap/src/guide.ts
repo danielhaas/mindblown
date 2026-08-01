@@ -25,9 +25,9 @@ export const ROOT_CHAPTER_ID = '(root)';
  *
  * `appUrl` / `videoUrl` are pre-validated rather than raw: both come from
  * free-text columns, and a caller that forgets `isHttpUrl` would hand a
- * `javascript:` payload an href — the same trap the Abnahme card guards
- * against. Storing them already-checked means the component cannot get it
- * wrong, and `null` doubles as "don't render this part".
+ * `javascript:` payload an href — which is why `isHttpUrl` runs here and
+ * not in the view. Storing them already-checked means the component cannot
+ * get it wrong, and `null` doubles as "don't render this part".
  */
 export interface GuideEntry {
   node: Node;
