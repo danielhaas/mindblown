@@ -865,7 +865,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // Reads the same requirement nodes as the register, for the opposite
   // reader: "how do I check this?" rather than "where does this stand?".
   // Sits next to it so the switch between the two is one click.
-  { id: 'guide', label: 'Anwender', enabled: true },
+  { id: 'guide', label: 'Prüfanleitungen', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
