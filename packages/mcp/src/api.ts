@@ -144,6 +144,7 @@ export interface NodeWithComputed {
   verificationText: string | null;
   verificationUrl: string | null;
   verificationVideoUrl: string | null;
+  verificationVideoPosterUrl: string | null;
   /**
    * Files and links hung on the node. Present here — this type is a
    * hand-maintained mirror, so it does not inherit from core — because MCP

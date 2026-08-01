@@ -120,10 +120,15 @@ describe('recordFieldChanges — Abnahme fields', () => {
     expect(loggedFields().map((e) => e.fieldName)).toEqual(['text']);
   });
 
-  it('keeps all three fields on the tracked list', () => {
+  it('keeps all four fields on the tracked list', () => {
     // Belt to the braces above: a future edit to the Set can't quietly drop
-    // one of the three while the other two keep the suite green.
-    for (const f of ['verificationText', 'verificationUrl', 'verificationVideoUrl'] as const) {
+    // one of the four while the others keep the suite green.
+    for (const f of [
+      'verificationText',
+      'verificationUrl',
+      'verificationVideoUrl',
+      'verificationVideoPosterUrl',
+    ] as const) {
       expect(TRACKED_FIELDS.has(f)).toBe(true);
     }
   });

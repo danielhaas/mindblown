@@ -176,6 +176,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       verificationText?: string | null;
       verificationUrl?: string | null;
       verificationVideoUrl?: string | null;
+      verificationVideoPosterUrl?: string | null;
       assigneeIds?: string[];
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`

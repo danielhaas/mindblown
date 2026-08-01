@@ -247,6 +247,7 @@ export interface CreateNodeInput {
   verificationText?: string | null;
   verificationUrl?: string | null;
   verificationVideoUrl?: string | null;
+  verificationVideoPosterUrl?: string | null;
   assigneeIds?: string[];
 }
 
@@ -299,6 +300,7 @@ export async function createNode(
       verificationText: input.verificationText ?? null,
       verificationUrl: input.verificationUrl ?? null,
       verificationVideoUrl: input.verificationVideoUrl ?? null,
+      verificationVideoPosterUrl: input.verificationVideoPosterUrl ?? null,
       assigneeIds: input.assigneeIds ?? [],
       tags: [],
       customFields: {},
@@ -396,6 +398,7 @@ export interface UpdateNodeInput {
   verificationText?: string | null;
   verificationUrl?: string | null;
   verificationVideoUrl?: string | null;
+  verificationVideoPosterUrl?: string | null;
   // Orchestration substrate (#111)
   claimedBySession?: string | null;
   claimedAt?: string | null;
@@ -519,6 +522,8 @@ export async function updateNode(
   if (input.verificationUrl !== undefined) updates.verificationUrl = input.verificationUrl;
   if (input.verificationVideoUrl !== undefined)
     updates.verificationVideoUrl = input.verificationVideoUrl;
+  if (input.verificationVideoPosterUrl !== undefined)
+    updates.verificationVideoPosterUrl = input.verificationVideoPosterUrl;
   // Orchestration substrate (#111)
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;

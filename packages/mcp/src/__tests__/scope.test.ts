@@ -42,6 +42,7 @@ function makeNode(overrides: Partial<NodeWithComputed> & { id: string }): NodeWi
     verificationText: null,
     verificationUrl: null,
     verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
     claimedBySession: null,
     claimedAt: null,
     computedEffort: 0,

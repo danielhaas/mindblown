@@ -941,6 +941,56 @@ describe('requirement fields', () => {
     expect(recorder.lastUpdate?.fields).toMatchObject({ verificationVideoUrl: null });
   });
 
+  // Same reasoning as verificationVideoUrl above, and the same trap: the
+  // handler spreads `...fields`, so a handler-level assertion passes even
+  // when the zod shape never declares the field — and the shape is the
+  // whole MCP surface. The recording pipeline writes a poster.jpg per
+  // clip; an agent that cannot name the field has nowhere to put it.
+  it('declares verificationVideoPosterUrl on the update_node schema', () => {
+    const schema = z.object(updateNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      nodeId: 'n1',
+      verificationVideoPosterUrl: 'https://videos.example.com/man-14-poster.jpg',
+    });
+    expect(parsed.verificationVideoPosterUrl).toBe(
+      'https://videos.example.com/man-14-poster.jpg',
+    );
+  });
+
+  it('declares verificationVideoPosterUrl on the create_node schema', () => {
+    const schema = z.object(createNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'Neue Anforderung',
+      verificationVideoPosterUrl: 'https://videos.example.com/admin-demo-poster.jpg',
+    });
+    expect(parsed.verificationVideoPosterUrl).toBe(
+      'https://videos.example.com/admin-demo-poster.jpg',
+    );
+  });
+
+  it('accepts null on verificationVideoPosterUrl to clear it', () => {
+    const schema = z.object(updateNodeTool.schema);
+    expect(
+      schema.parse({ mapId: 'm1', nodeId: 'n1', verificationVideoPosterUrl: null })
+        .verificationVideoPosterUrl,
+    ).toBeNull();
+  });
+
+  it('forwards verificationVideoPosterUrl through to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, {
+      mapId: 'm1',
+      nodeId: 'n1',
+      verificationVideoPosterUrl: 'https://videos.example.com/man-14-poster.jpg',
+    } as never);
+    expect(recorder.lastUpdate?.fields).toMatchObject({
+      verificationVideoPosterUrl: 'https://videos.example.com/man-14-poster.jpg',
+    });
+  });
+
   it('forwards verification fields on create', async () => {
     const recorder = makeRecordingBackend();
     await createNodeTool.handler(recorder.backend, {

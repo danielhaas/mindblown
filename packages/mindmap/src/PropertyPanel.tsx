@@ -208,6 +208,9 @@ function PropertyPanelInner({
   const [verificationText, setVerificationText] = useState(node.verificationText ?? '');
   const [verificationUrl, setVerificationUrl] = useState(node.verificationUrl ?? '');
   const [verificationVideoUrl, setVerificationVideoUrl] = useState(node.verificationVideoUrl ?? '');
+  const [verificationVideoPosterUrl, setVerificationVideoPosterUrl] = useState(
+    node.verificationVideoPosterUrl ?? '',
+  );
 
   // Sync local state when node changes externally
   useEffect(() => { setTitle(node.text); }, [node.text]);
@@ -222,6 +225,7 @@ function PropertyPanelInner({
   useEffect(() => { setVerificationText(node.verificationText ?? ''); }, [node.verificationText]);
   useEffect(() => { setVerificationUrl(node.verificationUrl ?? ''); }, [node.verificationUrl]);
   useEffect(() => { setVerificationVideoUrl(node.verificationVideoUrl ?? ''); }, [node.verificationVideoUrl]);
+  useEffect(() => { setVerificationVideoPosterUrl(node.verificationVideoPosterUrl ?? ''); }, [node.verificationVideoPosterUrl]);
 
   const applyServerNode = useMindmapStore((s) => s.applyServerNode);
   const allNodes = useMindmapStore((s) => s.nodes);
@@ -530,6 +534,35 @@ function PropertyPanelInner({
                 onUploaded={(media) => {
                   setVerificationVideoUrl(media.url);
                   directUpdate(nodeId, { verificationVideoUrl: media.url });
+                }}
+              />
+            </Field>
+            {/* Its own field rather than something derived from the clip:
+                the browser cannot pick a representative frame, and the
+                one it would show for free — frame 0 — is the blank page
+                the screen recorder was still waiting on. Directly under
+                the video link because it is only read when that is set. */}
+            <Field label="Video-Standbild">
+              <input
+                value={verificationVideoPosterUrl}
+                onChange={(e) => setVerificationVideoPosterUrl(e.target.value)}
+                onBlur={() => {
+                  const trimmed = verificationVideoPosterUrl.trim();
+                  const persisted = node.verificationVideoPosterUrl ?? '';
+                  if (trimmed !== persisted) {
+                    directUpdate(nodeId, { verificationVideoPosterUrl: trimmed || null });
+                  }
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                style={inputStyle}
+                placeholder="https://… (Standbild für den Player)"
+              />
+              <MediaUploadButton
+                accept="image/*"
+                label="Standbild hochladen…"
+                onUploaded={(media) => {
+                  setVerificationVideoPosterUrl(media.url);
+                  directUpdate(nodeId, { verificationVideoPosterUrl: media.url });
                 }}
               />
             </Field>

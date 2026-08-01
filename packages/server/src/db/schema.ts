@@ -231,6 +231,9 @@ export const nodes = pgTable('nodes', {
   verificationText: text('verification_text'),
   verificationUrl: text('verification_url'),
   verificationVideoUrl: text('verification_video_url'),
+  // Still frame for the video's <video poster>. Only meaningful alongside
+  // verification_video_url.
+  verificationVideoPosterUrl: text('verification_video_poster_url'),
 
   // ── Phase ─────────────────────────────────────────────────────
   // References a PhaseDef.id from maps.phases (statusWorkflow idiom,

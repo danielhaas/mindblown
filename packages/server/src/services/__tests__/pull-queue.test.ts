@@ -71,6 +71,7 @@ function makeNode(overrides: Partial<CoreNode> & { id: string }): CoreNode {
     verificationText: null,
     verificationUrl: null,
     verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
     claimedBySession: null,
     claimedAt: null,
     scopes: [],

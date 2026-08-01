@@ -41,6 +41,7 @@ function node(v: Partial<Node>): Node {
     verificationText: null,
     verificationUrl: null,
     verificationVideoUrl: null,
+    verificationVideoPosterUrl: null,
     ...v,
   } as Node;
 }
@@ -154,6 +155,54 @@ describe('buildGuideEntries', () => {
       );
       expect(e.appUrl).toBe('https://staging.example.com/mandates');
       expect(e.videoUrl).toBe('https://v.example.com/clip.mp4');
+    });
+
+    it('passes an absolute poster through alongside its clip', () => {
+      const [e] = buildGuideEntries(
+        mapOf(
+          node({
+            requirementId: 'X-03',
+            verificationVideoUrl: 'https://v.example.com/clip.mp4',
+            verificationVideoPosterUrl: 'https://v.example.com/clip.jpg',
+          }),
+        ),
+        leafProgress,
+      );
+      expect(e.posterUrl).toBe('https://v.example.com/clip.jpg');
+    });
+
+    it('drops a poster that is not absolute http(s)', () => {
+      // Same guard as the clip: the column is free text, and the value
+      // lands in a <video poster> attribute.
+      const [e] = buildGuideEntries(
+        mapOf(
+          node({
+            requirementId: 'X-04',
+            verificationVideoUrl: 'https://v.example.com/clip.mp4',
+            verificationVideoPosterUrl: 'javascript:alert(1)',
+          }),
+        ),
+        leafProgress,
+      );
+      expect(e.videoUrl).toBe('https://v.example.com/clip.mp4');
+      expect(e.posterUrl).toBeNull();
+    });
+
+    it('drops a poster with no clip to put it on', () => {
+      // A poster is an attribute of a player, and without a videoUrl the
+      // player is never rendered — so the entry must not carry one either.
+      const [e] = buildGuideEntries(
+        mapOf(
+          node({
+            requirementId: 'X-05',
+            verificationText: '1. Einloggen',
+            verificationVideoPosterUrl: 'https://v.example.com/clip.jpg',
+          }),
+        ),
+        leafProgress,
+      );
+      expect(e.videoUrl).toBeNull();
+      expect(e.posterUrl).toBeNull();
     });
   });
 
