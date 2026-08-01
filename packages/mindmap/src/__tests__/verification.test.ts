@@ -1,13 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import type { Node } from '@mindblown/core';
-import { isHttpUrl, verificationOf } from '../verification.js';
+import { isDocumented, isHttpUrl, verificationOf } from '../verification.js';
 
 /**
- * `verificationOf` decides whether a requirement row grows an Abnahme card
- * at all. The promise the feature makes is "none of the three fields set →
- * no handle, no card, the register looks exactly as it did before" — a row
- * that sprouts an empty card is the visible regression, and a stray space
- * left behind by an older write is the way it happens.
+ * `verificationOf` decides what the Prüfanleitungen view has to show for a
+ * criterion; `isDocumented` decides whether the register's row carries the
+ * marker that jumps there. The promise is "nothing written → no marker, the
+ * register looks exactly as it did before" — a row that sprouts a marker
+ * over nothing is the visible regression, and a stray space left behind by
+ * an older write is the way it happens.
  */
 
 /** Only the three fields matter here; the rest of Node never gets read. */
@@ -72,8 +73,43 @@ describe('verificationOf', () => {
 });
 
 /**
+ * The register's marker. It is the only thing the register says about the
+ * Prüf-felder, so what it counts as "documented" is the whole contract.
+ */
+describe('isDocumented', () => {
+  it('is false when nothing is written', () => {
+    expect(isDocumented(node({}))).toBe(false);
+    expect(isDocumented(node({ verificationText: '   ' }))).toBe(false);
+  });
+
+  it('is true for a written Anleitung', () => {
+    expect(isDocumented(node({ verificationText: '1. Einloggen' }))).toBe(true);
+  });
+
+  it('is true for a clip alone', () => {
+    // No steps written yet, but a reviewer can still watch how it is done —
+    // the marker has to lead him there.
+    expect(isDocumented(node({ verificationVideoUrl: 'https://v.example.com/a.mp4' }))).toBe(true);
+  });
+
+  it('is false for a Prüf-Link alone', () => {
+    // The deep link answers "where do I click this up", not "how do I check
+    // it", and it is deliberately not surfaced in the register at all: the
+    // reader of the register is asking where something stands, and a link
+    // out of the application is an invitation to leave that view.
+    expect(isDocumented(node({ verificationUrl: 'https://staging.example.com/x' }))).toBe(false);
+    // …but it rides along once there is something to read.
+    expect(
+      isDocumented(
+        node({ verificationText: '1. Einloggen', verificationUrl: 'https://staging.example.com/x' }),
+      ),
+    ).toBe(true);
+  });
+});
+
+/**
  * Both URL fields are free-text columns with no server-side validation, and
- * the Abnahme card is the first surface that renders them as an `href`.
+ * the Prüfanleitung is the only surface that renders them as an `href`.
  */
 describe('isHttpUrl', () => {
   it('accepts absolute http and https URLs', () => {
