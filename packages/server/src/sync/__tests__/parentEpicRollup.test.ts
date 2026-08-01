@@ -296,6 +296,7 @@ describe('applyRollupToParent (ProseMirror preservation)', () => {
       versionId: null,
       cycleId: null,
       externalLinks: [],
+      attachments: [],
       autoProgress: 'children',
       createdAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
@@ -303,6 +304,7 @@ export async function createNode(
       customFields: {},
       dependencies: [],
       externalLinks: [],
+      attachments: [],
       createdAt: now,
       updatedAt: now,
       createdBy: input.createdBy,
@@ -660,6 +662,141 @@ export async function setExternalLinkState(
     .set({ externalLinks: next })
     .where(and(eq(nodes.id, nodeId), notDeleted));
   return true;
+}
+
+// ── Attachments ──────────────────────────────────────────────────
+
+export class AttachmentValidationError extends Error {}
+
+/** Only `http:`/`https:`, parsed rather than prefix-matched. */
+function isHttpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+const MAX_ATTACHMENTS_PER_NODE = 50;
+const MAX_TITLE_LENGTH = 200;
+
+export interface NewAttachment {
+  kind: "file" | "link";
+  url: string;
+  title?: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+}
+
+/**
+ * Append one attachment.
+ *
+ * Its own function rather than a field on `updateNode` so that adding an
+ * attachment doesn't mean sending the whole array back: two people (or
+ * two browser tabs) adding a file at the same time would each write the
+ * list they last read, and the later write would drop the earlier one.
+ * Same reason `addDependency` exists — this mirrors it deliberately.
+ *
+ * Read-modify-write is still not atomic against a concurrent writer, but
+ * the window is one statement rather than a user's whole editing session.
+ */
+export async function addAttachment(
+  nodeId: string,
+  input: NewAttachment,
+  addedBy: string | null = null,
+  handle: DbHandle = db,
+): Promise<CoreNode> {
+  const url = (input.url ?? "").trim();
+  if (!isHttpUrl(url)) {
+    throw new AttachmentValidationError(
+      "URL muss mit http:// oder https:// beginnen",
+    );
+  }
+  if (input.kind !== "file" && input.kind !== "link") {
+    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
+  }
+
+  const [row] = await handle
+    .select({ attachments: nodes.attachments })
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
+  if (!row) throw new AttachmentValidationError(`Node ${nodeId} not found`);
+
+  const existing = (row.attachments as CoreNode["attachments"]) ?? [];
+  if (existing.length >= MAX_ATTACHMENTS_PER_NODE) {
+    throw new AttachmentValidationError(
+      `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`,
+    );
+  }
+
+  // A title always renders, so derive one rather than showing a raw URL:
+  // the filename for something we host, the host for a link elsewhere.
+  const fallbackTitle = (() => {
+    try {
+      const parsed = new URL(url);
+      const last = decodeURIComponent(
+        parsed.pathname.split("/").filter(Boolean).pop() ?? "",
+      );
+      return input.kind === "file" && last ? last : parsed.host;
+    } catch {
+      return url;
+    }
+  })();
+
+  const attachment = {
+    id: randomUUID(),
+    kind: input.kind,
+    url,
+    title: ((input.title ?? "").trim() || fallbackTitle).slice(
+      0,
+      MAX_TITLE_LENGTH,
+    ),
+    mimeType: input.kind === "file" ? (input.mimeType ?? null) : null,
+    sizeBytes: input.kind === "file" ? (input.sizeBytes ?? null) : null,
+    addedAt: new Date().toISOString(),
+    addedBy,
+  };
+
+  const [updated] = await handle
+    .update(nodes)
+    .set({ attachments: [...existing, attachment], updatedAt: new Date() })
+    .where(and(eq(nodes.id, nodeId), notDeleted))
+    .returning();
+
+  return dbNodeToCore(updated);
+}
+
+/**
+ * Drop one attachment by id.
+ *
+ * The stored file, if any, is deliberately left on disk — see the
+ * housekeeping note in deploy/README.md. Removing it here would break the
+ * case where the same URL was pasted onto a second node, and node
+ * deletion is a soft delete with a restore path regardless.
+ */
+export async function removeAttachment(
+  nodeId: string,
+  attachmentId: string,
+  handle: DbHandle = db,
+): Promise<CoreNode | null> {
+  const [row] = await handle
+    .select({ attachments: nodes.attachments })
+    .from(nodes)
+    .where(and(eq(nodes.id, nodeId), notDeleted));
+  if (!row) return null;
+
+  const existing = (row.attachments as CoreNode["attachments"]) ?? [];
+  const next = existing.filter((a) => a.id !== attachmentId);
+  if (next.length === existing.length) return null;
+
+  const [updated] = await handle
+    .update(nodes)
+    .set({ attachments: next, updatedAt: new Date() })
+    .where(and(eq(nodes.id, nodeId), notDeleted))
+    .returning();
+
+  return dbNodeToCore(updated);
 }
 
 /**

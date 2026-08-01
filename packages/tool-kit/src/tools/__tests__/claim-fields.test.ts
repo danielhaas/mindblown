@@ -35,6 +35,7 @@ function stubNode(overrides: Partial<NodeWithComputed> = {}): NodeWithComputed {
     versionId: null,
     cycleId: null,
     externalLinks: [],
+    attachments: [],
     collapsed: false,
     createdAt: '2026-06-08T10:00:00Z',
     updatedAt: '2026-06-08T10:00:00Z',

@@ -809,6 +809,13 @@ export async function runMigrations(): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS verification_video_url TEXT
   `);
 
+  // attachments: files and links a person hung on the node. Deliberately
+  // not external_links — the GitHub sync owns that column and rewrites it,
+  // so a pasted URL there would be walked over by the next sync pass.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'
+  `);
+
   // ── Requirement acceptances (Abnahme) ──────────────────────────
   // Append-only sign-off history per requirement node per user.
   // Active acceptance = revoked_at IS NULL; the partial unique index

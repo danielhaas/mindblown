@@ -15,8 +15,9 @@ import { mkdir, rm } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import {
-  ALLOWED_MEDIA_TYPES,
   MEDIA_ROUTE_PREFIX,
+  downloadName,
+  isDownloadOnly,
   maxUploadBytes,
   mediaDir,
   mediaUrl,
@@ -31,7 +32,17 @@ class AbortedUpload extends Error {}
 export interface UploadedMedia {
   id: string;
   url: string;
+  /** The name on disk and in the URL. Carries `.bin` for anything served
+   *  as a download — see `safeFilename`. */
   filename: string;
+  /**
+   * The name to show a person, and to save the file under: `filename`
+   * without the `.bin` we appended. Returned rather than left to the
+   * caller because the caller would otherwise have to know that rule —
+   * and the first caller that didn't put "Anforderungen.txt.bin" in front
+   * of a user.
+   */
+  displayName: string;
   contentType: string;
   size: number;
 }
@@ -77,18 +88,35 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
     maxAge: 31_536_000_000,
     immutable: true,
     // Stored names are minted by `safeFilename`, so the extension — and
-    // therefore the Content-Type — is always one of the allowlist's.
-    // `nosniff` closes the gap where a browser would second-guess that
-    // from the bytes and treat, say, an mp4 full of markup as HTML on our
-    // own origin.
+    // therefore the Content-Type — is one we chose, not one the client
+    // sent. `nosniff` closes the gap where a browser would second-guess
+    // that from the bytes and treat, say, an mp4 full of markup as HTML on
+    // our own origin.
+    //
+    // Note what is deliberately *not* attempted here: setting
+    // `Content-Type`. @fastify/static writes it from the extension after
+    // this hook runs, so a value set here is silently discarded — probed,
+    // not assumed. That is why anything not safe to render inline is
+    // stored under `.bin` instead (see `safeFilename`); the extension is
+    // the boundary, and this hook only decorates.
     setHeaders: (res, filePath) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      // A PDF is the one allowlisted type a browser renders as a
-      // full-page document. Nothing script-executable comes of it, but a
-      // full page under our own hostname is a phishing surface, so it
-      // downloads instead. `<img>` / `<video>` subresource loads ignore
-      // this header, so images and clips are unaffected.
-      if (filePath.endsWith('.pdf')) {
+
+      const stored = path.basename(filePath);
+      if (isDownloadOnly(stored)) {
+        // Restore the real name for "save as" — `bericht.xlsx.bin` should
+        // land on disk as `bericht.xlsx` so the user's machine opens it
+        // with the right application.
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="${downloadName(stored).replace(/["\\]/g, '')}"`,
+        );
+      } else if (filePath.endsWith('.pdf')) {
+        // A PDF is the one inline type a browser renders as a full-page
+        // document. Nothing script-executable comes of it, but a full page
+        // under our own hostname is a phishing surface, so it downloads
+        // instead. `<img>` / `<video>` subresource loads ignore this
+        // header, so images and clips are unaffected.
         res.setHeader('Content-Disposition', 'attachment');
       }
     },
@@ -109,19 +137,14 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const contentType = (part.mimetype ?? '').split(';')[0].trim().toLowerCase();
-    if (!(contentType in ALLOWED_MEDIA_TYPES)) {
-      // Drain the body, otherwise the client sees a connection reset
-      // instead of our 415 while it is still writing.
-      part.file.resume();
-      return reply.status(415).send({
-        error: {
-          code: 'UNSUPPORTED_MEDIA_TYPE',
-          message: `Dateityp ${contentType || 'unbekannt'} wird nicht unterstützt`,
-          supported: Object.keys(ALLOWED_MEDIA_TYPES),
-        },
-      });
-    }
+    // No type check any more: anything is accepted. What differs is how it
+    // comes back out — an inline type keeps its real Content-Type, and
+    // everything else is stored under `.bin` and served as a download, so
+    // an unknown type can't do anything on our origin. The old 415 bought
+    // safety at the cost of the ordinary case (a spec, a spreadsheet, an
+    // export), and `safeFilename` now buys the same safety without it.
+    const contentType =
+      (part.mimetype ?? '').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
 
     const id = newMediaId();
     const filename = safeFilename(part.filename, contentType);
@@ -205,6 +228,7 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
       id,
       url: mediaUrl(id, filename),
       filename,
+      displayName: downloadName(filename),
       contentType,
       size: part.file.bytesRead,
     };

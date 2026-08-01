@@ -61,6 +61,7 @@ function stubNode(overrides: Record<string, unknown> = {}): Record<string, unkno
     childrenIds: [],
     text: 'stub node',
     externalLinks: [],
+    attachments: [],
     assigneeIds: [],
     ...overrides,
   };

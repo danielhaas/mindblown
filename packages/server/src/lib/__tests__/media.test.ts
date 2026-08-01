@@ -14,7 +14,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import path from 'node:path';
 import {
-  ALLOWED_MEDIA_TYPES,
+  INLINE_MEDIA_TYPES,
+  downloadName,
+  isDownloadOnly,
   isMediaId,
   isMediaPlaybackPath,
   maxUploadBytes,
@@ -95,15 +97,67 @@ describe('safeFilename', () => {
     expect(safeFilename('a'.repeat(500) + '.mp4', 'video/mp4')).toBe('a'.repeat(80) + '.mp4');
   });
 
-  it('refuses a type outside the allowlist rather than inventing an extension', () => {
-    expect(() => safeFilename('x.html', 'text/html')).toThrow(/Unsupported/);
-    expect(() => safeFilename('x.bin', 'application/octet-stream')).toThrow(/Unsupported/);
-  });
-
-  it('covers every allowlisted type', () => {
-    for (const [mime, ext] of Object.entries(ALLOWED_MEDIA_TYPES)) {
+  it('covers every inline type', () => {
+    for (const [mime, ext] of Object.entries(INLINE_MEDIA_TYPES)) {
       expect(safeFilename('clip', mime)).toBe(`clip.${ext}`);
     }
+  });
+
+  // ── Types we accept but will not render ────────────────────────
+  //
+  // These used to be refused outright, and refusing them was how the
+  // "nothing script-executable is ever stored" property was bought. It's
+  // now bought by the stored extension instead: `.bin` is
+  // application/octet-stream, and — measured — `setHeaders` cannot
+  // override a Content-Type that @fastify/static derives from the
+  // extension afterwards. So the extension has to carry the guarantee on
+  // its own, and these cases are where that is decided.
+
+  it('stores anything outside the inline set under .bin', () => {
+    expect(safeFilename('bericht.xlsx', 'application/vnd.ms-excel')).toBe('bericht.xlsx.bin');
+    expect(safeFilename('notizen.txt', 'text/plain')).toBe('notizen.txt.bin');
+    expect(safeFilename('export.zip', 'application/zip')).toBe('export.zip.bin');
+  });
+
+  it('still ends in .bin when the client sent no extension at all', () => {
+    expect(safeFilename('README', 'text/plain')).toBe('README.bin');
+    expect(safeFilename('', 'application/zip')).toBe('datei.bin');
+    expect(safeFilename(undefined, 'application/octet-stream')).toBe('datei.bin');
+  });
+
+  it('cannot store a script-executable extension LAST, whatever was uploaded', () => {
+    // The decisive property, and the reason `.bin` goes on the end rather
+    // than the client's extension being kept as-is: every consumer that
+    // decides a content type from a filename reads the last extension.
+    for (const [name, mime] of [
+      ['evil.html', 'text/html'],
+      ['evil.svg', 'image/svg+xml'],
+      ['evil.js', 'text/javascript'],
+      ['evil.xhtml', 'application/xhtml+xml'],
+      ['evil.htm', 'text/html'],
+    ] as const) {
+      const out = safeFilename(name, mime);
+      expect(out.endsWith('.bin')).toBe(true);
+      expect(isDownloadOnly(out)).toBe(true);
+    }
+    expect(safeFilename('evil.html', 'text/html')).toBe('evil.html.bin');
+  });
+
+  it('svg is not an inline type — it can script, unlike the other images', () => {
+    expect(INLINE_MEDIA_TYPES['image/svg+xml']).toBeUndefined();
+  });
+});
+
+describe('isDownloadOnly / downloadName', () => {
+  it('rebuilds the name a download should land under', () => {
+    expect(downloadName('bericht.xlsx.bin')).toBe('bericht.xlsx');
+    expect(downloadName('README.bin')).toBe('README');
+    expect(downloadName('evil.html.bin')).toBe('evil.html');
+  });
+
+  it('leaves an inline file name alone', () => {
+    expect(isDownloadOnly('demo.mp4')).toBe(false);
+    expect(downloadName('demo.mp4')).toBe('demo.mp4');
   });
 });
 

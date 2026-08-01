@@ -84,6 +84,7 @@ export async function seedIfEmpty(): Promise<void> {
       tags: [],
       customFields: {},
       externalLinks: [],
+      attachments: [],
       createdAt: now,
       updatedAt: now,
       createdBy: user.id,

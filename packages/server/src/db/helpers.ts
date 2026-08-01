@@ -33,6 +33,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     versionId: (get('versionId', 'version_id') as string) ?? null,
     cycleId: (get('cycleId', 'cycle_id') as string) ?? null,
     externalLinks: (get('externalLinks', 'external_links') as CoreNode['externalLinks']) ?? [],
+    attachments: (get('attachments', 'attachments') as CoreNode['attachments']) ?? [],
     autoProgress: ((get('autoProgress', 'auto_progress') as CoreNode['autoProgress']) ?? 'off'),
     priorityRank: (get('priorityRank', 'priority_rank') as number) ?? null,
     completedAt: (get('completedAt', 'completed_at') instanceof Date

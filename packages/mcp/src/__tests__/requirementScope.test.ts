@@ -30,6 +30,7 @@ function makeNode(overrides: Partial<NodeWithComputed> & { id: string }): NodeWi
     versionId: null,
     cycleId: null,
     externalLinks: [],
+    attachments: [],
     collapsed: false,
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',

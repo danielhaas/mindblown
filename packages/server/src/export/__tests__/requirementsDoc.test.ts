@@ -29,6 +29,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     versionId: null,
     cycleId: null,
     externalLinks: [],
+    attachments: [],
     collapsed: false,
     x: seq,
     y: seq,
