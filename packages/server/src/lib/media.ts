@@ -29,11 +29,31 @@
  *    path if that stops being acceptable: keep the route, add a
  *    per-request signature, and re-render the src at view time.
  *
- * 3. **The stored extension comes from our allowlist, never from the
- *    client.** The file is served from the same origin as the app, so a
- *    stored `.html` would be stored XSS. Deriving the extension from the
- *    accepted MIME type means the set of things on disk is closed, and
- *    none of them is script-executable in a browsing context.
+ * 3. **The stored extension is the security boundary, and it is two-tier.**
+ *    Files are served from the same origin as the app, so a stored `.html`
+ *    returned as `text/html` would be stored XSS. The extension decides
+ *    that, and nothing downstream can repair it: @fastify/static derives
+ *    Content-Type from the extension and writes it *after* `setHeaders`
+ *    runs, so a hook cannot override it (measured — a stored `evil.html`
+ *    comes back as `text/html; charset=utf-8` whatever the hook sets).
+ *
+ *    So: a type in `INLINE_MEDIA_TYPES` takes its extension from our own
+ *    table, never the client, and is served with its real Content-Type.
+ *    **Every other type is accepted** and stored as `<name>.<ext>.bin` —
+ *    last extension `.bin`, which is `application/octet-stream`, with the
+ *    inner one surviving only to rebuild a `Content-Disposition` filename
+ *    (that header *can* be set from the hook). This used to be an
+ *    allowlist that refused everything else, which bought the same safety
+ *    at the cost of every ordinary file — a spec, a spreadsheet, an
+ *    export.
+ *
+ *    Scope of the guarantee, precisely: **the browser** never parses or
+ *    executes such a file, and it never runs in our origin. The *operating
+ *    system* is a different matter — `downloadName()` deliberately strips
+ *    the `.bin`, so `payload.exe.bin` lands on disk as `payload.exe`. That
+ *    is what every file host does and it is the right product behaviour,
+ *    but `Content-Disposition: attachment` protects this origin, not the
+ *    person who double-clicks the download.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -68,14 +88,17 @@ export const INLINE_MEDIA_TYPES: Readonly<Record<string, string>> = Object.freez
  * not the only way, and it cost users the ordinary case — a spec, a
  * spreadsheet, an export, a zip.
  *
- * So: anything outside the inline set keeps its (sanitised) extension for
- * the sake of a sensible "save as", but is served as
- * `application/octet-stream` with `Content-Disposition: attachment`. A
- * browser handed those two headers downloads the file; it never parses it,
- * never executes it, and never gives it our origin. That holds regardless
- * of what the bytes contain or what the client claimed the type was, which
- * is a stronger guarantee than an allowlist of MIME strings the client
- * picks.
+ * So: anything outside the inline set is stored with `.bin` appended, which
+ * makes this its Content-Type, and served with
+ * `Content-Disposition: attachment`. A browser handed those two headers
+ * downloads the file rather than parsing it, and it never runs in our
+ * origin. That holds regardless of what the bytes contain or what the
+ * client claimed the type was — a stronger guarantee than an allowlist of
+ * MIME strings the client picks, and one that doesn't cost the user every
+ * ordinary document.
+ *
+ * The guarantee is about the browser. What the recipient's operating system
+ * does with the downloaded file is outside it — see the module header.
  */
 export const INLINE_SAFE_FALLBACK = 'application/octet-stream';
 
@@ -158,6 +181,10 @@ export function isMediaPlaybackPath(url: string): boolean {
   return /^\/api\/media\/[0-9a-f]{40}\/[^/?#]+(?:[?#]|$)/.test(url);
 }
 
+/** Extension every non-inline upload is stored under. `.bin` resolves to
+ *  `application/octet-stream`, which is the whole point. */
+export const DOWNLOAD_EXTENSION = 'bin';
+
 const MAX_STEM_LENGTH = 80;
 
 /**
@@ -181,8 +208,9 @@ const MAX_STEM_LENGTH = 80;
  * last extension is `.bin`, which is `application/octet-stream`, and the
  * inner one survives only to rebuild a usable "save as" name in the
  * `Content-Disposition` header — which *can* be set from the hook. A
- * `.html`, `.svg` or `.js` upload thus lands as `…​.html.bin` and is
- * downloaded, never parsed, never given our origin.
+ * `.html`, `.svg` or `.js` upload thus lands as `….html.bin` and is
+ * downloaded rather than parsed — by the browser. See the module header
+ * for where that guarantee stops (it stops at the browser).
  *
  * Dots inside the stem go either way, so an inline file carries exactly
  * one extension. `index.html.mp4` would be served as `video/mp4` by both
@@ -209,9 +237,6 @@ export function safeFilename(original: string | undefined, mimeType: string): st
   return clientExt ? `${name}.${clientExt}.${DOWNLOAD_EXTENSION}` : `${name}.${DOWNLOAD_EXTENSION}`;
 }
 
-/** Extension every non-inline upload is stored under. `.bin` resolves to
- *  `application/octet-stream`, which is the whole point. */
-export const DOWNLOAD_EXTENSION = 'bin';
 
 /** True for a file we stored as a forced download. */
 export function isDownloadOnly(storedName: string): boolean {

@@ -1,11 +1,13 @@
 /**
  * Attachment routes — hanging a file or a link on a node.
  *
- * The interesting behaviour is not "does it store the thing" but the three
- * rules around it: a URL is validated as `http(s)` before it can reach a
- * renderer, adding one attachment doesn't rewrite the whole array (the
- * reason these are sub-resource routes at all), and a delete is scoped to
- * one id rather than a wholesale replace.
+ * Scope, stated because getting it wrong once already cost something: this
+ * file covers **wiring only** — that the routes exist, pass the right
+ * arguments, map a rejection to 400 and a missing id to 404, and broadcast.
+ * The rules themselves (which URLs are allowed, append-not-replace, the
+ * ceiling) live in db/__tests__/attachments.test.ts, because the DB layer
+ * is stubbed here and a stub cannot enforce them. A first mutation round
+ * found three of those rules deletable with this suite still fully green.
  *
  * DB layer stubbed in the mocked-helper style used by the other route
  * tests here — no Postgres needed to exercise wiring.
@@ -15,6 +17,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
 const MAP_ID = 'mmmm-mmmm';
+/** Whatever the DB layer refuses — the route only has to turn it into 400. */
+const REJECT_SENTINEL = 'urn:rejected-by-the-db-layer';
 const NODE_ID = 'nnnn-nnnn';
 
 // The stub keeps a real array so "append, don't replace" is observable.
@@ -33,7 +37,13 @@ const addAttachmentMock = vi.fn(
     input: { kind: string; url: string; title?: string },
     addedBy: string | null,
   ) => {
-    if (!/^https?:\/\//.test(input.url)) {
+    // Deliberately NOT a re-implementation of the URL rule. Mirroring it
+    // here would make the case below assert against the mock's regex
+    // rather than production's parser — the exact confusion that let three
+    // real rules ship untested. A sentinel is enough to prove the route
+    // turns the error into a 400; the rule itself lives in
+    // db/__tests__/attachments.test.ts.
+    if (input.url === REJECT_SENTINEL) {
       throw new AttachmentValidationError('URL muss mit http:// oder https:// beginnen');
     }
     stored.push({ id: `att-${stored.length + 1}`, ...input, addedBy });
@@ -127,17 +137,12 @@ describe('POST .../attachments', () => {
     expect(res.json().attachments).toHaveLength(2);
   });
 
-  it('refuses a URL scheme a renderer must never be handed', async () => {
-    for (const url of [
-      'javascript:alert(1)',
-      'data:text/html,<script>alert(1)</script>',
-      'vbscript:msgbox',
-      '/relative/path',
-    ]) {
-      const res = await post({ kind: 'link', url });
-      expect(res.statusCode).toBe(400);
-      expect(res.json().error.code).toBe('ATTACHMENT_VALIDATION_ERROR');
-    }
+  it('turns a validation error from the DB layer into a 400, not a 500', async () => {
+    const res = await post({ kind: 'link', url: REJECT_SENTINEL });
+
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('ATTACHMENT_VALIDATION_ERROR');
+    expect(res.json().error.message).toMatch(/http/);
     expect(stored).toHaveLength(0);
   });
 

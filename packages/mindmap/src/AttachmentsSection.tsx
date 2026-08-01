@@ -147,9 +147,8 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
       })}
 
       <MediaUploadButton
-        // No `accept` filter: the server takes any type now, and anything
-        // it won't render inline comes back as a download.
-        accept=""
+        // No filter — the default is already everything. Anything the
+        // server won't render inline comes back as a download.
         label="Datei hochladen…"
         onUploaded={(media) =>
           void onAdd({

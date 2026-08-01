@@ -679,6 +679,7 @@ function isHttpUrl(value: string): boolean {
 }
 
 const MAX_ATTACHMENTS_PER_NODE = 50;
+const MAX_URL_LENGTH = 2048;
 const MAX_TITLE_LENGTH = 200;
 
 export interface NewAttachment {
@@ -690,16 +691,91 @@ export interface NewAttachment {
 }
 
 /**
+ * Validate one attachment request and turn it into the row we store.
+ *
+ * Pure, and exported, because every rule worth arguing about lives here —
+ * which schemes may become an `<a href>`, how a title is derived when the
+ * caller gave none, that a link never carries a file's size. `addAttachment`
+ * below is this plus one SQL statement, and a stub-handle test cannot see
+ * into SQL. Keeping the rules on this side of the line is what keeps them
+ * verifiable.
+ */
+export function buildAttachment(
+  input: NewAttachment,
+  addedBy: string | null = null,
+  now: Date = new Date(),
+): CoreNode["attachments"][number] {
+  // `typeof` rather than truthiness: the route only checks that the field
+  // is present, so `{"url": 5}` reaches here, and `.trim()` on a number is
+  // a TypeError — a 500 for what is plainly a bad request.
+  if (typeof input.url !== "string") {
+    throw new AttachmentValidationError("url muss Text sein");
+  }
+  if (input.title !== undefined && typeof input.title !== "string") {
+    throw new AttachmentValidationError("title muss Text sein");
+  }
+  if (input.kind !== "file" && input.kind !== "link") {
+    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
+  }
+
+  const raw = input.url.trim();
+  if (!isHttpUrl(raw)) {
+    throw new AttachmentValidationError(
+      "URL muss mit http:// oder https:// beginnen",
+    );
+  }
+  if (raw.length > MAX_URL_LENGTH) {
+    throw new AttachmentValidationError(
+      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
+    );
+  }
+
+  // Store what the parser resolved rather than the raw string. The two
+  // differ for inputs a browser would normalise anyway (stray control
+  // characters, backslashes), and storing the canonical form means no
+  // consumer has to wonder which one it got.
+  const parsed = new URL(raw);
+
+  // A title always renders, so derive one rather than showing a raw URL:
+  // the filename for something we host, the host for a link elsewhere.
+  const last = decodeURIComponent(
+    parsed.pathname.split("/").filter(Boolean).pop() ?? "",
+  );
+  const fallbackTitle = input.kind === "file" && last ? last : parsed.host;
+
+  return {
+    id: randomUUID(),
+    kind: input.kind,
+    url: parsed.href,
+    title: ((input.title ?? "").trim() || fallbackTitle).slice(
+      0,
+      MAX_TITLE_LENGTH,
+    ),
+    mimeType: input.kind === "file" ? (input.mimeType ?? null) : null,
+    sizeBytes: input.kind === "file" ? (input.sizeBytes ?? null) : null,
+    addedAt: now.toISOString(),
+    addedBy,
+  };
+}
+
+/**
  * Append one attachment.
  *
- * Its own function rather than a field on `updateNode` so that adding an
- * attachment doesn't mean sending the whole array back: two people (or
- * two browser tabs) adding a file at the same time would each write the
- * list they last read, and the later write would drop the earlier one.
- * Same reason `addDependency` exists — this mirrors it deliberately.
+ * Its own function rather than a field on `updateNode`, and — the part that
+ * actually earns that — the append happens **in Postgres**, as
+ * `attachments || '[…]'::jsonb`, with the per-node ceiling as a predicate
+ * on the same statement.
  *
- * Read-modify-write is still not atomic against a concurrent writer, but
- * the window is one statement rather than a user's whole editing session.
+ * The first cut read the array, appended in JS, and wrote it back. That
+ * narrows the lost-update window from a user's whole editing session to a
+ * DB round-trip, which is better but is not "avoided": two fleet agents
+ * appending to the same node inside one tick still interleave, and one
+ * attachment vanishes behind a 201. jsonb concat closes it outright, and
+ * the ceiling predicate closes the same race on the limit check.
+ *
+ * Zero rows back means the WHERE matched nothing — either the node is gone
+ * or it is full. One extra read on that path tells the two apart, so the
+ * caller gets a message worth reading.
  */
 export async function addAttachment(
   nodeId: string,
@@ -707,62 +783,34 @@ export async function addAttachment(
   addedBy: string | null = null,
   handle: DbHandle = db,
 ): Promise<CoreNode> {
-  const url = (input.url ?? "").trim();
-  if (!isHttpUrl(url)) {
-    throw new AttachmentValidationError(
-      "URL muss mit http:// oder https:// beginnen",
-    );
-  }
-  if (input.kind !== "file" && input.kind !== "link") {
-    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
-  }
-
-  const [row] = await handle
-    .select({ attachments: nodes.attachments })
-    .from(nodes)
-    .where(and(eq(nodes.id, nodeId), notDeleted));
-  if (!row) throw new AttachmentValidationError(`Node ${nodeId} not found`);
-
-  const existing = (row.attachments as CoreNode["attachments"]) ?? [];
-  if (existing.length >= MAX_ATTACHMENTS_PER_NODE) {
-    throw new AttachmentValidationError(
-      `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`,
-    );
-  }
-
-  // A title always renders, so derive one rather than showing a raw URL:
-  // the filename for something we host, the host for a link elsewhere.
-  const fallbackTitle = (() => {
-    try {
-      const parsed = new URL(url);
-      const last = decodeURIComponent(
-        parsed.pathname.split("/").filter(Boolean).pop() ?? "",
-      );
-      return input.kind === "file" && last ? last : parsed.host;
-    } catch {
-      return url;
-    }
-  })();
-
-  const attachment = {
-    id: randomUUID(),
-    kind: input.kind,
-    url,
-    title: ((input.title ?? "").trim() || fallbackTitle).slice(
-      0,
-      MAX_TITLE_LENGTH,
-    ),
-    mimeType: input.kind === "file" ? (input.mimeType ?? null) : null,
-    sizeBytes: input.kind === "file" ? (input.sizeBytes ?? null) : null,
-    addedAt: new Date().toISOString(),
-    addedBy,
-  };
+  const attachment = buildAttachment(input, addedBy);
 
   const [updated] = await handle
     .update(nodes)
-    .set({ attachments: [...existing, attachment], updatedAt: new Date() })
-    .where(and(eq(nodes.id, nodeId), notDeleted))
+    .set({
+      attachments: sql`${nodes.attachments} || ${JSON.stringify([attachment])}::jsonb`,
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        sql`jsonb_array_length(${nodes.attachments}) < ${MAX_ATTACHMENTS_PER_NODE}`,
+      ),
+    )
     .returning();
+
+  if (!updated) {
+    const [row] = await handle
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(and(eq(nodes.id, nodeId), notDeleted));
+    throw new AttachmentValidationError(
+      row
+        ? `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`
+        : `Node ${nodeId} not found`,
+    );
+  }
 
   return dbNodeToCore(updated);
 }

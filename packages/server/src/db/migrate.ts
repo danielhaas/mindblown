@@ -10,6 +10,14 @@ import * as schema from './schema.js';
 export async function runMigrations(): Promise<void> {
   console.log('[db] Running migrations...');
 
+  // Every DDL below takes ACCESS EXCLUSIVE. If anything else holds a lock
+  // on the table when one fires — the nightly pg_dump, a psql someone left
+  // open — the ALTER blocks and every query queues behind it, so the API
+  // never finishes booting and systemd restart-loops. On mind.project.li
+  // that takes the whole agent fleet down. A timeout turns that into a
+  // loud, fast, retryable failure instead of a silent hang.
+  await db.execute(sql`SET lock_timeout = '3s'`);
+
   // Create tables using raw SQL (matching the Drizzle schema)
   // This is the pragmatic approach for a dev setup — drizzle-kit push
   // handles production migrations.

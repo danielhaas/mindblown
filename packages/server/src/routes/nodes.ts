@@ -450,7 +450,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   // A sub-resource rather than a field on PUT, for the same reason
   // dependencies are: adding one attachment shouldn't mean sending the
   // whole array back, where two people adding at once each overwrite the
-  // other's entry with the list they last read.
+  // other's entry with the list they last read. `addAttachment` then does
+  // the append as jsonb concat in one statement, so the narrower race that
+  // remains at this level is closed in the database rather than argued
+  // away — see the note there.
   app.post<{ Params: { id: string; nodeId: string } }>(
     '/api/maps/:id/nodes/:nodeId/attachments',
     async (req, reply) => {
@@ -510,8 +513,12 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       );
 
       if (!updated) {
+        // `removeAttachment` answers null for both "no such node" and "no
+        // such attachment"; say so rather than asserting the second, which
+        // sends someone hunting for an attachment on a node that isn't
+        // there.
         return reply.status(404).send({
-          error: { code: 'NOT_FOUND', message: 'Attachment not found' },
+          error: { code: 'NOT_FOUND', message: 'Node or attachment not found' },
         });
       }
 
