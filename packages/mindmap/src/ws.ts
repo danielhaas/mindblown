@@ -2,7 +2,25 @@ import { getToken } from './api.js';
 
 type MessageHandler = (data: unknown) => void;
 
-const WS_BASE: string = (import.meta.env.VITE_API_URL ?? 'http://localhost:3001').replace(/^http/, 'ws');
+/**
+ * Ohne VITE_API_URL: gleiche Herkunft wie die Seite, Schema aus dem Protokoll
+ * abgeleitet (https -> wss). Ein leerer Basis-String würde eine relative
+ * WebSocket-URL ergeben, die der Browser nicht auflöst — anders als bei fetch
+ * braucht `new WebSocket()` eine absolute Adresse.
+ *
+ * Bewusst eine Funktion und keine Modul-Konstante: `window` beim Import zu
+ * lesen macht das Modul in Node unimportierbar, und `store.ts` zieht es mit
+ * herein. Die Tests laufen in der node-Umgebung ohne DOM, also fiel dort die
+ * ganze Suite mit `ReferenceError: window is not defined` aus — obwohl keiner
+ * der Tests je eine Verbindung aufbaut. Erst beim Verbinden auszuwerten kostet
+ * nichts und hält den Import seiteneffektfrei.
+ */
+function wsBase(): string {
+  const configured = import.meta.env.VITE_API_URL;
+  if (configured) return (configured as string).replace(/^http/, 'ws');
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${scheme}://${window.location.host}`;
+}
 
 const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
 
@@ -27,9 +45,10 @@ export function connectWs(mapId: string, onMessage: MessageHandler, onStatusChan
 
     try {
       const token = getToken();
+      const base = wsBase();
       const url = token
-        ? `${WS_BASE}/ws/maps/${mapId}?token=${encodeURIComponent(token)}`
-        : `${WS_BASE}/ws/maps/${mapId}`;
+        ? `${base}/ws/maps/${mapId}?token=${encodeURIComponent(token)}`
+        : `${base}/ws/maps/${mapId}`;
       ws = new WebSocket(url);
     } catch {
       scheduleReconnect();

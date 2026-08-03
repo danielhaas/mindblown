@@ -9,7 +9,13 @@ import type {
   RequirementStage,
 } from '@mindblown/core';
 
-const BASE_URL: string = import.meta.env.VITE_API_URL ?? 'http://localhost:3001';
+// Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
+// Server (siehe vite.config.ts), im Produktivbetrieb liegen Oberfläche und API
+// ohnehin hinter demselben Host. Der frühere Default `http://localhost:3001`
+// funktionierte nur, wenn der Browser auf derselben Maschine lief wie der
+// Server — von jedem anderen Rechner zeigte er auf dessen eigenen localhost.
+// Wer die API woanders hat, setzt VITE_API_URL explizit.
+const BASE_URL: string = import.meta.env.VITE_API_URL ?? '';
 
 // ── Token helpers ────────────────────────────────────────────────
 

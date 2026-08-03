@@ -3,7 +3,16 @@ import * as api from './api.js';
 import type { Permission, PendingInvite } from './api.js';
 import { useMindmapStore } from './store.js';
 
-const BASE_URL: string = (import.meta as any).env?.VITE_APP_URL ?? window.location.origin;
+/**
+ * Basis für die geteilten Links. Funktion statt Modul-Konstante aus demselben
+ * Grund wie `wsBase()` in ws.ts: `window` beim Import zu lesen macht das Modul
+ * ausserhalb des Browsers unimportierbar. Hier ist noch nichts daran
+ * gescheitert — dieses Modul hängt bloss an keinem Test — aber der erste
+ * Test, der es importiert, würde ohne DOM sofort fallen.
+ */
+function baseUrl(): string {
+  return (import.meta as any).env?.VITE_APP_URL ?? window.location.origin;
+}
 
 export function ShareDialog({
   mapId,
@@ -110,7 +119,7 @@ export function ShareDialog({
 
   const handleCopyLink = () => {
     if (!publicToken) return;
-    const url = `${BASE_URL}/public/${mapId}?token=${publicToken}`;
+    const url = `${baseUrl()}/public/${mapId}?token=${publicToken}`;
     navigator.clipboard.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
@@ -120,7 +129,7 @@ export function ShareDialog({
   const handleCopyInviteLink = (email: string) => {
     // Prefills the register form with this email. The existing pending_invites
     // row is resolved automatically when the user signs up with that email.
-    const url = `${BASE_URL}/?email=${encodeURIComponent(email)}&mode=register`;
+    const url = `${baseUrl()}/?email=${encodeURIComponent(email)}&mode=register`;
     navigator.clipboard.writeText(url).then(() => {
       setCopiedInviteEmail(email);
       setTimeout(() => setCopiedInviteEmail(null), 2000);
@@ -548,7 +557,7 @@ export function ShareDialog({
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <input
                   readOnly
-                  value={`${BASE_URL}/public/${mapId}?token=${publicToken}`}
+                  value={`${baseUrl()}/public/${mapId}?token=${publicToken}`}
                   style={{
                     flex: 1,
                     padding: '8px 10px',
