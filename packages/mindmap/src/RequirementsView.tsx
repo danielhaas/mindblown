@@ -927,28 +927,37 @@ function ChapterGroup({
             )}
           </td>
 
-          {/* Title — inline editable (stopPropagation); ↗ is an explicit jump too */}
-          <td
-            style={tdStyle}
-            onClick={(e) => {
-              e.stopPropagation();
-              setEditingCell({ nodeId: r.node.id, field: 'text' });
-            }}
-          >
+          {/* Requirement — node title on top, business phrasing below.
+              Both inline editable, each into its own field (stopPropagation so
+              editing doesn't navigate); ↗ is an explicit jump too. */}
+          <td style={tdStyle} onClick={(e) => e.stopPropagation()}>
             {isEditing(r.node.id, 'text') ? (
               <input
                 autoFocus
-                defaultValue={r.node.requirementText ?? r.node.text}
+                defaultValue={r.node.text}
                 onBlur={(e) => {
                   const v = e.target.value.trim();
-                  // Business phrasing edits go to requirementText when one is
-                  // set — never touching the (GitHub-synced) node text.
-                  if (r.node.requirementText != null) {
-                    if (v !== r.node.requirementText) {
-                      updateNode(r.node.id, { requirementText: v || null });
-                    }
-                  } else if (v && v !== r.node.text) {
-                    updateNode(r.node.id, { text: v });
+                  // Never blanks the node text: it is the label on the canvas
+                  // and (unlike requirementText) syncs out to GitHub.
+                  if (v && v !== r.node.text) updateNode(r.node.id, { text: v });
+                  setEditingCell(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+                  if (e.key === 'Escape') setEditingCell(null);
+                  e.stopPropagation();
+                }}
+                style={{ ...inputStyle, width: '100%', padding: '2px 6px' }}
+              />
+            ) : isEditing(r.node.id, 'requirementText') ? (
+              <input
+                autoFocus
+                defaultValue={r.node.requirementText ?? ''}
+                placeholder="Business phrasing (falls back to the node title)"
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v !== (r.node.requirementText ?? '')) {
+                    updateNode(r.node.id, { requirementText: v || null });
                   }
                   setEditingCell(null);
                 }}
@@ -960,7 +969,7 @@ function ChapterGroup({
                 style={{ ...inputStyle, width: '100%', padding: '2px 6px' }}
               />
             ) : (
-              <span style={{ cursor: 'text', display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+              <span style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                 <span
                   style={{
                     flexShrink: 0,
@@ -972,38 +981,51 @@ function ChapterGroup({
                   }}
                   title={`Health: ${r.health}`}
                 />
-                {/* Requirement statements are sentences — wrap to two lines
-                    rather than truncating mid-clause. */}
-                <span
-                  style={{
-                    // Shrink-to-fit, not grow — keeps ↗ next to the title
-                    // instead of stranding it at the far edge of a wide column.
-                    flex: '0 1 auto',
-                    minWidth: 0,
-                    display: '-webkit-box',
-                    WebkitBoxOrient: 'vertical',
-                    WebkitLineClamp: 2,
-                    overflow: 'hidden',
-                    lineHeight: 1.4,
-                  }}
-                  title={
-                    r.node.requirementText != null && r.node.requirementText !== r.node.text
-                      ? `Node: ${r.node.text}`
-                      : (r.node.requirementText ?? r.node.text)
-                  }
-                >
-                  {r.node.requirementText ?? r.node.text}
+                <span style={{ flex: '1 1 auto', minWidth: 0 }}>
+                  <span style={{ display: 'flex', alignItems: 'flex-start', gap: 6 }}>
+                    {/* The node title. It is what the row is called everywhere
+                        else (canvas, Kanban, GitHub), so it is the scanning
+                        anchor even when a business phrasing exists — the
+                        register used to hide it in a tooltip. */}
+                    <span
+                      onClick={() => setEditingCell({ nodeId: r.node.id, field: 'text' })}
+                      title={`${r.node.text} — click to edit the node title`}
+                      style={reqTitleStyle(
+                        r.node.requirementText != null && r.node.requirementText !== r.node.text,
+                      )}
+                    >
+                      {r.node.text}
+                    </span>
+                    {/* Rides on the title line, not on the cell: as a sibling
+                        of the whole two-line block it ended up alone at the
+                        far edge of a 600px column. */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        jumpToNode(r.node);
+                      }}
+                      title="Show in mindmap"
+                      style={jumpButtonStyle}
+                    >
+                      ↗
+                    </button>
+                  </span>
+                  {/* Requirement statements are sentences — wrap to two lines
+                      rather than truncating mid-clause. Only rendered when it
+                      says something the title doesn't. */}
+                  {r.node.requirementText != null &&
+                    r.node.requirementText !== r.node.text && (
+                      <span
+                        onClick={() =>
+                          setEditingCell({ nodeId: r.node.id, field: 'requirementText' })
+                        }
+                        title={`${r.node.requirementText} — click to edit the business phrasing`}
+                        style={reqStatementStyle}
+                      >
+                        {r.node.requirementText}
+                      </span>
+                    )}
                 </span>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    jumpToNode(r.node);
-                  }}
-                  title="Show in mindmap"
-                  style={jumpButtonStyle}
-                >
-                  ↗
-                </button>
               </span>
             )}
           </td>
@@ -1622,6 +1644,42 @@ const inlineSelectStyle: React.CSSProperties = {
   fontFamily: 'inherit',
   color: '#334155',
   cursor: 'pointer',
+};
+
+/**
+ * The node title line. Clamped to one line when a business phrasing follows
+ * it — two rows of bold title would out-shout the statement it introduces —
+ * and to two when it is the only thing in the cell (then it IS the
+ * requirement statement, and cutting a sentence mid-clause loses meaning).
+ */
+function reqTitleStyle(hasStatement: boolean): React.CSSProperties {
+  return {
+    // Shrink-to-fit, not grow — keeps ↗ next to the title rather than at the
+    // far edge of a wide column.
+    flex: '0 1 auto',
+    minWidth: 0,
+    display: '-webkit-box',
+    WebkitBoxOrient: 'vertical',
+    WebkitLineClamp: hasStatement ? 1 : 2,
+    overflow: 'hidden',
+    fontWeight: 600,
+    color: '#1e293b',
+    lineHeight: 1.4,
+    cursor: 'text',
+  };
+}
+
+/** The business phrasing under the title — secondary, but still readable. */
+const reqStatementStyle: React.CSSProperties = {
+  display: '-webkit-box',
+  WebkitBoxOrient: 'vertical',
+  WebkitLineClamp: 2,
+  overflow: 'hidden',
+  marginTop: 2,
+  fontSize: 11.5,
+  color: '#64748b',
+  lineHeight: 1.4,
+  cursor: 'text',
 };
 
 const jumpButtonStyle: React.CSSProperties = {

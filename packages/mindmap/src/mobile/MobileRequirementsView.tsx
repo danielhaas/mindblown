@@ -197,7 +197,13 @@ export function MobileRequirementsView({
                 </span>
               )}
             </div>
-            <div className="mb-req-text">{node.requirementText ?? node.text}</div>
+            {/* Node title first, business phrasing under it — same order as
+                the desktop register. Showing only the phrasing hid the name
+                the node carries everywhere else. */}
+            <div className="mb-req-text">{node.text}</div>
+            {node.requirementText != null && node.requirementText !== node.text && (
+              <div className="mb-req-statement">{node.requirementText}</div>
+            )}
             {chapterText && <div className="mb-req-chapter">{chapterText}</div>}
           </button>
         );
