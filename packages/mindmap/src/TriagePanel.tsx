@@ -617,6 +617,10 @@ export function TriagePanel({
       data-testid="triage-panel"
       style={{
         width: PANEL_WIDTH,
+        // Das Property-Panel steht seit App.tsx:2184 daneben statt in derselben
+        // else-Kette, also können zwei Panels nebeneinander liegen. Ohne dies
+        // schrumpfen beide, sobald der Platz knapp wird.
+        flexShrink: 0,
         height: '100%',
         borderLeft: '1px solid #e2e8f0',
         background: '#ffffff',

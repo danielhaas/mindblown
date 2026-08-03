@@ -2187,6 +2187,17 @@ export function App() {
           {activeView === 'hill' && <HillChart />}
           {activeView === 'workload' && <WorkloadView />}
         </div>
+        {/* Die vier Arbeits-Panels bleiben untereinander exklusiv — jeweils
+            eines rechts. Das Property-Panel steht daneben statt in derselben
+            else-Kette: es hing vorher am Ende der Kette und war damit
+            unsichtbar, solange eines der anderen offen war. Genau aus dem
+            Blocked- und dem Sprint-Panel heraus klickt man aber Knoten an
+            (BlockedPanel.tsx:39, SprintPanel.tsx:258) — die Auswahl passierte,
+            die Eigenschaften dazu blieben verborgen, bis man das Panel schloss.
+
+            Reihenfolge: das Arbeits-Panel innen, das Property-Panel aussen am
+            Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
+            offen ist. */}
         {blockedPanelOpen ? (
           <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
         ) : sprintPanelOpen ? (
@@ -2201,17 +2212,16 @@ export function App() {
             mapId={currentMapId}
             onClose={() => setPlanHealthPanelOpen(false)}
           />
-        ) : activeView === 'guide' ? null : (
-          /* The Anwenderansicht keeps its own selection in `selectedNodeId`
-             (that is what makes a link to one criterion shareable), and the
-             property panel opens on any selection. Docking a 320px editor
-             of estimates, statuses and blocked-reasons beside a view whose
-             entire premise is "three facts, not nine" would undo it — so
-             that one view suppresses the panel and offers "Anleitung
-             bearbeiten" instead, which jumps to the mindmap where the panel
-             belongs. Every other view is untouched. */
-          <PropertyPanel />
-        )}
+        ) : null}
+        {/* The Anwenderansicht keeps its own selection in `selectedNodeId`
+            (that is what makes a link to one criterion shareable), and the
+            property panel opens on any selection. Docking a 320px editor
+            of estimates, statuses and blocked-reasons beside a view whose
+            entire premise is "three facts, not nine" would undo it — so
+            that one view suppresses the panel and offers "Anleitung
+            bearbeiten" instead, which jumps to the mindmap where the panel
+            belongs. Every other view is untouched. */}
+        {activeView !== 'guide' && <PropertyPanel />}
       </div>
 
       {/* Command Palette */}
