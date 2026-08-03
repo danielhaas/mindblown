@@ -278,6 +278,28 @@ systemctl reload caddy   # only if you changed the Caddyfile
 
 The API runs migrations on every startup, so schema changes apply automatically.
 
+**The `sudo -u mindblown` covers the pull, not just the build — keep it that way.**
+Pulling as root and building as `mindblown` works for a long time and then doesn't:
+root-owned files pile up in the tree, and nothing complains until a build has to
+*delete* one. Vite's `emptyDir` on `packages/mindmap/dist` is where it surfaces:
+
+```
+EPERM: operation not permitted, unlink '/opt/mindblown/packages/mindmap/dist/assets/index-<hash>.js'
+    at emptyDir (…/vite/dist/node/chunks/…)
+ERROR  @mindblown/mindmap#build: command (/opt/mindblown/packages/mindmap) … exited (1)
+```
+
+That is an ownership error, not a disk or dependency error. Recover with:
+
+```bash
+chown -R mindblown:mindblown /opt/mindblown   # as root
+find /opt/mindblown -path ./.git -prune -o -user root -print   # empty = clean
+```
+
+then re-run the redeploy block above. Anything that writes into `/opt/mindblown`
+— including ad-hoc `git pull`s while debugging — has to run as `mindblown`, since
+that is the user in the systemd unit.
+
 ## GitHub-sync observability (Uptime-Kuma push monitors)
 
 The API exposes four passive heartbeats for the GitHub→MindBlown sync
