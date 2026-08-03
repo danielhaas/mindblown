@@ -904,7 +904,16 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     const ids = state.selectedNodeIds.includes(id)
       ? state.selectedNodeIds.filter((i) => i !== id)
       : [...state.selectedNodeIds, id];
-    set({ selectedNodeIds: ids, selectedNodeId: ids[0] ?? null, editingNodeId: null });
+    // Der zuletzt angefasste Knoten ist der Anker, nicht der zuerst
+    // selektierte. `selectedNodeId` steuert das Property-Panel und die
+    // Tastaturnavigation: mit ids[0] zeigte das Panel nach Shift-Klick auf
+    // drei Knoten den ersten an, also den, den man am wenigsten gerade im
+    // Sinn hat. Beim Abwählen rückt der letzte verbliebene nach.
+    set({
+      selectedNodeIds: ids,
+      selectedNodeId: ids[ids.length - 1] ?? null,
+      editingNodeId: null,
+    });
   },
 
   selectAllNodes: () => {
