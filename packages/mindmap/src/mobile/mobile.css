@@ -923,6 +923,14 @@ body.mobile {
   line-height: 1.4;
 }
 
+/* Business phrasing under the title — secondary, but a full sentence, so it
+   wraps rather than clamping to one line like the pills above it. */
+.mb-req-statement {
+  font-size: 12.5px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
 .mb-req-chapter {
   font-size: 11px;
   color: #94a3b8;
