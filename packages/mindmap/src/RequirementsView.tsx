@@ -779,6 +779,7 @@ export function RequirementsView() {
                   updateNode={updateNode}
                   jumpToNode={jumpToNode}
                   jumpToGuide={jumpToGuide}
+                  selectNode={selectNode}
                   currentUserId={user?.id ?? null}
                   toggleAcceptance={toggleAcceptance}
                   rejectRequirement={rejectRequirement}
@@ -807,6 +808,7 @@ function ChapterGroup({
   updateNode,
   jumpToNode,
   jumpToGuide,
+  selectNode,
   currentUserId,
   toggleAcceptance,
   rejectRequirement,
@@ -823,6 +825,7 @@ function ChapterGroup({
   updateNode: (id: string, updates: Partial<Node>) => void;
   jumpToNode: (node: Node) => void;
   jumpToGuide: (node: Node) => void;
+  selectNode: (id: string) => void;
   currentUserId: string | null;
   toggleAcceptance: (row: ReqRow, gate: RequirementGate) => void;
   rejectRequirement: (row: ReqRow, gate: RequirementGate) => void;
@@ -854,10 +857,17 @@ function ChapterGroup({
         <tr
           key={r.node.id}
           ref={current ? selectedRowRef : undefined}
-          onClick={() => jumpToNode(r.node)}
+          // Auswählen, nicht wegspringen. Der Zeilenklick rief bis hierher
+          // jumpToNode und damit setActiveView('mindmap') (#207) — das
+          // Register verschwand also unter dem Finger, und die Eigenschaften
+          // des angeklickten Requirements sah man nur noch in der Mindmap.
+          // Jetzt bleibt man im Register und das Property-Panel öffnet sich
+          // rechts daneben. Den Sprung macht weiterhin das ↗ in der
+          // Requirement-Spalte, das genau dafür schon da war.
+          onClick={() => selectNode(r.node.id)}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
           onMouseLeave={(e) => (e.currentTarget.style.background = rowBackground)}
-          title="Open in mindmap"
+          title="Auswählen — Eigenschaften erscheinen rechts (↗ öffnet in der Mindmap)"
           style={{
             background: rowBackground,
             borderBottom: '1px solid #f1f5f9',
