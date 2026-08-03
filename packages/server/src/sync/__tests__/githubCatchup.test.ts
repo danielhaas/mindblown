@@ -140,7 +140,7 @@ import {
   type ReconcileResult,
 } from '../githubCatchup.js';
 import { fetchChangedIssues, getGitHubIssue, GitHubApiError } from '@mindblown/integrations';
-import type { ExternalLink } from '@mindblown/core';
+import type { ExternalLink, LinkedPrState } from '@mindblown/core';
 import * as nodeDb from '../../db/nodes.js';
 
 // Re-aliased for readability in tests: this is the mock class from
@@ -723,6 +723,59 @@ describe('computeStateUpdates → link state mirror', () => {
         'o/r#14',
       ),
     ).toBeNull();
+  });
+
+  // "Issue offen + Node done" ist der Normalzustand, solange ein PR läuft:
+  // der Agent setzt den Node beim Öffnen des PRs auf done, und
+  // updateGitHubIssue lässt das Issue bewusst offen bis zum Merge. Ohne
+  // Gate liest der Reopen-Zweig das als "auf GitHub wieder geöffnet" und
+  // setzt percentComplete auf null — der Snapshot ist leer, weil der
+  // Close-Pfad nie lief, der Fortschritt also unrettbar weg.
+  const pr = (state: 'open' | 'closed' | 'merged') =>
+    ({ number: 7, repo: 'o/r', url: 'https://github.com/o/r/pull/7', head: 'f', base: 'main',
+       author: 'max', draft: false, state, mergeable: true, changedFiles: [], reviews: [],
+       checks: { state: null, failures: [] }, lastSyncedAt: null }) as unknown as LinkedPrState;
+
+  it('leaves a done node alone while its PR is still open', () => {
+    expect(
+      computeStateUpdates(
+        { percentComplete: 100, status: 'done', externalLinks: [link()], linkedPr: pr('open') },
+        { state: 'open' },
+        'o/r#14',
+      ),
+    ).toBeNull();
+  });
+
+  it('leaves a done node alone when the PR was closed unmerged', () => {
+    expect(
+      computeStateUpdates(
+        { percentComplete: 100, status: 'done', externalLinks: [link()], linkedPr: pr('closed') },
+        { state: 'open' },
+        'o/r#14',
+      ),
+    ).toBeNull();
+  });
+
+  it('still reopens a done node once the PR merged and the issue is open again', () => {
+    // handlePrClosed clears linkedPr on merge, so this is the state after a
+    // merge — a human reopening the issue must still pull the node back.
+    const updates = computeStateUpdates(
+      { percentComplete: 100, status: 'done', externalLinks: [link({ state: 'closed' })], linkedPr: null },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.status).toBe('in_progress');
+  });
+
+  it('still closes a not-done node whose issue was closed, PR or not', () => {
+    // The close direction is untouched by the gate: if GitHub says closed,
+    // the node follows. Only the reopen direction was destroying progress.
+    const updates = computeStateUpdates(
+      { percentComplete: 40, status: 'in_progress', externalLinks: [link()], linkedPr: pr('open') },
+      { state: 'closed' },
+      'o/r#14',
+    );
+    expect(updates?.status).toBe('done');
   });
 });
 

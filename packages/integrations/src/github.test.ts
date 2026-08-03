@@ -77,7 +77,9 @@ function pr(state: LinkedPrState['state']): LinkedPrState {
     mergeable: true,
     changedFiles: [],
     reviews: [],
-  } as unknown as LinkedPrState;
+    checks: { state: null, failures: [] },
+    lastSyncedAt: '2026-07-27T20:41:35.000Z',
+  };
 }
 
 /** The body of the PATCH the function sent to GitHub. */
@@ -136,6 +138,10 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     expect(patch.labels).toEqual(['compliance']);
   });
 
+  // Unit-Kontrakt, kein Happy-Path-Nachweis: `handlePrClosed` setzt beim
+  // Merge `linkedPr: null`, ein persistiertes 'merged' entsteht nur über
+  // ein nachträgliches `pull_request.edited`. Den echten Merge-Weg decken
+  // GitHubs eigenes `Closes #N` und der `linkedPr: null`-Test darunter ab.
   it('closes the issue once the PR is merged', async () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('merged') }),

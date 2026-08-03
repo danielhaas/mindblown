@@ -194,7 +194,7 @@ export interface ReconcileResult {
  * the reconcile loop handles that case via `setExternalLinkState`.
  */
 export function computeStateUpdates(
-  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks'>,
+  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks' | 'linkedPr'>,
   issue: Pick<GitHubIssue, 'state'>,
   externalId: string,
 ): nodeDb.UpdateNodeInput | null {
@@ -209,6 +209,17 @@ export function computeStateUpdates(
   const hasSnapshot =
     (link.previousPercentComplete !== undefined && link.previousPercentComplete !== null) ||
     (link.previousStatus !== undefined && link.previousStatus !== null);
+
+  // "Issue offen, Node done" ist seit dem Gate in updateGitHubIssue der
+  // NORMALZUSTAND, solange ein PR läuft — der Agent setzt den Node beim
+  // Öffnen des PRs auf done, und das Issue bleibt bewusst offen bis zum
+  // Merge. Ohne diese Bedingung läse der Reopen-Zweig unten das als
+  // "auf GitHub wieder geöffnet" und setzte percentComplete auf null
+  // zurück (Snapshot ist leer, weil der Close-Pfad nie lief) — der
+  // Fortschritt wäre unrettbar weg. Der Catchup-Tick sieht das Issue
+  // garantiert, weil der Sync weiterhin title/body/labels schreibt und
+  // damit updated_at bumpt.
+  const hasUnmergedPr = !!node.linkedPr && node.linkedPr.state !== 'merged';
 
   const ghState: 'open' | 'closed' = isClosedOnGitHub ? 'closed' : 'open';
 
@@ -230,7 +241,7 @@ export function computeStateUpdates(
     nextPct = 100;
     nextStatus = 'done';
     stateChanged = true;
-  } else if (!isClosedOnGitHub && (looksDoneInMB || hasSnapshot)) {
+  } else if (!isClosedOnGitHub && (looksDoneInMB || hasSnapshot) && !hasUnmergedPr) {
     // Treat as a reopen transition.
     nextPct = link.previousPercentComplete ?? null;
     nextStatus = link.previousStatus ?? 'in_progress';

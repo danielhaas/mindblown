@@ -233,6 +233,17 @@ export async function updateGitHubIssue(
   //
   // We OMIT `state` rather than forcing 'open': a human who deliberately
   // closed the issue should not have it reopened under them.
+  //
+  // Bewusster Dead-End: `handlePrClosed` behält `linkedPr` mit
+  // `state: 'closed'` als Historie, wenn ein PR unmerged geschlossen wird.
+  // Damit bleibt dieses Gate für den Node dauerhaft aktiv und MindBlown
+  // schliesst sein Issue nie mehr — auch nicht, wenn die Arbeit später von
+  // Hand oder in einem PR ohne `Closes #N` landet. Das ist die richtige
+  // Richtung zu irren: ein abgebrochener PR heisst, dass die Arbeit NICHT
+  // erledigt ist, und ein Mensch kann das Issue jederzeit selbst schliessen
+  // (wir öffnen es dann nicht wieder). Auf `state === 'open'` zu verengen
+  // wäre falsch — dann meldete ein abgebrochener PR COMPLETED, exakt der
+  // Bug, den dieses Gate behebt.
   const hasUnmergedPr = !!node.linkedPr && node.linkedPr.state !== 'merged';
 
   // Build labels from tags + priority
