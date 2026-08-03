@@ -201,6 +201,9 @@ export async function createGitHubIssue(
  * Sync node changes to the linked GitHub Issue.
  * Updates title, body, state (open/closed), and labels. The issue's
  * GitHub milestone is left untouched (we no longer track it).
+ *
+ * While an unmerged PR is linked to the node, the issue's state is left
+ * ALONE — see `hasUnmergedPr` below.
  */
 export async function updateGitHubIssue(
   node: Node,
@@ -213,7 +216,24 @@ export async function updateGitHubIssue(
   const { owner, repo, issueNumber } = parsed;
 
   // Determine state from node status/progress
-  const isClosed = node.percentComplete === 100 || node.status === 'done';
+  const looksDone = node.percentComplete === 100 || node.status === 'done';
+
+  // …but "done in MindBlown" is not "done in the repo" while a PR is still
+  // in flight. Coding agents mark the node done when they OPEN the PR, not
+  // when it merges, so this sync used to close the issue as COMPLETED while
+  // the branch was still open — and on FulcrumCRM/crm often still red. That
+  // silently reported unshipped work as finished: 15 issues closed that way
+  // since 2026-07-15, among them compliance work (#6096 controlling-person
+  // look-through, #6027 retention audit records, #5910 duplicate-IBAN
+  // detection), none of which had landed on main.
+  //
+  // A merged PR closes its issue by itself via `Closes #N` in the body, and
+  // `handlePrClosed` clears `linkedPr` on merge — so gating on an unmerged
+  // linked PR costs us nothing on the happy path.
+  //
+  // We OMIT `state` rather than forcing 'open': a human who deliberately
+  // closed the issue should not have it reopened under them.
+  const hasUnmergedPr = !!node.linkedPr && node.linkedPr.state !== 'merged';
 
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -226,9 +246,11 @@ export async function updateGitHubIssue(
   const patchBody: Record<string, unknown> = {
     title: node.text,
     body,
-    state: isClosed ? 'closed' : 'open',
     labels,
   };
+  if (!hasUnmergedPr) {
+    patchBody.state = looksDone ? 'closed' : 'open';
+  }
 
   const updatedIssue = await githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
