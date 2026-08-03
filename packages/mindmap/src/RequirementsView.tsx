@@ -857,14 +857,21 @@ function ChapterGroup({
         <tr
           key={r.node.id}
           ref={current ? selectedRowRef : undefined}
-          // Auswählen, nicht wegspringen. Der Zeilenklick rief bis hierher
-          // jumpToNode und damit setActiveView('mindmap') (#207) — das
-          // Register verschwand also unter dem Finger, und die Eigenschaften
-          // des angeklickten Requirements sah man nur noch in der Mindmap.
-          // Jetzt bleibt man im Register und das Property-Panel öffnet sich
-          // rechts daneben. Den Sprung macht weiterhin das ↗ in der
-          // Requirement-Spalte, das genau dafür schon da war.
-          onClick={() => selectNode(r.node.id)}
+          // Auswählen, nicht wegspringen (#299): das Register bleibt stehen,
+          // das Property-Panel rechts zeigt die geklickte Zeile. Den Sprung in
+          // die Mindmap macht das ↗ in der Requirement-Spalte.
+          //
+          // Capture-Phase, nicht Bubble. Fünf der neun Zellen rufen
+          // stopPropagation, um ihre eigene Bedienung zu schützen (REQ-ID,
+          // Requirement-Text, Priority, Release, Acceptance) — ein
+          // Bubble-Handler auf der Zeile sah deren Klicks deshalb nie. Zum
+          // Auswählen blieben Status und Remaining übrig, also gerade nicht
+          // die Stellen, auf die ein Mensch zielt: Klicks auf den Titel
+          // öffneten den Inline-Editor, und das Panel zeigte weiter die
+          // vorherige Zeile. Capture läuft vor den Zellen-Handlern, damit
+          // trifft jeder Klick in der Zeile die Auswahl, ohne dass eine der
+          // Zellen ihre eigene Reaktion verliert.
+          onClickCapture={() => selectNode(r.node.id)}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
           onMouseLeave={(e) => (e.currentTarget.style.background = rowBackground)}
           title="Auswählen — Eigenschaften erscheinen rechts (↗ öffnet in der Mindmap)"
