@@ -865,7 +865,7 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // Reads the same requirement nodes as the register, for the opposite
   // reader: "how do I check this?" rather than "where does this stand?".
   // Sits next to it so the switch between the two is one click.
-  { id: 'guide', label: 'Prüfanleitungen', enabled: true },
+  { id: 'guide', label: 'How to verify', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -2213,13 +2213,13 @@ export function App() {
             onClose={() => setPlanHealthPanelOpen(false)}
           />
         ) : null}
-        {/* The Anwenderansicht keeps its own selection in `selectedNodeId`
-            (that is what makes a link to one criterion shareable), and the
-            property panel opens on any selection. Docking a 320px editor
-            of estimates, statuses and blocked-reasons beside a view whose
-            entire premise is "three facts, not nine" would undo it — so
-            that one view suppresses the panel and offers "Anleitung
-            bearbeiten" instead, which jumps to the mindmap where the panel
+        {/* The "How to verify" view keeps its own selection in
+            `selectedNodeId` (that is what makes a link to one criterion
+            shareable), and the property panel opens on any selection. Docking
+            a 320px editor of estimates, statuses and blocked-reasons beside a
+            view whose entire premise is "three facts, not nine" would undo it
+            — so that one view suppresses the panel and offers "Edit the
+            steps" instead, which jumps to the mindmap where the panel
             belongs. Every other view is untouched. */}
         {activeView !== 'guide' && <PropertyPanel />}
       </div>

@@ -35,7 +35,7 @@ import {
  * Same store as RequirementsView.tsx and the same derivation rules (chapter
  * = parent node, REQ-ID order), but a separate surface. The two are linked
  * in both directions through `selectedNodeId` alone: the register's marker
- * sets it and switches here, "Im Register ansehen" does the reverse. No
+ * sets it and switches here, "Show in register" does the reverse. No
  * shared state beyond the selection the URL already carries.
  */
 
@@ -179,7 +179,7 @@ export function GuideView() {
   if (!rootNodeId) {
     return (
       <div style={containerStyle}>
-        <Placeholder title="Keine Karte geöffnet" body="Öffne eine Karte, um ihre Kriterien zu sehen." />
+        <Placeholder title="No map open" body="Open a map to see its criteria." />
       </div>
     );
   }
@@ -192,16 +192,16 @@ export function GuideView() {
       <style>{guideCss}</style>
 
       <div style={headerStyle}>
-        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>Prüfanleitungen</h2>
+        <h2 style={{ margin: 0, fontSize: 16, color: INK }}>How to verify</h2>
         <div style={{ fontSize: 11, color: MUTED, marginTop: 3 }}>
-          {entries.length} Kriterien · {withGuide} mit Prüfanleitung · {withVideo} mit Video
+          {entries.length} criteria · {withGuide} with steps · {withVideo} with a clip
         </div>
       </div>
 
       {entries.length === 0 ? (
         <Placeholder
-          title="Noch keine Kriterien"
-          body="Diese Ansicht zeigt jeden Knoten mit einer Requirement-ID. Vergib eine im Eigenschaften-Panel, dann steht er hier."
+          title="No criteria yet"
+          body="This view lists every node that has a requirement ID. Give one out in the property panel and it shows up here."
         />
       ) : (
         <div className="mb-guide-grid">
@@ -214,8 +214,8 @@ export function GuideView() {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => e.stopPropagation()}
-                placeholder="Kriterium oder Kürzel suchen…"
-                aria-label="Kriterium suchen"
+                placeholder="Search criterion or ID…"
+                aria-label="Search criteria"
                 style={searchStyle}
               />
             </div>
@@ -223,7 +223,7 @@ export function GuideView() {
             <div style={{ flex: 1, overflowY: 'auto', padding: '0 10px 24px' }}>
               {visibleChapters.length === 0 ? (
                 <div style={{ padding: '18px 6px', fontSize: 12.5, color: MUTED }}>
-                  Nichts gefunden für „{query.trim()}“.
+                  Nothing found for “{query.trim()}”.
                 </div>
               ) : (
                 visibleChapters.map((chapter) => (
@@ -251,11 +251,11 @@ export function GuideView() {
               />
             ) : (
               <Placeholder
-                title="Wähle links ein Kriterium"
+                title="Pick a criterion on the left"
                 body={
                   chapters.length > 1
-                    ? `${chapters.length} Kapitel, ${entries.length} Kriterien. Zu jedem steht hier, wie du es selbst nachprüfst — Schritte und, wo vorhanden, ein kurzer Clip.`
-                    : 'Zu jedem Kriterium steht hier, wie du es selbst nachprüfst.'
+                    ? `${chapters.length} chapters, ${entries.length} criteria. For each one, this is where it says how to check it yourself — the steps and, where there is one, a short clip.`
+                    : 'For every criterion, this is where it says how to check it yourself.'
                 }
               />
             )}
@@ -311,7 +311,7 @@ function ChapterBlock({
               className="mb-guide-item"
               onClick={() => onSelect(entry)}
               aria-current={current}
-              title={entry.available ? entry.title : `${entry.title} — noch nicht verfügbar`}
+              title={entry.available ? entry.title : `${entry.title} — not available yet`}
               style={{
                 ...itemStyle,
                 background: current ? ACCENT_SOFT : 'transparent',
@@ -357,10 +357,10 @@ function ChapterBlock({
 function Marker({ marker }: { marker: ReturnType<typeof guideMarker> }) {
   const label =
     marker === 'video'
-      ? 'Prüfanleitung und Video vorhanden'
+      ? 'Has written steps and a clip'
       : marker === 'guide'
-        ? 'Prüfanleitung vorhanden'
-        : 'Noch keine Prüfanleitung';
+        ? 'Has written steps'
+        : 'No steps written yet';
   if (marker === 'video') {
     return (
       <span title={label} aria-label={label} style={{ fontSize: 9, color: ACCENT, lineHeight: 1 }}>
@@ -412,12 +412,12 @@ function GuideCard({
           <span style={noticeDotStyle} />
           <div>
             <b style={{ fontWeight: 600, color: INK_SOFT }}>
-              Diese Funktion ist noch nicht verfügbar.
+              This feature is not available yet.
             </b>
             <br />
             {entry.guideText != null
-              ? 'Die Anleitung unten ist bereits geschrieben — prüfbar wird sie, sobald die Funktion ausgeliefert ist.'
-              : 'Sobald sie da ist, steht hier, wie du sie prüfst.'}
+              ? 'The steps below are already written — they become checkable once the feature ships.'
+              : 'Once it is there, this is where it will say how to check it.'}
           </div>
         </div>
       )}
@@ -460,7 +460,7 @@ function GuideCard({
 
       {entry.guideText != null ? (
         <>
-          <div style={sectionLabelStyle}>Schritte</div>
+          <div style={sectionLabelStyle}>Steps</div>
           <div className="mb-guide-md" style={stepsStyle}>
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={guideMarkdownComponents}>
               {entry.guideText}
@@ -473,10 +473,10 @@ function GuideCard({
             <span style={noticeDotStyle} />
             <div>
               <b style={{ fontWeight: 600, color: INK_SOFT }}>
-                Für dieses Kriterium ist noch keine Prüfanleitung hinterlegt.
+                No steps have been written for this criterion yet.
               </b>
               <br />
-              Über „Anleitung bearbeiten“ kannst du sie schreiben.
+              Use “Edit the steps” to write them.
             </div>
           </div>
         )
@@ -536,24 +536,24 @@ function GuideCard({
             rel="noreferrer"
             style={primaryBtnStyle}
           >
-            In der Anwendung öffnen ↗
+            Open in the application ↗
           </a>
         )}
         <button
           className="mb-guide-btn"
           onClick={onEdit}
-          title="Öffnet das Kriterium in der Mindmap; die Prüf-Felder stehen im Eigenschaften-Panel"
+          title="Opens the criterion in the mindmap; the verification fields live in the property panel"
           style={quietBtnStyle}
         >
-          Anleitung bearbeiten
+          Edit the steps
         </button>
         <button
           className="mb-guide-btn"
           onClick={onShowInRegister}
-          title="Zeigt dieses Kriterium im Anforderungsregister — Status, Release, Abnahme"
+          title="Shows this criterion in the requirements register — status, release, sign-off"
           style={quietBtnStyle}
         >
-          Im Register ansehen
+          Show in register
         </button>
       </div>
     </div>

@@ -652,7 +652,7 @@ export function RequirementsView() {
               }
             }}
             disabled={exporting}
-            title="Als Anforderungsdokument (Word) exportieren — aktive Filter werden übernommen"
+            title="Export as Anforderungsdokument (Word) — the active filters carry over"
             style={secondaryButtonStyle(exporting)}
           >
             {exporting ? 'Exporting…' : 'Export Word'}
@@ -874,7 +874,7 @@ function ChapterGroup({
           onClickCapture={() => selectNode(r.node.id)}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
           onMouseLeave={(e) => (e.currentTarget.style.background = rowBackground)}
-          title="Auswählen — Eigenschaften erscheinen rechts (↗ öffnet in der Mindmap)"
+          title="Select — properties appear on the right (↗ opens it in the mindmap)"
           style={{
             background: rowBackground,
             borderBottom: '1px solid #f1f5f9',
@@ -933,8 +933,8 @@ function ChapterGroup({
                       e.currentTarget.style.color = '#a5b4fc';
                       e.currentTarget.style.background = 'transparent';
                     }}
-                    title="Prüfanleitung ansehen"
-                    aria-label={`Prüfanleitung zu ${r.node.requirementId} ansehen`}
+                    title="See how to verify this"
+                    aria-label={`See how to verify ${r.node.requirementId}`}
                     style={guideMarkerStyle}
                   >
                     ≡

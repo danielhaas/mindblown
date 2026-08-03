@@ -29,7 +29,7 @@ type Status =
 export function MediaUploadButton({
   onUploaded,
   accept = '*/*',
-  label = 'Datei hochladen…',
+  label = 'Upload file…',
   disabled = false,
 }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -48,7 +48,7 @@ export function MediaUploadButton({
     } catch (err) {
       setStatus({
         kind: 'error',
-        message: err instanceof Error ? err.message : 'Upload fehlgeschlagen',
+        message: err instanceof Error ? err.message : 'Upload failed',
       });
     }
   }
@@ -87,7 +87,7 @@ export function MediaUploadButton({
           textAlign: 'left',
         }}
       >
-        {busy ? `Lädt… ${Math.round(status.fraction * 100)} %` : label}
+        {busy ? `Uploading… ${Math.round(status.fraction * 100)} %` : label}
       </button>
 
       {busy && (

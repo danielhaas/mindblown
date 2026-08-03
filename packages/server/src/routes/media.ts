@@ -210,7 +210,7 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
 
     if (aborted) {
       return reply.status(400).send({
-        error: { code: 'UPLOAD_ABORTED', message: 'Upload wurde unterbrochen' },
+        error: { code: 'UPLOAD_ABORTED', message: 'Upload was interrupted' },
       });
     }
 
@@ -218,7 +218,7 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(413).send({
         error: {
           code: 'FILE_TOO_LARGE',
-          message: `Datei überschreitet das Limit von ${Math.floor(limit / (1024 * 1024))} MB`,
+          message: `File exceeds the ${Math.floor(limit / (1024 * 1024))} MB limit`,
           maxBytes: limit,
         },
       });
