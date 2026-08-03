@@ -183,11 +183,11 @@ describe('uploadMedia', () => {
     instance.respond(
       413,
       JSON.stringify({
-        error: { code: 'FILE_TOO_LARGE', message: 'Datei überschreitet das Limit von 100 MB' },
+        error: { code: 'FILE_TOO_LARGE', message: 'File exceeds the 100 MB limit' },
       }),
     );
 
-    await expect(promise).rejects.toThrow('Datei überschreitet das Limit von 100 MB');
+    await expect(promise).rejects.toThrow('File exceeds the 100 MB limit');
     await promise.catch((err) => {
       expect(err).toBeInstanceOf(ApiError);
       expect(err.status).toBe(413);

@@ -474,7 +474,7 @@ function PropertyPanelInner({
         {/* Verification how-to + deep link — the review surface reads these */}
         {(node.requirementId != null || requirementId.trim() !== '') && (
           <>
-            <Field label="Prüfanleitung">
+            <Field label="How to verify">
               <textarea
                 value={verificationText}
                 onChange={(e) => setVerificationText(e.target.value)}
@@ -492,10 +492,10 @@ function PropertyPanelInner({
                   resize: 'vertical',
                   fontFamily: 'inherit',
                 }}
-                placeholder={'Wie prüfen? Markdown, z.B.\n1. Einloggen als …\n2. …\n\n**Erwartet:** …\n**Testen mit:** …'}
+                placeholder={'How is this checked? Markdown, e.g.\n1. Sign in as …\n2. …\n\n**Expected:** …\n**Test data:** …'}
               />
             </Field>
-            <Field label="Prüf-Link">
+            <Field label="Where to check">
               <input
                 value={verificationUrl}
                 onChange={(e) => setVerificationUrl(e.target.value)}
@@ -508,10 +508,10 @@ function PropertyPanelInner({
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
                 style={inputStyle}
-                placeholder="https://staging… (wo wird geprüft?)"
+                placeholder="https://staging… (where is it checked?)"
               />
             </Field>
-            <Field label="Video-Link">
+            <Field label="Demo video">
               <input
                 value={verificationVideoUrl}
                 onChange={(e) => setVerificationVideoUrl(e.target.value)}
@@ -524,7 +524,7 @@ function PropertyPanelInner({
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
                 style={inputStyle}
-                placeholder="https://… (kurzes Demo-Video)"
+                placeholder="https://… (short demo clip)"
               />
               {/* The field still takes a pasted URL — YouTube, a link from
                   somewhere else. The upload is the second way in, for the
@@ -534,7 +534,7 @@ function PropertyPanelInner({
                   anything, so there is no blur to wait for. */}
               <MediaUploadButton
                 accept="video/*"
-                label="Video hochladen…"
+                label="Upload video…"
                 onUploaded={(media) => {
                   setVerificationVideoUrl(media.url);
                   directUpdate(nodeId, { verificationVideoUrl: media.url });
@@ -546,7 +546,7 @@ function PropertyPanelInner({
                 one it would show for free — frame 0 — is the blank page
                 the screen recorder was still waiting on. Directly under
                 the video link because it is only read when that is set. */}
-            <Field label="Video-Standbild">
+            <Field label="Video poster">
               <input
                 value={verificationVideoPosterUrl}
                 onChange={(e) => setVerificationVideoPosterUrl(e.target.value)}
@@ -559,11 +559,11 @@ function PropertyPanelInner({
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
                 style={inputStyle}
-                placeholder="https://… (Standbild für den Player)"
+                placeholder="https://… (still frame for the player)"
               />
               <MediaUploadButton
                 accept="image/*"
-                label="Standbild hochladen…"
+                label="Upload poster…"
                 onUploaded={(media) => {
                   setVerificationVideoPosterUrl(media.url);
                   directUpdate(nodeId, { verificationVideoPosterUrl: media.url });
@@ -765,7 +765,7 @@ function PropertyPanelInner({
             requirements. Unlike the verification block above, this doesn't
             wait for a Requirement ID: hanging a document on a task is
             useful long before that task is a formally tracked requirement. */}
-        <Field label="Anhänge">
+        <Field label="Attachments">
           <AttachmentsSection
             attachments={node.attachments ?? []}
             onAdd={async (attachment) => {

@@ -63,7 +63,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
     // `example.com` without a scheme — is answered instantly rather than
     // as a round-trip 400.
     if (!isHttpUrl(url)) {
-      setError('Bitte eine vollständige Adresse mit http:// oder https://');
+      setError('Enter a full address starting with http:// or https://');
       return;
     }
     setError(null);
@@ -73,7 +73,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
       setLinkTitle('');
       setLinkOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Konnte den Link nicht speichern');
+      setError(err instanceof Error ? err.message : 'Could not save the link');
     }
   }
 
@@ -83,7 +83,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
     try {
       await onRemove(id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Konnte den Anhang nicht entfernen');
+      setError(err instanceof Error ? err.message : 'Could not remove the attachment');
     } finally {
       setBusyId(null);
     }
@@ -93,7 +93,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       {attachments.length === 0 && (
         <div style={{ fontSize: 11, color: '#94a3b8' }}>
-          Noch nichts angehängt.
+          Nothing attached yet.
         </div>
       )}
 
@@ -128,7 +128,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
               onClick={() => void remove(a.id)}
               onKeyDown={(e) => e.stopPropagation()}
               disabled={busyId === a.id}
-              aria-label={`${a.title} entfernen`}
+              aria-label={`Remove ${a.title}`}
               style={{
                 border: 'none',
                 background: 'transparent',
@@ -149,7 +149,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
       <MediaUploadButton
         // No filter — the default is already everything. Anything the
         // server won't render inline comes back as a download.
-        label="Datei hochladen…"
+        label="Upload file…"
         onUploaded={(media) =>
           void onAdd({
             kind: 'file',
@@ -158,7 +158,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
             mimeType: media.contentType,
             sizeBytes: media.size,
           }).catch((err) =>
-            setError(err instanceof Error ? err.message : 'Konnte die Datei nicht anhängen'),
+            setError(err instanceof Error ? err.message : 'Could not attach the file'),
           )
         }
       />
@@ -180,7 +180,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
             textAlign: 'left',
           }}
         >
-          Link hinzufügen…
+          Add link…
         </button>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -211,7 +211,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
               if (e.key === 'Enter') void submitLink();
               if (e.key === 'Escape') setLinkOpen(false);
             }}
-            placeholder="Beschriftung (optional)"
+            placeholder="Label (optional)"
             style={{
               width: '100%',
               padding: '6px 8px',
@@ -237,7 +237,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
                 cursor: 'pointer',
               }}
             >
-              Hinzufügen
+              Add
             </button>
             <button
               type="button"
