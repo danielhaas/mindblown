@@ -114,6 +114,12 @@ describe('buildRegisterData — Abnahme verdicts', () => {
     const md = renderMarkdown(data);
     expect(md).toContain('Business: T. Muster ✗ 17.07. («kaputt»)');
   });
+
+  it('explains the Lieferstand convention in the legend', () => {
+    const md = renderMarkdown(build(nodes, []));
+    expect(md).toContain('**Lieferstand-Notizen:**');
+    expect(md).toContain('nicht** Teil der bestellten Anforderung');
+  });
 });
 
 describe('buildRegisterData — Release column', () => {

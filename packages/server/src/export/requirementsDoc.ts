@@ -399,6 +399,7 @@ const LEGEND = [
   '**Code %** (Code-Fortschritt): Anteil der erledigten Arbeitspakete unter einer Anforderung. Misst, wie viel Software gebaut wurde — **nicht**, ob das Ergebnis fachlich stimmt. 100 % bedeutet «Gebaut», nicht «Abgenommen».',
   '**Aufwand** (Gesamt-Referenz) und **Rest** (verbleibend; «—» ab Gebaut): **S** ≤ 2 Tage · **M** 3–5 Tage · **L** 1–3 Wochen · **XL** > 3 Wochen',
   '**Abnahme:** zwei Stufen, je eine Zeile — **IT** (funktioniert es?) und **Business** (ist es das, was wir bestellt haben?) · ✓ erteilt, mit Name und Datum · ✗ zurückgewiesen (mit Begründung) · «offen» = gebaut, aber diese Unterschrift fehlt noch · ⚠ seit dem Urteil geändert · «—» noch nicht so weit',
+  '**Lieferstand-Notizen:** Trägt eine Anforderung einen Block «Lieferstand TT.MM.JJJJ: …», ist das eine Anmerkung des Projektteams zum aktuellen Stand der Lieferung (bekannte Lücken, Fundorte in der Oberfläche, laufende Fixes) — sie ist **nicht** Teil der bestellten Anforderung.',
 ];
 
 /**
