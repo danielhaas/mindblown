@@ -114,10 +114,19 @@ describe('buildRegisterData — Abnahme verdicts', () => {
     const md = renderMarkdown(data);
     expect(md).toContain('Business: T. Muster ✗ 17.07. («kaputt»)');
   });
+});
 
-  it('explains the Lieferstand convention in the legend', () => {
+describe('renderMarkdown — legend', () => {
+  const nodes = [
+    makeNode({ id: 'root', childrenIds: ['ch'] }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+    makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', percentComplete: 100 }),
+  ];
+
+  it('explains the Lieferstand convention', () => {
     const md = renderMarkdown(build(nodes, []));
     expect(md).toContain('**Lieferstand-Notizen:**');
+    expect(md).toContain('«Lieferstand TT.MM.JJJJ:»');
     expect(md).toContain('nicht** Teil der bestellten Anforderung');
   });
 });
