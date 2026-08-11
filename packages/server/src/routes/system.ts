@@ -4,6 +4,7 @@
  * signup is closed); writes are admin-only.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import {
   getRegistrationPolicy,
@@ -14,7 +15,10 @@ import {
   type AiProviderSettings,
   type AiProviderPreference,
 } from '../db/settings.js';
-import { requireAdmin } from '../auth.js';
+import { requireAdmin, hashPassword } from '../auth.js';
+import { db } from '../db/connection.js';
+import { users } from '../db/schema.js';
+import { eq } from 'drizzle-orm';
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/system/registration-policy ────────────────────────
@@ -93,5 +97,39 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       preference: preference as AiProviderPreference,
     });
     return saved;
+  });
+
+  // ── POST /api/system/reset-password ────────────────────────────
+  // Admin-only. Sets a server-generated temporary password on the given
+  // account and returns it once — there is no reset email; the admin hands
+  // the temp password to the user out-of-band, who then changes it via
+  // /api/auth/change-password.
+  app.post('/api/system/reset-password', async (req, reply) => {
+    if (!(await requireAdmin(req))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+    const body = req.body as { email?: string };
+    const email = body?.email?.trim();
+    if (!email) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'email is required' },
+      });
+    }
+    const [user] = await db
+      .select({ id: users.id, email: users.email })
+      .from(users)
+      .where(eq(users.email, email))
+      .limit(1);
+    if (!user) {
+      return reply.status(404).send({
+        error: { code: 'USER_NOT_FOUND', message: `No user with email ${email}` },
+      });
+    }
+    const tempPassword = `mb-${randomBytes(9).toString('base64url')}`;
+    const passwordHash = await hashPassword(tempPassword);
+    await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    return { email: user.email, tempPassword };
   });
 }

@@ -267,6 +267,48 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  // ── POST /api/auth/change-password ─────────────────────────────
+  // Self-serve password change for a logged-in user. Requires the current
+  // password (so a hijacked session can't silently lock the owner out) and
+  // a web session — API keys can't rotate the credential that outlives them.
+  app.post('/api/auth/change-password', async (req, reply) => {
+    const { userId, authSource } = req as { userId?: string; authSource?: 'jwt' | 'api-key' };
+    if (!userId) {
+      return reply.status(401).send({
+        error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    if (authSource === 'api-key') {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Password changes require a web session, not an API key' },
+      });
+    }
+
+    const body = req.body as { currentPassword?: string; newPassword?: string };
+    if (!body.currentPassword || !body.newPassword) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'currentPassword and newPassword are required' },
+      });
+    }
+    if (body.newPassword.length < 8) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'New password must be at least 8 characters' },
+      });
+    }
+
+    const [user] = await db.select().from(users).where(eq(users.id, userId)).limit(1);
+    if (!user || !user.passwordHash || !(await verifyPassword(body.currentPassword, user.passwordHash))) {
+      return reply.status(401).send({
+        error: { code: 'INVALID_CREDENTIALS', message: 'Current password is incorrect' },
+      });
+    }
+
+    const passwordHash = await hashPassword(body.newPassword);
+    await db.update(users).set({ passwordHash }).where(eq(users.id, userId));
+
+    return reply.status(204).send();
+  });
+
   // ── POST /api/auth/long-lived-token ───────────────────────────
   // Mint a 1-year JWT for the caller — intended for the MCP server and
   // other headless clients. Caller must already be authed via session
