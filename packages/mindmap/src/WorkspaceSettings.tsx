@@ -13,6 +13,8 @@ import {
 import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
+import { ChangePasswordPanel } from './ChangePasswordPanel.js';
+import { AdminPasswordResetPanel } from './AdminPasswordResetPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 import { SettingsApiKeys } from './SettingsApiKeys.js';
 import { AiProviderPanel } from './AiProviderPanel.js';
@@ -420,8 +422,14 @@ export function WorkspaceSettings({
           {/* Connect to Claude (legacy stdio MCP shim) — shown only in workspace-wide view */}
           {!mapId && <ClaudeConnectPanel />}
 
+          {/* Account password — shown only in workspace-wide view */}
+          {!mapId && <ChangePasswordPanel />}
+
           {/* Registration policy — shown only in workspace-wide view */}
           {!mapId && <RegistrationPolicyPanel />}
+
+          {/* Admin password reset — shown only in workspace-wide view */}
+          {!mapId && <AdminPasswordResetPanel />}
 
           {/* AI chat provider — shown only in workspace-wide view */}
           {!mapId && <AiProviderPanel />}

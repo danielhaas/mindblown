@@ -68,6 +68,7 @@ vi.mock('../../db/schema.js', () => ({
   versions: {},
   nodes: {},
   maps: {},
+  users: {},
 }));
 vi.mock('../../db/nodes.js', () => ({
   getNode: vi.fn(),
@@ -191,6 +192,19 @@ describe('admin endpoints — non-admin JWT (negative control)', () => {
     expect(res.json().error?.code).toBe('FORBIDDEN');
   });
 
+  it('POST /api/system/reset-password → 403 for non-admin JWT', async () => {
+    requireAdminReturn = false;
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'someone@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
   it('POST /api/maps/sync/audit-drift → 403 for non-admin JWT', async () => {
     requireAdminReturn = false;
     const app = await buildApp('jwt');
@@ -234,6 +248,19 @@ describe('admin endpoints — API-key auth (closes #69)', () => {
       method: 'PUT',
       url: '/api/system/ai-provider',
       payload: { preference: 'anthropic' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error?.code).toBe('FORBIDDEN');
+  });
+
+  it('POST /api/system/reset-password → 403 even when user is admin', async () => {
+    requireAdminReturn = true;
+    const app = await buildApp('api-key');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'someone@example.com' },
     });
     await app.close();
     expect(res.statusCode).toBe(403);

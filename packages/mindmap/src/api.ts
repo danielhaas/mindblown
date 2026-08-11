@@ -255,6 +255,20 @@ export function getMe(): Promise<AuthUser> {
   return request<AuthUser>('/api/auth/me');
 }
 
+export function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  return request<void>('/api/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
+export function adminResetPassword(email: string): Promise<{ email: string; tempPassword: string }> {
+  return request<{ email: string; tempPassword: string }>('/api/system/reset-password', {
+    method: 'POST',
+    body: JSON.stringify({ email }),
+  });
+}
+
 // ── Comments ────────────────────────────────────────────────────
 
 export function fetchComments(mapId: string, nodeId: string): Promise<Comment[]> {
