@@ -23,6 +23,7 @@ import {
   GitHubApiError,
 } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, githubRepoSync } from '../db/schema.js';
@@ -215,7 +216,8 @@ export function computeCursorAdvance(
 }
 
 export function computeStateUpdates(
-  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks'>,
+  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks' | 'linkedPr'> &
+    Partial<Pick<Node, 'completedAt'>>,
   issue: Pick<GitHubIssue, 'state'>,
   externalId: string,
 ): nodeDb.UpdateNodeInput | null {
@@ -227,9 +229,21 @@ export function computeStateUpdates(
   const link = node.externalLinks[linkIdx];
   const isClosedOnGitHub = issue.state === 'closed';
   const looksDoneInMB = node.percentComplete === 100 || node.status === 'done';
-  const hasSnapshot =
-    (link.previousPercentComplete !== undefined && link.previousPercentComplete !== null) ||
-    (link.previousStatus !== undefined && link.previousStatus !== null);
+  const hasSnapshot = hasCloseSnapshot(link);
+
+  // "Issue offen, Node done" ist seit dem Gate in updateGitHubIssue der
+  // NORMALZUSTAND, solange ein PR läuft — der Agent setzt den Node beim
+  // Öffnen des PRs auf done, und das Issue bleibt bewusst offen bis zum
+  // Merge. Ohne dieses Gate läse der Reopen-Zweig unten das als "auf
+  // GitHub wieder geöffnet" und setzte percentComplete auf null zurück
+  // (Snapshot ist leer, weil der Close-Pfad nie lief) — der Fortschritt
+  // wäre unrettbar weg. Geblockt wird darum NUR bei laufendem PR OHNE
+  // Snapshot; ein vorhandener Snapshot macht den Reset zum verlustfreien
+  // Restore, und ein abgebrochener PR heisst, dass die Arbeit NICHT
+  // gelandet ist — der Node darf dann nicht ewig auf done/100 stehen.
+  // Semantik + Incident-Rationale: prBlocksNodeReopen in @mindblown/core
+  // (Gegenstück zum Outbound-Gate prBlocksIssueClose).
+  const blockReopen = prBlocksNodeReopen(node.linkedPr, hasSnapshot, node.completedAt);
 
   const ghState: 'open' | 'closed' = isClosedOnGitHub ? 'closed' : 'open';
 
@@ -251,7 +265,7 @@ export function computeStateUpdates(
     nextPct = 100;
     nextStatus = 'done';
     stateChanged = true;
-  } else if (!isClosedOnGitHub && (looksDoneInMB || hasSnapshot)) {
+  } else if (!isClosedOnGitHub && (looksDoneInMB || hasSnapshot) && !blockReopen) {
     // Treat as a reopen transition.
     nextPct = link.previousPercentComplete ?? null;
     nextStatus = link.previousStatus ?? 'in_progress';

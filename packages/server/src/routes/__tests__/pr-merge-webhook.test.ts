@@ -64,6 +64,7 @@ const mocks = vi.hoisted(() => {
     selectNodesMock: vi.fn(),
     broadcastMock: vi.fn(),
     verifySignatureMock: vi.fn(async () => true),
+    closeGitHubIssueMock: vi.fn(async () => undefined),
     // Initial implementation is a placeholder; the mock factory below
     // rewires this to delegate to the real processWebhook so the
     // tests exercise production behaviour. The signature is widened
@@ -105,6 +106,7 @@ vi.mock('@mindblown/integrations', async () => {
     mintInstallationToken: vi.fn(),
     isGitHubAppConfigured: vi.fn(() => true),
     processWebhook: mocks.processWebhookMock,
+    closeGitHubIssue: mocks.closeGitHubIssueMock,
   };
 });
 
@@ -237,6 +239,8 @@ beforeEach(() => {
   mocks.broadcastMock.mockReset();
   mocks.verifySignatureMock.mockReset();
   mocks.verifySignatureMock.mockResolvedValue(true);
+  mocks.closeGitHubIssueMock.mockReset();
+  mocks.closeGitHubIssueMock.mockResolvedValue(undefined);
   // Clear call history but PRESERVE the implementation set in the
   // module-mock factory above — the spy delegates to real
   // processWebhook so the new V1-hotfix / missing-base.ref tests
@@ -275,8 +279,14 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     expect(body.transitions).toEqual([
       { externalId: 'owner/repo#100', nodeId: 'n-100', status: 'transitioned' },
     ]);
-    expect(mocks.updateNodeMock).toHaveBeenCalledTimes(1);
-    const [calledNodeId, calledFields] = mocks.updateNodeMock.mock.calls[0];
+    // handlePrClosed now also parses title-only Closes refs, so it
+    // fires a linkedPr-clear updateNode alongside the status
+    // transition. Filter to the transition call this test cares about.
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
+    );
+    expect(doneCalls).toHaveLength(1);
+    const [calledNodeId, calledFields] = doneCalls[0];
     expect(calledNodeId).toBe('n-100');
     expect(calledFields).toMatchObject({ status: 'done', percentComplete: 100 });
     expect(mocks.broadcastMock).toHaveBeenCalledWith(
@@ -357,7 +367,13 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     expect(res.json().transitions).toEqual([
       { externalId: 'owner/repo#200', nodeId: 'n-200', status: 'already_done' },
     ]);
-    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    // No status re-transition. handlePrClosed may still fire its
+    // linkedPr-clear (title-only Closes refs are parsed now) — assert
+    // no call wrote a status.
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status != null,
+    );
+    expect(doneCalls).toHaveLength(0);
     expect(mocks.broadcastMock).not.toHaveBeenCalled();
   });
 
@@ -477,10 +493,10 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     await app.close();
 
     expect(res.statusCode).toBe(200);
-    // handlePrClosed (separate handler) legitimately fires for ANY
-    // merged PR to clear `linkedPr` — that's correct regardless of base
-    // branch since the PR really is closed. What MUST NOT happen on a
-    // non-default-branch merge is the status → done transition.
+    // What MUST NOT happen on a non-default-branch merge is the
+    // status → done transition. (handlePrClosed no longer clears
+    // `linkedPr` on such merges either — covered by its own test
+    // below.)
     const doneTransitionCalls = mocks.updateNodeMock.mock.calls.filter(
       (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
     );
@@ -491,6 +507,135 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     );
     // Falls through to processWebhook mock.
     expect(mocks.processWebhookMock).toHaveBeenCalled();
+  });
+
+  it('PR merged to a NON-default branch keeps linkedPr armed (merged + landedOnDefault:false)', async () => {
+    // Companion to the transition gate above, on the mirror side: a
+    // release-branch merge means the work has NOT landed on main, so
+    // the issue-close gate must stay armed. Clearing the mirror here
+    // used to disarm it — the next outbound sync then closed the issue
+    // as COMPLETED, and the catchup wiped the node with an empty
+    // snapshot. The state stays 'merged' (NOT 'closed' — that would
+    // let the catchup treat shipped release work like an abandoned
+    // PR and wipe the node's done-state), flagged landedOnDefault:false.
+    const node = seedLinkedNode({ nodeId: 'n-hf', externalId: 'owner/repo#77' });
+    const linkedPr = {
+      number: 555, repo: 'owner/repo', url: 'u', head: 'hotfix', base: 'release/v1',
+      author: 'a', draft: false, state: 'open', mergeable: true, changedFiles: [],
+      reviews: [], checks: { state: null, failures: [] }, lastSyncedAt: null,
+    };
+    mocks.selectNodesMock.mockResolvedValue([
+      { id: node.id, externalLinks: node.externalLinks, linkedPr },
+    ]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: prMergedPayload({
+        number: 555,
+        title: 'hotfix',
+        body: 'Fixes #77',
+        baseRef: 'release/v1',
+        defaultBranch: 'main',
+      }),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const linkedPrWrites = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) =>
+        Object.prototype.hasOwnProperty.call(call[1] ?? {}, 'linkedPr'),
+    );
+    expect(linkedPrWrites).toHaveLength(1);
+    expect((linkedPrWrites[0][1] as { linkedPr: { state: string } }).linkedPr).toMatchObject({
+      state: 'merged',
+      landedOnDefault: false,
+    });
+  });
+
+  it("a sibling PR's merge does NOT clear another PR's in-flight mirror (number guard)", async () => {
+    // Supersede pattern: abandoned PR A and replacement PR B both say
+    // 'Closes #88'; the mirror belongs to B (in flight). A's late
+    // merge/close event must not clear or clobber B's mirror — that
+    // would disarm the close gate while B still runs.
+    const node = seedLinkedNode({ nodeId: 'n-88', externalId: 'owner/repo#88' });
+    const linkedPrB = {
+      number: 900, repo: 'owner/repo', url: 'u', head: 'fix-b', base: 'main',
+      author: 'b', draft: false, state: 'open', mergeable: true, changedFiles: [],
+      reviews: [], checks: { state: null, failures: [] }, lastSyncedAt: null,
+    };
+    mocks.selectNodesMock.mockResolvedValue([
+      { id: node.id, externalLinks: node.externalLinks, linkedPr: linkedPrB },
+    ]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      // PR A (number 899) merges; mirror belongs to B (900).
+      payload: prMergedPayload({ number: 899, title: 'old attempt', body: 'Closes #88' }),
+    });
+    await app.close();
+
+    const linkedPrWrites = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) =>
+        Object.prototype.hasOwnProperty.call(call[1] ?? {}, 'linkedPr'),
+    );
+    expect(linkedPrWrites).toHaveLength(0);
+  });
+
+  it('closes title-only-ref issues explicitly after a default-branch merge', async () => {
+    // GitHub's auto-close honors closing keywords only in the PR BODY;
+    // a title-only ref leaves the issue open after the merge. Since the
+    // node just transitioned to done and the mirror is cleared, an open
+    // issue would read as a reopen on the next catchup tick and revert
+    // the shipped work — so the merge handler closes it itself.
+    const node = seedLinkedNode({ nodeId: 'n-77', externalId: 'owner/repo#77' });
+    // Chimera row: serves the node lookups AND getGitHubContextForRepo's
+    // maps/integrations selects (the harness routes every db.select
+    // through the same mock).
+    mocks.selectNodesMock.mockResolvedValue([
+      {
+        id: node.id,
+        externalLinks: node.externalLinks,
+        installationId: 'inst-1',
+        provider: 'github',
+        enabled: true,
+        config: { owner: 'owner', repo: 'repo', token: 'tok' },
+      },
+    ]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue({ ...node, status: 'done', percentComplete: 100 });
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: prMergedPayload({ number: 901, title: 'feat: thing (Closes #77)', body: null }),
+    });
+    // The close runs fire-and-forget after the response — let it drain.
+    await new Promise((r) => setTimeout(r, 20));
+    await app.close();
+
+    expect(mocks.closeGitHubIssueMock).toHaveBeenCalledTimes(1);
+    const closeCall = mocks.closeGitHubIssueMock.mock.calls[0] as unknown[];
+    expect((closeCall[0] as { externalId: string }).externalId).toBe('owner/repo#77');
+    expect(closeCall[2]).toBe('completed');
   });
 
   it('PR with missing base.ref does NOT transition status to done (fail-safe)', async () => {

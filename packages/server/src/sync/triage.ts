@@ -57,6 +57,14 @@ export interface TriageDecision {
    * UUID falls back to `uncertain` at the call site.
    */
   parentNodeId?: string;
+  /**
+   * Release lane the LLM picked from `mapContext.versions`, on `place`
+   * decisions only. Validated against the offered list like
+   * `parentNodeId`, but an invalid/missing pick does NOT downgrade the
+   * decision — the ingest layer falls back to the map's active lane
+   * (`resolveIngestVersionId` in sync/githubIngest.ts).
+   */
+  versionId?: string;
   /** Free-text LLM reasoning — persisted verbatim for audit. */
   reason: string;
   /** 0-100. We treat <0 / >100 as clamped at the boundary. */
@@ -342,15 +350,18 @@ Calibration guidance:
   - Medium confidence (60-84): Plausible fit, but the issue could also belong to a different epic or to no epic at all.
   - Low confidence (<60): Flag as "uncertain" instead of forcing a "place".
 
+On a "place" decision, ALSO pick the release lane (version) the issue belongs to, when the map context lists versions. Prefer a lane whose name/status the issue clearly matches (e.g. an explicit "V2" mention in the body, or a follow-up to work in a known lane); if you can't tell, OMIT versionId — the system falls back to the map's active lane.
+
 Output STRICTLY a JSON object with these fields, no markdown fences:
   {
     "decision": "place" | "skip" | "uncertain",
     "parentNodeId": "<UUID from the epics list, ONLY when decision is 'place'>",
+    "versionId": "<UUID from the versions list, ONLY when decision is 'place' and the lane is clear>",
     "reason": "<one or two sentences explaining your choice — this is persisted in the audit log>",
     "confidence": <integer 0-100>
   }
 
-For "skip" and "uncertain" decisions, OMIT parentNodeId entirely. Do not invent a UUID — only use UUIDs that appeared in the map context's epics list.`;
+For "skip" and "uncertain" decisions, OMIT parentNodeId and versionId entirely. Do not invent a UUID — only use UUIDs that appeared in the map context's epics or versions lists.`;
 
 function buildUserMessage(input: TriageInput): {
   context: string;
@@ -369,12 +380,22 @@ function buildUserMessage(input: TriageInput): {
           )
           .join('\n');
 
+  const versionsText =
+    ctx.versions.length === 0
+      ? '(this map has no release lanes)'
+      : ctx.versions
+          .map((v) => `- versionId: ${v.versionId}\n  name: ${v.name} (${v.status})`)
+          .join('\n');
+
   const contextBlock = `<map>
 name: ${ctx.mapName}
 description: ${ctx.mapDescription || '(no description)'}
 
 available top-level epics:
 ${epicsText}
+
+available release lanes (versions):
+${versionsText}
 </map>`;
 
   const issue = input.issue;
@@ -397,6 +418,7 @@ Decide the disposition. Respond with the JSON object only.`;
 interface ParsedLlmOutput {
   decision?: unknown;
   parentNodeId?: unknown;
+  versionId?: unknown;
   reason?: unknown;
   confidence?: unknown;
 }
@@ -433,6 +455,10 @@ function clampConfidence(raw: unknown): number {
  *     it matches a UUID present in the offered epics list. A
  *     hallucinated UUID downgrades the call to `uncertain` so we
  *     never create a node under a non-existent parent.
+ *   - `versionId` is only honored on `place` decisions AND only if it
+ *     matches an offered version. Unlike a hallucinated parent, a bad
+ *     versionId does NOT downgrade the decision — it's simply dropped
+ *     and the ingest layer's active-lane fallback takes over.
  *   - `confidence` is clamped to [0, 100]; non-numeric → 0.
  *   - `reason` falls back to a placeholder if missing.
  *
@@ -441,6 +467,7 @@ function clampConfidence(raw: unknown): number {
 function validateDecision(
   parsed: ParsedLlmOutput,
   validEpicIds: Set<string>,
+  validVersionIds: Set<string>,
 ): TriageDecision {
   const rawDecision =
     typeof parsed.decision === 'string' ? parsed.decision.toLowerCase() : '';
@@ -457,7 +484,17 @@ function validateDecision(
     const pid =
       typeof parsed.parentNodeId === 'string' ? parsed.parentNodeId : '';
     if (validEpicIds.has(pid)) {
-      return { decision: 'place', parentNodeId: pid, reason, confidence };
+      const vid =
+        typeof parsed.versionId === 'string' && validVersionIds.has(parsed.versionId)
+          ? parsed.versionId
+          : undefined;
+      return {
+        decision: 'place',
+        parentNodeId: pid,
+        ...(vid ? { versionId: vid } : {}),
+        reason,
+        confidence,
+      };
     }
     // Hallucinated or missing UUID — downgrade rather than crash.
     return {
@@ -572,6 +609,9 @@ export async function triageIssue(
   opts: TriageCallOpts = {},
 ): Promise<TriageDecision> {
   const validEpicIds = new Set(input.mapContext.epics.map((e) => e.nodeId));
+  const validVersionIds = new Set(
+    input.mapContext.versions.map((v) => v.versionId),
+  );
 
   let text: string;
   try {
@@ -606,5 +646,5 @@ export async function triageIssue(
     };
   }
 
-  return validateDecision(parsed, validEpicIds);
+  return validateDecision(parsed, validEpicIds, validVersionIds);
 }

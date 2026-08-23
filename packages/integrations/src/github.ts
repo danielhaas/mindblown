@@ -6,7 +6,7 @@
  */
 
 import type { Node, ExternalLink, Priority } from '@mindblown/core';
-import { proseMirrorToPlainText } from '@mindblown/core';
+import { proseMirrorToPlainText, prBlocksIssueClose } from '@mindblown/core';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -201,6 +201,9 @@ export async function createGitHubIssue(
  * Sync node changes to the linked GitHub Issue.
  * Updates title, body, state (open/closed), and labels. The issue's
  * GitHub milestone is left untouched (we no longer track it).
+ *
+ * While a not-landed PR is linked to the node, a done-node does NOT
+ * close its issue — see `prBlocksIssueClose` (@mindblown/core).
  */
 export async function updateGitHubIssue(
   node: Node,
@@ -213,7 +216,26 @@ export async function updateGitHubIssue(
   const { owner, repo, issueNumber } = parsed;
 
   // Determine state from node status/progress
-  const isClosed = node.percentComplete === 100 || node.status === 'done';
+  const looksDone = node.percentComplete === 100 || node.status === 'done';
+
+  // …but "done in MindBlown" is not "done in the repo" while a PR is still
+  // in flight. Coding agents mark the node done when they OPEN the PR, not
+  // when it merges, so this sync used to close the issue as COMPLETED while
+  // the branch was still open. The gate semantics (and the incident
+  // forensics behind them) live with `prBlocksIssueClose` in
+  // @mindblown/core — the catchup reconciler consults the same mirror
+  // via its sibling `prBlocksNodeReopen`, and the two must stay in
+  // agreement.
+  //
+  // Only the CLOSING direction is gated. A not-done node always pushes
+  // state 'open' (legacy behavior, gate or not): the node saying "work
+  // is open" must be able to reopen a prematurely-closed issue —
+  // otherwise a manual node reset can never repair a wrongly-closed
+  // issue, and the catchup would even revert the reset. When the gate
+  // blocks a close we OMIT `state` rather than forcing 'open': a human
+  // who deliberately closed the issue should not have it reopened under
+  // them while the node stays done.
+  const suppressClose = prBlocksIssueClose(node.linkedPr, node.completedAt);
 
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -226,9 +248,13 @@ export async function updateGitHubIssue(
   const patchBody: Record<string, unknown> = {
     title: node.text,
     body,
-    state: isClosed ? 'closed' : 'open',
     labels,
   };
+  if (looksDone) {
+    if (!suppressClose) patchBody.state = 'closed';
+  } else {
+    patchBody.state = 'open';
+  }
 
   const updatedIssue = await githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
@@ -401,7 +427,8 @@ export function processWebhook(
  * iterate ALL refs, not just the first one returned by processWebhook.
  */
 export function extractClosingIssueRefs(text: string): number[] {
-  const pattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+  // \b so "disclose #5" doesn't read as "close #5".
+  const pattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
   const refs = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {

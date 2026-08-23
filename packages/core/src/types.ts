@@ -103,6 +103,14 @@ export interface LinkedPrState {
   draft: boolean;
   /** open / closed / merged */
   state: 'open' | 'closed' | 'merged';
+  /**
+   * Set (to false) when the PR merged to something OTHER than the
+   * repo's default branch (release/v1 hotfix flow) — the work is
+   * merged, but it has NOT landed on main, so the issue-close gate
+   * stays armed. Absent on 'open'/'closed' mirrors and on legacy
+   * 'merged' mirrors (treat absent as landed — pre-flag behavior).
+   */
+  landedOnDefault?: boolean;
   /** GitHub's mergeable flag. `null` while GitHub is still computing it. */
   mergeable: boolean | null;
   /** Files changed in the PR — paths only, used by Kira's risky-paths gate. */
