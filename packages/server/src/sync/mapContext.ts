@@ -31,9 +31,9 @@
  * invalidation never clobbers other maps' entries.
  */
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { maps, nodes } from '../db/schema.js';
+import { maps, nodes, versions } from '../db/schema.js';
 import { notDeleted } from '../db/nodes.js';
 
 // ── Public types ──────────────────────────────────────────────────
@@ -43,6 +43,12 @@ export interface MapContextEpic {
   title: string;
   /** Empty string if the epic has no description set. */
   description: string;
+}
+
+export interface MapContextVersion {
+  versionId: string;
+  name: string;
+  status: string;
 }
 
 export interface MapContext {
@@ -56,6 +62,15 @@ export interface MapContext {
    * brand-new map with only the root + inbox).
    */
   epics: MapContextEpic[];
+  /**
+   * The map's release lanes (versions) — planning/active only:
+   * released and archived lanes are retired, a new issue never belongs
+   * to them. Ordered by sortOrder so the triage prompt presents them
+   * in roadmap order. Empty array when the map does release planning
+   * elsewhere (or not at all); the triage layer then skips version
+   * suggestion entirely.
+   */
+  versions: MapContextVersion[];
 }
 
 // ── Cache ─────────────────────────────────────────────────────────
@@ -161,11 +176,29 @@ export async function buildMapContext(mapId: string): Promise<MapContext> {
       }));
   }
 
+  const versionRows = (
+    await db
+      .select({
+        id: versions.id,
+        name: versions.name,
+        status: versions.status,
+        sortOrder: versions.sortOrder,
+      })
+      .from(versions)
+      .where(and(eq(versions.mapId, mapId), ne(versions.status, 'released')))
+  ).filter((v) => v.status === 'active' || v.status === 'planning');
+  versionRows.sort((a, b) => a.sortOrder - b.sortOrder);
+
   const context: MapContext = {
     mapId,
     mapName: mapRow.name,
     mapDescription: mapRow.description ?? '',
     epics,
+    versions: versionRows.map((v) => ({
+      versionId: v.id,
+      name: v.name,
+      status: v.status,
+    })),
   };
   cache.set(mapId, { context, expiresAt: Date.now() + TTL_MS });
   return context;

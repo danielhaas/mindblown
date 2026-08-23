@@ -1,5 +1,6 @@
 import { eq, asc, sql } from 'drizzle-orm';
 import { db } from './connection.js';
+import { invalidateMapContext } from '../sync/mapContext.js';
 import { versions, cycles, nodes, maps } from './schema.js';
 import { compareVersions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
@@ -59,6 +60,9 @@ export async function createVersion(input: CreateVersionInput): Promise<Version>
     createdAt: new Date(),
   }).returning();
 
+  // The triage prompt's lane list comes from the mapContext cache —
+  // drop it so the next ingest sees the new lane inside the 5-min TTL.
+  invalidateMapContext(input.mapId);
   return dbVersionToCore(row as unknown as Record<string, unknown>);
 }
 
@@ -121,7 +125,10 @@ export async function updateVersion(id: string, input: UpdateVersionInput): Prom
 
   const [row] = await db.update(versions).set(updates).where(eq(versions.id, id)).returning();
   if (!row) return null;
-  return dbVersionToCore(row as unknown as Record<string, unknown>);
+  const updated = dbVersionToCore(row as unknown as Record<string, unknown>);
+  // Rename / status flip changes what the triage prompt may offer.
+  invalidateMapContext(updated.mapId);
+  return updated;
 }
 
 // ── Delete ────────────────────────────────────────────────────────────
@@ -136,5 +143,10 @@ export async function deleteVersion(id: string): Promise<boolean> {
     .where(eq(nodes.versionId, id));
 
   const rows = await db.delete(versions).where(eq(versions.id, id)).returning();
+  if (rows.length > 0) {
+    const mapId = (rows[0] as { mapId?: string; map_id?: string }).mapId ??
+      (rows[0] as { map_id?: string }).map_id;
+    if (mapId) invalidateMapContext(mapId);
+  }
   return rows.length > 0;
 }

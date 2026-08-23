@@ -131,6 +131,8 @@ function buildSelectChain(fields?: Record<string, unknown>) {
         .sort((a, b) =>
           (b.changedAt as Date).getTime() - (a.changedAt as Date).getTime(),
         );
+    } else if (step.table === 'versions') {
+      rows = []; // no lane rows seeded → place paths stay unversioned
     }
     const filtered = applyPred(rows, step.pred);
     if (isCountSelect) {
@@ -304,6 +306,17 @@ vi.mock('../../db/schema.js', () => {
       decisionId: col('decisionId'),
       changedAt: col('changedAt'),
     },
+    // Release-lane default on the place paths: resolveIngestVersionId
+    // selects against this table. The default store is empty, so the
+    // resolver returns null and place-created nodes stay unversioned —
+    // matching the pre-existing assertions.
+    versions: {
+      __name: 'versions',
+      id: col('id'),
+      mapId: col('mapId'),
+      status: col('status'),
+      sortOrder: col('sortOrder'),
+    },
   };
 });
 
@@ -318,6 +331,10 @@ vi.mock('drizzle-orm', async () => {
     and: (...preds: Predicate[]): Predicate => ({
       __pred: true,
       check: (row) => preds.every((p) => p.check(row)),
+    }),
+    ne: (column: { __col?: string }, value: unknown): Predicate => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] !== value,
     }),
     gte: (column: { __col?: string }, value: unknown): Predicate => ({
       __pred: true,
@@ -433,6 +450,7 @@ vi.mock('../../sync/mapContext.js', () => ({
     mapName: 'm',
     mapDescription: '',
     epics: [{ nodeId: 'epic-1', title: 'Frontend', description: 'UI' }],
+    versions: [],
   })),
 }));
 
