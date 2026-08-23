@@ -4,7 +4,7 @@
  * Both sides of the GitHub sync consult the same mirror to decide
  * whether a node/issue state transition is safe, and they MUST agree —
  * a one-sided "correction" of either predicate reintroduces one of the
- * two incident classes below. The rationale lives here, once.
+ * incident classes below. The rationale lives here, once.
  *
  * Incident background (2026-08): a done-node used to close its GitHub
  * issue immediately, even while the closing PR was still open. When
@@ -14,56 +14,115 @@
  * look-through, #6027 retention audit records, #5910 duplicate-IBAN
  * detection), none of which had landed on main.
  *
- * The mirror's `state` semantics as maintained by the webhook handlers
- * (`prSync.ts`):
+ * The mirror's `state` semantics as maintained by `prSync.ts`:
  *   - 'open'   — the PR is in flight right now.
- *   - 'closed' — the PR is gone WITHOUT landing on the default branch
- *                (abandoned, or merged to a release branch). Kept as
- *                history.
- *   - 'merged' — landed on the default branch. Transient in practice:
- *                `handlePrClosed` clears the mirror entirely on a
- *                default-branch merge, because GitHub itself closes the
- *                referenced issue at that moment.
+ *   - 'closed' — the PR died unmerged (abandoned). Kept as history.
+ *   - 'merged' + landedOnDefault === false — merged to a non-default
+ *                branch (release/v1 hotfix): merged, but NOT on main.
+ *   - 'merged' otherwise — landed on the default branch. Transient in
+ *                practice: `handlePrClosed` clears the mirror entirely
+ *                on a default-branch merge, because GitHub itself
+ *                closes the referenced issue at that moment.
  */
 
-import type { LinkedPrState } from './types.js';
+import type { ExternalLink, LinkedPrState } from './types.js';
+
+/** Merged, but NOT to the default branch — the work is not on main. */
+function mergedOffDefault(pr: LinkedPrState): boolean {
+  return pr.state === 'merged' && pr.landedOnDefault === false;
+}
+
+/**
+ * A dead PR (abandoned) whose verdict a LATER done-claim overrides.
+ *
+ * An abandoned PR means the work was NOT done — at the time it died.
+ * If the node was marked done AFTER the PR died (`completedAt` newer
+ * than the mirror's close stamp), that is a fresh, deliberate claim —
+ * work shipped some other way (direct commit, a PR without a Closes
+ * ref) — and the stale mirror must not veto it. Without this
+ * discriminator the gates livelock: the issue can never close AND the
+ * catchup resets the node on every tick, forever, with no reachable
+ * escape (nothing on the MCP surface clears a mirror).
+ */
+function abandonedButSuperseded(
+  pr: LinkedPrState,
+  completedAt: string | null | undefined,
+): boolean {
+  if (pr.state !== 'closed') return false;
+  if (!completedAt || !pr.lastSyncedAt) return false;
+  return new Date(completedAt).getTime() > new Date(pr.lastSyncedAt).getTime();
+}
 
 /**
  * Outbound gate: may MindBlown close the linked GitHub issue as
  * COMPLETED because the node looks done?
  *
- * Blocks while the mirror shows any not-landed PR — in flight OR gone
- * without landing. An abandoned PR means the work is NOT done, so a
- * done-node must not report COMPLETED; a human can always close the
- * issue by hand (and MindBlown will not reopen it while the node stays
- * done). Narrowing this to `state === 'open'` would make an abandoned
+ * Blocks while the mirror shows work that has not landed on the
+ * default branch: an in-flight PR, an abandoned PR (unless a later
+ * done-claim supersedes it — see above), or a merge to a release
+ * branch. Narrowing this to `state === 'open'` would make an abandoned
  * PR close its issue as COMPLETED — exactly the incident class above.
  */
 export function prBlocksIssueClose(
   linkedPr: LinkedPrState | null | undefined,
+  completedAt?: string | null,
 ): boolean {
-  return linkedPr != null && linkedPr.state !== 'merged';
+  if (linkedPr == null) return false;
+  if (linkedPr.state === 'open') return true;
+  if (mergedOffDefault(linkedPr)) return true;
+  if (linkedPr.state === 'closed') {
+    return !abandonedButSuperseded(linkedPr, completedAt);
+  }
+  return false;
 }
 
 /**
  * Inbound gate: must a "GitHub says open, node says done" observation
  * be left alone instead of resetting the node?
  *
- * Blocks ONLY while the PR is in flight AND no close-snapshot exists.
- * While a PR runs, "issue open + node done" is the NORMAL state (the
- * agent marks the node done when it opens the PR; the outbound gate
- * keeps the issue open until merge) — resetting then would wipe
- * progress irrecoverably, because the snapshot was never taken.
+ * Blocks when:
+ *   - the PR is in flight AND no close-snapshot exists — "issue open +
+ *     node done" is the NORMAL state while a PR runs (the agent marks
+ *     the node done when it opens the PR; the outbound gate keeps the
+ *     issue open until merge), and resetting then would wipe progress
+ *     irrecoverably. With a snapshot the reset is a lossless restore
+ *     of real pre-close state, so it proceeds.
+ *   - the PR merged to a non-default branch — the work IS merged
+ *     (release lane); wiping the node's done-state because the issue
+ *     is still open (awaiting the forward-port) reports shipped
+ *     release work as not done.
+ *   - the PR died unmerged but a LATER done-claim supersedes it —
+ *     honoring the fresh claim; see `abandonedButSuperseded`.
  *
- * With a snapshot the reset is a lossless restore of real pre-close
- * state, so it proceeds even during an in-flight PR. And once the PR
- * is gone without landing (`state === 'closed'`), the work is NOT done
- * — pinning the node on done/100 forever would report never-landed
- * work as finished, the mirror image of the incident above.
+ * An abandoned PR with no later claim does NOT block: the work never
+ * landed, so pinning the node on done/100 forever would report
+ * never-landed work as finished — the mirror image of the incident.
  */
 export function prBlocksNodeReopen(
   linkedPr: LinkedPrState | null | undefined,
   hasSnapshot: boolean,
+  completedAt?: string | null,
 ): boolean {
-  return linkedPr?.state === 'open' && !hasSnapshot;
+  if (linkedPr == null) return false;
+  if (linkedPr.state === 'open') return !hasSnapshot;
+  if (mergedOffDefault(linkedPr)) return true;
+  if (linkedPr.state === 'closed') {
+    return abandonedButSuperseded(linkedPr, completedAt);
+  }
+  return false;
+}
+
+/**
+ * Does this external link carry a close-snapshot (node state captured
+ * when the external system drove the node to done)? Both the webhook
+ * reopen handler and the catchup reconciler restore from it and gate
+ * on its presence — one definition, so they cannot drift.
+ */
+export function hasCloseSnapshot(
+  link: Pick<ExternalLink, 'previousPercentComplete' | 'previousStatus'>,
+): boolean {
+  return (
+    (link.previousPercentComplete !== undefined && link.previousPercentComplete !== null) ||
+    (link.previousStatus !== undefined && link.previousStatus !== null)
+  );
 }

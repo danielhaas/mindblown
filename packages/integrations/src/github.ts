@@ -235,7 +235,7 @@ export async function updateGitHubIssue(
   // blocks a close we OMIT `state` rather than forcing 'open': a human
   // who deliberately closed the issue should not have it reopened under
   // them while the node stays done.
-  const suppressClose = prBlocksIssueClose(node.linkedPr);
+  const suppressClose = prBlocksIssueClose(node.linkedPr, node.completedAt);
 
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -427,7 +427,8 @@ export function processWebhook(
  * iterate ALL refs, not just the first one returned by processWebhook.
  */
 export function extractClosingIssueRefs(text: string): number[] {
-  const pattern = /(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)/gi;
+  // \b so "disclose #5" doesn't read as "close #5".
+  const pattern = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+#(\d+)\b/gi;
   const refs = new Set<number>();
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(text)) !== null) {

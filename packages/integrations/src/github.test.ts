@@ -172,6 +172,40 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     expect(sentPatch().state).toBe('open');
   });
 
+  it('keeps the issue open when the PR merged off the default branch', async () => {
+    // release/v1 hotfix: merged, but NOT on main — the work hasn't
+    // landed where GitHub would auto-close, so we must not close either.
+    await updateGitHubIssue(
+      node({
+        status: 'done',
+        percentComplete: 100,
+        linkedPr: { ...pr('merged'), landedOnDefault: false },
+      }),
+      LINK,
+      'tok',
+    );
+
+    expect(sentPatch()).not.toHaveProperty('state');
+  });
+
+  it('closes when the node was re-marked done AFTER the PR died', async () => {
+    // Livelock escape: abandoned PR (mirror pinned 'closed'), work later
+    // ships via direct commit, node re-marked done — the fresh claim
+    // postdates the PR death and wins over the stale mirror.
+    await updateGitHubIssue(
+      node({
+        status: 'done',
+        percentComplete: 100,
+        completedAt: '2026-08-23T10:00:00.000Z',
+        linkedPr: { ...pr('closed'), lastSyncedAt: '2026-08-01T00:00:00.000Z' },
+      }),
+      LINK,
+      'tok',
+    );
+
+    expect(sentPatch().state).toBe('closed');
+  });
+
   it('reopens an unfinished node even while its PR is in flight', async () => {
     // Only the CLOSING direction is gated. A manual node reset to
     // in_progress must be able to reopen a prematurely-closed issue —

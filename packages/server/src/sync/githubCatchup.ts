@@ -23,7 +23,7 @@ import {
   GitHubApiError,
 } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
-import { prBlocksNodeReopen } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, githubRepoSync } from '../db/schema.js';
@@ -195,7 +195,8 @@ export interface ReconcileResult {
  * the reconcile loop handles that case via `setExternalLinkState`.
  */
 export function computeStateUpdates(
-  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks' | 'linkedPr'>,
+  node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks' | 'linkedPr'> &
+    Partial<Pick<Node, 'completedAt'>>,
   issue: Pick<GitHubIssue, 'state'>,
   externalId: string,
 ): nodeDb.UpdateNodeInput | null {
@@ -207,9 +208,7 @@ export function computeStateUpdates(
   const link = node.externalLinks[linkIdx];
   const isClosedOnGitHub = issue.state === 'closed';
   const looksDoneInMB = node.percentComplete === 100 || node.status === 'done';
-  const hasSnapshot =
-    (link.previousPercentComplete !== undefined && link.previousPercentComplete !== null) ||
-    (link.previousStatus !== undefined && link.previousStatus !== null);
+  const hasSnapshot = hasCloseSnapshot(link);
 
   // "Issue offen, Node done" ist seit dem Gate in updateGitHubIssue der
   // NORMALZUSTAND, solange ein PR läuft — der Agent setzt den Node beim
@@ -223,7 +222,7 @@ export function computeStateUpdates(
   // gelandet ist — der Node darf dann nicht ewig auf done/100 stehen.
   // Semantik + Incident-Rationale: prBlocksNodeReopen in @mindblown/core
   // (Gegenstück zum Outbound-Gate prBlocksIssueClose).
-  const blockReopen = prBlocksNodeReopen(node.linkedPr, hasSnapshot);
+  const blockReopen = prBlocksNodeReopen(node.linkedPr, hasSnapshot, node.completedAt);
 
   const ghState: 'open' | 'closed' = isClosedOnGitHub ? 'closed' : 'open';
 

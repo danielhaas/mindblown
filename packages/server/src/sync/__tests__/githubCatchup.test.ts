@@ -759,6 +759,40 @@ describe('computeStateUpdates → link state mirror', () => {
     expect(updates?.status).toBe('in_progress');
   });
 
+  it('protects shipped release work — merged off the default branch', () => {
+    // release/v1 hotfix: mirror kept as merged + landedOnDefault:false.
+    // The issue stays open (awaiting the forward-port), but the node's
+    // done-state reflects genuinely merged work — no reset.
+    expect(
+      computeStateUpdates(
+        {
+          percentComplete: 100,
+          status: 'done',
+          externalLinks: [link()],
+          linkedPr: { ...pr('merged'), landedOnDefault: false },
+        },
+        { state: 'open' },
+        'o/r#14',
+      ),
+    ).toBeNull();
+  });
+
+  it('honors a done-claim made AFTER the PR died (no reset flip-flop)', () => {
+    expect(
+      computeStateUpdates(
+        {
+          percentComplete: 100,
+          status: 'done',
+          externalLinks: [link()],
+          linkedPr: { ...pr('closed'), lastSyncedAt: '2026-08-01T00:00:00.000Z' },
+          completedAt: '2026-08-23T10:00:00.000Z',
+        },
+        { state: 'open' },
+        'o/r#14',
+      ),
+    ).toBeNull();
+  });
+
   it('restores from a snapshot even while the PR is still open', () => {
     // A snapshot means the close path really ran — the reset is a
     // lossless restore of true pre-close state, not a wipe. The gate

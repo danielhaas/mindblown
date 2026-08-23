@@ -19,6 +19,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 const mocks = vi.hoisted(() => ({
   getNodeMock: vi.fn(),
   updateNodeMock: vi.fn(),
+  setExternalLinkStateMock: vi.fn(async () => true),
   selectNodesMock: vi.fn(),
   broadcastMock: vi.fn(),
   verifySignatureMock: vi.fn(async () => true),
@@ -66,6 +67,7 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: mocks.getNodeMock,
   createNode: vi.fn(),
   updateNode: mocks.updateNodeMock,
+  setExternalLinkState: mocks.setExternalLinkStateMock,
   notDeleted: { __pred: true, check: () => true },
 }));
 
@@ -172,6 +174,8 @@ function reopenedPayload(): Record<string, unknown> {
 beforeEach(() => {
   mocks.getNodeMock.mockReset();
   mocks.updateNodeMock.mockReset();
+  mocks.setExternalLinkStateMock.mockReset();
+  mocks.setExternalLinkStateMock.mockResolvedValue(true);
   mocks.selectNodesMock.mockReset();
   mocks.broadcastMock.mockReset();
   mocks.verifySignatureMock.mockReset();
@@ -203,14 +207,17 @@ describe('issues.reopened × in-flight PR (prBlocksNodeReopen parity with catchu
 
     const res = await postReopen();
     expect(res.statusCode).toBe(200);
+    expect(res.json().skipped).toBe('pr_in_flight');
 
-    // The link mirror is still refreshed (state → open), but no
-    // status/percentComplete write happens.
-    expect(mocks.updateNodeMock).toHaveBeenCalledTimes(1);
-    const fields = mocks.updateNodeMock.mock.calls[0][1] as Record<string, unknown>;
-    expect(fields).not.toHaveProperty('status');
-    expect(fields).not.toHaveProperty('percentComplete');
-    expect((fields.externalLinks as Array<{ state: string }>)[0].state).toBe('open');
+    // The link mirror is refreshed via setExternalLinkState (no
+    // revision bump → requirement acceptances stay valid); no node
+    // write happens at all.
+    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    expect(mocks.setExternalLinkStateMock).toHaveBeenCalledWith(
+      'n-1',
+      'owner/repo#42',
+      'open',
+    );
   });
 
   it('restores from the snapshot even while the PR is in flight', async () => {

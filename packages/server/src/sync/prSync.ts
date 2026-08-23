@@ -24,6 +24,7 @@ import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import type { LinkedPrState, ExternalLink } from '@mindblown/core';
+import { extractClosingIssueRefs } from '@mindblown/integrations';
 
 // ── PR payload shapes (subset of GH webhook) ──────────────────────
 
@@ -63,28 +64,32 @@ export interface GhCheckSuitePayload {
  * `Resolves #NNNN` keywords in the PR body. Same regex GitHub itself
  * uses for auto-close. Case-insensitive, hash optional.
  */
-export function parseClosesIssues(body: string | null | undefined): number[] {
-  if (!body) return [];
-  const matches = body.matchAll(
-    /\b(?:closes?|closed|fixe[sd]?|resolves?|resolved)\s+#(\d+)\b/gi,
-  );
-  const out = new Set<number>();
-  for (const m of matches) {
-    const n = parseInt(m[1], 10);
-    if (Number.isFinite(n)) out.add(n);
-  }
-  return [...out];
+export function parseClosesIssues(text: string | null | undefined): number[] {
+  // Thin delegate: extractClosingIssueRefs (@mindblown/integrations) is
+  // THE parser for "which issues does this close" — the #152 done-
+  // transition and the work-start sync use it too. A second regex here
+  // drifted (`fixe[sd]?` missed bare "fix"), so "Fix #123"-titled PRs
+  // transitioned their node without ever arming the mirror.
+  if (!text) return [];
+  return extractClosingIssueRefs(text);
 }
 
 /**
- * Closes-refs for a PR payload: title AND body. GitHub itself honors
- * closing keywords in both; parsing only the body left `Closes #N`-in-
- * title PRs without a linkedPr mirror, so the issue-close gate never
- * armed for them (same title+body convention as `extractClosingIssueRefs`
- * in @mindblown/integrations, used by the work-start sync).
+ * Closes-refs for a PR payload: title AND body, via the SAME parser the
+ * #152 done-transition and the work-start sync use
+ * (`extractClosingIssueRefs`). One parser decides which issues a PR
+ * closes — a second regex here drifted ("Fix #123" matched there but
+ * not here), so the mirror never armed for the most common imperative
+ * title form while the node still transitioned to done.
+ *
+ * Note the mirror deliberately arms for title-only refs even though
+ * GitHub's own auto-close only honors refs in the BODY: the done-
+ * transition handler treats title refs as closing refs, so the mirror
+ * must agree — and the merge handler closes title-only-ref issues
+ * explicitly (routes/integrations.ts) since GitHub won't.
  */
 function closesRefsFromPr(pr: Pick<GhPrPayload, 'title' | 'body'>): number[] {
-  return parseClosesIssues(`${pr.title ?? ''}\n${pr.body ?? ''}`);
+  return extractClosingIssueRefs(`${pr.title ?? ''}\n${pr.body ?? ''}`);
 }
 
 // ── Node lookup ────────────────────────────────────────────────────
@@ -144,6 +149,15 @@ export async function handlePrSnapshot(
   pr: GhPrPayload,
   changedFiles: string[],
 ): Promise<number> {
+  // Snapshot only IN-FLIGHT PRs. An `edited`/`synchronize` event on an
+  // already-closed or merged PR must not rewrite the mirror: a post-
+  // merge title edit used to resurrect a mirror handlePrClosed had
+  // deliberately cleared (or flip a kept-armed release-merge mirror to
+  // plain 'merged', disarming the close gate). Closed/merged
+  // transitions are owned by handlePrClosed alone. This also makes the
+  // supersede pattern work: a NEW open PR takes over a dead PR's
+  // mirror on its next event, while dead PRs can't steal it back.
+  if (pr.state !== 'open') return 0;
   const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
   const externalIds = issueNumbers.map((n) => `${repo}#${n}`);
@@ -156,8 +170,16 @@ export async function handlePrSnapshot(
     // explicitly resets them. The PR snapshot only updates the
     // "structural" fields (state, mergeable, draft, head, base, files).
     // Review + check updates come from their dedicated handlers.
-    const prevReviews = ref.linkedPr?.reviews ?? [];
-    const prevChecks = ref.linkedPr?.checks ?? { state: null, failures: [] };
+    //
+    // Carry-forward ONLY from the same PR: when this snapshot takes
+    // over the mirror from a superseded PR (abandoned A → replacement
+    // B), inheriting A's reviews would show B as blocked by A's stale
+    // CHANGES_REQUESTED (or falsely approved).
+    const samePr = ref.linkedPr?.number === pr.number;
+    const prevReviews = samePr ? (ref.linkedPr?.reviews ?? []) : [];
+    const prevChecks = samePr
+      ? (ref.linkedPr?.checks ?? { state: null, failures: [] })
+      : { state: null, failures: [] };
     const next: LinkedPrState = {
       number: pr.number,
       repo,
@@ -166,7 +188,7 @@ export async function handlePrSnapshot(
       base: pr.base.ref,
       author: pr.user?.login ?? null,
       draft: pr.draft,
-      state: pr.merged ? 'merged' : (pr.state as 'open' | 'closed'),
+      state: 'open',
       mergeable: pr.mergeable,
       changedFiles,
       reviews: prevReviews,
@@ -238,13 +260,16 @@ export async function handleReviewSubmitted(
 export async function handleCheckSuiteCompleted(
   repo: string,
   payload: GhCheckSuitePayload,
-  getPrBody: (prNumber: number) => Promise<string | null>,
+  // Returns the PR's title+body text (any closing-ref-bearing text) —
+  // title-only-ref PRs get an armed mirror too, so their CI state must
+  // resolve the same way.
+  getPrText: (prNumber: number) => Promise<string | null>,
 ): Promise<number> {
   if (payload.status !== 'completed') return 0;
   let totalUpdated = 0;
   for (const pr of payload.pull_requests) {
-    const body = await getPrBody(pr.number).catch(() => null);
-    const issueNumbers = parseClosesIssues(body);
+    const text = await getPrText(pr.number).catch(() => null);
+    const issueNumbers = parseClosesIssues(text);
     if (issueNumbers.length === 0) continue;
     const externalIds = issueNumbers.map((n) => `${repo}#${n}`);
     const refs = await findNodesByExternalIds(externalIds);
@@ -275,19 +300,30 @@ export async function handleCheckSuiteCompleted(
 
 /**
  * Handle `pull_request.closed`. On a merge to the repo's DEFAULT branch
- * the mirror is cleared — GitHub itself closes the referenced issue at
- * that moment, and the existing #152 handler transitions the linked
- * node to done. Everything else — abandoned PRs AND merges to non-
- * default branches (release/v1 hotfixes) — keeps the mirror with
- * state='closed': the work has NOT landed on main, so the issue-close
- * gate must stay armed (a release-branch merge used to clear the
- * mirror, disarm the gate, and let the next catchup tick wipe the
- * node's progress with an empty snapshot). Review history stays useful
- * either way.
+ * the mirror is cleared — GitHub itself closes body-referenced issues
+ * at that moment, and the merge handler in routes/integrations.ts
+ * transitions the linked node to done (and closes title-only-ref
+ * issues explicitly). Otherwise the mirror is kept armed:
  *
- * `defaultBranch` comes from the webhook's `repository.default_branch`;
- * when it's unknown (null) we conservatively treat a merge as default-
- * branch (the pre-existing behavior).
+ *   - abandoned (closed unmerged) → state 'closed'. The work never
+ *     landed; the issue-close gate stays armed, but the catchup may
+ *     reset a stale done-node (see prBlocksNodeReopen in core).
+ *   - merged to a NON-default branch (release/v1 hotfix) → state
+ *     'merged' + landedOnDefault:false. Merged, but not on main: the
+ *     close gate stays armed AND the node's done-state is protected —
+ *     collapsing this case into 'closed' let the catchup wipe shipped
+ *     release work.
+ *
+ * Only the mirror's OWN PR may transition it (`cur.number` guard, same
+ * as the review/check handlers): with the supersede pattern — PR A
+ * abandoned, replacement PR B in flight, both saying `Closes #N` — A's
+ * late close event must not clobber or clear B's mirror.
+ *
+ * `defaultBranch` comes from the webhook's `repository.default_branch`.
+ * Unknown (null) fails CLOSED — the mirror stays armed as a non-
+ * default merge. Clearing on unknown would disarm the close gate on
+ * exactly the payloads we know least about; the sibling #152 handler
+ * makes the same fail-safe choice for the done-transition.
  */
 export async function handlePrClosed(
   repo: string,
@@ -300,22 +336,21 @@ export async function handlePrClosed(
   const refs = await findNodesByExternalIds(externalIds);
   if (refs.length === 0) return 0;
 
+  const baseRef = pr.base?.ref ?? null;
   const mergedToDefault =
-    pr.merged && (defaultBranch == null || pr.base.ref === defaultBranch);
+    pr.merged && baseRef != null && defaultBranch != null && baseRef === defaultBranch;
 
   let updated = 0;
   for (const ref of refs) {
+    const cur = ref.linkedPr;
+    if (!cur || cur.number !== pr.number) continue;
     if (mergedToDefault) {
       await nodeDb.updateNode(ref.id, { linkedPr: null });
     } else {
-      // Abandoned, or merged somewhere that isn't the default branch:
-      // keep the history but mark closed so consumers don't try to
-      // merge it — and so the close gate stays armed.
-      const cur = ref.linkedPr;
-      if (!cur) continue;
       const next: LinkedPrState = {
         ...cur,
-        state: 'closed',
+        state: pr.merged ? 'merged' : 'closed',
+        ...(pr.merged ? { landedOnDefault: false } : {}),
         lastSyncedAt: new Date().toISOString(),
       };
       await nodeDb.updateNode(ref.id, { linkedPr: next });

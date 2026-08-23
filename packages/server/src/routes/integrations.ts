@@ -14,6 +14,7 @@ import {
   verifyWebhookSignature,
   mintInstallationToken,
   isGitHubAppConfigured,
+  closeGitHubIssue,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
@@ -35,7 +36,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { prBlocksNodeReopen } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -108,7 +109,7 @@ async function fetchPrFiles(repoFullName: string, prNumber: number): Promise<str
  * check_suite payload doesn't include PR bodies — only PR numbers.
  * Best-effort: returns null on any error.
  */
-async function fetchPrBody(repoFullName: string, prNumber: number): Promise<string | null> {
+async function fetchPrText(repoFullName: string, prNumber: number): Promise<string | null> {
   const ctx = await getGitHubContextForRepo(repoFullName);
   if (!ctx) return null;
   const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}`;
@@ -120,8 +121,10 @@ async function fetchPrBody(repoFullName: string, prNumber: number): Promise<stri
     },
   });
   if (!r.ok) return null;
-  const data = (await r.json()) as { body: string | null };
-  return data.body ?? null;
+  const data = (await r.json()) as { title?: string | null; body: string | null };
+  // Title AND body — closing refs live in either (same convention as
+  // closesRefsFromPr in sync/prSync.ts).
+  return `${data.title ?? ''}\n${data.body ?? ''}`;
 }
 
 async function getGitHubContextForRepo(
@@ -1532,33 +1535,38 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // exists, "node done" is deliberate state and the fallback
         // reset would wipe progress irrecoverably — webhook and
         // catchup must implement the SAME policy for this transition.
-        // The link's open/closed mirror is still refreshed.
         const savedPct = links[linkIdx].previousPercentComplete;
         const savedStatus = links[linkIdx].previousStatus;
-        const hasSnapshot =
-          (savedPct !== undefined && savedPct !== null) ||
-          (savedStatus !== undefined && savedStatus !== null);
-        if (prBlocksNodeReopen(node.linkedPr, hasSnapshot)) {
-          links[linkIdx] = {
-            ...links[linkIdx],
-            lastSyncedAt: new Date().toISOString(),
-            state: 'open',
-          };
-          updates = { externalLinks: links };
-        } else {
-          links[linkIdx] = {
-            ...links[linkIdx],
-            previousPercentComplete: null,
-            previousStatus: null,
-            lastSyncedAt: new Date().toISOString(),
-            state: 'open',
-          };
-          updates = {
-            percentComplete: savedPct !== undefined ? savedPct : null,
-            status: savedStatus !== undefined ? savedStatus : 'in_progress',
-            externalLinks: links,
-          };
+        if (prBlocksNodeReopen(node.linkedPr, hasCloseSnapshot(links[linkIdx]), node.completedAt)) {
+          // Mirror-only refresh: the link's open/closed state must
+          // track GitHub, but nothing user-visible changes — going
+          // through updateNode would bump the node's revision and mark
+          // every requirement acceptance on it stale, which is exactly
+          // what setExternalLinkState exists to avoid.
+          await nodeDb.setExternalLinkState(nodeId, externalId, 'open');
+          return reply.send({
+            received: true,
+            action: actionLabel,
+            matched: true,
+            nodeId,
+            skipped: 'pr_in_flight',
+          });
         }
+        links[linkIdx] = {
+          ...links[linkIdx],
+          previousPercentComplete: null,
+          previousStatus: null,
+          lastSyncedAt: new Date().toISOString(),
+          state: 'open',
+        };
+        updates = {
+          percentComplete: savedPct !== undefined ? savedPct : null,
+          // Restore semantics unified with the catchup reconciler
+          // (computeStateUpdates): a null captured status restores to
+          // 'in_progress', not to null.
+          status: savedStatus ?? 'in_progress',
+          externalLinks: links,
+        };
       }
 
       const updated = await nodeDb.updateNode(nodeId, updates);
@@ -1693,7 +1701,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           await PrSync.handleCheckSuiteCompleted(repoFullName, suite, async (n) => {
             // check_suite payload doesn't carry the PR body; fetch it.
             try {
-              return await fetchPrBody(repoFullName, n);
+              return await fetchPrText(repoFullName, n);
             } catch {
               return null;
             }
@@ -1843,6 +1851,42 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           `[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`,
         );
         transitions.push({ externalId, nodeId, status: 'transitioned' });
+      }
+
+      // GitHub's own auto-close honors closing keywords only in the PR
+      // BODY. Title-only refs leave the issue open after the merge —
+      // and since handlePrClosed just cleared the mirror and the node
+      // is now done, the next catchup tick would read "issue open +
+      // node done + no PR" as a reopen and revert the shipped work.
+      // Close those issues ourselves, best-effort (the catchup is the
+      // backstop if this fetch fails).
+      const bodyRefs = new Set(extractClosingIssueRefs(pr.body ?? ''));
+      const titleOnlyRefs = refs.filter((n) => !bodyRefs.has(n));
+      if (titleOnlyRefs.length > 0) {
+        (async () => {
+          const ctx = await getGitHubContextForRepo(repoFullName);
+          if (!ctx) return;
+          for (const n of titleOnlyRefs) {
+            try {
+              await closeGitHubIssue(
+                {
+                  provider: 'github',
+                  externalId: `${repoFullName}#${n}`,
+                  url: `https://github.com/${repoFullName}/issues/${n}`,
+                  syncEnabled: true,
+                  lastSyncedAt: null,
+                },
+                ctx.token,
+                'completed',
+              );
+            } catch (err) {
+              console.warn(
+                `[gh-webhook] closing title-only ref ${repoFullName}#${n} after merge failed:`,
+                err instanceof Error ? err.message : err,
+              );
+            }
+          }
+        })().catch(() => {});
       }
 
       return reply.send({
