@@ -601,6 +601,15 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_parent_node_id UUID
   `);
 
+  // ── suggested_version_id (release-lane pick) ──────────────────
+  // Sibling of suggested_parent_node_id: the LLM's latest lane
+  // suggestion, persisted so deferred decisions don't lose it and the
+  // operator-confirm paths can honor it instead of defaulting to the
+  // active lane. Same FK-less convention.
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_version_id UUID
+  `);
+
   // ── Triage cost opt (#142) — body-hash idempotency ────────────
   // SHA-256 of the canonical (title + body + sorted labels + state)
   // tuple used for the last successful auto-triage call. When a webhook

@@ -28,9 +28,18 @@ interface MockNode {
   childrenOrder?: string[];
 }
 
+interface MockVersion {
+  id: string;
+  mapId: string;
+  name: string;
+  status: string;
+  sortOrder: number;
+}
+
 const dbState = {
   maps: new Map<string, MockMap>(),
   nodes: new Map<string, MockNode>(),
+  versions: new Map<string, MockVersion>(),
 };
 
 type Predicate = { __pred: true; check: (row: Record<string, unknown>) => boolean };
@@ -49,6 +58,8 @@ function buildChain() {
       rows = [...dbState.maps.values()].map((m) => ({ ...m }));
     } else if (step.table === 'nodes') {
       rows = [...dbState.nodes.values()].map((n) => ({ ...n }));
+    } else if (step.table === 'versions') {
+      rows = [...dbState.versions.values()].map((v) => ({ ...v }));
     }
     return applyPred(rows, step.pred);
   };
@@ -91,6 +102,14 @@ vi.mock('../../db/schema.js', () => {
       parentId: col('parentId'),
       childrenOrder: col('childrenOrder'),
     },
+    versions: {
+      __name: 'versions',
+      id: col('id'),
+      mapId: col('mapId'),
+      name: col('name'),
+      status: col('status'),
+      sortOrder: col('sortOrder'),
+    },
   };
 });
 
@@ -101,6 +120,21 @@ vi.mock('drizzle-orm', async () => {
     eq: (column: { __col?: string }, value: unknown): Predicate => ({
       __pred: true,
       check: (row) => row[column.__col ?? ''] === value,
+    }),
+    ne: (column: { __col?: string }, value: unknown): Predicate => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] !== value,
+    }),
+    and: (...preds: unknown[]): Predicate => ({
+      __pred: true,
+      // Non-mock members (e.g. the real `notDeleted` SQL fragment) pass
+      // through as always-true — same behavior the tests had when `and`
+      // itself was the real drizzle implementation.
+      check: (row) =>
+        preds.every((p) => {
+          const m = p as { __pred?: true; check?: (r: Record<string, unknown>) => boolean };
+          return m?.__pred && typeof m.check === 'function' ? m.check(row) : true;
+        }),
     }),
   };
 });
@@ -115,6 +149,7 @@ import {
 beforeEach(() => {
   dbState.maps.clear();
   dbState.nodes.clear();
+  dbState.versions.clear();
   _clearMapContextCacheForTests();
 });
 
@@ -208,6 +243,32 @@ describe('buildMapContext', () => {
       'Backend', // first in childrenOrder
       'Frontend',
       'Infra',
+    ]);
+  });
+
+  it('lists the map\'s non-released versions in sortOrder, other maps excluded', async () => {
+    dbState.maps.set('m1', {
+      id: 'm1',
+      name: 'My Project',
+      description: null,
+      rootNodeId: 'root-1',
+    });
+    dbState.nodes.set('root-1', {
+      id: 'root-1',
+      text: 'My Project',
+      description: null,
+      parentId: null,
+      childrenOrder: [],
+    });
+    dbState.versions.set('v2', { id: 'v2', mapId: 'm1', name: 'V2', status: 'planning', sortOrder: 20 });
+    dbState.versions.set('v1', { id: 'v1', mapId: 'm1', name: 'V1', status: 'active', sortOrder: 10 });
+    dbState.versions.set('v0', { id: 'v0', mapId: 'm1', name: 'V0', status: 'released', sortOrder: 0 });
+    dbState.versions.set('vx', { id: 'vx', mapId: 'OTHER', name: 'VX', status: 'active', sortOrder: 5 });
+
+    const ctx = await buildMapContext('m1');
+    expect(ctx.versions).toEqual([
+      { versionId: 'v1', name: 'V1', status: 'active' },
+      { versionId: 'v2', name: 'V2', status: 'planning' },
     ]);
   });
 
