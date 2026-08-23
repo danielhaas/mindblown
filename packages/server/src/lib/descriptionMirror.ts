@@ -18,6 +18,21 @@
  * mirror drift self-healing: a missed webhook leaves the node on an
  * older mirror body whose hash still matches, so the next edit
  * re-syncs instead of freezing.
+ *
+ * Ownership lifecycle:
+ *   - Curation is one-way by WRITING: any non-mirror description write
+ *     (agent note, UI edit) stops inbound mirroring for that node.
+ *   - Resuming is one-way by BLANKING: clearing the description makes
+ *     the next inbound body edit refill it (the empty rule below) —
+ *     that IS the deliberate "hand it back to GitHub" gesture; no
+ *     separate flag exists.
+ *   - Legacy links (pre-hash) migrate lazily via the prior-body
+ *     fallback. One bounded one-time window remains for them: a
+ *     curated STRING description that outbound sync pushed to the GH
+ *     body BEFORE the hash deploy reads as a mirror on its first
+ *     inbound edit (from === curated text) and loses the curation
+ *     once — afterwards the stamp exists and the loss cannot recur.
+ *     Unresolvable without history; accepted and documented here.
  */
 
 import { createHash } from 'node:crypto';
