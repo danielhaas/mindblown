@@ -275,8 +275,14 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     expect(body.transitions).toEqual([
       { externalId: 'owner/repo#100', nodeId: 'n-100', status: 'transitioned' },
     ]);
-    expect(mocks.updateNodeMock).toHaveBeenCalledTimes(1);
-    const [calledNodeId, calledFields] = mocks.updateNodeMock.mock.calls[0];
+    // handlePrClosed now also parses title-only Closes refs, so it
+    // fires a linkedPr-clear updateNode alongside the status
+    // transition. Filter to the transition call this test cares about.
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
+    );
+    expect(doneCalls).toHaveLength(1);
+    const [calledNodeId, calledFields] = doneCalls[0];
     expect(calledNodeId).toBe('n-100');
     expect(calledFields).toMatchObject({ status: 'done', percentComplete: 100 });
     expect(mocks.broadcastMock).toHaveBeenCalledWith(
@@ -357,7 +363,13 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     expect(res.json().transitions).toEqual([
       { externalId: 'owner/repo#200', nodeId: 'n-200', status: 'already_done' },
     ]);
-    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    // No status re-transition. handlePrClosed may still fire its
+    // linkedPr-clear (title-only Closes refs are parsed now) — assert
+    // no call wrote a status.
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status != null,
+    );
+    expect(doneCalls).toHaveLength(0);
     expect(mocks.broadcastMock).not.toHaveBeenCalled();
   });
 
@@ -477,10 +489,10 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     await app.close();
 
     expect(res.statusCode).toBe(200);
-    // handlePrClosed (separate handler) legitimately fires for ANY
-    // merged PR to clear `linkedPr` — that's correct regardless of base
-    // branch since the PR really is closed. What MUST NOT happen on a
-    // non-default-branch merge is the status → done transition.
+    // What MUST NOT happen on a non-default-branch merge is the
+    // status → done transition. (handlePrClosed no longer clears
+    // `linkedPr` on such merges either — covered by its own test
+    // below.)
     const doneTransitionCalls = mocks.updateNodeMock.mock.calls.filter(
       (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
     );
@@ -491,6 +503,53 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     );
     // Falls through to processWebhook mock.
     expect(mocks.processWebhookMock).toHaveBeenCalled();
+  });
+
+  it('PR merged to a NON-default branch keeps linkedPr armed as closed (does NOT clear)', async () => {
+    // Companion to the transition gate above, on the mirror side: a
+    // release-branch merge means the work has NOT landed on main, so
+    // the issue-close gate must stay armed. Clearing the mirror here
+    // used to disarm it — the next outbound sync then closed the issue
+    // as COMPLETED, and the catchup wiped the node with an empty
+    // snapshot.
+    const node = seedLinkedNode({ nodeId: 'n-hf', externalId: 'owner/repo#77' });
+    const linkedPr = {
+      number: 555, repo: 'owner/repo', url: 'u', head: 'hotfix', base: 'release/v1',
+      author: 'a', draft: false, state: 'open', mergeable: true, changedFiles: [],
+      reviews: [], checks: { state: null, failures: [] }, lastSyncedAt: null,
+    };
+    mocks.selectNodesMock.mockResolvedValue([
+      { id: node.id, externalLinks: node.externalLinks, linkedPr },
+    ]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: prMergedPayload({
+        number: 555,
+        title: 'hotfix',
+        body: 'Fixes #77',
+        baseRef: 'release/v1',
+        defaultBranch: 'main',
+      }),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const linkedPrWrites = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) =>
+        Object.prototype.hasOwnProperty.call(call[1] ?? {}, 'linkedPr'),
+    );
+    expect(linkedPrWrites).toHaveLength(1);
+    expect((linkedPrWrites[0][1] as { linkedPr: { state: string } }).linkedPr).toMatchObject({
+      state: 'closed',
+    });
   });
 
   it('PR with missing base.ref does NOT transition status to done (fail-safe)', async () => {

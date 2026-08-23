@@ -171,4 +171,19 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
 
     expect(sentPatch().state).toBe('open');
   });
+
+  it('reopens an unfinished node even while its PR is in flight', async () => {
+    // Only the CLOSING direction is gated. A manual node reset to
+    // in_progress must be able to reopen a prematurely-closed issue —
+    // otherwise the reset can never repair the issue, and the catchup
+    // reconciler would even revert the reset (issue closed + node
+    // not-done reads as a close transition).
+    await updateGitHubIssue(
+      node({ status: 'in_progress', percentComplete: 40, linkedPr: pr('open') }),
+      LINK,
+      'tok',
+    );
+
+    expect(sentPatch().state).toBe('open');
+  });
 });

@@ -29,6 +29,7 @@ import type { LinkedPrState, ExternalLink } from '@mindblown/core';
 
 export interface GhPrPayload {
   number: number;
+  title?: string;
   body: string | null;
   state: 'open' | 'closed';
   merged: boolean;
@@ -73,6 +74,17 @@ export function parseClosesIssues(body: string | null | undefined): number[] {
     if (Number.isFinite(n)) out.add(n);
   }
   return [...out];
+}
+
+/**
+ * Closes-refs for a PR payload: title AND body. GitHub itself honors
+ * closing keywords in both; parsing only the body left `Closes #N`-in-
+ * title PRs without a linkedPr mirror, so the issue-close gate never
+ * armed for them (same title+body convention as `extractClosingIssueRefs`
+ * in @mindblown/integrations, used by the work-start sync).
+ */
+function closesRefsFromPr(pr: Pick<GhPrPayload, 'title' | 'body'>): number[] {
+  return parseClosesIssues(`${pr.title ?? ''}\n${pr.body ?? ''}`);
 }
 
 // ── Node lookup ────────────────────────────────────────────────────
@@ -132,7 +144,7 @@ export async function handlePrSnapshot(
   pr: GhPrPayload,
   changedFiles: string[],
 ): Promise<number> {
-  const issueNumbers = parseClosesIssues(pr.body);
+  const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
   const externalIds = issueNumbers.map((n) => `${repo}#${n}`);
   const refs = await findNodesByExternalIds(externalIds);
@@ -170,14 +182,21 @@ export async function handlePrSnapshot(
 /**
  * Handle `pull_request_review.submitted`. Appends the review to
  * `linkedPr.reviews` on every linked-issue node.
+ *
+ * Only EXISTING linkedPr mirrors are updated. Seeding a stub here
+ * (with hardcoded state:'open') resurrected the mirror after a merge
+ * had cleared it — a post-merge approve or late check event then
+ * re-armed the issue-close gate permanently, with no further
+ * `pull_request.closed` ever coming to release it. A review racing
+ * ahead of the `opened` webhook is caught by the snapshot handler
+ * seconds later; losing that one review entry is the cheaper error.
  */
 export async function handleReviewSubmitted(
   repo: string,
-  prNumber: number,
-  prBody: string | null,
+  pr: Pick<GhPrPayload, 'number' | 'title' | 'body'>,
   review: GhReviewPayload,
 ): Promise<number> {
-  const issueNumbers = parseClosesIssues(prBody);
+  const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
   const externalIds = issueNumbers.map((n) => `${repo}#${n}`);
   const refs = await findNodesByExternalIds(externalIds);
@@ -185,25 +204,8 @@ export async function handleReviewSubmitted(
 
   let updated = 0;
   for (const ref of refs) {
-    // If the PR snapshot hasn't landed yet (race: review submitted
-    // before the opened webhook reached us), seed the linkedPr with
-    // the minimum we know.
-    const cur: LinkedPrState =
-      ref.linkedPr ?? {
-        number: prNumber,
-        repo,
-        url: '',
-        head: '',
-        base: '',
-        author: null,
-        draft: false,
-        state: 'open',
-        mergeable: null,
-        changedFiles: [],
-        reviews: [],
-        checks: { state: null, failures: [] },
-        lastSyncedAt: new Date().toISOString(),
-      };
+    const cur = ref.linkedPr;
+    if (!cur || cur.number !== pr.number) continue;
     const next: LinkedPrState = {
       ...cur,
       reviews: [
@@ -248,41 +250,23 @@ export async function handleCheckSuiteCompleted(
     const refs = await findNodesByExternalIds(externalIds);
     for (const ref of refs) {
       const cur: LinkedPrState | null = ref.linkedPr;
-      if (!cur) {
-        // PR snapshot hasn't landed yet — record just the check state.
-        const stub: LinkedPrState = {
-          number: pr.number,
-          repo,
-          url: '',
-          head: pr.head?.ref ?? '',
-          base: '',
-          author: null,
-          draft: false,
-          state: 'open',
-          mergeable: null,
-          changedFiles: [],
-          reviews: [],
-          checks: {
-            state: payload.conclusion,
-            failures: payload.conclusion === 'failure' ? ['check_suite'] : [],
-          },
-          lastSyncedAt: new Date().toISOString(),
-        };
-        await nodeDb.updateNode(ref.id, { linkedPr: stub });
-      } else {
-        const next: LinkedPrState = {
-          ...cur,
-          checks: {
-            state: payload.conclusion,
-            failures:
-              payload.conclusion === 'failure'
-                ? [...new Set([...cur.checks.failures, 'check_suite'])]
-                : cur.checks.failures.filter((f) => f !== 'check_suite'),
-          },
-          lastSyncedAt: new Date().toISOString(),
-        };
-        await nodeDb.updateNode(ref.id, { linkedPr: next });
-      }
+      // Update EXISTING mirrors only — no stub seeding. A check suite
+      // completing after the merge cleared the mirror used to resurrect
+      // it with hardcoded state:'open' and permanently re-arm the
+      // issue-close gate (see handleReviewSubmitted for the rationale).
+      if (!cur || cur.number !== pr.number) continue;
+      const next: LinkedPrState = {
+        ...cur,
+        checks: {
+          state: payload.conclusion,
+          failures:
+            payload.conclusion === 'failure'
+              ? [...new Set([...cur.checks.failures, 'check_suite'])]
+              : cur.checks.failures.filter((f) => f !== 'check_suite'),
+        },
+        lastSyncedAt: new Date().toISOString(),
+      };
+      await nodeDb.updateNode(ref.id, { linkedPr: next });
       totalUpdated += 1;
     }
   }
@@ -290,31 +274,43 @@ export async function handleCheckSuiteCompleted(
 }
 
 /**
- * Handle `pull_request.closed`. If merged, the existing #152 handler
- * transitions the linked node to done; here we ALSO clear the linkedPr
- * mirror so consumers don't keep seeing a stale "open" state. For
- * un-merged closes (i.e. abandoned PRs) we set state='closed' and
- * preserve everything else (review history is still useful).
+ * Handle `pull_request.closed`. On a merge to the repo's DEFAULT branch
+ * the mirror is cleared — GitHub itself closes the referenced issue at
+ * that moment, and the existing #152 handler transitions the linked
+ * node to done. Everything else — abandoned PRs AND merges to non-
+ * default branches (release/v1 hotfixes) — keeps the mirror with
+ * state='closed': the work has NOT landed on main, so the issue-close
+ * gate must stay armed (a release-branch merge used to clear the
+ * mirror, disarm the gate, and let the next catchup tick wipe the
+ * node's progress with an empty snapshot). Review history stays useful
+ * either way.
+ *
+ * `defaultBranch` comes from the webhook's `repository.default_branch`;
+ * when it's unknown (null) we conservatively treat a merge as default-
+ * branch (the pre-existing behavior).
  */
 export async function handlePrClosed(
   repo: string,
   pr: GhPrPayload,
+  defaultBranch: string | null = null,
 ): Promise<number> {
-  const issueNumbers = parseClosesIssues(pr.body);
+  const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
   const externalIds = issueNumbers.map((n) => `${repo}#${n}`);
   const refs = await findNodesByExternalIds(externalIds);
   if (refs.length === 0) return 0;
 
+  const mergedToDefault =
+    pr.merged && (defaultBranch == null || pr.base.ref === defaultBranch);
+
   let updated = 0;
   for (const ref of refs) {
-    if (pr.merged) {
-      // Merge: clear the linkedPr. The existing #152 handler in
-      // routes/integrations.ts updates node status to done separately.
+    if (mergedToDefault) {
       await nodeDb.updateNode(ref.id, { linkedPr: null });
     } else {
-      // Abandoned PR: keep the history but mark closed so consumers
-      // don't try to merge it.
+      // Abandoned, or merged somewhere that isn't the default branch:
+      // keep the history but mark closed so consumers don't try to
+      // merge it — and so the close gate stays armed.
       const cur = ref.linkedPr;
       if (!cur) continue;
       const next: LinkedPrState = {

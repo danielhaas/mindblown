@@ -6,7 +6,7 @@
  */
 
 import type { Node, ExternalLink, Priority } from '@mindblown/core';
-import { proseMirrorToPlainText } from '@mindblown/core';
+import { proseMirrorToPlainText, prBlocksIssueClose } from '@mindblown/core';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -202,8 +202,8 @@ export async function createGitHubIssue(
  * Updates title, body, state (open/closed), and labels. The issue's
  * GitHub milestone is left untouched (we no longer track it).
  *
- * While an unmerged PR is linked to the node, the issue's state is left
- * ALONE — see `hasUnmergedPr` below.
+ * While a not-landed PR is linked to the node, a done-node does NOT
+ * close its issue — see `prBlocksIssueClose` (@mindblown/core).
  */
 export async function updateGitHubIssue(
   node: Node,
@@ -221,30 +221,21 @@ export async function updateGitHubIssue(
   // …but "done in MindBlown" is not "done in the repo" while a PR is still
   // in flight. Coding agents mark the node done when they OPEN the PR, not
   // when it merges, so this sync used to close the issue as COMPLETED while
-  // the branch was still open — and on FulcrumCRM/crm often still red. That
-  // silently reported unshipped work as finished: 15 issues closed that way
-  // since 2026-07-15, among them compliance work (#6096 controlling-person
-  // look-through, #6027 retention audit records, #5910 duplicate-IBAN
-  // detection), none of which had landed on main.
+  // the branch was still open. The gate semantics (and the incident
+  // forensics behind them) live with `prBlocksIssueClose` in
+  // @mindblown/core — the catchup reconciler consults the same mirror
+  // via its sibling `prBlocksNodeReopen`, and the two must stay in
+  // agreement.
   //
-  // A merged PR closes its issue by itself via `Closes #N` in the body, and
-  // `handlePrClosed` clears `linkedPr` on merge — so gating on an unmerged
-  // linked PR costs us nothing on the happy path.
-  //
-  // We OMIT `state` rather than forcing 'open': a human who deliberately
-  // closed the issue should not have it reopened under them.
-  //
-  // Bewusster Dead-End: `handlePrClosed` behält `linkedPr` mit
-  // `state: 'closed'` als Historie, wenn ein PR unmerged geschlossen wird.
-  // Damit bleibt dieses Gate für den Node dauerhaft aktiv und MindBlown
-  // schliesst sein Issue nie mehr — auch nicht, wenn die Arbeit später von
-  // Hand oder in einem PR ohne `Closes #N` landet. Das ist die richtige
-  // Richtung zu irren: ein abgebrochener PR heisst, dass die Arbeit NICHT
-  // erledigt ist, und ein Mensch kann das Issue jederzeit selbst schliessen
-  // (wir öffnen es dann nicht wieder). Auf `state === 'open'` zu verengen
-  // wäre falsch — dann meldete ein abgebrochener PR COMPLETED, exakt der
-  // Bug, den dieses Gate behebt.
-  const hasUnmergedPr = !!node.linkedPr && node.linkedPr.state !== 'merged';
+  // Only the CLOSING direction is gated. A not-done node always pushes
+  // state 'open' (legacy behavior, gate or not): the node saying "work
+  // is open" must be able to reopen a prematurely-closed issue —
+  // otherwise a manual node reset can never repair a wrongly-closed
+  // issue, and the catchup would even revert the reset. When the gate
+  // blocks a close we OMIT `state` rather than forcing 'open': a human
+  // who deliberately closed the issue should not have it reopened under
+  // them while the node stays done.
+  const suppressClose = prBlocksIssueClose(node.linkedPr);
 
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -259,8 +250,10 @@ export async function updateGitHubIssue(
     body,
     labels,
   };
-  if (!hasUnmergedPr) {
-    patchBody.state = looksDone ? 'closed' : 'open';
+  if (looksDone) {
+    if (!suppressClose) patchBody.state = 'closed';
+  } else {
+    patchBody.state = 'open';
   }
 
   const updatedIssue = await githubFetch<GitHubIssue>(

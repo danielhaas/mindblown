@@ -35,6 +35,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
+import { prBlocksNodeReopen } from '@mindblown/core';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -1525,20 +1526,39 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       } else {
         // reopened — revert to whatever was captured on the most recent close.
         // If we never saw a close (null), fall back to an in-progress state.
+        //
+        // Same gate as the catchup reconciler (prBlocksNodeReopen in
+        // @mindblown/core): while a PR is in flight and no snapshot
+        // exists, "node done" is deliberate state and the fallback
+        // reset would wipe progress irrecoverably — webhook and
+        // catchup must implement the SAME policy for this transition.
+        // The link's open/closed mirror is still refreshed.
         const savedPct = links[linkIdx].previousPercentComplete;
         const savedStatus = links[linkIdx].previousStatus;
-        links[linkIdx] = {
-          ...links[linkIdx],
-          previousPercentComplete: null,
-          previousStatus: null,
-          lastSyncedAt: new Date().toISOString(),
-          state: 'open',
-        };
-        updates = {
-          percentComplete: savedPct !== undefined ? savedPct : null,
-          status: savedStatus !== undefined ? savedStatus : 'in_progress',
-          externalLinks: links,
-        };
+        const hasSnapshot =
+          (savedPct !== undefined && savedPct !== null) ||
+          (savedStatus !== undefined && savedStatus !== null);
+        if (prBlocksNodeReopen(node.linkedPr, hasSnapshot)) {
+          links[linkIdx] = {
+            ...links[linkIdx],
+            lastSyncedAt: new Date().toISOString(),
+            state: 'open',
+          };
+          updates = { externalLinks: links };
+        } else {
+          links[linkIdx] = {
+            ...links[linkIdx],
+            previousPercentComplete: null,
+            previousStatus: null,
+            lastSyncedAt: new Date().toISOString(),
+            state: 'open',
+          };
+          updates = {
+            percentComplete: savedPct !== undefined ? savedPct : null,
+            status: savedStatus !== undefined ? savedStatus : 'in_progress',
+            externalLinks: links,
+          };
+        }
       }
 
       const updated = await nodeDb.updateNode(nodeId, updates);
@@ -1651,7 +1671,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         const pr = payload.pull_request as PrSync.GhPrPayload | undefined;
         const review = payload.review as PrSync.GhReviewPayload | undefined;
         if (pr && review) {
-          await PrSync.handleReviewSubmitted(repoFullName, pr.number, pr.body, review);
+          await PrSync.handleReviewSubmitted(repoFullName, pr, review);
         }
       } catch (err) {
         console.warn(
@@ -1700,7 +1720,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       try {
         const pr = payload.pull_request as PrSync.GhPrPayload | undefined;
         if (pr) {
-          await PrSync.handlePrClosed(repoFullName, pr);
+          const defaultBranch =
+            (payload.repository as { default_branch?: string } | undefined)
+              ?.default_branch ?? null;
+          await PrSync.handlePrClosed(repoFullName, pr, defaultBranch);
         }
       } catch (err) {
         console.warn(

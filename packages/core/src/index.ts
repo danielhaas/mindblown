@@ -102,6 +102,9 @@ export type { CalibrationSample, CalibrationAssessment } from './calibration.js'
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';
 
+// Linked-PR sync gates
+export { prBlocksIssueClose, prBlocksNodeReopen } from './linkedPr.js';
+
 // Requirements register helpers
 export {
   collectRequirementGhLinks,

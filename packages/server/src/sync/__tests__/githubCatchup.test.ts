@@ -746,14 +746,35 @@ describe('computeStateUpdates → link state mirror', () => {
     ).toBeNull();
   });
 
-  it('leaves a done node alone when the PR was closed unmerged', () => {
-    expect(
-      computeStateUpdates(
-        { percentComplete: 100, status: 'done', externalLinks: [link()], linkedPr: pr('closed') },
-        { state: 'open' },
-        'o/r#14',
-      ),
-    ).toBeNull();
+  it('resets a done node once its PR died unmerged — abandoned work is NOT done', () => {
+    // prBlocksNodeReopen gates on state==='open' only: an abandoned PR
+    // (state 'closed', kept as history) means the work never landed, so
+    // pinning the node on done/100 forever would report never-landed
+    // work as finished — the mirror image of the premature-close bug.
+    const updates = computeStateUpdates(
+      { percentComplete: 100, status: 'done', externalLinks: [link()], linkedPr: pr('closed') },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.status).toBe('in_progress');
+  });
+
+  it('restores from a snapshot even while the PR is still open', () => {
+    // A snapshot means the close path really ran — the reset is a
+    // lossless restore of true pre-close state, not a wipe. The gate
+    // only protects against the empty-snapshot null reset.
+    const updates = computeStateUpdates(
+      {
+        percentComplete: 100,
+        status: 'done',
+        externalLinks: [link({ state: 'closed', previousPercentComplete: 40, previousStatus: 'in_progress' })],
+        linkedPr: pr('open'),
+      },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.percentComplete).toBe(40);
+    expect(updates?.status).toBe('in_progress');
   });
 
   it('still reopens a done node once the PR merged and the issue is open again', () => {
