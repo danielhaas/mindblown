@@ -501,6 +501,7 @@ vi.mock('../mapContext.js', () => ({
     mapName: `map-${mapId}`,
     mapDescription: '',
     epics: mapContextEpics,
+    versions: [],
   })),
   invalidateMapContext: vi.fn(),
 }));

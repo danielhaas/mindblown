@@ -994,8 +994,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           state: isClosed ? 'closed' : 'open',
         };
         // Same active-lane default as auto-ingest — an imported orphan
-        // should be visible to the dispatch queue, not parked unversioned.
-        const versionId = await resolveIngestVersionId(tx, req.params.mapId);
+        // should be visible to the dispatch queue, not parked
+        // unversioned. Closed orphans get no lane: historical work
+        // must not inflate the active release's scope.
+        const versionId = isClosed
+          ? null
+          : await resolveIngestVersionId(tx, req.params.mapId);
         const updated = await nodeDb.updateNode(
           node.id,
           { externalLinks: [link], ...(versionId ? { versionId } : {}) },
@@ -1615,10 +1619,16 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             lastSyncedAt: new Date().toISOString(),
             state: isClosed ? 'closed' : 'open',
           };
-          // Operator placement still routes into the map's active lane —
-          // same default as auto-ingest, so a confirmed orphan doesn't
-          // land invisible to the dispatch queue.
-          const versionId = await resolveIngestVersionId(tx, req.params.mapId);
+          // Operator placement routes into a lane — the LLM's persisted
+          // lane pick first, then the active-lane default — so a
+          // confirmed decision doesn't land invisible to the dispatch
+          // queue. Closed issues get no lane (historical work must not
+          // inflate the active release).
+          const versionId = isClosed
+            ? null
+            : await resolveIngestVersionId(tx, req.params.mapId, {
+                suggestedVersionId: row.suggestedVersionId,
+              });
           const updated = await nodeDb.updateNode(
             node.id,
             { externalLinks: [link], ...(versionId ? { versionId } : {}) },
@@ -2357,9 +2367,14 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 lastSyncedAt: new Date().toISOString(),
                 state: isClosed ? 'closed' : 'open',
               };
-              // Same active-lane default as auto-ingest and the single
-              // /override path above.
-              const versionId = await resolveIngestVersionId(tx, req.params.mapId);
+              // Same lane routing as the single /override path above:
+              // LLM's persisted pick first, active-lane default,
+              // nothing for closed issues.
+              const versionId = isClosed
+                ? null
+                : await resolveIngestVersionId(tx, req.params.mapId, {
+                    suggestedVersionId: row.suggestedVersionId,
+                  });
               const updated = await nodeDb.updateNode(
                 node.id,
                 { externalLinks: [link], ...(versionId ? { versionId } : {}) },

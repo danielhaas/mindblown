@@ -197,6 +197,7 @@ vi.mock('../../sync/mapContext.js', () => ({
     mapName: 'm',
     mapDescription: '',
     epics: [{ nodeId: 'epic-1', title: 'Frontend', description: 'UI' }],
+    versions: [],
   })),
 }));
 

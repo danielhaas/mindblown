@@ -443,6 +443,13 @@ export const triageDecisions = pgTable('triage_decisions', {
   // reflects the latest LLM suggestion, so the audit history can show
   // "Claude suggested X, operator chose Y".
   suggestedParentNodeId: uuid('suggested_parent_node_id'),
+  // The LLM's release-lane pick, sibling of suggestedParentNodeId with
+  // the same semantics: always the latest auto-triage suggestion,
+  // FK-less, untouched by operator overrides. Without it, every
+  // deferred (non-auto-applied) decision silently dropped the lane the
+  // LLM read from the issue, and the operator-confirm paths fell back
+  // to the plain active lane.
+  suggestedVersionId: uuid('suggested_version_id'),
   decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
   decidedBy: text('decided_by').notNull(), // 'auto' | 'operator'
   reviewed: boolean('reviewed').notNull().default(false),
