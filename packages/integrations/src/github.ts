@@ -521,6 +521,18 @@ export function parseParentRelationships(issues: GitHubIssue[]): Map<number, num
 }
 
 /**
+ * Runaway backstop for `importGitHubIssues`. The previous valve sat at
+ * 1000 — on a repo with 8900+ issues that silently truncated to the
+ * OLDEST ~1000 (pagination is created-asc), so every consumer that
+ * diffs "all issues" against the map — sync-overview, backfill, drift
+ * audit — was blind to the majority of the repo, including everything
+ * recent. 50k ≈ 500 API calls, far above any real repo here, so the
+ * valve only trips on a genuine runaway; when it does, we warn instead
+ * of silently pretending the fetch was complete.
+ */
+export const IMPORT_MAX_ISSUES = 50_000;
+
+/**
  * Fetch issues from a GitHub repo and prepare them for import as MindBlown nodes.
  *
  * Issues are grouped by **functional label** (version prefixes like "V1: 2." are stripped).
@@ -553,8 +565,12 @@ export async function importGitHubIssues(
     if (batch.length < perPage) break;
     page++;
 
-    // Safety valve — don't import more than 1000 issues at once
-    if (issues.length >= 1000) break;
+    if (issues.length >= IMPORT_MAX_ISSUES) {
+      console.warn(
+        `[github-import] ${repoOwner}/${repoName}: hit the ${IMPORT_MAX_ISSUES}-issue backstop — result is TRUNCATED, downstream diffs will miss issues`,
+      );
+      break;
+    }
   }
 
   const parentOf = parseParentRelationships(issues);
