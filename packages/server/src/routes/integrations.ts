@@ -37,6 +37,8 @@ import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
+import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
+import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -459,14 +461,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Fetch the issue from GitHub to get its URL
       const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, ghCtx.token);
 
-      const externalLink: ExternalLink = {
-        provider: 'github',
-        externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
-        url: issue.html_url,
-        syncEnabled: true,
-        lastSyncedAt: new Date().toISOString(),
-        state: issue.state,
-      };
+      // "Mirror wrote nothing": manual linking does not write the
+      // description, so whatever the node holds is node-authored —
+      // stamp accordingly so the issues.edited guard treats it as
+      // curated instead of hitting the weaker legacy fallback.
+      const externalLink: ExternalLink = stampMirrorHash(
+        {
+          provider: 'github',
+          externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
+          url: issue.html_url,
+          syncEnabled: true,
+          lastSyncedAt: new Date().toISOString(),
+          state: issue.state,
+        },
+        null,
+      );
 
       // Add to existing external links
       const existingLinks = node.externalLinks.filter(
@@ -504,9 +513,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Create the issue on GitHub
       const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.token);
 
-      // Store the link on the node
+      // Store the link on the node. The description here is NODE-
+      // authored (it was pushed TO GitHub, not mirrored from it) —
+      // stamp the link as "mirror wrote nothing" so the issues.edited
+      // guard treats the description as curated from day one instead
+      // of falling back to the prior-body equality check, which a
+      // GH-side edit would misread as a mirror one round-trip later.
       const existingLinks = [...node.externalLinks];
-      existingLinks.push(externalLink);
+      existingLinks.push(stampMirrorHash(externalLink, null));
 
       const updated = await nodeDb.updateNode(req.params.nodeId, { externalLinks: existingLinks });
 
@@ -868,7 +882,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           ?.slice('priority:'.length) ?? null;
 
         await nodeDb.updateNode(childNode.id, {
-          externalLinks: [item.externalLink],
+          // Mirror write — stamp the link so the issues.edited guard
+          // can tell mirror from curation (lib/descriptionMirror.ts).
+          externalLinks: [stampMirrorHash(item.externalLink, item.issue.body)],
           tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
           description: item.issue.body,
           ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
@@ -1913,13 +1929,109 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       return reply.send({ received: true, action: result.action, matched: false });
     }
 
+    const nodeUpdates = { ...(result.nodeUpdates as nodeDb.UpdateNodeInput) };
+
+    // ── issues.edited guard: mirror-until-curated ──────────────────
+    // `description` is the one field with two legitimate writers: the
+    // GH issue body (machine mirror) and manual curation in MindBlown
+    // (business/audit notes — e.g. the Thomas-review annotations). A
+    // blind apply of the webhook body wiped the curation wholesale.
+    //
+    // The webhook payload carries the PRE-edit body in
+    // `changes.body.from`, so we can tell the two apart without any
+    // stored state: a node whose description still equals the OLD
+    // body (or is empty) is an unmodified mirror — keep mirroring.
+    // Anything else was touched in MindBlown — from then on the
+    // description is MB-owned and inbound body edits leave it alone.
+    // (Outbound sync still pushes the curated text to the GH body;
+    // this guard also stops that write-back from bouncing onto the
+    // node as a flattened copy of itself.)
+    //
+    // Ownership decision + hash mechanics: lib/descriptionMirror.ts.
+    // One accepted edge: an intentionally BLANKED description reads as
+    // mirror and re-fills from the next body edit — "keep it empty
+    // forever" would need an explicit ownership flag; not worth it
+    // until someone actually wants that.
+    //
+    // Title edits keep the `#NNNN ` prefix convention: ingest titles
+    // nodes as `#N <title>`, and search/auto-link parse that marker —
+    // the raw payload title would silently strip it.
+    if (payloadAction === 'edited' && issuePayload?.number != null) {
+      const node = await nodeDb.getNode(nodeId);
+      if (node) {
+        if ('description' in nodeUpdates) {
+          const changes = payload.changes as
+            | { body?: { from?: string | null } }
+            | undefined;
+          const priorBody = changes?.body?.from ?? null;
+          const linkIdx = node.externalLinks.findIndex(
+            (l) => l.provider === 'github' && l.externalId === result.externalId,
+          );
+          const link = linkIdx >= 0 ? node.externalLinks[linkIdx] : null;
+          if (link && isMirrorDescription(node.description, link, priorBody)) {
+            // Applying the mirror write — stamp the hash on the link in
+            // the same update so the next decision compares against
+            // what we just wrote (and legacy links migrate lazily).
+            // Skip the stamp when the hash already matches (webhook
+            // redelivery): the description write dedupes below, and a
+            // value-identical externalLinks write would otherwise keep
+            // the UPDATE+broadcast alive for a pure no-op.
+            const newBody =
+              typeof nodeUpdates.description === 'string' ? nodeUpdates.description : null;
+            const stamped = stampMirrorHash(link, newBody);
+            if (stamped.descriptionMirrorHash !== link.descriptionMirrorHash) {
+              nodeUpdates.externalLinks = node.externalLinks.map((l, i) =>
+                i === linkIdx ? stamped : l,
+              );
+            }
+          } else {
+            delete nodeUpdates.description;
+          }
+        }
+        if (typeof nodeUpdates.text === 'string') {
+          // Same definition of "carries the #N marker" as auto-link
+          // and search use (extractAutoLinkIssueNumber) — a second,
+          // stricter startsWith check would let `#42`-shaped titles
+          // slip through and lose the marker on the rewrite.
+          const prefix = `#${issuePayload.number} `;
+          if (
+            extractAutoLinkIssueNumber(node.text) === issuePayload.number &&
+            extractAutoLinkIssueNumber(nodeUpdates.text) !== issuePayload.number
+          ) {
+            nodeUpdates.text = `${prefix}${nodeUpdates.text}`;
+          }
+        }
+        // Drop fields that would write their current value — a GH
+        // edit-storm on a curated node (or the outbound curated-text
+        // write-back bouncing off GitHub) otherwise costs a full
+        // UPDATE + node:updated fanout per event for a no-op.
+        if (nodeUpdates.text === node.text) delete nodeUpdates.text;
+        if (
+          'description' in nodeUpdates &&
+          nodeUpdates.description === node.description
+        ) {
+          delete nodeUpdates.description;
+        }
+      }
+    }
+
+    if (Object.keys(nodeUpdates).length === 0) {
+      return reply.send({
+        received: true,
+        action: result.action,
+        matched: true,
+        nodeId,
+        skipped: 'no_change',
+      });
+    }
+
     // Apply updates
-    const updated = await nodeDb.updateNode(nodeId, result.nodeUpdates as nodeDb.UpdateNodeInput);
+    const updated = await nodeDb.updateNode(nodeId, nodeUpdates);
     if (updated) {
       broadcast(updated.mapId, {
         type: 'node:updated',
         nodeId,
-        fields: Object.keys(result.nodeUpdates),
+        fields: Object.keys(nodeUpdates),
         node: updated,
         source: 'github_webhook',
       });

@@ -15,22 +15,12 @@ import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/
 // but forgot to call link_github_issue. We catch that here so the orphan
 // bucket stays empty without per-call discipline. Spec: GitHub issue #58.
 //
-// Pattern: leading `#NNNN` followed by either a space or end-of-string.
-// Anchored — `#NNNN` mid-title is most likely a co-mention (e.g. an inline
-// PR reference), not the node's own identity.
-const AUTOLINK_TITLE_RE = /^#(\d+)(?:\s|$)/;
-
-/**
- * Extract the leading issue number from a title, or null when the title
- * doesn't match the auto-link pattern.
- */
-export function extractAutoLinkIssueNumber(title: string): number | null {
-  if (!title) return null;
-  const m = AUTOLINK_TITLE_RE.exec(title);
-  if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
+// The marker pattern itself lives in lib/autoLink.ts so the webhook
+// guard in routes/integrations.ts can share it without a routes↔routes
+// import cycle. Re-exported here for existing importers.
+import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
+import { stampMirrorHash } from '../lib/descriptionMirror.js';
+export { extractAutoLinkIssueNumber };
 
 /**
  * If the title starts with `#NNNN` and the map has a GitHub repo bound to
@@ -85,14 +75,21 @@ async function autoLinkNodeFromTitle(
     return null;
   }
 
-  const externalLink: ExternalLink = {
-    provider: 'github',
-    externalId: `${ghCtx.owner}/${ghCtx.repo}#${issueNumber}`,
-    url: issue.html_url,
-    syncEnabled: true,
-    lastSyncedAt: new Date().toISOString(),
-    state: issue.state,
-  };
+  // "Mirror wrote nothing": auto-link attaches to an existing node
+  // without writing its description — stamp so the issues.edited guard
+  // treats the node-authored description as curated (see
+  // lib/descriptionMirror.ts).
+  const externalLink: ExternalLink = stampMirrorHash(
+    {
+      provider: 'github',
+      externalId: `${ghCtx.owner}/${ghCtx.repo}#${issueNumber}`,
+      url: issue.html_url,
+      syncEnabled: true,
+      lastSyncedAt: new Date().toISOString(),
+      state: issue.state,
+    },
+    null,
+  );
 
   const updated = await nodeDb.updateNode(nodeId, {
     externalLinks: [...node.externalLinks, externalLink],
@@ -137,8 +134,15 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
   for (const link of githubLinks) {
     try {
       await updateGitHubIssue(node, link, ghCtx.token);
-      // Update lastSyncedAt on the link
-      const updatedLinks = node.externalLinks.map((l) =>
+      // Update lastSyncedAt on the link. Re-read the node AFTER the
+      // GitHub round-trip and patch the FRESH links: writing back the
+      // pre-await snapshot silently reverted any concurrent link write
+      // (webhook mirror-hash stamp, close-snapshot capture) that landed
+      // during the network call — a lost update measured in whole
+      // request latencies instead of microseconds.
+      const fresh = await nodeDb.getNode(node.id);
+      if (!fresh) continue;
+      const updatedLinks = fresh.externalLinks.map((l) =>
         l.provider === link.provider && l.externalId === link.externalId
           ? { ...l, lastSyncedAt: new Date().toISOString() }
           : l,
