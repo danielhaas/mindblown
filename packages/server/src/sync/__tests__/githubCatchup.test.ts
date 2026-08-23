@@ -135,6 +135,7 @@ import {
   reconcileRepo,
   resolveUnlistedLinks,
   computeStateUpdates,
+  computeCursorAdvance,
   _resetAuthFailureCountersForTests,
   _getAuthFailureCountForTests,
   type ReconcileResult,
@@ -485,7 +486,7 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     fetchChangedIssuesMock
       .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'))
       .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'))
-      .mockResolvedValueOnce([]) // success — counter resets
+      .mockResolvedValueOnce({ issues: [], truncated: false }) // success — counter resets
       .mockRejectedValueOnce(new MockGitHubApiError(401, 'Bad credentials'));
 
     await reconcileRepo(makeTarget('o', 'r')); // 1 failure
@@ -598,7 +599,7 @@ describe('reconcileRepo → 401 auth-failure escalation, token-resolution path (
     fetchChangedIssuesMock.mockReset();
     // Successful fetch by default — these tests are exercising the
     // mint-side failure path, fetch never runs.
-    fetchChangedIssuesMock.mockResolvedValue([]);
+    fetchChangedIssuesMock.mockResolvedValue({ issues: [], truncated: false });
     delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
     delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
   });
@@ -764,7 +765,7 @@ describe('reconcileRepo → repairs absent/stale link state', () => {
   }
 
   it('backfills state on a done node whose closed issue link has none', async () => {
-    fetchChangedIssuesMock.mockResolvedValue([issue(14, 'closed')] as never);
+    fetchChangedIssuesMock.mockResolvedValue({ issues: [issue(14, 'closed')], truncated: false } as never);
     dbRows.current = [nodeWithLink('o/r#14')];
     vi.mocked(nodeDb.getNode).mockResolvedValue(nodeWithLink('o/r#14') as never);
 
@@ -776,7 +777,7 @@ describe('reconcileRepo → repairs absent/stale link state', () => {
   });
 
   it('leaves an already-correct mirror alone', async () => {
-    fetchChangedIssuesMock.mockResolvedValue([issue(14, 'closed')] as never);
+    fetchChangedIssuesMock.mockResolvedValue({ issues: [issue(14, 'closed')], truncated: false } as never);
     dbRows.current = [nodeWithLink('o/r#14', { state: 'closed' })];
     vi.mocked(nodeDb.getNode).mockResolvedValue(
       nodeWithLink('o/r#14', { state: 'closed' }) as never,
@@ -879,3 +880,32 @@ describe('resolveUnlistedLinks', () => {
     expect(res).toEqual({ resolved: 0, unresolvable: 0 });
   });
 });
+
+describe('computeCursorAdvance — truncated-fetch cursor safety', () => {
+  const startedAt = new Date('2026-08-23T12:00:00.000Z');
+
+  it('advances to startedAt on a complete fetch', () => {
+    expect(
+      computeCursorAdvance(startedAt, false, [{ updated_at: '2026-08-20T00:00:00.000Z' }]),
+    ).toBe(startedAt);
+  });
+
+  it('advances only to the last processed issue when truncated', () => {
+    const got = computeCursorAdvance(startedAt, true, [
+      { updated_at: '2026-08-18T00:00:00.000Z' },
+      { updated_at: '2026-08-19T09:30:00.000Z' },
+    ]);
+    expect(got.toISOString()).toBe('2026-08-19T09:30:00.000Z');
+  });
+
+  it('falls back to startedAt when truncated with nothing processed', () => {
+    expect(computeCursorAdvance(startedAt, true, [])).toBe(startedAt);
+  });
+
+  it('falls back to startedAt on an unparseable timestamp', () => {
+    expect(
+      computeCursorAdvance(startedAt, true, [{ updated_at: 'not-a-date' }]),
+    ).toBe(startedAt);
+  });
+});
+

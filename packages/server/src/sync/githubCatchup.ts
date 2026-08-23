@@ -193,6 +193,27 @@ export interface ReconcileResult {
  * null here, because repairing it must not bump the node's revision —
  * the reconcile loop handles that case via `setExternalLinkState`.
  */
+/**
+ * Where may the sync cursor advance to after a clean (error-free) tick?
+ *
+ * Normally to `startedAt` — the whole change window was seen. But when
+ * the fetch was TRUNCATED by the backstop, the slice is an updated-ASC
+ * prefix of the window: jumping to `startedAt` would permanently skip
+ * every change past the cut (it is no longer "changed since cursor" on
+ * any later tick). Advance only to the last processed issue's
+ * updated_at, so the next tick resumes there and drains the tail.
+ * Pure — exported for tests.
+ */
+export function computeCursorAdvance(
+  startedAt: Date,
+  fetchTruncated: boolean,
+  issues: Array<Pick<GitHubIssue, 'updated_at'>>,
+): Date {
+  if (!fetchTruncated || issues.length === 0) return startedAt;
+  const last = new Date(issues[issues.length - 1].updated_at);
+  return Number.isNaN(last.getTime()) ? startedAt : last;
+}
+
 export function computeStateUpdates(
   node: Pick<Node, 'percentComplete' | 'status' | 'externalLinks'>,
   issue: Pick<GitHubIssue, 'state'>,
@@ -413,8 +434,11 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   }
 
   let issues: GitHubIssue[];
+  let fetchTruncated = false;
   try {
-    issues = await fetchChangedIssues(target.owner, target.repo, token, sinceWithOverlap);
+    const fetchResult = await fetchChangedIssues(target.owner, target.repo, token, sinceWithOverlap);
+    issues = fetchResult.issues;
+    fetchTruncated = fetchResult.truncated;
   } catch (err) {
     // 401-specific escalation path (#75). The "auth revoked" failure
     // mode looks identical to a transient fetch error in the existing
@@ -612,13 +636,26 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   }
   if (parentNumbers.size > 0) {
     try {
-      // since=null → full issue list for accurate sibling counts.
-      const allIssues = await fetchChangedIssues(target.owner, target.repo, token, null);
-      await applyRollupForFetchedIssues(
-        [...parentNumbers],
-        allIssues,
-        { owner: target.owner, repo: target.repo },
-      );
+      // since=null → full issue list for accurate sibling counts. A
+      // truncated list would produce WRONG sibling counts (the newest-
+      // updated issues are exactly the ones missing), so we skip the
+      // rollup rather than write a wrong parent percentage — stale
+      // beats wrong, next cycle retries.
+      const { issues: allIssues, truncated: rollupTruncated } =
+        await fetchChangedIssues(target.owner, target.repo, token, null);
+      if (rollupTruncated) {
+        console.warn(
+          '[catchup] skipping parent-epic rollup for',
+          repoLabel,
+          '— full issue list was truncated, sibling counts would be wrong',
+        );
+      } else {
+        await applyRollupForFetchedIssues(
+          [...parentNumbers],
+          allIssues,
+          { owner: target.owner, repo: target.repo },
+        );
+      }
     } catch (err) {
       // Rollup failures don't taint the reconcile result — they just mean
       // parent percentages stay stale until next cycle.
@@ -637,8 +674,23 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // the issue stays orphaned until manual backfill. The 60s overlap
   // buffer accepts re-fetching some issues already; widening the retry
   // window when something actually failed is the conservative choice.
+  //
+  // Truncated fetch (backstop tripped): the slice is updated-ASC, so
+  // everything we processed is a contiguous prefix of the change
+  // window. Advance the cursor only to the last PROCESSED issue's
+  // updated_at — the next tick resumes there and drains the tail,
+  // instead of jumping to startedAt and permanently skipping every
+  // change the backstop cut off.
   if (ingestErrored === 0 && stateSyncErrored === 0) {
-    await setLastSyncedAt(target.owner, target.repo, startedAt);
+    const nextCursor = computeCursorAdvance(startedAt, fetchTruncated, issues);
+    await setLastSyncedAt(target.owner, target.repo, nextCursor);
+    if (nextCursor !== startedAt) {
+      console.warn(
+        '[catchup] fetch was truncated for',
+        repoLabel,
+        `— cursor advanced only to ${nextCursor.toISOString()}; next tick drains the tail.`,
+      );
+    }
   } else {
     console.warn(
       '[catchup] not bumping lastSyncedAt for',
