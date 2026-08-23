@@ -1846,13 +1846,64 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       return reply.send({ received: true, action: result.action, matched: false });
     }
 
+    const nodeUpdates = { ...(result.nodeUpdates as nodeDb.UpdateNodeInput) };
+
+    // ── issues.edited guard: mirror-until-curated ──────────────────
+    // `description` is the one field with two legitimate writers: the
+    // GH issue body (machine mirror) and manual curation in MindBlown
+    // (business/audit notes — e.g. the Thomas-review annotations). A
+    // blind apply of the webhook body wiped the curation wholesale.
+    //
+    // The webhook payload carries the PRE-edit body in
+    // `changes.body.from`, so we can tell the two apart without any
+    // stored state: a node whose description still equals the OLD
+    // body (or is empty) is an unmodified mirror — keep mirroring.
+    // Anything else was touched in MindBlown — from then on the
+    // description is MB-owned and inbound body edits leave it alone.
+    // (Outbound sync still pushes the curated text to the GH body;
+    // this guard also stops that write-back from bouncing onto the
+    // node as a flattened copy of itself.)
+    //
+    // Title edits keep the `#NNNN ` prefix convention: ingest titles
+    // nodes as `#N <title>`, and search/auto-link parse that marker —
+    // the raw payload title would silently strip it.
+    if (payloadAction === 'edited' && issuePayload?.number != null) {
+      const node = await nodeDb.getNode(nodeId);
+      if (node) {
+        if ('description' in nodeUpdates) {
+          const changes = payload.changes as
+            | { body?: { from?: string | null } }
+            | undefined;
+          const priorBody = changes?.body?.from ?? (payload.issue as GitHubIssue | undefined)?.body ?? null;
+          const cur = node.description;
+          const isUnmodifiedMirror =
+            cur == null ||
+            cur === '' ||
+            (typeof cur === 'string' && cur === priorBody);
+          if (!isUnmodifiedMirror) {
+            delete nodeUpdates.description;
+          }
+        }
+        if (typeof nodeUpdates.text === 'string') {
+          const prefix = `#${issuePayload.number} `;
+          if (node.text.startsWith(prefix) && !nodeUpdates.text.startsWith(prefix)) {
+            nodeUpdates.text = `${prefix}${nodeUpdates.text}`;
+          }
+        }
+      }
+    }
+
+    if (Object.keys(nodeUpdates).length === 0) {
+      return reply.send({ received: true, action: result.action, matched: true, nodeId, skipped: 'curated' });
+    }
+
     // Apply updates
-    const updated = await nodeDb.updateNode(nodeId, result.nodeUpdates as nodeDb.UpdateNodeInput);
+    const updated = await nodeDb.updateNode(nodeId, nodeUpdates);
     if (updated) {
       broadcast(updated.mapId, {
         type: 'node:updated',
         nodeId,
-        fields: Object.keys(result.nodeUpdates),
+        fields: Object.keys(nodeUpdates),
         node: updated,
         source: 'github_webhook',
       });
