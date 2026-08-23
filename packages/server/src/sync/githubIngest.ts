@@ -44,7 +44,7 @@ import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
-import { computeBodyHash } from '../lib/descriptionMirror.js';
+import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -972,18 +972,20 @@ async function ensureNodeForIssueViaTriage(
       buildTriagedCreateInput(mapId, decision.parentNodeId, issue, ctx),
       tx,
     );
-    const link: ExternalLink = {
-      provider: 'github',
-      externalId,
-      url: issue.html_url,
-      syncEnabled: true,
-      lastSyncedAt: new Date().toISOString(),
-      state: issue.state,
-      // The description below is a mirror write — stamp it so the
-      // issues.edited guard can tell mirror from curation later
-      // (lib/descriptionMirror.ts).
-      descriptionMirrorHash: computeBodyHash(issue.body),
-    };
+    // The description write below mirrors the issue body — stamp the
+    // link so the issues.edited guard can tell mirror from curation
+    // later (lib/descriptionMirror.ts).
+    const link: ExternalLink = stampMirrorHash(
+      {
+        provider: 'github',
+        externalId,
+        url: issue.html_url,
+        syncEnabled: true,
+        lastSyncedAt: new Date().toISOString(),
+        state: issue.state,
+      },
+      issue.body,
+    );
     // Same milestone-based version routing as the non-triage path —
     // keeps Jenna's Unversioned bucket from refilling after the LLM
     // auto-places a node.
@@ -1254,18 +1256,20 @@ export async function ensureNodeForIssue(
       },
       tx,
     );
-    const link: ExternalLink = {
-      provider: 'github',
-      externalId,
-      url: issue.html_url,
-      syncEnabled: true,
-      lastSyncedAt: new Date().toISOString(),
-      state: issue.state,
-      // The description below is a mirror write — stamp it so the
-      // issues.edited guard can tell mirror from curation later
-      // (lib/descriptionMirror.ts).
-      descriptionMirrorHash: computeBodyHash(issue.body),
-    };
+    // The description write below mirrors the issue body — stamp the
+    // link so the issues.edited guard can tell mirror from curation
+    // later (lib/descriptionMirror.ts).
+    const link: ExternalLink = stampMirrorHash(
+      {
+        provider: 'github',
+        externalId,
+        url: issue.html_url,
+        syncEnabled: true,
+        lastSyncedAt: new Date().toISOString(),
+        state: issue.state,
+      },
+      issue.body,
+    );
     // Route the new node to its milestone-derived version when one
     // resolves on this map, so it doesn't land in the Unversioned
     // bucket for Jenna's next housekeeping sweep to re-discover.

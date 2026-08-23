@@ -35,7 +35,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { extractAutoLinkIssueNumber } from './nodes.js';
+import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
@@ -502,9 +502,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Create the issue on GitHub
       const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.token);
 
-      // Store the link on the node
+      // Store the link on the node. The description here is NODE-
+      // authored (it was pushed TO GitHub, not mirrored from it) —
+      // stamp the link as "mirror wrote nothing" so the issues.edited
+      // guard treats the description as curated from day one instead
+      // of falling back to the prior-body equality check, which a
+      // GH-side edit would misread as a mirror one round-trip later.
       const existingLinks = [...node.externalLinks];
-      existingLinks.push(externalLink);
+      existingLinks.push(stampMirrorHash(externalLink, null));
 
       const updated = await nodeDb.updateNode(req.params.nodeId, { externalLinks: existingLinks });
 
@@ -866,7 +871,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           ?.slice('priority:'.length) ?? null;
 
         await nodeDb.updateNode(childNode.id, {
-          externalLinks: [item.externalLink],
+          // Mirror write — stamp the link so the issues.edited guard
+          // can tell mirror from curation (lib/descriptionMirror.ts).
+          externalLinks: [stampMirrorHash(item.externalLink, item.issue.body)],
           tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
           description: item.issue.body,
           ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
@@ -1883,21 +1890,26 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             | { body?: { from?: string | null } }
             | undefined;
           const priorBody = changes?.body?.from ?? null;
-          const externalId = `${repoFullName}#${issuePayload.number}`;
           const linkIdx = node.externalLinks.findIndex(
-            (l) => l.provider === 'github' && l.externalId === externalId,
+            (l) => l.provider === 'github' && l.externalId === result.externalId,
           );
           const link = linkIdx >= 0 ? node.externalLinks[linkIdx] : null;
           if (link && isMirrorDescription(node.description, link, priorBody)) {
             // Applying the mirror write — stamp the hash on the link in
             // the same update so the next decision compares against
             // what we just wrote (and legacy links migrate lazily).
+            // Skip the stamp when the hash already matches (webhook
+            // redelivery): the description write dedupes below, and a
+            // value-identical externalLinks write would otherwise keep
+            // the UPDATE+broadcast alive for a pure no-op.
             const newBody =
               typeof nodeUpdates.description === 'string' ? nodeUpdates.description : null;
-            const links = node.externalLinks.map((l, i) =>
-              i === linkIdx ? stampMirrorHash(l, newBody) : l,
-            );
-            nodeUpdates.externalLinks = links;
+            const stamped = stampMirrorHash(link, newBody);
+            if (stamped.descriptionMirrorHash !== link.descriptionMirrorHash) {
+              nodeUpdates.externalLinks = node.externalLinks.map((l, i) =>
+                i === linkIdx ? stamped : l,
+              );
+            }
           } else {
             delete nodeUpdates.description;
           }

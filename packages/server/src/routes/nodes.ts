@@ -15,22 +15,11 @@ import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/
 // but forgot to call link_github_issue. We catch that here so the orphan
 // bucket stays empty without per-call discipline. Spec: GitHub issue #58.
 //
-// Pattern: leading `#NNNN` followed by either a space or end-of-string.
-// Anchored — `#NNNN` mid-title is most likely a co-mention (e.g. an inline
-// PR reference), not the node's own identity.
-const AUTOLINK_TITLE_RE = /^#(\d+)(?:\s|$)/;
-
-/**
- * Extract the leading issue number from a title, or null when the title
- * doesn't match the auto-link pattern.
- */
-export function extractAutoLinkIssueNumber(title: string): number | null {
-  if (!title) return null;
-  const m = AUTOLINK_TITLE_RE.exec(title);
-  if (!m) return null;
-  const n = Number.parseInt(m[1], 10);
-  return Number.isFinite(n) ? n : null;
-}
+// The marker pattern itself lives in lib/autoLink.ts so the webhook
+// guard in routes/integrations.ts can share it without a routes↔routes
+// import cycle. Re-exported here for existing importers.
+import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
+export { extractAutoLinkIssueNumber };
 
 /**
  * If the title starts with `#NNNN` and the map has a GitHub repo bound to
