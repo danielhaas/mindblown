@@ -56,8 +56,8 @@ type DbState = {
   // tests can assert on what was persisted.
   triageDecisions: Map<string, Record<string, unknown>>;
   // Versions rows. Populated by individual tests that exercise the
-  // milestone → version routing path in ensureNodeForIssue.
-  versions: Array<{ id: string; mapId: string; name: string }>;
+  // release-lane routing path in ensureNodeForIssue.
+  versions: Array<{ id: string; mapId: string; name: string; status: string; sortOrder: number }>;
 };
 const dbState: DbState = {
   maps: new Map(),
@@ -144,7 +144,7 @@ function buildChain(): {
     } else if (step.table === 'triageDecisions') {
       rows = [...dbState.triageDecisions.values()].map((r) => ({ ...r }));
     } else if (step.table === 'versions') {
-      rows = dbState.versions.map((v) => ({ id: v.id, mapId: v.mapId, name: v.name }));
+      rows = dbState.versions.map((v) => ({ ...v }));
     }
     return applyPred(rows, step.pred);
   };
@@ -358,12 +358,14 @@ vi.mock('../../db/schema.js', () => {
       externalId: col('externalId'),
       lastInputHash: col('lastInputHash'),
     },
-    // Milestone → versionId resolver lookups select against this table.
+    // Release-lane resolver lookups select against this table.
     versions: {
       __name: 'versions',
       id: col('id'),
       mapId: col('mapId'),
       name: col('name'),
+      status: col('status'),
+      sortOrder: col('sortOrder'),
     },
   };
 });
@@ -380,6 +382,10 @@ vi.mock('drizzle-orm', async () => {
     and: (...preds: Pred[]): Pred => ({
       __pred: true,
       check: (row) => preds.every((p) => p.check(row)),
+    }),
+    ne: (column: { __col?: string }, value: unknown): Pred => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] !== value,
     }),
     isNotNull: (column: { __col?: string }): Pred => ({
       __pred: true,
@@ -749,58 +755,43 @@ describe('ensureNodeForIssue', () => {
     expect(advisoryLocksTaken.length).toBeGreaterThan(0);
   });
 
-  // Jenna housekeeping digest 2026-06-11 — webhook-ingested issues
-  // were landing with versionId=null even when their GH milestone
-  // mapped cleanly to a known MindBlown version, refilling the
-  // Unversioned bucket between every sweep tick.
-  it('routes a milestoned issue into the matching version', async () => {
+  // Release-lane routing: a freshly ingested node defaults into the
+  // map's active lane (highest sortOrder among status='active') so it
+  // is visible to the dispatch queue instead of landing in the
+  // Unversioned bucket. Replaced the milestone-title routing, which
+  // was dead code in practice (0/1200 sampled issues carried a GH
+  // milestone).
+  it('routes a new node into the active lane with the highest sortOrder', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
     dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
-    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+    dbState.versions.push(
+      { id: 'v1-uuid', mapId: 'm1', name: 'V1', status: 'active', sortOrder: 10 },
+      { id: 'v15-uuid', mapId: 'm1', name: 'V1.5', status: 'active', sortOrder: 15 },
+      { id: 'v2-uuid', mapId: 'm1', name: 'V2', status: 'planning', sortOrder: 20 },
+    );
 
     await ensureNodeForIssue(
       'm1',
       'inbox-1',
-      issue(101, {
-        title: 'route me',
-        milestone: {
-          id: 7000,
-          number: 7,
-          title: 'V2: 7. Infrastruktur',
-          description: null,
-          state: 'open',
-          due_on: null,
-          created_at: new Date().toISOString(),
-        },
-      }),
+      issue(101, { title: 'route me' }),
       { owner: 'owner', repo: 'repo', createdBy: 'u1' },
     );
 
     const updateCall = updateNodeCalls.find((c) => c.input.externalLinks);
-    expect(updateCall?.input.versionId).toBe('v2-uuid');
+    expect(updateCall?.input.versionId).toBe('v15-uuid');
   });
 
-  it('leaves versionId unset when no version row matches the milestone prefix', async () => {
+  it('leaves versionId unset when the map has no active lane', async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
     dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
-    // No 'V3' version row in this map.
-    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+    dbState.versions.push(
+      { id: 'v2-uuid', mapId: 'm1', name: 'V2', status: 'planning', sortOrder: 20 },
+    );
 
     await ensureNodeForIssue(
       'm1',
       'inbox-1',
-      issue(102, {
-        title: 'orphan milestone',
-        milestone: {
-          id: 9000,
-          number: 9,
-          title: 'V3: ahead-of-its-time',
-          description: null,
-          state: 'open',
-          due_on: null,
-          created_at: new Date().toISOString(),
-        },
-      }),
+      issue(102, { title: 'planning-only map' }),
       { owner: 'owner', repo: 'repo', createdBy: 'u1' },
     );
 
@@ -808,26 +799,17 @@ describe('ensureNodeForIssue', () => {
     expect('versionId' in (updateCall?.input ?? {})).toBe(false);
   });
 
-  it('leaves versionId unset for a milestone without a V-prefix', async () => {
+  it("ignores another map's active lane", async () => {
     dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
     dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
-    dbState.versions.push({ id: 'v2-uuid', mapId: 'm1', name: 'V2' });
+    dbState.versions.push(
+      { id: 'other-uuid', mapId: 'OTHER', name: 'V9', status: 'active', sortOrder: 90 },
+    );
 
     await ensureNodeForIssue(
       'm1',
       'inbox-1',
-      issue(103, {
-        title: 'non-version milestone',
-        milestone: {
-          id: 12000,
-          number: 12,
-          title: 'Sprint 4',
-          description: null,
-          state: 'open',
-          due_on: null,
-          created_at: new Date().toISOString(),
-        },
-      }),
+      issue(103, { title: 'foreign lane' }),
       { owner: 'owner', repo: 'repo', createdBy: 'u1' },
     );
 

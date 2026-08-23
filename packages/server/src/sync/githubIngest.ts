@@ -39,9 +39,9 @@
  *     persists the new id.
  */
 
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
-import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
+import { importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
@@ -433,40 +433,47 @@ export function ghLabelsToTags(
 }
 
 /**
- * Resolve a GitHub milestone title to the matching MindBlown version
- * id on a given map, or null when no resolution is possible.
+ * Resolve the release lane (versionId) for a freshly ingested node.
  *
- * Three pieces have to line up:
- *   1. The issue must carry a milestone whose title has a parseable
- *      version prefix (`V1: …`, `V2: …`) — see `extractVersionFromMilestone`.
- *   2. The map must already have a version row whose `name` equals the
- *      extracted prefix. The bulk-import path (`routes/integrations.ts`)
- *      is what creates those rows on first run; we never create one
- *      from inside the auto-ingest path because that risks racing
- *      against the import / explicit `create_version` and producing
- *      duplicate-named version rows.
- *   3. The lookup runs on the caller's tx/db handle so it shares
- *      visibility (and lock state) with the rest of the ingest tx.
+ * Order of precedence:
+ *   1. `suggestedVersionId` — the triage LLM's pick, when it named one.
+ *      Re-validated against the map's non-released versions here (the
+ *      map-context cache the LLM saw may be up to 5 minutes stale).
+ *   2. The map's active lane: the version with `status='active'` and
+ *      the highest sortOrder (= the latest lane currently being worked).
+ *   3. null — the map has no active lane; the node lands unversioned.
  *
- * Without this, every webhook-ingested issue lands with `versionId=null`
- * even when its milestone maps cleanly to a known MindBlown version —
- * the operator then has to re-route it manually, and Jenna's housekeeping
- * sweep re-discovers the same nodes in the Unversioned bucket on every
- * tick (digest 2026-06-11).
+ * The active-lane fallback is deliberate policy, not a shrug: an
+ * unversioned node is invisible to the dispatch queue (get_schedule /
+ * get_next_ticket filter on version), so "park it unversioned for later
+ * review" quietly buries the ticket — and that review queue demonstrably
+ * never drains. A node in the wrong lane is visible and trivially
+ * movable (`bulk_assign_to_version`); the error costs are asymmetric,
+ * so we default into the active lane. This replaced the earlier
+ * milestone-title routing, which was dead code in practice — 0 of 1200
+ * sampled issues on the bound repo carried a GitHub milestone.
+ *
+ * Runs on the caller's tx/db handle so it shares visibility and lock
+ * state with the rest of the ingest tx.
  */
-export async function resolveVersionIdFromMilestone(
+export async function resolveIngestVersionId(
   handle: nodeDb.DbHandle,
   mapId: string,
-  milestoneTitle: string | null | undefined,
+  suggestedVersionId?: string | null,
 ): Promise<string | null> {
-  if (!milestoneTitle) return null;
-  const versionName = extractVersionFromMilestone(milestoneTitle);
-  if (!versionName) return null;
-  const [row] = await handle
-    .select({ id: versions.id })
+  const rows = await handle
+    .select({ id: versions.id, status: versions.status, sortOrder: versions.sortOrder })
     .from(versions)
-    .where(and(eq(versions.mapId, mapId), eq(versions.name, versionName)));
-  return row?.id ?? null;
+    .where(and(eq(versions.mapId, mapId), ne(versions.status, 'released')));
+
+  if (suggestedVersionId && rows.some((r) => r.id === suggestedVersionId)) {
+    return suggestedVersionId;
+  }
+
+  const active = rows.filter((r) => r.status === 'active');
+  if (active.length === 0) return null;
+  active.sort((a, b) => b.sortOrder - a.sortOrder);
+  return active[0].id;
 }
 
 /**
@@ -979,10 +986,10 @@ async function ensureNodeForIssueViaTriage(
       lastSyncedAt: new Date().toISOString(),
       state: issue.state,
     };
-    // Same milestone-based version routing as the non-triage path —
-    // keeps Jenna's Unversioned bucket from refilling after the LLM
-    // auto-places a node.
-    const triageVersionId = await resolveVersionIdFromMilestone(tx, mapId, issue.milestone?.title);
+    // Same lane routing as the non-triage path, but the LLM's own lane
+    // pick (decision.versionId) wins when it named a valid one — keeps
+    // the Unversioned bucket from refilling after an auto-place.
+    const triageVersionId = await resolveIngestVersionId(tx, mapId, decision.versionId);
     const updated = await nodeDb.updateNode(
       created.id,
       {
@@ -1257,13 +1264,11 @@ export async function ensureNodeForIssue(
       lastSyncedAt: new Date().toISOString(),
       state: issue.state,
     };
-    // Route the new node to its milestone-derived version when one
-    // resolves on this map, so it doesn't land in the Unversioned
-    // bucket for Jenna's next housekeeping sweep to re-discover.
-    // Issues with no milestone — or a milestone that doesn't carry a
-    // recognized version prefix — still land unversioned; the operator
-    // makes the call via NEEDS-VERSION triage.
-    const versionId = await resolveVersionIdFromMilestone(tx, mapId, issue.milestone?.title);
+    // Route the new node into the map's active lane so it doesn't land
+    // in the Unversioned bucket — invisible to the dispatch queue —
+    // for the next housekeeping sweep to re-discover. Non-triage maps
+    // have no LLM suggestion, so this is always the plain fallback.
+    const versionId = await resolveIngestVersionId(tx, mapId);
     const updated = await nodeDb.updateNode(
       created.id,
       {

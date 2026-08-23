@@ -52,6 +52,18 @@ function makeMapContext(overrides: Partial<MapContext> = {}): MapContext {
         description: 'API and DB',
       },
     ],
+    versions: [
+      {
+        versionId: '33333333-3333-3333-3333-333333333333',
+        name: 'V1',
+        status: 'active',
+      },
+      {
+        versionId: '44444444-4444-4444-4444-444444444444',
+        name: 'V2',
+        status: 'planning',
+      },
+    ],
     ...overrides,
   };
 }

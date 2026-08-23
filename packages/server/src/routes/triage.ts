@@ -70,7 +70,7 @@ import {
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
-import { backfillMap } from '../sync/githubIngest.js';
+import { backfillMap, resolveIngestVersionId } from '../sync/githubIngest.js';
 import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
@@ -993,9 +993,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           lastSyncedAt: new Date().toISOString(),
           state: isClosed ? 'closed' : 'open',
         };
+        // Same active-lane default as auto-ingest — an imported orphan
+        // should be visible to the dispatch queue, not parked unversioned.
+        const versionId = await resolveIngestVersionId(tx, req.params.mapId);
         const updated = await nodeDb.updateNode(
           node.id,
-          { externalLinks: [link] },
+          { externalLinks: [link], ...(versionId ? { versionId } : {}) },
           undefined,
           tx,
         );
@@ -1612,9 +1615,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             lastSyncedAt: new Date().toISOString(),
             state: isClosed ? 'closed' : 'open',
           };
+          // Operator placement still routes into the map's active lane —
+          // same default as auto-ingest, so a confirmed orphan doesn't
+          // land invisible to the dispatch queue.
+          const versionId = await resolveIngestVersionId(tx, req.params.mapId);
           const updated = await nodeDb.updateNode(
             node.id,
-            { externalLinks: [link] },
+            { externalLinks: [link], ...(versionId ? { versionId } : {}) },
             undefined,
             tx,
           );
@@ -2350,9 +2357,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 lastSyncedAt: new Date().toISOString(),
                 state: isClosed ? 'closed' : 'open',
               };
+              // Same active-lane default as auto-ingest and the single
+              // /override path above.
+              const versionId = await resolveIngestVersionId(tx, req.params.mapId);
               const updated = await nodeDb.updateNode(
                 node.id,
-                { externalLinks: [link] },
+                { externalLinks: [link], ...(versionId ? { versionId } : {}) },
                 undefined,
                 tx,
               );
