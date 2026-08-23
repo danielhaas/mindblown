@@ -457,14 +457,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Fetch the issue from GitHub to get its URL
       const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, ghCtx.token);
 
-      const externalLink: ExternalLink = {
-        provider: 'github',
-        externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
-        url: issue.html_url,
-        syncEnabled: true,
-        lastSyncedAt: new Date().toISOString(),
-        state: issue.state,
-      };
+      // "Mirror wrote nothing": manual linking does not write the
+      // description, so whatever the node holds is node-authored —
+      // stamp accordingly so the issues.edited guard treats it as
+      // curated instead of hitting the weaker legacy fallback.
+      const externalLink: ExternalLink = stampMirrorHash(
+        {
+          provider: 'github',
+          externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
+          url: issue.html_url,
+          syncEnabled: true,
+          lastSyncedAt: new Date().toISOString(),
+          state: issue.state,
+        },
+        null,
+      );
 
       // Add to existing external links
       const existingLinks = node.externalLinks.filter(
