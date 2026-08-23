@@ -1163,7 +1163,7 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(rows[0].suggestedParentNodeId).toBe('epic-1');
   });
 
-  it('triage_enabled=true + place LOW-confidence → triage row persisted, NO node created', async () => {
+  it('triage_enabled=true + place LOW-confidence → row persisted, node PARKED under the Inbox', async () => {
     dbState.maps.set('m1', {
       rootNodeId: 'root-1',
       inboxId: 'inbox-1',
@@ -1180,9 +1180,13 @@ describe('ensureNodeForIssue — triage fork', () => {
 
     const result = await ensureNodeForIssue('m1', 'inbox-1', issue(102), ctx);
 
-    expect(result.status).toBe('triaged_low_confidence');
-    expect(result.nodeId).toBeUndefined();
-    expect(createNodeCalls.length).toBe(0);
+    // Inbox fallback: the decision is persisted for review AND a node
+    // is parked under the Inbox — the review queue demonstrably never
+    // drains, and an invisible ticket is a buried ticket.
+    expect(result.status).toBe('created');
+    expect(result.triage?.decision).toBe('place');
+    expect(createNodeCalls.length).toBe(1);
+    expect(createNodeCalls[0].parentId).toBe('inbox-1');
     const rows = [...dbState.triageDecisions.values()];
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({
@@ -1190,13 +1194,11 @@ describe('ensureNodeForIssue — triage fork', () => {
       confidence: 60,
       decidedBy: 'auto',
     });
-    // placed_node_id is null since no node was created.
-    expect(rows[0].placedNodeId).toBeNull();
-    // BUT suggested_parent_node_id IS populated — that's the entire
-    // point of the column: the Override modal needs the LLM's pick
-    // for low-confidence places even when auto-apply was blocked.
-    // Without this assertion the gap that motivated the column
-    // wouldn't be regression-tested.
+    // placed_node_id points at the parked node.
+    expect(rows[0].placedNodeId).toBe(result.nodeId);
+    // suggested_parent_node_id still carries the LLM's pick — the
+    // Override modal pre-selects it when the operator re-routes the
+    // parked node out of the Inbox.
     expect(rows[0].suggestedParentNodeId).toBe('epic-1');
   });
 
@@ -1309,7 +1311,7 @@ describe('ensureNodeForIssue — triage fork', () => {
     expect(rows[0]).toMatchObject({ decision: 'skip', reviewed: false });
   });
 
-  it('triage_enabled=true + uncertain → triage row persisted, no node created', async () => {
+  it('triage_enabled=true + uncertain → row persisted, node PARKED under the Inbox', async () => {
     dbState.maps.set('m1', {
       rootNodeId: 'root-1',
       inboxId: 'inbox-1',
@@ -1325,11 +1327,14 @@ describe('ensureNodeForIssue — triage fork', () => {
 
     const result = await ensureNodeForIssue('m1', 'inbox-1', issue(104), ctx);
 
-    expect(result.status).toBe('triaged_uncertain');
-    expect(createNodeCalls.length).toBe(0);
+    expect(result.status).toBe('created');
+    expect(result.triage?.decision).toBe('uncertain');
+    expect(createNodeCalls.length).toBe(1);
+    expect(createNodeCalls[0].parentId).toBe('inbox-1');
     const rows = [...dbState.triageDecisions.values()];
     expect(rows.length).toBe(1);
     expect(rows[0]).toMatchObject({ decision: 'uncertain' });
+    expect(rows[0].placedNodeId).toBe(result.nodeId);
   });
 
   it('idempotent: a triaged issue already linked to a node short-circuits to skipped_exists', async () => {
@@ -1616,8 +1621,13 @@ describe('ensureNodeForIssue — triage fork', () => {
 
     const result = await ensureNodeForIssue('m1', 'inbox-1', issue(106), ctx);
 
-    expect(result.status).toBe('triaged_uncertain');
-    expect(createNodeCalls.length).toBe(0);
+    // Downgraded to uncertain → parked under the Inbox like any other
+    // uncertain decision. Crucially NOT auto-placed under the
+    // hallucinated parent.
+    expect(result.status).toBe('created');
+    expect(result.triage?.decision).toBe('uncertain');
+    expect(createNodeCalls.length).toBe(1);
+    expect(createNodeCalls[0].parentId).toBe('inbox-1');
     const rows = [...dbState.triageDecisions.values()];
     expect(rows[0]).toMatchObject({ decision: 'uncertain' });
   });
@@ -1788,11 +1798,36 @@ describe('ensureNodeForIssue — triage cost-opt (#142)', () => {
     };
     const iss = issue(204);
 
-    await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
+    const result = await ensureNodeForIssue('m1', 'inbox-1', iss, ctx);
 
     const rows = [...dbState.triageDecisions.values()];
     expect(rows).toHaveLength(1);
     expect(rows[0].lastInputHash).toBeNull();
+    // And no Inbox parking either: a parked node would make the
+    // node-existence precheck skip every future triage of this issue,
+    // freezing the transient LLM error in place.
+    expect(result.status).toBe('triaged_uncertain');
+    expect(createNodeCalls.length).toBe(0);
+  });
+
+  it('closed issue + uncertain → decision-only, no Inbox parking', async () => {
+    seedTriageMap();
+    triageMockResponse = {
+      decision: 'uncertain',
+      reason: 'could be anything',
+      confidence: 40,
+    };
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(207, { state: 'closed', closed_at: new Date().toISOString() }),
+      ctx,
+      { allowClosedWithinDays: 30 },
+    );
+
+    expect(result.status).toBe('triaged_uncertain');
+    expect(createNodeCalls.length).toBe(0);
   });
 
   // ── Per-issue debounce window ───────────────────────────────

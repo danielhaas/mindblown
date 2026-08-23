@@ -585,6 +585,7 @@ async function findNodesByExternalIdAcrossMaps(
  */
 async function ensureNodeForIssueViaTriage(
   mapId: string,
+  inboxNodeId: string,
   issue: GitHubIssue,
   ctx: IngestContext,
   externalId: string,
@@ -831,6 +832,13 @@ async function ensureNodeForIssueViaTriage(
         decisionId: string;
         previous: PriorDecisionSnapshot | null;
       }
+    | {
+        kind: 'inbox_parked';
+        decisionId: string;
+        nodeId: string;
+        node: Awaited<ReturnType<typeof nodeDb.getNode>>;
+        previous: PriorDecisionSnapshot | null;
+      }
     | { kind: 'lost_race'; nodeId: string }
     | {
         kind: 'operator_reviewed_late';
@@ -1007,9 +1015,77 @@ async function ensureNodeForIssueViaTriage(
       .returning({ id: triageDecisions.id });
 
     if (!shouldAutoApply || !decision.parentNodeId) {
+      // ── Inbox fallback ─────────────────────────────────────────
+      // A decision-only outcome used to leave OPEN issues node-less,
+      // parked in the operator review queue — which demonstrably
+      // never drains (1'640+ unreviewed rows). An invisible ticket is
+      // a buried ticket; a node under the GitHub Inbox is visible in
+      // the map, movable, and findable by the housekeeping sweeps.
+      // So: uncertain and low-confidence places PARK a node under the
+      // Inbox instead. `skip` stays node-less (the junk filter is the
+      // point of triage), and closed issues stay node-less too
+      // (history needs no parking).
+      //
+      // Lane: only the LLM's own validated pick — NO active-lane
+      // fallback here, unlike the auto-place path. An uncertain issue
+      // hasn't had its lane call made; parking it unversioned keeps it
+      // out of the dispatch queue until someone routes it.
+      // triage_error is NOT a decision — parking on an LLM outage
+      // would make the node-existence precheck skip every future
+      // triage of the issue, freezing the transient error in place.
+      if (
+        decision.decision === 'skip' ||
+        issue.state !== 'open' ||
+        decision.reason.startsWith('triage_error')
+      ) {
+        return {
+          kind: 'decision_only',
+          decisionId: decisionRow.id,
+          previous: priorSnapshot,
+        };
+      }
+      const parked = await nodeDb.createNode(
+        buildTriagedCreateInput(mapId, inboxNodeId, issue, ctx),
+        tx,
+      );
+      const parkLink: ExternalLink = stampMirrorHash(
+        {
+          provider: 'github',
+          externalId,
+          url: issue.html_url,
+          syncEnabled: true,
+          lastSyncedAt: new Date().toISOString(),
+          state: issue.state,
+        },
+        issue.body,
+      );
+      let parkVersionId: string | null = null;
+      if (decision.versionId) {
+        const resolved = await resolveIngestVersionId(tx, mapId, {
+          suggestedVersionId: decision.versionId,
+        });
+        if (resolved === decision.versionId) parkVersionId = resolved;
+      }
+      const parkedUpdated = await nodeDb.updateNode(
+        parked.id,
+        {
+          externalLinks: [parkLink],
+          description: issue.body ?? null,
+          tags: ghLabelsToTags(issue.labels),
+          ...(parkVersionId ? { versionId: parkVersionId } : {}),
+        },
+        undefined,
+        tx,
+      );
+      await tx
+        .update(triageDecisions)
+        .set({ placedNodeId: parked.id })
+        .where(eq(triageDecisions.id, decisionRow.id));
       return {
-        kind: 'decision_only',
+        kind: 'inbox_parked',
         decisionId: decisionRow.id,
+        nodeId: parked.id,
+        node: parkedUpdated ?? parked,
         previous: priorSnapshot,
       };
     }
@@ -1166,6 +1242,45 @@ async function ensureNodeForIssueViaTriage(
     };
   }
 
+  if (result.kind === 'inbox_parked') {
+    broadcast(mapId, {
+      type: 'node:created',
+      node: result.node,
+      source: 'github_ingest_triage_inbox',
+    });
+    await recordTriageHistory({
+      decisionId: result.decisionId,
+      changedBy: 'auto',
+      changeType: result.previous ? 'overridden' : 'created',
+      previousDecision: result.previous?.decision ?? null,
+      newDecision: decision.decision,
+      previousConfidence: result.previous?.confidence ?? null,
+      newConfidence: decision.confidence,
+      previousParentNodeId: result.previous?.placedNodeId ?? null,
+      newParentNodeId: result.nodeId,
+      reason: decision.reason,
+    });
+    await applyTriageLabel({
+      mapId,
+      externalId,
+      decision: decision.decision,
+      placedNodeId: result.nodeId,
+    });
+    // Reported as 'created' — a node exists and callers count it as
+    // ingested; the triage payload still carries the uncertain/
+    // low-confidence decision for dashboards and the review queue.
+    return {
+      status: 'created',
+      nodeId: result.nodeId,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+      },
+    };
+  }
+
   // Decision-only outcomes: no node created. Map the decision to a
   // dedicated status code so callers can distinguish "intentionally
   // not created" from "skipped because already exists".
@@ -1267,7 +1382,7 @@ export async function ensureNodeForIssue(
     triageEnabled = mapRow?.triageEnabled === true;
   }
   if (triageEnabled) {
-    return ensureNodeForIssueViaTriage(mapId, issue, ctx, externalId);
+    return ensureNodeForIssueViaTriage(mapId, inboxNodeId, issue, ctx, externalId);
   }
 
   // (3) Wrap lock + precheck + create + link-update in a Postgres
