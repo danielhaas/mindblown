@@ -340,6 +340,11 @@ server.tool(
       lines.push(`Total actual:    ${totalActual.toFixed(2)} ${unit}`);
       if (calibration.fudgeFactor != null) {
         lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x — applied by forecasts (${calibration.organicCount} organic samples)`);
+        if (fudgeFactor > 0 && (fudgeFactor < 0.5 || fudgeFactor > 2)) {
+          lines.push(
+            `⚠ UNCALIBRATED: the estimate unit is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — re-baseline estimates (target defaults 0.1-0.25d per ticket) instead of trusting fudge-corrected forecasts.`,
+          );
+        }
       } else {
         lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x (raw ratio — NOT applied by forecasts)`);
         if (calibration.note) lines.push(`⚠ ${calibration.note}`);
@@ -1057,6 +1062,15 @@ server.tool(
       lines.push('');
       if (fudgeFactor != null) {
         lines.push(`Velocity calibration: fudge = ${fudgeFactor.toFixed(2)}x (${calibration.organicCount} organic samples, ${calibration.organicDays.toFixed(1)} estimate-days)`);
+        // A fudge far from 1 means the estimate UNIT is broken, not the
+        // team's pace — at 0.10x a "1d" node is really ~1h of work, and
+        // every downstream number is unit-fiction until the estimates
+        // are recalibrated (defaults 0.1-0.25d, not 1-2d).
+        if (fudgeFactor < 0.5 || fudgeFactor > 2) {
+          lines.push(
+            `⚠ UNCALIBRATED: fudge ${fudgeFactor.toFixed(2)}x means the estimate unit itself is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — treat every forecast below as unit-fiction until estimates are re-baselined (target defaults 0.1-0.25d per ticket).`,
+          );
+        }
       } else if (calibration.note != null) {
         lines.push(`Velocity calibration: ${calibration.note}`);
       } else {
