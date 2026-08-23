@@ -44,6 +44,7 @@ import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
+import { computeBodyHash } from '../lib/descriptionMirror.js';
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -978,6 +979,10 @@ async function ensureNodeForIssueViaTriage(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
       state: issue.state,
+      // The description below is a mirror write — stamp it so the
+      // issues.edited guard can tell mirror from curation later
+      // (lib/descriptionMirror.ts).
+      descriptionMirrorHash: computeBodyHash(issue.body),
     };
     // Same milestone-based version routing as the non-triage path —
     // keeps Jenna's Unversioned bucket from refilling after the LLM
@@ -1256,6 +1261,10 @@ export async function ensureNodeForIssue(
       syncEnabled: true,
       lastSyncedAt: new Date().toISOString(),
       state: issue.state,
+      // The description below is a mirror write — stamp it so the
+      // issues.edited guard can tell mirror from curation later
+      // (lib/descriptionMirror.ts).
+      descriptionMirrorHash: computeBodyHash(issue.body),
     };
     // Route the new node to its milestone-derived version when one
     // resolves on this map, so it doesn't land in the Unversioned

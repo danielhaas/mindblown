@@ -35,6 +35,8 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
+import { extractAutoLinkIssueNumber } from './nodes.js';
+import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -1864,6 +1866,12 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // this guard also stops that write-back from bouncing onto the
     // node as a flattened copy of itself.)
     //
+    // Ownership decision + hash mechanics: lib/descriptionMirror.ts.
+    // One accepted edge: an intentionally BLANKED description reads as
+    // mirror and re-fills from the next body edit — "keep it empty
+    // forever" would need an explicit ownership flag; not worth it
+    // until someone actually wants that.
+    //
     // Title edits keep the `#NNNN ` prefix convention: ingest titles
     // nodes as `#N <title>`, and search/auto-link parse that marker —
     // the raw payload title would silently strip it.
@@ -1874,27 +1882,61 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           const changes = payload.changes as
             | { body?: { from?: string | null } }
             | undefined;
-          const priorBody = changes?.body?.from ?? (payload.issue as GitHubIssue | undefined)?.body ?? null;
-          const cur = node.description;
-          const isUnmodifiedMirror =
-            cur == null ||
-            cur === '' ||
-            (typeof cur === 'string' && cur === priorBody);
-          if (!isUnmodifiedMirror) {
+          const priorBody = changes?.body?.from ?? null;
+          const externalId = `${repoFullName}#${issuePayload.number}`;
+          const linkIdx = node.externalLinks.findIndex(
+            (l) => l.provider === 'github' && l.externalId === externalId,
+          );
+          const link = linkIdx >= 0 ? node.externalLinks[linkIdx] : null;
+          if (link && isMirrorDescription(node.description, link, priorBody)) {
+            // Applying the mirror write — stamp the hash on the link in
+            // the same update so the next decision compares against
+            // what we just wrote (and legacy links migrate lazily).
+            const newBody =
+              typeof nodeUpdates.description === 'string' ? nodeUpdates.description : null;
+            const links = node.externalLinks.map((l, i) =>
+              i === linkIdx ? stampMirrorHash(l, newBody) : l,
+            );
+            nodeUpdates.externalLinks = links;
+          } else {
             delete nodeUpdates.description;
           }
         }
         if (typeof nodeUpdates.text === 'string') {
+          // Same definition of "carries the #N marker" as auto-link
+          // and search use (extractAutoLinkIssueNumber) — a second,
+          // stricter startsWith check would let `#42`-shaped titles
+          // slip through and lose the marker on the rewrite.
           const prefix = `#${issuePayload.number} `;
-          if (node.text.startsWith(prefix) && !nodeUpdates.text.startsWith(prefix)) {
+          if (
+            extractAutoLinkIssueNumber(node.text) === issuePayload.number &&
+            extractAutoLinkIssueNumber(nodeUpdates.text) !== issuePayload.number
+          ) {
             nodeUpdates.text = `${prefix}${nodeUpdates.text}`;
           }
+        }
+        // Drop fields that would write their current value — a GH
+        // edit-storm on a curated node (or the outbound curated-text
+        // write-back bouncing off GitHub) otherwise costs a full
+        // UPDATE + node:updated fanout per event for a no-op.
+        if (nodeUpdates.text === node.text) delete nodeUpdates.text;
+        if (
+          'description' in nodeUpdates &&
+          nodeUpdates.description === node.description
+        ) {
+          delete nodeUpdates.description;
         }
       }
     }
 
     if (Object.keys(nodeUpdates).length === 0) {
-      return reply.send({ received: true, action: result.action, matched: true, nodeId, skipped: 'curated' });
+      return reply.send({
+        received: true,
+        action: result.action,
+        matched: true,
+        nodeId,
+        skipped: 'no_change',
+      });
     }
 
     // Apply updates

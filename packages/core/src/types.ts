@@ -83,6 +83,20 @@ export interface ExternalLink {
    */
   previousPercentComplete?: number | null;
   previousStatus?: string | null;
+
+  /**
+   * sha256 (hex) of the issue body the MIRROR path last wrote into
+   * `node.description` — stamped at ingest-create and on every applied
+   * inbound body edit. The description guard compares the node's
+   * current description against THIS (what the mirror wrote), not
+   * against what GitHub currently holds: after outbound sync pushes a
+   * curated text into the GH body the two are equal, and a
+   * GH-side-state comparison would misread the curation as a mirror
+   * and let the next body edit wipe it. Absent on legacy links —
+   * the guard then falls back to a prior-body equality check and
+   * stamps the hash lazily on the first applied edit.
+   */
+  descriptionMirrorHash?: string;
 }
 
 /**
