@@ -297,7 +297,18 @@ export async function rollupParentsForChildTitle(
     // initial import makes. For the webhook path we accept the cost (a few
     // hundred ms per child-close on a busy repo); for the catch-up path the
     // caller can batch and pass `allIssues` in via `applyRollupForFetchedIssues`.
-    allIssues = await fetchChangedIssues(ctx.owner, ctx.repo, ctx.token, null);
+    const fetchResult = await fetchChangedIssues(ctx.owner, ctx.repo, ctx.token, null);
+    if (fetchResult.truncated) {
+      // A truncated list is missing exactly the newest-updated issues —
+      // sibling counts computed from it would be wrong, and a wrong
+      // parent percentage is worse than a stale one. Skip; retried on
+      // the next child transition.
+      console.warn(
+        `[parent-epic-rollup] ${ctx.owner}/${ctx.repo}: full issue list truncated — skipping rollup, sibling counts would be wrong`,
+      );
+      return 0;
+    }
+    allIssues = fetchResult.issues;
   } catch (err) {
     console.warn(
       `[parent-epic-rollup] Failed to fetch ${ctx.owner}/${ctx.repo} issues:`,

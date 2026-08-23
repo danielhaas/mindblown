@@ -548,6 +548,18 @@ export function parseParentRelationships(issues: GitHubIssue[]): Map<number, num
 }
 
 /**
+ * Runaway backstop shared by BOTH pagination loops in this module
+ * (`importGitHubIssues` and `fetchChangedIssues`): stop after this many
+ * fetched items (raw, PRs included — that's what bounds API calls) and
+ * warn that the result is truncated. It exists to stop a genuine
+ * runaway, not to bound normal repos — the value is far above any real
+ * repo here (≈ MAX/100 API calls when it trips). Truncating silently is
+ * what it must never do: the earlier 1000er valve made every "all
+ * issues" diff blind to most of an 8900-issue repo.
+ */
+const MAX_FETCHED_ISSUES = 50_000;
+
+/**
  * Fetch issues from a GitHub repo and prepare them for import as MindBlown nodes.
  *
  * Issues are grouped by **functional label** (version prefixes like "V1: 2." are stripped).
@@ -563,6 +575,7 @@ export async function importGitHubIssues(
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
   let page = 1;
+  let fetched = 0;
   const perPage = 100;
   const state = options?.includeAll ? 'all' : 'open';
 
@@ -572,6 +585,7 @@ export async function importGitHubIssues(
       `/repos/${repoOwner}/${repoName}/issues?state=${state}&per_page=${perPage}&page=${page}&sort=created&direction=asc`,
       token,
     );
+    fetched += batch.length;
 
     // Filter out pull requests (GitHub API returns PRs in issues endpoint)
     const realIssues = batch.filter((i) => !i.pull_request);
@@ -580,8 +594,12 @@ export async function importGitHubIssues(
     if (batch.length < perPage) break;
     page++;
 
-    // Safety valve — don't import more than 1000 issues at once
-    if (issues.length >= 1000) break;
+    if (fetched >= MAX_FETCHED_ISSUES) {
+      console.warn(
+        `[github-import] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED, downstream diffs will miss issues`,
+      );
+      break;
+    }
   }
 
   const parentOf = parseParentRelationships(issues);
@@ -623,17 +641,30 @@ export async function importGitHubIssues(
  *   edits, label changes, and assignments — i.e. the same surface webhooks
  *   cover.
  * - PRs are filtered out (the issues endpoint returns both).
- * - Pagination is bounded to 1000 issues per call to avoid runaway scans.
+ * - Pagination is bounded by the shared `MAX_FETCHED_ISSUES` backstop;
+ *   when it trips, `truncated` is true and the NEWEST-updated tail is
+ *   missing (sort is updated-asc). Callers must not treat a truncated
+ *   result as the complete set — the catchup uses it to resume its
+ *   cursor instead of skipping the tail, the rollup refuses to compute
+ *   sibling counts from it.
  */
+export interface ChangedIssuesResult {
+  issues: GitHubIssue[];
+  /** True when the fetch stopped at MAX_FETCHED_ISSUES — the tail is missing. */
+  truncated: boolean;
+}
+
 export async function fetchChangedIssues(
   repoOwner: string,
   repoName: string,
   token: string,
   since: string | null | undefined,
-): Promise<GitHubIssue[]> {
+): Promise<ChangedIssuesResult> {
   const issues: GitHubIssue[] = [];
   let page = 1;
+  let fetched = 0;
   const perPage = 100;
+  let truncated = false;
 
   while (true) {
     const params = new URLSearchParams({
@@ -649,14 +680,21 @@ export async function fetchChangedIssues(
       `/repos/${repoOwner}/${repoName}/issues?${params.toString()}`,
       token,
     );
+    fetched += batch.length;
     issues.push(...batch.filter((i) => !i.pull_request));
 
     if (batch.length < perPage) break;
     page++;
-    if (issues.length >= 1000) break;
+    if (fetched >= MAX_FETCHED_ISSUES) {
+      truncated = true;
+      console.warn(
+        `[github-catchup-fetch] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED (newest-updated tail missing)`,
+      );
+      break;
+    }
   }
 
-  return issues;
+  return { issues, truncated };
 }
 
 /**
