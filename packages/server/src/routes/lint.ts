@@ -12,6 +12,8 @@
 import type { FastifyInstance } from 'fastify';
 import { computeTree } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
+import * as versionDb from '../db/versions.js';
+import { pickActiveLane } from '../lib/activeLane.js';
 import * as permDb from '../db/permissions.js';
 import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
@@ -66,6 +68,7 @@ export async function lintRoutes(app: FastifyInstance) {
       cycleId?: string;
       stalledDays?: string;
       rule?: string;
+      scope?: string;
     };
   }>('/api/maps/:id/lint', async (req, reply) => {
     const userId = req.userId;
@@ -115,6 +118,28 @@ export async function lintRoutes(app: FastifyInstance) {
     const computedProgress = new Map<string, number>();
     for (const [id, cv] of computed) computedProgress.set(id, cv.computedProgress);
 
+    // ── Active-lane default scope ─────────────────────────────
+    // Unscoped lint over a mature map is background noise (900+
+    // standing warnings on the primary map — nobody reads them). When
+    // the caller names NO scope, default to the map's active release
+    // lane: the work that is actually being dispatched is the work
+    // whose hygiene matters right now. `scope=all` restores the
+    // whole-map run; any explicit nodeId/versionId/cycleId wins.
+    let effectiveVersionId = req.query.versionId;
+    let defaultedToLane: { id: string; name: string } | null = null;
+    if (
+      !req.query.nodeId &&
+      !req.query.versionId &&
+      !req.query.cycleId &&
+      req.query.scope !== 'all'
+    ) {
+      const lane = pickActiveLane(await versionDb.listVersions(req.params.id));
+      if (lane) {
+        effectiveVersionId = lane.id;
+        defaultedToLane = { id: lane.id, name: lane.name };
+      }
+    }
+
     const report = computePlanLint({
       map: data.map,
       nodes: data.nodes,
@@ -124,13 +149,21 @@ export async function lintRoutes(app: FastifyInstance) {
       acceptances,
       computedProgress,
       nodeId: req.query.nodeId,
-      versionId: req.query.versionId,
+      versionId: effectiveVersionId,
       cycleId: req.query.cycleId,
       stalledDays,
       now,
     });
     if ('error' in report) {
       return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: report.error } });
+    }
+    if (defaultedToLane) {
+      // Machine consumers read report.scope; the label is for humans.
+      // The escape-hatch hint is composed per surface (the MCP tool
+      // phrases it in its own parameter syntax), not baked in here.
+      report.scope.defaultedToLane = true;
+      report.scope.versionName = defaultedToLane.name;
+      report.scopeLabel = `${defaultedToLane.name} (active lane — default)`;
     }
 
     if (rule) {

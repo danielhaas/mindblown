@@ -340,6 +340,11 @@ server.tool(
       lines.push(`Total actual:    ${totalActual.toFixed(2)} ${unit}`);
       if (calibration.fudgeFactor != null) {
         lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x — applied by forecasts (${calibration.organicCount} organic samples)`);
+        if (fudgeFactor > 0 && (fudgeFactor < 0.5 || fudgeFactor > 2)) {
+          lines.push(
+            `⚠ UNCALIBRATED: the estimate unit is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — re-baseline estimates (target defaults 0.1-0.25d per ticket) instead of trusting fudge-corrected forecasts.`,
+          );
+        }
       } else {
         lines.push(`Fudge factor:    ${fudgeFactor.toFixed(2)}x (raw ratio — NOT applied by forecasts)`);
         if (calibration.note) lines.push(`⚠ ${calibration.note}`);
@@ -1057,6 +1062,15 @@ server.tool(
       lines.push('');
       if (fudgeFactor != null) {
         lines.push(`Velocity calibration: fudge = ${fudgeFactor.toFixed(2)}x (${calibration.organicCount} organic samples, ${calibration.organicDays.toFixed(1)} estimate-days)`);
+        // A fudge far from 1 means the estimate UNIT is broken, not the
+        // team's pace — at 0.10x a "1d" node is really ~1h of work, and
+        // every downstream number is unit-fiction until the estimates
+        // are recalibrated (defaults 0.1-0.25d, not 1-2d).
+        if (fudgeFactor < 0.5 || fudgeFactor > 2) {
+          lines.push(
+            `⚠ UNCALIBRATED: fudge ${fudgeFactor.toFixed(2)}x means the estimate unit itself is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — treat every forecast below as unit-fiction until estimates are re-baselined (target defaults 0.1-0.25d per ticket).`,
+          );
+        }
       } else if (calibration.note != null) {
         lines.push(`Velocity calibration: ${calibration.note}`);
       } else {
@@ -1358,7 +1372,7 @@ const LINT_RULES = [
 
 server.tool(
   'plan_lint',
-  'Check plan QUALITY (hygiene), not execution risk — the coaching counterpart to risk_scan. Runs 11 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, plus a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint); map-level checks (calibration-drift, stale-plan, dates-without-dependencies, the requirements pack) always evaluate the whole map. See docs/plan-linter.md for the rule rationale.',
+  'Check plan QUALITY (hygiene), not execution risk — the coaching counterpart to risk_scan. Runs 11 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, plus a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint). UNSCOPED calls default to the map\'s ACTIVE release lane (the work being dispatched right now) — pass scope:"all" to lint the whole map; map-level checks (calibration-drift, stale-plan, dates-without-dependencies, the requirements pack) always evaluate the whole map. See docs/plan-linter.md for the rule rationale.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
@@ -1367,17 +1381,21 @@ server.tool(
     stalledDays: z.number().int().min(1).default(7).describe('Days without a progress update before in-progress work counts as stale (default 7)'),
     rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all eleven'),
     limit: z.number().int().min(1).max(1000).default(20).describe('Max findings listed per rule (default 20)'),
+    scope: z.enum(['all']).optional().describe('Pass "all" to lint the whole map instead of the active-lane default (only relevant when no other scope is given)'),
   },
-  async ({ mapId, nodeId, versionId, cycleId, stalledDays, rule, limit }) => {
+  async ({ mapId, nodeId, versionId, cycleId, stalledDays, rule, limit, scope }) => {
     try {
       // The rules run server-side (packages/server/src/lint/engine.ts) so
       // the MCP tool and the plan-health panel share one engine; this
       // handler only formats. Dismissed findings (panel) are excluded
       // from counts and listings but summarized per rule.
-      const report = await api.getLint(mapId, { nodeId, versionId, cycleId, stalledDays, rule });
+      const report = await api.getLint(mapId, { nodeId, versionId, cycleId, stalledDays, rule, scope });
 
       const lines: string[] = [];
       lines.push(`Plan lint — ${report.scopeLabel}`);
+      if (report.scope?.defaultedToLane) {
+        lines.push('(scoped to the active lane by default — pass scope:"all" to lint the whole map)');
+      }
       lines.push(`Plan health: ${report.warnCount} warning(s), ${report.infoCount} suggestion(s)`);
       if (rule) lines.push(`Filtered to rule: ${rule}`);
       lines.push('');

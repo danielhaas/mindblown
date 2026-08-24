@@ -805,6 +805,13 @@ export interface LintRuleReport {
 
 export interface LintReport {
   scopeLabel: string;
+  scope?: {
+    nodeId?: string;
+    versionId?: string;
+    cycleId?: string;
+    defaultedToLane?: boolean;
+    versionName?: string;
+  };
   warnCount: number;
   infoCount: number;
   rules: LintRuleReport[];
@@ -818,6 +825,7 @@ export function getLint(
     cycleId?: string;
     stalledDays?: number;
     rule?: string;
+    scope?: 'all';
   } = {},
 ): Promise<LintReport> {
   const params = new URLSearchParams();
@@ -826,6 +834,7 @@ export function getLint(
   if (opts.cycleId) params.set('cycleId', opts.cycleId);
   if (opts.stalledDays != null) params.set('stalledDays', String(opts.stalledDays));
   if (opts.rule) params.set('rule', opts.rule);
+  if (opts.scope) params.set('scope', opts.scope);
   const qs = params.toString();
   return request<LintReport>(`/api/maps/${mapId}/lint${qs ? `?${qs}` : ''}`);
 }

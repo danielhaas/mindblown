@@ -100,6 +100,14 @@ vi.mock('../../db/lint.js', () => ({
   }),
 }));
 
+// Active-lane default: the route asks db/versions for the map's lanes.
+// Default is [] (no active lane) so pre-existing tests keep their
+// whole-map behavior; the lane-default tests push into this array.
+const versionRows: Array<{ id: string; name: string; status: string; sortOrder: number }> = [];
+vi.mock('../../db/versions.js', () => ({
+  listVersions: vi.fn(async () => versionRows),
+}));
+
 import { lintRoutes } from '../lint.js';
 
 async function buildApp(userId: string | null = 'user-1'): Promise<FastifyInstance> {
@@ -114,6 +122,7 @@ async function buildApp(userId: string | null = 'user-1'): Promise<FastifyInstan
 beforeEach(() => {
   permissionLevel = 'edit';
   dismissals.length = 0;
+  versionRows.length = 0;
 });
 
 describe('GET /api/maps/:id/lint', () => {
@@ -176,6 +185,63 @@ describe('GET /api/maps/:id/lint', () => {
     const unest = res.json().rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
     expect(unest.findings[0].dismissed).toBe(true);
     expect(unest.activeCount).toBe(0);
+  });
+});
+
+describe('GET /api/maps/:id/lint — active-lane default scope', () => {
+  const LANES = [
+    { id: 'v1', name: 'V1', status: 'active', sortOrder: 10 },
+    { id: 'v15', name: 'V1.5', status: 'active', sortOrder: 15 },
+    { id: 'v2', name: 'V2', status: 'planning', sortOrder: 20 },
+  ];
+
+  it('unscoped call defaults to the active lane with the highest sortOrder', async () => {
+    versionRows.push(...LANES);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint' });
+    await app.close();
+    const body = res.json();
+    expect(body.scopeLabel).toContain('V1.5');
+    expect(body.scopeLabel).toContain('active lane');
+    // Machine consumers read the structured scope, not the label.
+    expect(body.scope).toMatchObject({
+      versionId: 'v15',
+      defaultedToLane: true,
+      versionName: 'V1.5',
+    });
+    // The unestimated leaf carries no version tag → out of lane scope.
+    const unest = body.rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
+    expect(unest.findings).toHaveLength(0);
+  });
+
+  it('scope=all lints the whole map', async () => {
+    versionRows.push(...LANES);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    const body = res.json();
+    expect(body.scopeLabel).not.toContain('active lane');
+    const unest = body.rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
+    expect(unest.findings).toHaveLength(1);
+  });
+
+  it('an explicit scope wins over the default', async () => {
+    versionRows.push(...LANES);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?nodeId=leaf-1' });
+    await app.close();
+    expect(res.json().scopeLabel).not.toContain('active lane');
+  });
+
+  it('maps without an active lane keep the whole-map behavior', async () => {
+    versionRows.push({ id: 'v2', name: 'V2', status: 'planning', sortOrder: 20 });
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint' });
+    await app.close();
+    const body = res.json();
+    expect(body.scopeLabel).not.toContain('active lane');
+    const unest = body.rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
+    expect(unest.findings).toHaveLength(1);
   });
 });
 
