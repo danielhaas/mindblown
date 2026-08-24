@@ -75,6 +75,31 @@ import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
+/**
+ * Inbox-fallback (#316): does this decision row's placedNodeId point
+ * at a node that is merely PARKED under the map's GitHub Inbox rather
+ * than genuinely placed? Returns the node id when parked, else null.
+ * Operator flows treat the two differently: parked nodes are moved
+ * (confirm/override-to-place) or removed (override-to-skip), while
+ * genuinely placed nodes keep the pre-#316 behavior.
+ */
+async function findParkedNodeId(
+  mapId: string,
+  placedNodeId: string | null,
+): Promise<string | null> {
+  if (!placedNodeId) return null;
+  const [mapRow] = await db
+    .select({ inbox: maps.githubInboxNodeId })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!mapRow?.inbox) return null;
+  const [node] = await db
+    .select({ id: nodes.id, parentId: nodes.parentId })
+    .from(nodes)
+    .where(and(eq(nodes.id, placedNodeId), notDeleted));
+  return node && node.parentId === mapRow.inbox ? (node.id as string) : null;
+}
+
 // ── Auth helpers ──────────────────────────────────────────────────
 
 interface AuthedReq {
@@ -401,6 +426,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           // MindBlown" (whether they're actually placed yet is
           // covered by the existing Pending/Placed tabs).
           if (row.decision !== 'skip' && row.decision !== 'uncertain') continue;
+          // Inbox-fallback (#316): an uncertain row with placedNodeId
+          // IS in the map (parked under the Inbox) — listing it here
+          // would break this endpoint's contract ("every GitHub
+          // ticket that is NOT currently a node in this map") and
+          // point remediation at already-linked issues.
+          if (row.decision === 'uncertain' && row.placedNodeId != null) continue;
           let kind: DecisionItem['kind'];
           if (row.decision === 'uncertain') {
             kind = 'uncertain';
@@ -1326,6 +1357,48 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // Inbox-fallback (#316): confirming a PLACE row whose node is
+      // still PARKED must apply the placement — one-click Confirm that
+      // only stamped reviewed would lock the node under the Inbox
+      // forever (operator-reviewed rows block all auto re-triage).
+      const parkedId = await findParkedNodeId(
+        req.params.mapId,
+        (row.placedNodeId as string | null) ?? null,
+      );
+      if (row.decision === 'place' && parkedId) {
+        const target = (row.suggestedParentNodeId as string | null) ?? null;
+        const [parent] = target
+          ? await db
+              .select({ id: nodes.id, mapId: nodes.mapId })
+              .from(nodes)
+              .where(and(eq(nodes.id, target), notDeleted))
+          : [undefined];
+        if (!parent || parent.mapId !== req.params.mapId) {
+          return reply.status(400).send({
+            error: {
+              code: 'PARKED_NEEDS_OVERRIDE',
+              message:
+                'This place decision is parked in the Inbox and has no valid suggested parent — use /override with an explicit parentNodeId to route it.',
+            },
+          });
+        }
+        const movedNode = await nodeDb.moveNode(parkedId, target as string);
+        if (movedNode) {
+          if (row.issueState !== 'closed') {
+            const laneId = await resolveIngestVersionId(db, req.params.mapId, {
+              suggestedVersionId: (row.suggestedVersionId as string | null) ?? null,
+            });
+            if (laneId) await nodeDb.updateNode(parkedId, { versionId: laneId });
+          }
+          broadcast(req.params.mapId, {
+            type: 'node:moved',
+            nodeId: parkedId,
+            newParentId: target,
+            position: undefined,
+          });
+        }
+      }
+
       // Stamp reviewed + operator. Intentionally NOT touching
       // placedNodeId, decision, reason, or confidence — confirm means
       // "accept the existing record as-is."
@@ -1480,12 +1553,32 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       // silently dropped (mindblown#99 fix 3). The previous behaviour
       // returned the old node-id and let the operator wonder why
       // their click didn't reparent.
-      if (decision === 'place' && row.placedNodeId) {
+      // A node linked to this externalId may exist even when
+      // placedNodeId is null — reclassify clears the pointer without
+      // deleting the node (and parked nodes make that path common).
+      // Creating a SECOND node for the same issue would double-mirror
+      // it, so the move-path below handles any existing linked node.
+      let existingLinkedNodeId: string | null = row.placedNodeId as string | null;
+      if (decision === 'place' && !existingLinkedNodeId) {
+        const mapNodes = await db
+          .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+          .from(nodes)
+          .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
+        for (const n of mapNodes) {
+          const links = (n.externalLinks as ExternalLink[]) ?? [];
+          if (links.some((l) => l.provider === 'github' && l.externalId === row.externalId)) {
+            existingLinkedNodeId = n.id as string;
+            break;
+          }
+        }
+      }
+
+      if (decision === 'place' && existingLinkedNodeId) {
         // The operator MAY supply a parentNodeId that's a no-op (it
         // matches the current parent). That's fine; moveNode is a
         // safe identity in that case but we still don't bother
         // calling it if parents already match.
-        const placedNodeId = row.placedNodeId as string;
+        const placedNodeId = existingLinkedNodeId;
         const submittedParent = body.parentNodeId as string;
 
         // Validate the submitted parent is in this map (same gate as
@@ -1537,6 +1630,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             confidence: 100,
             decidedBy: 'operator',
             decidedAt: new Date(),
+            placedNodeId,
             reviewed: true,
             reviewedAt: new Date(),
             reviewedBy: userId,
@@ -1675,6 +1769,31 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           node: created,
           source: 'triage_override',
         });
+      }
+
+      // Inbox-fallback (#316): a skip/uncertain verdict on a PARKED
+      // node removes it — leaving it would defeat the junk filter
+      // permanently (catchup keeps syncing it, every future ingest
+      // short-circuits on 'exists'). Soft delete: the Trash keeps it
+      // restorable, and no GitHub close fires (skip means "not ours",
+      // not "done").
+      if (decision !== 'place') {
+        const parkedToRemove = await findParkedNodeId(
+          req.params.mapId,
+          (row.placedNodeId as string | null) ?? null,
+        );
+        if (parkedToRemove) {
+          const del = await nodeDb.deleteNode(parkedToRemove);
+          await db
+            .update(triageDecisions)
+            .set({ placedNodeId: null })
+            .where(eq(triageDecisions.id, row.id));
+          broadcast(req.params.mapId, {
+            type: 'node:deleted',
+            nodeId: parkedToRemove,
+            deletedIds: del?.deletedIds ?? [parkedToRemove],
+          });
+        }
       }
 
       // Phase 3 audit log — record the override with full before/after
