@@ -203,6 +203,12 @@ describe('GET /api/maps/:id/lint — active-lane default scope', () => {
     const body = res.json();
     expect(body.scopeLabel).toContain('V1.5');
     expect(body.scopeLabel).toContain('active lane');
+    // Machine consumers read the structured scope, not the label.
+    expect(body.scope).toMatchObject({
+      versionId: 'v15',
+      defaultedToLane: true,
+      versionName: 'V1.5',
+    });
     // The unestimated leaf carries no version tag → out of lane scope.
     const unest = body.rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
     expect(unest.findings).toHaveLength(0);

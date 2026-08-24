@@ -45,6 +45,7 @@ import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken 
 import type { ExternalLink } from '@mindblown/core';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
+import { pickActiveLane } from '../lib/activeLane.js';
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -503,10 +504,8 @@ export async function resolveIngestVersionId(
     if (byMilestone) return byMilestone.id;
   }
 
-  const active = eligible.filter((r) => r.status === 'active');
-  if (active.length === 0) return null;
-  active.sort((a, b) => b.sortOrder - a.sortOrder || a.id.localeCompare(b.id));
-  return active[0].id;
+  const lane = pickActiveLane(eligible);
+  return lane?.id ?? null;
 }
 
 /**

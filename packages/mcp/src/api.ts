@@ -805,6 +805,13 @@ export interface LintRuleReport {
 
 export interface LintReport {
   scopeLabel: string;
+  scope?: {
+    nodeId?: string;
+    versionId?: string;
+    cycleId?: string;
+    defaultedToLane?: boolean;
+    versionName?: string;
+  };
   warnCount: number;
   infoCount: number;
   rules: LintRuleReport[];

@@ -13,6 +13,7 @@ import type { FastifyInstance } from 'fastify';
 import { computeTree } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
+import { pickActiveLane } from '../lib/activeLane.js';
 import * as permDb from '../db/permissions.js';
 import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
@@ -132,13 +133,10 @@ export async function lintRoutes(app: FastifyInstance) {
       !req.query.cycleId &&
       req.query.scope !== 'all'
     ) {
-      const lanes = (await versionDb.listVersions(req.params.id)).filter(
-        (v) => v.status === 'active',
-      );
-      lanes.sort((a, b) => b.sortOrder - a.sortOrder || a.id.localeCompare(b.id));
-      if (lanes.length > 0) {
-        effectiveVersionId = lanes[0].id;
-        defaultedToLane = { id: lanes[0].id, name: lanes[0].name };
+      const lane = pickActiveLane(await versionDb.listVersions(req.params.id));
+      if (lane) {
+        effectiveVersionId = lane.id;
+        defaultedToLane = { id: lane.id, name: lane.name };
       }
     }
 
@@ -160,7 +158,12 @@ export async function lintRoutes(app: FastifyInstance) {
       return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: report.error } });
     }
     if (defaultedToLane) {
-      report.scopeLabel = `${defaultedToLane.name} (active lane — default; pass scope=all to lint the whole map)`;
+      // Machine consumers read report.scope; the label is for humans.
+      // The escape-hatch hint is composed per surface (the MCP tool
+      // phrases it in its own parameter syntax), not baked in here.
+      report.scope.defaultedToLane = true;
+      report.scope.versionName = defaultedToLane.name;
+      report.scopeLabel = `${defaultedToLane.name} (active lane — default)`;
     }
 
     if (rule) {

@@ -1393,6 +1393,9 @@ server.tool(
 
       const lines: string[] = [];
       lines.push(`Plan lint — ${report.scopeLabel}`);
+      if (report.scope?.defaultedToLane) {
+        lines.push('(scoped to the active lane by default — pass scope:"all" to lint the whole map)');
+      }
       lines.push(`Plan health: ${report.warnCount} warning(s), ${report.infoCount} suggestion(s)`);
       if (rule) lines.push(`Filtered to rule: ${rule}`);
       lines.push('');

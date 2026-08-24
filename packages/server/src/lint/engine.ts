@@ -48,6 +48,22 @@ export interface LintRuleReport {
 
 export interface LintReport {
   scopeLabel: string;
+  /**
+   * Structured scope descriptor — machine consumers must use THIS,
+   * not scopeLabel, to know what a count covers. `defaultedToLane`
+   * marks the route-applied active-lane default (an unscoped call on
+   * a map with an active lane); a green (0-warning) defaulted report
+   * says nothing about out-of-lane leaves.
+   */
+  scope: {
+    nodeId?: string;
+    versionId?: string;
+    cycleId?: string;
+    /** Set by the route when the active-lane default was applied. */
+    defaultedToLane?: boolean;
+    /** Human name of the lane, when the route resolved one. */
+    versionName?: string;
+  };
   warnCount: number; // active warn findings across rules
   infoCount: number; // active info findings across rules
   rules: LintRuleReport[];
@@ -462,6 +478,11 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
 
   return {
     scopeLabel,
+    scope: {
+      ...(opts.nodeId ? { nodeId: opts.nodeId } : {}),
+      ...(opts.versionId ? { versionId: opts.versionId } : {}),
+      ...(opts.cycleId ? { cycleId: opts.cycleId } : {}),
+    },
     warnCount: reports.filter((r) => r.severity === 'warn').reduce((s, r) => s + r.activeCount, 0),
     infoCount: reports.filter((r) => r.severity === 'info').reduce((s, r) => s + r.activeCount, 0),
     rules: reports,
