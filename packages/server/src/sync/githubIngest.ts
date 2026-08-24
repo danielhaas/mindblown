@@ -158,15 +158,15 @@ async function findNodeInMapByExternalId(
   tx: { select: typeof db.select },
   mapId: string,
   externalId: string,
-): Promise<string | null> {
+): Promise<{ id: string; parentId: string | null } | null> {
   const rows = await tx
-    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+    .select({ id: nodes.id, parentId: nodes.parentId, externalLinks: nodes.externalLinks })
     .from(nodes)
     .where(and(eq(nodes.mapId, mapId), nodeDb.notDeleted));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
-      return row.id;
+      return { id: row.id, parentId: (row.parentId as string | null) ?? null };
     }
   }
   return null;
@@ -585,6 +585,7 @@ async function findNodesByExternalIdAcrossMaps(
  */
 async function ensureNodeForIssueViaTriage(
   mapId: string,
+  inboxNodeId: string,
   issue: GitHubIssue,
   ctx: IngestContext,
   externalId: string,
@@ -636,16 +637,33 @@ async function ensureNodeForIssueViaTriage(
         decision: TriageDecision['decision']; confidence: number }
     | { kind: 'hash_match'; decisionId: string; nodeId: string | null;
         decision: TriageDecision['decision']; confidence: number }
-    | { kind: 'proceed' };
+    | {
+        kind: 'hash_parked';
+        decisionId: string;
+        nodeId: string;
+        node: Awaited<ReturnType<typeof nodeDb.getNode>>;
+        decision: TriageDecision['decision'];
+        confidence: number;
+      }
+    | { kind: 'proceed'; parkedNodeId?: string };
   const precheck: PrecheckResult = await db.transaction(async (tx) => {
     await takeIngestLock(tx, externalId);
 
     // (a) Node-existence precheck — uses the same tx-scoped helper as
     // the non-triage path so it sees a concurrent winner's just-
-    // committed externalLink.
-    const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
-    if (existingNodeId) {
-      return { kind: 'exists', nodeId: existingNodeId };
+    // committed externalLink. A PARKED node (direct child of the
+    // GitHub Inbox) does NOT block re-triage: an issues.edited with a
+    // clarified body must be able to graduate the parked node into a
+    // confident placement — otherwise parking would freeze every
+    // uncertain decision the way it would freeze a triage_error.
+    const existing = await findNodeInMapByExternalId(tx, mapId, externalId);
+    let parkedNodeId: string | undefined;
+    if (existing) {
+      if (existing.parentId === inboxNodeId) {
+        parkedNodeId = existing.id;
+      } else {
+        return { kind: 'exists', nodeId: existing.id };
+      }
     }
 
     // (b) Operator-reviewed precheck. Once an operator has reviewed a
@@ -707,19 +725,89 @@ async function ensureNodeForIssueViaTriage(
         .update(triageDecisions)
         .set({ decidedAt: new Date() })
         .where(eq(triageDecisions.id, decisionId));
+
+      // Lazy Inbox parking on the hash-match path: the pre-existing
+      // backlog of node-less uncertain/low-confidence rows would
+      // otherwise NEVER park (their text doesn't change, so every
+      // webhook short-circuits here before the parking code). The
+      // stored decision is authoritative — no LLM call needed to
+      // park it now, inside the same lock-holding tx.
+      const rowDecision = existingDecision.decision as TriageDecision['decision'];
+      if (
+        !existing &&
+        issue.state === 'open' &&
+        rowDecision !== 'skip' &&
+        existingDecision.placedNodeId == null
+      ) {
+        const parked = await nodeDb.createNode(
+          buildTriagedCreateInput(mapId, inboxNodeId, issue, ctx),
+          tx,
+        );
+        const parkLink: ExternalLink = stampMirrorHash(
+          {
+            provider: 'github',
+            externalId,
+            url: issue.html_url,
+            syncEnabled: true,
+            lastSyncedAt: new Date().toISOString(),
+            state: issue.state,
+          },
+          issue.body,
+        );
+        const parkedUpdated = await nodeDb.updateNode(
+          parked.id,
+          {
+            externalLinks: [parkLink],
+            description: issue.body ?? null,
+            tags: ghLabelsToTags(issue.labels),
+          },
+          undefined,
+          tx,
+        );
+        await tx
+          .update(triageDecisions)
+          .set({ placedNodeId: parked.id })
+          .where(eq(triageDecisions.id, decisionId));
+        return {
+          kind: 'hash_parked',
+          decisionId,
+          nodeId: parked.id,
+          node: parkedUpdated ?? parked,
+          decision: rowDecision,
+          confidence: existingDecision.confidence as number,
+        };
+      }
       return {
         kind: 'hash_match',
         decisionId,
         nodeId: (existingDecision.placedNodeId as string | null) ?? null,
-        decision: existingDecision.decision as TriageDecision['decision'],
+        decision: rowDecision,
         confidence: existingDecision.confidence as number,
       };
     }
-    return { kind: 'proceed' };
+    return { kind: 'proceed', parkedNodeId };
   });
 
   if (precheck.kind === 'exists') {
     return { status: 'skipped_exists', nodeId: precheck.nodeId, mapId };
+  }
+  if (precheck.kind === 'hash_parked') {
+    markTriageDebounce(mapId, externalId);
+    broadcast(mapId, {
+      type: 'node:created',
+      node: precheck.node,
+      source: 'github_ingest_triage_inbox',
+    });
+    return {
+      status: 'created',
+      nodeId: precheck.nodeId,
+      mapId,
+      triage: {
+        decisionId: precheck.decisionId,
+        decision: precheck.decision,
+        confidence: precheck.confidence,
+      },
+    };
   }
   if (precheck.kind === 'hash_match') {
     // Hash-match short-circuit (#142 layer 3). Stamp the debounce so
@@ -831,6 +919,27 @@ async function ensureNodeForIssueViaTriage(
         decisionId: string;
         previous: PriorDecisionSnapshot | null;
       }
+    | {
+        kind: 'inbox_parked';
+        decisionId: string;
+        nodeId: string;
+        node: Awaited<ReturnType<typeof nodeDb.getNode>>;
+        previous: PriorDecisionSnapshot | null;
+      }
+    | {
+        kind: 'still_parked';
+        decisionId: string;
+        nodeId: string;
+        previous: PriorDecisionSnapshot | null;
+      }
+    | {
+        kind: 'graduated';
+        decisionId: string;
+        nodeId: string;
+        targetParentId: string;
+        versionId: string | null;
+        previous: PriorDecisionSnapshot | null;
+      }
     | { kind: 'lost_race'; nodeId: string }
     | {
         kind: 'operator_reviewed_late';
@@ -856,10 +965,17 @@ async function ensureNodeForIssueViaTriage(
     // Re-run the node-existence precheck inside this tx, in case a
     // concurrent worker landed a node between the precheck tx above
     // and this tx (window during which the lock was released).
-    // Cheap insurance; the happy path returns immediately.
-    const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
-    if (existingNodeId) {
-      return { kind: 'lost_race', nodeId: existingNodeId };
+    // Cheap insurance; the happy path returns immediately. A parked
+    // node (child of the Inbox) is OUR node, not a race — it graduates
+    // or stays parked below.
+    const existingNow = await findNodeInMapByExternalId(tx, mapId, externalId);
+    let parkedNow: string | undefined;
+    if (existingNow) {
+      if (existingNow.parentId === inboxNodeId) {
+        parkedNow = existingNow.id;
+      } else {
+        return { kind: 'lost_race', nodeId: existingNow.id };
+      }
     }
 
     // Mirror the operator-reviewed precheck inside this tx (Ray's
@@ -1007,14 +1123,111 @@ async function ensureNodeForIssueViaTriage(
       .returning({ id: triageDecisions.id });
 
     if (!shouldAutoApply || !decision.parentNodeId) {
+      // ── Inbox fallback ─────────────────────────────────────────
+      // A decision-only outcome used to leave OPEN issues node-less,
+      // parked in the operator review queue — which demonstrably
+      // never drains (1'640+ unreviewed rows). An invisible ticket is
+      // a buried ticket; a node under the GitHub Inbox is visible in
+      // the map, movable, and findable by the housekeeping sweeps.
+      // So: uncertain and low-confidence places PARK a node under the
+      // Inbox instead. `skip` stays node-less (the junk filter is the
+      // point of triage), and closed issues stay node-less too
+      // (history needs no parking).
+      //
+      // Lane: NONE — parked nodes are strictly unversioned. An
+      // uncertain issue hasn't had its lane call made; any lane stamp
+      // (even the LLM's low-confidence pick) would make get_next_ticket
+      // hand not-confidently-triaged work to a coding agent.
+      // triage_error is NOT a decision — parking on an LLM outage
+      // would make the node-existence precheck skip every future
+      // triage of the issue, freezing the transient error in place.
+      if (
+        decision.decision === 'skip' ||
+        issue.state !== 'open' ||
+        decision.reason.startsWith('triage_error')
+      ) {
+        return {
+          kind: 'decision_only',
+          decisionId: decisionRow.id,
+          previous: priorSnapshot,
+        };
+      }
+      if (parkedNow) {
+        // Already parked and the LLM is still unsure — keep the node,
+        // refresh placedNodeId on the (just-upserted) row.
+        await tx
+          .update(triageDecisions)
+          .set({ placedNodeId: parkedNow })
+          .where(eq(triageDecisions.id, decisionRow.id));
+        return {
+          kind: 'still_parked',
+          decisionId: decisionRow.id,
+          nodeId: parkedNow,
+          previous: priorSnapshot,
+        };
+      }
+      const parked = await nodeDb.createNode(
+        buildTriagedCreateInput(mapId, inboxNodeId, issue, ctx),
+        tx,
+      );
+      const parkLink: ExternalLink = stampMirrorHash(
+        {
+          provider: 'github',
+          externalId,
+          url: issue.html_url,
+          syncEnabled: true,
+          lastSyncedAt: new Date().toISOString(),
+          state: issue.state,
+        },
+        issue.body,
+      );
+      const parkedUpdated = await nodeDb.updateNode(
+        parked.id,
+        {
+          externalLinks: [parkLink],
+          description: issue.body ?? null,
+          tags: ghLabelsToTags(issue.labels),
+        },
+        undefined,
+        tx,
+      );
+      await tx
+        .update(triageDecisions)
+        .set({ placedNodeId: parked.id })
+        .where(eq(triageDecisions.id, decisionRow.id));
       return {
-        kind: 'decision_only',
+        kind: 'inbox_parked',
         decisionId: decisionRow.id,
+        nodeId: parked.id,
+        node: parkedUpdated ?? parked,
         previous: priorSnapshot,
       };
     }
 
-    // Auto-apply: create the node under the LLM-chosen parent.
+    // Auto-apply. A parked node GRADUATES: it moves under the LLM-
+    // chosen parent (post-tx — moveNode manages childrenOrder outside
+    // this tx) instead of a duplicate being created.
+    if (parkedNow) {
+      const graduatedVersionId =
+        issue.state === 'closed'
+          ? null
+          : await resolveIngestVersionId(tx, mapId, {
+              suggestedVersionId: decision.versionId,
+              milestoneTitle: issue.milestone?.title,
+            });
+      await tx
+        .update(triageDecisions)
+        .set({ placedNodeId: parkedNow })
+        .where(eq(triageDecisions.id, decisionRow.id));
+      return {
+        kind: 'graduated',
+        decisionId: decisionRow.id,
+        nodeId: parkedNow,
+        targetParentId: decision.parentNodeId,
+        versionId: graduatedVersionId,
+        previous: priorSnapshot,
+      };
+    }
     const created = await nodeDb.createNode(
       buildTriagedCreateInput(mapId, decision.parentNodeId, issue, ctx),
       tx,
@@ -1125,6 +1338,96 @@ async function ensureNodeForIssueViaTriage(
     markTriageDebounce(mapId, externalId);
   }
 
+  if (result.kind === 'graduated') {
+    // The parked node moves under the LLM-chosen epic. moveNode runs
+    // outside the upsert tx (it manages childrenOrder itself); if it
+    // fails, the node simply stays parked — the decision row already
+    // says place+placedNodeId, and the next edit retries.
+    try {
+      const moved = await nodeDb.moveNode(result.nodeId, result.targetParentId);
+      const updated = await nodeDb.updateNode(result.nodeId, {
+        ...(result.versionId ? { versionId: result.versionId } : {}),
+      });
+      const fresh = updated ?? moved;
+      if (fresh) {
+        broadcast(mapId, {
+          type: 'node:updated',
+          nodeId: result.nodeId,
+          fields: ['parentId', 'versionId'],
+          node: fresh,
+          source: 'github_ingest_triage_graduate',
+        });
+      }
+    } catch (err) {
+      console.warn(
+        `[github-ingest] graduation move failed for ${externalId} (node stays parked):`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+    await recordTriageHistory({
+      decisionId: result.decisionId,
+      changedBy: 'auto',
+      changeType: result.previous ? 'overridden' : 'created',
+      previousDecision: result.previous?.decision ?? null,
+      newDecision: decision.decision,
+      previousConfidence: result.previous?.confidence ?? null,
+      newConfidence: decision.confidence,
+      previousParentNodeId: result.previous?.placedNodeId ?? null,
+      newParentNodeId: result.nodeId,
+      reason: decision.reason,
+    });
+    // A graduated node IS placed — the #178 gate may write the label.
+    await applyTriageLabel({
+      mapId,
+      externalId,
+      decision: decision.decision,
+      placedNodeId: result.nodeId,
+    });
+    return {
+      status: 'created',
+      nodeId: result.nodeId,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+      },
+    };
+  }
+
+  if (result.kind === 'still_parked') {
+    await recordTriageHistory({
+      decisionId: result.decisionId,
+      changedBy: 'auto',
+      changeType: result.previous ? 'overridden' : 'created',
+      previousDecision: result.previous?.decision ?? null,
+      newDecision: decision.decision,
+      previousConfidence: result.previous?.confidence ?? null,
+      newConfidence: decision.confidence,
+      previousParentNodeId: result.previous?.placedNodeId ?? null,
+      newParentNodeId: result.nodeId,
+      reason: decision.reason,
+    });
+    await applyTriageLabel({
+      mapId,
+      externalId,
+      decision: decision.decision,
+      placedNodeId: null,
+    });
+    const stillStatus: IngestResult['status'] =
+      decision.decision === 'uncertain' ? 'triaged_uncertain' : 'triaged_low_confidence';
+    return {
+      status: stillStatus,
+      nodeId: result.nodeId,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+      },
+    };
+  }
+
   if (result.kind === 'auto_placed') {
     broadcast(mapId, {
       type: 'node:created',
@@ -1154,6 +1457,48 @@ async function ensureNodeForIssueViaTriage(
       decision: decision.decision,
       placedNodeId: result.nodeId,
     });
+    return {
+      status: 'created',
+      nodeId: result.nodeId,
+      mapId,
+      triage: {
+        decisionId: result.decisionId,
+        decision: decision.decision,
+        confidence: decision.confidence,
+      },
+    };
+  }
+
+  if (result.kind === 'inbox_parked') {
+    broadcast(mapId, {
+      type: 'node:created',
+      node: result.node,
+      source: 'github_ingest_triage_inbox',
+    });
+    await recordTriageHistory({
+      decisionId: result.decisionId,
+      changedBy: 'auto',
+      changeType: result.previous ? 'overridden' : 'created',
+      previousDecision: result.previous?.decision ?? null,
+      newDecision: decision.decision,
+      previousConfidence: result.previous?.confidence ?? null,
+      newConfidence: decision.confidence,
+      previousParentNodeId: result.previous?.placedNodeId ?? null,
+      newParentNodeId: result.nodeId,
+      reason: decision.reason,
+    });
+    // placedNodeId deliberately null: parked is NOT placed. Passing
+    // the node id would flip the #178 gate and write `triage:placed`
+    // to GitHub for an unreviewed, unrouted issue.
+    await applyTriageLabel({
+      mapId,
+      externalId,
+      decision: decision.decision,
+      placedNodeId: null,
+    });
+    // Reported as 'created' — a node exists and callers count it as
+    // ingested; the triage payload still carries the uncertain/
+    // low-confidence decision for dashboards and the review queue.
     return {
       status: 'created',
       nodeId: result.nodeId,
@@ -1267,7 +1612,7 @@ export async function ensureNodeForIssue(
     triageEnabled = mapRow?.triageEnabled === true;
   }
   if (triageEnabled) {
-    return ensureNodeForIssueViaTriage(mapId, issue, ctx, externalId);
+    return ensureNodeForIssueViaTriage(mapId, inboxNodeId, issue, ctx, externalId);
   }
 
   // (3) Wrap lock + precheck + create + link-update in a Postgres
@@ -1292,9 +1637,9 @@ export async function ensureNodeForIssue(
     | { kind: 'exists'; nodeId: string };
   const result: TxResult = await db.transaction(async (tx) => {
     await takeIngestLock(tx, externalId);
-    const existingNodeId = await findNodeInMapByExternalId(tx, mapId, externalId);
-    if (existingNodeId) {
-      return { kind: 'exists', nodeId: existingNodeId };
+    const existingNode = await findNodeInMapByExternalId(tx, mapId, externalId);
+    if (existingNode) {
+      return { kind: 'exists', nodeId: existingNode.id };
     }
     // The create-node auto-link runs on the HTTP route, not here, so we
     // attach the externalLink ourselves so downstream sync paths
