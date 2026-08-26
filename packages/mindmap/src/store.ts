@@ -6,7 +6,7 @@ import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
-import { readStoredRole, writeStoredRole, reconcileView } from './roles.js';
+import { readStoredRole, writeStoredRole, reconcileView, defaultViewForRole } from './roles.js';
 import type { ViewRole } from './roles.js';
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -19,7 +19,19 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'releases' | 'requirements' | 'guide';
+export type ActiveView =
+  | 'mindmap'
+  | 'kanban'
+  | 'gantt'
+  | 'list'
+  | 'calendar'
+  | 'hill'
+  | 'workload'
+  | 'releases'
+  | 'requirements'
+  | 'guide'
+  | 'digest'
+  | 'cockpit';
 
 export interface VisibleNode {
   node: Node;
@@ -257,7 +269,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   nodeActorsMapId: null,
   members: [],
   membersMapId: null,
-  activeView: 'mindmap',
+  activeView: defaultViewForRole(readStoredRole()),
   loading: false,
   error: null,
   wsConnected: false,

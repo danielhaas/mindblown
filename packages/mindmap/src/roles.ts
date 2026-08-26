@@ -45,6 +45,8 @@ export interface RoleConfig {
 }
 
 export const ALL_VIEWS: ActiveView[] = [
+  'digest',
+  'cockpit',
   'mindmap',
   'kanban',
   'gantt',
@@ -71,13 +73,16 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   stakeholder: {
     label: 'Stakeholder',
     hint: 'When does it ship, is it on track, what threatens it?',
-    tabs: ['releases'],
-    panels: ['blocked', 'planHealth'],
+    // Round 2 (Thomas): Blocked is "219 developer paragraphs", Plan Health
+    // unexplained — both dropped. Property stays so a click on a digest line
+    // shows the node (review: otherwise the drill-down is a no-op).
+    tabs: ['digest', 'releases'],
+    panels: ['property'],
   },
   pm: {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
-    tabs: ['releases', 'list', 'kanban', 'mindmap'],
+    tabs: ['cockpit', 'releases', 'list', 'kanban', 'mindmap'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {
@@ -100,7 +105,7 @@ export const ROLE_ORDER: ViewRole[] = ['stakeholder', 'pm', 'developer', 'all'];
 export const DEFAULT_ROLE: ViewRole = 'all';
 
 export function isViewRole(value: unknown): value is ViewRole {
-  return typeof value === 'string' && value in ROLE_CONFIG;
+  return typeof value === 'string' && (ROLE_ORDER as string[]).includes(value);
 }
 
 export function isTabVisible(role: ViewRole, view: ActiveView): boolean {
@@ -129,15 +134,19 @@ export function reconcileView(role: ViewRole, current: ActiveView): ActiveView {
  * The sprint a developer means by "this sprint": the one whose date range
  * contains today; failing that the one marked active. Sprint `status` is
  * unreliable on real maps (persona Round 1 found a sprint ending today still
- * `planned`), so dates win over status.
+ * `planned`), so dates win over status. When cycles overlap (Round 2: a
+ * month-long leftover bucket next to two-week sprints), the one that
+ * started most recently wins — that is the plan somebody made last.
  */
 export function pickCurrentCycle<C extends { id: string; startDate: string; endDate: string; status: string }>(
   cycles: C[],
   today: Date = new Date(),
 ): C | null {
   const t = today.toISOString().slice(0, 10);
-  const byDate = cycles.find((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10));
-  return byDate ?? cycles.find((c) => c.status === 'active') ?? null;
+  const containing = cycles
+    .filter((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10))
+    .sort((a, b) => b.startDate.localeCompare(a.startDate) || (a.status === 'active' ? -1 : 1));
+  return containing[0] ?? cycles.find((c) => c.status === 'active') ?? null;
 }
 
 // ── Persistence (per browser, like Fulcrum's sidebar.showAll) ────────

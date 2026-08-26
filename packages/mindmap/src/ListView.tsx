@@ -6,6 +6,22 @@ import { pickCurrentCycle } from './roles.js';
 
 // ── Constants ──────────────────────────────────────────────────
 
+const FLAG_PREFIX = 'mindblown.list.';
+function readFlag(key: string): boolean {
+  try {
+    return window.localStorage.getItem(FLAG_PREFIX + key) === '1';
+  } catch {
+    return false;
+  }
+}
+function writeFlag(key: string, v: boolean): void {
+  try {
+    window.localStorage.setItem(FLAG_PREFIX + key, v ? '1' : '0');
+  } catch {
+    // private mode / quota — the toggle just won't survive a reload
+  }
+}
+
 const toggleStyle = (on: boolean): React.CSSProperties => ({
   display: 'flex',
   alignItems: 'center',
@@ -170,11 +186,15 @@ export function ListView() {
   const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
   const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set());
   const [blockedFilter, setBlockedFilter] = useState<'all' | 'blocked' | 'unblocked'>('all');
-  const [leavesOnly, setLeavesOnly] = useState(false);
+  // Persisted per browser: the developer preset is "leaves + todo + current
+  // sprint", and redoing three clicks on every reload was Round-2 friction #1.
+  const [leavesOnly, setLeavesOnlyRaw] = useState(() => readFlag('leavesOnly'));
+  const setLeavesOnly = (v: boolean) => { writeFlag('leavesOnly', v); setLeavesOnlyRaw(v); };
   // "Mine" — nodes assigned to the signed-in user. Off by default: on real
   // maps most tickets are unassigned (persona Round 1), so on-by-default
   // would show an empty list.
-  const [mineOnly, setMineOnly] = useState(false);
+  const [mineOnly, setMineOnlyRaw] = useState(() => readFlag('mineOnly'));
+  const setMineOnly = (v: boolean) => { writeFlag('mineOnly', v); setMineOnlyRaw(v); };
   const user = useMindmapStore((s) => s.user);
   const cycles = useMindmapStore((s) => s.cycles);
   const setActiveCycleFilter = useMindmapStore((s) => s.setActiveCycleFilter);
@@ -257,8 +277,12 @@ export function ListView() {
     if (statusFilter.size > 0) {
       const matchIds = new Set<string>();
       for (const r of rows) {
+        // An unset status is "todo" everywhere else (statusCategory,
+        // ready_nodes, kanban's first column) — persona Round 2 found a
+        // sprint where 7 of 12 leaves had no status and vanished from
+        // "To Do". Filtering for todo therefore includes null.
         const s = r.node.status ?? '';
-        if (statusFilter.has(s)) {
+        if (statusFilter.has(s) || (s === '' && statusFilter.has('todo'))) {
           matchIds.add(r.node.id);
           let cur = r.node;
           while (cur.parentId && nodes[cur.parentId]) {

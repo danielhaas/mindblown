@@ -48,10 +48,12 @@ describe('ROLE_CONFIG invariants', () => {
     }
     // Developer wanted List, not Kanban, as the default
     expect(defaultViewForRole('developer')).toBe('list');
-    // Stakeholder: Releases only, plus the Blocked panel
-    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['releases']);
-    expect(isPanelVisible('stakeholder', 'blocked')).toBe(true);
+    // Stakeholder: digest landing page + Releases, no panels (Round 2)
+    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['digest', 'releases']);
+    expect(defaultViewForRole('pm')).toBe('cockpit');
+    expect(ROLE_CONFIG.stakeholder.panels).toEqual(['property']);
     expect(isPanelVisible('stakeholder', 'triage')).toBe(false);
+    expect(isPanelVisible('pm', 'triage')).toBe(true);
     // "all" keeps today's default
     expect(defaultViewForRole('all')).toBe('mindmap');
   });
@@ -62,7 +64,7 @@ describe('reconcileView', () => {
     expect(reconcileView('pm', 'kanban')).toBe('kanban');
   });
   it('falls back to the role default when it does not', () => {
-    expect(reconcileView('stakeholder', 'kanban')).toBe('releases');
+    expect(reconcileView('stakeholder', 'kanban')).toBe('digest');
   });
 });
 
@@ -73,6 +75,7 @@ describe('persistence', () => {
     expect(s.getItem(VIEW_ROLE_STORAGE_KEY)).toBe('pm');
     expect(readStoredRole(s)).toBe('pm');
     expect(readStoredRole(memStorage({ [VIEW_ROLE_STORAGE_KEY]: 'ceo' }))).toBe('all');
+    expect(readStoredRole(memStorage({ [VIEW_ROLE_STORAGE_KEY]: 'constructor' }))).toBe('all');
     expect(readStoredRole(undefined)).toBe('all');
   });
 });
@@ -82,6 +85,11 @@ describe('pickCurrentCycle', () => {
   it('prefers the sprint whose dates contain today, even if still "planned"', () => {
     const cycles = [c('old', '2026-08-01', '2026-08-10', 'active'), c('now', '2026-08-11', '2026-08-26')];
     expect(pickCurrentCycle(cycles, new Date('2026-08-26T10:00:00Z'))?.id).toBe('now');
+  });
+  it('prefers the most recently started sprint when cycles overlap (Round 2: leftover bucket vs Sprint 0)', () => {
+    const cycles = [c('bucket', '2026-08-27', '2026-09-25'), c('sprint0', '2026-08-31', '2026-09-11')];
+    expect(pickCurrentCycle(cycles, new Date('2026-08-28'))?.id).toBe('bucket');
+    expect(pickCurrentCycle(cycles, new Date('2026-09-01'))?.id).toBe('sprint0');
   });
   it('falls back to the active sprint, then null', () => {
     expect(pickCurrentCycle([c('a', '2026-01-01', '2026-01-10', 'active')], new Date('2026-08-26'))?.id).toBe('a');

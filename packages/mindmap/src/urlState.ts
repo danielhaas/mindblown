@@ -72,6 +72,8 @@ const VIEW_IDS: ReadonlySet<string> = new Set<ActiveView>([
   'releases',
   'requirements',
   'guide',
+  'digest',
+  'cockpit',
 ]);
 
 // ── Shape ──────────────────────────────────────────────────────
@@ -169,7 +171,9 @@ export function serializeUrlState(search: string, state: UrlState): string {
   for (const key of OWNED_PARAMS) params.delete(key);
 
   if (state.map) params.set(PARAM.map, state.map);
-  if (state.view && state.view !== DEFAULT_VIEW) params.set(PARAM.view, state.view);
+  // Always written: since roles, a bare URL means "the role's default view",
+  // so eliding 'mindmap' would send a PM's copied mindmap link to the cockpit.
+  if (state.view) params.set(PARAM.view, state.view);
   if (state.focus) params.set(PARAM.focus, state.focus);
   if (state.node) params.set(PARAM.node, state.node);
   if (state.depth !== null && state.depth !== DEFAULT_DEPTH) {

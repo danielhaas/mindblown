@@ -37,6 +37,8 @@ import { TrashDialog } from './TrashDialog.js';
 import type { HealthSignal } from '@mindblown/core';
 import type { MapSummary } from './api.js';
 import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.js';
+import { DigestView } from './DigestView.js';
+import { CockpitView } from './CockpitView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -859,6 +861,10 @@ function EditableMapName({ name, onChange }: { name: string; onChange: (v: strin
 // ── View Switcher ─────────────────────────────────────────────
 
 const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
+  // Role landing pages (roles.ts): the stakeholder's one-screen digest and
+  // the PM's Monday cockpit. Listed first so they lead when their role is on.
+  { id: 'digest', label: 'Overview', enabled: true },
+  { id: 'cockpit', label: 'Today', enabled: true },
   { id: 'mindmap', label: 'Mindmap', enabled: true },
   { id: 'kanban', label: 'Kanban', enabled: true },
   { id: 'gantt', label: 'Gantt', enabled: true },
@@ -2230,6 +2236,8 @@ export function App() {
       {/* Main content + Property/Sprint panel */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+          {activeView === 'digest' && <DigestView />}
+          {activeView === 'cockpit' && <CockpitView />}
           {activeView === 'mindmap' && <MindmapEditor />}
           {activeView === 'kanban' && <KanbanView />}
           {activeView === 'gantt' && <GanttView />}

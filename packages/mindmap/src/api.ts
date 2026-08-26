@@ -1132,6 +1132,34 @@ export function fetchReleaseForecast(
   return request<ReleaseForecastResponse>(`/api/maps/${mapId}/release-forecast${suffix}`);
 }
 
+// ── Change history (landing pages; mirrors the MCP change_history tool) ──
+
+export interface ChangeEvent {
+  id: string;
+  mapId: string;
+  nodeId: string | null;
+  userId: string | null;
+  eventType: 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed';
+  fieldName: string | null;
+  oldValue: unknown;
+  newValue: unknown;
+  createdAt: string;
+}
+
+export function fetchChangeHistory(
+  mapId: string,
+  opts: { nodeId?: string; eventType?: ChangeEvent['eventType']; fieldName?: string; sinceDays?: number; limit?: number } = {},
+): Promise<{ events: ChangeEvent[] }> {
+  const qs = new URLSearchParams();
+  if (opts.nodeId) qs.set('nodeId', opts.nodeId);
+  if (opts.eventType) qs.set('eventType', opts.eventType);
+  if (opts.fieldName) qs.set('fieldName', opts.fieldName);
+  if (opts.sinceDays !== undefined) qs.set('sinceDays', String(opts.sinceDays));
+  if (opts.limit !== undefined) qs.set('limit', String(opts.limit));
+  const q = qs.toString();
+  return request(`/api/maps/${mapId}/changes${q ? `?${q}` : ''}`);
+}
+
 // ── Calendar subscribe URL ─────────────────────────────────────
 
 export type CalendarIcsView = 'full' | 'milestones' | 'owned';
