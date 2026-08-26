@@ -25,6 +25,7 @@ import { Shell, Card, Muted, Link } from './DigestView.js';
 const WINDOW_DAYS = 3;
 const EVENT_CAP = 1000;
 const TRIAGE_PAGE = 500;
+const CAUSE_PREVIEW = 8;
 
 export function CockpitView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -36,6 +37,10 @@ export function CockpitView() {
   const setActiveView = useMindmapStore((s) => s.setActiveView);
 
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
+  // Which blocker causes are unfolded to show their tasks (Dan: clicking a
+  // cause jumped to one random task).
+  const [openCauses, setOpenCauses] = useState<Set<number>>(new Set());
+  const [showAllCauses, setShowAllCauses] = useState(false);
   const [events, setEvents] = useState<ChangeEventLite[]>([]);
   const [triage, setTriage] = useState<TriageDecision[]>([]);
   // Server-side total — the list is capped, the real backlog was 1946 (Round 2).
@@ -193,16 +198,51 @@ export function CockpitView() {
           {blockers.length === 0 ? (
             <Muted>Nothing is blocked.</Muted>
           ) : (
-            <ul style={listStyle}>
-              {blockers.slice(0, 8).map((g, i) => (
-                <li key={i}>
-                  <strong>{g.nodeIds.length}</strong>{' '}
-                  <Link onClick={() => selectNode(g.nodeIds[0])}>{g.label}</Link>
-                  {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
-                  {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
+            <ul style={{ ...listStyle, paddingLeft: 0, listStyle: 'none' }}>
+              {(showAllCauses ? blockers : blockers.slice(0, CAUSE_PREVIEW)).map((g, i) => {
+                const open = openCauses.has(i);
+                return (
+                  <li key={i} style={{ marginBottom: 4 }}>
+                    <Link
+                      onClick={() =>
+                        setOpenCauses((s) => {
+                          const n = new Set(s);
+                          if (n.has(i)) n.delete(i);
+                          else n.add(i);
+                          return n;
+                        })
+                      }
+                    >
+                      <span style={pillStyle}>{g.nodeIds.length} {g.nodeIds.length === 1 ? 'task' : 'tasks'}</span>{' '}
+                      <span style={{ color: '#94a3b8', fontSize: 10 }}>{open ? '▾' : '▸'}</span> {g.label}
+                    </Link>
+                    {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
+                    {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
+                    {open && (
+                      <ul style={{ margin: '4px 0 6px 12px', paddingLeft: 14, fontSize: 12, lineHeight: 1.6 }}>
+                        {g.nodeIds.map((id) =>
+                          nodes[id] ? (
+                            <li key={id}>
+                              <Link onClick={() => selectNode(id)}>{nodes[id].text}</Link>
+                              {breadcrumb(nodes, nodes[id]) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, nodes[id])}</span>}
+                              {g.kind !== 'orphaned_claim' && nodes[id].blockedReason && (
+                                <div style={{ color: '#94a3b8', fontSize: 11 }}>{nodes[id].blockedReason.slice(0, 140)}</div>
+                              )}
+                            </li>
+                          ) : null,
+                        )}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+              {blockers.length > CAUSE_PREVIEW && (
+                <li style={{ marginTop: 4 }}>
+                  <Link onClick={() => setShowAllCauses((v) => !v)}>
+                    {showAllCauses ? `Show top ${CAUSE_PREVIEW} causes only` : `Show all ${blockers.length} causes`}
+                  </Link>
                 </li>
-              ))}
-              {blockers.length > 8 && <li style={{ color: '#94a3b8' }}>… {blockers.length - 8} more causes</li>}
+              )}
             </ul>
           )}
         </Card>
@@ -253,3 +293,14 @@ export function CockpitView() {
 }
 
 const listStyle: React.CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.6 };
+const pillStyle: React.CSSProperties = {
+  display: 'inline-block',
+  minWidth: 56,
+  textAlign: 'center',
+  padding: '0 6px',
+  borderRadius: 999,
+  background: '#fee2e2',
+  color: '#991b1b',
+  fontSize: 11,
+  fontWeight: 700,
+};
