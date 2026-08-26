@@ -132,6 +132,37 @@ export function weeklyDelta(row: ReleaseForecastRow): string | null {
 export interface Threat {
   text: string;
   nodeId: string | null;
+  /** Effort in planning units, for the caller to render in the reader's vocabulary. */
+  effort: number | null;
+}
+
+// ── Effort in a stakeholder's vocabulary ─────────────────────────────
+
+/**
+ * Planning units per calendar day the team actually burns. Measured rate
+ * first (netEffortPerDay from the change log); otherwise the configured
+ * capacity × focus factor. Stakeholders never see raw units: "15d" reads
+ * as three working weeks to them while an agent fleet burns it in two days
+ * (Dan, 26.08.).
+ */
+export function paceRate(f: {
+  netEffortPerDay?: number | null;
+  dailyCapacity: number;
+  focusFactor: number;
+}): { rate: number; measured: boolean } | null {
+  if (f.netEffortPerDay && f.netEffortPerDay > 0) return { rate: f.netEffortPerDay, measured: true };
+  const configured = f.dailyCapacity * (f.focusFactor || 1);
+  return configured > 0 ? { rate: configured, measured: false } : null;
+}
+
+/** "≈ 3 calendar days at the current pace" — never a planning unit. */
+export function calendarAtPace(effort: number, rate: number | null): string {
+  if (!rate || effort <= 0) return '';
+  const days = effort / rate;
+  if (days < 0.75) return 'under a day at the current pace';
+  const n = Math.round(days);
+  if (n >= 14) return `≈ ${Math.round(n / 7)} weeks at the current pace`;
+  return `≈ ${n} calendar day${n === 1 ? '' : 's'} at the current pace`;
 }
 
 /**
@@ -152,7 +183,7 @@ export function threats(
     .filter((n) => computed.get(n.id)?.isBlocked && (n.effortEstimate ?? 0) > 0)
     .sort((a, b) => (b.effortEstimate ?? 0) - (a.effortEstimate ?? 0));
   for (const n of blockedBig.slice(0, 2)) {
-    out.push({ text: `${n.text} (${n.effortEstimate}d) is blocked but still counted: ${n.blockedReason ?? 'waiting on a predecessor'}`, nodeId: n.id });
+    out.push({ text: `${n.text} is blocked but still counted: ${n.blockedReason ?? 'waiting on a predecessor'}`, nodeId: n.id, effort: n.effortEstimate });
   }
 
   // "No owner" is only a signal on maps that assign work at all. On the
@@ -163,12 +194,12 @@ export function threats(
   const assignmentInUse = assigned >= Math.max(3, allOpen.length * 0.05);
   const unowned = inScope.filter((n) => (n.priority === 'P0' || n.priority === 'P1') && n.assigneeIds.length === 0 && !n.claimedBySession);
   if (assignmentInUse && unowned.length) {
-    out.push({ text: `${unowned.length} high-priority tasks have no owner`, nodeId: unowned[0].id });
+    out.push({ text: `${unowned.length} high-priority tasks have no owner`, nodeId: unowned[0].id, effort: null });
   }
 
   const unestimated = inScope.filter((n) => n.effortEstimate === null);
   if (unestimated.length >= Math.max(3, inScope.length / 4)) {
-    out.push({ text: `${unestimated.length} of ${inScope.length} open tasks have no estimate — the finish date is a guess`, nodeId: null });
+    out.push({ text: `${unestimated.length} of ${inScope.length} open tasks have no estimate — the finish date is a guess`, nodeId: null, effort: null });
   }
   return out.slice(0, limit);
 }

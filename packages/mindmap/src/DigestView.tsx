@@ -19,6 +19,8 @@ import {
   recentlyDone,
   scopeGrowth,
   breadcrumb,
+  paceRate,
+  calendarAtPace,
 } from './landing.js';
 import type { ChangeEventLite } from './landing.js';
 
@@ -88,7 +90,9 @@ export function DigestView() {
     return <Shell><p style={{ color: '#64748b' }}>Loading…</p></Shell>;
   }
 
-  const fmt = (n: number) => Math.round(n * 10) / 10;
+  const pace = paceRate(forecast);
+  const rate = pace?.rate ?? null;
+  const cal = (units: number) => calendarAtPace(units, rate) || 'no pace measured yet';
 
   return (
     <Shell>
@@ -126,6 +130,9 @@ export function DigestView() {
               {risks.map((t, i) => (
                 <li key={i}>
                   {t.nodeId ? <Link onClick={() => selectNode(t.nodeId!)}>{t.text}</Link> : t.text}
+                  {t.effort !== null && t.effort > 0 && (
+                    <span style={{ color: '#64748b' }}> — {cal(t.effort)}</span>
+                  )}
                 </li>
               ))}
             </ol>
@@ -154,11 +161,16 @@ export function DigestView() {
               <strong>{growth.created}</strong> tasks added, <strong>{growth.deleted}</strong> removed
             </div>
             <div>
-              Work added <strong>+{fmt(growth.effortAdded)}</strong>, removed <strong>−{fmt(growth.effortRemoved)}</strong>, net{' '}
-              <strong style={{ color: growth.effortDelta > 0 ? '#b91c1c' : '#047857' }}>
-                {growth.effortDelta > 0 ? '+' : ''}{fmt(growth.effortDelta)}
-              </strong>{' '}
-              {forecast.effortUnit}
+              {growth.effortDelta > 0 ? (
+                <>The plan grew by <strong style={{ color: '#b91c1c' }}>{cal(growth.effortDelta)}</strong></>
+              ) : growth.effortDelta < 0 ? (
+                <>The plan shrank by <strong style={{ color: '#047857' }}>{cal(-growth.effortDelta)}</strong></>
+              ) : (
+                <>The amount of work did not change</>
+              )}
+              {growth.effortAdded > 0 && growth.effortRemoved > 0 && (
+                <span style={{ color: '#94a3b8' }}> (added {cal(growth.effortAdded)}, removed {cal(growth.effortRemoved)})</span>
+              )}
             </div>
             {events.length >= EVENT_CAP && (
               <div style={{ color: '#94a3b8', fontSize: 12 }}>Change log capped at {EVENT_CAP} events — counts are a floor.</div>
@@ -173,6 +185,11 @@ export function DigestView() {
       </div>
 
       <div style={{ marginTop: 18, fontSize: 12, color: '#94a3b8' }}>
+        {pace
+          ? pace.measured
+            ? `"Current pace" is measured from what the team finished over the last ${forecast.ratesWindowDays ?? 14} days. `
+            : '"Current pace" is the configured capacity — nothing has been measured yet. '
+          : ''}
         Detail lives in the{' '}
         <Link onClick={() => setActiveView('releases')}>Releases</Link> tab. Forecast snapshot:{' '}
         {forecast.lastSnapshotAt ? forecast.lastSnapshotAt.slice(0, 16).replace('T', ' ') : 'none yet'}.
