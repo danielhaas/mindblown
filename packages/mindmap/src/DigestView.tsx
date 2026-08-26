@@ -34,6 +34,7 @@ const LEVEL_STYLE = {
 const WINDOW_DAYS = 14;
 const EVENT_CAP = 1000;
 const MAX_RELEASES = 3;
+const DONE_PREVIEW = 5;
 
 export function DigestView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -47,6 +48,7 @@ export function DigestView() {
   const [events, setEvents] = useState<ChangeEventLite[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
+  const [showAllDone, setShowAllDone] = useState(false);
 
   useEffect(() => {
     if (!currentMapId) return;
@@ -80,7 +82,10 @@ export function DigestView() {
     () => threats(nodes, computed, categoryOf, focus?.versionId ?? null),
     [nodes, computed, categoryOf, focus?.versionId],
   );
-  const done = useMemo(() => recentlyDone(nodes, categoryOf, WINDOW_DAYS), [nodes, categoryOf]);
+  // Everything finished in the window; the card shows the latest few and
+  // says how many there are (Dan: "are those the last ones or did we only finish 5?").
+  const done = useMemo(() => recentlyDone(nodes, categoryOf, WINDOW_DAYS, new Date(), Infinity), [nodes, categoryOf]);
+  const doneShown = showAllDone ? done : done.slice(0, DONE_PREVIEW);
   const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null, nodes), [events, focus?.versionId, nodes]);
 
   if (error) {
@@ -144,18 +149,25 @@ export function DigestView() {
           )}
         </Card>
 
-        <Card title={`Finished in the last ${WINDOW_DAYS} days`}>
+        <Card title={`Finished in the last ${WINDOW_DAYS} days — ${done.length}`}>
           {done.length === 0 ? (
             <Muted>Nothing was marked done in this window.</Muted>
           ) : (
             <ul style={listStyle}>
-              {done.map((n) => (
+              {doneShown.map((n) => (
                 <li key={n.id}>
                   <span style={{ color: '#94a3b8', fontSize: 11 }}>{n.completedAt!.slice(5, 10)} </span>
                   <Link onClick={() => selectNode(n.id)}>{n.text}</Link>
                   {breadcrumb(nodes, n) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, n)}</span>}
                 </li>
               ))}
+              {done.length > DONE_PREVIEW && (
+                <li style={{ listStyle: 'none', marginLeft: -18, marginTop: 4 }}>
+                  <Link onClick={() => setShowAllDone((v) => !v)}>
+                    {showAllDone ? `Show latest ${DONE_PREVIEW} only` : `Show all ${done.length}`}
+                  </Link>
+                </li>
+              )}
             </ul>
           )}
         </Card>
