@@ -156,9 +156,14 @@ export function PropertyPanel() {
   const computed = useMindmapStore((s) => s.computed);
   const updateNode = useMindmapStore((s) => s.updateNode);
 
+  // The panel follows the selection, but the user can always dismiss it.
+  // Dismissal is remembered per node id, so selecting another node (or
+  // re-selecting this one after a deselect) brings the panel back.
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
+
   const node = selectedNodeId ? nodes[selectedNodeId] : null;
   const cv = selectedNodeId ? computed.get(selectedNodeId) : undefined;
-  const isOpen = !!node;
+  const isOpen = !!node && selectedNodeId !== dismissedFor;
 
   // Don't render if closed
   if (!isOpen || !node || !selectedNodeId) {
@@ -172,6 +177,7 @@ export function PropertyPanel() {
       nodeId={selectedNodeId}
       computedValues={cv}
       updateNode={updateNode}
+      onClose={() => setDismissedFor(selectedNodeId)}
     />
   );
 }
@@ -181,11 +187,13 @@ function PropertyPanelInner({
   nodeId,
   computedValues,
   updateNode: directUpdate,
+  onClose,
 }: {
   node: Node;
   nodeId: string;
   computedValues?: ComputedNodeValues;
   updateNode: (id: string, updates: Partial<Node>) => void;
+  onClose: () => void;
 }) {
   const debouncedUpdate = useDebouncedUpdate(nodeId);
   const hasChildren = node.childrenIds.length > 0;
@@ -250,6 +258,12 @@ function PropertyPanelInner({
         flexDirection: 'column',
         overflow: 'hidden',
       }}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          onClose();
+        }
+      }}
     >
       {/* Header */}
       <div
@@ -258,8 +272,28 @@ function PropertyPanelInner({
           borderBottom: '1px solid #f1f5f9',
         }}
       >
-        <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 8 }}>
-          Properties
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+            Properties
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            title="Close (Esc)"
+            aria-label="Close properties panel"
+            style={{
+              padding: '0 4px',
+              background: 'transparent',
+              border: 'none',
+              color: '#94a3b8',
+              fontSize: 16,
+              lineHeight: 1,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            ×
+          </button>
         </div>
         <input
           value={title}
