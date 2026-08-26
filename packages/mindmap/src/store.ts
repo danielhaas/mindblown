@@ -6,6 +6,8 @@ import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
+import { readStoredRole, writeStoredRole, reconcileView } from './roles.js';
+import type { ViewRole } from './roles.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
@@ -144,6 +146,9 @@ export interface MindmapState {
 
   // Actions — view
   setActiveView: (view: ActiveView) => void;
+  /** Role lens (roles.ts): filters tabs/panels; never a permission. */
+  viewRole: ViewRole;
+  setViewRole: (role: ViewRole) => void;
 
   // Actions — cycle / sprint
   loadCycles: () => Promise<void>;
@@ -706,6 +711,11 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   // ── View actions ─────────────────────────────────────────────
 
   setActiveView: (view) => set({ activeView: view }),
+  viewRole: readStoredRole(),
+  setViewRole: (role) => {
+    writeStoredRole(role);
+    set((state) => ({ viewRole: role, activeView: reconcileView(role, state.activeView) }));
+  },
 
   // ── Drill-down actions ──────────────────────────────────────
 

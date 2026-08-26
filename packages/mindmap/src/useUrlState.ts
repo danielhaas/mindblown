@@ -75,7 +75,9 @@ function readStoreUrlState(): UrlState {
  */
 function applyToStore(state: UrlState): void {
   const s = useMindmapStore.getState();
-  s.setActiveView(resolveView(state.view));
+  // A bare URL lands on the role's default view; an explicit ?view= wins
+  // even when the role hides that tab (shared links must keep working).
+  s.setActiveView(resolveView(state.view, s.viewRole));
   s.setMaxDepth(resolveDepth(state.depth));
   s.setActiveVersionFilter(state.version);
   s.setActiveCycleFilter(state.sprint);

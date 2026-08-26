@@ -233,6 +233,12 @@ describe('resolve', () => {
     expect(resolveDepth(null)).toBe(DEFAULT_DEPTH);
   });
 
+  it('lands a bare URL on the role default, but an explicit view always wins', () => {
+    expect(resolveView(null, 'developer')).toBe('list');
+    expect(resolveView(null, 'stakeholder')).toBe('releases');
+    expect(resolveView('gantt', 'stakeholder')).toBe('gantt');
+  });
+
   it('preserves depth 0 rather than treating it as absent', () => {
     expect(resolveDepth(0)).toBe(0);
   });

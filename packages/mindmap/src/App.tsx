@@ -36,6 +36,8 @@ import { HealthListDialog } from './HealthListDialog.js';
 import { TrashDialog } from './TrashDialog.js';
 import type { HealthSignal } from '@mindblown/core';
 import type { MapSummary } from './api.js';
+import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.js';
+import type { ViewRole, PanelKey } from './roles.js';
 
 // ── Health badge colors ────────────────────────────────────────
 
@@ -872,7 +874,43 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   { id: 'workload', label: 'Workload', enabled: true },
 ];
 
-function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: ActiveView) => void }) {
+/**
+ * Role lens switcher (roles.ts). Sits left of the view tabs so the tabs
+ * visibly change when the role does. "All" is the escape hatch — like the
+ * CRM's sidebar "show all" — and the default for existing users.
+ */
+function RoleSwitcher({ role, onChange }: { role: ViewRole; onChange: (r: ViewRole) => void }) {
+  return (
+    <select
+      value={role}
+      onChange={(e) => onChange(e.target.value as ViewRole)}
+      title={ROLE_CONFIG[role].hint}
+      aria-label="Role"
+      style={{
+        fontSize: 11,
+        fontWeight: 600,
+        color: role === 'all' ? '#64748b' : '#4f46e5',
+        background: role === 'all' ? '#fff' : '#eef2ff',
+        border: role === 'all' ? '1px solid #e2e8f0' : '1px solid #c7d2fe',
+        borderRadius: 4,
+        padding: '3px 6px',
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+      }}
+    >
+      {ROLE_ORDER.map((r) => (
+        <option key={r} value={r}>
+          {ROLE_CONFIG[r].label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ViewSwitcher({ active, role, onChange }: { active: ActiveView; role: ViewRole; onChange: (v: ActiveView) => void }) {
+  // A tab the role hides stays visible while it is the active view (deep
+  // link, or the role changed under it) so the user can see where they are.
+  const tabs = VIEW_TABS.filter((tab) => isTabVisible(role, tab.id) || tab.id === active);
   return (
     <div
       style={{
@@ -884,7 +922,7 @@ function ViewSwitcher({ active, onChange }: { active: ActiveView; onChange: (v: 
         gap: 1,
       }}
     >
-      {VIEW_TABS.map((tab) => {
+      {tabs.map((tab) => {
         const isActive = tab.id === active;
         return (
           <button
@@ -1445,6 +1483,9 @@ export function App() {
   const rootNodeId = useMindmapStore((s) => s.rootNodeId);
   const computed = useMindmapStore((s) => s.computed);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const viewRole = useMindmapStore((s) => s.viewRole);
+  const setViewRole = useMindmapStore((s) => s.setViewRole);
+  const showPanel = (panel: PanelKey) => isPanelVisible(viewRole, panel);
   const loading = useMindmapStore((s) => s.loading);
   const error = useMindmapStore((s) => s.error);
   const wsConnected = useMindmapStore((s) => s.wsConnected);
@@ -1789,7 +1830,8 @@ export function App() {
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
-          <ViewSwitcher active={activeView} onChange={setActiveView} />
+          <RoleSwitcher role={viewRole} onChange={setViewRole} />
+          <ViewSwitcher active={activeView} role={viewRole} onChange={setActiveView} />
         </div>
 
         {/* Right: sprint indicator + stats */}
@@ -1896,6 +1938,7 @@ export function App() {
           />
 
           {/* Sprints panel toggle (opens the right-dock panel — distinct from the sprint filter) */}
+          {showPanel('sprint') && (<>
           <button
             onClick={() => {
               setSprintPanelOpen(!sprintPanelOpen);
@@ -1925,8 +1968,10 @@ export function App() {
           </button>
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+          </>)}
 
           {/* Blocked indicator */}
+          {showPanel('blocked') && (<>
           <BlockedIndicator
             count={blockedLeafCount}
             panelOpen={blockedPanelOpen}
@@ -1941,8 +1986,10 @@ export function App() {
           />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+          </>)}
 
           {/* Triage indicator (#94) */}
+          {showPanel('triage') && (<>
           <TriageIndicator
             count={triagePendingCount}
             panelOpen={triagePanelOpen}
@@ -1957,8 +2004,10 @@ export function App() {
           />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+          </>)}
 
           {/* Plan-health panel toggle (pull-based lint, docs/plan-linter.md) */}
+          {showPanel('planHealth') && (<>
           <button
             onClick={() => {
               setPlanHealthPanelOpen(!planHealthPanelOpen);
@@ -1986,6 +2035,7 @@ export function App() {
           </button>
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+          </>)}
 
           {/* Combined status readout: nodes / progress / effort / health / connection */}
           <HealthChip
@@ -2000,6 +2050,7 @@ export function App() {
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
           {/* AI Chat toggle */}
+          {showPanel('aiChat') && (
           <button
             onClick={() => {
               // Three states: closed → fully open, minimised → restore,
@@ -2032,8 +2083,10 @@ export function App() {
           >
             AI Chat
           </button>
+          )}
 
           {/* Map chat toggle (talk to other people on this map) */}
+          {showPanel('mapChat') && (
           <button
             onClick={() => {
               if (!mapChatOpen) {
@@ -2090,6 +2143,7 @@ export function App() {
               </span>
             )}
           </button>
+          )}
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
@@ -2198,16 +2252,16 @@ export function App() {
             Reihenfolge: das Arbeits-Panel innen, das Property-Panel aussen am
             Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
             offen ist. */}
-        {blockedPanelOpen ? (
+        {blockedPanelOpen && showPanel('blocked') ? (
           <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
-        ) : sprintPanelOpen ? (
+        ) : sprintPanelOpen && showPanel('sprint') ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
-        ) : triagePanelOpen && currentMapId ? (
+        ) : triagePanelOpen && currentMapId && showPanel('triage') ? (
           <TriagePanel
             mapId={currentMapId}
             onClose={() => setTriagePanelOpen(false)}
           />
-        ) : planHealthPanelOpen && currentMapId ? (
+        ) : planHealthPanelOpen && currentMapId && showPanel('planHealth') ? (
           <PlanHealthPanel
             mapId={currentMapId}
             onClose={() => setPlanHealthPanelOpen(false)}
@@ -2221,7 +2275,7 @@ export function App() {
             — so that one view suppresses the panel and offers "Edit the
             steps" instead, which jumps to the mindmap where the panel
             belongs. Every other view is untouched. */}
-        {activeView !== 'guide' && <PropertyPanel />}
+        {activeView !== 'guide' && showPanel('property') && <PropertyPanel />}
       </div>
 
       {/* Command Palette */}
@@ -2283,14 +2337,14 @@ export function App() {
       )}
 
       {/* AI Chat Panel — full panel when open & !minimised, chip when minimised */}
-      {aiChatOpen && currentMapId && !aiChatMinimised && (
+      {aiChatOpen && showPanel('aiChat') && currentMapId && !aiChatMinimised && (
         <AIChatPanel
           mapId={currentMapId}
           onClose={() => setAiChatOpen(false)}
           onMinimise={() => setAiChatMinimised(true)}
         />
       )}
-      {aiChatOpen && currentMapId && aiChatMinimised && (
+      {aiChatOpen && showPanel('aiChat') && currentMapId && aiChatMinimised && (
         <MinimisedChip
           label="AI Chat"
           color="#3b82f6"
@@ -2307,7 +2361,7 @@ export function App() {
       )}
 
       {/* Map Chat Panel — same minimise pattern */}
-      {mapChatOpen && currentMapId && rootNodeId && !mapChatMinimised && (
+      {mapChatOpen && showPanel('mapChat') && currentMapId && rootNodeId && !mapChatMinimised && (
         <MapChatPanel
           mapId={currentMapId}
           rootNodeId={rootNodeId}
@@ -2315,7 +2369,7 @@ export function App() {
           onMinimise={() => setMapChatMinimised(true)}
         />
       )}
-      {mapChatOpen && currentMapId && rootNodeId && mapChatMinimised && (
+      {mapChatOpen && showPanel('mapChat') && currentMapId && rootNodeId && mapChatMinimised && (
         <MinimisedChip
           label={mapChatUnread > 0 ? `Map chat · ${mapChatUnread > 99 ? '99+' : mapChatUnread}` : 'Map chat'}
           color="#0ea5e9"
