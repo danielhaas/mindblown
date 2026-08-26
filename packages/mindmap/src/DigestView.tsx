@@ -22,7 +22,7 @@ import {
   paceRate,
   calendarAtPace,
 } from './landing.js';
-import type { ChangeEventLite } from './landing.js';
+import type { ChangeEventLite, ScopeTotals } from './landing.js';
 
 const LEVEL_STYLE = {
   on_track: { label: 'On track', bg: '#ecfdf5', fg: '#047857', border: '#a7f3d0' },
@@ -81,7 +81,7 @@ export function DigestView() {
     [nodes, computed, categoryOf, focus?.versionId],
   );
   const done = useMemo(() => recentlyDone(nodes, categoryOf, WINDOW_DAYS), [nodes, categoryOf]);
-  const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null), [events, focus?.versionId]);
+  const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null, nodes), [events, focus?.versionId, nodes]);
 
   if (error) {
     return <Shell><p style={{ color: '#b91c1c' }}>{error}</p></Shell>;
@@ -93,6 +93,11 @@ export function DigestView() {
   const pace = paceRate(forecast);
   const rate = pace?.rate ?? null;
   const cal = (units: number) => calendarAtPace(units, rate) || 'no pace measured yet';
+  // The scope card follows the focused release (#333) — its map-wide total
+  // stays as a footnote so the number still matches the MCP `burnup` tool.
+  const scope: ScopeTotals = focus && growth.forVersion ? growth.forVersion : growth;
+  const scopeScoped = Boolean(focus && growth.forVersion);
+  const hasAny = (t: ScopeTotals) => t.created > 0 || t.deleted > 0 || t.effortAdded > 0 || t.effortRemoved > 0;
 
   return (
     <Shell>
@@ -155,30 +160,38 @@ export function DigestView() {
           )}
         </Card>
 
-        <Card title={`Scope change, last ${WINDOW_DAYS} days`}>
+        <Card title={scopeScoped ? `Scope change for ${focus!.versionName}, last ${WINDOW_DAYS} days` : `Scope change, whole map, last ${WINDOW_DAYS} days`}>
           <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>
             <div>
-              <strong>{growth.created}</strong> tasks added, <strong>{growth.deleted}</strong> removed
+              <strong>{scope.created}</strong> tasks added, <strong>{scope.deleted}</strong> removed
             </div>
             <div>
-              {growth.effortDelta > 0 ? (
-                <>The plan grew by <strong style={{ color: '#b91c1c' }}>{cal(growth.effortDelta)}</strong></>
-              ) : growth.effortDelta < 0 ? (
-                <>The plan shrank by <strong style={{ color: '#047857' }}>{cal(-growth.effortDelta)}</strong></>
+              {scope.effortDelta > 0 ? (
+                <>The plan grew by <strong style={{ color: '#b91c1c' }}>{cal(scope.effortDelta)}</strong></>
+              ) : scope.effortDelta < 0 ? (
+                <>The plan shrank by <strong style={{ color: '#047857' }}>{cal(-scope.effortDelta)}</strong></>
               ) : (
                 <>The amount of work did not change</>
               )}
-              {growth.effortAdded > 0 && growth.effortRemoved > 0 && (
-                <span style={{ color: '#94a3b8' }}> (added {cal(growth.effortAdded)}, removed {cal(growth.effortRemoved)})</span>
+              {scope.effortAdded > 0 && scope.effortRemoved > 0 && (
+                <span style={{ color: '#94a3b8' }}> (added {cal(scope.effortAdded)}, removed {cal(scope.effortRemoved)})</span>
               )}
             </div>
-            {events.length >= EVENT_CAP && (
-              <div style={{ color: '#94a3b8', fontSize: 12 }}>Change log capped at {EVENT_CAP} events — counts are a floor.</div>
-            )}
             {focus && growth.promoted.length > 0 && (
               <div>
                 <strong>{growth.promoted.length}</strong> tasks were moved into {focus.versionName}
               </div>
+            )}
+            {scopeScoped && (
+              <div style={{ color: '#94a3b8', fontSize: 12, marginTop: 4 }}>
+                Whole map: +{growth.created} / −{growth.deleted} tasks, {scopeDelta(growth, cal)}
+                {hasAny(growth.unattributed) && (
+                  <> · not in any release: +{growth.unattributed.created} / −{growth.unattributed.deleted} tasks, {scopeDelta(growth.unattributed, cal)}</>
+                )}
+              </div>
+            )}
+            {events.length >= EVENT_CAP && (
+              <div style={{ color: '#94a3b8', fontSize: 12 }}>Change log capped at {EVENT_CAP} events — counts are a floor.</div>
             )}
           </div>
         </Card>
@@ -257,6 +270,13 @@ function ReleaseCard({
       )}
     </section>
   );
+}
+
+/** "grew by ≈ 2 weeks at the current pace" / "shrank by …" / "effort unchanged" — for the footnote. */
+function scopeDelta(t: ScopeTotals, cal: (units: number) => string): string {
+  if (t.effortDelta > 0) return `grew by ${cal(t.effortDelta)}`;
+  if (t.effortDelta < 0) return `shrank by ${cal(-t.effortDelta)}`;
+  return 'effort unchanged';
 }
 
 // ── Bits ─────────────────────────────────────────────────────────────

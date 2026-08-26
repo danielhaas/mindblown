@@ -6,6 +6,7 @@ import {
   computeWorkloads,
   collectDoneNodeIds,
   collectRequirementKeepIds,
+  isLeafDone,
 } from '../viewScope.js';
 
 // The store module reads localStorage at import time (auth-token bootstrap);
@@ -166,6 +167,16 @@ const workflow = [
 
 const workloadsNow = () =>
   computeWorkloads(useMindmapStore.getState().getVisibleNodes(SCOPE_ONLY), workflow);
+
+describe('isLeafDone — the one either/or rule (#332)', () => {
+  it('is done by status OR by 100 %, open otherwise', () => {
+    expect(isLeafDone({ percentComplete: 100 }, 'todo')).toBe(true);
+    expect(isLeafDone({ percentComplete: 0 }, 'done')).toBe(true);
+    expect(isLeafDone({ percentComplete: null }, 'done')).toBe(true);
+    expect(isLeafDone({ percentComplete: 50 }, 'todo')).toBe(false);
+    expect(isLeafDone({ percentComplete: null }, 'in_progress')).toBe(false);
+  });
+});
 
 describe('collectDoneNodeIds — the Gantt "hide done" oracle', () => {
   const lookupFrom = (nodes: Record<string, Node>) => (id: string) => nodes[id];

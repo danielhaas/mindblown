@@ -10,9 +10,19 @@
 import type { Node, ComputedNodeValues, Cycle, Priority } from '@mindblown/core';
 import { effectiveVersionId } from '@mindblown/core';
 import type { ReleaseForecastRow, TriageDecision } from './api.js';
+import { isLeafDone } from './viewScope.js';
 
 export type StatusCategory = 'todo' | 'in_progress' | 'done';
 export type CategoryOf = (node: Node) => StatusCategory;
+
+/**
+ * Open = not done by the shared either/or rule (status category OR 100 %).
+ * Every filter on this page goes through here — a leaf at 100 % with a
+ * never-set status is finished, whatever its category says (#332).
+ */
+function isOpen(node: Node, categoryOf: CategoryOf): boolean {
+  return !isLeafDone(node, categoryOf(node));
+}
 
 const DAY = 86_400_000;
 
@@ -176,7 +186,7 @@ export function threats(
   versionId: string | null,
   limit = 3,
 ): Threat[] {
-  const inScope = leavesOf(nodes).filter((n) => categoryOf(n) !== 'done' && (!versionId || inVersion(nodes, n, versionId)));
+  const inScope = leavesOf(nodes).filter((n) => isOpen(n, categoryOf) && (!versionId || inVersion(nodes, n, versionId)));
   const out: Threat[] = [];
 
   const blockedBig = inScope
@@ -189,7 +199,7 @@ export function threats(
   // "No owner" is only a signal on maps that assign work at all. On the
   // Fulcrum map 2 of 4,900 nodes carry an assignee, so this line would be
   // true for every release forever (Round 2, Thomas) — gate it on usage.
-  const allOpen = leavesOf(nodes).filter((n) => categoryOf(n) !== 'done');
+  const allOpen = leavesOf(nodes).filter((n) => isOpen(n, categoryOf));
   const assigned = allOpen.filter((n) => n.assigneeIds.length > 0 || n.claimedBySession).length;
   const assignmentInUse = assigned >= Math.max(3, allOpen.length * 0.05);
   const unowned = inScope.filter((n) => (n.priority === 'P0' || n.priority === 'P1') && n.assigneeIds.length === 0 && !n.claimedBySession);
@@ -219,11 +229,12 @@ export function recentlyDone(
   limit = 5,
 ): Node[] {
   const since = today.getTime() - days * DAY;
-  // completedAt only — the server stamps it on every done-transition. Falling
-  // back to updatedAt ranked tickets somebody re-saved this morning above the
+  // completedAt only — the server stamps it on every done-transition (status
+  // OR 100 %, so a 100 % leaf with no status carries one too). Falling back
+  // to updatedAt ranked tickets somebody re-saved this morning above the
   // things actually finished (Round 2, Thomas).
   return leavesOf(nodes)
-    .filter((n) => categoryOf(n) === 'done' && n.completedAt)
+    .filter((n) => !isOpen(n, categoryOf) && n.completedAt)
     .map((n) => ({ n, at: Date.parse(n.completedAt!) }))
     .filter((x) => x.at >= since)
     .sort((a, b) => b.at - a.at)
@@ -242,7 +253,8 @@ export interface ChangeEventLite {
   createdAt: string;
 }
 
-export interface ScopeGrowth {
+/** The burnup accounting for one bucket of events. */
+export interface ScopeTotals {
   created: number;
   deleted: number;
   /** Effort that entered the plan: estimates of nodes created in the window + upward estimate edits. */
@@ -251,10 +263,62 @@ export interface ScopeGrowth {
   effortRemoved: number;
   /** Net, same sign convention as the burnup tool. */
   effortDelta: number;
+}
+
+export interface ScopeGrowth extends ScopeTotals {
   /** Nodes moved *into* `versionId` in the window (promotions). */
   promoted: string[];
   /** Promotions into every version, so a slip can be explained (Round 2: "V1 +126d because 27 tickets were promoted into it"). */
   promotedByVersion: Record<string, string[]>;
+  /**
+   * The same accounting restricted to events whose node sits in `versionId`
+   * (inherited membership, see `inVersion`). null when no version is focused
+   * or the caller passed no `nodes` to resolve against — then the map-wide
+   * figures above are all there is.
+   */
+  forVersion: ScopeTotals | null;
+  /**
+   * Events whose node resolves to no release at all: the node is gone and
+   * its delete snapshot predates the `versionId` field, or nothing in its
+   * parent chain is tagged. Counted, not dropped — the sum of every version
+   * bucket plus this one is the map-wide total (#333).
+   */
+  unattributed: ScopeTotals;
+}
+
+export function emptyScopeTotals(): ScopeTotals {
+  return { created: 0, deleted: 0, effortAdded: 0, effortRemoved: 0, effortDelta: 0 };
+}
+
+/** Where the version resolver can start for one event. */
+interface EventAttribution {
+  /** Explicit version stamped on the event payload (create newValue / delete snapshot). */
+  explicit: string | null | undefined;
+  /** Parent recorded on the payload, for nodes no longer in the current tree. */
+  parentId: string | null | undefined;
+}
+
+/**
+ * The (inherited) release an event belongs to, or null when nothing can
+ * say. Preference order: a version stamped on the event payload, then the
+ * node's current chain, then the chain above the parent the payload names
+ * — that last one is how a deleted node still finds its release when the
+ * snapshot predates the `versionId` field.
+ */
+function attributeEvent(
+  e: ChangeEventLite,
+  nodeById: Map<string, Node>,
+  hint: EventAttribution,
+): string | null {
+  if (typeof hint.explicit === 'string') return hint.explicit;
+  if (e.nodeId && nodeById.has(e.nodeId)) {
+    const v = effectiveVersionId(e.nodeId, nodeById);
+    if (v) return v;
+  }
+  if (typeof hint.parentId === 'string' && nodeById.has(hint.parentId)) {
+    return effectiveVersionId(hint.parentId, nodeById);
+  }
+  return null;
 }
 
 /**
@@ -264,29 +328,64 @@ export interface ScopeGrowth {
  * leaves count the snapshot on the delete event, estimate edits count in
  * full. Subtree deletes only snapshot the primary node (server) — same
  * blind spot as burnup, by design.
+ *
+ * The top-level figures are always map-wide (that is what burnup reports).
+ * With `nodes` the same events are also attributed to releases, and
+ * `forVersion` carries the focused release's share — issue #333: the card
+ * under "What threatens MVP" said the plan grew by 11 weeks, all of it V1.
  */
-export function scopeGrowth(events: ChangeEventLite[], versionId: string | null): ScopeGrowth {
-  const g: ScopeGrowth = { created: 0, deleted: 0, effortAdded: 0, effortRemoved: 0, effortDelta: 0, promoted: [], promotedByVersion: {} };
+export function scopeGrowth(
+  events: ChangeEventLite[],
+  versionId: string | null,
+  nodes?: Record<string, Node>,
+): ScopeGrowth {
+  const g: ScopeGrowth = {
+    ...emptyScopeTotals(),
+    promoted: [],
+    promotedByVersion: {},
+    forVersion: null,
+    unattributed: emptyScopeTotals(),
+  };
+  const nodeById = nodes ? new Map(Object.entries(nodes)) : null;
+  const perVersion = nodeById && versionId ? emptyScopeTotals() : null;
+
+  // Map-wide first, then the same delta into the bucket the event belongs to.
+  const book = (e: ChangeEventLite, hint: EventAttribution, apply: (t: ScopeTotals) => void) => {
+    apply(g);
+    if (!nodeById) return;
+    const v = attributeEvent(e, nodeById, hint);
+    if (v === null) apply(g.unattributed);
+    else if (perVersion && v === versionId) apply(perVersion);
+  };
 
   for (const e of events) {
     if (e.eventType === 'node.created') {
-      g.created += 1;
-      const nv = e.newValue as { effortEstimate?: number | null } | null;
-      g.effortAdded += nv?.effortEstimate ?? 0;
+      const nv = e.newValue as { effortEstimate?: number | null; versionId?: string | null; parentId?: string | null } | null;
+      book(e, { explicit: nv?.versionId, parentId: nv?.parentId }, (t) => {
+        t.created += 1;
+        t.effortAdded += nv?.effortEstimate ?? 0;
+      });
     } else if (e.eventType === 'node.deleted') {
-      g.deleted += 1;
-      const snap = e.oldValue as { effortEstimate?: number | null; isLeaf?: boolean } | null;
-      if (snap?.isLeaf && snap.effortEstimate != null) g.effortRemoved += snap.effortEstimate;
+      const snap = e.oldValue as
+        | { effortEstimate?: number | null; isLeaf?: boolean; versionId?: string | null; parentId?: string | null }
+        | null;
+      book(e, { explicit: snap?.versionId, parentId: snap?.parentId }, (t) => {
+        t.deleted += 1;
+        if (snap?.isLeaf && snap.effortEstimate != null) t.effortRemoved += snap.effortEstimate;
+      });
     } else if (e.eventType === 'node.field_changed' && e.fieldName === 'effortEstimate') {
       const d = (Number(e.newValue) || 0) - (Number(e.oldValue) || 0);
-      if (d > 0) g.effortAdded += d;
-      else g.effortRemoved += -d;
+      book(e, { explicit: undefined, parentId: undefined }, (t) => {
+        if (d > 0) t.effortAdded += d;
+        else t.effortRemoved += -d;
+      });
     } else if (e.eventType === 'node.field_changed' && e.fieldName === 'versionId' && typeof e.newValue === 'string' && e.nodeId) {
       (g.promotedByVersion[e.newValue] ??= []).push(e.nodeId);
       if (versionId && e.newValue === versionId) g.promoted.push(e.nodeId);
     }
   }
-  g.effortDelta = g.effortAdded - g.effortRemoved;
+  for (const t of [g, g.unattributed, perVersion]) if (t) t.effortDelta = t.effortAdded - t.effortRemoved;
+  g.forVersion = perVersion;
   return g;
 }
 
@@ -353,7 +452,7 @@ export function groupBlockers(
 
   for (const n of leavesOf(nodes)) {
     const c = computed.get(n.id);
-    if (!c?.isBlocked || categoryOf(n) === 'done') continue;
+    if (!c?.isBlocked || !isOpen(n, categoryOf)) continue;
     if (n.blockedReason) {
       const kind = classifyBlocker(n.blockedReason);
       const def = BLOCKER_KINDS.find((k) => k.kind === kind);
@@ -394,7 +493,9 @@ export function sprintHealth(
   stalledAfterDays = 14,
 ): SprintHealth {
   const leaves = leavesOf(nodes);
-  const inProg = leaves.filter((n) => categoryOf(n) === 'in_progress');
+  // A leaf at 100 % whose status still says in_progress is finished work
+  // waiting for a status click, not WIP.
+  const inProg = leaves.filter((n) => categoryOf(n) === 'in_progress' && isOpen(n, categoryOf));
   const stalledSince = today.getTime() - stalledAfterDays * DAY;
   const t = isoDay(today);
   return {
@@ -404,7 +505,7 @@ export function sprintHealth(
     inProgress: inProg.length,
     wipLimit,
     stalled: inProg.filter((n) => Date.parse(n.updatedAt) < stalledSince).length,
-    openInSprint: cycle ? leaves.filter((n) => n.cycleId === cycle.id && categoryOf(n) !== 'done').length : 0,
+    openInSprint: cycle ? leaves.filter((n) => n.cycleId === cycle.id && isOpen(n, categoryOf)).length : 0,
   };
 }
 
@@ -469,7 +570,7 @@ export function escalations(
 ): Node[] {
   const prio = (p: Priority | null) => (p === 'P0' ? 0 : p === 'P1' ? 1 : 2);
   return leavesOf(nodes)
-    .filter((n) => categoryOf(n) !== 'done' && (n.priority === 'P0' || n.priority === 'P1') && computed.get(n.id)?.isBlocked && n.blockedReason)
+    .filter((n) => isOpen(n, categoryOf) && (n.priority === 'P0' || n.priority === 'P1') && computed.get(n.id)?.isBlocked && n.blockedReason)
     .sort((a, b) => prio(a.priority) - prio(b.priority) || (b.effortEstimate ?? 0) - (a.effortEstimate ?? 0))
     .slice(0, limit);
 }
