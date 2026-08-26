@@ -181,13 +181,32 @@ export function statusCategory(
 }
 
 /**
- * Every node in the tree that counts as "done" for a hide-done filter.
+ * THE leaf-done rule, in one place.
  *
  * A leaf is done when its status sits in a `done` workflow category OR its
  * `percentComplete` reached 100 — the same either/or the server uses when it
- * stamps `completedAt` (see `updateNode` in server/src/db/nodes.ts). A parent
- * is done when every one of its children is, because a parent holds no
- * progress of its own — the rollup does.
+ * stamps `completedAt` (`updateNode` in server/src/db/nodes.ts) and the
+ * release forecast uses to count open tickets (`routes/maps.ts`). Takes the
+ * already-resolved category so callers that hold a `categoryOf` closure
+ * (landing.ts) and callers that hold the raw workflow share the same test.
+ *
+ * Issue #332: `threats()` decided openness by category alone, so the seven
+ * MVP requirement nodes at 100 % with a never-set status showed up as
+ * "7 of 11 open tasks have no estimate" while the forecast said 4 open.
+ */
+export function isLeafDone(
+  node: Pick<Node, 'percentComplete'>,
+  category: StatusCategoryId,
+): boolean {
+  return (node.percentComplete ?? 0) >= 100 || category === 'done';
+}
+
+/**
+ * Every node in the tree that counts as "done" for a hide-done filter.
+ *
+ * Leaves follow `isLeafDone`. A parent is done when every one of its
+ * children is, because a parent holds no progress of its own — the rollup
+ * does.
  *
  * Both Gantt views used to test `node.percentComplete >= 100` alone, which
  * missed two whole classes of finished work: leaves closed by status (their
@@ -210,9 +229,7 @@ export function collectDoneNodeIds(
     if (!node) return false;
     let isDone: boolean;
     if (node.childrenIds.length === 0) {
-      isDone =
-        (node.percentComplete ?? 0) >= 100 ||
-        statusCategory(node, statusWorkflow) === 'done';
+      isDone = isLeafDone(node, statusCategory(node, statusWorkflow));
     } else {
       // Descend into every child regardless of the running verdict — a
       // done child under a not-done parent still has to land in the set.

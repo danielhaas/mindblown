@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
 import type { ReleaseForecastRow } from '../api.js';
+import type { ChangeEventLite } from '../landing.js';
 import {
   nextRelease,
   openReleases,
@@ -148,6 +149,18 @@ describe('threats', () => {
     const nodes = byId([other]);
     expect(threats(nodes, computedFor(nodes), cat, 'v')).toEqual([]);
   });
+  it('treats a 100 % leaf with no status as done, like the forecast does (#332)', () => {
+    const parent = node({ id: 'p', versionId: 'v' });
+    // The seven MVP requirement nodes: percentComplete 100, status never set.
+    const finished = [1, 2, 3, 4].map((i) => node({ id: `f${i}`, parentId: 'p', status: null, percentComplete: 100 }));
+    const byStatus = node({ id: 's', parentId: 'p', status: 'done', percentComplete: 0 });
+    const half = node({ id: 'h', parentId: 'p', status: null, percentComplete: 50 });
+    const open = [1, 2, 3].map((i) => node({ id: `o${i}`, parentId: 'p' }));
+    const nodes = byId([parent, ...finished, byStatus, half, ...open]);
+    const t = threats(nodes, computedFor(nodes), cat, 'v');
+    // In scope: h + o1..o3 = 4 open, of which 4 unestimated — never "8 of 9".
+    expect(t.map((x) => x.text)).toEqual(['4 of 4 open tasks have no estimate — the finish date is a guess']);
+  });
 });
 
 describe('recentlyDone', () => {
@@ -159,6 +172,11 @@ describe('recentlyDone', () => {
     // re-saved this morning, but finished who-knows-when — must not rank first
     const resaved = node({ id: 'resaved', status: 'done', completedAt: null, updatedAt: '2026-08-26T08:26:00Z' });
     expect(recentlyDone(byId([a, b, old, open, resaved]), cat, 14, TODAY).map((n) => n.id)).toEqual(['b', 'a']);
+  });
+  it('counts a 100 % leaf with no status as finished when the server stamped completedAt (#332)', () => {
+    const pct = node({ id: 'pct', status: null, percentComplete: 100, completedAt: '2026-08-22T00:00:00Z' });
+    const half = node({ id: 'half', status: null, percentComplete: 50, completedAt: '2026-08-23T00:00:00Z' });
+    expect(recentlyDone(byId([pct, half]), cat, 14, TODAY).map((n) => n.id)).toEqual(['pct']);
   });
 });
 
@@ -180,7 +198,44 @@ describe('scopeGrowth', () => {
     expect(g).toEqual({
       created: 1, deleted: 2, effortAdded: 11, effortRemoved: 6, effortDelta: 5,
       promoted: ['d'], promotedByVersion: { v: ['d'], w: ['e'] },
+      // no nodes passed → no attribution attempted
+      forVersion: null,
+      unattributed: { created: 0, deleted: 0, effortAdded: 0, effortRemoved: 0, effortDelta: 0 },
     });
+  });
+
+  it('attributes each event to the inherited release of its node; the rest lands in "unattributed" (#333)', () => {
+    const r1 = node({ id: 'r1', versionId: 'v1' });
+    const a = node({ id: 'a', parentId: 'r1' }); // created in the V1 subtree, no own tag
+    const r15 = node({ id: 'r15', versionId: 'v15' });
+    const c = node({ id: 'c', parentId: 'r15', effortEstimate: 5 }); // estimate raised on a V1.5 node
+    const inbox = node({ id: 'inbox' });
+    const z = node({ id: 'z', parentId: 'inbox' }); // no version anywhere in the chain
+    const nodes = byId([r1, a, r15, c, inbox, z]);
+    const ev = (e: Partial<ChangeEventLite>): ChangeEventLite => ({ eventType: '', fieldName: null, oldValue: null, newValue: null, nodeId: null, createdAt: '', ...e });
+    const events = [
+      ev({ eventType: 'node.created', nodeId: 'a', newValue: { parentId: 'r1', effortEstimate: 8, versionId: null } }),
+      // deleted from V1 — the node is gone, the snapshot carries the resolved version
+      ev({ eventType: 'node.deleted', nodeId: 'gone1', oldValue: { effortEstimate: 3, isLeaf: true, versionId: 'v1', parentId: 'r1' } }),
+      // deleted, older snapshot without versionId — parent still in the tree resolves it
+      ev({ eventType: 'node.deleted', nodeId: 'gone2', oldValue: { effortEstimate: 2, isLeaf: true, parentId: 'r1' } }),
+      ev({ eventType: 'node.field_changed', fieldName: 'effortEstimate', nodeId: 'c', oldValue: 5, newValue: 9 }),
+      // unattributed: node gone and no snapshot; node whose chain has no version
+      ev({ eventType: 'node.deleted', nodeId: 'gone3', oldValue: null }),
+      ev({ eventType: 'node.field_changed', fieldName: 'effortEstimate', nodeId: 'z', oldValue: 0, newValue: 4 }),
+    ];
+    const g = scopeGrowth(events, 'v1', nodes);
+    expect(g.forVersion).toEqual({ created: 1, deleted: 2, effortAdded: 8, effortRemoved: 5, effortDelta: 3 });
+    expect(g.unattributed).toEqual({ created: 0, deleted: 1, effortAdded: 4, effortRemoved: 0, effortDelta: 4 });
+    // map-wide unchanged — still what the burnup tool reports
+    expect({ created: g.created, deleted: g.deleted, effortAdded: g.effortAdded, effortRemoved: g.effortRemoved, effortDelta: g.effortDelta })
+      .toEqual({ created: 1, deleted: 3, effortAdded: 16, effortRemoved: 5, effortDelta: 11 });
+    // the V1.5 raise shows up only for V1.5
+    expect(scopeGrowth(events, 'v15', nodes).forVersion).toEqual({ created: 0, deleted: 0, effortAdded: 4, effortRemoved: 0, effortDelta: 4 });
+    // an explicit version on the create payload beats the current chain
+    expect(scopeGrowth([ev({ eventType: 'node.created', nodeId: 'a', newValue: { parentId: 'r1', effortEstimate: 1, versionId: 'v15' } })], 'v15', nodes).forVersion?.created).toBe(1);
+    // no focused release → no per-version share, map-wide only
+    expect(scopeGrowth(events, null, nodes).forVersion).toBeNull();
   });
 });
 
@@ -222,6 +277,14 @@ describe('groupBlockers', () => {
 });
 
 describe('sprintHealth', () => {
+  it('does not count a 100 % leaf as WIP or as open in the sprint, whatever its status says (#332)', () => {
+    const cycle = { id: 'c1', mapId: 'm', versionId: null, name: 'S1', startDate: '2026-08-17', endDate: '2026-08-30', status: 'active', sortOrder: 0, createdAt: '', updatedAt: '' } as never;
+    const wip = node({ id: 'wip', status: 'in_progress', cycleId: 'c1' });
+    const finished = node({ id: 'fin', status: 'in_progress', percentComplete: 100, cycleId: 'c1' });
+    const h = sprintHealth(cycle, byId([wip, finished]), cat, null, TODAY);
+    expect(h.inProgress).toBe(1);
+    expect(h.openInSprint).toBe(1);
+  });
   it('flags a sprint that ended while still planned, WIP over limit, stalled work, rollover (#324)', () => {
     const cycle = { id: 'c', mapId: 'm', versionId: null, name: 'V1 fertigstellen', startDate: '2026-08-11', endDate: '2026-08-25', status: 'planned' as const, createdAt: '' };
     const fresh = node({ id: 'f', status: 'in_progress', cycleId: 'c', updatedAt: '2026-08-25T00:00:00Z' });

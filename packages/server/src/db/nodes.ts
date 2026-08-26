@@ -356,6 +356,27 @@ export async function getNode(nodeId: string): Promise<CoreNode | null> {
   return dbNodeToCore(row as unknown as Record<string, unknown>);
 }
 
+/**
+ * The release a node belongs to by the rule used everywhere else
+ * (`effectiveVersionId` in core): its own `versionId`, else the nearest
+ * tagged ancestor. Walks live rows one parent at a time — a handful of
+ * point reads, not a map load — so the delete route can stamp the
+ * inherited version into the change-log snapshot (#333: the Overview
+ * attributes scope change per release, and a deleted node has no chain
+ * left to walk on the client).
+ */
+export async function resolveInheritedVersionId(nodeId: string): Promise<string | null> {
+  const seen = new Set<string>();
+  let cur = await getNode(nodeId);
+  while (cur) {
+    if (cur.versionId != null) return cur.versionId;
+    if (!cur.parentId || seen.has(cur.parentId)) return null;
+    seen.add(cur.parentId);
+    cur = await getNode(cur.parentId);
+  }
+  return null;
+}
+
 // ── Update ─────────────────────────────────────────────────────────
 
 export interface UpdateNodeInput {

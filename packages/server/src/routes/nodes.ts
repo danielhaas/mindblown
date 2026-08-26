@@ -250,6 +250,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
           text: node.text,
           effortEstimate: node.effortEstimate ?? null,
           priority: node.priority ?? null,
+          // Explicit tag only; inherited membership is resolved from
+          // parentId by readers (Overview scope card, #333).
+          versionId: node.versionId ?? null,
         },
       })
       .catch(() => {});
@@ -547,6 +550,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       // but reading it before the mutation keeps the snapshot path stable
       // even if we tighten getNode to filter deleted_at later).
       const deletedBefore = await nodeDb.getNode(req.params.nodeId);
+      // Inherited release, resolved while the chain is still walkable —
+      // after the delete no client can recover it (#333).
+      const deletedVersionId = deletedBefore
+        ? await nodeDb.resolveInheritedVersionId(deletedBefore.id)
+        : null;
 
       const { deletedIds, parentChildIndex } = await nodeDb.deleteNode(req.params.nodeId);
       if (deletedIds.length === 0) {
@@ -582,6 +590,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
                     percentComplete: deletedBefore.percentComplete ?? null,
                     isLeaf: (deletedBefore.childrenIds?.length ?? 0) === 0,
                     parentChildIndex,
+                    versionId: deletedVersionId,
                   }
                 : null,
           })
