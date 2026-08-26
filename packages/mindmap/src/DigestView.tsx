@@ -106,6 +106,7 @@ export function DigestView() {
             primary={i === 0}
             focused={focus?.versionId === r.versionId}
             onFocus={() => setFocusId(r.versionId)}
+            onOpen={() => setActiveView('releases')}
           />
         ))
       )}
@@ -185,11 +186,14 @@ function ReleaseCard({
   primary,
   focused,
   onFocus,
+  onOpen,
 }: {
   row: ReleaseForecastRow;
   primary: boolean;
   focused: boolean;
   onFocus: () => void;
+  /** Open the Releases tab — the real drill-down for a release. */
+  onOpen: () => void;
 }) {
   const verdict = releaseVerdict(row);
   const lv = LEVEL_STYLE[verdict.level];
@@ -197,7 +201,9 @@ function ReleaseCard({
   const forecastDate = row.velocityAdjustedFinishDate ?? row.plannedFinishDate;
   return (
     <section
-      onClick={onFocus}
+      // Clicking the card only re-targets the lower cards; that is invisible
+      // on the card that is already focused, so it must not look like a link.
+      onClick={focused ? undefined : onFocus}
       style={{
         background: lv.bg,
         border: `1px solid ${lv.border}`,
@@ -205,11 +211,15 @@ function ReleaseCard({
         borderRadius: 10,
         padding: primary ? '18px 22px' : '10px 16px',
         marginBottom: primary ? 14 : 10,
-        cursor: 'pointer',
+        cursor: focused ? 'default' : 'pointer',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: primary ? 22 : 15, fontWeight: 700, color: '#0f172a' }}>{row.versionName}</span>
+        <Link onClick={onOpen}>
+          <span style={{ fontSize: primary ? 22 : 15, fontWeight: 700, color: '#0f172a', textDecoration: 'underline', textDecorationColor: '#c7d2fe', textUnderlineOffset: 4 }}>
+            {row.versionName}
+          </span>
+        </Link>
         <span style={{ fontSize: 12, fontWeight: 700, color: lv.fg, textTransform: 'uppercase', letterSpacing: 0.5 }}>{lv.label}</span>
       </div>
       <div style={{ fontSize: primary ? 14 : 13, color: '#1e293b', marginTop: 4 }}>{verdict.headline}</div>
