@@ -72,6 +72,8 @@ describe('parseUrlState', () => {
       'releases',
       'requirements',
       'guide',
+      'digest',
+      'cockpit',
     ]) {
       expect(parseUrlState(`?view=${view}`).view).toBe(view === 'mindmap' ? 'mindmap' : view);
     }
@@ -154,7 +156,7 @@ describe('serializeUrlState', () => {
       '',
       state({ map: 'm1', view: DEFAULT_VIEW, depth: DEFAULT_DEPTH }),
     );
-    expect(search).toBe('?map=m1');
+    expect(search).toBe('?map=m1&view=mindmap');
   });
 
   it('emits nothing when there is nothing to say', () => {

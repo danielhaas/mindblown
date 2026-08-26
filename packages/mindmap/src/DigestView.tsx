@@ -30,6 +30,7 @@ const LEVEL_STYLE = {
 } as const;
 
 const WINDOW_DAYS = 14;
+const EVENT_CAP = 1000;
 const MAX_RELEASES = 3;
 
 export function DigestView() {
@@ -51,7 +52,7 @@ export function DigestView() {
     setError(null);
     Promise.all([
       api.fetchReleaseForecast(currentMapId),
-      api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: 1000 }),
+      api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: EVENT_CAP }),
     ])
       .then(([f, ev]) => {
         if (cancelled) return;
@@ -78,7 +79,7 @@ export function DigestView() {
     [nodes, computed, categoryOf, focus?.versionId],
   );
   const done = useMemo(() => recentlyDone(nodes, categoryOf, WINDOW_DAYS), [nodes, categoryOf]);
-  const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null, nodes), [events, focus?.versionId, nodes]);
+  const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null), [events, focus?.versionId]);
 
   if (error) {
     return <Shell><p style={{ color: '#b91c1c' }}>{error}</p></Shell>;
@@ -158,6 +159,9 @@ export function DigestView() {
               </strong>{' '}
               {forecast.effortUnit}
             </div>
+            {events.length >= EVENT_CAP && (
+              <div style={{ color: '#94a3b8', fontSize: 12 }}>Change log capped at {EVENT_CAP} events — counts are a floor.</div>
+            )}
             {focus && growth.promoted.length > 0 && (
               <div>
                 <strong>{growth.promoted.length}</strong> tasks were moved into {focus.versionName}

@@ -74,9 +74,10 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     label: 'Stakeholder',
     hint: 'When does it ship, is it on track, what threatens it?',
     // Round 2 (Thomas): Blocked is "219 developer paragraphs", Plan Health
-    // unexplained — both dropped; the Overview carries what they'd need.
+    // unexplained — both dropped. Property stays so a click on a digest line
+    // shows the node (review: otherwise the drill-down is a no-op).
     tabs: ['digest', 'releases'],
-    panels: [],
+    panels: ['property'],
   },
   pm: {
     label: 'PM',
@@ -104,7 +105,7 @@ export const ROLE_ORDER: ViewRole[] = ['stakeholder', 'pm', 'developer', 'all'];
 export const DEFAULT_ROLE: ViewRole = 'all';
 
 export function isViewRole(value: unknown): value is ViewRole {
-  return typeof value === 'string' && value in ROLE_CONFIG;
+  return typeof value === 'string' && (ROLE_ORDER as string[]).includes(value);
 }
 
 export function isTabVisible(role: ViewRole, view: ActiveView): boolean {

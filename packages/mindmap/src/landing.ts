@@ -8,6 +8,7 @@
  * Each function answers one question the persona asked, in its words.
  */
 import type { Node, ComputedNodeValues, Cycle, Priority } from '@mindblown/core';
+import { effectiveVersionId } from '@mindblown/core';
 import type { ReleaseForecastRow, TriageDecision } from './api.js';
 
 export type StatusCategory = 'todo' | 'in_progress' | 'done';
@@ -172,13 +173,9 @@ export function threats(
   return out.slice(0, limit);
 }
 
+/** Same membership rule as the server release forecast: nearest tagged ancestor wins. */
 export function inVersion(nodes: Record<string, Node>, node: Node, versionId: string): boolean {
-  let cur: Node | undefined = node;
-  while (cur) {
-    if (cur.versionId === versionId) return true;
-    cur = cur.parentId ? nodes[cur.parentId] : undefined;
-  }
-  return false;
+  return effectiveVersionId(node.id, new Map(Object.entries(nodes))) === versionId;
 }
 
 // ── Recently done (stakeholder Q3) ───────────────────────────────────
@@ -230,27 +227,26 @@ export interface ScopeGrowth {
 }
 
 /**
- * Same accounting as the MCP `burnup` tool, so the number a stakeholder
- * reads here matches what a developer quotes back. Created nodes count
- * their *current* estimate (a create event carries none); their later
- * estimate edits are therefore skipped to avoid double counting. Deleted
- * nodes count the estimate snapshot on the delete event.
+ * Exactly the accounting of the MCP `burnup` tool (packages/mcp, 'burnup'),
+ * so the number a stakeholder reads here matches what a developer quotes
+ * back: created nodes count the estimate on the create event, deleted
+ * leaves count the snapshot on the delete event, estimate edits count in
+ * full. Subtree deletes only snapshot the primary node (server) — same
+ * blind spot as burnup, by design.
  */
-export function scopeGrowth(events: ChangeEventLite[], versionId: string | null, nodes: Record<string, Node> = {}): ScopeGrowth {
+export function scopeGrowth(events: ChangeEventLite[], versionId: string | null): ScopeGrowth {
   const g: ScopeGrowth = { created: 0, deleted: 0, effortAdded: 0, effortRemoved: 0, effortDelta: 0, promoted: [], promotedByVersion: {} };
-  const createdIds = new Set<string>();
-  for (const e of events) if (e.eventType === 'node.created' && e.nodeId) createdIds.add(e.nodeId);
 
   for (const e of events) {
     if (e.eventType === 'node.created') {
       g.created += 1;
-      g.effortAdded += (e.nodeId && nodes[e.nodeId]?.effortEstimate) || 0;
+      const nv = e.newValue as { effortEstimate?: number | null } | null;
+      g.effortAdded += nv?.effortEstimate ?? 0;
     } else if (e.eventType === 'node.deleted') {
       g.deleted += 1;
-      const snap = e.oldValue as { effortEstimate?: number | null } | null;
-      g.effortRemoved += snap?.effortEstimate ?? 0;
+      const snap = e.oldValue as { effortEstimate?: number | null; isLeaf?: boolean } | null;
+      if (snap?.isLeaf && snap.effortEstimate != null) g.effortRemoved += snap.effortEstimate;
     } else if (e.eventType === 'node.field_changed' && e.fieldName === 'effortEstimate') {
-      if (e.nodeId && createdIds.has(e.nodeId)) continue;
       const d = (Number(e.newValue) || 0) - (Number(e.oldValue) || 0);
       if (d > 0) g.effortAdded += d;
       else g.effortRemoved += -d;
@@ -304,7 +300,8 @@ const BLOCKER_KINDS: { kind: BlockerKind; label: string; re: RegExp }[] = [
   { kind: 'external', label: 'External party, no date', re: /extern|pentest|vendor|provider|third[- ]party|supplier|lieferant|awaiting .* from/i },
 ];
 
-const NAME_RE = /\b(Dan|Daniel|Thomas|Rita|Alpine|Bob|Ray|Jenna|Stella)\b/;
+// The person after a 'needs / waiting on / wartet auf / decision by' — no name list.
+const NAME_RE = /(?:needs?|waiting (?:on|for)|wartet auf|entscheid|decision (?:by|from)|spec from|from)\s+(?!Entscheid|Decision|Gate|Spec|Review|The\b|Der\b|Die\b|Das\b)([A-ZÄÖÜ][a-zäöüß]+)/i;
 
 export function classifyBlocker(reason: string): BlockerKind {
   for (const k of BLOCKER_KINDS) if (k.re.test(reason)) return k.kind;

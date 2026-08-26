@@ -6,7 +6,7 @@ import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
-import { readStoredRole, writeStoredRole, reconcileView } from './roles.js';
+import { readStoredRole, writeStoredRole, reconcileView, defaultViewForRole } from './roles.js';
 import type { ViewRole } from './roles.js';
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -269,7 +269,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   nodeActorsMapId: null,
   members: [],
   membersMapId: null,
-  activeView: 'mindmap',
+  activeView: defaultViewForRole(readStoredRole()),
   loading: false,
   error: null,
   wsConnected: false,

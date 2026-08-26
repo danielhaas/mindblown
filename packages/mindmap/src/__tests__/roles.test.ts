@@ -51,7 +51,7 @@ describe('ROLE_CONFIG invariants', () => {
     // Stakeholder: digest landing page + Releases, no panels (Round 2)
     expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['digest', 'releases']);
     expect(defaultViewForRole('pm')).toBe('cockpit');
-    expect(ROLE_CONFIG.stakeholder.panels).toEqual([]);
+    expect(ROLE_CONFIG.stakeholder.panels).toEqual(['property']);
     expect(isPanelVisible('stakeholder', 'triage')).toBe(false);
     expect(isPanelVisible('pm', 'triage')).toBe(true);
     // "all" keeps today's default
@@ -75,6 +75,7 @@ describe('persistence', () => {
     expect(s.getItem(VIEW_ROLE_STORAGE_KEY)).toBe('pm');
     expect(readStoredRole(s)).toBe('pm');
     expect(readStoredRole(memStorage({ [VIEW_ROLE_STORAGE_KEY]: 'ceo' }))).toBe('all');
+    expect(readStoredRole(memStorage({ [VIEW_ROLE_STORAGE_KEY]: 'constructor' }))).toBe('all');
     expect(readStoredRole(undefined)).toBe('all');
   });
 });

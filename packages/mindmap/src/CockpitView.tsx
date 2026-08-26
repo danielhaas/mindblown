@@ -23,6 +23,8 @@ import { pickCurrentCycle } from './roles.js';
 import { Shell, Card, Muted, Link } from './DigestView.js';
 
 const WINDOW_DAYS = 3;
+const EVENT_CAP = 1000;
+const TRIAGE_PAGE = 500;
 
 export function CockpitView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -45,13 +47,18 @@ export function CockpitView() {
     if (!currentMapId) return;
     let cancelled = false;
     setError(null);
+    // Reset per map — otherwise map A's broken-pipeline strip (or its 403)
+    // outlives the switch to map B (review finding).
+    setTriage([]);
+    setTriageTotal(null);
+    setTriageError(null);
     Promise.all([
       api.fetchReleaseForecast(currentMapId),
-      api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: 1000 }),
+      api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: EVENT_CAP }),
       // A failed triage fetch must not hide the strip silently (Round 2: a
       // token-auth PM got 403 and saw "nothing waiting").
       api
-        .listTriageDecisions(currentMapId, { reviewed: false, limit: 500 })
+        .listTriageDecisions(currentMapId, { reviewed: false, limit: TRIAGE_PAGE })
         .then((t) => ({ ok: true as const, ...t }))
         .catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : 'unavailable' })),
     ])
@@ -62,6 +69,7 @@ export function CockpitView() {
         if (t.ok) {
           setTriage(t.decisions);
           setTriageTotal(t.total);
+          setTriageError(null);
         } else {
           setTriageError(t.error);
         }
@@ -82,7 +90,7 @@ export function CockpitView() {
     () => (forecast?.releases ?? []).filter((r) => (r.velocityFinishDeltaDays7d ?? r.plannedFinishDeltaDays7d ?? 0) > 0),
     [forecast],
   );
-  const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null, nodes), [events, release?.versionId, nodes]);
+  const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null), [events, release?.versionId]);
   const blockers = useMemo(() => groupBlockers(nodes, computed, categoryOf), [nodes, computed, categoryOf]);
   const sprint = useMemo(
     () => sprintHealth(pickCurrentCycle(cycles), nodes, categoryOf, currentMap?.wipLimit ?? null),
@@ -119,6 +127,16 @@ export function CockpitView() {
       {!pipeline.broken && (triageTotal ?? 0) > 0 && (
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
           {triageTotal} tickets waiting for triage.
+        </div>
+      )}
+      {triage.length >= TRIAGE_PAGE && (
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
+          Pipeline check reads the newest {TRIAGE_PAGE} pending decisions only.
+        </div>
+      )}
+      {events.length >= EVENT_CAP && (
+        <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 12 }}>
+          Change log capped at {EVENT_CAP} events for the last {WINDOW_DAYS} days — the Slipped card may undercount.
         </div>
       )}
       {triageError && (

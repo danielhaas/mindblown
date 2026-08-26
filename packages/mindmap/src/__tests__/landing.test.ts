@@ -14,6 +14,7 @@ import {
   triagePipelineState,
   escalations,
   leavesOf,
+  inVersion,
 } from '../landing.js';
 
 const TODAY = new Date('2026-08-26T09:00:00Z');
@@ -159,24 +160,22 @@ describe('recentlyDone', () => {
 });
 
 describe('scopeGrowth', () => {
-  it('accounts like burnup: created nodes count their current estimate, deleted their snapshot, edits once', () => {
-    const nodes = byId([node({ id: 'a', effortEstimate: 8 }), node({ id: 'c', effortEstimate: 5 })]);
+  it('accounts exactly like the burnup tool: create newValue, leaf delete snapshot, edits in full', () => {
     const g = scopeGrowth(
       [
-        { eventType: 'node.created', fieldName: null, oldValue: null, newValue: null, nodeId: 'a', createdAt: '' },
-        // estimate set after creation — already counted via the node's current estimate
-        { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: null, newValue: 8, nodeId: 'a', createdAt: '' },
-        { eventType: 'node.deleted', fieldName: null, oldValue: { text: 'x', effortEstimate: 3 }, newValue: null, nodeId: 'b', createdAt: '' },
+        { eventType: 'node.created', fieldName: null, oldValue: null, newValue: { effortEstimate: 8 }, nodeId: 'a', createdAt: '' },
+        { eventType: 'node.deleted', fieldName: null, oldValue: { text: 'x', effortEstimate: 3, isLeaf: true }, newValue: null, nodeId: 'b', createdAt: '' },
+        // non-leaf delete: no snapshot effort counted (same as burnup)
+        { eventType: 'node.deleted', fieldName: null, oldValue: { text: 'p', effortEstimate: 9, isLeaf: false }, newValue: null, nodeId: 'bp', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: 2, newValue: 5, nodeId: 'c', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: 4, newValue: 1, nodeId: 'f', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'versionId', oldValue: null, newValue: 'v', nodeId: 'd', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'versionId', oldValue: 'v', newValue: 'w', nodeId: 'e', createdAt: '' },
       ],
       'v',
-      nodes,
     );
     expect(g).toEqual({
-      created: 1, deleted: 1, effortAdded: 11, effortRemoved: 6, effortDelta: 5,
+      created: 1, deleted: 2, effortAdded: 11, effortRemoved: 6, effortDelta: 5,
       promoted: ['d'], promotedByVersion: { v: ['d'], w: ['e'] },
     });
   });
@@ -212,6 +211,10 @@ describe('groupBlockers', () => {
       ['other', 1],
     ]);
     expect(groups.filter((g) => g.kind === 'decision').map((g) => g.unblocker).sort()).toEqual(['Dan', 'Thomas']);
+    // nearest-tagged-ancestor membership (matches the server forecast)
+    const p = node({ id: 'p', versionId: 'v' });
+    const child = node({ id: 'c', parentId: 'p', versionId: 'w' });
+    expect(inVersion(byId([p, child]), child, 'v')).toBe(false);
   });
 });
 
