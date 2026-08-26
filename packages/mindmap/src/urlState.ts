@@ -1,4 +1,6 @@
 import type { ActiveView } from './store.js';
+import { defaultViewForRole } from './roles.js';
+import type { ViewRole } from './roles.js';
 
 /**
  * URL ⇄ view-state mirroring.
@@ -235,8 +237,8 @@ export function validateUrlState(state: UrlState, ctx: UrlStateContext): UrlStat
 
 // ── Resolve ────────────────────────────────────────────────────
 
-export function resolveView(view: ActiveView | null): ActiveView {
-  return view ?? DEFAULT_VIEW;
+export function resolveView(view: ActiveView | null, role: ViewRole = 'all'): ActiveView {
+  return view ?? defaultViewForRole(role);
 }
 
 export function resolveDepth(depth: number | null): number {

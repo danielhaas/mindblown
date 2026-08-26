@@ -2,8 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { OctocatIcon } from './icons/Octocat.js';
+import { pickCurrentCycle } from './roles.js';
 
 // ── Constants ──────────────────────────────────────────────────
+
+const toggleStyle = (on: boolean): React.CSSProperties => ({
+  display: 'flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 11,
+  fontWeight: 500,
+  color: '#64748b',
+  cursor: 'pointer',
+  padding: '4px 8px',
+  borderRadius: 6,
+  background: on ? '#eef2ff' : 'transparent',
+  border: on ? '1px solid #c7d2fe' : '1px solid transparent',
+});
 
 const STATUS_OPTIONS = [
   { value: '', label: 'No status' },
@@ -156,6 +171,15 @@ export function ListView() {
   const [priorityFilter, setPriorityFilter] = useState<Set<string>>(new Set());
   const [blockedFilter, setBlockedFilter] = useState<'all' | 'blocked' | 'unblocked'>('all');
   const [leavesOnly, setLeavesOnly] = useState(false);
+  // "Mine" — nodes assigned to the signed-in user. Off by default: on real
+  // maps most tickets are unassigned (persona Round 1), so on-by-default
+  // would show an empty list.
+  const [mineOnly, setMineOnly] = useState(false);
+  const user = useMindmapStore((s) => s.user);
+  const cycles = useMindmapStore((s) => s.cycles);
+  const setActiveCycleFilter = useMindmapStore((s) => s.setActiveCycleFilter);
+  const currentCycle = useMemo(() => pickCurrentCycle(cycles), [cycles]);
+  const currentSprintOn = currentCycle !== null && activeCycleFilter === currentCycle.id;
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [editingCell, setEditingCell] = useState<{ nodeId: string; field: string } | null>(null);
 
@@ -285,8 +309,25 @@ export function ListView() {
       rows = rows.filter((r) => r.isLeaf);
     }
 
+    // Mine — keep ancestors so the tree stays readable, like text search
+    if (mineOnly && user) {
+      const uid = user.id;
+      const matchIds = new Set<string>();
+      for (const r of rows) {
+        if (r.node.assigneeIds.includes(uid)) {
+          matchIds.add(r.node.id);
+          let cur = r.node;
+          while (cur.parentId && nodes[cur.parentId]) {
+            matchIds.add(cur.parentId);
+            cur = nodes[cur.parentId];
+          }
+        }
+      }
+      rows = rows.filter((r) => matchIds.has(r.node.id));
+    }
+
     return rows;
-  }, [flatRows, searchText, statusFilter, priorityFilter, blockedFilter, leavesOnly, nodes]);
+  }, [flatRows, searchText, statusFilter, priorityFilter, blockedFilter, leavesOnly, mineOnly, user, nodes]);
 
   // ── Sort ──────────────────────────────────────────────────────
 
@@ -1139,6 +1180,33 @@ export function ListView() {
           />
           Leaves only
         </label>
+
+        {/* Mine */}
+        {user && (
+          <label style={toggleStyle(mineOnly)} title="Only nodes assigned to me">
+            <input
+              type="checkbox"
+              checked={mineOnly}
+              onChange={(e) => setMineOnly(e.target.checked)}
+              style={{ accentColor: '#4f46e5', width: 12, height: 12 }}
+            />
+            Mine
+          </label>
+        )}
+
+        {/* Current sprint — drives the map-wide sprint filter, so the header
+            chip and URL (?sprint=) stay in sync with this checkbox. */}
+        {currentCycle && (
+          <label style={toggleStyle(currentSprintOn)} title={currentCycle.name}>
+            <input
+              type="checkbox"
+              checked={currentSprintOn}
+              onChange={(e) => setActiveCycleFilter(e.target.checked ? currentCycle.id : null)}
+              style={{ accentColor: '#4f46e5', width: 12, height: 12 }}
+            />
+            Current sprint
+          </label>
+        )}
 
         {/* Spacer */}
         <div style={{ flex: 1 }} />
