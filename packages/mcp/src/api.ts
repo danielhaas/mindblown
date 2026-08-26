@@ -244,6 +244,13 @@ export interface VersionInfo {
   /** Ship-date ground truth — stamped on the transition into 'released'. */
   releasedAt?: string | null;
   createdAt: string;
+  updatedAt?: string | null;
+  /**
+   * Order lint (#331), present on create/update responses: target dates
+   * that contradict the sortOrder / name order of the map's versions. The
+   * write succeeded regardless — this is advice, not a rejection.
+   */
+  warnings?: string[];
 }
 
 export interface CycleInfo {

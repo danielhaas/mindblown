@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { compareVersions } from '@mindblown/core';
+import { compareVersions, findVersionOrderInversions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -230,6 +230,21 @@ export function ReleasesView() {
     () => [...versions].sort(compareVersions),
     [versions],
   );
+
+  // Order lint (#331): rows whose target date contradicts the sortOrder /
+  // name order. Same detector the write path uses for its `warnings`, so
+  // the badge and the API agree. Keyed by name (the detector's identity).
+  const orderWarningsByName = useMemo(() => {
+    const byName = new Map<string, string[]>();
+    for (const inv of findVersionOrderInversions(versions)) {
+      for (const name of [inv.a, inv.b]) {
+        const list = byName.get(name) ?? [];
+        list.push(inv.reason);
+        byName.set(name, list);
+      }
+    }
+    return byName;
+  }, [versions]);
   const forecastById = useMemo(() => {
     const map = new Map<string, ReleaseForecastRow>();
     for (const r of forecast?.releases ?? []) map.set(r.versionId, r);
@@ -481,7 +496,30 @@ export function ReleasesView() {
                     }}
                   >
                     <td style={tdStyle}>
-                      <div style={{ fontWeight: 600, color: '#1e293b' }}>{v.name}</div>
+                      <div style={{ fontWeight: 600, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span>{v.name}</span>
+                        {orderWarningsByName.has(v.name) && (
+                          <span
+                            data-testid="order-warning-badge"
+                            title={
+                              orderWarningsByName.get(v.name)!.join('\n') +
+                              '\n\nThe forecast chains releases in target-date order — this is the order it uses.'
+                            }
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                              background: '#fef3c7',
+                              color: '#b45309',
+                              whiteSpace: 'nowrap',
+                              cursor: 'help',
+                            }}
+                          >
+                            date order ≠ manual order
+                          </span>
+                        )}
+                      </div>
                       {v.description && (
                         <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
                           {v.description}

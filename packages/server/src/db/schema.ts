@@ -361,6 +361,8 @@ export const versions = pgTable('versions', {
   // transition into 'released', cleared when a release is reopened.
   releasedAt: timestamp('released_at', { withTimezone: true }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  // Audit (#331): stamped by updateVersion; null on rows that predate it.
+  updatedAt: timestamp('updated_at', { withTimezone: true }),
 });
 
 // ── Release Snapshots ────────────────────────────────────────────
@@ -402,8 +404,8 @@ export const changeEvents = pgTable('change_events', {
   mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
   nodeId: uuid('node_id'), // null for 'map.*' events, kept for deleted nodes
   userId: uuid('user_id').references(() => users.id, { onDelete: 'set null' }),
-  eventType: text('event_type').notNull(), // 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed'
-  fieldName: text('field_name'), // set when eventType = 'node.field_changed'
+  eventType: text('event_type').notNull(), // 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed' | 'version.field_changed'
+  fieldName: text('field_name'), // set when eventType = '*.field_changed'
   oldValue: jsonb('old_value'),
   newValue: jsonb('new_value'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

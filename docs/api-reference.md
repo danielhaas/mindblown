@@ -516,7 +516,22 @@ POST /api/versions
 | `targetDate` | string | No | Target release date (ISO 8601) |
 | `sortOrder` | number | No | Display ordering |
 
-**Response (201):** The created version.
+**Response (201):** The created version, plus `warnings`.
+
+#### Order warnings (`warnings: string[]`)
+
+Create and update responses carry a `warnings` array next to the version fields. Releases are ordered by `targetDate` first (see `compareVersions`), and the release forecast chains releases in that order — so a target date that contradicts the intended order (a lower `sortOrder`, or a lower semver in the name when `sortOrder` ties) silently flips the forecast. The write is **never rejected** for this — dates may legitimately leapfrog — but each contradicting pair is reported, e.g.:
+
+```json
+{
+  "id": "…", "name": "V1.5", "targetDate": "2026-09-28", "sortOrder": 15,
+  "warnings": [
+    "\"V1.5\" (2026-09-28) is dated before \"V1\" (2026-12-18) but sorts after it (sortOrder 15 > 10)"
+  ]
+}
+```
+
+`warnings` is `[]` when the order is consistent. Undated versions never take part. The same check backs the "date order ≠ manual order" badge in the Releases view.
 
 ### List Versions
 
@@ -539,6 +554,10 @@ GET /api/versions/:id
 ```
 PUT /api/versions/:id
 ```
+
+Updatable fields: `name`, `description`, `status`, `targetDate` (null clears), `sortOrder`. **Response (200):** the updated version plus `warnings` (see above).
+
+Changes to `name`, `status`, `targetDate` and `sortOrder` are audited: each one writes a `change_events` row with `eventType: "version.field_changed"`, `nodeId: null`, `fieldName`, `oldValue`, `newValue` and the caller's `userId`. `updatedAt` is stamped on every write.
 
 ### Delete Version
 

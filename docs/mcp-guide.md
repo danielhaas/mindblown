@@ -248,9 +248,12 @@ Once connected, the AI can fully manage your projects through natural conversati
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `list_versions` | List all versions for a workspace | `workspaceId` |
-| `create_version` | Create a new version/release | `workspaceId`, `name`, `description?`, `targetDate?` |
+| `list_versions` | List all versions for a map | `mapId` |
+| `create_version` | Create a new version/release | `mapId`, `name`, `description?`, `targetDate?` |
+| `update_version` | Change a version's name, description, target date, or status (null clears) | `versionId`, `name?`, `description?`, `targetDate?`, `status?` |
 | `assign_to_version` | Assign one node to a version (empty string to unassign) | `mapId`, `nodeId`, `versionId` |
+
+**Order warnings.** Releases are ordered by target date, and the forecast chains them in that order. If a `create_version` / `update_version` call leaves a target date that contradicts the intended order (e.g. V1 re-dated past V1.5), the tool result still reports success but appends one `⚠ Order warning: "V1.5" (2026-09-28) is dated before "V1" (2026-12-18) but sorts after it …` line per contradicting pair. Treat it as a prompt to re-check the dates — the forecast will use the date order as it stands. The write is never rejected.
 
 ### Milestone Tools
 

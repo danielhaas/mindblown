@@ -1014,15 +1014,18 @@ export interface CreateVersionFields {
   targetDate?: string | null;
 }
 
-export function createVersion(mapId: string, fields: CreateVersionFields): Promise<Version> {
-  return request<Version>('/api/versions', {
+/** Create/update responses carry the order lint (#331) next to the version. */
+export type VersionWriteResponse = Version & { warnings: string[] };
+
+export function createVersion(mapId: string, fields: CreateVersionFields): Promise<VersionWriteResponse> {
+  return request<VersionWriteResponse>('/api/versions', {
     method: 'POST',
     body: JSON.stringify({ mapId, ...fields }),
   });
 }
 
-export function updateVersion(id: string, fields: Partial<CreateVersionFields>): Promise<Version> {
-  return request<Version>(`/api/versions/${id}`, {
+export function updateVersion(id: string, fields: Partial<CreateVersionFields>): Promise<VersionWriteResponse> {
+  return request<VersionWriteResponse>(`/api/versions/${id}`, {
     method: 'PUT',
     body: JSON.stringify(fields),
   });

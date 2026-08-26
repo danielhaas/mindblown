@@ -147,6 +147,13 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE cycles ADD COLUMN IF NOT EXISTS version_id UUID REFERENCES versions(id)
   `);
 
+  // ── versions.updated_at (#331) ────────────────────────────────
+  // Nullable on purpose: a null says "not touched since the audit trail
+  // began", which is more honest than backfilling created_at.
+  await db.execute(sql`
+    ALTER TABLE versions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
+  `);
+
   // ── Add version_id to nodes ───────────────────────────────────
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS version_id UUID REFERENCES versions(id)
