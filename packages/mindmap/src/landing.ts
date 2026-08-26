@@ -389,6 +389,28 @@ export interface TriagePipelineState {
 const TRIAGE_ERROR_RE = /triage_error[:\s]*(.*)/i;
 
 /** N pending decisions sharing one error text = the pipeline, not the tickets. */
+/**
+ * "400 {"type":"error","error":{"message":"Your credit balance is too low…"}}"
+ * → "Your credit balance is too low…". The API error JSON is the cause a PM
+ * has to read; the envelope around it is not.
+ */
+export function humaniseTriageCause(raw: string): string {
+  const start = raw.indexOf('{');
+  if (start === -1) return raw;
+  const candidates = [raw.slice(start), raw.slice(start, raw.lastIndexOf('}') + 1)];
+  for (const c of candidates) {
+    try {
+      const j = JSON.parse(c) as { error?: { message?: string }; message?: string };
+      const msg = j.error?.message ?? j.message;
+      if (msg) return `${raw.slice(0, start).trim()} ${msg}`.trim();
+    } catch {
+      // truncated JSON — fall through to the regex
+    }
+  }
+  const m = /"message"\s*:\s*"([^"]*)/.exec(raw);
+  return m ? `${raw.slice(0, start).trim()} ${m[1]}`.trim() : raw;
+}
+
 export function triagePipelineState(decisions: Pick<TriageDecision, 'reason' | 'decidedAt' | 'decision'>[], threshold = 5): TriagePipelineState {
   const errors = decisions
     .map((d) => ({ m: TRIAGE_ERROR_RE.exec(d.reason ?? ''), at: d.decidedAt }))
@@ -397,7 +419,7 @@ export function triagePipelineState(decisions: Pick<TriageDecision, 'reason' | '
   const causes = new Map<string, number>();
   for (const e of errors) {
     // Same cause, different ticket number → one key.
-    const key = e.m![1].replace(/\(?#\d+\)?/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const key = humaniseTriageCause(e.m![1]).replace(/\(?#\d+\)?/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
     causes.set(key, (causes.get(key) ?? 0) + 1);
   }
   const [cause, count] = [...causes.entries()].sort((a, b) => b[1] - a[1])[0];

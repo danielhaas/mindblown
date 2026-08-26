@@ -12,6 +12,7 @@ import {
   groupBlockers,
   sprintHealth,
   triagePipelineState,
+  humaniseTriageCause,
   escalations,
   leavesOf,
   inVersion,
@@ -242,6 +243,15 @@ describe('triagePipelineState', () => {
     expect(s.count).toBe(6);
     expect(s.cause).toMatch(/credit balance too low/);
     expect(s.since).toBe('2026-08-20T10:00:00Z');
+  });
+  it('reads the API error message out of the JSON envelope, even when truncated (prod 26.08)', () => {
+    const full = '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."},"request_id":"req_1"}';
+    expect(humaniseTriageCause(full)).toBe('400 Your credit balance is too low to access the Anthropic API.');
+    const cut = '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anth';
+    expect(humaniseTriageCause(cut)).toBe('400 Your credit balance is too low to access the Anth');
+    expect(humaniseTriageCause('plain text cause')).toBe('plain text cause');
+    const rows = Array.from({ length: 6 }, (_, i) => ({ decision: 'uncertain' as const, reason: `triage_error: ${full.replace('req_1', `req_${i}`)}`, decidedAt: '2026-08-24T00:00:00Z' }));
+    expect(triagePipelineState(rows).cause).toBe('400 Your credit balance is too low to access the Anthropic API.');
   });
   it('stays quiet below the threshold or for ordinary uncertain rows', () => {
     expect(triagePipelineState([err(1), err(2)]).broken).toBe(false);
