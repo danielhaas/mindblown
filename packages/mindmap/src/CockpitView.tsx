@@ -16,6 +16,7 @@ import {
   sprintHealth,
   triagePipelineState,
   escalations,
+  collapseDuplicates,
   breadcrumb,
 } from './landing.js';
 import type { ChangeEventLite } from './landing.js';
@@ -102,7 +103,7 @@ export function CockpitView() {
     [cycles, nodes, categoryOf, currentMap?.wipLimit],
   );
   const pipeline = useMemo(() => triagePipelineState(triage), [triage]);
-  const escalate = useMemo(() => escalations(nodes, computed, categoryOf), [nodes, computed, categoryOf]);
+  const escalate = useMemo(() => collapseDuplicates(escalations(nodes, computed, categoryOf, 10)).slice(0, 5), [nodes, computed, categoryOf]);
 
   if (error) return <Shell><p style={{ color: '#b91c1c' }}>{error}</p></Shell>;
   if (!forecast) return <Shell><p style={{ color: '#64748b' }}>Loading…</p></Shell>;
@@ -221,10 +222,11 @@ export function CockpitView() {
                     {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
                     {open && (
                       <ul style={{ margin: '4px 0 6px 12px', paddingLeft: 14, fontSize: 12, lineHeight: 1.6 }}>
-                        {g.nodeIds.map((id) =>
+                        {collapseDuplicates(g.nodeIds.map((id) => nodes[id]).filter(Boolean)).map(({ node: { id }, duplicates }) =>
                           nodes[id] ? (
                             <li key={id}>
                               <Link onClick={() => selectNode(id)}>{nodes[id].text}</Link>
+                              {duplicates > 0 && <span style={dupPillStyle}>×{duplicates + 1} — duplicate node</span>}
                               {breadcrumb(nodes, nodes[id]) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, nodes[id])}</span>}
                               {g.kind !== 'orphaned_claim' && nodes[id].blockedReason && (
                                 <div style={{ color: '#94a3b8', fontSize: 11 }}>{nodes[id].blockedReason.slice(0, 140)}</div>
@@ -303,10 +305,15 @@ export function CockpitView() {
             <Muted>No blocked P0/P1 with a named reason.</Muted>
           ) : (
             <ul style={listStyle}>
-              {escalate.map((n) => (
+              {escalate.map(({ node: n, duplicates, duplicateIds }) => (
                 <li key={n.id}>
                   <span style={{ fontWeight: 700, color: n.priority === 'P0' ? '#dc2626' : '#ea580c' }}>{n.priority}</span>{' '}
                   <Link onClick={() => selectNode(n.id)}>{n.text}</Link>
+                  {duplicates > 0 && (
+                    <span style={dupPillStyle} title={`Same issue is also on node(s) ${duplicateIds.map((d) => d.slice(0, 8)).join(', ')}`}>
+                      ×{duplicates + 1} — duplicate node
+                    </span>
+                  )}
                   <div style={{ color: '#64748b', fontSize: 12 }}>
                     {breadcrumb(nodes, n) ? `${breadcrumb(nodes, n)} — ` : ''}{n.blockedReason}
                   </div>
@@ -321,6 +328,15 @@ export function CockpitView() {
 }
 
 const listStyle: React.CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.6 };
+const dupPillStyle: React.CSSProperties = {
+  marginLeft: 6,
+  padding: '0 6px',
+  borderRadius: 999,
+  background: '#fef3c7',
+  color: '#92400e',
+  fontSize: 10,
+  fontWeight: 700,
+};
 const pillStyle: React.CSSProperties = {
   display: 'inline-block',
   minWidth: 56,

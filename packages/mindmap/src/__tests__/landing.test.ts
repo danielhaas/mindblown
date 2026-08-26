@@ -15,6 +15,7 @@ import {
   triagePipelineState,
   humaniseTriageCause,
   escalations,
+  collapseDuplicates,
   leavesOf,
   inVersion,
   paceRate,
@@ -358,5 +359,18 @@ describe('stakeholder pace vocabulary', () => {
     const t = threats(nodes, computedFor(nodes, ['big']), cat, 'v')[0];
     expect(t.effort).toBe(15);
     expect(t.text).not.toMatch(/15d/);
+  });
+});
+
+describe('collapseDuplicates', () => {
+  const gh = (id: string) => [{ provider: 'github', externalId: `FulcrumCRM/crm#${id}`, url: `https://github.com/FulcrumCRM/crm/issues/${id}`, syncEnabled: true, lastSyncedAt: null }];
+  it('shows a shared issue once (oldest node) with the copy count; unlinked nodes pass through', () => {
+    const a = node({ id: 'a', createdAt: '2026-07-15T00:00:00Z', externalLinks: gh('4184') } as Partial<Node>);
+    const b = node({ id: 'b', createdAt: '2026-07-23T00:00:00Z', externalLinks: gh('4184') } as Partial<Node>);
+    const c = node({ id: 'c', externalLinks: gh('9') } as Partial<Node>);
+    const plain = node({ id: 'p', externalLinks: [] } as Partial<Node>);
+    const out = collapseDuplicates([b, plain, a, c]);
+    expect(out.map((x) => [x.node.id, x.duplicates])).toEqual([['a', 1], ['p', 0], ['c', 0]]);
+    expect(out[0].duplicateIds).toEqual(['b']);
   });
 });
