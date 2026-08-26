@@ -580,3 +580,41 @@ export function escalations(
     .sort((a, b) => prio(a.priority) - prio(b.priority) || (b.effortEstimate ?? 0) - (a.effortEstimate ?? 0))
     .slice(0, limit);
 }
+
+// ── Duplicate nodes (same GitHub issue) ──────────────────────────────
+
+export interface Collapsed<T> {
+  node: T;
+  /** How many other nodes point at the same issue — 0 for a unique node. */
+  duplicates: number;
+  duplicateIds: string[];
+}
+
+function issueKey(n: Node): string | null {
+  const l = n.externalLinks?.find((x) => /\/(issues|pull)\/\d+/.test(x.url) || /#\d+$/.test(x.externalId));
+  return l ? (l.externalId || l.url).toLowerCase() : null;
+}
+
+/**
+ * Nodes that share a GitHub issue are one piece of work entered twice
+ * (a 2026-07-23 import re-created 80 existing nodes on the Fulcrum map).
+ * Show it once — the oldest node, which carries the real estimate — and say
+ * how many copies exist, so the plan's hygiene problem is visible as such
+ * instead of inflating an escalation list.
+ */
+export function collapseDuplicates(list: Node[]): Collapsed<Node>[] {
+  const byKey = new Map<string, Node[]>();
+  const order: (string | Node)[] = [];
+  for (const n of list) {
+    const k = issueKey(n);
+    if (!k) { order.push(n); continue; }
+    const g = byKey.get(k);
+    if (g) g.push(n);
+    else { byKey.set(k, [n]); order.push(k); }
+  }
+  return order.map((o) => {
+    if (typeof o !== 'string') return { node: o, duplicates: 0, duplicateIds: [] };
+    const g = [...byKey.get(o)!].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return { node: g[0], duplicates: g.length - 1, duplicateIds: g.slice(1).map((n) => n.id) };
+  });
+}
