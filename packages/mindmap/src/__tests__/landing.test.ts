@@ -16,6 +16,8 @@ import {
   escalations,
   leavesOf,
   inVersion,
+  paceRate,
+  calendarAtPace,
 } from '../landing.js';
 
 const TODAY = new Date('2026-08-26T09:00:00Z');
@@ -268,5 +270,28 @@ describe('escalations + leavesOf', () => {
     const nodes = byId([parent, p1, p0, p2]);
     expect(leavesOf(nodes).map((n) => n.id).sort()).toEqual(['p0', 'p1', 'p2']);
     expect(escalations(nodes, computedFor(nodes, ['p1', 'p0', 'p2']), cat).map((n) => n.id)).toEqual(['p0', 'p1']);
+  });
+});
+
+describe('stakeholder pace vocabulary', () => {
+  it('prefers the measured rate, falls back to capacity × focus, null when nothing', () => {
+    expect(paceRate({ netEffortPerDay: 6, dailyCapacity: 1, focusFactor: 0.5 })).toEqual({ rate: 6, measured: true });
+    expect(paceRate({ netEffortPerDay: null, dailyCapacity: 2, focusFactor: 0.5 })).toEqual({ rate: 1, measured: false });
+    expect(paceRate({ dailyCapacity: 0, focusFactor: 1 })).toBeNull();
+  });
+  it('never prints a planning unit', () => {
+    expect(calendarAtPace(15, 6)).toBe('≈ 3 calendar days at the current pace');
+    expect(calendarAtPace(1, 1)).toBe('≈ 1 calendar day at the current pace');
+    expect(calendarAtPace(0.5, 6)).toBe('under a day at the current pace');
+    expect(calendarAtPace(120, 6)).toBe('≈ 3 weeks at the current pace');
+    expect(calendarAtPace(15, null)).toBe('');
+  });
+  it('threats carry the effort separately so the view chooses the vocabulary', () => {
+    const parent = node({ id: 'p', versionId: 'v' });
+    const big = node({ id: 'big', parentId: 'p', effortEstimate: 15, blockedReason: 'parked' });
+    const nodes = byId([parent, big]);
+    const t = threats(nodes, computedFor(nodes, ['big']), cat, 'v')[0];
+    expect(t.effort).toBe(15);
+    expect(t.text).not.toMatch(/15d/);
   });
 });
