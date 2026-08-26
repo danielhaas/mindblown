@@ -482,6 +482,10 @@ export interface SprintHealth {
   stalled: number;
   /** Open leaves tagged with this sprint — what rolls over if nothing changes. */
   openInSprint: number;
+  /** Of those, the ones somebody has marked started. */
+  inProgressInSprint: number;
+  /** Leaves tagged with this sprint and finished. */
+  doneInSprint: number;
 }
 
 export function sprintHealth(
@@ -506,6 +510,8 @@ export function sprintHealth(
     wipLimit,
     stalled: inProg.filter((n) => Date.parse(n.updatedAt) < stalledSince).length,
     openInSprint: cycle ? leaves.filter((n) => n.cycleId === cycle.id && isOpen(n, categoryOf)).length : 0,
+    inProgressInSprint: cycle ? inProg.filter((n) => n.cycleId === cycle.id).length : 0,
+    doneInSprint: cycle ? leaves.filter((n) => n.cycleId === cycle.id && !isOpen(n, categoryOf)).length : 0,
   };
 }
 

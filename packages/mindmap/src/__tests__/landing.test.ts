@@ -293,6 +293,8 @@ describe('sprintHealth', () => {
     const finished = node({ id: 'd', status: 'done', cycleId: 'c' });
     const h = sprintHealth(cycle, byId([fresh, stale, todo, finished]), cat, 1, TODAY);
     expect(h.endedButNotClosed).toBe(true);
+    expect(h.inProgressInSprint).toBe(2);
+    expect(h.doneInSprint).toBe(1);
     expect(h.daysLeft).toBe(-1);
     expect(h.inProgress).toBe(2);
     expect(h.stalled).toBe(1);

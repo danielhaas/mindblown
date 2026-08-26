@@ -108,6 +108,7 @@ export function CockpitView() {
   if (!forecast) return <Shell><p style={{ color: '#64748b' }}>Loading…</p></Shell>;
 
   const totalBlocked = blockers.reduce((n, g) => n + g.nodeIds.length, 0);
+  const orphanedCount = blockers.find((g) => g.kind === 'orphaned_claim')?.nodeIds.length ?? 0;
   const overWip = sprint.wipLimit !== null && sprint.inProgress > sprint.wipLimit;
 
   return (
@@ -259,15 +260,42 @@ export function CockpitView() {
                     : ''}
               </div>
               <div>
-                In progress: <strong style={{ color: overWip ? '#b91c1c' : undefined }}>{sprint.inProgress}</strong>
-                {sprint.wipLimit !== null ? ` / limit ${sprint.wipLimit}` : ''}
-                {sprint.stalled > 0 && <>, <strong>{sprint.stalled}</strong> untouched for 14+ days</>}
+                Tagged with this sprint: <strong>{sprint.openInSprint + sprint.doneInSprint}</strong> tasks —{' '}
+                <strong>{sprint.doneInSprint}</strong> done, <strong>{sprint.inProgressInSprint}</strong> started,{' '}
+                <strong>{sprint.openInSprint - sprint.inProgressInSprint}</strong> not started
               </div>
-              <div>Open in this sprint: <strong>{sprint.openInSprint}</strong> (rolls over unless finished)</div>
+              <div>
+                Rolls over unless finished: <strong>{sprint.openInSprint}</strong>
+              </div>
             </div>
           ) : (
             <Muted>No sprint covers today.</Muted>
           )}
+        </Card>
+
+        {/* Map-wide, on purpose: the WIP limit is a map setting, and "in
+            progress" only means somebody marked it started — not that it is
+            in the sprint, and (see stalled) not that anyone is still on it. */}
+        <Card title="Work in progress — whole map" accent={overWip ? '#fecaca' : undefined}>
+          <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>
+            <div>
+              Marked started: <strong style={{ color: overWip ? '#b91c1c' : undefined }}>{sprint.inProgress}</strong>
+              {sprint.wipLimit !== null ? ` / limit ${sprint.wipLimit}` : ''}
+            </div>
+            {sprint.stalled > 0 && (
+              <div>
+                <strong>{sprint.stalled}</strong> of those untouched for 14+ days
+              </div>
+            )}
+            {orphanedCount > 0 && (
+              <div>
+                <strong style={{ color: '#b91c1c' }}>{orphanedCount}</strong> are orphaned claims — a worker died and the status never reset
+              </div>
+            )}
+            <div style={{ color: '#94a3b8', fontSize: 12 }}>
+              Actually moving: about {Math.max(0, sprint.inProgress - sprint.stalled - orphanedCount)}
+            </div>
+          </div>
         </Card>
 
         <Card title="Escalate" accent={escalate.length ? '#fde68a' : undefined}>
