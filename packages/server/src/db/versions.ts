@@ -2,8 +2,9 @@ import { eq, asc, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { invalidateMapContext } from '../sync/mapContext.js';
 import { versions, cycles, nodes, maps } from './schema.js';
-import { compareVersions } from '@mindblown/core';
+import { compareVersions, findVersionOrderInversions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
+import { recordEvent } from './events.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -24,7 +25,22 @@ function dbVersionToCore(row: Record<string, unknown>): Version {
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),
+    updatedAt: (() => {
+      const v = get('updatedAt', 'updated_at');
+      return v instanceof Date ? v.toISOString() : ((v as string) ?? null);
+    })(),
   };
+}
+
+/**
+ * Order lint for the write path (#331): the map's versions whose target
+ * dates contradict their sortOrder / name order, as ready-to-show text.
+ * Never blocks a write — dates may legitimately leapfrog — but the caller
+ * is expected to surface it (REST `warnings`, MCP tool text).
+ */
+export async function orderWarnings(mapId: string): Promise<string[]> {
+  const all = await listVersions(mapId);
+  return findVersionOrderInversions(all).map((i) => i.reason);
 }
 
 async function workspaceIdForMap(mapId: string): Promise<string | null> {
@@ -58,6 +74,7 @@ export async function createVersion(input: CreateVersionInput): Promise<Version>
     targetDate: input.targetDate ?? null,
     sortOrder: input.sortOrder ?? 0,
     createdAt: new Date(),
+    updatedAt: new Date(),
   }).returning();
 
   // The triage prompt's lane list comes from the mapContext cache —
@@ -100,7 +117,14 @@ export interface UpdateVersionInput {
   sortOrder?: number;
 }
 
-export async function updateVersion(id: string, input: UpdateVersionInput): Promise<Version | null> {
+/** Version fields whose edits land in change_events (#331). */
+const AUDITED_VERSION_FIELDS = ['name', 'status', 'targetDate', 'sortOrder'] as const;
+
+export async function updateVersion(
+  id: string,
+  input: UpdateVersionInput,
+  userId: string | null = null,
+): Promise<Version | null> {
   const updates: Record<string, unknown> = {};
 
   if (input.name !== undefined) updates.name = input.name;
@@ -109,25 +133,45 @@ export async function updateVersion(id: string, input: UpdateVersionInput): Prom
   if (input.targetDate !== undefined) updates.targetDate = input.targetDate;
   if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
 
+  const current = await getVersion(id);
+  if (!current) return null;
+
   // Ship-date ground truth for the forecast scorecard: stamp released_at
   // on the transition INTO 'released'; clear it when a release is
   // reopened (the old date would be a lie the scorecard trains on).
   if (input.status !== undefined) {
-    const current = await getVersion(id);
-    if (current) {
-      if (input.status === 'released' && current.status !== 'released') {
-        updates.releasedAt = new Date();
-      } else if (input.status !== 'released' && current.status === 'released') {
-        updates.releasedAt = null;
-      }
+    if (input.status === 'released' && current.status !== 'released') {
+      updates.releasedAt = new Date();
+    } else if (input.status !== 'released' && current.status === 'released') {
+      updates.releasedAt = null;
     }
   }
+
+  updates.updatedAt = new Date();
 
   const [row] = await db.update(versions).set(updates).where(eq(versions.id, id)).returning();
   if (!row) return null;
   const updated = dbVersionToCore(row as unknown as Record<string, unknown>);
   // Rename / status flip changes what the triage prompt may offer.
   invalidateMapContext(updated.mapId);
+
+  // Audit trail (#331): one change_events row per audited field that
+  // actually changed. Before this the only trace of a re-dated release
+  // was release_snapshots.target_date. recordEvent never throws.
+  for (const field of AUDITED_VERSION_FIELDS) {
+    const oldVal = current[field] ?? null;
+    const newVal = updated[field] ?? null;
+    if (oldVal === newVal) continue;
+    await recordEvent({
+      mapId: updated.mapId,
+      nodeId: null,
+      userId,
+      eventType: 'version.field_changed',
+      fieldName: field,
+      oldValue: oldVal,
+      newValue: newVal,
+    });
+  }
   return updated;
 }
 

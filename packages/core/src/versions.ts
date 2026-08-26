@@ -20,11 +20,16 @@ export interface VersionOrderFields {
   targetDate?: string | null;
 }
 
+/** "V1" → [1, 0]; "V1.5" → [1, 5]; "MVP: Onboarding" → null (no semver in the name). */
+function parseSemverOrNull(name: string): [number, number] | null {
+  const m = name.match(/^V(\d+)(?:\.(\d+))?/i);
+  if (!m) return null;
+  return [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0];
+}
+
 /** "V1" → [1, 0]; "V1.5" → [1, 5]; "MVP: Onboarding" → [∞, ∞] (sorts last). */
 function parseSemver(name: string): [number, number] {
-  const m = name.match(/^V(\d+)(?:\.(\d+))?/i);
-  if (!m) return [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
-  return [parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0];
+  return parseSemverOrNull(name) ?? [Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER];
 }
 
 export function compareVersions(a: VersionOrderFields, b: VersionOrderFields): number {
@@ -41,6 +46,74 @@ export function compareVersions(a: VersionOrderFields, b: VersionOrderFields): n
   if (aMaj !== bMaj) return aMaj - bMaj;
   if (aMin !== bMin) return aMin - bMin;
   return a.name.localeCompare(b.name);
+}
+
+// ── Order inversions ───────────────────────────────────────────────
+//
+// compareVersions puts the target date first, so a date edit can silently
+// reorder releases against the order everyone *means*: V1 re-dated past
+// V1.5's target now chains V1 after V1.5 in the forecast (#331). Dates may
+// legitimately leapfrog, so this is a lint, not a constraint — the write
+// path returns these as warnings and the Releases table badges the rows.
+
+export interface VersionOrderInversion {
+  /** The version that is dated earlier but is meant to come later. */
+  a: string;
+  /** The version that is dated later but is meant to come first. */
+  b: string;
+  /** Human-readable explanation, ready for a tool result or a tooltip. */
+  reason: string;
+}
+
+/**
+ * Pairs of dated versions whose date order contradicts their intended
+ * order. Intended order is `sortOrder` when the two differ, otherwise the
+ * semver parsed from the names ("V1" < "V1.5" < "V2"); a pair with equal
+ * sortOrder where either name carries no semver is skipped — there is no
+ * intended order to contradict. Undated versions never take part.
+ */
+export function findVersionOrderInversions(
+  versions: readonly VersionOrderFields[],
+): VersionOrderInversion[] {
+  const dated = versions.filter((v) => v.targetDate != null && v.targetDate !== '');
+  const out: VersionOrderInversion[] = [];
+  for (let i = 0; i < dated.length; i++) {
+    for (let j = i + 1; j < dated.length; j++) {
+      const x = dated[i];
+      const y = dated[j];
+      const xd = x.targetDate as string;
+      const yd = y.targetDate as string;
+      if (xd === yd) continue;
+      // `first` is the one the intended order puts first.
+      let first: VersionOrderFields;
+      let second: VersionOrderFields;
+      let how: string;
+      if (x.sortOrder !== y.sortOrder) {
+        [first, second] = x.sortOrder < y.sortOrder ? [x, y] : [y, x];
+        how = `sortOrder ${second.sortOrder} > ${first.sortOrder}`;
+      } else {
+        const xs = parseSemverOrNull(x.name);
+        const ys = parseSemverOrNull(y.name);
+        if (!xs || !ys) continue;
+        const cmp = xs[0] !== ys[0] ? xs[0] - ys[0] : xs[1] - ys[1];
+        if (cmp === 0) continue;
+        [first, second] = cmp < 0 ? [x, y] : [y, x];
+        how = `by name, "${second.name}" > "${first.name}"`;
+      }
+      const firstDate = first.targetDate as string;
+      const secondDate = second.targetDate as string;
+      if (secondDate < firstDate) {
+        out.push({
+          a: second.name,
+          b: first.name,
+          reason:
+            `"${second.name}" (${secondDate}) is dated before "${first.name}" (${firstDate}) ` +
+            `but sorts after it (${how})`,
+        });
+      }
+    }
+  }
+  return out;
 }
 
 // ── Effective version membership ───────────────────────────────────

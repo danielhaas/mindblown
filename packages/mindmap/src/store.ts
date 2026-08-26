@@ -668,7 +668,9 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     const mapId = state.currentMapId;
     if (!mapId) return null;
     try {
-      const created = await api.createVersion(mapId, fields);
+      // The order lint (#331) is computed client-side in ReleasesView from
+      // the version list; strip it so Version objects stay clean.
+      const { warnings: _warnings, ...created } = await api.createVersion(mapId, fields);
       set({ versions: [...state.versions, created] });
       return created;
     } catch (e: any) {
@@ -684,7 +686,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       versions: state.versions.map((v) => (v.id === id ? { ...v, ...fields } as Version : v)),
     });
     try {
-      const updated = await api.updateVersion(id, fields);
+      const { warnings: _warnings, ...updated } = await api.updateVersion(id, fields);
       set({
         versions: get().versions.map((v) => (v.id === id ? updated : v)),
       });

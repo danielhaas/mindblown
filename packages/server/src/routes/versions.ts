@@ -41,7 +41,9 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const version = await versionDb.createVersion(body);
-    return reply.status(201).send(version);
+    // #331: order lint rides along with the write. Never a reject.
+    const warnings = await versionDb.orderWarnings(version.mapId);
+    return reply.status(201).send({ ...version, warnings });
   });
 
   // ── GET /api/versions — List versions for a map ────────────────
@@ -116,13 +118,16 @@ export async function versionRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = req.body as versionDb.UpdateVersionInput;
-    const updated = await versionDb.updateVersion(req.params.id, body);
+    const updated = await versionDb.updateVersion(req.params.id, body, userId);
     if (!updated) {
       return reply.status(404).send({
         error: { code: 'VERSION_NOT_FOUND', message: `Version ${req.params.id} not found` },
       });
     }
-    return reply.send(updated);
+    // #331: a re-dated release that now sorts against its sortOrder / name
+    // order is the silent-forecast bug. Say so; don't block.
+    const warnings = await versionDb.orderWarnings(updated.mapId);
+    return reply.send({ ...updated, warnings });
   });
 
   // ── DELETE /api/versions/:id — Delete version ──────────────────

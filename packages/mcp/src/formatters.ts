@@ -409,3 +409,19 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
 
   return lines.join('\n');
 }
+
+/**
+ * Order warnings (#331) appended to the create_version / update_version
+ * tool text. One line per warning so an agent that re-dated a release
+ * sees "V1.5 is dated before V1 but sorts after it" in the same result
+ * that told it the write succeeded — never a silent forecast flip.
+ */
+export function formatVersionWarnings(warnings: string[] | undefined): string {
+  if (!warnings || warnings.length === 0) return '';
+  return (
+    '\n' +
+    warnings.map((w) => `⚠ Order warning: ${w}`).join('\n') +
+    '\nThe forecast chains releases in target-date order, so this release order is what the forecast will use. ' +
+    'Fix the target date (or sortOrder / name) if that is not what you meant.'
+  );
+}

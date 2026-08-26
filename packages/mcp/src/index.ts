@@ -29,7 +29,7 @@ import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
-import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail } from './formatters.js';
+import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings } from './formatters.js';
 
 export { runWithApiContext } from './api.js';
 export type { Injector, InjectOptions, InjectResponse } from './api.js';
@@ -2507,7 +2507,7 @@ server.tool(
   async ({ mapId, name, description, targetDate }) => {
     try {
       const version = await api.createVersion(mapId, name, description, targetDate);
-      return toolResult(`Created version "${name}" (id: ${version.id}).`);
+      return toolResult(`Created version "${name}" (id: ${version.id}).` + formatVersionWarnings(version.warnings));
     } catch (err) {
       return toolError(err);
     }
@@ -2516,7 +2516,7 @@ server.tool(
 
 server.tool(
   'update_version',
-  'Update a version — change its name, description, target date, or status. Pass null to clear description or targetDate.',
+  'Update a version — change its name, description, target date, or status. Pass null to clear description or targetDate. If the new target date puts this release out of order with its sortOrder/name order (e.g. V1 now dated after V1.5), the result carries an "Order warning" — the write still succeeds, but the forecast will chain releases in that date order, so re-check the dates.',
   {
     versionId: z.string().describe('The version ID'),
     name: z.string().optional().describe('New name'),
@@ -2532,7 +2532,10 @@ server.tool(
       }
       if (Object.keys(cleanFields).length === 0) return toolResult('No fields to update.');
       const version = await api.updateVersion(versionId, cleanFields);
-      return toolResult(`Updated version "${version.name}" (${Object.keys(cleanFields).join(', ')}).`);
+      return toolResult(
+        `Updated version "${version.name}" (${Object.keys(cleanFields).join(', ')}).` +
+          formatVersionWarnings(version.warnings),
+      );
     } catch (err) {
       return toolError(err);
     }

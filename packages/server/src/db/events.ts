@@ -8,7 +8,10 @@ export type EventType =
   | 'node.deleted'
   | 'node.restored'
   | 'node.moved'
-  | 'node.field_changed';
+  | 'node.field_changed'
+  // Version writes (#331): node_id is null, field_name is the version
+  // field (name / status / targetDate / sortOrder).
+  | 'version.field_changed';
 
 export interface ChangeEvent {
   id: string;

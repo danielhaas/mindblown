@@ -684,6 +684,9 @@ export interface Version {
    *  cleared if the release is reopened. Anchors the forecast scorecard. */
   releasedAt: string | null;
   createdAt: string;
+  /** Last write through updateVersion. Null for rows that predate the
+   *  column (#331) — the change_events trail starts at the same point. */
+  updatedAt?: string | null;
 }
 
 // ── Cycle / Sprint ──────────────────────────────────────────────
