@@ -19,7 +19,19 @@ function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeV
 
 // ── Store types ────────────────────────────────────────────────
 
-export type ActiveView = 'mindmap' | 'kanban' | 'gantt' | 'list' | 'calendar' | 'hill' | 'workload' | 'releases' | 'requirements' | 'guide';
+export type ActiveView =
+  | 'mindmap'
+  | 'kanban'
+  | 'gantt'
+  | 'list'
+  | 'calendar'
+  | 'hill'
+  | 'workload'
+  | 'releases'
+  | 'requirements'
+  | 'guide'
+  | 'digest'
+  | 'cockpit';
 
 export interface VisibleNode {
   node: Node;

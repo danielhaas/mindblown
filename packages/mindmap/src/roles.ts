@@ -45,6 +45,8 @@ export interface RoleConfig {
 }
 
 export const ALL_VIEWS: ActiveView[] = [
+  'digest',
+  'cockpit',
   'mindmap',
   'kanban',
   'gantt',
@@ -71,13 +73,13 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   stakeholder: {
     label: 'Stakeholder',
     hint: 'When does it ship, is it on track, what threatens it?',
-    tabs: ['releases'],
+    tabs: ['digest', 'releases'],
     panels: ['blocked', 'planHealth'],
   },
   pm: {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
-    tabs: ['releases', 'list', 'kanban', 'mindmap'],
+    tabs: ['cockpit', 'releases', 'list', 'kanban', 'mindmap'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {

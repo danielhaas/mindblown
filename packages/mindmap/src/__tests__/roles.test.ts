@@ -48,8 +48,9 @@ describe('ROLE_CONFIG invariants', () => {
     }
     // Developer wanted List, not Kanban, as the default
     expect(defaultViewForRole('developer')).toBe('list');
-    // Stakeholder: Releases only, plus the Blocked panel
-    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['releases']);
+    // Stakeholder: digest landing page + Releases only, plus the Blocked panel
+    expect(ROLE_CONFIG.stakeholder.tabs).toEqual(['digest', 'releases']);
+    expect(defaultViewForRole('pm')).toBe('cockpit');
     expect(isPanelVisible('stakeholder', 'blocked')).toBe(true);
     expect(isPanelVisible('stakeholder', 'triage')).toBe(false);
     // "all" keeps today's default
@@ -62,7 +63,7 @@ describe('reconcileView', () => {
     expect(reconcileView('pm', 'kanban')).toBe('kanban');
   });
   it('falls back to the role default when it does not', () => {
-    expect(reconcileView('stakeholder', 'kanban')).toBe('releases');
+    expect(reconcileView('stakeholder', 'kanban')).toBe('digest');
   });
 });
 

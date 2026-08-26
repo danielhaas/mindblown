@@ -235,7 +235,7 @@ describe('resolve', () => {
 
   it('lands a bare URL on the role default, but an explicit view always wins', () => {
     expect(resolveView(null, 'developer')).toBe('list');
-    expect(resolveView(null, 'stakeholder')).toBe('releases');
+    expect(resolveView(null, 'stakeholder')).toBe('digest');
     expect(resolveView('gantt', 'stakeholder')).toBe('gantt');
   });
 
