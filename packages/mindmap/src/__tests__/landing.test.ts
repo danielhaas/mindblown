@@ -3,6 +3,7 @@ import type { Node, ComputedNodeValues } from '@mindblown/core';
 import type { ReleaseForecastRow } from '../api.js';
 import {
   nextRelease,
+  openReleases,
   releaseVerdict,
   weeklyDelta,
   threats,
@@ -67,6 +68,14 @@ describe('nextRelease', () => {
     const rows = [row({ versionId: 'mvp', versionName: 'MVP', targetDate: '2026-08-11', remainingTickets: 5 }), row({})];
     expect(nextRelease(rows, TODAY)?.versionId).toBe('mvp');
   });
+  it('openReleases lists overdue first, then upcoming, then undated — so V1.5 is not hidden behind MVP', () => {
+    const rows = [
+      row({ versionId: 'v2', versionName: 'V2', targetDate: null, sortOrder: 3 }),
+      row({}),
+      row({ versionId: 'mvp', versionName: 'MVP', targetDate: '2026-08-11', remainingTickets: 4 }),
+    ];
+    expect(openReleases(rows, TODAY).map((r) => r.versionId)).toEqual(['mvp', 'v', 'v2']);
+  });
   it('skips released versions and empty overdue ones', () => {
     const rows = [
       row({ versionId: 'r', versionStatus: 'released', targetDate: '2026-08-01' }),
@@ -110,7 +119,7 @@ describe('weeklyDelta', () => {
 });
 
 describe('threats', () => {
-  it('lists big blocked-but-counted work, unowned P0/P1, and unestimated bulk', () => {
+  it('lists big blocked-but-counted work and unestimated bulk', () => {
     const parent = node({ id: 'p', versionId: 'v' });
     const big = node({ id: 'big', parentId: 'p', effortEstimate: 15, blockedReason: 'deferred to V1.5 follow-up' });
     const p0 = node({ id: 'p0', parentId: 'p', priority: 'P0', effortEstimate: 1 });
@@ -118,8 +127,17 @@ describe('threats', () => {
     const nodes = byId([parent, big, p0, ...un]);
     const t = threats(nodes, computedFor(nodes, ['big']), cat, 'v');
     expect(t.map((x) => x.nodeId)).toContain('big');
-    expect(t.some((x) => /1 high-priority/.test(x.text))).toBe(true);
     expect(t.some((x) => /3 of 5 open tasks have no estimate/.test(x.text))).toBe(true);
+  });
+  it('only reports "no owner" on maps that assign work at all (Round 2: false alarm on Fulcrum)', () => {
+    const parent = node({ id: 'p', versionId: 'v' });
+    const p0 = node({ id: 'p0', parentId: 'p', priority: 'P0', effortEstimate: 1 });
+    const unused = byId([parent, p0]);
+    expect(threats(unused, computedFor(unused), cat, 'v').some((x) => /no owner/.test(x.text))).toBe(false);
+
+    const owned = [1, 2, 3].map((i) => node({ id: `o${i}`, parentId: 'p', assigneeIds: ['u1'], effortEstimate: 1 }));
+    const inUse = byId([parent, p0, ...owned]);
+    expect(threats(inUse, computedFor(inUse), cat, 'v').some((x) => /1 high-priority tasks have no owner/.test(x.text))).toBe(true);
   });
   it('ignores leaves outside the version', () => {
     const other = node({ id: 'o', versionId: 'w', priority: 'P0' });
@@ -129,42 +147,71 @@ describe('threats', () => {
 });
 
 describe('recentlyDone', () => {
-  it('returns done leaves within the window, newest first, using completedAt', () => {
+  it('returns done leaves within the window, newest first, by completedAt only', () => {
     const a = node({ id: 'a', status: 'done', completedAt: '2026-08-20T00:00:00Z' });
     const b = node({ id: 'b', status: 'done', completedAt: '2026-08-24T00:00:00Z' });
     const old = node({ id: 'old', status: 'done', completedAt: '2026-07-01T00:00:00Z' });
     const open = node({ id: 'open', status: 'todo' });
-    expect(recentlyDone(byId([a, b, old, open]), cat, 14, TODAY).map((n) => n.id)).toEqual(['b', 'a']);
+    // re-saved this morning, but finished who-knows-when — must not rank first
+    const resaved = node({ id: 'resaved', status: 'done', completedAt: null, updatedAt: '2026-08-26T08:26:00Z' });
+    expect(recentlyDone(byId([a, b, old, open, resaved]), cat, 14, TODAY).map((n) => n.id)).toEqual(['b', 'a']);
   });
 });
 
 describe('scopeGrowth', () => {
-  it('sums creations, deletions, estimate deltas and promotions into the version', () => {
+  it('accounts like burnup: created nodes count their current estimate, deleted their snapshot, edits once', () => {
+    const nodes = byId([node({ id: 'a', effortEstimate: 8 }), node({ id: 'c', effortEstimate: 5 })]);
     const g = scopeGrowth(
       [
         { eventType: 'node.created', fieldName: null, oldValue: null, newValue: null, nodeId: 'a', createdAt: '' },
-        { eventType: 'node.deleted', fieldName: null, oldValue: null, newValue: null, nodeId: 'b', createdAt: '' },
+        // estimate set after creation — already counted via the node's current estimate
+        { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: null, newValue: 8, nodeId: 'a', createdAt: '' },
+        { eventType: 'node.deleted', fieldName: null, oldValue: { text: 'x', effortEstimate: 3 }, newValue: null, nodeId: 'b', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: 2, newValue: 5, nodeId: 'c', createdAt: '' },
+        { eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: 4, newValue: 1, nodeId: 'f', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'versionId', oldValue: null, newValue: 'v', nodeId: 'd', createdAt: '' },
         { eventType: 'node.field_changed', fieldName: 'versionId', oldValue: 'v', newValue: 'w', nodeId: 'e', createdAt: '' },
       ],
       'v',
+      nodes,
     );
-    expect(g).toEqual({ created: 1, deleted: 1, effortDelta: 3, promoted: ['d'] });
+    expect(g).toEqual({
+      created: 1, deleted: 1, effortAdded: 11, effortRemoved: 6, effortDelta: 5,
+      promoted: ['d'], promotedByVersion: { v: ['d'], w: ['e'] },
+    });
   });
 });
 
 describe('groupBlockers', () => {
-  it('groups identical root causes, separates orphaned claims and dependency waits (#322)', () => {
-    const ci = [1, 2, 3].map((i) => node({ id: `ci${i}`, blockedReason: `PR #${700 + i} green, cannot merge: CI red on main` }));
+  it('groups by cause vocabulary, not by text — differently worded CI-red reasons merge (#322, Round 2)', () => {
+    const ci = [
+      node({ id: 'ci1', blockedReason: 'PR #5948 (#5914) is code-complete, Rita-approved; repo-wide CI red blocks merging' }),
+      node({ id: 'ci2', blockedReason: '#5819 implementation blocked on PR open, CI red on main since 21.08' }),
+      node({ id: 'ci3', blockedReason: 'migration graph fork after #5900 — cannot merge until resolved' }),
+      node({ id: 'ci4', blockedReason: 'GitHub Actions not dispatching, token lacks workflow scope' }),
+    ];
+    const pr = node({ id: 'pr', blockedReason: 'PR #8460 open, awaiting review' });
+    const gateDan = node({ id: 'gd', blockedReason: 'GATE 2.4 — needs Dan to answer the Alpine spec question' });
+    const gateThomas = node({ id: 'gt', blockedReason: 'Wartet auf Entscheid Thomas (Gate 2.16 wording)' });
+    const ext = node({ id: 'ext', blockedReason: 'Pentest by external vendor, no date' });
     const orphan = node({ id: 'orph', status: 'in_progress', blockedReason: 'claim swept off worker while not running, nobody on it' });
+    const other = node({ id: 'oth', blockedReason: 'something else entirely' });
     const dep = node({ id: 'dep' });
-    const done = node({ id: 'done', status: 'done', blockedReason: 'irrelevant' });
-    const nodes = byId([...ci, orphan, dep, done]);
-    const groups = groupBlockers(nodes, computedFor(nodes, ['ci1', 'ci2', 'ci3', 'orph', 'done'], ['dep']), cat);
-    expect(groups[0].kind).toBe('orphaned_claim');
-    expect(groups[1]).toMatchObject({ kind: 'reason', nodeIds: ['ci1', 'ci2', 'ci3'] });
-    expect(groups[2]).toMatchObject({ kind: 'dependency', nodeIds: ['dep'] });
+    const done = node({ id: 'done', status: 'done', blockedReason: 'CI red' });
+    const nodes = byId([...ci, pr, gateDan, gateThomas, ext, orphan, other, dep, done]);
+    const blocked = ['ci1', 'ci2', 'ci3', 'ci4', 'pr', 'gd', 'gt', 'ext', 'orph', 'oth', 'done'];
+    const groups = groupBlockers(nodes, computedFor(nodes, blocked, ['dep']), cat);
+    expect(groups.map((g) => [g.kind, g.nodeIds.length])).toEqual([
+      ['orphaned_claim', 1],
+      ['merge_blocked', 4],
+      ['decision', 1],
+      ['decision', 1],
+      ['pr_open', 1],
+      ['external', 1],
+      ['dependency', 1],
+      ['other', 1],
+    ]);
+    expect(groups.filter((g) => g.kind === 'decision').map((g) => g.unblocker).sort()).toEqual(['Dan', 'Thomas']);
   });
 });
 

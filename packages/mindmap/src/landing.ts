@@ -56,15 +56,25 @@ export interface ReleaseVerdict {
  * problem — persona found MVP's target 15 days gone and still "active").
  */
 export function nextRelease(rows: ReleaseForecastRow[], today: Date = new Date()): ReleaseForecastRow | null {
+  return openReleases(rows, today)[0] ?? null;
+}
+
+/**
+ * Every open release the stakeholder should see, loudest first: overdue
+ * ones (latest target first), then upcoming by target date, then undated
+ * by sort order. Round 2 (Thomas): "give me a row per open release, not
+ * just the loudest one" — MVP was 15 days late and hid V1.5 completely.
+ */
+export function openReleases(rows: ReleaseForecastRow[], today: Date = new Date()): ReleaseForecastRow[] {
   const open = rows.filter(
     (r) => (r.versionStatus === 'active' || r.versionStatus === 'planning') && (r.remainingTickets > 0 || r.leaves === 0),
   );
   const dated = open.filter((r) => r.targetDate).sort((a, b) => a.targetDate!.localeCompare(b.targetDate!));
   const t = isoDay(today);
-  const overdue = dated.filter((r) => r.targetDate! < t);
-  if (overdue.length) return overdue[overdue.length - 1];
-  const active = dated.find((r) => r.versionStatus === 'active') ?? dated[0];
-  return active ?? open.sort((a, b) => a.sortOrder - b.sortOrder)[0] ?? null;
+  const overdue = dated.filter((r) => r.targetDate! < t).reverse();
+  const upcoming = dated.filter((r) => r.targetDate! >= t);
+  const undated = open.filter((r) => !r.targetDate).sort((a, b) => a.sortOrder - b.sortOrder);
+  return [...overdue, ...upcoming, ...undated];
 }
 
 export function releaseVerdict(row: ReleaseForecastRow, today: Date = new Date()): ReleaseVerdict {
@@ -144,8 +154,14 @@ export function threats(
     out.push({ text: `${n.text} (${n.effortEstimate}d) is blocked but still counted: ${n.blockedReason ?? 'waiting on a predecessor'}`, nodeId: n.id });
   }
 
+  // "No owner" is only a signal on maps that assign work at all. On the
+  // Fulcrum map 2 of 4,900 nodes carry an assignee, so this line would be
+  // true for every release forever (Round 2, Thomas) — gate it on usage.
+  const allOpen = leavesOf(nodes).filter((n) => categoryOf(n) !== 'done');
+  const assigned = allOpen.filter((n) => n.assigneeIds.length > 0 || n.claimedBySession).length;
+  const assignmentInUse = assigned >= Math.max(3, allOpen.length * 0.05);
   const unowned = inScope.filter((n) => (n.priority === 'P0' || n.priority === 'P1') && n.assigneeIds.length === 0 && !n.claimedBySession);
-  if (unowned.length) {
+  if (assignmentInUse && unowned.length) {
     out.push({ text: `${unowned.length} high-priority tasks have no owner`, nodeId: unowned[0].id });
   }
 
@@ -175,9 +191,12 @@ export function recentlyDone(
   limit = 5,
 ): Node[] {
   const since = today.getTime() - days * DAY;
+  // completedAt only — the server stamps it on every done-transition. Falling
+  // back to updatedAt ranked tickets somebody re-saved this morning above the
+  // things actually finished (Round 2, Thomas).
   return leavesOf(nodes)
-    .filter((n) => categoryOf(n) === 'done')
-    .map((n) => ({ n, at: Date.parse(n.completedAt ?? n.updatedAt) }))
+    .filter((n) => categoryOf(n) === 'done' && n.completedAt)
+    .map((n) => ({ n, at: Date.parse(n.completedAt!) }))
     .filter((x) => x.at >= since)
     .sort((a, b) => b.at - a.at)
     .slice(0, limit)
@@ -198,45 +217,98 @@ export interface ChangeEventLite {
 export interface ScopeGrowth {
   created: number;
   deleted: number;
-  /** Net effort added through estimate edits, in effort units. */
+  /** Effort that entered the plan: estimates of nodes created in the window + upward estimate edits. */
+  effortAdded: number;
+  /** Effort that left: estimates of nodes deleted in the window + downward estimate edits. */
+  effortRemoved: number;
+  /** Net, same sign convention as the burnup tool. */
   effortDelta: number;
   /** Nodes moved *into* `versionId` in the window (promotions). */
   promoted: string[];
+  /** Promotions into every version, so a slip can be explained (Round 2: "V1 +126d because 27 tickets were promoted into it"). */
+  promotedByVersion: Record<string, string[]>;
 }
 
-export function scopeGrowth(events: ChangeEventLite[], versionId: string | null): ScopeGrowth {
-  const g: ScopeGrowth = { created: 0, deleted: 0, effortDelta: 0, promoted: [] };
+/**
+ * Same accounting as the MCP `burnup` tool, so the number a stakeholder
+ * reads here matches what a developer quotes back. Created nodes count
+ * their *current* estimate (a create event carries none); their later
+ * estimate edits are therefore skipped to avoid double counting. Deleted
+ * nodes count the estimate snapshot on the delete event.
+ */
+export function scopeGrowth(events: ChangeEventLite[], versionId: string | null, nodes: Record<string, Node> = {}): ScopeGrowth {
+  const g: ScopeGrowth = { created: 0, deleted: 0, effortAdded: 0, effortRemoved: 0, effortDelta: 0, promoted: [], promotedByVersion: {} };
+  const createdIds = new Set<string>();
+  for (const e of events) if (e.eventType === 'node.created' && e.nodeId) createdIds.add(e.nodeId);
+
   for (const e of events) {
-    if (e.eventType === 'node.created') g.created += 1;
-    else if (e.eventType === 'node.deleted') g.deleted += 1;
-    else if (e.eventType === 'node.field_changed' && e.fieldName === 'effortEstimate') {
-      g.effortDelta += (Number(e.newValue) || 0) - (Number(e.oldValue) || 0);
-    } else if (e.eventType === 'node.field_changed' && e.fieldName === 'versionId' && versionId && e.newValue === versionId && e.nodeId) {
-      g.promoted.push(e.nodeId);
+    if (e.eventType === 'node.created') {
+      g.created += 1;
+      g.effortAdded += (e.nodeId && nodes[e.nodeId]?.effortEstimate) || 0;
+    } else if (e.eventType === 'node.deleted') {
+      g.deleted += 1;
+      const snap = e.oldValue as { effortEstimate?: number | null } | null;
+      g.effortRemoved += snap?.effortEstimate ?? 0;
+    } else if (e.eventType === 'node.field_changed' && e.fieldName === 'effortEstimate') {
+      if (e.nodeId && createdIds.has(e.nodeId)) continue;
+      const d = (Number(e.newValue) || 0) - (Number(e.oldValue) || 0);
+      if (d > 0) g.effortAdded += d;
+      else g.effortRemoved += -d;
+    } else if (e.eventType === 'node.field_changed' && e.fieldName === 'versionId' && typeof e.newValue === 'string' && e.nodeId) {
+      (g.promotedByVersion[e.newValue] ??= []).push(e.nodeId);
+      if (versionId && e.newValue === versionId) g.promoted.push(e.nodeId);
     }
   }
+  g.effortDelta = g.effortAdded - g.effortRemoved;
   return g;
 }
 
 // ── Blocked, grouped by root cause (PM Q2, issue #322) ───────────────
 
+export type BlockerKind =
+  | 'orphaned_claim'
+  | 'merge_blocked'
+  | 'pr_open'
+  | 'decision'
+  | 'external'
+  | 'dependency'
+  | 'other';
+
 export interface BlockerGroup {
-  kind: 'orphaned_claim' | 'dependency' | 'reason';
+  kind: BlockerKind;
   label: string;
+  /** Who can unblock it, when the reason names someone. */
+  unblocker: string | null;
   nodeIds: string[];
 }
 
-const ORPHAN_RE = /swept off|nobody on it|orphan/i;
+/**
+ * Cause vocabulary, tested in order. Round 2 (Jenna) showed that keying on
+ * the reason text collapses only byte-identical strings — 133 of 136 groups
+ * were singletons while 41 nodes shared one cause ("CI red on main"). The
+ * PM decides on causes, so the classifier names causes, not tickets.
+ */
+const BLOCKER_KINDS: { kind: BlockerKind; label: string; re: RegExp }[] = [
+  { kind: 'orphaned_claim', label: 'Claim swept off a worker — in progress with nobody on it', re: /swept off|nobody on it|orphan/i },
+  {
+    kind: 'merge_blocked',
+    label: 'Code done, cannot merge — CI red on main / migration fork / Actions not dispatching',
+    re: /ci (is )?red|red ci|main (is )?red|cannot merge|can't merge|migration[- ]?(graph )?fork|not dispatch|workflow scope|merge[- ]blocked|blocks merging/i,
+  },
+  { kind: 'pr_open', label: 'PR open, waiting for review or checks', re: /\bPRs?\b.*(open|review|green|pending|approv)|pull request|awaiting review|in review/i },
+  {
+    kind: 'decision',
+    label: 'Waiting on a named decision',
+    re: /\bgate\b|entscheid|decision|decide|ruling|klärung|klaerung|wartet auf|waiting (on|for) (dan|thomas|rita|daniel|alpine|the )|needs? (dan|thomas|rita|daniel)|spec from|sign-?off/i,
+  },
+  { kind: 'external', label: 'External party, no date', re: /extern|pentest|vendor|provider|third[- ]party|supplier|lieferant|awaiting .* from/i },
+];
 
-function normaliseReason(reason: string): string {
-  return reason
-    .toLowerCase()
-    .replace(/#\d+/g, '')
-    .replace(/https?:\/\/\S+/g, '')
-    .replace(/[^a-zäöüß0-9 ]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 48);
+const NAME_RE = /\b(Dan|Daniel|Thomas|Rita|Alpine|Bob|Ray|Jenna|Stella)\b/;
+
+export function classifyBlocker(reason: string): BlockerKind {
+  for (const k of BLOCKER_KINDS) if (k.re.test(reason)) return k.kind;
+  return 'other';
 }
 
 export function groupBlockers(
@@ -244,32 +316,32 @@ export function groupBlockers(
   computed: Map<string, ComputedNodeValues>,
   categoryOf: CategoryOf,
 ): BlockerGroup[] {
-  const orphaned: string[] = [];
-  const dependency: string[] = [];
-  const byReason = new Map<string, { label: string; ids: string[] }>();
+  const byKey = new Map<string, BlockerGroup>();
+  const add = (key: string, g: Omit<BlockerGroup, 'nodeIds'>, id: string) => {
+    const cur = byKey.get(key) ?? { ...g, nodeIds: [] };
+    cur.nodeIds.push(id);
+    byKey.set(key, cur);
+  };
 
   for (const n of leavesOf(nodes)) {
     const c = computed.get(n.id);
     if (!c?.isBlocked || categoryOf(n) === 'done') continue;
-    if (n.blockedReason && ORPHAN_RE.test(n.blockedReason)) {
-      orphaned.push(n.id);
-    } else if (n.blockedReason) {
-      const key = normaliseReason(n.blockedReason);
-      const g = byReason.get(key) ?? { label: n.blockedReason.slice(0, 80), ids: [] };
-      g.ids.push(n.id);
-      byReason.set(key, g);
+    if (n.blockedReason) {
+      const kind = classifyBlocker(n.blockedReason);
+      const def = BLOCKER_KINDS.find((k) => k.kind === kind);
+      const who = kind === 'decision' ? (NAME_RE.exec(n.blockedReason)?.[1] ?? null) : null;
+      if (kind === 'other') {
+        add('other', { kind, label: 'Other reasons (see Blocked panel)', unblocker: null }, n.id);
+      } else {
+        add(`${kind}:${who ?? ''}`, { kind, label: who ? `${def!.label} — ${who}` : def!.label, unblocker: who }, n.id);
+      }
     } else if (c.blockedBy.predecessorIds.length) {
-      dependency.push(n.id);
+      add('dependency', { kind: 'dependency', label: 'Waiting on a predecessor task', unblocker: null }, n.id);
     }
   }
 
-  const out: BlockerGroup[] = [];
-  if (orphaned.length) out.push({ kind: 'orphaned_claim', label: 'Claim swept off a worker — in progress with nobody on it', nodeIds: orphaned });
-  for (const g of [...byReason.values()].sort((a, b) => b.ids.length - a.ids.length)) {
-    out.push({ kind: 'reason', label: g.label, nodeIds: g.ids });
-  }
-  if (dependency.length) out.push({ kind: 'dependency', label: 'Waiting on a predecessor task', nodeIds: dependency });
-  return out;
+  const rank: Record<BlockerKind, number> = { orphaned_claim: 0, merge_blocked: 1, decision: 2, pr_open: 3, external: 4, dependency: 5, other: 6 };
+  return [...byKey.values()].sort((a, b) => rank[a.kind] - rank[b.kind] || b.nodeIds.length - a.nodeIds.length);
 }
 
 // ── Sprint health (PM Q4, issue #324) ────────────────────────────────

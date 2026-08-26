@@ -73,8 +73,10 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   stakeholder: {
     label: 'Stakeholder',
     hint: 'When does it ship, is it on track, what threatens it?',
+    // Round 2 (Thomas): Blocked is "219 developer paragraphs", Plan Health
+    // unexplained — both dropped; the Overview carries what they'd need.
     tabs: ['digest', 'releases'],
-    panels: ['blocked', 'planHealth'],
+    panels: [],
   },
   pm: {
     label: 'PM',
@@ -131,15 +133,19 @@ export function reconcileView(role: ViewRole, current: ActiveView): ActiveView {
  * The sprint a developer means by "this sprint": the one whose date range
  * contains today; failing that the one marked active. Sprint `status` is
  * unreliable on real maps (persona Round 1 found a sprint ending today still
- * `planned`), so dates win over status.
+ * `planned`), so dates win over status. When cycles overlap (Round 2: a
+ * month-long leftover bucket next to two-week sprints), the one that
+ * started most recently wins — that is the plan somebody made last.
  */
 export function pickCurrentCycle<C extends { id: string; startDate: string; endDate: string; status: string }>(
   cycles: C[],
   today: Date = new Date(),
 ): C | null {
   const t = today.toISOString().slice(0, 10);
-  const byDate = cycles.find((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10));
-  return byDate ?? cycles.find((c) => c.status === 'active') ?? null;
+  const containing = cycles
+    .filter((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10))
+    .sort((a, b) => b.startDate.localeCompare(a.startDate) || (a.status === 'active' ? -1 : 1));
+  return containing[0] ?? cycles.find((c) => c.status === 'active') ?? null;
 }
 
 // ── Persistence (per browser, like Fulcrum's sidebar.showAll) ────────

@@ -36,6 +36,9 @@ export function CockpitView() {
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   const [events, setEvents] = useState<ChangeEventLite[]>([]);
   const [triage, setTriage] = useState<TriageDecision[]>([]);
+  // Server-side total — the list is capped, the real backlog was 1946 (Round 2).
+  const [triageTotal, setTriageTotal] = useState<number | null>(null);
+  const [triageError, setTriageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,13 +48,23 @@ export function CockpitView() {
     Promise.all([
       api.fetchReleaseForecast(currentMapId),
       api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: 1000 }),
-      api.listTriageDecisions(currentMapId, { reviewed: false, limit: 500 }).catch(() => ({ decisions: [] as TriageDecision[] })),
+      // A failed triage fetch must not hide the strip silently (Round 2: a
+      // token-auth PM got 403 and saw "nothing waiting").
+      api
+        .listTriageDecisions(currentMapId, { reviewed: false, limit: 500 })
+        .then((t) => ({ ok: true as const, ...t }))
+        .catch((e: unknown) => ({ ok: false as const, error: e instanceof Error ? e.message : 'unavailable' })),
     ])
       .then(([f, ev, t]) => {
         if (cancelled) return;
         setForecast(f);
         setEvents(ev.events);
-        setTriage(t.decisions);
+        if (t.ok) {
+          setTriage(t.decisions);
+          setTriageTotal(t.total);
+        } else {
+          setTriageError(t.error);
+        }
       })
       .catch((e) => !cancelled && setError(e instanceof Error ? e.message : 'Failed to load'));
     return () => {
@@ -69,7 +82,7 @@ export function CockpitView() {
     () => (forecast?.releases ?? []).filter((r) => (r.velocityFinishDeltaDays7d ?? r.plannedFinishDeltaDays7d ?? 0) > 0),
     [forecast],
   );
-  const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null), [events, release?.versionId]);
+  const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null, nodes), [events, release?.versionId, nodes]);
   const blockers = useMemo(() => groupBlockers(nodes, computed, categoryOf), [nodes, computed, categoryOf]);
   const sprint = useMemo(
     () => sprintHealth(pickCurrentCycle(cycles), nodes, categoryOf, currentMap?.wipLimit ?? null),
@@ -99,38 +112,59 @@ export function CockpitView() {
           }}
         >
           <strong>Triage pipeline is broken</strong>
-          {pipeline.since ? ` since ${pipeline.since.slice(0, 10)}` : ''} — {pipeline.count} tickets untriaged. Cause:{' '}
+          {pipeline.since ? ` since at least ${pipeline.since.slice(0, 10)}` : ''} — {triageTotal ?? pipeline.count} tickets untriaged. Cause:{' '}
           <code>{pipeline.cause}</code>
         </div>
       )}
-      {!pipeline.broken && triage.length > 0 && (
+      {!pipeline.broken && (triageTotal ?? 0) > 0 && (
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
-          {triage.length} tickets waiting for triage.
+          {triageTotal} tickets waiting for triage.
+        </div>
+      )}
+      {triageError && (
+        <div style={{ fontSize: 12, color: '#b45309', marginBottom: 12 }}>
+          Triage queue could not be loaded ({triageError}) — the count above may be missing.
         </div>
       )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
         <Card title="Slipped" accent={slippedReleases.length || growth.promoted.length ? '#fde68a' : undefined}>
-          {slippedReleases.length === 0 && growth.promoted.length === 0 && growth.effortDelta <= 0 ? (
-            <Muted>No release date moved this week and nothing was promoted into {release?.versionName ?? 'the next release'}.</Muted>
+          {slippedReleases.length === 0 && Object.keys(growth.promotedByVersion).length === 0 && growth.effortDelta <= 0 ? (
+            <Muted>No release date moved this week and nothing was moved between versions.</Muted>
           ) : (
             <ul style={listStyle}>
-              {slippedReleases.map((r) => (
-                <li key={r.versionId}>
-                  <Link onClick={() => setActiveView('releases')}>{r.versionName}</Link> {weeklyDelta(r)}
-                </li>
-              ))}
-              {growth.promoted.map((id) =>
-                nodes[id] ? (
-                  <li key={id}>
-                    <Link onClick={() => selectNode(id)}>{nodes[id].text}</Link> moved into {release?.versionName} in the last {WINDOW_DAYS} days
-                    {nodes[id].effortEstimate ? ` (${nodes[id].effortEstimate}d)` : ' (no estimate)'}
+              {slippedReleases.map((r) => {
+                // The "why": tickets promoted into this release in the window.
+                const promoted = (growth.promotedByVersion[r.versionId] ?? []).filter((id) => nodes[id]);
+                const promotedEffort = promoted.reduce((s, id) => s + (nodes[id].effortEstimate ?? 0), 0);
+                return (
+                  <li key={r.versionId}>
+                    <Link onClick={() => setActiveView('releases')}>{r.versionName}</Link> {weeklyDelta(r)}
+                    {promoted.length > 0 && (
+                      <span>
+                        {' '}— {promoted.length} tickets ({Math.round(promotedEffort * 10) / 10} {forecast.effortUnit}) moved into it in the last {WINDOW_DAYS} days
+                      </span>
+                    )}
                   </li>
-                ) : null,
-              )}
+                );
+              })}
+              {Object.entries(growth.promotedByVersion)
+                .filter(([vid]) => !slippedReleases.some((r) => r.versionId === vid))
+                .map(([vid, ids]) => {
+                  const name = forecast.releases.find((r) => r.versionId === vid)?.versionName ?? 'a version';
+                  return (
+                    <li key={vid}>
+                      {ids.length} tickets moved into {name} in the last {WINDOW_DAYS} days
+                      {ids[0] && nodes[ids[0]] && (
+                        <> — e.g. <Link onClick={() => selectNode(ids[0])}>{nodes[ids[0]].text}</Link></>
+                      )}
+                    </li>
+                  );
+                })}
               {growth.effortDelta > 0 && (
                 <li>
-                  Estimates grew by {Math.round(growth.effortDelta * 10) / 10} {forecast.effortUnit} in the last {WINDOW_DAYS} days
+                  Scope grew by {Math.round(growth.effortDelta * 10) / 10} {forecast.effortUnit} net in the last {WINDOW_DAYS} days
+                  {' '}(+{Math.round(growth.effortAdded * 10) / 10} / −{Math.round(growth.effortRemoved * 10) / 10})
                 </li>
               )}
             </ul>
@@ -147,6 +181,7 @@ export function CockpitView() {
                   <strong>{g.nodeIds.length}</strong>{' '}
                   <Link onClick={() => selectNode(g.nodeIds[0])}>{g.label}</Link>
                   {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
+                  {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
                 </li>
               ))}
               {blockers.length > 8 && <li style={{ color: '#94a3b8' }}>… {blockers.length - 8} more causes</li>}

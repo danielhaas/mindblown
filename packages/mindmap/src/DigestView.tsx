@@ -2,15 +2,17 @@
  * Stakeholder digest — the one screen persona "Thomas" asked for
  * (Round 1, 2026-08-26): "V1.5 — target — forecast (moved since last week?)
  * — on track yes/no and why — finished this fortnight — scope growth".
+ * Round 2 added: a card per open release (overdue first) instead of only
+ * the loudest one, and honest data sources for the three lower cards.
  * Read-only; every line that names a node selects it.
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import type { ReleaseForecastResponse } from './api.js';
+import type { ReleaseForecastResponse, ReleaseForecastRow } from './api.js';
 import { statusCategory } from './viewScope.js';
 import {
-  nextRelease,
+  openReleases,
   releaseVerdict,
   weeklyDelta,
   threats,
@@ -28,6 +30,7 @@ const LEVEL_STYLE = {
 } as const;
 
 const WINDOW_DAYS = 14;
+const MAX_RELEASES = 3;
 
 export function DigestView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -40,6 +43,7 @@ export function DigestView() {
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   const [events, setEvents] = useState<ChangeEventLite[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [focusId, setFocusId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!currentMapId) return;
@@ -65,19 +69,16 @@ export function DigestView() {
     return (n: Parameters<typeof statusCategory>[0]) => statusCategory(n, wf);
   }, [currentMap?.statusWorkflow]);
 
-  const release = useMemo(() => (forecast ? nextRelease(forecast.releases) : null), [forecast]);
-  const verdict = useMemo(() => (release ? releaseVerdict(release) : null), [release]);
-  const delta = release ? weeklyDelta(release) : null;
+  const releases = useMemo(() => (forecast ? openReleases(forecast.releases).slice(0, MAX_RELEASES) : []), [forecast]);
+  // The threats/scope cards follow one release: the loudest by default, or
+  // whichever card the reader clicked.
+  const focus = releases.find((r) => r.versionId === focusId) ?? releases[0] ?? null;
   const risks = useMemo(
-    () => threats(nodes, computed, categoryOf, release?.versionId ?? null),
-    [nodes, computed, categoryOf, release?.versionId],
+    () => threats(nodes, computed, categoryOf, focus?.versionId ?? null),
+    [nodes, computed, categoryOf, focus?.versionId],
   );
   const done = useMemo(() => recentlyDone(nodes, categoryOf, WINDOW_DAYS), [nodes, categoryOf]);
-  const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null), [events, release?.versionId]);
-
-  const openNode = (id: string) => {
-    selectNode(id);
-  };
+  const growth = useMemo(() => scopeGrowth(events, focus?.versionId ?? null, nodes), [events, focus?.versionId, nodes]);
 
   if (error) {
     return <Shell><p style={{ color: '#b91c1c' }}>{error}</p></Shell>;
@@ -86,61 +87,43 @@ export function DigestView() {
     return <Shell><p style={{ color: '#64748b' }}>Loading…</p></Shell>;
   }
 
-  const lv = LEVEL_STYLE[verdict?.level ?? 'unknown'];
+  const fmt = (n: number) => Math.round(n * 10) / 10;
 
   return (
     <Shell>
-      {/* Headline card */}
-      <section
-        style={{
-          background: lv.bg,
-          border: `1px solid ${lv.border}`,
-          borderRadius: 10,
-          padding: '18px 22px',
-          marginBottom: 18,
-        }}
-      >
-        {release ? (
-          <>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 22, fontWeight: 700, color: '#0f172a' }}>{release.versionName}</span>
-              <span style={{ fontSize: 12, fontWeight: 700, color: lv.fg, textTransform: 'uppercase', letterSpacing: 0.5 }}>{lv.label}</span>
-            </div>
-            <div style={{ fontSize: 14, color: '#1e293b', marginTop: 6 }}>{verdict?.headline}</div>
-            <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-              {release.targetDate ? `Target ${release.targetDate}` : 'No target date'}
-              {' · '}
-              {release.velocityAdjustedFinishDate ?? release.plannedFinishDate
-                ? `Forecast ${release.velocityAdjustedFinishDate ?? release.plannedFinishDate}`
-                : 'No forecast'}
-              {delta ? ` · ${delta}` : ''}
-              {' · '}
-              {release.remainingTickets} tasks open
-            </div>
-            {verdict && verdict.reasons.length > 0 && (
-              <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.5 }}>
-                {verdict.reasons.map((r, i) => (
-                  <li key={i}>{r}</li>
-                ))}
-              </ul>
-            )}
-          </>
-        ) : (
+      {releases.length === 0 ? (
+        <section style={{ ...cardBase, marginBottom: 18 }}>
           <div style={{ fontSize: 14, color: '#475569' }}>
-            No upcoming release. Create a version with a target date in the Releases tab.
+            No open release. Create a version with a target date in the Releases tab.
           </div>
-        )}
-      </section>
+        </section>
+      ) : (
+        releases.map((r, i) => (
+          <ReleaseCard
+            key={r.versionId}
+            row={r}
+            primary={i === 0}
+            focused={focus?.versionId === r.versionId}
+            onFocus={() => setFocusId(r.versionId)}
+          />
+        ))
+      )}
+
+      {forecast.calibrationNote && (
+        <div style={{ fontSize: 12, color: '#b45309', margin: '0 0 18px' }}>
+          Forecast caveat: {forecast.calibrationNote}
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
-        <Card title="What threatens it">
+        <Card title={focus ? `What threatens ${focus.versionName}` : 'What threatens it'}>
           {risks.length === 0 ? (
             <Muted>Nothing stands out.</Muted>
           ) : (
             <ol style={listStyle}>
               {risks.map((t, i) => (
                 <li key={i}>
-                  {t.nodeId ? <Link onClick={() => openNode(t.nodeId!)}>{t.text}</Link> : t.text}
+                  {t.nodeId ? <Link onClick={() => selectNode(t.nodeId!)}>{t.text}</Link> : t.text}
                 </li>
               ))}
             </ol>
@@ -154,7 +137,8 @@ export function DigestView() {
             <ul style={listStyle}>
               {done.map((n) => (
                 <li key={n.id}>
-                  <Link onClick={() => openNode(n.id)}>{n.text}</Link>
+                  <span style={{ color: '#94a3b8', fontSize: 11 }}>{n.completedAt!.slice(5, 10)} </span>
+                  <Link onClick={() => selectNode(n.id)}>{n.text}</Link>
                   {breadcrumb(nodes, n) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, n)}</span>}
                 </li>
               ))}
@@ -168,11 +152,15 @@ export function DigestView() {
               <strong>{growth.created}</strong> tasks added, <strong>{growth.deleted}</strong> removed
             </div>
             <div>
-              Estimates moved by <strong>{growth.effortDelta > 0 ? '+' : ''}{Math.round(growth.effortDelta * 10) / 10}</strong> {forecast.effortUnit}
+              Work added <strong>+{fmt(growth.effortAdded)}</strong>, removed <strong>−{fmt(growth.effortRemoved)}</strong>, net{' '}
+              <strong style={{ color: growth.effortDelta > 0 ? '#b91c1c' : '#047857' }}>
+                {growth.effortDelta > 0 ? '+' : ''}{fmt(growth.effortDelta)}
+              </strong>{' '}
+              {forecast.effortUnit}
             </div>
-            {release && growth.promoted.length > 0 && (
+            {focus && growth.promoted.length > 0 && (
               <div>
-                <strong>{growth.promoted.length}</strong> tasks were moved into {release.versionName}
+                <strong>{growth.promoted.length}</strong> tasks were moved into {focus.versionName}
               </div>
             )}
           </div>
@@ -188,9 +176,62 @@ export function DigestView() {
   );
 }
 
+function ReleaseCard({
+  row,
+  primary,
+  focused,
+  onFocus,
+}: {
+  row: ReleaseForecastRow;
+  primary: boolean;
+  focused: boolean;
+  onFocus: () => void;
+}) {
+  const verdict = releaseVerdict(row);
+  const lv = LEVEL_STYLE[verdict.level];
+  const delta = weeklyDelta(row);
+  const forecastDate = row.velocityAdjustedFinishDate ?? row.plannedFinishDate;
+  return (
+    <section
+      onClick={onFocus}
+      style={{
+        background: lv.bg,
+        border: `1px solid ${lv.border}`,
+        outline: focused && !primary ? `2px solid ${lv.fg}` : 'none',
+        borderRadius: 10,
+        padding: primary ? '18px 22px' : '10px 16px',
+        marginBottom: primary ? 14 : 10,
+        cursor: 'pointer',
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: primary ? 22 : 15, fontWeight: 700, color: '#0f172a' }}>{row.versionName}</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: lv.fg, textTransform: 'uppercase', letterSpacing: 0.5 }}>{lv.label}</span>
+      </div>
+      <div style={{ fontSize: primary ? 14 : 13, color: '#1e293b', marginTop: 4 }}>{verdict.headline}</div>
+      <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+        {row.targetDate ? `Target ${row.targetDate}` : 'No target date'}
+        {' · '}
+        {forecastDate ? `Forecast ${forecastDate}` : 'No forecast'}
+        {delta ? ` · ${delta}` : ''}
+        {' · '}
+        {row.remainingTickets} tasks open
+      </div>
+      {(primary || focused) && verdict.reasons.length > 0 && (
+        <ul style={{ margin: '10px 0 0', paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.5 }}>
+          {verdict.reasons.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
 // ── Bits ─────────────────────────────────────────────────────────────
 
 const listStyle: React.CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.6 };
+const cardBase: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px' };
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -202,14 +243,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
 export function Card({ title, children, accent }: { title: string; children: React.ReactNode; accent?: string }) {
   return (
-    <section
-      style={{
-        background: '#fff',
-        border: `1px solid ${accent ?? '#e2e8f0'}`,
-        borderRadius: 10,
-        padding: '14px 18px',
-      }}
-    >
+    <section style={{ ...cardBase, border: `1px solid ${accent ?? '#e2e8f0'}` }}>
       <h3 style={{ margin: '0 0 10px', fontSize: 12, fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: 0.5 }}>
         {title}
       </h3>
@@ -225,7 +259,10 @@ export function Muted({ children }: { children: React.ReactNode }) {
 export function Link({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
       style={{
         background: 'none',
         border: 'none',
