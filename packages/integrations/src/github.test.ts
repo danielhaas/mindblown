@@ -6,6 +6,7 @@ import {
   findClosingPrsForIssue,
   probeIssueLanded,
   getIssueCloseEvent,
+  GitHubScanTruncatedError,
   type IssueLandingProbe,
 } from './github.js';
 
@@ -480,6 +481,72 @@ describe('findClosingPrsForIssue', () => {
     expect(probe.landed).toBeNull();
   });
 
+  it('finds a cross-reference that sits behind page 1', async () => {
+    // The timeline is sorted ASCENDING, so on a long-lived ticket the
+    // closing PR is on the LAST page. Reading only page 1 reported "no
+    // closing PR" for exactly the issues most likely to have one — and
+    // "no closing PR" is what lets the outbound sync close as COMPLETED.
+    // This is the one route by which the original incident could return
+    // through the new code.
+    const page1 = Array.from({ length: 100 }, () => ({ event: 'labeled' }));
+    stubResponses([page1, [crossRef(7794)], prPayload()]);
+
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+
+    expect(prs.map((p) => p.number)).toEqual([7794]);
+  });
+
+  it('keeps the NEWEST candidates when more than the lookup cap reference the issue', async () => {
+    // 30 cross-references, cap 25. Ascending order means the oldest are
+    // first, so a head-cut would resolve mentions from two years ago and
+    // discard the PR that actually closed the ticket.
+    const refs = Array.from({ length: 30 }, (_, i) => crossRef(1000 + i));
+    const pages: unknown[] = [refs];
+    // 25 PR lookups follow, one per surviving candidate.
+    for (let i = 5; i < 30; i++) {
+      pages.push(prPayload({ number: 1000 + i, body: 'Closes #6096' }));
+    }
+    stubResponses(pages);
+
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+
+    expect(prs).toHaveLength(25);
+    expect(prs[0].number).toBe(1005);
+    expect(prs[24].number).toBe(1029);
+  });
+
+  it('refuses to answer from a partial scan rather than reporting "no PRs"', async () => {
+    // 20 full pages and still no end in sight. Returning the prefix
+    // would read as "nothing references this issue" — the most dangerous
+    // possible wrong answer here.
+    const fullPage = Array.from({ length: 100 }, () => ({ event: 'labeled' }));
+    stubResponses(Array.from({ length: 25 }, () => fullPage));
+
+    await expect(
+      findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok'),
+    ).rejects.toBeInstanceOf(GitHubScanTruncatedError);
+  });
+
+  it('holds the issue open when the scan was truncated', async () => {
+    // End-to-end consequence of the throw above: a truncated scan must
+    // reach the outbound sync as "no evidence", not as "no PR".
+    const fullPage = Array.from({ length: 100 }, () => ({ event: 'labeled' }));
+    stubResponses([
+      { default_branch: 'main' },
+      ...Array.from({ length: 25 }, () => fullPage),
+    ]);
+
+    const result = await updateGitHubIssue(
+      node({ status: 'done', percentComplete: 100, linkedPr: null }),
+      LINK,
+      'tok',
+    );
+
+    expect(result.stateAction).toBe('held');
+    expect(result.holdReason).toBe('probe_failed');
+    expect(result.holdError).toContain('GitHubScanTruncatedError');
+  });
+
   it('reports an open closing PR as in flight', async () => {
     stubResponses([
       { default_branch: 'main' },
@@ -543,6 +610,40 @@ describe('getIssueCloseEvent', () => {
     const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 7357, 'tok');
 
     expect(ev?.commitId).toBeNull();
+  });
+
+  it('reads past page 1 to find the latest close', async () => {
+    // The events endpoint is ascending too. Answering from page 1 on a
+    // busy issue reports a close that has since been superseded — and
+    // both the audit and the abandoned-PR path branch on that close's
+    // `commitId` and `stateReason`.
+    const page1 = Array.from({ length: 100 }, (_, i) =>
+      i === 0
+        ? { event: 'closed', actor: { login: 'old' }, commit_id: null, created_at: '2026-01-01T00:00:00Z' }
+        : { event: 'labeled' },
+    );
+    vi.stubGlobal(
+      'fetch',
+      (() => {
+        const pages = [
+          page1,
+          [
+            {
+              event: 'closed',
+              actor: { login: 'mindblown-by-project-li[bot]' },
+              commit_id: 'newest',
+              created_at: '2026-08-30T00:00:00Z',
+            },
+          ],
+        ];
+        let i = 0;
+        return vi.fn(async () => ({ ok: true, status: 200, json: async () => pages[i++] }));
+      })(),
+    );
+
+    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 6096, 'tok');
+
+    expect(ev?.commitId).toBe('newest');
   });
 
   it('returns null when the issue was never closed', async () => {

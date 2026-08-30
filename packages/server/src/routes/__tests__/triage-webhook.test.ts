@@ -81,6 +81,10 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: vi.fn(async () => null),
   createNode: vi.fn(),
   updateNode: vi.fn(async () => null),
+  // Moved out of routes/integrations.ts, where it was a second copy of
+  // the same scan. This file's node table is empty (`where: async () =>
+  // []`), so "no node linked to that issue" is the faithful answer.
+  findNodeIdByExternalId: vi.fn(async () => null),
   notDeleted: { __pred: true, check: () => true },
 }));
 

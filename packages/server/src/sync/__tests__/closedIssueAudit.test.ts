@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const mocks = vi.hoisted(() => ({
   fetchChangedIssues: vi.fn(),
   getIssueCloseEvent: vi.fn(),
+  getRepoDefaultBranch: vi.fn(async () => 'main'),
   probeIssueLanded: vi.fn(),
   reopenGitHubIssue: vi.fn(async () => undefined),
   getNode: vi.fn(),
@@ -36,6 +37,7 @@ vi.mock('@mindblown/integrations', async () => {
     ...actual,
     fetchChangedIssues: mocks.fetchChangedIssues,
     getIssueCloseEvent: mocks.getIssueCloseEvent,
+    getRepoDefaultBranch: mocks.getRepoDefaultBranch,
     probeIssueLanded: mocks.probeIssueLanded,
     reopenGitHubIssue: mocks.reopenGitHubIssue,
   };
@@ -58,13 +60,34 @@ function issue(overrides: Record<string, unknown> = {}) {
     html_url: 'https://github.com/FulcrumCRM/crm/issues/7357',
     state: 'closed' as const,
     state_reason: 'completed' as const,
+    updated_at: '2026-08-10T13:09:33Z',
     ...overrides,
   };
 }
 
+function prRef(overrides: Record<string, unknown> = {}) {
+  return {
+    number: 7794,
+    state: 'closed' as const,
+    merged: false,
+    mergedAt: null,
+    mergeCommitSha: null,
+    baseRef: 'main',
+    url: 'https://github.com/FulcrumCRM/crm/pull/7794',
+    ...overrides,
+  };
+}
+
+/**
+ * The default probe carries a DEAD closing PR, because that is the
+ * incident shape: a PR claimed the ticket, the ticket closed, the PR
+ * never landed. An empty `closingPrs` is a different population
+ * entirely — see the `no_closing_pr` tests — and using it as the default
+ * fixture is what made the first cut of this suite agree with a bug.
+ */
 function probe(overrides: Record<string, unknown> = {}) {
   return {
-    closingPrs: [],
+    closingPrs: [prRef()],
     defaultBranch: 'main',
     landed: null,
     inFlight: false,
@@ -81,6 +104,7 @@ const API_CLOSE = {
 
 beforeEach(() => {
   for (const m of Object.values(mocks)) m.mockReset();
+  mocks.getRepoDefaultBranch.mockResolvedValue('main');
   mocks.reopenGitHubIssue.mockResolvedValue(undefined);
   mocks.updateNode.mockResolvedValue(null);
   mocks.findNodeIdByExternalId.mockResolvedValue(null);
@@ -120,6 +144,28 @@ describe('auditOneIssue', () => {
 
     expect(f.verdict).toBe('unbacked');
     expect(f.closingPrs).toEqual([7794]);
+  });
+
+  it('does NOT condemn an issue no PR ever claimed — that close is legitimate', async () => {
+    // This is the population `issueCloseAction` closes on purpose: an
+    // assessment, an ops task, anything finished without code, where
+    // MindBlown is the only mechanism that can close the ticket. Calling
+    // it `unbacked` would make the audit condemn exactly what the gate
+    // it belongs to permits — and a write-mode run would then reopen
+    // every one of them.
+    mocks.probeIssueLanded.mockResolvedValue(probe({ closingPrs: [] }));
+
+    const f = await auditOneIssue(OPTS, issue());
+
+    expect(f.verdict).toBe('no_closing_pr');
+  });
+
+  it('condemns only when a PR claimed the issue and none of them landed', async () => {
+    // The discriminator between the two verdicts is exactly one thing:
+    // did any PR claim to close this issue.
+    mocks.probeIssueLanded.mockResolvedValue(probe({ closingPrs: [prRef()] }));
+
+    expect((await auditOneIssue(OPTS, issue())).verdict).toBe('unbacked');
   });
 
   it('clears a close backed by a merge commit on the close event', async () => {
@@ -204,6 +250,54 @@ describe('auditClosedIssues', () => {
     expect(result.reopened).toBe(0);
     expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
     expect(mocks.updateNode).not.toHaveBeenCalled();
+  });
+
+  it('never reopens a no_closing_pr issue, even in write mode', async () => {
+    // The write mode acts on `unbacked` and on nothing else. Without
+    // that restriction a single `dryRun:false` run would reopen every
+    // ticket the repo ever closed without a PR — and, since none of them
+    // has a close-snapshot, leave each node at null/in_progress.
+    mocks.probeIssueLanded.mockResolvedValue(probe({ closingPrs: [] }));
+
+    const result = await auditClosedIssues({ ...OPTS, dryRun: false });
+
+    expect(result.unbacked).toBe(0);
+    expect(result.noClosingPr).toBe(1);
+    expect(result.reopened).toBe(0);
+    expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+  });
+
+  it('inspects the NEWEST closed issues when limit cuts the list', async () => {
+    // `fetchChangedIssues` sorts updated:asc, so slicing the head walked
+    // the repo's oldest tickets — without a `since` that is the first
+    // issues ever filed, not the window the incident lives in.
+    mocks.fetchChangedIssues.mockResolvedValue({
+      issues: [
+        issue({ number: 1, updated_at: '2025-01-01T00:00:00Z' }),
+        issue({ number: 2, updated_at: '2026-08-20T00:00:00Z' }),
+        issue({ number: 3, updated_at: '2026-08-29T00:00:00Z' }),
+      ],
+      truncated: false,
+    });
+
+    const result = await auditClosedIssues({ ...OPTS, limit: 2 });
+
+    expect(result.findings.map((f) => f.issueNumber)).toEqual([3, 2]);
+  });
+
+  it('resolves the default branch once per run, not once per issue', async () => {
+    mocks.fetchChangedIssues.mockResolvedValue({
+      issues: [issue({ number: 1 }), issue({ number: 2 }), issue({ number: 3 })],
+      truncated: false,
+    });
+
+    await auditClosedIssues(OPTS);
+
+    expect(mocks.getRepoDefaultBranch).toHaveBeenCalledTimes(1);
+    for (const call of mocks.probeIssueLanded.mock.calls) {
+      expect(call[4]).toBe('main');
+    }
   });
 
   it('writes nothing when dryRun is explicitly true', async () => {

@@ -65,6 +65,18 @@ function probe(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * A close made by MindBlown itself: API close (no commit id), reason
+ * `completed`, actor = the bot. Only this shape may be rolled back —
+ * every other closer's decision stands.
+ */
+const BOT_CLOSE = {
+  actor: 'mindblown-by-project-li[bot]',
+  commitId: null,
+  createdAt: '2026-07-27T00:00:00Z',
+  stateReason: 'completed' as const,
+};
+
 beforeEach(() => {
   for (const m of Object.values(mocks)) m.mockReset();
   mocks.reopenGitHubIssue.mockResolvedValue(undefined);
@@ -76,12 +88,7 @@ beforeEach(() => {
 describe('handleAbandonedPr', () => {
   it('reopens an issue the dead PR had closed with no merge behind it', async () => {
     mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
-    mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'mindblown-by-project-li[bot]',
-      commitId: null,
-      createdAt: '2026-07-27T00:00:00Z',
-      stateReason: 'completed',
-    });
+    mocks.getIssueCloseEvent.mockResolvedValue(BOT_CLOSE);
 
     const out = await handleAbandonedPr(CTX, ABANDONED_PR);
 
@@ -98,7 +105,7 @@ describe('handleAbandonedPr', () => {
     mocks.findNodeIdByExternalId.mockResolvedValue('n-6085');
     mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
     mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'bot', commitId: null, createdAt: null, stateReason: 'completed',
+      ...BOT_CLOSE, createdAt: null,
     });
     mocks.getNode.mockResolvedValue({
       id: 'n-6085',
@@ -137,7 +144,7 @@ describe('handleAbandonedPr', () => {
     mocks.findNodeIdByExternalId.mockResolvedValue('n-6085');
     mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
     mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'bot', commitId: null, createdAt: null, stateReason: 'completed',
+      ...BOT_CLOSE, createdAt: null,
     });
     mocks.getNode.mockResolvedValue({
       id: 'n-6085',
@@ -178,7 +185,7 @@ describe('handleAbandonedPr', () => {
     // would put a shipped ticket back on the board.
     mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
     mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'bot', commitId: null, createdAt: null, stateReason: 'completed',
+      ...BOT_CLOSE, createdAt: null,
     });
     mocks.probeIssueLanded.mockResolvedValue(
       probe({
@@ -205,7 +212,7 @@ describe('handleAbandonedPr', () => {
     // satisfiable by the dead PR reporting itself.
     mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
     mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'bot', commitId: null, createdAt: null, stateReason: 'completed',
+      ...BOT_CLOSE, createdAt: null,
     });
     mocks.probeIssueLanded.mockResolvedValue(
       probe({
@@ -224,6 +231,97 @@ describe('handleAbandonedPr', () => {
     const out = await handleAbandonedPr(CTX, ABANDONED_PR);
 
     expect(out[0].status).toBe('reopened');
+  });
+
+  it('does NOT undo a close made by a human — the actor is the only thing that tells them apart', async () => {
+    // `commit_id` is null for MindBlown's close AND for a person's, so
+    // the previous two guards let this through. A trust officer closing
+    // a ticket by hand must not have it reopened under them because some
+    // old branch carrying `Closes #N` got abandoned months later.
+    mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
+    mocks.getIssueCloseEvent.mockResolvedValue({ ...BOT_CLOSE, actor: 'danielhaas' });
+
+    const out = await handleAbandonedPr(CTX, ABANDONED_PR);
+
+    expect(out[0].status).toBe('foreign_close');
+    expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
+    expect(mocks.updateNode).not.toHaveBeenCalled();
+  });
+
+  it('does NOT undo a not_planned close — nobody claimed that work shipped', async () => {
+    // `trashGc` closes as not_planned when the MindBlown node is
+    // deleted. Reopening resurrects work that was deliberately dropped.
+    mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
+    mocks.getIssueCloseEvent.mockResolvedValue({
+      ...BOT_CLOSE,
+      stateReason: 'not_planned',
+    });
+
+    const out = await handleAbandonedPr(CTX, ABANDONED_PR);
+
+    expect(out[0].status).toBe('not_planned');
+    expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it('does NOT reopen while another PR for the same issue is still open', async () => {
+    // Two PRs on one ticket: A dies while B is in flight. Reopening and
+    // pulling the node off done reports B's live work as not started.
+    mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
+    mocks.getIssueCloseEvent.mockResolvedValue(BOT_CLOSE);
+    mocks.probeIssueLanded.mockResolvedValue(
+      probe({
+        inFlight: true,
+        closingPrs: [
+          {
+            number: 6200,
+            state: 'open',
+            merged: false,
+            mergedAt: null,
+            mergeCommitSha: null,
+            baseRef: 'main',
+            url: 'u',
+          },
+        ],
+      }),
+    );
+
+    const out = await handleAbandonedPr(CTX, ABANDONED_PR);
+
+    expect(out[0].status).toBe('pr_in_flight');
+    expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it('does not double-restore when the reopen webhook already pulled the node back', async () => {
+    // Reopening the issue makes GitHub deliver `issues.reopened` to us,
+    // and that handler restores the snapshot itself. If it wins the
+    // race, this rollback would restore a SECOND time — off a link whose
+    // snapshot is already consumed — landing the node on
+    // null/in_progress and losing the progress the undo just gave back.
+    mocks.findNodeIdByExternalId.mockResolvedValue('n-6085');
+    mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
+    mocks.getIssueCloseEvent.mockResolvedValue(BOT_CLOSE);
+    mocks.getNode.mockResolvedValue({
+      id: 'n-6085',
+      // Already restored by the webhook.
+      status: 'in_progress',
+      percentComplete: 40,
+      externalLinks: [
+        {
+          provider: 'github',
+          externalId: 'FulcrumCRM/crm#6085',
+          url: 'u',
+          syncEnabled: true,
+          lastSyncedAt: null,
+          previousPercentComplete: null,
+          previousStatus: null,
+        },
+      ],
+    });
+
+    const out = await handleAbandonedPr(CTX, ABANDONED_PR);
+
+    expect(out[0].status).toBe('node_not_done');
+    expect(mocks.updateNode).not.toHaveBeenCalled();
   });
 
   it('is a no-op — and idempotent on replay — when the issue is already open', async () => {
@@ -259,7 +357,7 @@ describe('handleAbandonedPr', () => {
   it('handles every Closes ref in the PR, not just the first', async () => {
     mocks.getGitHubIssue.mockResolvedValue({ number: 0, state: 'closed' });
     mocks.getIssueCloseEvent.mockResolvedValue({
-      actor: 'bot', commitId: null, createdAt: null, stateReason: 'completed',
+      ...BOT_CLOSE, createdAt: null,
     });
 
     const out = await handleAbandonedPr(CTX, {

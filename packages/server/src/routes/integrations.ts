@@ -184,7 +184,12 @@ async function getGitHubContextForRepo(
 // byte-identical, which is one full-table scan written twice — and the
 // closed-issue audit now calls it once per condemned issue, so the two
 // copies were about to drift under different load. One name, one query.
-const findNodeByExternalId = nodeDb.findNodeIdByExternalId;
+// Delegated lazily rather than aliased at module scope: an alias binds
+// the export at import time, which turns "this test file mocks db/nodes
+// and never touches node lookup" into a module-load failure.
+function findNodeByExternalId(externalId: string): Promise<string | null> {
+  return nodeDb.findNodeIdByExternalId(externalId);
+}
 
 // ── Helper: get workspace ID for a map ────────────────────────────
 

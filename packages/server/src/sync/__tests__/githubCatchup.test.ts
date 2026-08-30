@@ -812,15 +812,68 @@ describe('computeStateUpdates → link state mirror', () => {
     expect(updates?.status).toBe('in_progress');
   });
 
-  it('still reopens a done node once the PR merged and the issue is open again', () => {
-    // handlePrClosed clears linkedPr on merge, so this is the state after a
-    // merge — a human reopening the issue must still pull the node back.
+  it('leaves a done node alone when the mirror is empty and nothing was captured', () => {
+    // Behaviour CHANGED with the issue-close gate, deliberately.
+    //
+    // "Issue open + node done + no mirror" used to mean "the PR merged
+    // and a human reopened the issue", because a done node closed its
+    // issue immediately — the pairing could not arise any other way. It
+    // can now: the sync holds the issue OPEN until the work is proven
+    // landed, and while the `pull_request.opened` webhook is missing the
+    // node carries no mirror either. That is precisely the state this PR
+    // exists to protect, and the branch below would answer it by writing
+    // `percentComplete: null, status: 'in_progress'`.
+    //
+    // With no snapshot there is nothing to restore TO, so the "reset" is
+    // not a restore — it is progress destroyed within one 5-minute
+    // catchup tick. `issues.reopened` is the event that means a human
+    // reopened the issue, and its webhook path still handles it.
     const updates = computeStateUpdates(
       { percentComplete: 100, status: 'done', externalLinks: [link({ state: 'closed' })], linkedPr: null },
       { state: 'open' },
       'o/r#14',
     );
+    expect(updates).toBeNull();
+  });
+
+  it('still restores a done node with an empty mirror when a snapshot exists', () => {
+    // The guard above is scoped to the case where the reset would lose
+    // data. A captured snapshot makes it a lossless restore, so the
+    // catchup must still perform it — otherwise a genuinely reopened
+    // issue could never pull its node back.
+    const updates = computeStateUpdates(
+      {
+        percentComplete: 100,
+        status: 'done',
+        externalLinks: [
+          link({ state: 'closed', previousPercentComplete: 40, previousStatus: 'in_progress' }),
+        ],
+        linkedPr: null,
+      },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.percentComplete).toBe(40);
     expect(updates?.status).toBe('in_progress');
+  });
+
+  it('the empty-mirror guard is scoped to done nodes only', () => {
+    // A node that does NOT read as done reaches the reopen branch only
+    // via its snapshot, and restoring from a snapshot is exactly what
+    // the branch is for. The guard must not touch that path.
+    const updates = computeStateUpdates(
+      {
+        percentComplete: 40,
+        status: 'in_progress',
+        externalLinks: [
+          link({ state: 'closed', previousPercentComplete: 25, previousStatus: 'in_progress' }),
+        ],
+        linkedPr: null,
+      },
+      { state: 'open' },
+      'o/r#14',
+    );
+    expect(updates?.percentComplete).toBe(25);
   });
 
   it('still closes a not-done node whose issue was closed, PR or not', () => {
