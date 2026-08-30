@@ -1358,7 +1358,13 @@ export interface ClosedIssueAuditFindingApi {
   issueNumber: number;
   title: string;
   url: string;
-  verdict: 'unbacked' | 'backed_by_pr' | 'backed_by_commit' | 'skipped' | 'error';
+  verdict:
+    | 'unbacked'
+    | 'backed_by_pr'
+    | 'backed_by_commit'
+    | 'no_closing_pr'
+    | 'skipped'
+    | 'error';
   closedAt: string | null;
   closedBy: string | null;
   mergeCommitSha: string | null;
@@ -1373,6 +1379,7 @@ export interface ClosedIssueAuditResultApi {
   dryRun: boolean;
   inspected: number;
   unbacked: number;
+  noClosingPr: number;
   reopened: number;
   truncated: boolean;
   findings: ClosedIssueAuditFindingApi[];
@@ -1382,15 +1389,21 @@ export function auditClosedIssues(
   mapId: string,
   opts: { dryRun?: boolean; closedBy?: string; since?: string; limit?: number },
 ): Promise<ClosedIssueAuditResultApi> {
-  // `dryRun` is forwarded as an explicit boolean rather than left to the
-  // server default: this call can reopen tickets in bulk, and "the
-  // default was true, wasn't it?" is not a good enough answer when it
-  // wasn't.
+  // `dryRun: true` is FORCED here, not defaulted.
+  //
+  // `requireAdmin` on the server route deliberately rejects API-key
+  // auth, but the HTTP-MCP route mints a loopback session JWT from the
+  // caller's `mb_…` key — so everything reaching the server through MCP
+  // arrives looking like a session and passes that check. A leaked API
+  // key must not be able to reopen every ticket in a repo through a
+  // single tool call. The MCP surface therefore reports; the write mode
+  // lives on the REST route behind a real admin session.
+  const { dryRun: _ignored, ...rest } = opts;
   return request<ClosedIssueAuditResultApi>(
     `/api/maps/${mapId}/github/audit-closed-issues`,
     {
       method: 'POST',
-      body: JSON.stringify({ ...opts, dryRun: opts.dryRun !== false }),
+      body: JSON.stringify({ ...rest, dryRun: true }),
     },
   );
 }

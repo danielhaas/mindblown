@@ -31,13 +31,14 @@
 import {
   fetchChangedIssues,
   getIssueCloseEvent,
+  getRepoDefaultBranch,
   probeIssueLanded,
   reopenGitHubIssue,
 } from '@mindblown/integrations';
 import type { GitHubIssue } from '@mindblown/integrations';
 
-import * as nodeDb from '../db/nodes.js';
 import { findNodeIdByExternalId } from '../db/nodes.js';
+import { rollBackNodeOffDone } from './nodeRollback.js';
 
 export interface AuditOptions {
   owner: string;
@@ -61,12 +62,33 @@ export interface AuditOptions {
 }
 
 export type AuditVerdict =
-  /** Closed COMPLETED, no merge commit, no merged PR → must reopen. */
+  /**
+   * Closed COMPLETED, no merge commit, and a PR that claims to close it
+   * exists but never landed on the default branch. This is the incident
+   * population and the ONLY verdict the write mode acts on.
+   */
   | 'unbacked'
   /** A merged PR on the default branch backs the close. */
   | 'backed_by_pr'
   /** GitHub's own commit-driven auto-close. */
   | 'backed_by_commit'
+  /**
+   * Closed COMPLETED with no merge commit, and NO pull request ever
+   * referenced the issue with a closing keyword.
+   *
+   * Reported, never acted on. This is exactly the population
+   * `issueCloseAction` closes on purpose — an assessment, an ops task,
+   * anything finished without code, where MindBlown is the only
+   * mechanism that can ever close the ticket. Condemning it as
+   * `unbacked` would make a `dryRun:false` run reopen every legitimately
+   * closed non-code ticket in the repo and, because no close-snapshot
+   * exists for them, leave each one at `percentComplete: null,
+   * status: 'in_progress'` — the board's done-state destroyed by the
+   * tool built to protect it. It also inflates the dry-run count with
+   * false positives, which makes the report unusable for the thing it
+   * is for.
+   */
+  | 'no_closing_pr'
   /** Closed for another reason (not_planned) or by another actor. */
   | 'skipped'
   /** A GitHub call failed for this issue. */
@@ -95,8 +117,13 @@ export interface AuditResult {
   dryRun: boolean;
   /** Issues fetched and inspected. */
   inspected: number;
-  /** Issues that failed the check. */
+  /** Issues that failed the check — the only ones write mode touches. */
   unbacked: number;
+  /**
+   * Closed COMPLETED with no merge commit, but no PR ever claimed to
+   * close them. Reported for visibility, never acted on.
+   */
+  noClosingPr: number;
   /** Issues reopened by this run (0 in dryRun). */
   reopened: number;
   /**
@@ -109,49 +136,18 @@ export interface AuditResult {
 }
 
 /**
- * Roll a node back off done after its issue was reopened. Mirrors
- * `prAbandon.rollBackNode` — restore the close-snapshot when the close
- * path captured one, otherwise land on `in_progress`, because the one
- * thing we know for certain is that the work is not on the default
- * branch.
- */
-async function rollBackNode(nodeId: string, externalId: string): Promise<void> {
-  const node = await nodeDb.getNode(nodeId);
-  if (!node) return;
-
-  const links = node.externalLinks.map((l) => ({ ...l }));
-  const idx = links.findIndex(
-    (l) => l.provider === 'github' && l.externalId === externalId,
-  );
-
-  let restoredPct: number | null = null;
-  let restoredStatus = 'in_progress';
-  if (idx >= 0) {
-    restoredPct = links[idx].previousPercentComplete ?? null;
-    restoredStatus = links[idx].previousStatus ?? 'in_progress';
-    links[idx] = {
-      ...links[idx],
-      previousPercentComplete: null,
-      previousStatus: null,
-      state: 'open',
-      lastSyncedAt: new Date().toISOString(),
-    };
-  }
-
-  await nodeDb.updateNode(nodeId, {
-    percentComplete: restoredPct,
-    status: restoredStatus,
-    externalLinks: links,
-  });
-}
-
-/**
  * Classify one already-fetched issue. Split out from the loop so the
  * decision — the part worth testing — needs no repo scan around it.
+ *
+ * `defaultBranch` is passed in rather than resolved here: it is the same
+ * for every issue in the run, and re-resolving it per issue spent one
+ * `GET /repos/:o/:r` per inspected ticket on the same hourly budget the
+ * probe's timeline and PR reads come out of.
  */
 export async function auditOneIssue(
   opts: Pick<AuditOptions, 'owner' | 'repo' | 'token' | 'closedBy'>,
   issue: Pick<GitHubIssue, 'number' | 'title' | 'html_url' | 'state' | 'state_reason'>,
+  defaultBranch?: string,
 ): Promise<AuditFinding> {
   const repoFullName = `${opts.owner}/${opts.repo}`;
   const externalId = `${repoFullName}#${issue.number}`;
@@ -198,11 +194,20 @@ export async function auditOneIssue(
       opts.repo,
       issue.number,
       opts.token,
+      defaultBranch,
     );
     base.closingPrs = probe.closingPrs.map((p) => p.number);
     if (probe.landed) {
       base.verdict = 'backed_by_pr';
       base.mergeCommitSha = probe.landed.mergeCommitSha;
+      return base;
+    }
+
+    // No PR ever claimed to close this issue. That is the case the
+    // outbound gate deliberately allows to close as COMPLETED, so the
+    // audit must not condemn it — see the verdict's own docstring.
+    if (probe.closingPrs.length === 0) {
+      base.verdict = 'no_closing_pr';
       return base;
     }
 
@@ -227,26 +232,43 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
   const limit = opts.limit ?? 200;
   const repoFullName = `${opts.owner}/${opts.repo}`;
 
+  // One lookup for the whole run — see auditOneIssue's docstring.
+  const defaultBranch = await getRepoDefaultBranch(
+    opts.owner,
+    opts.repo,
+    opts.token,
+  );
+
   const fetched = await fetchChangedIssues(
     opts.owner,
     opts.repo,
     opts.token,
     opts.since ?? null,
   );
-  const closed = fetched.issues
+  // `fetchChangedIssues` sorts `updated:asc`, so a plain `.slice(0,
+  // limit)` inspected the repo's OLDEST tickets — without a `since` that
+  // is the first 200 issues ever filed, not the incident window. Sort
+  // newest-updated first before cutting.
+  const allClosed = fetched.issues
     .filter((i) => i.state === 'closed')
-    .slice(0, limit);
+    .sort((a, b) => (a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0));
+  const closed = allClosed.slice(0, limit);
 
   const findings: AuditFinding[] = [];
   for (const issue of closed) {
-    const finding = await auditOneIssue(opts, issue);
+    const finding = await auditOneIssue(opts, issue, defaultBranch);
     if (finding.verdict === 'unbacked' && !dryRun) {
       try {
         await reopenGitHubIssue({ externalId: finding.externalId }, opts.token);
-        if (finding.nodeId) await rollBackNode(finding.nodeId, finding.externalId);
+        const rollback = finding.nodeId
+          ? await rollBackNodeOffDone(finding.nodeId, finding.externalId)
+          : null;
         finding.reopened = true;
         console.log(
-          `[closed-issue-audit] reopened ${finding.externalId} — closed COMPLETED with no merge commit`,
+          `[closed-issue-audit] reopened ${finding.externalId} — closed COMPLETED with no merge commit` +
+            (rollback === 'not_done'
+              ? ` (node ${finding.nodeId} was already off done — left alone)`
+              : ''),
         );
       } catch (err) {
         finding.verdict = 'error';
@@ -261,10 +283,9 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
     dryRun,
     inspected: closed.length,
     unbacked: findings.filter((f) => f.verdict === 'unbacked').length,
+    noClosingPr: findings.filter((f) => f.verdict === 'no_closing_pr').length,
     reopened: findings.filter((f) => f.reopened).length,
-    truncated:
-      fetched.truncated ||
-      fetched.issues.filter((i) => i.state === 'closed').length > limit,
+    truncated: fetched.truncated || allClosed.length > limit,
     findings,
   };
 }

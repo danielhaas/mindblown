@@ -218,8 +218,74 @@ export async function getRepoDefaultBranch(
  * How many cross-referencing PRs we're willing to resolve for one issue.
  * A long-lived ticket accumulates mentions; the ones that matter are its
  * own PRs, and 25 is far past any real case.
+ *
+ * The NEWEST 25 are kept, not the oldest. Both list endpoints below sort
+ * ascending, so a first-N cut would throw away the PR that actually
+ * closed the issue and keep a two-year-old mention — turning "no
+ * evidence found" into a close as COMPLETED, i.e. the original incident
+ * arriving through the new code.
  */
 const MAX_CLOSING_PR_LOOKUPS = 25;
+
+/**
+ * Page ceiling for the two per-issue list endpoints (timeline, events).
+ * 20 × 100 = 2000 entries on a single issue; past that we refuse to
+ * answer rather than answer from a prefix — see
+ * `GitHubScanTruncatedError`.
+ */
+const MAX_ISSUE_SCAN_PAGES = 20;
+
+/**
+ * Thrown when a per-issue scan hit its page ceiling before reaching the
+ * end of the list.
+ *
+ * This is deliberately an ERROR and not a flag. Both endpoints it guards
+ * are sorted ASCENDING, so a truncated scan is missing the NEWEST
+ * entries — exactly the ones that decide "did this issue's work land"
+ * and "what was the most recent close". Every caller of these functions
+ * treats a throw as "no evidence" and therefore holds; a boolean would
+ * have to be threaded through four layers, and the one layer that forgot
+ * it would close a ticket as COMPLETED off a prefix of its own history.
+ */
+export class GitHubScanTruncatedError extends Error {
+  constructor(what: string, ref: string) {
+    super(
+      `${what} for ${ref} exceeded ${MAX_ISSUE_SCAN_PAGES} pages — refusing to answer from a partial scan`,
+    );
+    this.name = 'GitHubScanTruncatedError';
+  }
+}
+
+/**
+ * Walk every page of a per-issue list endpoint.
+ *
+ * Throws `GitHubScanTruncatedError` at the page ceiling instead of
+ * returning what it has.
+ */
+async function fetchAllIssuePages<T>(
+  path: string,
+  token: string,
+  what: string,
+  ref: string,
+): Promise<T[]> {
+  const out: T[] = [];
+  const perPage = 100;
+  for (let page = 1; page <= MAX_ISSUE_SCAN_PAGES; page++) {
+    const sep = path.includes('?') ? '&' : '?';
+    const batch = await githubFetch<T[]>(
+      `${path}${sep}per_page=${perPage}&page=${page}`,
+      token,
+    );
+    // A non-array body (an error object GitHub answered 200 to, a shape
+    // change) must not silently read as "no entries".
+    if (!Array.isArray(batch)) {
+      throw new Error(`${what} for ${ref}: expected a list, got ${typeof batch}`);
+    }
+    out.push(...batch);
+    if (batch.length < perPage) return out;
+  }
+  throw new GitHubScanTruncatedError(what, ref);
+}
 
 /**
  * Every pull request in the SAME repo that claims to close `issueNumber`.
@@ -234,6 +300,12 @@ const MAX_CLOSING_PR_LOOKUPS = 25;
  *
  * Cross-repo references are dropped: a PR in another repo can't close
  * this issue through the mechanism we model.
+ *
+ * The timeline is read to its END, not to its first page. GitHub sorts
+ * it ascending, so on a long-lived ticket the closing PR's
+ * cross-reference sits behind page 1 — reading only page 1 would report
+ * "no closing PR" for exactly the issues most likely to have one, and
+ * "no closing PR" is what lets the outbound sync close as COMPLETED.
  */
 export async function findClosingPrsForIssue(
   repoOwner: string,
@@ -253,23 +325,28 @@ export async function findClosingPrsForIssue(
     };
   }
 
-  const events = await githubFetch<TimelineEvent[]>(
-    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/timeline?per_page=100`,
+  const fullName = `${repoOwner}/${repoName}`;
+  const events = await fetchAllIssuePages<TimelineEvent>(
+    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/timeline`,
     token,
+    'issue timeline',
+    `${fullName}#${issueNumber}`,
   );
 
-  const fullName = `${repoOwner}/${repoName}`;
-  const candidates: number[] = [];
-  for (const ev of events ?? []) {
+  const seen: number[] = [];
+  for (const ev of events) {
     if (ev.event !== 'cross-referenced') continue;
     const src = ev.source?.issue;
     if (!src?.pull_request) continue;
     if (src.repository?.full_name && src.repository.full_name !== fullName) continue;
     if (typeof src.number !== 'number') continue;
-    if (candidates.includes(src.number)) continue;
-    candidates.push(src.number);
-    if (candidates.length >= MAX_CLOSING_PR_LOOKUPS) break;
+    if (seen.includes(src.number)) continue;
+    seen.push(src.number);
   }
+  // Newest-first cut: the timeline is ascending, so the tail is the
+  // recent history. `slice(-N)` keeps the PRs that could plausibly have
+  // closed this issue; `slice(0, N)` would keep the oldest mentions.
+  const candidates = seen.slice(-MAX_CLOSING_PR_LOOKUPS);
 
   const out: ClosingPrRef[] = [];
   for (const prNumber of candidates) {
@@ -311,6 +388,12 @@ export async function findClosingPrsForIssue(
  * landing on the default branch performed the close. Every close made
  * through the API — MindBlown's included — leaves it `null`, which is
  * precisely the population the backfill has to re-verify.
+ *
+ * The event list is read to its END. It is sorted ascending, so on a
+ * busy issue the most recent close is not on page 1 — and both the
+ * closed-issue audit and the abandoned-PR reopen path branch on
+ * `commitId` and `stateReason` of *the latest* close. Answering from
+ * page 1 would answer about a close that has since been superseded.
  */
 export async function getIssueCloseEvent(
   repoOwner: string,
@@ -326,13 +409,15 @@ export async function getIssueCloseEvent(
     state_reason?: 'completed' | 'not_planned' | null;
   }
 
-  const events = await githubFetch<RawEvent[]>(
-    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/events?per_page=100`,
+  const events = await fetchAllIssuePages<RawEvent>(
+    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/events`,
     token,
+    'issue events',
+    `${repoOwner}/${repoName}#${issueNumber}`,
   );
 
   let latest: RawEvent | null = null;
-  for (const ev of events ?? []) {
+  for (const ev of events) {
     if (ev.event !== 'closed') continue;
     latest = ev;
   }
@@ -359,9 +444,19 @@ export async function probeIssueLanded(
   repoName: string,
   issueNumber: number,
   token: string,
+  /**
+   * The repo's default branch, when the caller already knows it. It does
+   * not change between issues, and the closed-issue audit probes up to
+   * `limit` issues in one run — re-resolving it per issue spent a
+   * `GET /repos/:o/:r` on every one of them, on the same 5000/h budget
+   * the probe's own timeline + PR reads come out of.
+   */
+  defaultBranchHint?: string,
 ): Promise<IssueLandingProbe> {
   const [defaultBranch, closingPrs] = await Promise.all([
-    getRepoDefaultBranch(repoOwner, repoName, token),
+    defaultBranchHint != null
+      ? Promise.resolve(defaultBranchHint)
+      : getRepoDefaultBranch(repoOwner, repoName, token),
     findClosingPrsForIssue(repoOwner, repoName, issueNumber, token),
   ]);
 
@@ -428,6 +523,13 @@ export interface UpdateIssueResult {
   stateAction: 'closed_completed' | 'reopened' | 'held';
   holdReason: IssueStateHoldReason | null;
   /**
+   * What the landing probe actually failed with, when `holdReason` is
+   * `probe_failed`. `probe_failed` alone collapses a rate-limit 403, a
+   * 404, a truncated scan and a plain TypeError into one word — and a
+   * hold nobody can diagnose is a hold nobody will fix.
+   */
+  holdError: string | null;
+  /**
    * Merge commit the probe turned up. The caller should persist this on
    * the `ExternalLink` (`mergeCommitSha`) so the next sync closes on
    * local evidence instead of paying for another probe.
@@ -447,6 +549,7 @@ export interface UpdateIssueOptions {
     repo: string,
     issueNumber: number,
     token: string,
+    defaultBranchHint?: string,
   ) => Promise<IssueLandingProbe>;
 }
 
@@ -509,6 +612,7 @@ export async function updateGitHubIssue(
 
   let stateAction: UpdateIssueResult['stateAction'] = 'held';
   let holdReason: IssueStateHoldReason | null = null;
+  let holdError: string | null = null;
   let mergeCommitSha: string | null = null;
   let mergedPrNumber: number | null = null;
 
@@ -556,8 +660,14 @@ export async function updateGitHubIssue(
           patchBody.state_reason = 'completed';
           stateAction = 'closed_completed';
         }
-      } catch {
+      } catch (err) {
         holdReason = 'probe_failed';
+        holdError =
+          err instanceof GitHubApiError
+            ? `GitHubApiError ${err.status}: ${err.body.slice(0, 300)}`
+            : err instanceof Error
+              ? `${err.name}: ${err.message}`
+              : String(err);
       }
     }
   }
@@ -571,7 +681,14 @@ export async function updateGitHubIssue(
     },
   );
 
-  return { issue: updatedIssue, stateAction, holdReason, mergeCommitSha, mergedPrNumber };
+  return {
+    issue: updatedIssue,
+    stateAction,
+    holdReason,
+    holdError,
+    mergeCommitSha,
+    mergedPrNumber,
+  };
 }
 
 /**

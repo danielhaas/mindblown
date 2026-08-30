@@ -18,6 +18,7 @@ export {
   getGitHubIssue,
   verifyWebhookSignature,
   GitHubApiError,
+  GitHubScanTruncatedError,
   reopenGitHubIssue,
   getRepoDefaultBranch,
   findClosingPrsForIssue,

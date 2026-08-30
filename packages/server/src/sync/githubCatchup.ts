@@ -243,7 +243,35 @@ export function computeStateUpdates(
   // gelandet ist — der Node darf dann nicht ewig auf done/100 stehen.
   // Semantik + Incident-Rationale: prBlocksNodeReopen in @mindblown/core
   // (Gegenstück zum Outbound-Gate prBlocksIssueClose).
-  const blockReopen = prBlocksNodeReopen(node.linkedPr, hasSnapshot, node.completedAt);
+  // Zweiter, breiterer Wächter für dieselbe Gefahr — und der Grund, dass
+  // er nötig wurde, ist dieser PR selbst.
+  //
+  // `prBlocksNodeReopen(null, …)` liefert false: ohne Mirror gibt es
+  // nichts zu vetieren. Vor dem Close-Gate war das folgenlos, weil ein
+  // done-Node sein Issue sofort geschlossen hatte — der Reopen-Zweig war
+  // für diese Form unerreichbar. Jetzt hält der Sync das Issue bewusst
+  // OFFEN, während der Node done ist, und der Hold-Pfad PATCHt weiter
+  // Titel/Body/Labels, hebt also `updated_at` und holt das Issue in den
+  // nächsten 5-Minuten-Catchup. Ist `linkedPr` in dem Moment leer (das
+  // Webhook kam nie an — genau die Lage, für die dieser PR gebaut ist),
+  // nähme der Zweig unten „Issue offen + Node done" als Wiedereröffnung
+  // und schriebe `percentComplete: null, status: 'in_progress'`.
+  //
+  // Ohne Snapshot ist dieser Reset kein Restore, sondern Datenverlust:
+  // es gibt keinen erfassten Vorzustand, auf den er zurückfiele. Das ist
+  // dasselbe „wipe progress irrecoverably"-Argument, das der Kommentar
+  // oben für `state === 'open'` bereits macht — nur nie auf den leeren
+  // Mirror ausgedehnt.
+  //
+  // Preis, bewusst bezahlt: ein von Hand auf GitHub wiedereröffnetes
+  // Issue ohne Mirror und ohne Snapshot repariert der Catchup nicht mehr
+  // von selbst. Das Ereignis dafür ist `issues.reopened`, und dessen
+  // Webhook-Pfad (routes/integrations.ts) bleibt unangetastet.
+  const emptyMirrorOnDoneNode =
+    node.linkedPr == null && !hasSnapshot && looksDoneInMB;
+  const blockReopen =
+    prBlocksNodeReopen(node.linkedPr, hasSnapshot, node.completedAt) ||
+    emptyMirrorOnDoneNode;
 
   const ghState: 'open' | 'closed' = isClosedOnGitHub ? 'closed' : 'open';
 

@@ -179,21 +179,12 @@ async function getGitHubContextForRepo(
 }
 
 // ── Helper: find node by external ID ──────────────────────────────
-
-async function findNodeByExternalId(externalId: string): Promise<string | null> {
-  // Search all nodes for matching externalLink
-  const allNodes = await db
-    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
-    .from(nodes)
-    .where(notDeleted);
-  for (const node of allNodes) {
-    const links = (node.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
-      return node.id;
-    }
-  }
-  return null;
-}
+//
+// The scan itself lives in `db/nodes.ts`. It used to live here as well,
+// byte-identical, which is one full-table scan written twice — and the
+// closed-issue audit now calls it once per condemned issue, so the two
+// copies were about to drift under different load. One name, one query.
+const findNodeByExternalId = nodeDb.findNodeIdByExternalId;
 
 // ── Helper: get workspace ID for a map ────────────────────────────
 
@@ -1849,15 +1840,23 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         | { number: number; title?: string | null; body: string | null }
         | undefined;
       if (abandonedPr) {
-        try {
-          const ctx = await getGitHubContextForRepo(repoFullName);
-          if (ctx) await handleAbandonedPr(ctx, abandonedPr);
-        } catch (err) {
-          console.warn(
-            '[pr-abandon] reopen sweep failed:',
-            err instanceof Error ? err.message : err,
-          );
-        }
+        // Detached, like the title-only-close sweep on the merge path
+        // below. The sweep costs 3 + up to 25 sequential GitHub calls
+        // PER `Closes #N` reference; awaiting it inside the handler puts
+        // a multi-reference PR past GitHub's 10 s webhook delivery
+        // timeout, which turns a successful sweep into a redelivery and
+        // runs the whole thing again.
+        void (async () => {
+          try {
+            const ctx = await getGitHubContextForRepo(repoFullName);
+            if (ctx) await handleAbandonedPr(ctx, abandonedPr);
+          } catch (err) {
+            console.warn(
+              '[pr-abandon] reopen sweep failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        })();
       }
     }
 

@@ -343,6 +343,8 @@ export interface ClosedIssueAuditOptions {
   /**
    * Write mode. Omitted or `true` = report only. Pass `false` to reopen
    * every unbacked issue and roll its node back off done.
+   *
+   * Note the MCP tool never sends `false` — see `tools/githubAudit.ts`.
    */
   dryRun?: boolean;
   /** Only audit closes made by this GitHub login. */
@@ -357,6 +359,7 @@ export type ClosedIssueAuditVerdict =
   | 'unbacked'
   | 'backed_by_pr'
   | 'backed_by_commit'
+  | 'no_closing_pr'
   | 'skipped'
   | 'error';
 
@@ -380,6 +383,8 @@ export interface ClosedIssueAuditResult {
   dryRun: boolean;
   inspected: number;
   unbacked: number;
+  /** Closed with no merge commit AND no PR ever referencing them. Never acted on. */
+  noClosingPr: number;
   reopened: number;
   /** The sweep was cut short (fetch valve or `limit`) — it is a sample. */
   truncated: boolean;

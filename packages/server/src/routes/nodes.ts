@@ -136,7 +136,12 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
       const result = await updateGitHubIssue(node, link, ghCtx.token);
       if (result.holdReason) {
         console.log(
-          `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})`,
+          `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})` +
+            // Without this, every hold caused by a rate limit, a 404, a
+            // truncated scan or a shape change reads as the same one
+            // word, and a hold nobody can diagnose is a hold nobody
+            // will fix.
+            (result.holdError ? ` — ${result.holdError}` : ''),
         );
       }
       // Update lastSyncedAt on the link. Re-read the node AFTER the

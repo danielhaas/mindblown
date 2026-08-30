@@ -24,9 +24,10 @@ import { defineTool } from '../spec.js';
 import type { ClosedIssueAuditFinding } from '../backend.js';
 
 const VERDICT_LABEL: Record<string, string> = {
-  unbacked: 'NO MERGE — claims completed, nothing landed',
+  unbacked: 'NO MERGE — a PR claimed to close it, nothing landed',
   backed_by_pr: 'ok — merged PR on the default branch',
   backed_by_commit: 'ok — closed by a commit on the default branch',
+  no_closing_pr: 'no PR ever — closed without code (not acted on)',
   skipped: 'skipped — not a completed close by the audited actor',
   error: 'ERROR',
 };
@@ -52,26 +53,29 @@ export const auditClosedIssuesTool = defineTool({
   description: [
     'Find GitHub issues that are closed as COMPLETED but have no merge commit behind them.',
     '',
-    'An issue fails the audit when ALL of these hold:',
+    'An issue fails the audit ("unbacked") when ALL of these hold:',
     '  - it is closed, and not closed as "not planned"',
     '  - its most recent `closed` event has commit_id = null (an API close, not a commit)',
-    '  - no pull request that references it with a closing keyword merged into the default branch',
+    '  - a pull request DOES reference it with a closing keyword, and none of those merged',
+    '    into the default branch',
     '',
     'Those tickets claim shipped work that is not on the default branch — the failure mode where',
     'a coding agent marks its node done on PR OPEN and the issue closes seconds later, then the',
     'PR dies unmerged and nobody looks again.',
     '',
-    'DRY RUN BY DEFAULT: reports only. Pass dryRun=false to reopen each failing issue and roll',
-    'its MindBlown node back off done (restoring the progress captured at close time).',
+    'An issue closed with no PR referencing it at all is reported as "no_closing_pr", never as',
+    'a failure: that is ordinary non-code work (an assessment, an ops task) where MindBlown is',
+    'the only thing that can close the ticket.',
+    '',
+    'THIS TOOL ONLY REPORTS. It never reopens anything. Reopening is a bulk write against real',
+    'tickets and lives on the admin REST route POST /api/maps/:mapId/github/audit-closed-issues',
+    'with `dryRun: false`, which requires a real admin session — an API key alone is not enough.',
+    'Run this first, read the findings, then decide.',
     '',
     'Admin-only. Costs several GitHub API calls per inspected issue — use `limit` and `since`.',
   ].join('\n'),
   schema: {
     mapId: z.string().describe('The map whose GitHub integration to audit'),
-    dryRun: z
-      .boolean()
-      .optional()
-      .describe('Report only (default true). false = actually reopen the failing issues.'),
     closedBy: z
       .string()
       .optional()
@@ -90,19 +94,21 @@ export const auditClosedIssuesTool = defineTool({
       .optional()
       .describe('Maximum issues to inspect (default 200).'),
   },
-  handler: async (backend, { mapId, dryRun, closedBy, since, limit }) => {
+  handler: async (backend, { mapId, closedBy, since, limit }) => {
+    // No `dryRun` is forwarded — the tool reports, full stop. The MCP
+    // API client forces `dryRun: true` on the wire as well, so a future
+    // edit here cannot turn this into a write path by accident.
     const result = await backend.auditClosedIssues(mapId, {
-      dryRun,
       closedBy,
       since,
       limit,
     });
 
     const header = [
-      `Closed-issue audit — ${result.repo} (${result.dryRun ? 'DRY RUN' : 'WRITE MODE'})`,
+      `Closed-issue audit — ${result.repo} (report only, nothing was changed)`,
       `  inspected: ${result.inspected}`,
-      `  without merge evidence: ${result.unbacked}`,
-      `  reopened: ${result.reopened}`,
+      `  claim completed work that never landed: ${result.unbacked}`,
+      `  closed without any PR (not a finding): ${result.noClosingPr}`,
     ];
     if (result.truncated) {
       header.push(
@@ -121,10 +127,12 @@ export const auditClosedIssuesTool = defineTool({
     header.push('', 'Findings:');
     for (const f of interesting) header.push(formatFinding(f));
 
-    if (result.dryRun && result.unbacked > 0) {
+    if (result.unbacked > 0) {
       header.push(
         '',
-        'Nothing was changed. Re-run with dryRun=false to reopen these issues.',
+        'To reopen these, an admin runs POST /api/maps/' +
+          mapId +
+          '/github/audit-closed-issues with {"dryRun": false} from a logged-in session.',
       );
     }
     return header.join('\n');
