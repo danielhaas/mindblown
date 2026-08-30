@@ -500,19 +500,37 @@ describe('findClosingPrsForIssue', () => {
     // 30 cross-references, cap 25. Ascending order means the oldest are
     // first, so a head-cut would resolve mentions from two years ago and
     // discard the PR that actually closed the ticket.
+    //
+    // The fetch stub answers BY URL, not by call order. A positional
+    // stub cannot see this bug at all: it hands back the same payload
+    // sequence whichever 25 candidates the code asked for, so the
+    // assertion passes under the head-cut too. (It did — the first
+    // version of this test survived the mutation.)
     const refs = Array.from({ length: 30 }, (_, i) => crossRef(1000 + i));
-    const pages: unknown[] = [refs];
-    // 25 PR lookups follow, one per surviving candidate.
-    for (let i = 5; i < 30; i++) {
-      pages.push(prPayload({ number: 1000 + i, body: 'Closes #6096' }));
-    }
-    stubResponses(pages);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const pr = /\/pulls\/(\d+)$/.exec(String(url));
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            pr
+              ? prPayload({ number: Number(pr[1]), body: 'Closes #6096' })
+              : refs,
+        };
+      }),
+    );
 
     const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
 
     expect(prs).toHaveLength(25);
-    expect(prs[0].number).toBe(1005);
-    expect(prs[24].number).toBe(1029);
+    expect(prs.map((p) => p.number)).toEqual(
+      Array.from({ length: 25 }, (_, i) => 1005 + i),
+    );
+    // The point of the assertion above, stated on its own so it cannot
+    // be read past: the most recent reference must survive the cut.
+    expect(prs.at(-1)!.number).toBe(1029);
   });
 
   it('refuses to answer from a partial scan rather than reporting "no PRs"', async () => {
