@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => {
     broadcastMock: vi.fn(),
     verifySignatureMock: vi.fn(async () => true),
     closeGitHubIssueMock: vi.fn(async () => undefined),
+    handleAbandonedPrMock: vi.fn(async () => []),
     // Initial implementation is a placeholder; the mock factory below
     // rewires this to delegate to the real processWebhook so the
     // tests exercise production behaviour. The signature is widened
@@ -147,6 +148,10 @@ vi.mock('../../auth.js', () => ({ requireAdmin: vi.fn() }));
 vi.mock('../../sync/parentEpicRollup.js', () => ({
   rollupParentsForChildTitle: vi.fn(),
 }));
+vi.mock('../../sync/prAbandon.js', () => ({
+  handleAbandonedPr: mocks.handleAbandonedPrMock,
+}));
+vi.mock('../../sync/closedIssueAudit.js', () => ({ auditClosedIssues: vi.fn() }));
 vi.mock('../../sync/githubIngest.js', () => ({
   ingestNewIssuesForRepo: vi.fn(),
   ensureInboxNode: vi.fn(),
@@ -241,6 +246,8 @@ beforeEach(() => {
   mocks.verifySignatureMock.mockResolvedValue(true);
   mocks.closeGitHubIssueMock.mockReset();
   mocks.closeGitHubIssueMock.mockResolvedValue(undefined);
+  mocks.handleAbandonedPrMock.mockReset();
+  mocks.handleAbandonedPrMock.mockResolvedValue([]);
   // Clear call history but PRESERVE the implementation set in the
   // module-mock factory above — the spy delegates to real
   // processWebhook so the new V1-hotfix / missing-base.ref tests
@@ -459,6 +466,107 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
     expect(mocks.processWebhookMock).toHaveBeenCalled();
   });
 
+  it('records the merge commit on the link — the evidence a later close needs', async () => {
+    // `handlePrClosed` CLEARS the mirror on a default-branch merge, so
+    // five minutes later a done node looks identical to one that never
+    // had a PR. Without this stamp the outbound sync has nothing local
+    // to close on and must pay for a probe — or, before the fix, closed
+    // COMPLETED on no evidence at all.
+    const node = seedLinkedNode({ nodeId: 'n-101', externalId: 'owner/repo#101' });
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue({ ...node, status: 'done', percentComplete: 100 });
+
+    const payload = prMergedPayload({ number: 900, title: 't', body: 'Closes #101' });
+    (payload.pull_request as Record<string, unknown>).merge_commit_sha = 'f00dcafe';
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload,
+    });
+    await app.close();
+
+    const doneCall = mocks.updateNodeMock.mock.calls.find(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
+    );
+    const links = (doneCall![1] as { externalLinks: Array<Record<string, unknown>> }).externalLinks;
+    expect(links[0]).toMatchObject({ mergeCommitSha: 'f00dcafe', mergedPrNumber: 900 });
+  });
+
+  it('records the merge commit even on the already-done path', async () => {
+    // The node is NORMALLY already done here — the agent marks it done
+    // when it opens the PR. If the idempotency short-circuit skipped
+    // the stamp, the evidence would be recorded in exactly the case it
+    // is never needed and skipped in the one where it always is.
+    const node = seedLinkedNode({
+      nodeId: 'n-102',
+      externalId: 'owner/repo#102',
+      status: 'done',
+      percentComplete: 100,
+    });
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const payload = prMergedPayload({ number: 901, title: 't', body: 'Closes #102' });
+    (payload.pull_request as Record<string, unknown>).merge_commit_sha = 'f00dcafe';
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload,
+    });
+    await app.close();
+
+    expect(res.json().transitions).toEqual([
+      { externalId: 'owner/repo#102', nodeId: 'n-102', status: 'already_done' },
+    ]);
+    const stampCall = mocks.updateNodeMock.mock.calls.find((call: unknown[]) => {
+      const fields = call[1] as { externalLinks?: Array<Record<string, unknown>> };
+      return fields.externalLinks?.[0]?.mergeCommitSha === 'f00dcafe';
+    });
+    expect(stampCall, 'merge commit was not stamped on the already-done path').toBeDefined();
+    expect((stampCall![1] as Record<string, unknown>).status).toBeUndefined();
+  });
+
+  it('does not re-stamp the merge commit on a webhook replay', async () => {
+    const node = seedLinkedNode({
+      nodeId: 'n-103',
+      externalId: 'owner/repo#103',
+      status: 'done',
+      percentComplete: 100,
+    });
+    node.externalLinks[0].mergeCommitSha = 'f00dcafe';
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const payload = prMergedPayload({ number: 902, title: 't', body: 'Closes #103' });
+    (payload.pull_request as Record<string, unknown>).merge_commit_sha = 'f00dcafe';
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload,
+    });
+    await app.close();
+
+    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+  });
   it('PR merged to a NON-default branch (V1-hotfix flow) does NOT transition', async () => {
     // Regression for the 2026-06-11 drift on crm #2291 / #2292: a
     // PR targeting `release/v1` (V1 hotfix) merged with `Fixes #2291`
@@ -676,5 +784,98 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
       (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
     );
     expect(doneTransitionCalls).toHaveLength(0);
+  });
+});
+
+describe('webhook: pull_request.closed merged=false → reopen sweep', () => {
+  /**
+   * Both the node scan and the PAT-integration lookup read through the
+   * same stubbed `select().from().where()`, so one array serves both:
+   * the node row (no `config`) and the integration row (no
+   * `externalLinks`).
+   */
+  function seedRepoIntegration(extra: unknown[] = []): void {
+    mocks.selectNodesMock.mockResolvedValue([
+      { config: { owner: 'owner', repo: 'repo', token: 'pat-token' }, enabled: true },
+      ...extra,
+    ]);
+  }
+
+  function abandonedPayload(body: string | null, title = 'fix: something'): Record<string, unknown> {
+    return {
+      action: 'closed',
+      pull_request: {
+        number: 6089,
+        merged: false,
+        draft: false,
+        state: 'closed',
+        html_url: 'https://github.com/owner/repo/pull/6089',
+        title,
+        body,
+        head: { ref: 'fix/6085', sha: 'abc' },
+        base: { ref: 'main' },
+        user: { login: 'django-dev-max' },
+        mergeable: true,
+      },
+      repository: { full_name: 'owner/repo', default_branch: 'main' },
+    };
+  }
+
+  it('runs the reopen sweep for a PR closed without merging', async () => {
+    seedRepoIntegration();
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: abandonedPayload('Closes #6085'),
+    });
+    await app.close();
+
+    expect(mocks.handleAbandonedPrMock).toHaveBeenCalledTimes(1);
+    const [ctx, pr] = mocks.handleAbandonedPrMock.mock.calls[0];
+    expect(ctx).toMatchObject({ owner: 'owner', repo: 'repo', token: 'pat-token' });
+    expect(pr).toMatchObject({ number: 6089, body: 'Closes #6085' });
+  });
+
+  it('does NOT run the reopen sweep when the PR merged', async () => {
+    seedRepoIntegration();
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: prMergedPayload({ number: 6089, title: 't', body: 'Closes #6085' }),
+    });
+    await app.close();
+
+    expect(mocks.handleAbandonedPrMock).not.toHaveBeenCalled();
+  });
+
+  it('still acknowledges the webhook when the sweep throws', async () => {
+    seedRepoIntegration();
+    mocks.handleAbandonedPrMock.mockRejectedValue(new Error('GitHub API 502'));
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: {
+        'x-github-event': 'pull_request',
+        'x-hub-signature-256': 'sha256=anything',
+      },
+      payload: abandonedPayload('Closes #6085'),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
   });
 });
