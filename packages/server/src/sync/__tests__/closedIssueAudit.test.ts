@@ -19,8 +19,13 @@ const mocks = vi.hoisted(() => ({
   probeIssueLanded: vi.fn(),
   reopenGitHubIssue: vi.fn(async () => undefined),
   getNode: vi.fn(),
-  updateNode: vi.fn(async () => null),
-  findNodeIdByExternalId: vi.fn(async () => null as string | null),
+  updateNode: vi.fn(
+    async (
+      _nodeId: string,
+      _fields: Record<string, any>,
+    ): Promise<unknown> => null,
+  ),
+  findNodeIdByExternalId: vi.fn(async (_externalId: string) => null as string | null),
 }));
 
 vi.mock('@mindblown/integrations', async () => {

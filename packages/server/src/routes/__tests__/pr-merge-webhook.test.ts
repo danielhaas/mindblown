@@ -41,6 +41,8 @@ interface NodeRow {
     lastSyncedAt: string | null;
     previousPercentComplete?: number | null;
     previousStatus?: string | null;
+    mergeCommitSha?: string | null;
+    mergedPrNumber?: number | null;
   }>;
 }
 
@@ -65,7 +67,9 @@ const mocks = vi.hoisted(() => {
     broadcastMock: vi.fn(),
     verifySignatureMock: vi.fn(async () => true),
     closeGitHubIssueMock: vi.fn(async () => undefined),
-    handleAbandonedPrMock: vi.fn(async () => []),
+    handleAbandonedPrMock: vi.fn(
+      async (_ctx: unknown, _pr: unknown): Promise<unknown[]> => [],
+    ),
     // Initial implementation is a placeholder; the mock factory below
     // rewires this to delegate to the real processWebhook so the
     // tests exercise production behaviour. The signature is widened
