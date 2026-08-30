@@ -937,6 +937,29 @@ export async function findLinksMissingState(
   return out;
 }
 
+/**
+ * Find the node linked to a GitHub externalId (`owner/repo#123`).
+ *
+ * Lifted out of `routes/integrations.ts` so the sync modules
+ * (`prAbandon`, `closedIssueAudit`) resolve nodes the same way the
+ * webhook handler does instead of each growing its own scan.
+ */
+export async function findNodeIdByExternalId(
+  externalId: string,
+): Promise<string | null> {
+  const rows = await db
+    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(notDeleted);
+  for (const row of rows) {
+    const links = (row.externalLinks as ExternalLink[]) ?? [];
+    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+      return row.id;
+    }
+  }
+  return null;
+}
+
 // ── Delete (with descendants) ──────────────────────────────────────
 
 /**

@@ -6,7 +6,7 @@
  */
 
 import type { Node, ExternalLink, Priority } from '@mindblown/core';
-import { proseMirrorToPlainText, prBlocksIssueClose } from '@mindblown/core';
+import { proseMirrorToPlainText, issueCloseAction } from '@mindblown/core';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -34,7 +34,27 @@ export interface GitHubIssue {
   updated_at: string;
   /** ISO timestamp when the issue was closed; null for open issues. */
   closed_at?: string | null;
+  /**
+   * Why the issue was closed. GitHub fills this with `completed` when a
+   * close request omits `state_reason` — the silent default the
+   * premature-close incident rode in on. Absent on older payloads.
+   */
+  state_reason?: 'completed' | 'not_planned' | 'reopened' | null;
   pull_request?: { merged_at: string | null };
+}
+
+/** The `closed` entry from an issue's event log. */
+export interface IssueCloseEvent {
+  /** Who closed it — `mindblown-by-project-li[bot]` for our own closes. */
+  actor: string | null;
+  /**
+   * The commit GitHub attributes the close to. `null` whenever the close
+   * came from an API call rather than from a commit landing on the
+   * default branch — i.e. every close MindBlown itself performed.
+   */
+  commitId: string | null;
+  createdAt: string | null;
+  stateReason: 'completed' | 'not_planned' | null;
 }
 
 export interface GitHubWebhookPayload {
@@ -156,6 +176,202 @@ function buildExternalLink(
   };
 }
 
+// ── Did the work actually land? ───────────────────────────────────
+
+/** A pull request that claims to close a given issue. */
+export interface ClosingPrRef {
+  number: number;
+  state: 'open' | 'closed';
+  merged: boolean;
+  mergedAt: string | null;
+  mergeCommitSha: string | null;
+  baseRef: string;
+  url: string;
+}
+
+/** What a landing probe found for one issue. */
+export interface IssueLandingProbe {
+  /** Every PR in the same repo whose title/body carries a closing ref. */
+  closingPrs: ClosingPrRef[];
+  /** The repo's default branch at probe time. */
+  defaultBranch: string;
+  /** The first closing PR merged INTO the default branch, if any. */
+  landed: ClosingPrRef | null;
+  /** True while at least one closing PR is still open. */
+  inFlight: boolean;
+}
+
+/** The repo's default branch — the only branch a merge counts as "shipped" on. */
+export async function getRepoDefaultBranch(
+  repoOwner: string,
+  repoName: string,
+  token: string,
+): Promise<string> {
+  const repo = await githubFetch<{ default_branch: string }>(
+    `/repos/${repoOwner}/${repoName}`,
+    token,
+  );
+  return repo.default_branch;
+}
+
+/**
+ * How many cross-referencing PRs we're willing to resolve for one issue.
+ * A long-lived ticket accumulates mentions; the ones that matter are its
+ * own PRs, and 25 is far past any real case.
+ */
+const MAX_CLOSING_PR_LOOKUPS = 25;
+
+/**
+ * Every pull request in the SAME repo that claims to close `issueNumber`.
+ *
+ * Writing `Closes #N` in a PR body makes GitHub post a `cross-referenced`
+ * timeline event on issue N, so the timeline is the reliable index of
+ * "which PRs point here". A cross-reference alone is only a mention
+ * though — a PR that merely links the ticket in prose shows up the same
+ * way — so each candidate PR is fetched and re-checked with
+ * `extractClosingIssueRefs`, the same parser the merge handler uses to
+ * decide which issues a PR closes. One parser, one answer.
+ *
+ * Cross-repo references are dropped: a PR in another repo can't close
+ * this issue through the mechanism we model.
+ */
+export async function findClosingPrsForIssue(
+  repoOwner: string,
+  repoName: string,
+  issueNumber: number,
+  token: string,
+): Promise<ClosingPrRef[]> {
+  interface TimelineEvent {
+    event?: string;
+    source?: {
+      type?: string;
+      issue?: {
+        number?: number;
+        pull_request?: unknown;
+        repository?: { full_name?: string };
+      };
+    };
+  }
+
+  const events = await githubFetch<TimelineEvent[]>(
+    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/timeline?per_page=100`,
+    token,
+  );
+
+  const fullName = `${repoOwner}/${repoName}`;
+  const candidates: number[] = [];
+  for (const ev of events ?? []) {
+    if (ev.event !== 'cross-referenced') continue;
+    const src = ev.source?.issue;
+    if (!src?.pull_request) continue;
+    if (src.repository?.full_name && src.repository.full_name !== fullName) continue;
+    if (typeof src.number !== 'number') continue;
+    if (candidates.includes(src.number)) continue;
+    candidates.push(src.number);
+    if (candidates.length >= MAX_CLOSING_PR_LOOKUPS) break;
+  }
+
+  const out: ClosingPrRef[] = [];
+  for (const prNumber of candidates) {
+    const pr = await githubFetch<{
+      number: number;
+      state: 'open' | 'closed';
+      merged?: boolean;
+      merged_at: string | null;
+      merge_commit_sha: string | null;
+      base: { ref: string };
+      html_url: string;
+      title: string | null;
+      body: string | null;
+    }>(`/repos/${repoOwner}/${repoName}/pulls/${prNumber}`, token);
+
+    const refs = extractClosingIssueRefs(`${pr.title ?? ''}\n${pr.body ?? ''}`);
+    if (!refs.includes(issueNumber)) continue;
+
+    out.push({
+      number: pr.number,
+      state: pr.state,
+      // `merged` is absent on some payload shapes; `merged_at` is the
+      // field GitHub always sets, so it decides.
+      merged: pr.merged === true || pr.merged_at != null,
+      mergedAt: pr.merged_at,
+      mergeCommitSha: pr.merge_commit_sha,
+      baseRef: pr.base.ref,
+      url: pr.html_url,
+    });
+  }
+  return out;
+}
+
+/**
+ * The MOST RECENT `closed` event on an issue, or null if it was never
+ * closed.
+ *
+ * The audit run keys on `commitId`: GitHub sets it only when a commit
+ * landing on the default branch performed the close. Every close made
+ * through the API — MindBlown's included — leaves it `null`, which is
+ * precisely the population the backfill has to re-verify.
+ */
+export async function getIssueCloseEvent(
+  repoOwner: string,
+  repoName: string,
+  issueNumber: number,
+  token: string,
+): Promise<IssueCloseEvent | null> {
+  interface RawEvent {
+    event?: string;
+    actor?: { login?: string } | null;
+    commit_id?: string | null;
+    created_at?: string;
+    state_reason?: 'completed' | 'not_planned' | null;
+  }
+
+  const events = await githubFetch<RawEvent[]>(
+    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/events?per_page=100`,
+    token,
+  );
+
+  let latest: RawEvent | null = null;
+  for (const ev of events ?? []) {
+    if (ev.event !== 'closed') continue;
+    latest = ev;
+  }
+  if (!latest) return null;
+
+  return {
+    actor: latest.actor?.login ?? null,
+    commitId: latest.commit_id ?? null,
+    createdAt: latest.created_at ?? null,
+    stateReason: latest.state_reason ?? null,
+  };
+}
+
+/**
+ * Ask GitHub whether an issue's work has landed on the default branch.
+ *
+ * This is the evidence MindBlown does not hold locally. It is the whole
+ * point of the fix: "no linked PR in our mirror" was being read as "no
+ * PR exists", and a node marked done seconds after its PR opened closed
+ * the issue as COMPLETED with `commit_id=null`.
+ */
+export async function probeIssueLanded(
+  repoOwner: string,
+  repoName: string,
+  issueNumber: number,
+  token: string,
+): Promise<IssueLandingProbe> {
+  const [defaultBranch, closingPrs] = await Promise.all([
+    getRepoDefaultBranch(repoOwner, repoName, token),
+    findClosingPrsForIssue(repoOwner, repoName, issueNumber, token),
+  ]);
+
+  const landed =
+    closingPrs.find((p) => p.merged && p.baseRef === defaultBranch) ?? null;
+  const inFlight = closingPrs.some((p) => p.state === 'open');
+
+  return { closingPrs, defaultBranch, landed, inFlight };
+}
+
 // ── Outbound: MindBlown → GitHub ──────────────────────────────────
 
 /**
@@ -197,19 +413,92 @@ export async function createGitHubIssue(
   };
 }
 
+/** Why `updateGitHubIssue` left the issue's state untouched. */
+export type IssueStateHoldReason =
+  /** A linked PR in the mirror has not landed on the default branch. */
+  | 'pr_not_landed'
+  /** The landing probe found an open PR that claims to close this issue. */
+  | 'pr_in_flight'
+  /** The landing probe itself failed — we refuse to close on no evidence. */
+  | 'probe_failed';
+
+export interface UpdateIssueResult {
+  issue: GitHubIssue;
+  /** What we did to the issue's open/closed state. */
+  stateAction: 'closed_completed' | 'reopened' | 'held';
+  holdReason: IssueStateHoldReason | null;
+  /**
+   * Merge commit the probe turned up. The caller should persist this on
+   * the `ExternalLink` (`mergeCommitSha`) so the next sync closes on
+   * local evidence instead of paying for another probe.
+   */
+  mergeCommitSha: string | null;
+  mergedPrNumber: number | null;
+}
+
+export interface UpdateIssueOptions {
+  /**
+   * Injection seam for the landing probe (tests, and callers that
+   * already hold the answer). Defaults to the live
+   * `probeIssueLanded`.
+   */
+  probe?: (
+    owner: string,
+    repo: string,
+    issueNumber: number,
+    token: string,
+  ) => Promise<IssueLandingProbe>;
+}
+
 /**
  * Sync node changes to the linked GitHub Issue.
  * Updates title, body, state (open/closed), and labels. The issue's
  * GitHub milestone is left untouched (we no longer track it).
  *
- * While a not-landed PR is linked to the node, a done-node does NOT
- * close its issue — see `prBlocksIssueClose` (@mindblown/core).
+ * ## Closing an issue needs evidence, not a done-flag
+ *
+ * "Done in MindBlown" is not "done in the repo". Coding agents mark the
+ * node done when they OPEN the PR, so this sync used to close the linked
+ * issue as `COMPLETED` — with `commit_id=null` — while the branch was
+ * still open, and in several cases still red or never merged at all
+ * (crm#7357: closed 6 s after its PR was created; crm#6305: 21 s;
+ * crm#6085: the PR never merged and the work is still missing today).
+ * A `CLOSED/COMPLETED` ticket with no merge commit ends the search.
+ *
+ * So the close direction now requires one of:
+ *
+ *   1. a merge commit recorded on the link (`mergeCommitSha`, written by
+ *      the `pull_request.closed + merged=true` handler), or
+ *   2. a mirror that survived as `state: 'merged'` on the default
+ *      branch, or
+ *   3. a live probe against GitHub finding no PR in flight for the
+ *      issue — the "no PR at all" case (assessments, ops tasks) where
+ *      MindBlown is the only mechanism that can ever close it.
+ *
+ * A probe that finds an OPEN closing PR holds; a probe that FAILS holds
+ * too — refusing to close on absent evidence is the whole point, and a
+ * later sync (or the catchup) retries. A closed-unmerged PR alone does
+ * not hold here: that case is already decided by the mirror gate above
+ * (`prBlocksIssueClose`), and holding on it again would deadlock a node
+ * whose work shipped by some other route.
+ *
+ * The `state_reason` is now always explicit. GitHub defaults an
+ * unqualified `state: 'closed'` to `COMPLETED`, which is exactly the
+ * value the incident is about — never let it be implicit.
+ *
+ * Only the CLOSING direction is gated. A not-done node always pushes
+ * `state: 'open'`: the node saying "work is open" must be able to reopen
+ * a prematurely-closed issue, otherwise a manual node reset can never
+ * repair one. When we hold, we OMIT `state` rather than forcing 'open':
+ * a human who deliberately closed the issue should not have it reopened
+ * under them while the node stays done.
  */
 export async function updateGitHubIssue(
   node: Node,
   externalLink: ExternalLink,
   token: string,
-): Promise<GitHubIssue> {
+  options: UpdateIssueOptions = {},
+): Promise<UpdateIssueResult> {
   const parsed = parseExternalId(externalLink.externalId);
   if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
 
@@ -218,24 +507,10 @@ export async function updateGitHubIssue(
   // Determine state from node status/progress
   const looksDone = node.percentComplete === 100 || node.status === 'done';
 
-  // …but "done in MindBlown" is not "done in the repo" while a PR is still
-  // in flight. Coding agents mark the node done when they OPEN the PR, not
-  // when it merges, so this sync used to close the issue as COMPLETED while
-  // the branch was still open. The gate semantics (and the incident
-  // forensics behind them) live with `prBlocksIssueClose` in
-  // @mindblown/core — the catchup reconciler consults the same mirror
-  // via its sibling `prBlocksNodeReopen`, and the two must stay in
-  // agreement.
-  //
-  // Only the CLOSING direction is gated. A not-done node always pushes
-  // state 'open' (legacy behavior, gate or not): the node saying "work
-  // is open" must be able to reopen a prematurely-closed issue —
-  // otherwise a manual node reset can never repair a wrongly-closed
-  // issue, and the catchup would even revert the reset. When the gate
-  // blocks a close we OMIT `state` rather than forcing 'open': a human
-  // who deliberately closed the issue should not have it reopened under
-  // them while the node stays done.
-  const suppressClose = prBlocksIssueClose(node.linkedPr, node.completedAt);
+  let stateAction: UpdateIssueResult['stateAction'] = 'held';
+  let holdReason: IssueStateHoldReason | null = null;
+  let mergeCommitSha: string | null = null;
+  let mergedPrNumber: number | null = null;
 
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -250,10 +525,41 @@ export async function updateGitHubIssue(
     body,
     labels,
   };
-  if (looksDone) {
-    if (!suppressClose) patchBody.state = 'closed';
-  } else {
+
+  if (!looksDone) {
     patchBody.state = 'open';
+    stateAction = 'reopened';
+  } else {
+    const action = issueCloseAction(node.linkedPr, externalLink, node.completedAt);
+    if (action.kind === 'close') {
+      patchBody.state = 'closed';
+      patchBody.state_reason = action.stateReason;
+      stateAction = 'closed_completed';
+      mergeCommitSha = externalLink.mergeCommitSha ?? null;
+      mergedPrNumber = externalLink.mergedPrNumber ?? null;
+    } else if (action.kind === 'hold') {
+      holdReason = action.because;
+    } else {
+      const probe = options.probe ?? probeIssueLanded;
+      try {
+        const result = await probe(owner, repo, issueNumber, token);
+        if (result.landed) {
+          patchBody.state = 'closed';
+          patchBody.state_reason = 'completed';
+          stateAction = 'closed_completed';
+          mergeCommitSha = result.landed.mergeCommitSha;
+          mergedPrNumber = result.landed.number;
+        } else if (result.inFlight) {
+          holdReason = 'pr_in_flight';
+        } else {
+          patchBody.state = 'closed';
+          patchBody.state_reason = 'completed';
+          stateAction = 'closed_completed';
+        }
+      } catch {
+        holdReason = 'probe_failed';
+      }
+    }
   }
 
   const updatedIssue = await githubFetch<GitHubIssue>(
@@ -265,7 +571,35 @@ export async function updateGitHubIssue(
     },
   );
 
-  return updatedIssue;
+  return { issue: updatedIssue, stateAction, holdReason, mergeCommitSha, mergedPrNumber };
+}
+
+/**
+ * Reopen a GitHub issue that was closed on a promise that did not hold —
+ * the PR referencing it died unmerged, or the closed-issue audit found
+ * `COMPLETED` with no merge commit behind it.
+ *
+ * `state_reason: 'reopened'` is explicit for the same reason the close
+ * path sets its reason explicitly: the field is the thing this whole fix
+ * is about, and an implicit value is how the bug got in.
+ */
+export async function reopenGitHubIssue(
+  externalLink: Pick<ExternalLink, 'externalId'>,
+  token: string,
+): Promise<GitHubIssue> {
+  const parsed = parseExternalId(externalLink.externalId);
+  if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
+
+  const { owner, repo, issueNumber } = parsed;
+
+  return githubFetch<GitHubIssue>(
+    `/repos/${owner}/${repo}/issues/${issueNumber}`,
+    token,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ state: 'open', state_reason: 'reopened' }),
+    },
+  );
 }
 
 /**

@@ -1350,3 +1350,46 @@ export function conflictScan(
       : `/api/maps/${mapId}/nodes/${candidate}/conflict-scan`,
   );
 }
+
+// ── Closed-issue audit (premature-close backfill) ────────────────
+
+export interface ClosedIssueAuditFindingApi {
+  externalId: string;
+  issueNumber: number;
+  title: string;
+  url: string;
+  verdict: 'unbacked' | 'backed_by_pr' | 'backed_by_commit' | 'skipped' | 'error';
+  closedAt: string | null;
+  closedBy: string | null;
+  mergeCommitSha: string | null;
+  closingPrs: number[];
+  nodeId: string | null;
+  reopened: boolean;
+  error?: string;
+}
+
+export interface ClosedIssueAuditResultApi {
+  repo: string;
+  dryRun: boolean;
+  inspected: number;
+  unbacked: number;
+  reopened: number;
+  findings: ClosedIssueAuditFindingApi[];
+}
+
+export function auditClosedIssues(
+  mapId: string,
+  opts: { dryRun?: boolean; closedBy?: string; since?: string; limit?: number },
+): Promise<ClosedIssueAuditResultApi> {
+  // `dryRun` is forwarded as an explicit boolean rather than left to the
+  // server default: this call can reopen tickets in bulk, and "the
+  // default was true, wasn't it?" is not a good enough answer when it
+  // wasn't.
+  return request<ClosedIssueAuditResultApi>(
+    `/api/maps/${mapId}/github/audit-closed-issues`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ ...opts, dryRun: opts.dryRun !== false }),
+    },
+  );
+}

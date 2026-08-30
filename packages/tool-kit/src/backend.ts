@@ -329,4 +329,57 @@ export interface ToolBackend {
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
   releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
+
+  // ── Closed-issue audit (premature-close backfill) ───────────────
+  auditClosedIssues(
+    mapId: string,
+    opts: ClosedIssueAuditOptions,
+  ): Promise<ClosedIssueAuditResult>;
+}
+
+// ── Closed-issue audit (premature-close backfill) ─────────────────
+
+export interface ClosedIssueAuditOptions {
+  /**
+   * Write mode. Omitted or `true` = report only. Pass `false` to reopen
+   * every unbacked issue and roll its node back off done.
+   */
+  dryRun?: boolean;
+  /** Only audit closes made by this GitHub login. */
+  closedBy?: string;
+  /** Only look at issues updated at/after this ISO timestamp. */
+  since?: string;
+  /** Ceiling on issues inspected (API budget). */
+  limit?: number;
+}
+
+export type ClosedIssueAuditVerdict =
+  | 'unbacked'
+  | 'backed_by_pr'
+  | 'backed_by_commit'
+  | 'skipped'
+  | 'error';
+
+export interface ClosedIssueAuditFinding {
+  externalId: string;
+  issueNumber: number;
+  title: string;
+  url: string;
+  verdict: ClosedIssueAuditVerdict;
+  closedAt: string | null;
+  closedBy: string | null;
+  mergeCommitSha: string | null;
+  closingPrs: number[];
+  nodeId: string | null;
+  reopened: boolean;
+  error?: string;
+}
+
+export interface ClosedIssueAuditResult {
+  repo: string;
+  dryRun: boolean;
+  inspected: number;
+  unbacked: number;
+  reopened: number;
+  findings: ClosedIssueAuditFinding[];
 }

@@ -29,6 +29,8 @@ import {
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import * as PrSync from '../sync/prSync.js';
+import { handleAbandonedPr } from '../sync/prAbandon.js';
+import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { markWorkStarted } from '../sync/workStartSync.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
@@ -1046,6 +1048,73 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── POST /api/maps/:mapId/github/audit-closed-issues ──────────
+  //
+  // Inventory sweep for the premature-close incident class: issues
+  // closed as COMPLETED whose close carries no merge commit and for
+  // which no closing PR ever merged to the default branch. Those tickets
+  // claim shipped work that is not on the default branch, and a
+  // CLOSED/COMPLETED ticket ends the search.
+  //
+  // **`dryRun` defaults to true** — the endpoint reports unless the
+  // caller explicitly passes `dryRun: false`, which reopens each
+  // condemned issue and rolls its node back off done. Admin-only: it
+  // fans out GitHub API calls and, in write mode, mutates tickets.
+  app.post<{ Params: { mapId: string } }>(
+    '/api/maps/:mapId/github/audit-closed-issues',
+    async (req, reply) => {
+      if (!req.userId) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+        });
+      }
+      if (!(await requireAdmin(req))) {
+        return reply.status(403).send({
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        });
+      }
+
+      const ctx = await getGitHubContextForMap(req.params.mapId);
+      if (!ctx) {
+        return reply.status(400).send({
+          error: {
+            code: 'NO_GITHUB_INTEGRATION',
+            message: `Map ${req.params.mapId} has no GitHub integration configured`,
+          },
+        });
+      }
+
+      const body = (req.body ?? {}) as {
+        dryRun?: boolean;
+        closedBy?: string;
+        since?: string;
+        limit?: number;
+      };
+
+      try {
+        const result = await auditClosedIssues({
+          owner: ctx.owner,
+          repo: ctx.repo,
+          token: ctx.token,
+          // Explicit `=== false` so a missing/garbled field reports
+          // rather than writes.
+          dryRun: body.dryRun !== false,
+          closedBy: body.closedBy,
+          since: body.since ?? null,
+          limit: body.limit,
+        });
+        return reply.send(result);
+      } catch (err) {
+        return reply.status(500).send({
+          error: {
+            code: 'CLOSED_ISSUE_AUDIT_FAILED',
+            message: err instanceof Error ? err.message : 'Closed-issue audit failed',
+          },
+        });
+      }
+    },
+  );
+
   // ── POST /api/maps/:mapId/github/reconcile ────────────────────
   // On-demand catch-up reconcile for the repo bound to this map.
   // Webhooks normally drive realtime sync; this endpoint is the manual
@@ -1757,6 +1826,41 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // ── pull_request.closed + merged=false → undo the premature close ─
+    //
+    // The way back. An issue closed because its PR was opened is closed
+    // on a promise; when the PR dies unmerged the promise is broken and
+    // the ticket has to go back on the board. Without this, crm#6085's
+    // shape repeats forever: closed 2026-07-27 for PR #6089, PR never
+    // merged, ticket still reads COMPLETED while the work is missing.
+    //
+    // `handleAbandonedPr` re-checks against GitHub before touching
+    // anything — a close carrying a commit id, or an issue whose work a
+    // REPLACEMENT PR already landed, is left alone. Best-effort: a
+    // failure here must not fail the webhook, and the closed-issue audit
+    // is the backstop.
+    if (
+      event === 'pull_request' &&
+      payloadAction === 'closed' &&
+      repoFullName &&
+      (payload.pull_request as { merged?: boolean } | undefined)?.merged !== true
+    ) {
+      const abandonedPr = payload.pull_request as
+        | { number: number; title?: string | null; body: string | null }
+        | undefined;
+      if (abandonedPr) {
+        try {
+          const ctx = await getGitHubContextForRepo(repoFullName);
+          if (ctx) await handleAbandonedPr(ctx, abandonedPr);
+        } catch (err) {
+          console.warn(
+            '[pr-abandon] reopen sweep failed:',
+            err instanceof Error ? err.message : err,
+          );
+        }
+      }
+    }
+
     // ── pull_request: closed + merged=true → transition linked nodes ─
     //
     // #152 — when a PR merges with `Closes #N` references in title or
@@ -1811,7 +1915,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         merged: boolean;
         body: string | null;
         title: string;
+        merge_commit_sha?: string | null;
       };
+      // The one piece of durable proof that this issue's work shipped.
+      // Stamped onto the link so the outbound sync can close the issue as
+      // COMPLETED later on local evidence — without it, a done-node whose
+      // mirror was already cleared looks exactly like a node that never
+      // had a PR, which is how the premature-close incident got its
+      // COMPLETED/commit_id=null closes.
+      const mergeCommitSha = pr.merge_commit_sha ?? null;
       const refs = extractClosingIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
       const transitions: Array<{
         externalId: string;
@@ -1832,7 +1944,26 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           continue;
         }
         // Idempotency: replay → no second transition.
+        //
+        // The node is normally ALREADY done here — the coding agent marks
+        // it done when it opens the PR — so this is the branch the merge
+        // evidence has to be recorded on, not an edge case. Guarded on
+        // "sha not yet stored" so a webhook replay still writes nothing.
         if (node.status === 'done' && node.percentComplete === 100) {
+          if (mergeCommitSha) {
+            const links = node.externalLinks.map((l) => ({ ...l }));
+            const idx = links.findIndex(
+              (l) => l.provider === 'github' && l.externalId === externalId,
+            );
+            if (idx >= 0 && links[idx].mergeCommitSha !== mergeCommitSha) {
+              links[idx] = {
+                ...links[idx],
+                mergeCommitSha,
+                mergedPrNumber: pr.number,
+              };
+              await nodeDb.updateNode(nodeId, { externalLinks: links });
+            }
+          }
           transitions.push({ externalId, nodeId, status: 'already_done' });
           continue;
         }
@@ -1846,6 +1977,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             previousPercentComplete: node.percentComplete,
             previousStatus: node.status,
             lastSyncedAt: new Date().toISOString(),
+            ...(mergeCommitSha
+              ? { mergeCommitSha, mergedPrNumber: pr.number }
+              : {}),
           };
         }
         const updates: nodeDb.UpdateNodeInput = {

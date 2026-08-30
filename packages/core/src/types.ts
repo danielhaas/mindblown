@@ -97,6 +97,26 @@ export interface ExternalLink {
    * stamps the hash lazily on the first applied edit.
    */
   descriptionMirrorHash?: string;
+
+  /**
+   * SHA of the merge commit that landed the work for this issue on the
+   * repo's DEFAULT branch, plus the PR it came from. Written by the
+   * `pull_request.closed + merged=true` webhook handler and by the
+   * closed-issue audit (`auditClosedIssues`).
+   *
+   * This is the ONLY durable proof MindBlown holds that an issue's work
+   * actually shipped. `node.linkedPr` cannot serve that role: the mirror
+   * is deliberately CLEARED on a default-branch merge, so five minutes
+   * after the merge the node looks exactly like a node that never had a
+   * PR. Closing an issue as COMPLETED requires this field (or a live
+   * probe against GitHub) — see `issueCloseAction` in `linkedPr.ts`.
+   *
+   * Absent on links written before the field existed and on issues that
+   * never had a merged PR.
+   */
+  mergeCommitSha?: string | null;
+  /** PR number whose merge produced `mergeCommitSha`. */
+  mergedPrNumber?: number | null;
 }
 
 /**

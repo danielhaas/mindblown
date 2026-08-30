@@ -32,4 +32,6 @@ export const httpBackend: ToolBackend = {
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
+  // ── Closed-issue audit (premature-close backfill) ───────────────
+  auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
 };

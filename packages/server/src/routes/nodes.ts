@@ -133,7 +133,12 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
 
   for (const link of githubLinks) {
     try {
-      await updateGitHubIssue(node, link, ghCtx.token);
+      const result = await updateGitHubIssue(node, link, ghCtx.token);
+      if (result.holdReason) {
+        console.log(
+          `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})`,
+        );
+      }
       // Update lastSyncedAt on the link. Re-read the node AFTER the
       // GitHub round-trip and patch the FRESH links: writing back the
       // pre-await snapshot silently reverted any concurrent link write
@@ -144,7 +149,19 @@ async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promis
       if (!fresh) continue;
       const updatedLinks = fresh.externalLinks.map((l) =>
         l.provider === link.provider && l.externalId === link.externalId
-          ? { ...l, lastSyncedAt: new Date().toISOString() }
+          ? {
+              ...l,
+              lastSyncedAt: new Date().toISOString(),
+              // Persist what the landing probe cost us to learn, so the
+              // next done-sync closes on local evidence instead of
+              // paying for the timeline walk again.
+              ...(result.mergeCommitSha && !l.mergeCommitSha
+                ? {
+                    mergeCommitSha: result.mergeCommitSha,
+                    mergedPrNumber: result.mergedPrNumber,
+                  }
+                : {}),
+            }
           : l,
       );
       await nodeDb.updateNode(node.id, { externalLinks: updatedLinks });
