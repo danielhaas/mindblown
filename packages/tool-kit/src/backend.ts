@@ -381,5 +381,7 @@ export interface ClosedIssueAuditResult {
   inspected: number;
   unbacked: number;
   reopened: number;
+  /** The sweep was cut short (fetch valve or `limit`) — it is a sample. */
+  truncated: boolean;
   findings: ClosedIssueAuditFinding[];
 }

@@ -104,6 +104,11 @@ export const auditClosedIssuesTool = defineTool({
       `  without merge evidence: ${result.unbacked}`,
       `  reopened: ${result.reopened}`,
     ];
+    if (result.truncated) {
+      header.push(
+        '  NOTE: the sweep was cut short (fetch valve or limit) — this is a sample, not the repo.',
+      );
+    }
 
     const interesting = result.findings.filter(
       (f) => f.verdict === 'unbacked' || f.verdict === 'error',

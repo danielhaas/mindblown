@@ -1374,6 +1374,7 @@ export interface ClosedIssueAuditResultApi {
   inspected: number;
   unbacked: number;
   reopened: number;
+  truncated: boolean;
   findings: ClosedIssueAuditFindingApi[];
 }
 

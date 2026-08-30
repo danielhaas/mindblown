@@ -91,6 +91,7 @@ function makeRecordingBackend(): {
     claimNode: async () => { throw new Error('not implemented'); },
     releaseNode: async () => { throw new Error('not implemented'); },
     conflictScan: async () => { throw new Error('not implemented'); },
+    auditClosedIssues: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

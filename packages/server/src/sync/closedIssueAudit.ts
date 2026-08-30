@@ -99,6 +99,12 @@ export interface AuditResult {
   unbacked: number;
   /** Issues reopened by this run (0 in dryRun). */
   reopened: number;
+  /**
+   * True when the issue fetch or the `limit` cut the list short — the
+   * sweep is a sample, not the full repo. A caller that reports "0
+   * unbacked" off a truncated run is reporting nothing.
+   */
+  truncated: boolean;
   findings: AuditFinding[];
 }
 
@@ -221,13 +227,15 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
   const limit = opts.limit ?? 200;
   const repoFullName = `${opts.owner}/${opts.repo}`;
 
-  const all = await fetchChangedIssues(
+  const fetched = await fetchChangedIssues(
     opts.owner,
     opts.repo,
     opts.token,
     opts.since ?? null,
   );
-  const closed = all.filter((i) => i.state === 'closed').slice(0, limit);
+  const closed = fetched.issues
+    .filter((i) => i.state === 'closed')
+    .slice(0, limit);
 
   const findings: AuditFinding[] = [];
   for (const issue of closed) {
@@ -254,6 +262,9 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
     inspected: closed.length,
     unbacked: findings.filter((f) => f.verdict === 'unbacked').length,
     reopened: findings.filter((f) => f.reopened).length,
+    truncated:
+      fetched.truncated ||
+      fetched.issues.filter((i) => i.state === 'closed').length > limit,
     findings,
   };
 }
