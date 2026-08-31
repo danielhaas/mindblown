@@ -72,6 +72,12 @@ export const auditClosedIssuesTool = defineTool({
     'with `dryRun: false`, which requires a real admin session — an API key alone is not enough.',
     'Run this first, read the findings, then decide.',
     '',
+    'Read the findings before you run the write mode: a finding whose closing PR is still OPEN',
+    'is condemned too (an open PR is not a merge), and reopening it rolls the node back — to the',
+    'progress captured at close time if there is any, otherwise to 0 %/in_progress. That is a',
+    'deliberate admin action on a list you have looked at, not something a loop does behind you,',
+    'but it is a lossy reset and the findings list is where you catch it.',
+    '',
     'Admin-only. Costs several GitHub API calls per inspected issue — use `limit` and `since`.',
   ].join('\n'),
   schema: {

@@ -1611,11 +1611,31 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // reopened — revert to whatever was captured on the most recent close.
         // If we never saw a close (null), fall back to an in-progress state.
         //
-        // Same gate as the catchup reconciler (prBlocksNodeReopen in
-        // @mindblown/core): while a PR is in flight and no snapshot
-        // exists, "node done" is deliberate state and the fallback
-        // reset would wipe progress irrecoverably — webhook and
-        // catchup must implement the SAME policy for this transition.
+        // Shares ONE gate with the catchup reconciler — `prBlocksNodeReopen`
+        // (@mindblown/core): while a PR is in flight and no snapshot exists,
+        // "node done" is deliberate state and the fallback reset would wipe
+        // progress irrecoverably.
+        //
+        // The catchup carries a SECOND, broader guard that this path
+        // deliberately does not (`emptyMirrorOnDoneNode` in
+        // sync/githubCatchup.ts). Do not "unify" them — the divergence is
+        // the point, because the two paths know different things:
+        //
+        //   - Here, `issues.reopened` is a WITNESSED act. Somebody reopened
+        //     the issue; GitHub says so. Acting on it is honouring a
+        //     decision.
+        //   - There, nothing happened. The catchup INFERS a reopen from a
+        //     steady state ("issue open + node done") on a 5-minute poll.
+        //     Since the close gate went in, that pairing is also the normal
+        //     state of a node whose PR is still running, so the inference
+        //     is wrong precisely when it is most destructive.
+        //
+        // Copying the catchup's guard into this handler would wall off the
+        // only remaining way a wrongly-closed issue gets repaired: a human
+        // reopens it on GitHub and nothing happens. The case is pinned by
+        // `issues-reopen-gate.test.ts` → "resets with the fallback when no
+        // PR is linked (legacy behavior)" (around :252). Read that test
+        // before touching this branch.
         const savedPct = links[linkIdx].previousPercentComplete;
         const savedStatus = links[linkIdx].previousStatus;
         if (prBlocksNodeReopen(node.linkedPr, hasCloseSnapshot(links[linkIdx]), node.completedAt)) {

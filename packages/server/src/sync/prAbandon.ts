@@ -58,12 +58,32 @@ export interface AbandonedPrContext {
  * `Closes #N` was closed unmerged. An automatic path must not write
  * against a deliberate human decision.
  *
- * Configurable because the login is per-installation (`<app-slug>[bot]`).
- * An unset or mistyped value means nothing matches and nothing is
- * reopened — the safe direction.
+ * ## Why it is DERIVED and not just configured
+ *
+ * A GitHub App's bot login is `<app-slug>[bot]` by definition, and the
+ * slug is already configured as `GITHUB_APP_NAME`. A second variable
+ * holding the same truth is a second thing to keep in sync, and the
+ * failure when it drifts is silent in the worst way: every close reads
+ * as somebody else's, everything lands in `foreign_close`, and the
+ * reopen path is simply dead. Nobody gets an error; the tickets just
+ * stop coming back.
+ *
+ * So the order is: an explicit `MINDBLOWN_BOT_LOGIN` override (for an
+ * installation whose bot login genuinely differs), else derived from
+ * `GITHUB_APP_NAME`, else the literal as a last resort so a dev box with
+ * no App configured still behaves.
+ *
+ * The residual drift is made audible rather than silent: a skipped close
+ * logs both logins (see the `foreign_close` branch), so "the reopen path
+ * does nothing" shows up in the log as a name mismatch instead of as
+ * nothing at all.
  */
 function mindblownBotLogin(): string {
-  return process.env.MINDBLOWN_BOT_LOGIN ?? 'mindblown-by-project-li[bot]';
+  const explicit = process.env.MINDBLOWN_BOT_LOGIN?.trim();
+  if (explicit) return explicit;
+  const appSlug = process.env.GITHUB_APP_NAME?.trim();
+  if (appSlug) return `${appSlug}[bot]`;
+  return 'mindblown-by-project-li[bot]';
 }
 
 export interface AbandonedPrOutcome {
@@ -141,7 +161,16 @@ export async function handleAbandonedPr(
       // `commit_id` — both null. The actor is the only thing that tells
       // them apart, and undoing a person's decision automatically is
       // strictly worse than leaving a stale close for a person to fix.
-      if (closeEvent?.actor !== mindblownBotLogin()) {
+      const ourLogin = mindblownBotLogin();
+      if (closeEvent?.actor !== ourLogin) {
+        // Logged, not silent. A misconfigured login sends EVERY close
+        // down this branch and kills the reopen path outright — with no
+        // error, no counter, and no ticket coming back. The line below
+        // is what turns that into something a log grep can find.
+        console.log(
+          `[pr-abandon] ${externalId} was closed by ${closeEvent?.actor ?? 'unknown'}, ` +
+            `not by ${ourLogin} — leaving it closed`,
+        );
         outcomes.push({ externalId, status: 'foreign_close', nodeId });
         continue;
       }

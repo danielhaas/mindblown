@@ -7,7 +7,7 @@
  * sync ever looked again.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   getGitHubIssue: vi.fn(),
@@ -246,6 +246,67 @@ describe('handleAbandonedPr', () => {
     expect(out[0].status).toBe('foreign_close');
     expect(mocks.reopenGitHubIssue).not.toHaveBeenCalled();
     expect(mocks.updateNode).not.toHaveBeenCalled();
+  });
+
+  describe('whose closes count as ours', () => {
+    // The bot login is the hinge of the guard above. Get it wrong and
+    // EVERY close reads as a stranger's: the reopen path goes quiet with
+    // no error and no ticket ever comes back. These pin where the value
+    // comes from.
+    const saved = {
+      login: process.env.MINDBLOWN_BOT_LOGIN,
+      appName: process.env.GITHUB_APP_NAME,
+    };
+
+    afterEach(() => {
+      if (saved.login === undefined) delete process.env.MINDBLOWN_BOT_LOGIN;
+      else process.env.MINDBLOWN_BOT_LOGIN = saved.login;
+      if (saved.appName === undefined) delete process.env.GITHUB_APP_NAME;
+      else process.env.GITHUB_APP_NAME = saved.appName;
+    });
+
+    async function runWithActor(actor: string) {
+      mocks.getGitHubIssue.mockResolvedValue({ number: 6085, state: 'closed' });
+      mocks.getIssueCloseEvent.mockResolvedValue({ ...BOT_CLOSE, actor });
+      const out = await handleAbandonedPr(CTX, ABANDONED_PR);
+      return out[0].status;
+    }
+
+    it('derives the login from GITHUB_APP_NAME — one source of truth, not two', async () => {
+      // `<app-slug>[bot]` is what a GitHub App's login always is, and the
+      // slug is already configured. A second variable holding the same
+      // truth is a second thing that can drift.
+      delete process.env.MINDBLOWN_BOT_LOGIN;
+      process.env.GITHUB_APP_NAME = 'some-other-app';
+
+      expect(await runWithActor('some-other-app[bot]')).toBe('reopened');
+      expect(await runWithActor('mindblown-by-project-li[bot]')).toBe('foreign_close');
+    });
+
+    it('lets an explicit MINDBLOWN_BOT_LOGIN override the derivation', async () => {
+      process.env.GITHUB_APP_NAME = 'some-other-app';
+      process.env.MINDBLOWN_BOT_LOGIN = 'legacy-login[bot]';
+
+      expect(await runWithActor('legacy-login[bot]')).toBe('reopened');
+      expect(await runWithActor('some-other-app[bot]')).toBe('foreign_close');
+    });
+
+    it('falls back to the literal when neither variable is set', async () => {
+      delete process.env.MINDBLOWN_BOT_LOGIN;
+      delete process.env.GITHUB_APP_NAME;
+
+      expect(await runWithActor('mindblown-by-project-li[bot]')).toBe('reopened');
+    });
+
+    it('ignores an empty MINDBLOWN_BOT_LOGIN instead of matching nothing', async () => {
+      // `.env.example` ships the key with an empty value. Read naively,
+      // `?? ` keeps '' and every actor comparison fails — the exact
+      // silent death this suite exists to prevent.
+      process.env.MINDBLOWN_BOT_LOGIN = '';
+      process.env.GITHUB_APP_NAME = 'some-other-app';
+
+      expect(await runWithActor('some-other-app[bot]')).toBe('reopened');
+    });
   });
 
   it('does NOT undo a not_planned close — nobody claimed that work shipped', async () => {
