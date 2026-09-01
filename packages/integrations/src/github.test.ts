@@ -9,6 +9,7 @@ import {
   GitHubScanTruncatedError,
   GitHubApiError,
   GitHubPaginationLimitError,
+  GitHubCrossOriginPaginationError,
   fetchChangedIssues,
   importGitHubIssues,
   parseLinkNext,
@@ -875,6 +876,157 @@ describe('parseLinkNext', () => {
     expect(parseLinkNext(null)).toBeNull();
     expect(parseLinkNext(undefined)).toBeNull();
   });
+
+  it('accepts an unquoted rel', () => {
+    expect(parseLinkNext('<https://api.github.com/x?page=2>; rel=next')).toBe(
+      'https://api.github.com/x?page=2',
+    );
+  });
+
+  /*
+   * The four forms below are the ones that made the first parser answer
+   * wrongly, and each is its own case because each fails differently.
+   *
+   * Three of them return `null` on a header that DOES advertise a next
+   * page — and `null` means the paginator stops and reports
+   * `truncated: false`, i.e. a prefix presented as the complete list.
+   * That is the fail-open shape this whole change set exists to remove,
+   * arriving through the parser instead of through the loop.
+   */
+
+  it('keeps a target URL that contains a comma', () => {
+    // RFC 8288 permits it precisely because `<>` delimits the target.
+    // Splitting the header on `,` cut this entry in half and lost the
+    // `rel="next"` that followed. `?labels=bug,urgent` is one filter
+    // away from any of today's call sites.
+    expect(
+      parseLinkNext('<https://api.github.com/x?labels=bug,urgent&page=2>; rel="next"'),
+    ).toBe('https://api.github.com/x?labels=bug,urgent&page=2');
+  });
+
+  it('does NOT treat rel="nextpage" as next', () => {
+    // The dangerous direction of the same bug: not a missed page but a
+    // followed one. A substring match paged into an unrelated relation.
+    expect(parseLinkNext('<https://api.github.com/x?page=2>; rel="nextpage"')).toBeNull();
+  });
+
+  it('finds rel when another parameter comes first', () => {
+    // The old regex required `rel` immediately after the first `;`.
+    expect(
+      parseLinkNext(
+        '<https://api.github.com/x?page=2>; type="application/json"; rel="next"',
+      ),
+    ).toBe('https://api.github.com/x?page=2');
+  });
+
+  it('keeps a comma inside a QUOTED parameter value', () => {
+    // This is the case Ray's proposed `<([^>]*)>\s*;\s*([^,<]*)` still
+    // gets wrong: the params blob stops at the comma inside `title`, so
+    // `rel="next"` is never seen and the walk silently ends. I measured
+    // it before adopting the suggestion — hence the quote-aware scanner
+    // rather than a wider regex.
+    expect(
+      parseLinkNext('<https://api.github.com/x?page=2>; title="Foo, Bar"; rel="next"'),
+    ).toBe('https://api.github.com/x?page=2');
+  });
+
+  it('handles a space-separated multi-relation rel', () => {
+    // RFC 8288 allows `rel="next prev"`. Token comparison covers it;
+    // equality against the whole value would not.
+    expect(parseLinkNext('<https://api.github.com/x?page=2>; rel="next prev"')).toBe(
+      'https://api.github.com/x?page=2',
+    );
+  });
+});
+
+describe('pagination stays on the origin it started on', () => {
+  /**
+   * MF1. `githubFetchPage` attaches `Authorization: Bearer <token>` to
+   * whatever URL it is handed, and before this change set every such URL
+   * was built internally. Following `Link` means one now arrives in a
+   * response header — so an off-origin `next` would send the
+   * installation token to that host, over plain http:// if the header
+   * says so.
+   *
+   * This test is Ray's probe: it records every URL fetched together with
+   * the Authorization header it carried, and asserts the token never
+   * leaves api.github.com.
+   */
+  function evilLinkStub(nextUrl: string) {
+    const seen: Array<{ url: string; auth: unknown }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        seen.push({
+          url: String(url),
+          auth: (init?.headers as Record<string, string>)?.Authorization,
+        });
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers({ link: `<${nextUrl}>; rel="next"` }),
+          json: async () => issuePage([1]),
+        };
+      }),
+    );
+    return seen;
+  }
+
+  it('refuses to follow a Link pointing at another host', async () => {
+    const seen = evilLinkStub('http://evil.example/steal?after=1');
+
+    await expect(
+      fetchChangedIssues('FulcrumCRM', 'crm', 'ghs_SUPER_SECRET', null),
+    ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
+
+    // The point of the guard, stated as the property that matters: the
+    // token was never sent anywhere but GitHub.
+    expect(seen).toHaveLength(1);
+    for (const call of seen) {
+      expect(new URL(call.url).origin).toBe('https://api.github.com');
+    }
+    expect(seen.some((c) => String(c.url).includes('evil.example'))).toBe(false);
+  });
+
+  it('refuses a downgrade to http on the same host', async () => {
+    // `http://api.github.com` is a different origin, and the token would
+    // go over the wire in clear text.
+    evilLinkStub('http://api.github.com/repos/FulcrumCRM/crm/issues?after=1');
+
+    await expect(
+      fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null),
+    ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
+  });
+
+  it('refuses a non-absolute Link target', async () => {
+    evilLinkStub('/repos/FulcrumCRM/crm/issues?after=1');
+
+    await expect(
+      fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null),
+    ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
+  });
+
+  it('still follows a same-origin Link', async () => {
+    // The guard must not be so tight that it breaks the fix it protects.
+    const fetchMock = bigRepo({ pages: [issuePage([1]), issuePage([2])] });
+
+    const result = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
+
+    expect(result.issues.map((i) => i.number)).toEqual([1, 2]);
+    expect(fetchMock.mock.calls).toHaveLength(2);
+  });
+
+  it('throws rather than quietly returning the first page', async () => {
+    // Refusing to follow means the listing is INCOMPLETE. Returning what
+    // we have with `truncated: false` would turn a security guard into
+    // the exact fail-open this PR removes.
+    evilLinkStub('http://evil.example/steal?after=1');
+
+    const err = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null).catch((e) => e);
+
+    expect(err).toBeInstanceOf(GitHubCrossOriginPaginationError);
+    expect(err.message).toContain('evil.example');
+  });
 });
 
 describe('pagination on a repo too large for ?page=', () => {
@@ -938,6 +1090,11 @@ describe('pagination on a repo too large for ?page=', () => {
 
     await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', '2026-08-01T00:00:00Z');
 
+    // Assert the plural in the name before asserting the property: the
+    // loop below is vacuously true on a single call, so without this the
+    // test claims "across pages" while checking one page — the same
+    // hollow shape M30 exposed in its sibling.
+    expect(fetchMock.mock.calls).toHaveLength(2);
     for (const call of fetchMock.mock.calls) {
       expect(new URL(String(call[0])).searchParams.get('since')).toBe(
         '2026-08-01T00:00:00Z',

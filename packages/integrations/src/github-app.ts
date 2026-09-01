@@ -5,7 +5,12 @@
  * and repo listing — all via native fetch + jsonwebtoken. No @octokit deps.
  */
 
-import { GitHubApiError, githubFetchPage, type GitHubPage } from './github.js';
+import {
+  GitHubApiError,
+  githubFetchPage,
+  assertSamePaginationOrigin,
+  type GitHubPage,
+} from './github.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -210,12 +215,38 @@ export async function listInstallationRepositories(installationId: string): Prom
   // grants access to dozens of repos, not tens of thousands). It is
   // converted anyway so this file stops being the one place that still
   // builds `?page=` by hand.
-  let url: string | null = 'https://api.github.com/installation/repositories?per_page=100';
+  // `paginateGitHub` carries the page ceiling for the other four walks;
+  // this one has to state its own. Without it the only brake is the
+  // server eventually not sending a `Link` — and a self-referential or
+  // cycling header keeps sending one. The old loop at least stopped on a
+  // short page; the first cut of this conversion dropped that and put
+  // nothing in its place.
+  const MAX_PAGES = 100; // 100 × 100 repos — far past any real installation.
+  const FIRST_URL = 'https://api.github.com/installation/repositories?per_page=100';
+
+  let url: string | null = FIRST_URL;
+  let pages = 0;
   while (url) {
     const page: GitHubPage<{ total_count: number; repositories: GitHubRepo[] }> =
       await githubFetchPage(url, token);
     repos.push(...(page.data.repositories ?? []));
+    pages += 1;
+
+    // `total_count` is the endpoint's own answer to "am I done" — keep it
+    // as the primary stop, but never as the ONLY one: a missing field is
+    // `undefined`, and every comparison against that is false.
     if (repos.length >= page.data.total_count) break;
+    if (!page.nextUrl) break;
+    if (pages >= MAX_PAGES) {
+      console.warn(
+        `[github-app] installation ${installationId}: stopped listing repositories at ` +
+          `${MAX_PAGES} pages — result is TRUNCATED`,
+      );
+      break;
+    }
+    // Same guard as `paginateGitHub`: the next URL comes from a response
+    // header and the next request carries the installation token.
+    assertSamePaginationOrigin(FIRST_URL, page.nextUrl);
     url = page.nextUrl;
   }
 

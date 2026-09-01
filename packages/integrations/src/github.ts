@@ -140,6 +140,71 @@ function isPaginationLimit(status: number, body: string): boolean {
   );
 }
 
+/**
+ * A `Link: rel="next"` pointed somewhere other than the host the walk
+ * started on — refused before the request is made.
+ *
+ * The reason this exists is narrow and worth stating plainly. Before the
+ * Link-header change every URL this module fetched was built internally
+ * from an owner/repo pair. Now one arrives in a response header, and
+ * `githubFetchPage` attaches `Authorization: Bearer <installation token>`
+ * to whatever it is handed. Following an off-origin `next` would hand
+ * the token to that host — over plain `http://` if the header says so.
+ *
+ * Exploiting it needs GitHub itself or a MITM, and a MITM already has
+ * the token from the first request. It is still a trust assumption that
+ * did not exist before this refactor, and it costs two lines not to make
+ * it.
+ */
+export class GitHubCrossOriginPaginationError extends Error {
+  readonly fromOrigin: string;
+  readonly toUrl: string;
+  constructor(fromOrigin: string, toUrl: string) {
+    super(
+      `Refusing to follow pagination from ${fromOrigin} to ${toUrl}: the Link ` +
+        'header points at a different origin, and the request would carry the ' +
+        'API token there.',
+    );
+    this.name = 'GitHubCrossOriginPaginationError';
+    this.fromOrigin = fromOrigin;
+    this.toUrl = toUrl;
+  }
+}
+
+/**
+ * Absolute form of a path this module fetches, for origin comparison —
+ * relative paths resolve against the API base, which is what
+ * `githubFetchPage` does with them.
+ */
+function absoluteUrl(pathOrUrl: string): string {
+  return pathOrUrl.startsWith('http') ? pathOrUrl : `${GITHUB_API}${pathOrUrl}`;
+}
+
+/**
+ * A pagination hop must stay on the origin the walk started on.
+ *
+ * Throws rather than stopping quietly: a `Link` we refuse to follow
+ * means the listing is incomplete, and returning a prefix as if it were
+ * the whole list is the fail-open shape this PR exists to remove.
+ */
+export function assertSamePaginationOrigin(
+  firstPathOrUrl: string,
+  nextUrl: string,
+): void {
+  const fromOrigin = new URL(absoluteUrl(firstPathOrUrl)).origin;
+  let toOrigin: string;
+  try {
+    toOrigin = new URL(nextUrl).origin;
+  } catch {
+    // Not an absolute URL at all. GitHub always sends one; anything else
+    // is not something to follow with a bearer token attached.
+    throw new GitHubCrossOriginPaginationError(fromOrigin, nextUrl);
+  }
+  if (toOrigin !== fromOrigin) {
+    throw new GitHubCrossOriginPaginationError(fromOrigin, nextUrl);
+  }
+}
+
 /** A response body plus the one header that matters for paging. */
 export interface GitHubPage<T> {
   data: T;
@@ -166,11 +231,61 @@ export interface GitHubPage<T> {
  */
 export function parseLinkNext(linkHeader: string | null | undefined): string | null {
   if (!linkHeader) return null;
-  for (const part of linkHeader.split(',')) {
-    const m = /<([^>]+)>\s*;\s*rel\s*=\s*"?next"?/i.exec(part);
-    if (m) return m[1];
+
+  for (const { target, params } of splitLinkEntries(linkHeader)) {
+    // RFC 8288: `rel` may carry several space-separated relation types
+    // (`rel="next prev"`), quoted or bare. Compare TOKENS, never a
+    // substring — `rel="nextpage"` is a different relation and following
+    // it would page into whatever that endpoint is.
+    const m = /(?:^|;)\s*rel\s*=\s*(?:"([^"]*)"|([^;,\s]+))/i.exec(params);
+    if (!m) continue;
+    const value = m[1] ?? m[2] ?? '';
+    if (value.split(/\s+/).some((t) => t.toLowerCase() === 'next')) return target;
   }
   return null;
+}
+
+/**
+ * Split a `Link` header into its entries, respecting the two things that
+ * make a naive `split(',')` wrong:
+ *
+ *   - the target inside `<…>` may contain commas (`?labels=bug,urgent`),
+ *     which is legal precisely because the angle brackets delimit it;
+ *   - a quoted parameter value may contain commas (`title="Foo, Bar"`).
+ *
+ * Both produce the same failure if mishandled: the entry is cut in half,
+ * `rel="next"` is lost, the paginator stops after page one and reports
+ * `truncated: false`. That is a silent fail-open — the shape this whole
+ * change set exists to remove — so it is worth a real scanner rather
+ * than a regex that is right about most headers.
+ */
+function splitLinkEntries(header: string): Array<{ target: string; params: string }> {
+  const entries: Array<{ target: string; params: string }> = [];
+  let i = 0;
+
+  while (i < header.length) {
+    const open = header.indexOf('<', i);
+    if (open < 0) break;
+    const close = header.indexOf('>', open + 1);
+    if (close < 0) break;
+    const target = header.slice(open + 1, close);
+
+    // Parameters run to the next top-level comma — one that is neither
+    // inside quotes nor inside a following `<…>`.
+    let j = close + 1;
+    let inQuotes = false;
+    while (j < header.length) {
+      const ch = header[j];
+      if (ch === '"' && header[j - 1] !== '\\') inQuotes = !inQuotes;
+      else if (ch === ',' && !inQuotes) break;
+      j += 1;
+    }
+
+    entries.push({ target, params: header.slice(close + 1, j) });
+    i = j + 1;
+  }
+
+  return entries;
 }
 
 export async function githubFetchPage<T>(
@@ -258,6 +373,9 @@ export async function paginateGitHub<T>(
       opts.onTruncated?.();
       return { pages, truncated: true };
     }
+    // The next URL comes out of a response header and the next request
+    // carries the API token. It does not leave the origin we started on.
+    assertSamePaginationOrigin(firstPath, page.nextUrl);
     url = page.nextUrl;
   }
 

@@ -9,7 +9,7 @@
  */
 
 import type { PrRecord } from '@mindblown/core';
-import { paginateGitHub } from '@mindblown/integrations';
+import { paginateGitHub, GitHubApiError } from '@mindblown/integrations';
 import type { GitHubMapContext } from './githubContext.js';
 
 const PER_PAGE = 100;
@@ -62,8 +62,14 @@ export async function fetchMergedPrsSince(
     };
   }
 
-  const result = await fetchMergedPrsUncached(ctx, sinceMs, maxPages);
-  throughputCache.set(cacheKey, { fetchedAt: Date.now(), sinceMs, result });
+  const { apiError, ...result } = await fetchMergedPrsUncached(ctx, sinceMs, maxPages);
+  // Never cache a result GitHub refused to give us. Caching it pins the
+  // degraded reading — "0 merged PRs, rework 0" — for the full hour,
+  // long past the 401 that caused it, and every reader in that hour sees
+  // a clean forecast built on nothing.
+  if (!apiError) {
+    throughputCache.set(cacheKey, { fetchedAt: Date.now(), sinceMs, result });
+  }
   return result;
 }
 
@@ -71,9 +77,10 @@ async function fetchMergedPrsUncached(
   ctx: GitHubMapContext,
   sinceMs: number,
   maxPages: number,
-): Promise<FetchMergedPrsResult> {
+): Promise<FetchMergedPrsResult & { apiError: boolean }> {
   const out: PrRecord[] = [];
   let truncated = false;
+  let apiError = false;
 
   interface PrRow {
     number: number;
@@ -119,13 +126,24 @@ async function fetchMergedPrsUncached(
       },
     );
     truncated = walk.truncated;
-  } catch {
-    // Auth / rate limit / anything else — return what we have rather than
-    // failing the whole report. Unchanged intent; the difference is that
-    // `paginateGitHub` throws where the raw fetch handed back a non-ok
-    // response for us to inspect.
+  } catch (err) {
+    // ONLY an HTTP-level refusal is swallowed, because that is the one
+    // case the raw-fetch loop swallowed (`if (!res.ok) { truncated =
+    // true; break; }`). A bare `catch {}` was wider than the branch it
+    // replaced: a rejected fetch (ECONNREFUSED, DNS) and a non-list body
+    // both used to propagate to `velocityMeasure`, which logs them and
+    // sets `repoThroughput = null`. Swallowed instead, they render as
+    // "0 merged PRs, reworkFraction 0" — NET rate == gross rate — so an
+    // expired token reads as "the repo shipped nothing and the forecast
+    // is clean". Silently, and for as long as the cache holds it.
+    if (!(err instanceof GitHubApiError)) throw err;
+    console.warn(
+      `[repo-throughput] ${ctx.owner}/${ctx.repo}: GitHub refused the PR list ` +
+        `(${err.status}) — reporting a partial window: ${err.message}`,
+    );
     truncated = true;
+    apiError = true;
   }
 
-  return { prs: out, truncated };
+  return { prs: out, truncated, apiError };
 }
