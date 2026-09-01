@@ -15,6 +15,7 @@ import {
   pullableNodes,
   dispatchQueueSnapshot,
   hasBrief,
+  isBugNode,
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
@@ -64,6 +65,24 @@ describe('parseGateEntry', () => {
   });
 });
 
+describe('isBugNode', () => {
+  it('accepts "bug" and the GitHub-mirror spelling "type:bug", case-insensitive', () => {
+    expect(isBugNode(n({ id: 'a', tags: ['bug'] }))).toBe(true);
+    expect(isBugNode(n({ id: 'b', tags: ['type:bug'] }))).toBe(true);
+    expect(isBugNode(n({ id: 'c', tags: ['Bug'] }))).toBe(true);
+    expect(isBugNode(n({ id: 'd', tags: ['Type:Bug'] }))).toBe(true);
+    expect(isBugNode(n({ id: 'e', tags: ['ui', 'type:bug'] }))).toBe(true);
+  });
+
+  it('does not match lookalike tags (exact match only)', () => {
+    expect(isBugNode(n({ id: 'f', tags: [] }))).toBe(false);
+    expect(isBugNode(n({ id: 'g', tags: ['debug'] }))).toBe(false);
+    expect(isBugNode(n({ id: 'h', tags: ['bugfix'] }))).toBe(false);
+    expect(isBugNode(n({ id: 'i', tags: ['type:bugfix'] }))).toBe(false);
+    expect(isBugNode(n({ id: 'j', tags: ['type:tech-debt'] }))).toBe(false);
+  });
+});
+
 describe('matchesDispatchGate', () => {
   const map = new Map([root, epic, leaf, bug, loose].map((x) => [x.id, x]));
 
@@ -76,6 +95,11 @@ describe('matchesDispatchGate', () => {
   it('bug tag is case-insensitive and ANDs with a version entry', () => {
     expect(matchesDispatchGate(bug, ['type:bug'], map)).toBe(true);
     expect(matchesDispatchGate(bug, ['type:bug', 'version:v1'], map)).toBe(false);
+  });
+
+  it('a GitHub-mirrored "type:bug" tag passes the type:bug gate', () => {
+    const mirrored = n({ id: 'mirrored', status: 'todo', tags: ['type:bug'] });
+    expect(matchesDispatchGate(mirrored, ['type:bug'], map)).toBe(true);
   });
 
   it('empty gate is open; an unknown entry matches nothing (fail-closed)', () => {

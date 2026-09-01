@@ -34,10 +34,14 @@ export const NEEDS_BRIEF_TAG = 'needs-brief';
 export const GATE_BUGS_ONLY = 'type:bug';
 export const GATE_VERSION_PREFIX = 'version:';
 
-/** Bug detection for gate/policy purposes: node carries the "bug" tag
- *  (node.tags mirrors GitHub labels, so a GH `bug` label counts). */
+/** Bug detection for gate/policy purposes: node carries the "bug" or
+ *  "type:bug" tag, case-insensitive (node.tags mirrors GitHub labels, and
+ *  the label mirror writes `type:bug`, so both spellings must count). */
 export function isBugNode(node: Pick<Node, 'tags'>): boolean {
-  return node.tags.some((t) => t.toLowerCase() === 'bug');
+  return node.tags.some((t) => {
+    const tag = t.toLowerCase();
+    return tag === 'bug' || tag === 'type:bug';
+  });
 }
 
 /**
