@@ -132,6 +132,10 @@ function fieldsFromVersion(v: Version): FormFields {
 export function ReleasesView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const versions = useMindmapStore((s) => s.versions);
+  // Which lane the Leidang fleet is fenced to right now (dispatchGate
+  // `version:<id>`). Shown on the row so re-dating or closing a version
+  // that is being dispatched is a visible act (Jenna, design review).
+  const dispatchGate = useMindmapStore((s) => s.currentMap?.dispatchGate);
   const activeVersionFilter = useMindmapStore((s) => s.activeVersionFilter);
   const createVersionAction = useMindmapStore((s) => s.createVersion);
   const updateVersionAction = useMindmapStore((s) => s.updateVersion);
@@ -498,6 +502,23 @@ export function ReleasesView() {
                     <td style={tdStyle}>
                       <div style={{ fontWeight: 600, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span>{v.name}</span>
+                        {dispatchGate?.includes(`version:${v.id}`) && (
+                          <span
+                            data-testid="dispatching-badge"
+                            title="The Leidang fleet's dispatch gate is fenced to this version — tickets in it are being pulled right now. Change the gate in the Cockpit."
+                            style={{
+                              fontSize: 10,
+                              fontWeight: 600,
+                              padding: '1px 6px',
+                              borderRadius: 4,
+                              background: '#dcfce7',
+                              color: '#166534',
+                              border: '1px solid #bbf7d0',
+                            }}
+                          >
+                            dispatching
+                          </span>
+                        )}
                         {orderWarningsByName.has(v.name) && (
                           <span
                             data-testid="order-warning-badge"

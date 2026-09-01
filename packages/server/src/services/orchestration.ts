@@ -26,6 +26,11 @@ import {
   buildInProgressIds,
   buildTodoIds,
   proseMirrorToPlainText,
+  effectiveVersionId,
+  isBugNode,
+  matchesDispatchGate,
+  DEFAULT_DISPATCH_POLICY,
+  NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
 import type {
@@ -246,53 +251,10 @@ export async function releaseNode(
 
 // ── getNextTicket (Leidang pull queue) ──────────────────────────
 
-export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
-
-/** Tag auto-applied to ready nodes the pull queue refuses to hand out. */
-export const NEEDS_BRIEF_TAG = 'needs-brief';
-
-/**
- * Effective version of a node: its own versionId, or the nearest
- * ancestor's (explicit-assignment-wins walk — same semantics as the
- * search_nodes versionId filter and the lint engine).
- */
-function effectiveVersionId(node: CoreNode, nodeMap: NodeMap): string | null {
-  const seen = new Set<string>();
-  let cur: CoreNode | undefined = node;
-  while (cur) {
-    if (cur.versionId != null) return cur.versionId;
-    if (cur.parentId === null || seen.has(cur.parentId)) return null;
-    seen.add(cur.parentId);
-    cur = nodeMap.get(cur.parentId);
-  }
-  return null;
-}
-
-/** Bug detection for gate/policy purposes: node carries the "bug" tag
- *  (node.tags mirrors GitHub labels, so a GH `bug` label counts). */
-function isBugNode(node: CoreNode): boolean {
-  return node.tags.some((t) => t.toLowerCase() === 'bug');
-}
-
-/**
- * AND-filter over the map's dispatchGate. Vocabulary is deliberately
- * tiny: `version:<versionId>` and `type:bug`. Empty gate = no fence.
- * Unknown entries match NOTHING (fail-closed): a typo in the gate
- * empties the queue loudly instead of silently opening the fence.
- */
-export function matchesDispatchGate(
-  node: CoreNode,
-  gate: string[],
-  nodeMap: NodeMap,
-): boolean {
-  return gate.every((entry) => {
-    if (entry === 'type:bug') return isBugNode(node);
-    if (entry.startsWith('version:')) {
-      return effectiveVersionId(node, nodeMap) === entry.slice('version:'.length);
-    }
-    return false;
-  });
-}
+// Gate vocabulary, bug detection and the gate predicate live in
+// @mindblown/core (dispatch.ts) so the cockpit's Dispatch card applies the
+// exact fence the pull applies. Re-exported for existing imports/tests.
+export { DEFAULT_DISPATCH_POLICY, NEEDS_BRIEF_TAG, matchesDispatchGate };
 
 const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
@@ -579,7 +541,7 @@ export async function getNextTicket(
         priorityRank: winner.priorityRank,
         tags: winner.tags,
         scopes: winner.scopes,
-        versionId: effectiveVersionId(winner, nodeMap),
+        versionId: effectiveVersionId(winner.id, nodeMap),
         effortEstimate: winner.effortEstimate,
         githubLinks: winner.externalLinks
           .filter((l) => l.provider === 'github')

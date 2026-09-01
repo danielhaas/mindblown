@@ -1142,7 +1142,13 @@ export interface ChangeEvent {
   mapId: string;
   nodeId: string | null;
   userId: string | null;
-  eventType: 'node.created' | 'node.deleted' | 'node.moved' | 'node.field_changed';
+  eventType:
+    | 'node.created'
+    | 'node.deleted'
+    | 'node.moved'
+    | 'node.field_changed'
+    | 'version.field_changed'
+    | 'map.field_changed';
   fieldName: string | null;
   oldValue: unknown;
   newValue: unknown;

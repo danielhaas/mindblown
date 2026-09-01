@@ -100,6 +100,22 @@ export {
 } from './calibration.js';
 export type { CalibrationSample, CalibrationAssessment } from './calibration.js';
 
+// Pull-queue (Leidang) gate predicates + queue snapshot — shared by the
+// server's get_next_ticket and the cockpit's Dispatch card.
+export {
+  DEFAULT_DISPATCH_POLICY,
+  DISPATCH_POLICY_KEYS,
+  NEEDS_BRIEF_TAG,
+  GATE_BUGS_ONLY,
+  GATE_VERSION_PREFIX,
+  isBugNode,
+  parseGateEntry,
+  matchesDispatchGate,
+  pullableNodes,
+  dispatchQueueSnapshot,
+} from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, DispatchState, DispatchQueueSnapshot } from './dispatch.js';
+
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';
 

@@ -1,0 +1,143 @@
+/**
+ * Shared pull-queue predicates (core/dispatch.ts).
+ *
+ * These back both the server's get_next_ticket fence and the cockpit's
+ * Dispatch card, so the semantics pinned here are the ones a PM reads off
+ * the screen: version gates match the INHERITED version, unknown gate
+ * entries empty the queue, and the state word follows the server's
+ * refusal order (hold → full → empty → running).
+ */
+import { describe, it, expect } from 'vitest';
+import type { Node, StatusDef } from '../types.js';
+import {
+  parseGateEntry,
+  matchesDispatchGate,
+  pullableNodes,
+  dispatchQueueSnapshot,
+  NEEDS_BRIEF_TAG,
+} from '../dispatch.js';
+
+function n(p: Partial<Node> & { id: string }): Node {
+  return {
+    mapId: 'm',
+    parentId: 'root',
+    childrenIds: [],
+    text: p.id,
+    description: null,
+    effortEstimate: null,
+    status: null,
+    blockedReason: null,
+    tags: [],
+    dependencies: [],
+    versionId: null,
+    claimedBySession: null,
+    claimedAt: null,
+    externalLinks: [],
+    ...p,
+  } as unknown as Node;
+}
+
+const WORKFLOW: StatusDef[] = [
+  { id: 'todo', name: 'To do', category: 'todo', color: '#000', position: 0 },
+  { id: 'in_progress', name: 'Doing', category: 'in_progress', color: '#000', position: 1 },
+  { id: 'blocked', name: 'Blocked', category: 'in_progress', color: '#000', position: 2 },
+  { id: 'done', name: 'Done', category: 'done', color: '#000', position: 3 },
+];
+
+const root = n({ id: 'root', parentId: null, childrenIds: ['epic', 'bug', 'loose'] });
+// Note: the server does NOT exclude parents from the pullable set — a
+// status-less epic would be pullable too. Give it a non-todo status so the
+// fixtures below read as leaves-only.
+const epic = n({ id: 'epic', versionId: 'v1', childrenIds: ['leaf'], status: 'in_progress' });
+const leaf = n({ id: 'leaf', parentId: 'epic', status: 'todo' });
+const bug = n({ id: 'bug', status: 'todo', tags: ['Bug'] });
+const loose = n({ id: 'loose', status: 'todo' });
+
+describe('parseGateEntry', () => {
+  it('classifies the two known shapes and flags the rest', () => {
+    expect(parseGateEntry('type:bug')).toEqual({ kind: 'bugs', raw: 'type:bug' });
+    expect(parseGateEntry('version:v1')).toEqual({ kind: 'version', raw: 'version:v1', versionId: 'v1' });
+    expect(parseGateEntry('version:').kind).toBe('unknown');
+    expect(parseGateEntry('priority:P0').kind).toBe('unknown');
+  });
+});
+
+describe('matchesDispatchGate', () => {
+  const map = new Map([root, epic, leaf, bug, loose].map((x) => [x.id, x]));
+
+  it('matches the inherited version, not only node.versionId', () => {
+    expect(leaf.versionId).toBeNull();
+    expect(matchesDispatchGate(leaf, ['version:v1'], map)).toBe(true);
+    expect(matchesDispatchGate(loose, ['version:v1'], map)).toBe(false);
+  });
+
+  it('bug tag is case-insensitive and ANDs with a version entry', () => {
+    expect(matchesDispatchGate(bug, ['type:bug'], map)).toBe(true);
+    expect(matchesDispatchGate(bug, ['type:bug', 'version:v1'], map)).toBe(false);
+  });
+
+  it('empty gate is open; an unknown entry matches nothing (fail-closed)', () => {
+    expect(matchesDispatchGate(loose, [], map)).toBe(true);
+    expect(matchesDispatchGate(loose, ['priority:P0'], map)).toBe(false);
+  });
+});
+
+describe('pullableNodes', () => {
+  it('excludes the root, claimed nodes, non-todo statuses and blocked predecessors', () => {
+    const claimed = n({ id: 'claimed', status: 'todo', claimedBySession: 's1' });
+    const blocked = n({ id: 'blocked', status: 'blocked' });
+    const waiting = n({ id: 'waiting', status: 'todo', dependencies: [{ targetNodeId: 'loose', type: 'FS' }] as never });
+    const { pullable } = pullableNodes([root, epic, leaf, bug, loose, claimed, blocked, waiting], WORKFLOW);
+    expect(pullable.map((x) => x.id).sort()).toEqual(['bug', 'leaf', 'loose']);
+  });
+});
+
+describe('dispatchQueueSnapshot', () => {
+  const all = [root, epic, leaf, bug, loose];
+
+  it('hold beats everything when cap is 0', () => {
+    const s = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 0, gate: [] });
+    expect(s.state).toBe('hold');
+    expect(s.pullable).toBe(3);
+    expect(s.inGate).toBe(3);
+  });
+
+  it('full when active claims reach the cap', () => {
+    const c1 = n({ id: 'c1', status: 'in_progress', claimedBySession: 'a' });
+    const c2 = n({ id: 'c2', status: 'in_progress', claimedBySession: 'b' });
+    const s = dispatchQueueSnapshot([...all, c1, c2], { workflow: WORKFLOW, cap: 2, gate: [] });
+    expect(s.activeClaims).toBe(2);
+    expect(s.state).toBe('full');
+  });
+
+  it('empty when the gate leaves nothing, and names an unknown entry as the cause', () => {
+    const s = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['version:nope'] });
+    expect(s.state).toBe('empty');
+    expect(s.inGate).toBe(0);
+    expect(s.unknownGateEntries).toEqual([]);
+    const typo = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['verison:v1'] });
+    expect(typo.state).toBe('empty');
+    expect(typo.unknownGateEntries).toEqual(['verison:v1']);
+  });
+
+  it('counts what the gate hides: unversioned pullable tickets under a version gate', () => {
+    const s = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['version:v1'] });
+    expect(s.state).toBe('running');
+    expect(s.inGate).toBe(1);
+    expect(s.inGateIds).toEqual(['leaf']);
+    // bug + loose have no effective version → invisible to the fleet
+    expect(s.unversionedOutsideGate).toBe(2);
+    // No version gate → nothing is "hidden by the version fence"
+    expect(dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['type:bug'] }).unversionedOutsideGate).toBe(0);
+  });
+
+  it('counts needs-brief and unestimated inside the gate only', () => {
+    const nb = n({ id: 'nb', status: 'todo', tags: [NEEDS_BRIEF_TAG], effortEstimate: 2 });
+    const s = dispatchQueueSnapshot([...all, nb], { workflow: WORKFLOW, cap: 6, gate: [] });
+    expect(s.needsBrief).toBe(1);
+    expect(s.unestimated).toBe(3); // leaf, bug, loose — nb is estimated
+    const gated = dispatchQueueSnapshot([...all, nb], { workflow: WORKFLOW, cap: 6, gate: ['version:v1'] });
+    expect(gated.needsBrief).toBe(0);
+    expect(gated.unestimated).toBe(1);
+  });
+});

@@ -1,0 +1,459 @@
+/**
+ * Cockpit cards for steering and watching the Leidang pull fleet.
+ *
+ * DispatchCard — the three map knobs the fleet obeys (cap / gate / policy)
+ * with explicit Apply per knob: every write reaches the satellites within
+ * ~2 min, so nothing saves on-change. Under each knob the last write from
+ * the change_events audit ("who put us on hold on Friday?").
+ *
+ * FleetCard — what MindBlown itself knows about the fleet: the claims it
+ * holds and the queue depth behind the gate. Worker states (parked,
+ * limit-parked, prompt-blocked) live on the satellites and are NOT here;
+ * that is the fleet-status push (separate PR).
+ *
+ * Gate and phase are a human's decision by design (Leidang Layer 5): the
+ * orchestrator writes cap and policy autonomously, never the gate. This
+ * card is where that human decision happens.
+ */
+import { useEffect, useMemo, useState } from 'react';
+import type { Version } from '@mindblown/core';
+import { dispatchQueueSnapshot, DISPATCH_POLICY_KEYS } from '@mindblown/core';
+import type { DispatchQueueSnapshot, DispatchState } from '@mindblown/core';
+import { useMindmapStore } from './store.js';
+import * as api from './api.js';
+import type { ChangeEvent } from './api.js';
+import { Card, Muted, Link } from './DigestView.js';
+import {
+  KNOB_FIELDS,
+  KNOB_LABEL,
+  STALE_CLAIM_HOURS,
+  GATE_BUGS_ONLY,
+  PRESETS,
+  applyPreset,
+  claimRows,
+  effectivePolicy,
+  formatAge,
+  formatKnobValue,
+  gateChips,
+  lastKnobWrites,
+  lastNonZeroCap,
+  movePolicyKey,
+  newestKnobWrite,
+  normalizePolicy,
+  policyKeyLabel,
+  shortSession,
+  toggleGateEntry,
+  togglePolicyKey,
+  versionGateEntry,
+  versionGateOptions,
+} from './dispatch.js';
+import type { KnobField, KnobWrite, PresetId } from './dispatch.js';
+
+const AUDIT_LIMIT = 100;
+const CLAIM_PREVIEW = 8;
+
+const STATE_WORD: Record<DispatchState, { label: string; color: string; bg: string; hint: string }> = {
+  hold: { label: 'Hold', color: '#475569', bg: '#e2e8f0', hint: 'Cap is 0 — no ticket is handed out.' },
+  full: { label: 'Full', color: '#9a3412', bg: '#ffedd5', hint: 'Every cap slot holds a claim. Check for stale claims before raising the cap.' },
+  empty: { label: 'Empty', color: '#991b1b', bg: '#fee2e2', hint: 'Cap is open but nothing pullable is inside the gate — phase-change signal, or a fail-closed gate.' },
+  running: { label: 'Running', color: '#166534', bg: '#dcfce7', hint: 'Tickets are being handed out inside the gate.' },
+};
+
+function sameList(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/** Audit + members for both cards — one fetch, shared via props. */
+function useKnobAudit(mapId: string | null, knobSignature: string) {
+  const [events, setEvents] = useState<ChangeEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const members = useMindmapStore((s) => s.members);
+  const loadMembers = useMindmapStore((s) => s.loadMembers);
+
+  useEffect(() => {
+    if (!mapId) return;
+    let cancelled = false;
+    api
+      .fetchChangeHistory(mapId, { eventType: 'map.field_changed', limit: AUDIT_LIMIT })
+      .then((r) => !cancelled && (setEvents(r.events), setError(null)))
+      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : 'unavailable'));
+    return () => {
+      cancelled = true;
+    };
+    // knobSignature: re-read after our own apply and after a map:updated
+    // from someone else — the row that explains the new value is new too.
+  }, [mapId, knobSignature]);
+
+  useEffect(() => {
+    if (mapId) void loadMembers();
+  }, [mapId, loadMembers]);
+
+  const writes = useMemo(() => lastKnobWrites(events, members), [events, members]);
+  return { events, writes, error };
+}
+
+export function DispatchCard() {
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
+  const currentMap = useMindmapStore((s) => s.currentMap);
+  const nodes = useMindmapStore((s) => s.nodes);
+  const versions = useMindmapStore((s) => s.versions);
+  const updateMapSettings = useMindmapStore((s) => s.updateMapSettings);
+
+  const cap = currentMap?.maxActiveClaims ?? 0;
+  const gate = useMemo(() => currentMap?.dispatchGate ?? [], [currentMap?.dispatchGate]);
+  const policy = useMemo(() => currentMap?.dispatchPolicy ?? [], [currentMap?.dispatchPolicy]);
+  const knobSignature = `${cap}|${gate.join(',')}|${policy.join(',')}`;
+
+  const { events, writes, error: auditError } = useKnobAudit(currentMapId, knobSignature);
+
+  // Drafts: edited locally, written on Apply. Reset whenever the saved
+  // value changes underneath (our own write echoing back, or somebody
+  // else's) so the card never shows a stale draft as if it were live.
+  const [capDraft, setCapDraft] = useState<string>(String(cap));
+  const [gateDraft, setGateDraft] = useState<string[]>(gate);
+  const [policyDraft, setPolicyDraft] = useState<string[]>(policy);
+  const [busy, setBusy] = useState<KnobField | 'preset' | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [presetVersion, setPresetVersion] = useState<string>('');
+  const [pendingPreset, setPendingPreset] = useState<PresetId | null>(null);
+
+  useEffect(() => setCapDraft(String(cap)), [cap]);
+  useEffect(() => setGateDraft(gate), [gate]);
+  useEffect(() => setPolicyDraft(policy), [policy]);
+
+  const snapshot: DispatchQueueSnapshot | null = useMemo(() => {
+    if (!currentMap) return null;
+    return dispatchQueueSnapshot(Object.values(nodes), { workflow: currentMap.statusWorkflow, cap, gate });
+  }, [nodes, currentMap, cap, gate]);
+
+  // What the DRAFT gate would leave in the queue — shown while editing so
+  // a fail-closed typo is visible before it goes live.
+  const draftInGate = useMemo(() => {
+    if (!currentMap || sameList(gateDraft, gate)) return null;
+    return dispatchQueueSnapshot(Object.values(nodes), { workflow: currentMap.statusWorkflow, cap: Math.max(1, cap), gate: gateDraft }).inGate;
+  }, [nodes, currentMap, cap, gate, gateDraft]);
+
+  const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
+  const suggestedCap = useMemo(() => lastNonZeroCap(events), [events]);
+
+  if (!currentMap || !snapshot) return null;
+
+  const capNumber = Number(capDraft);
+  const capValid = Number.isInteger(capNumber) && capNumber >= 0;
+  const capDirty = capValid && capNumber !== cap;
+  const gateDirty = !sameList(gateDraft, gate);
+  const policyDirty = !sameList(normalizePolicy(policyDraft), policy);
+  const state = STATE_WORD[snapshot.state];
+
+  const save = async (field: KnobField | 'preset', fields: Parameters<typeof updateMapSettings>[0]) => {
+    setBusy(field);
+    setSaveError(null);
+    const ok = await updateMapSettings(fields);
+    setBusy(null);
+    if (!ok) setSaveError('Save failed — the value shown is what the server still has.');
+    return ok;
+  };
+
+  const runPreset = async (id: PresetId) => {
+    const result = applyPreset(id, presetVersion || null);
+    if (!result) return;
+    const ok = await save('preset', { dispatchGate: result.gate, dispatchPolicy: result.policy });
+    if (ok) setPendingPreset(null);
+  };
+
+  return (
+    <Card title="Dispatch — Leidang pull queue" accent={snapshot.state === 'empty' ? '#fecaca' : snapshot.state === 'full' ? '#fed7aa' : undefined}>
+      {/* Header: state word + the cap ratio, both from SAVED values */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <span title={state.hint} style={{ ...pill, background: state.bg, color: state.color }}>{state.label}</span>
+        <span style={{ fontSize: 13, color: '#334155' }}>
+          <strong>{snapshot.activeClaims}</strong> active / cap <strong>{cap}</strong>
+        </span>
+        <span style={{ fontSize: 12, color: '#64748b' }}>
+          · <strong>{snapshot.inGate}</strong> pullable in gate
+        </span>
+      </div>
+      {snapshot.state === 'empty' && (
+        <div style={warnBox}>
+          {snapshot.unknownGateEntries.length > 0
+            ? <>The gate contains an entry the server cannot read (<code>{snapshot.unknownGateEntries.join(', ')}</code>) — it matches nothing. Remove it below.</>
+            : snapshot.pullable > 0
+              ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done (switch the gate) or the work is unversioned (see Fleet).</>
+              : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
+        </div>
+      )}
+      {saveError && <div style={{ ...warnBox, marginBottom: 8 }}>{saveError}</div>}
+
+      {/* ── Cap ── */}
+      <KnobRow
+        field="maxActiveClaims"
+        write={writes.maxActiveClaims}
+        versions={versions}
+        hint="Fleet-wide claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out."
+      >
+        <div style={row}>
+          <input
+            type="number"
+            min={0}
+            max={99}
+            value={capDraft}
+            onChange={(e) => setCapDraft(e.target.value)}
+            style={{ ...input, width: 64 }}
+            aria-label="Claim cap"
+          />
+          {cap === 0 ? (
+            <button
+              style={btn}
+              disabled={busy !== null || suggestedCap === null}
+              title={suggestedCap === null ? 'No earlier non-zero cap in the audit — type one.' : `Back to the last cap the audit saw (${suggestedCap})`}
+              onClick={() => suggestedCap !== null && setCapDraft(String(suggestedCap))}
+            >
+              Lift hold{suggestedCap !== null ? ` → ${suggestedCap}` : ''}
+            </button>
+          ) : (
+            <button style={btn} disabled={busy !== null} onClick={() => setCapDraft('0')} title="Set the cap to 0 — the fleet drains and parks.">
+              Hold
+            </button>
+          )}
+          <ApplyButton dirty={capDirty} busy={busy === 'maxActiveClaims'} onClick={() => save('maxActiveClaims', { maxActiveClaims: capNumber })} />
+          {!capValid && <span style={{ fontSize: 12, color: '#b91c1c' }}>whole number ≥ 0</span>}
+        </div>
+      </KnobRow>
+
+      {/* ── Gate ── */}
+      <KnobRow
+        field="dispatchGate"
+        write={writes.dispatchGate}
+        versions={versions}
+        hint="AND-filter. version: matches the ticket's effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised."
+      >
+        <div style={{ ...row, flexWrap: 'wrap' }}>
+          {gateDraft.length === 0 && <span style={{ fontSize: 12, color: '#64748b' }}>open — no fence</span>}
+          {gateChips(gateDraft, versions).map((c) => (
+            <span key={c.raw} title={c.warning ?? c.detail ?? undefined} style={{ ...chip, ...(c.warning ? chipWarn : {}) }}>
+              {c.label}
+              {c.detail && <span style={{ color: '#64748b', marginLeft: 4 }}>({c.detail})</span>}
+              <button style={chipX} aria-label={`Remove ${c.label} from gate`} onClick={() => setGateDraft(toggleGateEntry(gateDraft, c.raw))}>×</button>
+            </span>
+          ))}
+        </div>
+        <div style={row}>
+          <select
+            value=""
+            onChange={(e) => e.target.value && setGateDraft(toggleGateEntry(gateDraft, versionGateEntry(e.target.value)))}
+            style={{ ...input, width: 220 }}
+            aria-label="Add version to gate"
+          >
+            <option value="">+ version…</option>
+            {versionOptions.map((v) => (
+              <option key={v.id} value={v.id} disabled={gateDraft.includes(versionGateEntry(v.id))}>
+                {v.name} ({v.status}{v.targetDate ? ` · ${v.targetDate}` : ''})
+              </option>
+            ))}
+          </select>
+          <label style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+            <input type="checkbox" checked={gateDraft.includes(GATE_BUGS_ONLY)} onChange={() => setGateDraft(toggleGateEntry(gateDraft, GATE_BUGS_ONLY))} />
+            Bugs only
+          </label>
+          <ApplyButton dirty={gateDirty} busy={busy === 'dispatchGate'} onClick={() => save('dispatchGate', { dispatchGate: gateDraft })} />
+          {draftInGate !== null && (
+            <span style={{ fontSize: 12, color: draftInGate === 0 ? '#b91c1c' : '#64748b' }}>
+              with this gate: {draftInGate} pullable
+            </span>
+          )}
+        </div>
+      </KnobRow>
+
+      {/* ── Policy ── */}
+      <KnobRow
+        field="dispatchPolicy"
+        write={writes.dispatchPolicy}
+        versions={versions}
+        hint="Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age)."
+      >
+        <div style={{ ...row, flexWrap: 'wrap' }}>
+          {normalizePolicy(policyDraft).map((k, i, arr) => (
+            <span key={k} style={chip}>
+              <span style={{ color: '#94a3b8', marginRight: 4 }}>{i + 1}.</span>
+              {policyKeyLabel(k)}
+              <button style={chipX} aria-label={`Move ${k} earlier`} disabled={i === 0} onClick={() => setPolicyDraft(movePolicyKey(arr, k, -1))}>↑</button>
+              <button style={chipX} aria-label={`Move ${k} later`} disabled={i === arr.length - 1} onClick={() => setPolicyDraft(movePolicyKey(arr, k, 1))}>↓</button>
+              <button style={chipX} aria-label={`Remove ${k}`} onClick={() => setPolicyDraft(togglePolicyKey(arr, k))}>×</button>
+            </span>
+          ))}
+          {DISPATCH_POLICY_KEYS.filter((k) => !policyDraft.includes(k)).map((k) => (
+            <button key={k} style={{ ...chip, ...chipGhost }} onClick={() => setPolicyDraft(togglePolicyKey(policyDraft, k))} aria-label={`Add ${k}`}>
+              + {policyKeyLabel(k)}
+            </button>
+          ))}
+          <ApplyButton dirty={policyDirty} busy={busy === 'dispatchPolicy'} onClick={() => save('dispatchPolicy', { dispatchPolicy: normalizePolicy(policyDraft) })} />
+        </div>
+        {policyDraft.length === 0 && (
+          <div style={{ fontSize: 12, color: '#64748b' }}>Sorting by default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</div>
+        )}
+      </KnobRow>
+
+      {/* ── Presets ── */}
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid #f1f5f9' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>
+          Phase presets <span style={{ fontWeight: 400, textTransform: 'none', letterSpacing: 0 }}>— set gate + policy, never the cap</span>
+        </div>
+        <div style={{ ...row, flexWrap: 'wrap' }}>
+          {PRESETS.map((p) => (
+            <button key={p.id} style={btn} title={p.hint} disabled={busy !== null} onClick={() => setPendingPreset(pendingPreset === p.id ? null : p.id)}>
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {pendingPreset && (() => {
+          const preset = PRESETS.find((p) => p.id === pendingPreset)!;
+          const next = applyPreset(pendingPreset, presetVersion || null);
+          return (
+            <div style={{ marginTop: 8, padding: '8px 10px', background: '#f8fafc', borderRadius: 8, fontSize: 12, color: '#334155' }}>
+              <div style={{ marginBottom: 6 }}>{preset.hint}</div>
+              {preset.needsVersion && (
+                <div style={{ ...row, marginBottom: 6 }}>
+                  <select value={presetVersion} onChange={(e) => setPresetVersion(e.target.value)} style={{ ...input, width: 240 }} aria-label="Preset version">
+                    <option value="">pick the version…</option>
+                    {versionOptions.map((v) => (
+                      <option key={v.id} value={v.id}>{v.name} ({v.status}{v.targetDate ? ` · ${v.targetDate}` : ''})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {next && (
+                <div style={{ lineHeight: 1.7 }}>
+                  <div>Gate: <s style={{ color: '#94a3b8' }}>{formatKnobValue('dispatchGate', gate, versions)}</s> → <strong>{formatKnobValue('dispatchGate', next.gate, versions)}</strong></div>
+                  <div>Policy: <s style={{ color: '#94a3b8' }}>{formatKnobValue('dispatchPolicy', policy, versions)}</s> → <strong>{formatKnobValue('dispatchPolicy', next.policy, versions)}</strong></div>
+                  <div style={{ marginTop: 6 }}>
+                    <button style={{ ...btn, ...btnPrimary }} disabled={busy !== null} onClick={() => runPreset(pendingPreset)}>
+                      {busy === 'preset' ? 'Applying…' : `Apply ${preset.label}`}
+                    </button>
+                    <button style={{ ...btn, marginLeft: 6 }} onClick={() => setPendingPreset(null)}>Cancel</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
+      {auditError && <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Audit trail unavailable ({auditError}) — the "last write" lines are missing, the knobs still work.</div>}
+    </Card>
+  );
+}
+
+export function FleetCard() {
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
+  const currentMap = useMindmapStore((s) => s.currentMap);
+  const nodes = useMindmapStore((s) => s.nodes);
+  const versions = useMindmapStore((s) => s.versions);
+  const selectNode = useMindmapStore((s) => s.selectNode);
+  const [showAllClaims, setShowAllClaims] = useState(false);
+
+  const cap = currentMap?.maxActiveClaims ?? 0;
+  const gate = useMemo(() => currentMap?.dispatchGate ?? [], [currentMap?.dispatchGate]);
+  const policy = useMemo(() => currentMap?.dispatchPolicy ?? [], [currentMap?.dispatchPolicy]);
+  const { writes } = useKnobAudit(currentMapId, `${cap}|${gate.join(',')}|${policy.join(',')}`);
+
+  // Per render on purpose: the "ago" labels must not lag behind a knob
+  // write or a claim that just landed over the socket.
+  const now = new Date();
+  const claims = useMemo(() => claimRows(nodes, now), [nodes]); // eslint-disable-line react-hooks/exhaustive-deps -- `now` only stamps ages
+  const snapshot = useMemo(
+    () => (currentMap ? dispatchQueueSnapshot(Object.values(nodes), { workflow: currentMap.statusWorkflow, cap, gate }) : null),
+    [nodes, currentMap, cap, gate],
+  );
+  if (!currentMap || !snapshot) return null;
+
+  const stale = claims.filter((c) => c.stale).length;
+  const last = newestKnobWrite(writes);
+  const gateHasVersion = gate.some((g) => g.startsWith('version:'));
+
+  return (
+    <Card title="Fleet — what MindBlown holds" accent={stale > 0 ? '#fed7aa' : undefined}>
+      <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>
+        <div>
+          Claims: <strong>{claims.length}</strong>
+          {stale > 0 && (
+            <span style={{ color: '#9a3412' }}> — <strong>{stale}</strong> older than {STALE_CLAIM_HOURS} h (sweeper threshold; the worker is probably gone)</span>
+          )}
+        </div>
+        {claims.length > 0 && (
+          <ul style={{ margin: '4px 0 8px', paddingLeft: 18, fontSize: 12, lineHeight: 1.7 }}>
+            {(showAllClaims ? claims : claims.slice(0, CLAIM_PREVIEW)).map((c) => (
+              <li key={c.node.id} style={{ color: c.stale ? '#9a3412' : undefined }}>
+                <Link onClick={() => selectNode(c.node.id)}>{c.node.text}</Link>
+                <span style={{ color: '#64748b' }}> — <span title={c.session}>{shortSession(c.session)}</span> · {formatAge(c.node.claimedAt, now)}</span>
+              </li>
+            ))}
+            {claims.length > CLAIM_PREVIEW && (
+              <li><Link onClick={() => setShowAllClaims((v) => !v)}>{showAllClaims ? `Show ${CLAIM_PREVIEW} only` : `Show all ${claims.length}`}</Link></li>
+            )}
+          </ul>
+        )}
+
+        <div style={{ marginTop: 4 }}>
+          Queue behind the gate: <strong>{snapshot.inGate}</strong> pullable
+          {snapshot.inGate > 0 && (
+            <span style={{ color: '#64748b' }}>
+              {' '}— {snapshot.needsBrief} tagged needs-brief{snapshot.needsBrief > 0 ? ' (refused until a brief exists)' : ''}, {snapshot.unestimated} unestimated
+            </span>
+          )}
+        </div>
+        {gateHasVersion && snapshot.unversionedOutsideGate > 0 && (
+          <div style={{ color: '#b45309' }}>
+            <strong>{snapshot.unversionedOutsideGate}</strong> pullable tickets have no version and are invisible to this gate — version them in or out.
+          </div>
+        )}
+        {snapshot.unknownGateEntries.length > 0 && (
+          <div style={{ color: '#b91c1c' }}>Gate has an unreadable entry — the queue is empty until it is removed (see Dispatch).</div>
+        )}
+
+        <div style={{ color: '#64748b', fontSize: 12, marginTop: 8 }}>
+          {last
+            ? <>Last knob write: {KNOB_LABEL[last.field]} {formatKnobValue(last.field, last.oldValue, versions)} → {formatKnobValue(last.field, last.newValue, versions)} · {last.actor ?? 'API key / system'} · {formatAge(last.at, now)} ago</>
+            : <>No knob write in the audit yet — the trail starts with the first write after this feature shipped.</>}
+        </div>
+        <Muted>Worker states (parked, limit-parked, at a prompt) live on the satellites and are not shown here yet.</Muted>
+      </div>
+    </Card>
+  );
+}
+
+// ── Pieces ─────────────────────────────────────────────────────────
+
+function KnobRow({ field, write, versions, hint, children }: { field: KnobField; write: KnobWrite | undefined; versions: Version[]; hint: string; children: React.ReactNode }) {
+  const now = new Date();
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: '#334155', minWidth: 48 }} title={hint}>{KNOB_LABEL[field]}</span>
+        <span style={{ fontSize: 11, color: '#94a3b8' }}>
+          {write
+            ? <>last: {formatKnobValue(field, write.oldValue, versions)} → {formatKnobValue(field, write.newValue, versions)} · {write.actor ?? 'API key / system'} · {formatAge(write.at, now)} ago</>
+            : 'no write on record'}
+        </span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ApplyButton({ dirty, busy, onClick }: { dirty: boolean; busy: boolean; onClick: () => void }) {
+  return (
+    <button style={{ ...btn, ...(dirty ? btnPrimary : {}) }} disabled={!dirty || busy} onClick={onClick} title={dirty ? 'Write to the map — the fleet follows within ~2 min' : 'Nothing changed'}>
+      {busy ? 'Saving…' : 'Apply'}
+    </button>
+  );
+}
+
+const row: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, marginTop: 4 };
+const pill: React.CSSProperties = { padding: '2px 10px', borderRadius: 999, fontSize: 11, fontWeight: 700, letterSpacing: 0.3 };
+const chip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 2, padding: '2px 4px 2px 8px', borderRadius: 999, background: '#eef2ff', color: '#3730a3', fontSize: 12, border: '1px solid #c7d2fe' };
+const chipWarn: React.CSSProperties = { background: '#fee2e2', color: '#991b1b', border: '1px solid #fecaca' };
+const chipGhost: React.CSSProperties = { background: 'transparent', color: '#64748b', border: '1px dashed #cbd5e1', cursor: 'pointer', padding: '2px 8px', fontFamily: 'inherit' };
+const chipX: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontSize: 12, padding: '0 3px', lineHeight: 1, fontFamily: 'inherit' };
+const input: React.CSSProperties = { fontSize: 12, padding: '3px 6px', border: '1px solid #cbd5e1', borderRadius: 6, fontFamily: 'inherit', background: '#fff' };
+const btn: React.CSSProperties = { fontSize: 12, padding: '3px 10px', border: '1px solid #cbd5e1', borderRadius: 6, background: '#fff', color: '#334155', cursor: 'pointer', fontFamily: 'inherit' };
+const btnPrimary: React.CSSProperties = { background: '#4f46e5', border: '1px solid #4f46e5', color: '#fff' };
+const warnBox: React.CSSProperties = { background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 8, padding: '6px 10px', fontSize: 12, marginBottom: 6 };

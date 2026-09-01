@@ -147,6 +147,13 @@ export interface MindmapState {
   closeMap: () => void;
   updateMapName: (name: string) => void;
   /**
+   * Write map settings (the Leidang dispatch knobs and friends) with an
+   * optimistic local update; reverts on failure and returns false. Every
+   * write moves the fleet within ~2 min, so callers apply explicitly, never
+   * on-change.
+   */
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy'>>) => Promise<boolean>;
+  /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
    * can immediately assign it to a node via updateNode phaseId), or null
@@ -450,6 +457,31 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       // Revert on error
       set({ currentMap: state.currentMap });
     });
+  },
+
+  updateMapSettings: async (fields) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    const before = state.currentMap;
+    if (!mapId || !before) return false;
+
+    set({ currentMap: { ...before, ...fields } });
+    try {
+      const saved = await api.updateMap(mapId, fields);
+      // The server clamps (cap → int ≥ 0) — mirror what it kept, not what
+      // was sent. Guard against a map switch during the round trip.
+      const now = get();
+      if (now.currentMapId === mapId && now.currentMap) {
+        set({ currentMap: { ...now.currentMap, ...saved } });
+      }
+      return true;
+    } catch (e: any) {
+      const now = get();
+      if (now.currentMapId === mapId) {
+        set({ currentMap: before, error: e?.message ?? 'Failed to save map settings' });
+      }
+      return false;
+    }
   },
 
   createPhase: async (name: string) => {
@@ -1442,6 +1474,15 @@ function handleWsMessage(
 
       const nodes = { ...state.nodes, [serverNode.id]: serverNode };
       set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+
+    // Map settings changed by someone else (a PM in another tab, the
+    // Leidang orchestrator's cap/policy write). Row only — nodes untouched.
+    case 'map:updated': {
+      const serverMap = msg.map as MindMap;
+      if (!state.currentMap || state.currentMap.id !== serverMap.id) return;
+      set({ currentMap: { ...state.currentMap, ...serverMap } });
       break;
     }
 
