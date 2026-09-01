@@ -85,6 +85,20 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: mocks.getNodeMock,
   createNode: vi.fn(),
   updateNode: mocks.updateNodeMock,
+  // The webhook's node lookup moved into db/nodes.js (it used to be a
+  // second copy inside routes/integrations.ts). Reproduce the real scan
+  // over this file's own node rows so the route keeps resolving nodes
+  // exactly as before.
+  findNodeIdByExternalId: async (externalId: string) => {
+    const rows = (await mocks.nodeRowsMock()) as Array<Record<string, unknown>>;
+    for (const row of rows) {
+      const links = (row.externalLinks ?? []) as Array<{ provider: string; externalId: string }>;
+      if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+        return row.id as string;
+      }
+    }
+    return null;
+  },
   notDeleted: { __pred: true, check: () => true },
 }));
 

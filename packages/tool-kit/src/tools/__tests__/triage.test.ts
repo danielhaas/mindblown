@@ -132,6 +132,7 @@ function makeRecorder(): Recorder {
     claimNode: async () => { throw new Error('not used'); },
     releaseNode: async () => { throw new Error('not used'); },
     conflictScan: async () => { throw new Error('not used'); },
+    auditClosedIssues: async () => { throw new Error('not used'); },
   };
   return state;
 }

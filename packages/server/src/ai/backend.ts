@@ -13,6 +13,8 @@ import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
+import { auditClosedIssues } from '../sync/closedIssueAudit.js';
+import { getGitHubContextForMap } from '../lib/githubContext.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -256,5 +258,27 @@ export function createChatBackend(userId: string): ToolBackend {
     claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
     releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
+
+    // ── Closed-issue audit (premature-close backfill) ─────────────
+    //
+    // Deliberately read-only on this surface: the in-app chat backend
+    // runs as whichever user is typing, with none of the admin gate the
+    // HTTP route enforces. An LLM turn must not be able to reopen a
+    // hundred tickets because a sentence read like a request to. The
+    // write path stays on the admin REST route (and the MCP tool that
+    // calls it), where `requireAdmin` is real.
+    auditClosedIssues: async (mapId, opts) => {
+      const ctx = await getGitHubContextForMap(mapId);
+      if (!ctx) throw new Error(`Map ${mapId} has no GitHub integration configured`);
+      return auditClosedIssues({
+        owner: ctx.owner,
+        repo: ctx.repo,
+        token: ctx.token,
+        dryRun: true,
+        closedBy: opts.closedBy,
+        since: opts.since ?? null,
+        limit: opts.limit,
+      });
+    },
   };
 }

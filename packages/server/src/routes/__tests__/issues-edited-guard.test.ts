@@ -76,6 +76,17 @@ vi.mock('../../db/nodes.js', () => ({
   createNode: vi.fn(),
   updateNode: mocks.updateNodeMock,
   setExternalLinkState: vi.fn(async () => true),
+  // Moved out of routes/integrations.ts, where it was a second copy of
+  // the same scan. Same behaviour, over this file's node rows.
+  findNodeIdByExternalId: async (externalId: string) => {
+    for (const row of await mocks.selectNodesMock()) {
+      const links = (row.externalLinks ?? []) as Array<{ provider: string; externalId: string }>;
+      if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+        return row.id as string;
+      }
+    }
+    return null;
+  },
   notDeleted: { __pred: true, check: () => true },
 }));
 

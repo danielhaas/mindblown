@@ -18,6 +18,12 @@ export {
   getGitHubIssue,
   verifyWebhookSignature,
   GitHubApiError,
+  GitHubScanTruncatedError,
+  reopenGitHubIssue,
+  getRepoDefaultBranch,
+  findClosingPrsForIssue,
+  probeIssueLanded,
+  getIssueCloseEvent,
 } from './github.js';
 
 export type {
@@ -25,6 +31,12 @@ export type {
   GitHubWebhookPayload,
   WebhookResult,
   ImportedIssue,
+  ClosingPrRef,
+  IssueLandingProbe,
+  IssueCloseEvent,
+  IssueStateHoldReason,
+  UpdateIssueResult,
+  UpdateIssueOptions,
 } from './github.js';
 
 export {

@@ -29,6 +29,8 @@ import {
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import * as PrSync from '../sync/prSync.js';
+import { handleAbandonedPr } from '../sync/prAbandon.js';
+import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { markWorkStarted } from '../sync/workStartSync.js';
 import { triageIssue } from '../sync/triage.js';
 import { buildMapContext } from '../sync/mapContext.js';
@@ -177,20 +179,16 @@ async function getGitHubContextForRepo(
 }
 
 // ── Helper: find node by external ID ──────────────────────────────
-
-async function findNodeByExternalId(externalId: string): Promise<string | null> {
-  // Search all nodes for matching externalLink
-  const allNodes = await db
-    .select({ id: nodes.id, externalLinks: nodes.externalLinks })
-    .from(nodes)
-    .where(notDeleted);
-  for (const node of allNodes) {
-    const links = (node.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
-      return node.id;
-    }
-  }
-  return null;
+//
+// The scan itself lives in `db/nodes.ts`. It used to live here as well,
+// byte-identical, which is one full-table scan written twice — and the
+// closed-issue audit now calls it once per condemned issue, so the two
+// copies were about to drift under different load. One name, one query.
+// Delegated lazily rather than aliased at module scope: an alias binds
+// the export at import time, which turns "this test file mocks db/nodes
+// and never touches node lookup" into a module-load failure.
+function findNodeByExternalId(externalId: string): Promise<string | null> {
+  return nodeDb.findNodeIdByExternalId(externalId);
 }
 
 // ── Helper: get workspace ID for a map ────────────────────────────
@@ -1046,6 +1044,73 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── POST /api/maps/:mapId/github/audit-closed-issues ──────────
+  //
+  // Inventory sweep for the premature-close incident class: issues
+  // closed as COMPLETED whose close carries no merge commit and for
+  // which no closing PR ever merged to the default branch. Those tickets
+  // claim shipped work that is not on the default branch, and a
+  // CLOSED/COMPLETED ticket ends the search.
+  //
+  // **`dryRun` defaults to true** — the endpoint reports unless the
+  // caller explicitly passes `dryRun: false`, which reopens each
+  // condemned issue and rolls its node back off done. Admin-only: it
+  // fans out GitHub API calls and, in write mode, mutates tickets.
+  app.post<{ Params: { mapId: string } }>(
+    '/api/maps/:mapId/github/audit-closed-issues',
+    async (req, reply) => {
+      if (!req.userId) {
+        return reply.status(401).send({
+          error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+        });
+      }
+      if (!(await requireAdmin(req))) {
+        return reply.status(403).send({
+          error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        });
+      }
+
+      const ctx = await getGitHubContextForMap(req.params.mapId);
+      if (!ctx) {
+        return reply.status(400).send({
+          error: {
+            code: 'NO_GITHUB_INTEGRATION',
+            message: `Map ${req.params.mapId} has no GitHub integration configured`,
+          },
+        });
+      }
+
+      const body = (req.body ?? {}) as {
+        dryRun?: boolean;
+        closedBy?: string;
+        since?: string;
+        limit?: number;
+      };
+
+      try {
+        const result = await auditClosedIssues({
+          owner: ctx.owner,
+          repo: ctx.repo,
+          token: ctx.token,
+          // Explicit `=== false` so a missing/garbled field reports
+          // rather than writes.
+          dryRun: body.dryRun !== false,
+          closedBy: body.closedBy,
+          since: body.since ?? null,
+          limit: body.limit,
+        });
+        return reply.send(result);
+      } catch (err) {
+        return reply.status(500).send({
+          error: {
+            code: 'CLOSED_ISSUE_AUDIT_FAILED',
+            message: err instanceof Error ? err.message : 'Closed-issue audit failed',
+          },
+        });
+      }
+    },
+  );
+
   // ── POST /api/maps/:mapId/github/reconcile ────────────────────
   // On-demand catch-up reconcile for the repo bound to this map.
   // Webhooks normally drive realtime sync; this endpoint is the manual
@@ -1546,11 +1611,31 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // reopened — revert to whatever was captured on the most recent close.
         // If we never saw a close (null), fall back to an in-progress state.
         //
-        // Same gate as the catchup reconciler (prBlocksNodeReopen in
-        // @mindblown/core): while a PR is in flight and no snapshot
-        // exists, "node done" is deliberate state and the fallback
-        // reset would wipe progress irrecoverably — webhook and
-        // catchup must implement the SAME policy for this transition.
+        // Shares ONE gate with the catchup reconciler — `prBlocksNodeReopen`
+        // (@mindblown/core): while a PR is in flight and no snapshot exists,
+        // "node done" is deliberate state and the fallback reset would wipe
+        // progress irrecoverably.
+        //
+        // The catchup carries a SECOND, broader guard that this path
+        // deliberately does not (`emptyMirrorOnDoneNode` in
+        // sync/githubCatchup.ts). Do not "unify" them — the divergence is
+        // the point, because the two paths know different things:
+        //
+        //   - Here, `issues.reopened` is a WITNESSED act. Somebody reopened
+        //     the issue; GitHub says so. Acting on it is honouring a
+        //     decision.
+        //   - There, nothing happened. The catchup INFERS a reopen from a
+        //     steady state ("issue open + node done") on a 5-minute poll.
+        //     Since the close gate went in, that pairing is also the normal
+        //     state of a node whose PR is still running, so the inference
+        //     is wrong precisely when it is most destructive.
+        //
+        // Copying the catchup's guard into this handler would wall off the
+        // only remaining way a wrongly-closed issue gets repaired: a human
+        // reopens it on GitHub and nothing happens. The case is pinned by
+        // `issues-reopen-gate.test.ts` → "resets with the fallback when no
+        // PR is linked (legacy behavior)" (around :252). Read that test
+        // before touching this branch.
         const savedPct = links[linkIdx].previousPercentComplete;
         const savedStatus = links[linkIdx].previousStatus;
         if (prBlocksNodeReopen(node.linkedPr, hasCloseSnapshot(links[linkIdx]), node.completedAt)) {
@@ -1757,6 +1842,49 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // ── pull_request.closed + merged=false → undo the premature close ─
+    //
+    // The way back. An issue closed because its PR was opened is closed
+    // on a promise; when the PR dies unmerged the promise is broken and
+    // the ticket has to go back on the board. Without this, crm#6085's
+    // shape repeats forever: closed 2026-07-27 for PR #6089, PR never
+    // merged, ticket still reads COMPLETED while the work is missing.
+    //
+    // `handleAbandonedPr` re-checks against GitHub before touching
+    // anything — a close carrying a commit id, or an issue whose work a
+    // REPLACEMENT PR already landed, is left alone. Best-effort: a
+    // failure here must not fail the webhook, and the closed-issue audit
+    // is the backstop.
+    if (
+      event === 'pull_request' &&
+      payloadAction === 'closed' &&
+      repoFullName &&
+      (payload.pull_request as { merged?: boolean } | undefined)?.merged !== true
+    ) {
+      const abandonedPr = payload.pull_request as
+        | { number: number; title?: string | null; body: string | null }
+        | undefined;
+      if (abandonedPr) {
+        // Detached, like the title-only-close sweep on the merge path
+        // below. The sweep costs 3 + up to 25 sequential GitHub calls
+        // PER `Closes #N` reference; awaiting it inside the handler puts
+        // a multi-reference PR past GitHub's 10 s webhook delivery
+        // timeout, which turns a successful sweep into a redelivery and
+        // runs the whole thing again.
+        void (async () => {
+          try {
+            const ctx = await getGitHubContextForRepo(repoFullName);
+            if (ctx) await handleAbandonedPr(ctx, abandonedPr);
+          } catch (err) {
+            console.warn(
+              '[pr-abandon] reopen sweep failed:',
+              err instanceof Error ? err.message : err,
+            );
+          }
+        })();
+      }
+    }
+
     // ── pull_request: closed + merged=true → transition linked nodes ─
     //
     // #152 — when a PR merges with `Closes #N` references in title or
@@ -1811,7 +1939,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         merged: boolean;
         body: string | null;
         title: string;
+        merge_commit_sha?: string | null;
       };
+      // The one piece of durable proof that this issue's work shipped.
+      // Stamped onto the link so the outbound sync can close the issue as
+      // COMPLETED later on local evidence — without it, a done-node whose
+      // mirror was already cleared looks exactly like a node that never
+      // had a PR, which is how the premature-close incident got its
+      // COMPLETED/commit_id=null closes.
+      const mergeCommitSha = pr.merge_commit_sha ?? null;
       const refs = extractClosingIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
       const transitions: Array<{
         externalId: string;
@@ -1832,7 +1968,26 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           continue;
         }
         // Idempotency: replay → no second transition.
+        //
+        // The node is normally ALREADY done here — the coding agent marks
+        // it done when it opens the PR — so this is the branch the merge
+        // evidence has to be recorded on, not an edge case. Guarded on
+        // "sha not yet stored" so a webhook replay still writes nothing.
         if (node.status === 'done' && node.percentComplete === 100) {
+          if (mergeCommitSha) {
+            const links = node.externalLinks.map((l) => ({ ...l }));
+            const idx = links.findIndex(
+              (l) => l.provider === 'github' && l.externalId === externalId,
+            );
+            if (idx >= 0 && links[idx].mergeCommitSha !== mergeCommitSha) {
+              links[idx] = {
+                ...links[idx],
+                mergeCommitSha,
+                mergedPrNumber: pr.number,
+              };
+              await nodeDb.updateNode(nodeId, { externalLinks: links });
+            }
+          }
           transitions.push({ externalId, nodeId, status: 'already_done' });
           continue;
         }
@@ -1846,6 +2001,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             previousPercentComplete: node.percentComplete,
             previousStatus: node.status,
             lastSyncedAt: new Date().toISOString(),
+            ...(mergeCommitSha
+              ? { mergeCommitSha, mergedPrNumber: pr.number }
+              : {}),
           };
         }
         const updates: nodeDb.UpdateNodeInput = {

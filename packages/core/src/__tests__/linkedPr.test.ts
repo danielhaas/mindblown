@@ -1,6 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { prBlocksIssueClose, prBlocksNodeReopen, hasCloseSnapshot } from '../linkedPr.js';
-import type { LinkedPrState } from '../types.js';
+import {
+  prBlocksIssueClose,
+  prBlocksNodeReopen,
+  hasCloseSnapshot,
+  issueCloseAction,
+} from '../linkedPr.js';
+import type { ExternalLink, LinkedPrState } from '../types.js';
 
 const PR_CLOSED_AT = '2026-08-23T00:00:00.000Z';
 const BEFORE_CLOSE = '2026-08-22T00:00:00.000Z';
@@ -80,6 +85,77 @@ describe('prBlocksNodeReopen', () => {
 
   it('allows without a mirror', () => {
     expect(prBlocksNodeReopen(null, false)).toBe(false);
+  });
+});
+
+describe('issueCloseAction', () => {
+  const link = (extra: Partial<ExternalLink> = {}): ExternalLink =>
+    ({
+      provider: 'github',
+      externalId: 'o/r#1',
+      url: 'u',
+      syncEnabled: true,
+      lastSyncedAt: null,
+      ...extra,
+    }) as ExternalLink;
+
+  it('closes on a recorded merge commit — the only hard local evidence', () => {
+    expect(issueCloseAction(null, link({ mergeCommitSha: 'abc123' }))).toEqual({
+      kind: 'close',
+      stateReason: 'completed',
+      because: 'merge_commit',
+    });
+  });
+
+  it('trusts the merge commit even while a PR mirror is armed', () => {
+    // A follow-up PR opened after the work landed must not re-hide a
+    // legitimately shipped ticket.
+    expect(
+      issueCloseAction(pr('open'), link({ mergeCommitSha: 'abc123' })),
+    ).toEqual({ kind: 'close', stateReason: 'completed', because: 'merge_commit' });
+  });
+
+  it('holds while the mirror shows a PR that has not landed', () => {
+    expect(issueCloseAction(pr('open'), link())).toEqual({
+      kind: 'hold',
+      because: 'pr_not_landed',
+    });
+    expect(issueCloseAction(pr('closed'), link())).toEqual({
+      kind: 'hold',
+      because: 'pr_not_landed',
+    });
+    expect(
+      issueCloseAction(pr('merged', { landedOnDefault: false }), link()),
+    ).toEqual({ kind: 'hold', because: 'pr_not_landed' });
+  });
+
+  it('closes on a mirror that survived as a default-branch merge', () => {
+    expect(issueCloseAction(pr('merged'), link())).toEqual({
+      kind: 'close',
+      stateReason: 'completed',
+      because: 'mirror_merged',
+    });
+  });
+
+  it('demands a probe when nothing local says the work landed', () => {
+    // THE incident shape: node marked done seconds after the PR opened,
+    // the `pull_request.opened` webhook not applied yet, so no mirror.
+    // The old gate read that as "no PR exists" and closed COMPLETED.
+    expect(issueCloseAction(null, link())).toEqual({ kind: 'probe' });
+    expect(issueCloseAction(undefined, undefined)).toEqual({ kind: 'probe' });
+  });
+
+  it('probes rather than holds when a later done-claim supersedes a dead PR', () => {
+    // The livelock escape has to survive the new decision layer: an
+    // abandoned PR plus a fresher done-claim must still be able to
+    // reach a close (via the probe), not sit blocked forever.
+    expect(
+      issueCloseAction(
+        { ...pr('closed'), lastSyncedAt: PR_CLOSED_AT },
+        link(),
+        AFTER_CLOSE,
+      ),
+    ).toEqual({ kind: 'probe' });
   });
 });
 
