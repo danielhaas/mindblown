@@ -2204,10 +2204,15 @@ server.tool(
             : e.eventType.startsWith('version.')
               ? '(version)'
               : '(no node)';
+        // "who" matters most for map settings (who put the fleet on hold?);
+        // the log only carries the user id, so it is shown short.
+        const by = e.userId ? `  by ${e.userId.slice(0, 8)}` : '';
         if (e.eventType.endsWith('.field_changed')) {
           lines.push(
-            `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}`,
+            `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}${by}`,
           );
+        } else if (e.eventType === 'node.restored') {
+          lines.push(`${when}  restored  — ${nodeLabel}${by}`);
         } else if (e.eventType === 'node.created') {
           const newVal = e.newValue as { text?: string } | null;
           lines.push(`${when}  created: "${newVal?.text ?? ''}"  — ${nodeLabel}`);

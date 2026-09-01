@@ -109,6 +109,7 @@ export {
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,
   isBugNode,
+  hasBrief,
   parseGateEntry,
   matchesDispatchGate,
   pullableNodes,

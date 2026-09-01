@@ -7,6 +7,8 @@
  * a second, slightly different reading of the gate would show a healthy
  * queue while every satellite gets `reason: empty`, or the reverse. Same
  * reason the PR gates moved into core: one predicate, two consumers.
+ * `selectPullCandidates` (server) builds on `pullableNodes`, `matchesDispatchGate`
+ * and `hasBrief` from here; `dispatchQueueSnapshot` is the read-only view.
  *
  * Vocabulary is deliberately tiny: `version:<versionId>` and `type:bug`.
  * Unknown entries match NOTHING (fail-closed): a typo in the gate empties
@@ -16,6 +18,7 @@ import type { Node, NodeMap, StatusDef } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
 import { buildIsDonePredicate, buildTodoIds } from './statusWorkflow.js';
+import { proseMirrorToPlainText } from './richtext.js';
 
 /** Default ranking when `dispatchPolicy` is empty. */
 export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
@@ -35,6 +38,19 @@ export const GATE_VERSION_PREFIX = 'version:';
  *  (node.tags mirrors GitHub labels, so a GH `bug` label counts). */
 export function isBugNode(node: Pick<Node, 'tags'>): boolean {
   return node.tags.some((t) => t.toLowerCase() === 'bug');
+}
+
+/**
+ * Empty-brief guard: a ticket is dispatchable only if the worker gets a
+ * self-contained brief — a non-empty description, or a linked GitHub
+ * issue it can read (inbound sync copies issue bodies into the
+ * description, so a linked node normally carries the text locally too).
+ * This is the predicate; the `needs-brief` TAG is only the trace the pull
+ * leaves behind and is never removed when a brief is added later.
+ */
+export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boolean {
+  if (proseMirrorToPlainText(node.description).trim() !== '') return true;
+  return node.externalLinks.some((l) => l.provider === 'github');
 }
 
 export type GateEntry =
@@ -67,8 +83,8 @@ export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap
 
 /**
  * The pullable set BEFORE the gate: a non-root node in a todo status (or
- * no status), unclaimed, with every dependency predecessor done. This is
- * the exact filter `selectPullCandidates` applies server-side.
+ * no status), unclaimed, with every dependency predecessor done. The
+ * server's `selectPullCandidates` starts from exactly this set.
  */
 export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable: Node[]; nodeMap: NodeMap } {
   const isDone = buildIsDonePredicate(workflow);
@@ -92,11 +108,15 @@ export interface DispatchQueueSnapshot {
   cap: number;
   /** Pullable before the gate. */
   pullable: number;
-  /** Pullable AND inside the gate — what the fleet can actually receive. */
+  /** Pullable, inside the gate, WITH a brief — what a pull can actually grant. */
   inGate: number;
-  /** In-gate tickets the queue will refuse (tagged needs-brief on a prior pull). */
+  /**
+   * Pullable and inside the gate but without a brief — the pull refuses
+   * these (and tags them `needs-brief`). Counted by the predicate, not the
+   * tag, so a ticket that got its brief later drops out of this number.
+   */
   needsBrief: number;
-  /** In-gate tickets without an effort estimate. */
+  /** Grantable (inGate) tickets without an effort estimate. */
   unestimated: number;
   /**
    * Pullable tickets with NO effective version while the gate fences on a
@@ -106,19 +126,23 @@ export interface DispatchQueueSnapshot {
   unversionedOutsideGate: number;
   /** Gate entries the server cannot interpret — each one empties the queue. */
   unknownGateEntries: string[];
-  /** In-gate ticket ids, for drill-down lists. */
+  /** Grantable ticket ids, for drill-down lists. */
   inGateIds: string[];
   state: DispatchState;
 }
 
 /**
- * What the pull queue looks like right now, from a full node list.
+ * What the pull queue looks like right now, from a full node list — the
+ * FLEET-WIDE reading. Profile routing (`profilePolicy`) only splits this
+ * set between heavy/standard/light pullers and a heavy puller takes
+ * anything, so it does not change what is grantable to the fleet as a
+ * whole; it is deliberately not modelled here.
  *
  * `state` precedence mirrors the server's refusal order: hold (cap 0) →
- * full (claims ≥ cap) → empty (nothing pullable inside the gate) →
+ * full (claims ≥ cap) → empty (nothing grantable inside the gate) →
  * running. "empty" with a cap > 0 is the phase-change signal from the
- * design (queue ran dry), OR a fail-closed gate — `unknownGateEntries`
- * tells the two apart.
+ * design (queue ran dry), OR a fail-closed gate, OR every in-gate ticket
+ * lacking a brief — `unknownGateEntries` and `needsBrief` tell them apart.
  */
 export function dispatchQueueSnapshot(
   nodes: Node[],
@@ -127,7 +151,8 @@ export function dispatchQueueSnapshot(
   const cap = Math.max(0, Math.floor(opts.cap));
   const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
-  const inGate = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  const gated = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  const inGate = gated.filter(hasBrief);
   const gateHasVersion = opts.gate.some((g) => parseGateEntry(g).kind === 'version');
   const unversionedOutsideGate = gateHasVersion
     ? pullable.filter((n) => effectiveVersionId(n.id, nodeMap) === null).length
@@ -145,7 +170,7 @@ export function dispatchQueueSnapshot(
     cap,
     pullable: pullable.length,
     inGate: inGate.length,
-    needsBrief: inGate.filter((n) => n.tags.includes(NEEDS_BRIEF_TAG)).length,
+    needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
     unversionedOutsideGate,
     unknownGateEntries,

@@ -144,8 +144,12 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     async updateMap(mapId, fields) {
-      const updated = await mapDb.updateMap(mapId, fields);
+      // Attributed + broadcast like the REST route: a dispatch-knob write
+      // from the in-app chat must show the chatting user in the audit and
+      // reach an open cockpit without a reload.
+      const updated = await mapDb.updateMap(mapId, fields, userId);
       if (!updated) throw new Error(`Map ${mapId} not found`);
+      broadcast(mapId, { type: 'map:updated', map: updated });
       return toMapSummary(updated);
     },
 

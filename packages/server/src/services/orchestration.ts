@@ -28,7 +28,9 @@ import {
   proseMirrorToPlainText,
   effectiveVersionId,
   isBugNode,
+  hasBrief,
   matchesDispatchGate,
+  pullableNodes,
   DEFAULT_DISPATCH_POLICY,
   NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
@@ -307,16 +309,9 @@ export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): 
   });
 }
 
-/**
- * Empty-brief guard: a ticket is dispatchable only if the worker gets a
- * self-contained brief — a non-empty description, or a linked GitHub
- * issue it can read (inbound sync copies issue bodies into the
- * description, so a linked node normally carries the text locally too).
- */
-export function hasBrief(node: CoreNode): boolean {
-  if (proseMirrorToPlainText(node.description).trim() !== '') return true;
-  return node.externalLinks.some((l) => l.provider === 'github');
-}
+// Empty-brief guard lives in core (dispatch.ts) next to the gate predicate;
+// re-exported so existing imports keep working.
+export { hasBrief };
 
 /** Puller profiles the routing table recognizes. Anything else = standard. */
 export type PullProfile = 'heavy' | 'standard' | 'light';
@@ -401,17 +396,9 @@ export function selectPullCandidates(
   if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [] };
   if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [] };
 
-  const isDone = buildIsDonePredicate(opts.workflow);
-  const todoIds = buildTodoIds(opts.workflow);
-  const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
-
-  const ready = allNodes.filter(
-    (n) =>
-      n.parentId !== null && // the root is not a ticket
-      (n.status === null || todoIds.has(n.status)) &&
-      n.claimedBySession === null &&
-      isReady(n, nodeMap, isDone),
-  );
+  // Same pullable set the cockpit's Dispatch card renders (core/dispatch.ts):
+  // non-root, todo-or-null status, unclaimed, predecessors done.
+  const { pullable: ready, nodeMap } = pullableNodes(allNodes, opts.workflow);
   const gated = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Profile routing (#262): a configured policy FILTERS eligibility here;
   // ranking below is untouched. No policy = no filter = pre-#262 behavior.

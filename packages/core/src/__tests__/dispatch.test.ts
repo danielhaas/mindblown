@@ -14,6 +14,7 @@ import {
   matchesDispatchGate,
   pullableNodes,
   dispatchQueueSnapshot,
+  hasBrief,
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
@@ -32,7 +33,8 @@ function n(p: Partial<Node> & { id: string }): Node {
     versionId: null,
     claimedBySession: null,
     claimedAt: null,
-    externalLinks: [],
+    // A linked issue = a brief; tests that need a briefless ticket pass externalLinks: [].
+    externalLinks: [{ provider: 'github', externalId: `#${p.id}`, url: 'https://github.com/o/r/issues/1' }],
     ...p,
   } as unknown as Node;
 }
@@ -131,13 +133,29 @@ describe('dispatchQueueSnapshot', () => {
     expect(dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['type:bug'] }).unversionedOutsideGate).toBe(0);
   });
 
-  it('counts needs-brief and unestimated inside the gate only', () => {
-    const nb = n({ id: 'nb', status: 'todo', tags: [NEEDS_BRIEF_TAG], effortEstimate: 2 });
-    const s = dispatchQueueSnapshot([...all, nb], { workflow: WORKFLOW, cap: 6, gate: [] });
+  it('needs-brief is the PREDICATE (no description, no link), not the tag; briefless tickets are not grantable', () => {
+    // Tagged on an earlier pull, but has a brief now → not counted.
+    const tagged = n({ id: 'tagged', status: 'todo', tags: [NEEDS_BRIEF_TAG], effortEstimate: 2 });
+    // Never pulled, no brief → counted, and excluded from inGate.
+    const briefless = n({ id: 'briefless', status: 'todo', externalLinks: [], description: null });
+    const s = dispatchQueueSnapshot([...all, tagged, briefless], { workflow: WORKFLOW, cap: 6, gate: [] });
     expect(s.needsBrief).toBe(1);
-    expect(s.unestimated).toBe(3); // leaf, bug, loose — nb is estimated
-    const gated = dispatchQueueSnapshot([...all, nb], { workflow: WORKFLOW, cap: 6, gate: ['version:v1'] });
+    expect(s.inGateIds).not.toContain('briefless');
+    expect(s.inGateIds).toContain('tagged');
+    expect(s.unestimated).toBe(3); // leaf, bug, loose — tagged is estimated, briefless is not grantable
+    const gated = dispatchQueueSnapshot([...all, tagged, briefless], { workflow: WORKFLOW, cap: 6, gate: ['version:v1'] });
     expect(gated.needsBrief).toBe(0);
     expect(gated.unestimated).toBe(1);
+  });
+
+  it('a description counts as a brief; an all-briefless gate is "empty" with needsBrief set', () => {
+    const described = n({ id: 'described', status: 'todo', externalLinks: [], description: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: 'do it' }] }] } as never });
+    const bare = n({ id: 'bare', status: 'todo', externalLinks: [] });
+    expect(hasBrief(described)).toBe(true);
+    expect(hasBrief(bare)).toBe(false);
+    const s = dispatchQueueSnapshot([root, bare], { workflow: WORKFLOW, cap: 6, gate: [] });
+    expect(s.state).toBe('empty');
+    expect(s.needsBrief).toBe(1);
+    expect(s.pullable).toBe(1);
   });
 });

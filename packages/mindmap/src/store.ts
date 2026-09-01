@@ -11,6 +11,19 @@ import type { ViewRole } from './roles.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
+/** Map fields a `map:updated` broadcast may overwrite locally (mirrors the
+ *  server's AUDITED_MAP_FIELDS plus the timestamp). */
+const BROADCAST_MAP_SETTINGS = [
+  'maxActiveClaims',
+  'dispatchGate',
+  'dispatchPolicy',
+  'profilePolicy',
+  'wipLimit',
+  'focusFactor',
+  'workerCount',
+  'updatedAt',
+] as const satisfies readonly (keyof MindMap)[];
+
 function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeValues> {
   const arr = Object.values(nodes);
   if (arr.length === 0) return new Map();
@@ -1478,11 +1491,17 @@ function handleWsMessage(
     }
 
     // Map settings changed by someone else (a PM in another tab, the
-    // Leidang orchestrator's cap/policy write). Row only — nodes untouched.
+    // Leidang orchestrator's cap/policy write). Only the fleet-facing
+    // settings are merged: an optimistic rename in flight (updateMapName is
+    // fire-and-forget) must not be reverted by an unrelated cap broadcast.
     case 'map:updated': {
       const serverMap = msg.map as MindMap;
       if (!state.currentMap || state.currentMap.id !== serverMap.id) return;
-      set({ currentMap: { ...state.currentMap, ...serverMap } });
+      const patch: Partial<MindMap> = {};
+      for (const key of BROADCAST_MAP_SETTINGS) {
+        if (key in serverMap) (patch as Record<string, unknown>)[key] = serverMap[key];
+      }
+      set({ currentMap: { ...state.currentMap, ...patch } });
       break;
     }
 

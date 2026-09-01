@@ -11,6 +11,7 @@
 import type { Node, Version } from '@mindblown/core';
 import {
   parseGateEntry,
+  compareVersions,
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,
   DISPATCH_POLICY_KEYS,
@@ -99,7 +100,8 @@ export { GATE_BUGS_ONLY };
  */
 export function versionGateOptions(versions: Version[]): Version[] {
   const rank: Record<Version['status'], number> = { active: 0, planning: 1, released: 2, archived: 3 };
-  return [...versions].sort((a, b) => rank[a.status] - rank[b.status] || b.sortOrder - a.sortOrder || a.name.localeCompare(b.name));
+  // Within a status band, the codebase's canonical release order.
+  return [...versions].sort((a, b) => rank[a.status] - rank[b.status] || compareVersions(a, b));
 }
 
 // ── Policy ─────────────────────────────────────────────────────────
