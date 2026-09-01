@@ -9,6 +9,7 @@
  */
 
 import type { PrRecord } from '@mindblown/core';
+import { paginateGitHub } from '@mindblown/integrations';
 import type { GitHubMapContext } from './githubContext.js';
 
 const PER_PAGE = 100;
@@ -72,55 +73,58 @@ async function fetchMergedPrsUncached(
   maxPages: number,
 ): Promise<FetchMergedPrsResult> {
   const out: PrRecord[] = [];
-  let page = 1;
   let truncated = false;
 
-  for (; page <= maxPages; page++) {
-    const url =
+  interface PrRow {
+    number: number;
+    title: string;
+    body: string | null;
+    created_at: string;
+    merged_at: string | null;
+    updated_at: string;
+  }
+
+  try {
+    // Follows `Link: rel="next"` instead of counting `page` up. Same
+    // reason as the issue-list walks in @mindblown/integrations: past a
+    // certain depth GitHub refuses `page` on a large dataset and answers
+    // 422. This endpoint sits on the same repo and the same depth
+    // budget, so it was one busy repo away from the identical break.
+    const walk = await paginateGitHub<PrRow>(
       `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls` +
-      `?state=closed&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${page}`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${ctx.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
+        `?state=closed&sort=updated&direction=desc&per_page=${PER_PAGE}`,
+      ctx.token,
+      {
+        maxPages,
+        onPage: (rows) => {
+          if (rows.length === 0) return false;
+
+          for (const r of rows) {
+            if (r.merged_at && Date.parse(r.merged_at) >= sinceMs) {
+              out.push({
+                number: r.number,
+                title: r.title,
+                body: r.body,
+                createdAt: r.created_at,
+                mergedAt: r.merged_at,
+              });
+            }
+          }
+
+          // Once the whole page's activity predates the window, older pages
+          // can't contain in-window merges (sorted by updated desc).
+          if (rows.every((r) => Date.parse(r.updated_at) < sinceMs)) return false;
+          return true;
+        },
       },
-    });
-    if (!res.ok) {
-      // Auth/rate-limit/other — return what we have rather than failing the report.
-      truncated = true;
-      break;
-    }
-    const rows = (await res.json()) as Array<{
-      number: number;
-      title: string;
-      body: string | null;
-      created_at: string;
-      merged_at: string | null;
-      updated_at: string;
-    }>;
-    if (rows.length === 0) break;
-
-    for (const r of rows) {
-      if (r.merged_at && Date.parse(r.merged_at) >= sinceMs) {
-        out.push({
-          number: r.number,
-          title: r.title,
-          body: r.body,
-          createdAt: r.created_at,
-          mergedAt: r.merged_at,
-        });
-      }
-    }
-
-    // A partial page is the last page — no need to request the next one.
-    if (rows.length < PER_PAGE) break;
-
-    // Once the whole page's activity predates the window, older pages can't
-    // contain in-window merges (sorted by updated desc).
-    const pageAllOld = rows.every((r) => Date.parse(r.updated_at) < sinceMs);
-    if (pageAllOld) break;
-    if (page === maxPages) truncated = true;
+    );
+    truncated = walk.truncated;
+  } catch {
+    // Auth / rate limit / anything else — return what we have rather than
+    // failing the whole report. Unchanged intent; the difference is that
+    // `paginateGitHub` throws where the raw fetch handed back a non-ok
+    // response for us to inspect.
+    truncated = true;
   }
 
   return { prs: out, truncated };

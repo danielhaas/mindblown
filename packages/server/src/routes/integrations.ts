@@ -15,6 +15,7 @@ import {
   mintInstallationToken,
   isGitHubAppConfigured,
   closeGitHubIssue,
+  GitHubPaginationLimitError,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
@@ -1101,9 +1102,16 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
         return reply.send(result);
       } catch (err) {
+        // A pagination-depth refusal gets its own code so the caller can
+        // tell "this repo is too big for one sweep, narrow it" apart from
+        // "the audit is broken". The message already names the way out;
+        // the code makes it greppable.
         return reply.status(500).send({
           error: {
-            code: 'CLOSED_ISSUE_AUDIT_FAILED',
+            code:
+              err instanceof GitHubPaginationLimitError
+                ? 'GITHUB_PAGINATION_LIMIT'
+                : 'CLOSED_ISSUE_AUDIT_FAILED',
             message: err instanceof Error ? err.message : 'Closed-issue audit failed',
           },
         });

@@ -108,11 +108,76 @@ export class GitHubApiError extends Error {
   }
 }
 
-async function githubFetch<T>(
+/**
+ * A 422 that means "this list is too deep for `page` — use cursors".
+ *
+ * GitHub refuses `page`-based pagination past a certain depth on large
+ * datasets and says so in the body. The raw message names the mechanism
+ * but not the way out, so the caller reads a 500 and has nothing to do
+ * about it. This subclass names the way out.
+ *
+ * The Link-header paginator below makes this unreachable for our own
+ * loops — GitHub hands us whichever scheme the endpoint wants. It stays
+ * because a hand-built `?page=` somewhere else, or an instance running a
+ * build from before this fix, still produces it, and then the message is
+ * the only self-help the operator gets.
+ */
+export class GitHubPaginationLimitError extends GitHubApiError {
+  constructor(body: string) {
+    super(422, body);
+    this.name = 'GitHubPaginationLimitError';
+    this.message =
+      'GitHub refused page-based pagination on this dataset — it is too large. ' +
+      'Narrow the range (pass `since`, or a smaller `limit`) and run it again. ' +
+      `Original: ${body}`;
+  }
+}
+
+function isPaginationLimit(status: number, body: string): boolean {
+  return (
+    status === 422 &&
+    /pagination with the page parameter is not supported/i.test(body)
+  );
+}
+
+/** A response body plus the one header that matters for paging. */
+export interface GitHubPage<T> {
+  data: T;
+  /**
+   * Absolute URL of the next page, from `Link: …; rel="next"`, or null
+   * on the last page.
+   */
+  nextUrl: string | null;
+}
+
+/**
+ * The `rel="next"` URL out of a GitHub `Link` header.
+ *
+ * Header shape:
+ *   `<https://api.github.com/…?page=2>; rel="next", <…>; rel="last"`
+ * or, on a cursor-paginated endpoint:
+ *   `<https://api.github.com/…?after=Y3Vyc29yOnYyOpHOAA>; rel="next"`
+ *
+ * We do not care which. That is the whole point: GitHub picks the scheme
+ * per endpoint and dataset size, so a caller that follows the header is
+ * right under both — and stays right if GitHub changes its mind.
+ *
+ * Exported for tests.
+ */
+export function parseLinkNext(linkHeader: string | null | undefined): string | null {
+  if (!linkHeader) return null;
+  for (const part of linkHeader.split(',')) {
+    const m = /<([^>]+)>\s*;\s*rel\s*=\s*"?next"?/i.exec(part);
+    if (m) return m[1];
+  }
+  return null;
+}
+
+export async function githubFetchPage<T>(
   path: string,
   token: string,
   options: RequestInit = {},
-): Promise<T> {
+): Promise<GitHubPage<T>> {
   const url = path.startsWith('http') ? path : `${GITHUB_API}${path}`;
   const res = await fetch(url, {
     ...options,
@@ -127,13 +192,76 @@ async function githubFetch<T>(
 
   if (!res.ok) {
     const body = await res.text();
+    if (isPaginationLimit(res.status, body)) throw new GitHubPaginationLimitError(body);
     throw new GitHubApiError(res.status, body);
   }
 
   // 204 No Content
-  if (res.status === 204) return undefined as unknown as T;
+  if (res.status === 204) {
+    return { data: undefined as unknown as T, nextUrl: null };
+  }
 
-  return res.json() as Promise<T>;
+  // `headers` is absent on hand-rolled test doubles; treat that as "no
+  // next page" rather than throwing.
+  const nextUrl = parseLinkNext(res.headers?.get?.('link'));
+  return { data: (await res.json()) as T, nextUrl };
+}
+
+async function githubFetch<T>(
+  path: string,
+  token: string,
+  options: RequestInit = {},
+): Promise<T> {
+  return (await githubFetchPage<T>(path, token, options)).data;
+}
+
+/**
+ * Walk a paginated GitHub list endpoint by following `Link: rel="next"`.
+ *
+ * Replaces the hand-rolled `let page = 1; … page++` loops this file
+ * carried, one per call site. Those broke on 2026-09-01 against a repo
+ * of ~10 000 issues: past a certain depth GitHub answers
+ * `422 "Pagination with the page parameter is not supported for large
+ * datasets, please use cursor based pagination (after/before)"`. The fix
+ * is not to hand-build `after`/`before` — it is to stop deciding the
+ * scheme at all and follow the one GitHub put in the header.
+ *
+ * `onPage` sees each batch and returns `false` to stop early (the
+ * throughput report walks a time window and stops once past it).
+ * `maxPages` is a hard backstop; the returned `truncated` says whether
+ * it tripped, so a caller can refuse to treat a prefix as the whole list.
+ */
+export async function paginateGitHub<T>(
+  firstPath: string,
+  token: string,
+  opts: {
+    maxPages: number;
+    onPage: (batch: T[]) => boolean | void;
+    /** Called once when `maxPages` trips, for the call site's own log line. */
+    onTruncated?: () => void;
+  },
+): Promise<{ pages: number; truncated: boolean }> {
+  let url: string | null = firstPath;
+  let pages = 0;
+
+  while (url) {
+    const page: GitHubPage<T[]> = await githubFetchPage<T[]>(url, token);
+    // A non-array body (a shape change, or an error GitHub answered 200
+    // to) must not read as "the list ended here".
+    if (!Array.isArray(page.data)) {
+      throw new Error(`Expected a list from ${url}, got ${typeof page.data}`);
+    }
+    pages += 1;
+    if (opts.onPage(page.data) === false) return { pages, truncated: false };
+    if (!page.nextUrl) return { pages, truncated: false };
+    if (pages >= opts.maxPages) {
+      opts.onTruncated?.();
+      return { pages, truncated: true };
+    }
+    url = page.nextUrl;
+  }
+
+  return { pages, truncated: false };
 }
 
 function priorityToLabel(priority: Priority | null): string | null {
@@ -260,7 +388,15 @@ export class GitHubScanTruncatedError extends Error {
  * Walk every page of a per-issue list endpoint.
  *
  * Throws `GitHubScanTruncatedError` at the page ceiling instead of
- * returning what it has.
+ * returning what it has — see that class for why truncation here is an
+ * error and not a flag.
+ *
+ * Paginates via `paginateGitHub` like every other list walk in this
+ * file. The 422 depth limit almost certainly does not reach a single
+ * issue's timeline, so this one was not broken — but two pagination
+ * mechanics in one file is an invitation to reach for the wrong one, and
+ * the next endpoint added here would have been a coin flip. One
+ * mechanism, one place to fix it next time.
  */
 async function fetchAllIssuePages<T>(
   path: string,
@@ -269,22 +405,19 @@ async function fetchAllIssuePages<T>(
   ref: string,
 ): Promise<T[]> {
   const out: T[] = [];
-  const perPage = 100;
-  for (let page = 1; page <= MAX_ISSUE_SCAN_PAGES; page++) {
-    const sep = path.includes('?') ? '&' : '?';
-    const batch = await githubFetch<T[]>(
-      `${path}${sep}per_page=${perPage}&page=${page}`,
-      token,
-    );
-    // A non-array body (an error object GitHub answered 200 to, a shape
-    // change) must not silently read as "no entries".
-    if (!Array.isArray(batch)) {
-      throw new Error(`${what} for ${ref}: expected a list, got ${typeof batch}`);
-    }
-    out.push(...batch);
-    if (batch.length < perPage) return out;
-  }
-  throw new GitHubScanTruncatedError(what, ref);
+  const sep = path.includes('?') ? '&' : '?';
+  const { truncated } = await paginateGitHub<T>(
+    `${path}${sep}per_page=100`,
+    token,
+    {
+      maxPages: MAX_ISSUE_SCAN_PAGES,
+      onPage: (batch) => {
+        out.push(...batch);
+      },
+    },
+  );
+  if (truncated) throw new GitHubScanTruncatedError(what, ref);
+  return out;
 }
 
 /**
@@ -1025,33 +1158,28 @@ export async function importGitHubIssues(
   options?: { includeAll?: boolean },
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
-  let page = 1;
-  let fetched = 0;
   const perPage = 100;
   const state = options?.includeAll ? 'all' : 'open';
 
-  // Paginate through issues
-  while (true) {
-    const batch = await githubFetch<GitHubIssue[]>(
-      `/repos/${repoOwner}/${repoName}/issues?state=${state}&per_page=${perPage}&page=${page}&sort=created&direction=asc`,
-      token,
-    );
-    fetched += batch.length;
-
-    // Filter out pull requests (GitHub API returns PRs in issues endpoint)
-    const realIssues = batch.filter((i) => !i.pull_request);
-    issues.push(...realIssues);
-
-    if (batch.length < perPage) break;
-    page++;
-
-    if (fetched >= MAX_FETCHED_ISSUES) {
-      console.warn(
-        `[github-import] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED, downstream diffs will miss issues`,
-      );
-      break;
-    }
-  }
+  // Paginate by following `Link: rel="next"` — see paginateGitHub. The
+  // hand-rolled `page++` this used to run hits GitHub's 422 depth limit
+  // on a repo of this size, the same way `fetchChangedIssues` did.
+  await paginateGitHub<GitHubIssue>(
+    `/repos/${repoOwner}/${repoName}/issues?state=${state}&per_page=${perPage}&sort=created&direction=asc`,
+    token,
+    {
+      maxPages: Math.ceil(MAX_FETCHED_ISSUES / perPage),
+      onPage: (batch) => {
+        // Filter out pull requests (GitHub API returns PRs in issues endpoint)
+        issues.push(...batch.filter((i) => !i.pull_request));
+      },
+      onTruncated: () => {
+        console.warn(
+          `[github-import] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED, downstream diffs will miss issues`,
+        );
+      },
+    },
+  );
 
   const parentOf = parseParentRelationships(issues);
 
@@ -1112,38 +1240,37 @@ export async function fetchChangedIssues(
   since: string | null | undefined,
 ): Promise<ChangedIssuesResult> {
   const issues: GitHubIssue[] = [];
-  let page = 1;
-  let fetched = 0;
   const perPage = 100;
-  let truncated = false;
 
-  while (true) {
-    const params = new URLSearchParams({
-      state: 'all',
-      per_page: String(perPage),
-      page: String(page),
-      sort: 'updated',
-      direction: 'asc',
-    });
-    if (since) params.set('since', since);
+  const params = new URLSearchParams({
+    state: 'all',
+    per_page: String(perPage),
+    sort: 'updated',
+    direction: 'asc',
+  });
+  if (since) params.set('since', since);
 
-    const batch = await githubFetch<GitHubIssue[]>(
-      `/repos/${repoOwner}/${repoName}/issues?${params.toString()}`,
-      token,
-    );
-    fetched += batch.length;
-    issues.push(...batch.filter((i) => !i.pull_request));
-
-    if (batch.length < perPage) break;
-    page++;
-    if (fetched >= MAX_FETCHED_ISSUES) {
-      truncated = true;
-      console.warn(
-        `[github-catchup-fetch] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED (newest-updated tail missing)`,
-      );
-      break;
-    }
-  }
+  // `page` is deliberately NOT in the query. This is the call site that
+  // broke on 2026-09-01: a repo of ~10 000 issues, run without `since`,
+  // walked deep enough that GitHub answered 422 "Pagination with the
+  // page parameter is not supported for large datasets, please use
+  // cursor based pagination". `paginateGitHub` follows the `Link` header
+  // instead, so GitHub picks the scheme and we are right under either.
+  const { truncated } = await paginateGitHub<GitHubIssue>(
+    `/repos/${repoOwner}/${repoName}/issues?${params.toString()}`,
+    token,
+    {
+      maxPages: Math.ceil(MAX_FETCHED_ISSUES / perPage),
+      onPage: (batch) => {
+        issues.push(...batch.filter((i) => !i.pull_request));
+      },
+      onTruncated: () => {
+        console.warn(
+          `[github-catchup-fetch] ${repoOwner}/${repoName}: hit the ${MAX_FETCHED_ISSUES}-item fetch backstop — result is TRUNCATED (newest-updated tail missing)`,
+        );
+      },
+    },
+  );
 
   return { issues, truncated };
 }

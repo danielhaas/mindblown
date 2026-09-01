@@ -17,12 +17,18 @@ function ghPr(number: number, mergedAt: string) {
   };
 }
 
-// Serves `rows` on page 1 and an empty page afterwards, so one crawl
-// makes exactly one request instead of paging to the cap.
+// Serves `rows` on the first page and nothing after it.
+//
+// This used to key on `url.endsWith('&page=1')` — the exact idiom the
+// crawl no longer emits. Pagination follows `Link: rel="next"` now, so
+// the first page is the request with no cursor, and omitting the header
+// is how this stub says "that was the last page".
 function mockFetchReturning(rows: unknown[]) {
   return vi.fn(async (url: string) => ({
     ok: true,
-    json: async () => (url.endsWith('&page=1') ? rows : []),
+    status: 200,
+    headers: new Headers(),
+    json: async () => (new URL(String(url)).searchParams.has('after') ? [] : rows),
   })) as unknown as typeof fetch;
 }
 
