@@ -9,6 +9,15 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
+import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
+
+/** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
+export interface FleetStatusResult {
+  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
+  /** Server clock at read time — staleness is judged against this, not the caller's clock. */
+  now: string;
+}
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
 // Mirrors the persisted `triage_decisions` row, plus the per-request
@@ -346,6 +355,8 @@ export interface ToolBackend {
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
+  /** Last-known satellite rollups + recent orchestrator ticks (read-only). */
+  getFleetStatus(mapId: string): Promise<FleetStatusResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

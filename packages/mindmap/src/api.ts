@@ -7,6 +7,8 @@ import type {
   CriticalPathResult,
   RequirementGate,
   RequirementStage,
+  FleetRollup,
+  FleetTickPayload,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -843,6 +845,20 @@ export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+// ── Leidang fleet telemetry ──────────────────────────────────────
+
+export interface FleetResponse {
+  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
+  /** Server clock — staleness is judged against it, not the browser's. */
+  now: string;
+}
+
+/** Last-known satellite rollups + recent orchestrator ticks. */
+export function fetchFleet(mapId: string): Promise<FleetResponse> {
+  return request<FleetResponse>(`/api/maps/${mapId}/fleet`);
 }
 
 // ── Attachments ──────────────────────────────────────────────────
