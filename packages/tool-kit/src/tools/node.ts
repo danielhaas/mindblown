@@ -293,7 +293,7 @@ export const moveNodeTool = defineTool({
 export const flagBlockerTool = defineTool({
   name: 'flag_blocker',
   description:
-    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). Use clear_blocker (or set blockedReason via update_node) to unblock.',
+    'Mark a node as blocked, recording the reason. This is the canonical "this is stuck" primitive — sets `blockedReason` so the node shows up in blocked_digest, risk_scan, and the blocked rollup propagates to ancestors; the status is left alone. Use this when something external is holding work back (waiting on a vendor, legal review, a decision, an upstream team). Undo: clear_blocker releases the ticket back to the queue (status → todo unless done/claimed — NOT the mirror image of this call); update_node with blockedReason: null clears only the reason and keeps the status.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to flag as blocked'),
@@ -311,14 +311,19 @@ export const flagBlockerTool = defineTool({
 export const clearBlockerTool = defineTool({
   name: 'clear_blocker',
   description:
-    'Clear the blocker on a node — removes `blockedReason` so the node stops surfacing in blocked_digest and ancestor blocked rollups. Use when the external thing that was holding the work back has resolved.',
+    'Release a blocked node back into the work queue — the one-call undo of a fleet worker\'s give-up (blocked.sh) or a flag_blocker. Clears `blockedReason`, removes the `blocked` tag, and moves the status back to the map\'s todo status (also from in_progress — NOT symmetric with flag_blocker, which leaves the status alone). Status is left untouched when the node is done (finished work is never re-opened), still claimed by a session (a claimed node is not pullable; release the claim first if the worker is really gone), or has a status id the workflow does not know. After a status reset the pull queue (get_next_ticket) can hand the ticket out again. To clear only the reason and keep the status, use update_node with blockedReason: null.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to unblock'),
   },
   handler: async (backend, { mapId, nodeId }) => {
-    await backend.updateNode(mapId, nodeId, { blockedReason: null });
-    return `Cleared blocker on ${nodeId}.`;
+    const result = await backend.unblockNode(mapId, nodeId);
+    const status = result.statusReset
+      ? `status reset to ${result.node.status ?? 'todo'} — pullable again`
+      : result.node.claimedBySession
+        ? `status left at ${result.node.status ?? 'none'} — still claimed by "${result.node.claimedBySession}", so NOT pullable; release_node first if that worker is gone`
+        : `status left at ${result.node.status ?? 'none'}`;
+    return `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
   },
 });
 

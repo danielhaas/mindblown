@@ -131,6 +131,7 @@ function makeRecorder(): Recorder {
     getNextTicket: async () => { throw new Error('not used'); },
     claimNode: async () => { throw new Error('not used'); },
     releaseNode: async () => { throw new Error('not used'); },
+    unblockNode: async () => { throw new Error('not used'); },
     conflictScan: async () => { throw new Error('not used'); },
     auditClosedIssues: async () => { throw new Error('not used'); },
   };

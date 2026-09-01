@@ -16,6 +16,7 @@ import {
   dispatchQueueSnapshot,
   hasBrief,
   isBugNode,
+  planUnblock,
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
@@ -181,5 +182,41 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.state).toBe('empty');
     expect(s.needsBrief).toBe(1);
     expect(s.pullable).toBe(1);
+  });
+});
+
+describe('planUnblock', () => {
+  const u = (p: { status: string | null; tags: string[]; claimedBySession?: string | null }, wf = WORKFLOW) =>
+    planUnblock({ claimedBySession: null, ...p }, wf);
+
+  it("undoes the fleet's give-up: blocked (not a workflow status) → first todo, tag removed", () => {
+    expect(u({ status: 'blocked', tags: ['app:fm', 'blocked'] })).toEqual({ status: 'todo', tagsRemove: ['blocked'] });
+  });
+
+  it('re-queues in_progress (the worker is gone) and leaves the tag list alone when there is no blocked tag', () => {
+    expect(u({ status: 'in_progress', tags: ['bug'] })).toEqual({ status: 'todo', tagsRemove: [] });
+  });
+
+  it('never re-opens done work; matches status by name case-insensitively', () => {
+    expect(u({ status: 'done', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: 'DONE', tags: [] })).toEqual({ tagsRemove: [] });
+  });
+
+  it('leaves a still-claimed node alone (not pullable anyway; never pull a ticket from under a worker)', () => {
+    expect(u({ status: 'in_progress', tags: ['blocked'], claimedBySession: 'sat2:worker-1' })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: 'blocked', tags: [], claimedBySession: 'x' })).toEqual({ tagsRemove: [] });
+  });
+
+  it('does not guess for a status id the workflow does not know, other than blocked', () => {
+    // e.g. a legacy `cancelled` on a map whose workflow lacks it
+    expect(u({ status: 'cancelled', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+  });
+
+  it('is a status no-op when already todo, normalises null, and falls back to null without a todo status', () => {
+    expect(u({ status: 'todo', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: null, tags: [] })).toEqual({ status: 'todo', tagsRemove: [] });
+    const noTodo = WORKFLOW.filter((s) => s.category !== 'todo');
+    expect(u({ status: 'blocked', tags: [] }, noTodo)).toEqual({ status: null, tagsRemove: [] });
+    expect(u({ status: null, tags: [] }, noTodo)).toEqual({ tagsRemove: [] });
   });
 });

@@ -10,6 +10,7 @@ export type {
   ReadyNodesResult,
   ClaimNodeResult,
   ReleaseNodeResult,
+  UnblockNodeResult,
   ConflictEntry,
   ConflictScanResult,
   // Pull queue (Leidang)

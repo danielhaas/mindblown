@@ -31,6 +31,7 @@ export const httpBackend: ToolBackend = {
   getNextTicket: (mapId, sessionId, profile) => api.getNextTicket(mapId, sessionId, profile),
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
+  unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),

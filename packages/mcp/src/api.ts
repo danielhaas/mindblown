@@ -1345,6 +1345,23 @@ export function releaseNode(
   );
 }
 
+/** Release a parked ticket back into the queue (clear_blocker). */
+export interface UnblockNodeResultApi {
+  node: { id: string; text: string; status: string | null; claimedBySession: string | null };
+  statusReset: boolean;
+}
+
+export async function unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResultApi> {
+  const res = await request<UnblockNodeResultApi>(`/api/maps/${mapId}/nodes/${nodeId}/unblock`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+  return {
+    node: { id: res.node.id, text: res.node.text, status: res.node.status, claimedBySession: res.node.claimedBySession ?? null },
+    statusReset: res.statusReset,
+  };
+}
+
 export function conflictScan(
   mapId: string,
   candidateNodeId?: string,

@@ -13,6 +13,7 @@ import * as nodeDb from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
+import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
@@ -261,6 +262,14 @@ export function createChatBackend(userId: string): ToolBackend {
     getNextTicket: (mapId, sessionId, profile?) => orchestrationService.getNextTicket(mapId, sessionId, profile),
     claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
     releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
+    async unblockNode(mapId, nodeId) {
+      const result = await unblockNodeService(mapId, nodeId, userId);
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: result.changedFields, node: result.node });
+      return {
+        node: { id: result.node.id, text: result.node.text, status: result.node.status, claimedBySession: result.node.claimedBySession },
+        statusReset: result.statusReset,
+      };
+    },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
 
     // ── Closed-issue audit (premature-close backfill) ─────────────
