@@ -297,7 +297,10 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
               </option>
             ))}
           </select>
-          <label style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}>
+          <label
+            title='Matches tickets tagged "bug" or "type:bug" (case-insensitive) — GitHub-mirrored labels arrive as "type:bug".'
+            style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+          >
             <input type="checkbox" checked={gateDraft.includes(GATE_BUGS_ONLY)} onChange={() => setGateDraft(toggleGateEntry(gateDraft, GATE_BUGS_ONLY))} />
             Bugs only
           </label>

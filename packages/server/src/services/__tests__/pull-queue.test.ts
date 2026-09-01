@@ -202,6 +202,18 @@ describe('dispatchGate', () => {
     expect(matchesDispatchGate(bug, ['type:bug'], nodeMap)).toBe(true);
     expect(matchesDispatchGate(bug, ['version:v1'], nodeMap)).toBe(false);
   });
+
+  it('type:bug gate accepts the GitHub-mirror tag spelling, not lookalikes (#349)', () => {
+    const d = select(
+      [
+        makeNode({ id: 'mirrored', tags: ['type:bug'] }),
+        makeNode({ id: 'mixed-case', tags: ['Type:Bug'] }),
+        makeNode({ id: 'lookalike', tags: ['debug', 'bugfix', 'type:bugfix'] }),
+      ],
+      { gate: ['type:bug'] },
+    );
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['mirrored', 'mixed-case']);
+  });
 });
 
 describe('dispatchPolicy', () => {
@@ -212,6 +224,13 @@ describe('dispatchPolicy', () => {
     const d = select([oldFeature, p0Feature, bug]);
     expect(d.ranked.map((n) => n.id)).toEqual(['bug', 'p0-feature', 'old-feature']);
     expect(DEFAULT_DISPATCH_POLICY).toEqual(['bugs', 'priority', 'age']);
+  });
+
+  it('bugs key ranks a GitHub-mirrored type:bug tag first too (#349)', () => {
+    const feature = makeNode({ id: 'feature', priority: 'P0', createdAt: '2026-01-01T00:00:00Z' });
+    const mirrored = makeNode({ id: 'mirrored', tags: ['type:bug'], createdAt: '2026-03-01T00:00:00Z' });
+    const d = select([feature, mirrored]);
+    expect(d.ranked.map((n) => n.id)).toEqual(['mirrored', 'feature']);
   });
 
   it('priority key: priorityRank beats the P0–P3 enum, nulls last', () => {

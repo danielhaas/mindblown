@@ -104,11 +104,11 @@ export const updateMapTool = defineTool({
     dispatchGate: z
       .array(z.string().regex(/^(version:.+|type:bug)$/, 'gate entries must be "version:<versionId>" or "type:bug"'))
       .optional()
-      .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug"). Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket.'),
+      .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug" or "type:bug", case-insensitive — GitHub-mirrored labels arrive as "type:bug"). Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket.'),
     dispatchPolicy: z
       .array(z.enum(['bugs', 'priority', 'size', 'age']))
       .optional()
-      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"].'),
+      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"].'),
     profilePolicy: z
       .object({
         heavyMinHours: z.number().positive().optional().describe("Heavy-class floor in hours (estimate at/above = heavy pullers only). Omitted = one day (the map's hoursPerDay)."),

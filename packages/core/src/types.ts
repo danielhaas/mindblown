@@ -593,7 +593,8 @@ export interface MindMap {
    * AND-filter fencing what `get_next_ticket` may hand out. Tiny
    * deliberate vocabulary: `version:<versionId>` (effective version via
    * the explicit-assignment-wins ancestor walk) and `type:bug` (node
-   * tagged "bug"). Empty = no fence. A ticket outside the gate is
+   * tagged "bug" or "type:bug", case-insensitive — the GitHub label
+   * mirror writes `type:bug`). Empty = no fence. A ticket outside the gate is
    * invisible to the pull queue, not deprioritized.
    */
   dispatchGate: string[];
