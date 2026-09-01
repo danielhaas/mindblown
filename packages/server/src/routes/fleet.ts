@@ -17,9 +17,18 @@ import * as fleetDb from '../db/fleet.js';
 import { broadcast } from '../ws.js';
 
 const TICK_LIST_LIMIT = 20;
+/** Hostnames as `hostname -s` / config `host` produce them. The PK is (map, host) and the route is unauthenticated — no free-form keys. */
+const HOST_RE = /^[A-Za-z0-9._-]{1,64}$/;
+/** A 10-worker rollup is ~15 kB; this leaves room for blocked_nodes histories, not for abuse. */
+const PUSH_BODY_LIMIT = 256 * 1024;
 
 export async function fleetRoutes(app: FastifyInstance): Promise<void> {
-  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', async (req, reply) => {
+  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
+    if (!HOST_RE.test(req.params.host)) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'host must match [A-Za-z0-9._-]{1,64}' },
+      });
+    }
     const rollup = parseRollup(req.body);
     if (!rollup) {
       return reply.status(400).send({
@@ -50,13 +59,17 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ host: row.host, generatedAt: row.generatedAt, receivedAt: row.receivedAt, workers: rollup.workers.length });
   });
 
-  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     const payload = parseTick(req.body);
     if (!payload) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Body must be a decision object' } });
     }
-    const at = typeof (req.body as { tickAt?: unknown }).tickAt === 'string' ? new Date((req.body as { tickAt: string }).tickAt) : new Date();
-    const tickAt = Number.isNaN(at.getTime()) ? new Date() : at;
+    // Display field only (ordering/retention use received_at); still clamp
+    // to now so a wrong orchestrator clock cannot show a tick from the future.
+    const now = new Date();
+    const at = typeof (req.body as { tickAt?: unknown }).tickAt === 'string' ? new Date((req.body as { tickAt: string }).tickAt) : now;
+    const tickAt = Number.isNaN(at.getTime()) || at.getTime() > now.getTime() ? now : at;
+    delete (payload as { tickAt?: unknown }).tickAt;
     let row;
     try {
       row = await fleetDb.insertTick(req.params.id, payload, tickAt);

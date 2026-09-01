@@ -7,16 +7,25 @@
  * rules the orchestrator applies: a rollup older than 20 min is a host
  * that is down, paused, or whose agent stopped, and it does not count as
  * capacity; a worker that says "working" but has not moved for 30 min is
- * dead. Refetches on every `fleet:updated` socket message.
+ * dead.
+ *
+ * Clocks: staleness is judged against the SERVER time the last response
+ * carried (core `estimateServerNow`), advanced by a 30-s ticker — a fleet
+ * that dies sends nothing, so the card must age its data on its own, not
+ * wait for the next push. Refetches on every `fleet:updated` socket
+ * message and every 60 s as a backstop.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { summarizeFleet, effectiveWorkerState, silentSatellites } from '@mindblown/core';
-import type { FleetWorkerStatus, HostSummary } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow } from '@mindblown/core';
+import type { FleetWorkerStatus, HostSummary, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetResponse } from './api.js';
 import { Link } from './DigestView.js';
 import { formatAge } from './dispatch.js';
+
+const CLOCK_MS = 30_000;
+const POLL_MS = 60_000;
 
 const STATE_STYLE: Record<string, { bg: string; color: string }> = {
   working: { bg: '#dcfce7', color: '#166534' },
@@ -27,6 +36,7 @@ const STATE_STYLE: Record<string, { bg: string; color: string }> = {
   parked: { bg: '#f1f5f9', color: '#475569' },
   dead: { bg: '#fee2e2', color: '#991b1b' },
 };
+const STATE_ORDER = ['working', 'prompt', 'clearing', 'parked', 'limit-parked', 'auth-parked', 'dead'];
 
 function localHHMM(iso: string | null | undefined): string {
   if (!iso) return '';
@@ -35,14 +45,30 @@ function localHHMM(iso: string | null | undefined): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+type Loaded = { data: FleetResponse; fetchedAt: number };
+
 export function FleetTelemetry() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const fleetRev = useMindmapStore((s) => s.fleetRev);
   const nodes = useMindmapStore((s) => s.nodes);
   const selectNode = useMindmapStore((s) => s.selectNode);
-  const [data, setData] = useState<FleetResponse | null>(null);
+  // data + fetchedAt live in ONE state so the server time and the moment it
+  // was fetched can never come from different fetches (that pairing
+  // double-counted the page's uptime and painted every host red).
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [openHosts, setOpenHosts] = useState<Set<string>>(new Set());
+  const [clock, setClock] = useState(0);
+  const [poll, setPoll] = useState(0);
+
+  useEffect(() => {
+    const c = setInterval(() => setClock((t) => t + 1), CLOCK_MS);
+    const p = setInterval(() => setPoll((t) => t + 1), POLL_MS);
+    return () => {
+      clearInterval(c);
+      clearInterval(p);
+    };
+  }, []);
 
   useEffect(() => {
     if (!currentMapId) return;
@@ -51,41 +77,37 @@ export function FleetTelemetry() {
       .fetchFleet(currentMapId)
       .then((r) => {
         if (cancelled) return;
-        setData(r);
+        setLoaded({ data: r, fetchedAt: Date.now() });
         setError(null);
       })
       .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : 'unavailable'));
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, fleetRev]);
+  }, [currentMapId, fleetRev, poll]);
 
-  // Staleness against the SERVER clock the response carried, advanced by
-  // the time since — a browser with a wrong clock must not paint every
-  // host red (or green).
-  const [fetchedAt] = useState(() => Date.now());
-  const now = useMemo(() => {
-    if (!data) return new Date();
-    const serverNow = new Date(data.now).getTime();
-    return new Date(Number.isNaN(serverNow) ? Date.now() : serverNow + (Date.now() - fetchedAt));
-  }, [data, fetchedAt]);
-
-  const summary = useMemo(
-    () => summarizeFleet((data?.hosts ?? []).map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now),
-    [data, now],
+  // Re-evaluated on every clock tick, so a fleet that went silent turns
+  // stale on screen without anyone pushing.
+  const now = useMemo(
+    () => (loaded ? estimateServerNow(loaded.data.now, loaded.fetchedAt, Date.now()) : new Date()),
+    [loaded, clock], // eslint-disable-line react-hooks/exhaustive-deps -- clock is the ticker
   );
-  const tick = data?.ticks[0] ?? null;
+  const summary = useMemo(
+    () => summarizeFleet((loaded?.data.hosts ?? []).map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now),
+    [loaded, now],
+  );
+  const tick = loaded?.data.ticks[0] ?? null;
   const silent = useMemo(() => silentSatellites(tick?.payload.pullStatus, summary.hosts.map((h) => h.host)), [tick, summary.hosts]);
 
   if (error) return <div style={{ fontSize: 12, color: '#b45309' }}>Fleet telemetry unavailable ({error}).</div>;
-  if (!data) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading fleet telemetry…</div>;
+  if (!loaded) return <div style={{ fontSize: 12, color: '#94a3b8' }}>Loading fleet telemetry…</div>;
 
-  const stateOrder = ['working', 'prompt', 'clearing', 'parked', 'limit-parked', 'auth-parked', 'dead'];
   const totals = Object.entries(summary.totals).sort((a, b) => {
-    const ia = stateOrder.indexOf(a[0]);
-    const ib = stateOrder.indexOf(b[0]);
+    const ia = STATE_ORDER.indexOf(a[0]);
+    const ib = STATE_ORDER.indexOf(b[0]);
     return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
   });
+  const allStale = summary.hosts.length > 0 && summary.freshHosts === 0;
 
   return (
     <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6, marginBottom: 10, paddingBottom: 10, borderBottom: '1px solid #f1f5f9' }}>
@@ -97,7 +119,8 @@ export function FleetTelemetry() {
         <>
           <div>
             Satellites: <strong>{summary.freshHosts}</strong>/{summary.hosts.length} reporting ·{' '}
-            <strong>{summary.workersTotal}</strong> workers
+            <strong>{summary.workersTotal}</strong> workers on reporting hosts
+            {summary.staleWorkers > 0 && <span style={{ color: '#94a3b8' }}> (+{summary.staleWorkers} last seen on stale hosts, not counted)</span>}
             {totals.length > 0 && (
               <span style={{ color: '#64748b' }}>
                 {' '}—{' '}
@@ -110,44 +133,63 @@ export function FleetTelemetry() {
               </span>
             )}
           </div>
-          {summary.working === 0 && summary.workersTotal > 0 && (
+          {allStale && (
+            <div style={{ color: '#991b1b', fontSize: 12 }}>
+              No host is reporting — every rollup is older than 20 min. Fleet stopped, hosts down, or the agents are not running.
+            </div>
+          )}
+          {!allStale && summary.working === 0 && summary.workersTotal > 0 && (
             <div style={{ color: '#991b1b', fontSize: 12 }}>Nobody is working. Cap and gate are not the reason — look at the worker states below.</div>
           )}
-          {silent.map((s) => (
-            <div key={s.sat} style={{ color: '#991b1b', fontSize: 12 }}>
-              Satellite <strong>{s.sat}</strong> is configured but {s.reason === 'unreachable' ? 'unreachable over ssh' : 'delivered no rollup — agent not running'}.
-            </div>
-          ))}
+          {silent.map((s) =>
+            s.reason === 'not-pushing' ? (
+              <div key={s.sat} style={{ color: '#94a3b8', fontSize: 12 }}>
+                {s.sat} delivers to the orchestrator but does not push to MindBlown yet (sender patch not rolled out there).
+              </div>
+            ) : (
+              <div key={s.sat} style={{ color: '#991b1b', fontSize: 12 }}>
+                Satellite <strong>{s.sat}</strong> is configured but {s.reason === 'unreachable' ? 'unreachable over ssh' : 'delivered no rollup — agent not running'}.
+              </div>
+            ),
+          )}
           <ul style={{ margin: '4px 0 0', paddingLeft: 0, listStyle: 'none' }}>
             {summary.hosts.map((h) => (
-              <HostRow key={h.host} host={h} now={now} open={openHosts.has(h.host)} onToggle={() => setOpenHosts((s) => {
-                const n = new Set(s);
-                if (n.has(h.host)) n.delete(h.host);
-                else n.add(h.host);
-                return n;
-              })} nodes={nodes} selectNode={selectNode} />
+              <HostRow
+                key={h.host}
+                host={h}
+                now={now}
+                open={openHosts.has(h.host)}
+                onToggle={() =>
+                  setOpenHosts((s) => {
+                    const n = new Set(s);
+                    if (n.has(h.host)) n.delete(h.host);
+                    else n.add(h.host);
+                    return n;
+                  })
+                }
+                nodes={nodes}
+                selectNode={selectNode}
+              />
             ))}
           </ul>
         </>
       )}
 
       <div style={{ marginTop: 8 }}>
-        {tick ? (
-          <TickBlock tick={tick} now={now} />
-        ) : (
-          <div style={{ color: '#94a3b8', fontSize: 12 }}>No orchestrator tick received yet.</div>
-        )}
+        {tick ? <TickBlock tick={tick} now={now} /> : <div style={{ color: '#94a3b8', fontSize: 12 }}>No orchestrator tick received yet.</div>}
       </div>
     </div>
   );
 }
+
+type NodeIndex = Record<string, Pick<Node, 'text'>>;
 
 function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
   host: HostSummary;
   now: Date;
   open: boolean;
   onToggle: () => void;
-  nodes: Record<string, { text: string }>;
+  nodes: NodeIndex;
   selectNode: (id: string) => void;
 }) {
   const age = `${Math.round(h.freshness.ageMin)}m`;
@@ -162,6 +204,7 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
       {h.draining && <span style={{ ...pill, background: '#fef3c7', color: '#92400e', marginLeft: 6 }}>draining: {h.draining}</span>}
       <span style={{ color: '#64748b', fontSize: 12 }}>
         {' '}· {Object.entries(h.counts).map(([s, n]) => `${s} ${n}`).join(', ') || 'no workers'}
+        {h.freshness.stale && h.workers.length > 0 ? ' (last seen)' : ''}
       </span>
       {open && (
         <ul style={{ margin: '2px 0 4px 14px', paddingLeft: 12, fontSize: 12, lineHeight: 1.7 }}>
@@ -174,7 +217,7 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode }: {
   );
 }
 
-function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: Date; nodes: Record<string, { text: string }>; selectNode: (id: string) => void }) {
+function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: Date; nodes: NodeIndex; selectNode: (id: string) => void }) {
   const state = effectiveWorkerState(w, now);
   const style = STATE_STYLE[state] ?? { bg: '#f1f5f9', color: '#475569' };
   const claimId = w.claim?.nodeId;
@@ -193,7 +236,7 @@ function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: D
       {state === 'prompt' && w.prompt_question && <span style={{ color: '#1e40af' }}> · asks: {w.prompt_question}</span>}
       {w.waiting?.reason && <span style={{ color: '#64748b' }}> · waiting: {w.waiting.reason}</span>}
       {typeof w.ctx_pct === 'number' && <span style={{ color: '#94a3b8' }}> · ctx {w.ctx_pct}%</span>}
-      {w.last_activity && <span style={{ color: '#94a3b8' }}> · {formatAge(w.last_activity, now)}</span>}
+      {w.last_activity && <span style={{ color: '#94a3b8' }}> · idle {formatAge(w.last_activity, now)}</span>}
     </li>
   );
 }
@@ -206,7 +249,7 @@ function TickBlock({ tick, now }: { tick: FleetResponse['ticks'][number]; now: D
   return (
     <div style={{ fontSize: 12 }}>
       <div style={{ color: '#334155' }}>
-        <strong>Orchestrator</strong> · last tick {formatAge(tick.tickAt, now)} ago
+        <strong>Orchestrator</strong> · last tick {formatAge(tick.receivedAt, now)} ago
         {p.noJudgment && <span style={{ color: '#b45309' }}> · no judgment this tick ({p.noJudgment})</span>}
         {p.summary?.heartbeat && <span style={{ color: '#94a3b8' }}> · {p.summary.heartbeat}</span>}
       </div>

@@ -62,6 +62,7 @@ describe('fleet_status tool', () => {
             pullStatus: [
               { sat: 'satellite-claudia', ok: true, files: ['njoerd.json'] },
               { sat: 'leidang-sat2', ok: true, files: [] },
+              { sat: 'leidang-sat4', ok: true, files: ['sat4.json'] },
             ],
             summary: { heartbeat: 'claims 0/12 · gate 1/199 nb48' },
           },
@@ -75,7 +76,9 @@ describe('fleet_status tool', () => {
     expect(out).toContain('sat3 (45m ago — STALE');
     expect(out).toContain('worker-1: sonnet · working · claim: #8770 export · ctx 42%');
     expect(out).toContain('worker-2: fable · limit-parked · reset 2026-09-01T17:10:00Z');
+    expect(out).toContain('plus 1 last seen on stale hosts, not counted');
     expect(out).toContain('SILENT satellite leidang-sat2: up but delivered no rollup');
+    expect(out).toContain('note: leidang-sat4 delivers to the orchestrator but does not push to MindBlown yet');
     expect(out).toContain('[critical] nothing works');
     expect(out).toContain('- #3287: deploy FM CT122');
     expect(out).toContain('gate RECOMMENDED (needs the human) → type:bug');

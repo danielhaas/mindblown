@@ -130,8 +130,9 @@ export {
   effectiveWorkerState,
   summarizeFleet,
   silentSatellites,
+  estimateServerNow,
 } from './fleet.js';
-export type { FleetWorkerStatus, FleetRollup, FleetTickPayload, HostFreshness, HostSummary, FleetSummary } from './fleet.js';
+export type { FleetWorkerStatus, FleetRollup, FleetTickPayload, HostFreshness, HostSummary, FleetSummary, SilentReason } from './fleet.js';
 
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';

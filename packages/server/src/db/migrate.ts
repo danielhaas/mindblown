@@ -985,7 +985,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     )
   `);
   await db.execute(sql`
-    CREATE INDEX IF NOT EXISTS fleet_ticks_map_tick_idx ON fleet_ticks (map_id, tick_at DESC)
+    CREATE INDEX IF NOT EXISTS fleet_ticks_map_received_idx ON fleet_ticks (map_id, received_at DESC)
   `);
 
   // ── Forecast scoreboard (ticket model + ship-date ground truth) ──

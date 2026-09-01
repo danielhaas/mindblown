@@ -326,7 +326,10 @@ export const fleetStatusTool = defineTool({
         .sort((a, b) => b[1] - a[1])
         .map(([s, n]) => `${s} ${n}`)
         .join(' · ');
-      lines.push(`Fleet: ${summary.freshHosts}/${summary.hosts.length} hosts reporting, ${summary.workersTotal} workers on fresh hosts (${states || 'none'})`);
+      lines.push(
+        `Fleet: ${summary.freshHosts}/${summary.hosts.length} hosts reporting, ${summary.workersTotal} workers on fresh hosts (${states || 'none'})` +
+          (summary.staleWorkers > 0 ? ` — plus ${summary.staleWorkers} last seen on stale hosts, not counted` : ''),
+      );
       for (const h of summary.hosts) {
         const age = `${Math.round(h.freshness.ageMin)}m ago`;
         const flag = h.freshness.stale ? ' — STALE: host down, paused, or agent stopped?' : '';
@@ -354,7 +357,15 @@ export const fleetStatusTool = defineTool({
       if (p.assessment) lines.push(`  ${p.assessment}`);
       if (p.summary?.heartbeat) lines.push(`  numbers: ${p.summary.heartbeat}`);
       const silent = silentSatellites(p.pullStatus, summary.hosts.map((h) => h.host));
-      for (const s of silent) lines.push(`  SILENT satellite ${s.sat}: ${s.reason === 'unreachable' ? 'unreachable over ssh' : 'up but delivered no rollup — agent not running'}`);
+      for (const s of silent) {
+        lines.push(
+          s.reason === 'unreachable'
+            ? `  SILENT satellite ${s.sat}: unreachable over ssh`
+            : s.reason === 'no-rollup'
+              ? `  SILENT satellite ${s.sat}: up but delivered no rollup — agent not running`
+              : `  note: ${s.sat} delivers to the orchestrator but does not push to MindBlown yet (sender patch not rolled out there)`,
+        );
+      }
       for (const a of p.anomalies ?? []) lines.push(`  [${a.severity}] ${a.what}`);
       if ((p.asks ?? []).length > 0) {
         lines.push('  asks for the human:');

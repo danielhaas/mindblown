@@ -7,7 +7,7 @@
  * derives fleet topology from this — a host that stops pushing simply
  * goes stale (the card says so) and one that never pushed is unknown.
  */
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { fleetStatus, fleetTicks } from './schema.js';
 import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
@@ -47,13 +47,18 @@ export async function listRollups(mapId: string): Promise<FleetStatusRow[]> {
   return rows.map(toStatusRow).sort((a, b) => a.host.localeCompare(b.host));
 }
 
+/**
+ * Ordering and retention go by `received_at` (server clock), never by the
+ * caller's `tick_at`: an orchestrator with a wrong clock could otherwise
+ * pin "latest tick" forever and push real ticks out of the window.
+ */
 export async function insertTick(mapId: string, payload: FleetTickPayload, tickAt: Date): Promise<FleetTickRow> {
   const [row] = await db.insert(fleetTicks).values({ mapId, tickAt, payload }).returning();
   // Trim beyond the retention window — one statement, no cron.
   await db.execute(sql`
     DELETE FROM fleet_ticks
     WHERE map_id = ${mapId}
-      AND id NOT IN (SELECT id FROM fleet_ticks WHERE map_id = ${mapId} ORDER BY tick_at DESC LIMIT ${TICK_RETENTION})
+      AND id NOT IN (SELECT id FROM fleet_ticks WHERE map_id = ${mapId} ORDER BY received_at DESC LIMIT ${TICK_RETENTION})
   `);
   return toTickRow(row);
 }
@@ -62,8 +67,8 @@ export async function listTicks(mapId: string, limit = 20): Promise<FleetTickRow
   const rows = await db
     .select()
     .from(fleetTicks)
-    .where(and(eq(fleetTicks.mapId, mapId)))
-    .orderBy(desc(fleetTicks.tickAt))
+    .where(eq(fleetTicks.mapId, mapId))
+    .orderBy(desc(fleetTicks.receivedAt))
     .limit(limit);
   return rows.map(toTickRow);
 }

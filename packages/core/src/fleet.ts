@@ -151,7 +151,10 @@ export interface FleetSummary {
   hosts: HostSummary[];
   /** Effective state → count across fresh hosts only; stale hosts are listed but not counted as capacity. */
   totals: Record<string, number>;
+  /** Workers on fresh (reporting) hosts. */
   workersTotal: number;
+  /** Workers on stale hosts — last seen, not capacity. */
+  staleWorkers: number;
   working: number;
   /** Fresh hosts / all hosts. */
   freshHosts: number;
@@ -192,8 +195,12 @@ export function summarizeFleet(
 
   const totals: Record<string, number> = {};
   let workersTotal = 0;
+  let staleWorkers = 0;
   for (const h of hosts) {
-    if (h.freshness.stale) continue;
+    if (h.freshness.stale) {
+      staleWorkers += h.workers.length;
+      continue;
+    }
     for (const [s, n] of Object.entries(h.counts)) {
       totals[s] = (totals[s] ?? 0) + n;
       workersTotal += n;
@@ -203,24 +210,51 @@ export function summarizeFleet(
     hosts,
     totals,
     workersTotal,
+    staleWorkers,
     working: totals.working ?? 0,
     freshHosts: hosts.filter((h) => !h.freshness.stale).length,
     staleHosts: hosts.filter((h) => h.freshness.stale).map((h) => h.host),
   };
 }
 
+export type SilentReason =
+  /** ssh to the satellite failed — host down or unreachable. */
+  | 'unreachable'
+  /** ssh fine, but the satellite had no rollup file — agent not running. */
+  | 'no-rollup'
+  /** Delivered to the orchestrator (scp) but nothing reached MindBlown — sender patch not rolled out there yet. Mild. */
+  | 'not-pushing';
+
 /**
- * Configured satellites that delivered nothing this tick — invisible
- * unless named (2026-07-26: sat2 ran six workers unseen). From the
- * orchestrator's pull-status; hosts are matched by rollup file name.
+ * Configured satellites that are not accounted for — invisible unless
+ * named (2026-07-26: sat2 ran six workers unseen). `pullStatus` is the
+ * orchestrator's scp channel; `knownHosts` is who pushed to MindBlown.
+ * The two channels differ, so "delivered by scp but not pushed" is its own,
+ * mild category and never the red one.
  */
 export function silentSatellites(
   pullStatus: FleetTickPayload['pullStatus'] | undefined,
   knownHosts: string[],
-): { sat: string; reason: 'unreachable' | 'no-rollup' }[] {
+): { sat: string; reason: SilentReason }[] {
   if (!pullStatus) return [];
   const known = new Set(knownHosts.map((h) => `${h}.json`));
-  return pullStatus
-    .filter((p) => !p.ok || !p.files.some((f) => known.has(f)))
-    .map((p) => ({ sat: p.sat, reason: p.ok ? 'no-rollup' : 'unreachable' }));
+  const out: { sat: string; reason: SilentReason }[] = [];
+  for (const p of pullStatus) {
+    if (!p.ok) out.push({ sat: p.sat, reason: 'unreachable' });
+    else if (p.files.length === 0) out.push({ sat: p.sat, reason: 'no-rollup' });
+    else if (!p.files.some((f) => known.has(f))) out.push({ sat: p.sat, reason: 'not-pushing' });
+  }
+  return out;
+}
+
+/**
+ * The client's best estimate of the server clock: the `now` the last
+ * response carried, advanced by the time elapsed since THAT fetch. Both
+ * values must come from the same fetch — pairing a fresh server time with
+ * the first fetch's timestamp double-counts the page's whole uptime.
+ */
+export function estimateServerNow(serverNowIso: string, fetchedAtMs: number, nowMs: number): Date {
+  const serverNow = Date.parse(serverNowIso);
+  if (Number.isNaN(serverNow)) return new Date(nowMs);
+  return new Date(serverNow + Math.max(0, nowMs - fetchedAtMs));
 }

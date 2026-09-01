@@ -75,6 +75,25 @@ describe('PUT /api/maps/:id/fleet-status/:host', () => {
     expect(broadcastMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a free-form host key (unauthenticated route, host is half the PK)', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/${encodeURIComponent('a b/../c')}`, payload: { ...rollup, host: 'a b/../c' } });
+    const long = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/${'h'.repeat(65)}`, payload: { ...rollup, host: 'h'.repeat(65) } });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(long.statusCode).toBe(400);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a body over the push limit', async () => {
+    const app = await buildApp();
+    const fat = { ...rollup, workers: Array.from({ length: 3000 }, (_, i) => ({ session: `njoerd:worker-${i}:default`, state: 'parked', claim: null, blocked_nodes: [] })) };
+    const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/njoerd`, payload: fat });
+    await app.close();
+    expect(res.statusCode).toBe(413);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
+  });
+
   it('maps an FK violation to 404', async () => {
     upsertRollupMock.mockRejectedValueOnce(Object.assign(new Error('fk'), { code: '23503' }));
     const app = await buildApp();
@@ -91,7 +110,7 @@ describe('POST /api/maps/:id/fleet-ticks', () => {
     const res = await app.inject({
       method: 'POST',
       url: `/api/maps/${MAP_ID}/fleet-ticks`,
-      payload: { tickAt: '2026-09-01T10:30:00Z', assessment: 'fleet idle', anomalies: [], asks: ['#1: decide'] },
+      payload: { tickAt: '2026-08-31T10:30:00Z', assessment: 'fleet idle', anomalies: [], asks: ['#1: decide'] },
     });
     await app.close();
 
@@ -99,20 +118,26 @@ describe('POST /api/maps/:id/fleet-ticks', () => {
     const [mapId, payload, tickAt] = insertTickMock.mock.calls[0] as [string, Record<string, unknown>, Date];
     expect(mapId).toBe(MAP_ID);
     expect(payload).toMatchObject({ assessment: 'fleet idle', asks: ['#1: decide'] });
-    expect(tickAt.toISOString()).toBe('2026-09-01T10:30:00.000Z');
+    expect(payload).not.toHaveProperty('tickAt'); // column, not payload
+    expect(tickAt.toISOString()).toBe('2026-08-31T10:30:00.000Z');
     expect(broadcastMock).toHaveBeenCalledWith(MAP_ID, expect.objectContaining({ type: 'fleet:updated', kind: 'tick' }));
   });
 
-  it('falls back to now for a missing/invalid tickAt and rejects a non-object body', async () => {
-    insertTickMock.mockResolvedValueOnce({ id: 't2', tickAt: 'x', receivedAt: 'y', payload: {} });
+  it('falls back to now for a missing/invalid/future tickAt and rejects a non-object body', async () => {
+    insertTickMock.mockResolvedValue({ id: 't2', tickAt: 'x', receivedAt: 'y', payload: {} });
     const app = await buildApp();
     const before = Date.now();
     const ok = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/fleet-ticks`, payload: { tickAt: 'yesterday', assessment: 'x' } });
+    const future = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/fleet-ticks`, payload: { tickAt: '2099-01-01T00:00:00Z', assessment: 'x' } });
     const bad = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/fleet-ticks`, payload: '"just a string"', headers: { 'content-type': 'application/json' } });
     await app.close();
     expect(ok.statusCode).toBe(201);
-    const tickAt = insertTickMock.mock.calls[0][2] as Date;
-    expect(tickAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+    expect(future.statusCode).toBe(201);
+    for (const call of insertTickMock.mock.calls) {
+      const tickAt = call[2] as Date;
+      expect(tickAt.getTime()).toBeGreaterThanOrEqual(before - 1000);
+      expect(tickAt.getTime()).toBeLessThanOrEqual(Date.now() + 1000);
+    }
     expect(bad.statusCode).toBe(400);
   });
 });

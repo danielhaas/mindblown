@@ -8,6 +8,7 @@ import {
   effectiveWorkerState,
   summarizeFleet,
   silentSatellites,
+  estimateServerNow,
 } from '../fleet.js';
 
 const NOW = new Date('2026-09-01T12:00:00Z');
@@ -82,6 +83,7 @@ describe('summarizeFleet', () => {
     expect(s.hosts[1].draining).toBe('paused for login');
     expect(s.totals).toEqual({ working: 1, 'limit-parked': 1, dead: 1 });
     expect(s.workersTotal).toBe(3);
+    expect(s.staleWorkers).toBe(1);
     expect(s.working).toBe(1);
     expect(s.freshHosts).toBe(1);
     expect(s.staleHosts).toEqual(['sat3']);
@@ -104,5 +106,34 @@ describe('silentSatellites', () => {
       { sat: 'leidang-sat3', reason: 'unreachable' },
     ]);
     expect(silentSatellites(undefined, ['njoerd'])).toEqual([]);
+  });
+
+  it('a satellite that delivered by scp but never pushed to MindBlown is "not-pushing", not an alarm', () => {
+    // Merge-day state: the sender patch is not rolled out anywhere yet.
+    const ps = [
+      { sat: 'satellite-claudia', ok: true, files: ['njoerd.json'] },
+      { sat: 'leidang-sat2', ok: true, files: ['sat2.json'] },
+    ];
+    expect(silentSatellites(ps, [])).toEqual([
+      { sat: 'satellite-claudia', reason: 'not-pushing' },
+      { sat: 'leidang-sat2', reason: 'not-pushing' },
+    ]);
+    expect(silentSatellites(ps, ['njoerd', 'sat2'])).toEqual([]);
+  });
+});
+
+describe('estimateServerNow', () => {
+  it('advances the server clock by the time since THAT fetch, never by page uptime', () => {
+    const server = '2026-09-01T12:00:00Z';
+    const fetchedAt = Date.parse('2026-09-01T09:00:00Z'); // browser clock is 3 h behind the server
+    expect(estimateServerNow(server, fetchedAt, fetchedAt + 90_000).toISOString()).toBe('2026-09-01T12:01:30.000Z');
+    // A refetch pairs a new server time with ITS fetch time — no drift accumulates.
+    const refetched = '2026-09-01T12:30:00Z';
+    const fetchedAt2 = fetchedAt + 30 * 60_000;
+    expect(estimateServerNow(refetched, fetchedAt2, fetchedAt2 + 10_000).toISOString()).toBe('2026-09-01T12:30:10.000Z');
+    // Garbage server time → the local clock
+    expect(estimateServerNow('nope', 0, 5_000).getTime()).toBe(5_000);
+    // A clock that ran backwards does not subtract
+    expect(estimateServerNow(server, 10_000, 5_000).toISOString()).toBe('2026-09-01T12:00:00.000Z');
   });
 });
