@@ -961,6 +961,33 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     CREATE INDEX IF NOT EXISTS lint_dismissals_map_idx ON lint_dismissals (map_id)
   `);
 
+  // ── Leidang fleet telemetry (cockpit Fleet card) ────────────────
+  // fleet_status: last-known rollup per (map, host), overwritten on push.
+  // fleet_ticks: orchestrator decisions, trimmed to a retention window on
+  // insert. Both are snapshots MindBlown receives, never a register.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_status (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      host TEXT NOT NULL,
+      generated_at TIMESTAMPTZ NOT NULL,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      payload JSONB NOT NULL,
+      PRIMARY KEY (map_id, host)
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_ticks (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      tick_at TIMESTAMPTZ NOT NULL,
+      received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      payload JSONB NOT NULL
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS fleet_ticks_map_tick_idx ON fleet_ticks (map_id, tick_at DESC)
+  `);
+
   // ── Forecast scoreboard (ticket model + ship-date ground truth) ──
   // released_at is the empirical anchor: set when a version's status
   // transitions into 'released', it lets the scorecard grade every

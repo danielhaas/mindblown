@@ -119,6 +119,20 @@ export {
 } from './dispatch.js';
 export type { DispatchPolicyKey, GateEntry, DispatchState, DispatchQueueSnapshot, UnblockPlan } from './dispatch.js';
 
+// Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
+export {
+  ROLLUP_STALE_MIN,
+  WORKER_DEAD_MIN,
+  parseRollup,
+  parseTick,
+  hostFreshness,
+  isWorkerDead,
+  effectiveWorkerState,
+  summarizeFleet,
+  silentSatellites,
+} from './fleet.js';
+export type { FleetWorkerStatus, FleetRollup, FleetTickPayload, HostFreshness, HostSummary, FleetSummary } from './fleet.js';
+
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';
 

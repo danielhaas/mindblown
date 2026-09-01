@@ -25,7 +25,8 @@ import type { DispatchQueueSnapshot, DispatchState } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { ChangeEvent } from './api.js';
-import { Card, Muted, Link } from './DigestView.js';
+import { Card, Link } from './DigestView.js';
+import { FleetTelemetry } from './FleetTelemetry.js';
 import {
   KNOB_LABEL,
   STALE_CLAIM_HOURS,
@@ -415,7 +416,8 @@ function FleetCard({ knobs, writes }: { knobs: KnobState; writes: Writes }) {
   const gateHasVersion = gate.some((g) => g.startsWith('version:'));
 
   return (
-    <Card title="Fleet — what MindBlown holds" accent={stale > 0 ? '#fed7aa' : undefined}>
+    <Card title="Fleet" accent={stale > 0 ? '#fed7aa' : undefined}>
+      <FleetTelemetry />
       <div style={{ fontSize: 13, color: '#334155', lineHeight: 1.6 }}>
         <div>
           Claims: <strong>{claims.length}</strong>
@@ -464,7 +466,6 @@ function FleetCard({ knobs, writes }: { knobs: KnobState; writes: Writes }) {
             ? <>Last knob write: {KNOB_LABEL[last.field]} {formatKnobValue(last.field, last.oldValue, versions)} → {formatKnobValue(last.field, last.newValue, versions)} · {last.actor ?? 'API key / system'} · {formatAge(last.at, now)} ago</>
             : <>No knob write in the audit yet — the trail starts with the first write after this feature shipped.</>}
         </div>
-        <Muted>Worker states (parked, limit-parked, at a prompt) live on the satellites and are not shown here yet.</Muted>
       </div>
     </Card>
   );

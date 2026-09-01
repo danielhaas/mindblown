@@ -14,6 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
+import type { FleetStatusResult } from '@mindblown/tool-kit';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1343,6 +1344,11 @@ export function releaseNode(
     `/api/maps/${mapId}/nodes/${nodeId}/release`,
     { method: 'POST', body: JSON.stringify({ sessionId }) },
   );
+}
+
+/** What MindBlown last received from the Leidang fleet (fleet_status). */
+export function getFleetStatus(mapId: string): Promise<FleetStatusResult> {
+  return request<FleetStatusResult>(`/api/maps/${mapId}/fleet`);
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

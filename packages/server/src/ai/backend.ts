@@ -14,6 +14,7 @@ import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
+import * as fleetDb from '../db/fleet.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
@@ -271,6 +272,10 @@ export function createChatBackend(userId: string): ToolBackend {
       };
     },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
+    async getFleetStatus(mapId) {
+      const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, 20)]);
+      return { hosts, ticks, now: new Date().toISOString() };
+    },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //

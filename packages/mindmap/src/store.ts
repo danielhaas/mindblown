@@ -145,6 +145,8 @@ export interface MindmapState {
   loading: boolean;
   error: string | null;
   wsConnected: boolean;
+  /** Bumped on every `fleet:updated` socket message — the Fleet card refetches on change. */
+  fleetRev: number;
 
   // Presence / follow mode
   presence: Record<string, RemotePresence>;
@@ -303,6 +305,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   loading: false,
   error: null,
   wsConnected: false,
+  fleetRev: 0,
   presence: {},
   followingUserId: null,
 
@@ -1589,6 +1592,13 @@ function handleWsMessage(
       const nodes = { ...state.nodes };
       nodes[parentId] = { ...nodes[parentId], childrenIds };
       set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+
+    // A satellite rollup or an orchestrator tick landed — the payload is not
+    // on the socket (rollups are large); the Fleet card refetches.
+    case 'fleet:updated': {
+      set({ fleetRev: state.fleetRev + 1 });
       break;
     }
   }

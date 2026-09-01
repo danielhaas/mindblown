@@ -97,6 +97,7 @@ function makeRecordingBackend(): {
       return { node: { id: nodeId, text: 'stub', status: 'todo', claimedBySession: null }, statusReset: true };
     },
     conflictScan: async () => { throw new Error('not implemented'); },
+    getFleetStatus: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
   };
   return {

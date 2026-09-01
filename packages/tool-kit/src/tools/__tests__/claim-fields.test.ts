@@ -74,6 +74,7 @@ function backendFor(detail: MapDetail): ToolBackend {
     releaseNode: unimplemented,
     unblockNode: unimplemented,
     conflictScan: unimplemented,
+    getFleetStatus: unimplemented,
   } as unknown as ToolBackend;
 }
 

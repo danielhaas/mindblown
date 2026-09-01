@@ -12,6 +12,7 @@
  */
 
 import { z } from 'zod';
+import { summarizeFleet, effectiveWorkerState, silentSatellites } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 
 export const readyNodesTool = defineTool({
@@ -297,10 +298,84 @@ export const conflictScanTool = defineTool({
   },
 });
 
+export const fleetStatusTool = defineTool({
+  name: 'fleet_status',
+  description: [
+    'What MindBlown last heard from the Leidang worker fleet: one rollup per',
+    'satellite host (workers with state working / parked / limit-parked /',
+    'auth-parked / prompt, their claim, context fill, last activity) and the',
+    'orchestrator\'s recent ticks (assessment, anomalies, asks for the human,',
+    'knob writes). Read-only. A host whose rollup is older than 20 min is',
+    'reported STALE — host down, paused, or agent stopped — and does not count',
+    'as capacity. Use this to answer "why is nothing being worked on?" before',
+    'touching maxActiveClaims: parked/limit-parked workers, not the cap, are the',
+    'usual reason. Empty until the satellites push (fleet-status route).',
+  ].join('\n'),
+  schema: {
+    mapId: z.string().describe('The map ID the fleet pulls from'),
+  },
+  handler: async (backend, { mapId }) => {
+    const r = await backend.getFleetStatus(mapId);
+    const now = new Date(r.now);
+    const summary = summarizeFleet(r.hosts.map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now);
+    const lines: string[] = [];
+    if (summary.hosts.length === 0) {
+      lines.push(`No satellite rollup received yet for map ${mapId} — the fleet-status push is not wired, or the fleet is off.`);
+    } else {
+      const states = Object.entries(summary.totals)
+        .sort((a, b) => b[1] - a[1])
+        .map(([s, n]) => `${s} ${n}`)
+        .join(' · ');
+      lines.push(`Fleet: ${summary.freshHosts}/${summary.hosts.length} hosts reporting, ${summary.workersTotal} workers on fresh hosts (${states || 'none'})`);
+      for (const h of summary.hosts) {
+        const age = `${Math.round(h.freshness.ageMin)}m ago`;
+        const flag = h.freshness.stale ? ' — STALE: host down, paused, or agent stopped?' : '';
+        const drain = h.draining ? ` — DRAINING: ${h.draining}` : '';
+        lines.push('');
+        lines.push(`${h.host} (${age}${flag}${drain})`);
+        for (const w of h.workers) {
+          const state = effectiveWorkerState(w, now);
+          const bits = [w.model ?? '', state];
+          if (w.claim?.title) bits.push(`claim: ${w.claim.title}`);
+          else if (w.claim?.nodeId) bits.push(`claim: ${w.claim.nodeId}`);
+          if (state === 'limit-parked' && w.limit_reset_at) bits.push(`reset ${w.limit_reset_at}`);
+          if (state === 'prompt' && w.prompt_question) bits.push(`prompt: ${w.prompt_question}`);
+          if (w.waiting?.reason) bits.push(`waiting: ${w.waiting.reason}`);
+          if (typeof w.ctx_pct === 'number') bits.push(`ctx ${w.ctx_pct}%`);
+          lines.push(`  - ${w.worker ?? w.session}: ${bits.filter(Boolean).join(' · ')}`);
+        }
+      }
+    }
+    const tick = r.ticks[0];
+    if (tick) {
+      const p = tick.payload;
+      lines.push('');
+      lines.push(`Last orchestrator tick ${tick.tickAt}${p.noJudgment ? ` — NO JUDGMENT (${p.noJudgment})` : ''}`);
+      if (p.assessment) lines.push(`  ${p.assessment}`);
+      if (p.summary?.heartbeat) lines.push(`  numbers: ${p.summary.heartbeat}`);
+      const silent = silentSatellites(p.pullStatus, summary.hosts.map((h) => h.host));
+      for (const s of silent) lines.push(`  SILENT satellite ${s.sat}: ${s.reason === 'unreachable' ? 'unreachable over ssh' : 'up but delivered no rollup — agent not running'}`);
+      for (const a of p.anomalies ?? []) lines.push(`  [${a.severity}] ${a.what}`);
+      if ((p.asks ?? []).length > 0) {
+        lines.push('  asks for the human:');
+        for (const a of p.asks ?? []) lines.push(`    - ${a}`);
+      }
+      if (p.cap?.set !== null && p.cap?.set !== undefined) lines.push(`  cap set → ${p.cap.set} (${p.cap.reason ?? ''})`);
+      if (p.policy?.set) lines.push(`  policy set → ${p.policy.set.join(' › ')} (${p.policy.reason ?? ''})`);
+      if (p.gate_recommendation?.set) lines.push(`  gate RECOMMENDED (needs the human) → ${p.gate_recommendation.set.join(' + ')} (${p.gate_recommendation.reason ?? ''})`);
+    } else {
+      lines.push('');
+      lines.push('No orchestrator tick received yet.');
+    }
+    return lines.join('\n');
+  },
+});
+
 export const orchestrationTools = [
   readyNodesTool,
   getNextTicketTool,
   claimNodeTool,
   releaseNodeTool,
   conflictScanTool,
+  fleetStatusTool,
 ];

@@ -553,3 +553,31 @@ export const lintDismissals = pgTable('lint_dismissals', {
   dismissedBy: uuid('dismissed_by').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Leidang fleet telemetry ───────────────────────────────────────
+// Last-known satellite rollup per (map, host) — overwritten on every push
+// (rollup.sh, every ~2 min). A row that stops being refreshed IS the
+// host-down signal; nothing here is a session register. `payload` is the
+// rollup v1 document verbatim (core `FleetRollup`).
+
+export const fleetStatus = pgTable(
+  'fleet_status',
+  {
+    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    host: text('host').notNull(),
+    generatedAt: timestamp('generated_at', { withTimezone: true }).notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+    payload: jsonb('payload').notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.mapId, t.host] })],
+);
+
+// One row per orchestrator tick (decision.json + the numbers it judged
+// from); trimmed to TICK_RETENTION per map on insert.
+export const fleetTicks = pgTable('fleet_ticks', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  tickAt: timestamp('tick_at', { withTimezone: true }).notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  payload: jsonb('payload').notNull(),
+});
