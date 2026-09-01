@@ -19,7 +19,7 @@ import {
   collapseDuplicates,
   breadcrumb,
 } from './landing.js';
-import type { ChangeEventLite } from './landing.js';
+import type { ChangeEventLite, BlockerKind } from './landing.js';
 import { pickCurrentCycle } from './roles.js';
 import { Shell, Card, Muted, Link } from './DigestView.js';
 import { LeidangCards } from './DispatchCards.js';
@@ -29,6 +29,8 @@ const WINDOW_DAYS = 3;
 const EVENT_CAP = 1000;
 const TRIAGE_PAGE = 500;
 const CAUSE_PREVIEW = 8;
+/** Blocker causes where "release all" is a sane default (see the Blocked card). */
+const BULK_RELEASE_KINDS = new Set<BlockerKind>(['decision', 'external', 'other']);
 
 export function CockpitView() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -58,13 +60,14 @@ export function CockpitView() {
 
   const releaseTickets = async (ids: string[], label: string) => {
     if (ids.length > 1 && !window.confirm(`Release ${ids.length} tickets under "${label}" back into the pull queue?\n\nEach gets blockedReason cleared, the blocked tag removed and its status reset to todo (done stays done). The fleet can pull them within ~2 min.`)) return;
-    setReleasing(new Set(ids));
     let ok = 0;
     let failed: string | null = null;
     for (const id of ids) {
+      setReleasing(new Set([id]));
       if (await unblockNode(id)) ok += 1;
       else {
-        failed = nodes[id]?.text ?? id;
+        // Read through the store, not the render closure — `nodes` is stale after the first await.
+        failed = useMindmapStore.getState().nodes[id]?.text ?? id;
         break;
       }
     }
@@ -254,7 +257,11 @@ export function CockpitView() {
                     </Link>
                     {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
                     {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
-                    {g.kind !== 'dependency' && g.nodeIds.length > 1 && (
+                    {/* Bulk only where re-queueing is the right default. pr_open /
+                        merge_blocked tickets have finished code in review — a
+                        re-pull would duplicate it; orphaned claims need a look at
+                        the half-finished worktree first. Those keep the per-row button. */}
+                    {BULK_RELEASE_KINDS.has(g.kind) && g.nodeIds.length > 1 && (
                       <button
                         style={releaseBtnStyle}
                         disabled={releasing.size > 0}
@@ -276,7 +283,11 @@ export function CockpitView() {
                                 <button
                                   style={releaseBtnStyle}
                                   disabled={releasing.size > 0}
-                                  title="Release back into the pull queue: blockedReason cleared, blocked tag removed, status back to todo (done stays done)."
+                                  title={
+                                    nodes[id].claimedBySession
+                                      ? `Still claimed by ${nodes[id].claimedBySession} — this clears the reason and tag but leaves the status; release the claim first if that worker is gone.`
+                                      : 'Release back into the pull queue: blockedReason cleared, blocked tag removed, status back to todo (done stays done).'
+                                  }
                                   onClick={() => void releaseTickets([id], nodes[id].text)}
                                 >
                                   {releasing.has(id) ? 'Releasing…' : 'Release'}

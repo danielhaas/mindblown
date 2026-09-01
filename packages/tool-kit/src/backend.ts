@@ -160,8 +160,12 @@ export interface ReleaseNodeResult {
 
 /** Result of releasing a parked ("blocked") ticket back into the queue. */
 export interface UnblockNodeResult {
-  node: { id: string; text: string; status: string | null };
-  /** True when the status was moved back to the workflow's todo status. */
+  node: { id: string; text: string; status: string | null; claimedBySession: string | null };
+  /**
+   * True when the status was moved back to the workflow's todo status —
+   * i.e. the ticket is pullable again. False when the node is done, still
+   * claimed by a session, or already in todo.
+   */
   statusReset: boolean;
 }
 

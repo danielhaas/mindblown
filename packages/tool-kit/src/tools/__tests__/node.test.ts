@@ -94,7 +94,7 @@ function makeRecordingBackend(): {
     releaseNode: async () => { throw new Error('not implemented'); },
     unblockNode: async (mapId, nodeId) => {
       state.lastUnblock = { mapId, nodeId };
-      return { node: { id: nodeId, text: 'stub', status: 'todo' }, statusReset: true };
+      return { node: { id: nodeId, text: 'stub', status: 'todo', claimedBySession: null }, statusReset: true };
     },
     conflictScan: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },

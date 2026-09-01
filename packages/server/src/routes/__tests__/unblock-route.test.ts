@@ -57,6 +57,7 @@ function node(overrides: Record<string, unknown> = {}): Record<string, unknown> 
     parentId: 'pppp',
     childrenIds: [],
     text: '#8755 FM mail relay token',
+    claimedBySession: null,
     status: 'blocked',
     blockedReason: 'needs Dan: deploy CT122',
     tags: ['app:fm', 'blocked'],
@@ -120,6 +121,17 @@ describe('POST /api/maps/:id/nodes/:nodeId/unblock', () => {
     await app.close();
     expect(updateNodeMock).toHaveBeenLastCalledWith(NODE_ID, { blockedReason: null, tagsRemove: ['blocked'] });
     expect(res.json().statusReset).toBe(false);
+  });
+
+  it('leaves the status of a still-claimed node alone and says so (statusReset false)', async () => {
+    getNodeMock.mockResolvedValueOnce(node({ status: 'in_progress', claimedBySession: 'sat2:worker-1:default' }));
+    updateNodeMock.mockResolvedValueOnce(node({ status: 'in_progress', claimedBySession: 'sat2:worker-1:default', blockedReason: null, tags: ['app:fm'] }));
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/nodes/${NODE_ID}/unblock` });
+    await app.close();
+    expect(updateNodeMock).toHaveBeenLastCalledWith(NODE_ID, { blockedReason: null, tagsRemove: ['blocked'] });
+    expect(res.json().statusReset).toBe(false);
+    expect(res.json().node.claimedBySession).toBe('sat2:worker-1:default');
   });
 
   it('404s for a node outside the map and writes nothing', async () => {

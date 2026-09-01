@@ -40,6 +40,9 @@ export async function unblockNode(mapId: string, nodeId: string, userId: string 
 
   const plan = planUnblock(before, workflow);
   const input: nodeDb.UpdateNodeInput = { blockedReason: null };
+  // `tags` is on purpose not in change_events' TRACKED_FIELDS (noise), so
+  // the tag removal leaves no audit row — status + blockedReason do. The
+  // field is still listed for the broadcast/GitHub-sync fan-out.
   const changedFields = ['blockedReason'];
   if (plan.tagsRemove.length > 0) {
     input.tagsRemove = plan.tagsRemove;

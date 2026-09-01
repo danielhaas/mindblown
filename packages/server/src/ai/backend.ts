@@ -266,7 +266,7 @@ export function createChatBackend(userId: string): ToolBackend {
       const result = await unblockNodeService(mapId, nodeId, userId);
       broadcast(mapId, { type: 'node:updated', nodeId, fields: result.changedFields, node: result.node });
       return {
-        node: { id: result.node.id, text: result.node.text, status: result.node.status },
+        node: { id: result.node.id, text: result.node.text, status: result.node.status, claimedBySession: result.node.claimedBySession },
         statusReset: result.statusReset,
       };
     },

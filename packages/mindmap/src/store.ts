@@ -1172,7 +1172,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   unblockNode: async (id) => {
     const state = get();
     const mapId = state.currentMapId;
-    if (!mapId || !state.nodes[id]) return false;
+    if (!mapId || !state.nodes[id]) {
+      set({ error: 'That ticket is no longer on this map.' });
+      return false;
+    }
     try {
       const { node } = await api.unblockNode(mapId, id);
       const current = get();

@@ -186,24 +186,37 @@ describe('dispatchQueueSnapshot', () => {
 });
 
 describe('planUnblock', () => {
+  const u = (p: { status: string | null; tags: string[]; claimedBySession?: string | null }, wf = WORKFLOW) =>
+    planUnblock({ claimedBySession: null, ...p }, wf);
+
   it("undoes the fleet's give-up: blocked (not a workflow status) → first todo, tag removed", () => {
-    expect(planUnblock({ status: 'blocked', tags: ['app:fm', 'blocked'] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: ['blocked'] });
+    expect(u({ status: 'blocked', tags: ['app:fm', 'blocked'] })).toEqual({ status: 'todo', tagsRemove: ['blocked'] });
   });
 
   it('re-queues in_progress (the worker is gone) and leaves the tag list alone when there is no blocked tag', () => {
-    expect(planUnblock({ status: 'in_progress', tags: ['bug'] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: [] });
+    expect(u({ status: 'in_progress', tags: ['bug'] })).toEqual({ status: 'todo', tagsRemove: [] });
   });
 
   it('never re-opens done work; matches status by name case-insensitively', () => {
-    expect(planUnblock({ status: 'done', tags: ['blocked'] }, WORKFLOW)).toEqual({ tagsRemove: ['blocked'] });
-    expect(planUnblock({ status: 'DONE', tags: [] }, WORKFLOW)).toEqual({ tagsRemove: [] });
+    expect(u({ status: 'done', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: 'DONE', tags: [] })).toEqual({ tagsRemove: [] });
   });
 
-  it('is a status no-op when already todo / null, and falls back to null without a todo status', () => {
-    expect(planUnblock({ status: 'todo', tags: ['blocked'] }, WORKFLOW)).toEqual({ tagsRemove: ['blocked'] });
-    expect(planUnblock({ status: null, tags: [] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: [] });
+  it('leaves a still-claimed node alone (not pullable anyway; never pull a ticket from under a worker)', () => {
+    expect(u({ status: 'in_progress', tags: ['blocked'], claimedBySession: 'sat2:worker-1' })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: 'blocked', tags: [], claimedBySession: 'x' })).toEqual({ tagsRemove: [] });
+  });
+
+  it('does not guess for a status id the workflow does not know, other than blocked', () => {
+    // e.g. a legacy `cancelled` on a map whose workflow lacks it
+    expect(u({ status: 'cancelled', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+  });
+
+  it('is a status no-op when already todo, normalises null, and falls back to null without a todo status', () => {
+    expect(u({ status: 'todo', tags: ['blocked'] })).toEqual({ tagsRemove: ['blocked'] });
+    expect(u({ status: null, tags: [] })).toEqual({ status: 'todo', tagsRemove: [] });
     const noTodo = WORKFLOW.filter((s) => s.category !== 'todo');
-    expect(planUnblock({ status: 'blocked', tags: [] }, noTodo)).toEqual({ status: null, tagsRemove: [] });
-    expect(planUnblock({ status: null, tags: [] }, noTodo)).toEqual({ tagsRemove: [] });
+    expect(u({ status: 'blocked', tags: [] }, noTodo)).toEqual({ status: null, tagsRemove: [] });
+    expect(u({ status: null, tags: [] }, noTodo)).toEqual({ tagsRemove: [] });
   });
 });

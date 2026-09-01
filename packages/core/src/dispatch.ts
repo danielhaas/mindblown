@@ -73,14 +73,22 @@ export interface UnblockPlan {
  * queue (status, blockedReason, tag); undoing one of them leaves it stuck
  * and invisible — the old clear_blocker did exactly that.
  *
- * Status rule: anything not in a done category goes back to the
- * workflow's first todo status (null when the map has none — null is the
- * todo category too). `blocked` is usually not a workflow status at all;
- * an in_progress ticket whose worker gave up is re-queued as well — the
- * worker is gone, the queue is where it gets picked up again. Done stays
- * done: finished work is never re-opened by an unblock.
+ * Status rule: back to the workflow's first todo status (null when the
+ * map has none — null is the todo category too) for `blocked` (not a
+ * workflow status), null, and any workflow status outside `done` — an
+ * in_progress ticket whose worker gave up is re-queued too, the queue is
+ * where it gets picked up again. Left alone: done (finished work is never
+ * re-opened), a status id the workflow does not know other than `blocked`
+ * (e.g. a legacy `cancelled` on a map without it — no guessing), and a
+ * node that is STILL CLAIMED: a PM click must not pull the ticket from
+ * under a running worker, and a claimed node is not pullable anyway, so a
+ * status flip would only lie about "pullable again". blocked.sh releases
+ * its own claim before it stops, so the fleet path never hits this.
  */
-export function planUnblock(node: Pick<Node, 'status' | 'tags'>, workflow: StatusDef[]): UnblockPlan {
+export function planUnblock(
+  node: Pick<Node, 'status' | 'tags' | 'claimedBySession'>,
+  workflow: StatusDef[],
+): UnblockPlan {
   const tagsRemove = node.tags.includes(BLOCKED_TAG) ? [BLOCKED_TAG] : [];
   const current = node.status;
   const def =
@@ -88,11 +96,10 @@ export function planUnblock(node: Pick<Node, 'status' | 'tags'>, workflow: Statu
       ? undefined
       : workflow.find((s) => s.id === current || s.name.toLowerCase() === current.toLowerCase());
   if (def?.category === 'done') return { tagsRemove };
+  if (node.claimedBySession) return { tagsRemove };
+  if (def === undefined && current !== null && current !== BLOCKED_TAG) return { tagsRemove };
   const target = workflow.find((s) => s.category === 'todo')?.id ?? null;
-  if (current === target || (current === null && target === null)) return { tagsRemove };
-  // A null status is already "todo" — only rewrite it when the workflow
-  // names an explicit todo status.
-  if (current === null && def === undefined && target === null) return { tagsRemove };
+  if (current === target) return { tagsRemove };
   return { status: target, tagsRemove };
 }
 
