@@ -5,7 +5,12 @@
  * and repo listing — all via native fetch + jsonwebtoken. No @octokit deps.
  */
 
-import { GitHubApiError } from './github.js';
+import {
+  GitHubApiError,
+  githubFetchPage,
+  assertSamePaginationOrigin,
+  type GitHubPage,
+} from './github.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -198,30 +203,51 @@ export async function mintInstallationToken(installationId: string): Promise<str
 export async function listInstallationRepositories(installationId: string): Promise<GitHubRepo[]> {
   const token = await mintInstallationToken(installationId);
   const repos: GitHubRepo[] = [];
-  let page = 1;
 
-  while (true) {
-    const res = await fetch(
-      `https://api.github.com/installation/repositories?per_page=100&page=${page}`,
-      {
-        headers: {
-          Accept: 'application/vnd.github+json',
-          Authorization: `Bearer ${token}`,
-          'X-GitHub-Api-Version': '2022-11-28',
-        },
-      },
-    );
+  // Follows `Link: rel="next"` like every other list walk, rather than
+  // counting `page` up. This endpoint returns an ENVELOPE
+  // (`{ total_count, repositories }`) rather than a bare array, so it
+  // cannot use `paginateGitHub` — but it can share the same fetch
+  // primitive, which is where the header parsing and the
+  // pagination-limit error mapping live.
+  //
+  // The 422 depth limit realistically cannot bite here (an installation
+  // grants access to dozens of repos, not tens of thousands). It is
+  // converted anyway so this file stops being the one place that still
+  // builds `?page=` by hand.
+  // `paginateGitHub` carries the page ceiling for the other four walks;
+  // this one has to state its own. Without it the only brake is the
+  // server eventually not sending a `Link` — and a self-referential or
+  // cycling header keeps sending one. The old loop at least stopped on a
+  // short page; the first cut of this conversion dropped that and put
+  // nothing in its place.
+  const MAX_PAGES = 100; // 100 × 100 repos — far past any real installation.
+  const FIRST_URL = 'https://api.github.com/installation/repositories?per_page=100';
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Failed to list repos: ${res.status} ${body}`);
+  let url: string | null = FIRST_URL;
+  let pages = 0;
+  while (url) {
+    const page: GitHubPage<{ total_count: number; repositories: GitHubRepo[] }> =
+      await githubFetchPage(url, token);
+    repos.push(...(page.data.repositories ?? []));
+    pages += 1;
+
+    // `total_count` is the endpoint's own answer to "am I done" — keep it
+    // as the primary stop, but never as the ONLY one: a missing field is
+    // `undefined`, and every comparison against that is false.
+    if (repos.length >= page.data.total_count) break;
+    if (!page.nextUrl) break;
+    if (pages >= MAX_PAGES) {
+      console.warn(
+        `[github-app] installation ${installationId}: stopped listing repositories at ` +
+          `${MAX_PAGES} pages — result is TRUNCATED`,
+      );
+      break;
     }
-
-    const data = (await res.json()) as { total_count: number; repositories: GitHubRepo[] };
-    repos.push(...data.repositories);
-
-    if (repos.length >= data.total_count || data.repositories.length < 100) break;
-    page++;
+    // Same guard as `paginateGitHub`: the next URL comes from a response
+    // header and the next request carries the installation token.
+    assertSamePaginationOrigin(FIRST_URL, page.nextUrl);
+    url = page.nextUrl;
   }
 
   return repos;

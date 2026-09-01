@@ -9,6 +9,7 @@
  */
 
 import type { PrRecord } from '@mindblown/core';
+import { paginateGitHub, GitHubApiError } from '@mindblown/integrations';
 import type { GitHubMapContext } from './githubContext.js';
 
 const PER_PAGE = 100;
@@ -61,8 +62,14 @@ export async function fetchMergedPrsSince(
     };
   }
 
-  const result = await fetchMergedPrsUncached(ctx, sinceMs, maxPages);
-  throughputCache.set(cacheKey, { fetchedAt: Date.now(), sinceMs, result });
+  const { apiError, ...result } = await fetchMergedPrsUncached(ctx, sinceMs, maxPages);
+  // Never cache a result GitHub refused to give us. Caching it pins the
+  // degraded reading — "0 merged PRs, rework 0" — for the full hour,
+  // long past the 401 that caused it, and every reader in that hour sees
+  // a clean forecast built on nothing.
+  if (!apiError) {
+    throughputCache.set(cacheKey, { fetchedAt: Date.now(), sinceMs, result });
+  }
   return result;
 }
 
@@ -70,58 +77,73 @@ async function fetchMergedPrsUncached(
   ctx: GitHubMapContext,
   sinceMs: number,
   maxPages: number,
-): Promise<FetchMergedPrsResult> {
+): Promise<FetchMergedPrsResult & { apiError: boolean }> {
   const out: PrRecord[] = [];
-  let page = 1;
   let truncated = false;
+  let apiError = false;
 
-  for (; page <= maxPages; page++) {
-    const url =
-      `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls` +
-      `?state=closed&sort=updated&direction=desc&per_page=${PER_PAGE}&page=${page}`;
-    const res = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${ctx.token}`,
-        Accept: 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    });
-    if (!res.ok) {
-      // Auth/rate-limit/other — return what we have rather than failing the report.
-      truncated = true;
-      break;
-    }
-    const rows = (await res.json()) as Array<{
-      number: number;
-      title: string;
-      body: string | null;
-      created_at: string;
-      merged_at: string | null;
-      updated_at: string;
-    }>;
-    if (rows.length === 0) break;
-
-    for (const r of rows) {
-      if (r.merged_at && Date.parse(r.merged_at) >= sinceMs) {
-        out.push({
-          number: r.number,
-          title: r.title,
-          body: r.body,
-          createdAt: r.created_at,
-          mergedAt: r.merged_at,
-        });
-      }
-    }
-
-    // A partial page is the last page — no need to request the next one.
-    if (rows.length < PER_PAGE) break;
-
-    // Once the whole page's activity predates the window, older pages can't
-    // contain in-window merges (sorted by updated desc).
-    const pageAllOld = rows.every((r) => Date.parse(r.updated_at) < sinceMs);
-    if (pageAllOld) break;
-    if (page === maxPages) truncated = true;
+  interface PrRow {
+    number: number;
+    title: string;
+    body: string | null;
+    created_at: string;
+    merged_at: string | null;
+    updated_at: string;
   }
 
-  return { prs: out, truncated };
+  try {
+    // Follows `Link: rel="next"` instead of counting `page` up. Same
+    // reason as the issue-list walks in @mindblown/integrations: past a
+    // certain depth GitHub refuses `page` on a large dataset and answers
+    // 422. This endpoint sits on the same repo and the same depth
+    // budget, so it was one busy repo away from the identical break.
+    const walk = await paginateGitHub<PrRow>(
+      `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls` +
+        `?state=closed&sort=updated&direction=desc&per_page=${PER_PAGE}`,
+      ctx.token,
+      {
+        maxPages,
+        onPage: (rows) => {
+          if (rows.length === 0) return false;
+
+          for (const r of rows) {
+            if (r.merged_at && Date.parse(r.merged_at) >= sinceMs) {
+              out.push({
+                number: r.number,
+                title: r.title,
+                body: r.body,
+                createdAt: r.created_at,
+                mergedAt: r.merged_at,
+              });
+            }
+          }
+
+          // Once the whole page's activity predates the window, older pages
+          // can't contain in-window merges (sorted by updated desc).
+          if (rows.every((r) => Date.parse(r.updated_at) < sinceMs)) return false;
+          return true;
+        },
+      },
+    );
+    truncated = walk.truncated;
+  } catch (err) {
+    // ONLY an HTTP-level refusal is swallowed, because that is the one
+    // case the raw-fetch loop swallowed (`if (!res.ok) { truncated =
+    // true; break; }`). A bare `catch {}` was wider than the branch it
+    // replaced: a rejected fetch (ECONNREFUSED, DNS) and a non-list body
+    // both used to propagate to `velocityMeasure`, which logs them and
+    // sets `repoThroughput = null`. Swallowed instead, they render as
+    // "0 merged PRs, reworkFraction 0" — NET rate == gross rate — so an
+    // expired token reads as "the repo shipped nothing and the forecast
+    // is clean". Silently, and for as long as the cache holds it.
+    if (!(err instanceof GitHubApiError)) throw err;
+    console.warn(
+      `[repo-throughput] ${ctx.owner}/${ctx.repo}: GitHub refused the PR list ` +
+        `(${err.status}) — reporting a partial window: ${err.message}`,
+    );
+    truncated = true;
+    apiError = true;
+  }
+
+  return { prs: out, truncated, apiError };
 }
