@@ -904,7 +904,15 @@ describe('pagination on a repo too large for ?page=', () => {
     // The stub only refuses `page >= 2`, so an implementation could
     // sneak page 1 through and still pass the tests above. It must not:
     // the point is that we stop choosing the scheme.
-    const fetchMock = bigRepo({ pages: [issuePage([1]), issuePage([2])] });
+    //
+    // Page 1 is deliberately FULL (100 items). A length-driven loop
+    // ("a full page means there is another") would append `page=2` here
+    // and this assertion is what catches it — with a short first page
+    // such a loop stops early and the test goes green for the wrong
+    // reason.
+    const fetchMock = bigRepo({
+      pages: [issuePage(Array.from({ length: 100 }, (_, i) => i + 1)), issuePage([101])],
+    });
 
     await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
 
