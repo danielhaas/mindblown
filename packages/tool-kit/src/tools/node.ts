@@ -311,14 +311,17 @@ export const flagBlockerTool = defineTool({
 export const clearBlockerTool = defineTool({
   name: 'clear_blocker',
   description:
-    'Clear the blocker on a node — removes `blockedReason` so the node stops surfacing in blocked_digest and ancestor blocked rollups. Use when the external thing that was holding the work back has resolved.',
+    'Release a blocked node back into the work queue — the one-call undo of a fleet worker\'s give-up (blocked.sh) or a flag_blocker. Clears `blockedReason`, removes the `blocked` tag, and moves the status back to the map\'s todo status unless the node is done (finished work is never re-opened). After this the pull queue (get_next_ticket) can hand the ticket out again. Use when the external thing that was holding the work back has resolved. To keep a node out of the queue while only editing the reason, use update_node instead.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to unblock'),
   },
   handler: async (backend, { mapId, nodeId }) => {
-    await backend.updateNode(mapId, nodeId, { blockedReason: null });
-    return `Cleared blocker on ${nodeId}.`;
+    const result = await backend.unblockNode(mapId, nodeId);
+    const status = result.statusReset
+      ? `status reset to ${result.node.status ?? 'todo'} — pullable again`
+      : `status left at ${result.node.status ?? 'none'}`;
+    return `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
   },
 });
 

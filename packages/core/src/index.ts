@@ -114,8 +114,10 @@ export {
   matchesDispatchGate,
   pullableNodes,
   dispatchQueueSnapshot,
+  BLOCKED_TAG,
+  planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, DispatchState, DispatchQueueSnapshot } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, DispatchState, DispatchQueueSnapshot, UnblockPlan } from './dispatch.js';
 
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';

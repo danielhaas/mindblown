@@ -38,6 +38,7 @@ export function CockpitView() {
   const cycles = useMindmapStore((s) => s.cycles);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
+  const unblockNode = useMindmapStore((s) => s.unblockNode);
 
   const [forecast, setForecast] = useState<ReleaseForecastResponse | null>(null);
   // Which blocker causes are unfolded to show their tasks (Dan: clicking a
@@ -50,6 +51,26 @@ export function CockpitView() {
   const [triageTotal, setTriageTotal] = useState<number | null>(null);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Asks loop: ids currently being released back into the queue. One at a
+  // time per click (bulk runs sequentially) so a failure names the ticket.
+  const [releasing, setReleasing] = useState<Set<string>>(new Set());
+  const [releaseNote, setReleaseNote] = useState<string | null>(null);
+
+  const releaseTickets = async (ids: string[], label: string) => {
+    if (ids.length > 1 && !window.confirm(`Release ${ids.length} tickets under "${label}" back into the pull queue?\n\nEach gets blockedReason cleared, the blocked tag removed and its status reset to todo (done stays done). The fleet can pull them within ~2 min.`)) return;
+    setReleasing(new Set(ids));
+    let ok = 0;
+    let failed: string | null = null;
+    for (const id of ids) {
+      if (await unblockNode(id)) ok += 1;
+      else {
+        failed = nodes[id]?.text ?? id;
+        break;
+      }
+    }
+    setReleasing(new Set());
+    setReleaseNote(failed ? `Released ${ok}, then failed on "${failed}" — see the error banner.` : `Released ${ok} ticket${ok === 1 ? '' : 's'} back into the queue.`);
+  };
 
   useEffect(() => {
     if (!currentMapId) return;
@@ -204,6 +225,12 @@ export function CockpitView() {
         </Card>
 
         <Card title={`Blocked — ${totalBlocked}, by cause`} accent={totalBlocked ? '#fecaca' : undefined}>
+          {releaseNote && (
+            <div style={{ fontSize: 12, color: '#166534', background: '#dcfce7', borderRadius: 6, padding: '4px 8px', marginBottom: 8 }}>
+              {releaseNote}{' '}
+              <Link onClick={() => setReleaseNote(null)}>dismiss</Link>
+            </div>
+          )}
           {blockers.length === 0 ? (
             <Muted>Nothing is blocked.</Muted>
           ) : (
@@ -227,6 +254,16 @@ export function CockpitView() {
                     </Link>
                     {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
                     {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
+                    {g.kind !== 'dependency' && g.nodeIds.length > 1 && (
+                      <button
+                        style={releaseBtnStyle}
+                        disabled={releasing.size > 0}
+                        title="Release every ticket under this cause back into the pull queue: blockedReason cleared, blocked tag removed, status back to todo (done stays done)."
+                        onClick={() => void releaseTickets(g.nodeIds, g.label)}
+                      >
+                        Release all {g.nodeIds.length}
+                      </button>
+                    )}
                     {open && (
                       <ul style={{ margin: '4px 0 6px 12px', paddingLeft: 14, fontSize: 12, lineHeight: 1.6 }}>
                         {collapseDuplicates(g.nodeIds.map((id) => nodes[id]).filter(Boolean)).map(({ node: { id }, duplicates }) =>
@@ -235,6 +272,16 @@ export function CockpitView() {
                               <Link onClick={() => selectNode(id)}>{nodes[id].text}</Link>
                               {duplicates > 0 && <span style={dupPillStyle}>×{duplicates + 1} — duplicate node</span>}
                               {breadcrumb(nodes, nodes[id]) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, nodes[id])}</span>}
+                              {g.kind !== 'dependency' && (
+                                <button
+                                  style={releaseBtnStyle}
+                                  disabled={releasing.size > 0}
+                                  title="Release back into the pull queue: blockedReason cleared, blocked tag removed, status back to todo (done stays done)."
+                                  onClick={() => void releaseTickets([id], nodes[id].text)}
+                                >
+                                  {releasing.has(id) ? 'Releasing…' : 'Release'}
+                                </button>
+                              )}
                               {g.kind !== 'orphaned_claim' && nodes[id].blockedReason && (
                                 <div style={{ color: '#94a3b8', fontSize: 11 }}>
                                   {linkifyRefs(truncateReason(nodes[id].blockedReason), repo).map((seg, si) =>
@@ -356,6 +403,18 @@ function truncateReason(reason: string): string {
 }
 
 const listStyle: React.CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.6 };
+const releaseBtnStyle: React.CSSProperties = {
+  marginLeft: 8,
+  fontSize: 11,
+  padding: '1px 8px',
+  border: '1px solid #bbf7d0',
+  borderRadius: 6,
+  background: '#f0fdf4',
+  color: '#166534',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+  verticalAlign: 'middle',
+};
 const dupPillStyle: React.CSSProperties = {
   marginLeft: 6,
   padding: '0 6px',

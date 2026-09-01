@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
 import type { MapDetail, NodeWithComputed } from '../../types.js';
 
@@ -22,10 +22,12 @@ function makeRecordingBackend(): {
   backend: ToolBackend;
   lastCreate: { mapId: string; parentId: string; text: string; fields?: Record<string, unknown> } | null;
   lastUpdate: { mapId: string; nodeId: string; fields: Record<string, unknown> } | null;
+  lastUnblock: { mapId: string; nodeId: string } | null;
 } {
   const state = {
     lastCreate: null as ReturnType<typeof makeRecordingBackend>['lastCreate'],
     lastUpdate: null as ReturnType<typeof makeRecordingBackend>['lastUpdate'],
+    lastUnblock: null as ReturnType<typeof makeRecordingBackend>['lastUnblock'],
   };
   const stubNode: NodeWithComputed = {
     id: 'node-stub',
@@ -90,6 +92,10 @@ function makeRecordingBackend(): {
     getNextTicket: async () => { throw new Error('not implemented'); },
     claimNode: async () => { throw new Error('not implemented'); },
     releaseNode: async () => { throw new Error('not implemented'); },
+    unblockNode: async (mapId, nodeId) => {
+      state.lastUnblock = { mapId, nodeId };
+      return { node: { id: nodeId, text: 'stub', status: 'todo' }, statusReset: true };
+    },
     conflictScan: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
   };
@@ -97,6 +103,7 @@ function makeRecordingBackend(): {
     backend,
     get lastCreate() { return state.lastCreate; },
     get lastUpdate() { return state.lastUpdate; },
+    get lastUnblock() { return state.lastUnblock; },
   };
 }
 
@@ -1211,5 +1218,18 @@ describe('search_nodes tool — phase name in output', () => {
       query: 'phased',
     } as never);
     expect(out).toContain('phase: M1 – Grundgerüst');
+  });
+});
+
+describe('clear_blocker tool', () => {
+  it('goes through unblockNode (the one-call undo), not a blockedReason-only update', async () => {
+    const rec = makeRecordingBackend();
+    const out = await clearBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'n-blocked' } as never);
+    expect(rec.lastUnblock).toEqual({ mapId: 'm1', nodeId: 'n-blocked' });
+    // The old implementation wrote {blockedReason: null} via updateNode and
+    // left status=blocked — the node stayed out of the queue.
+    expect(rec.lastUpdate).toBeNull();
+    expect(out).toContain('status reset to todo');
+    expect(out).toContain('"blocked" tag removed');
   });
 });

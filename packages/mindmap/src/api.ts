@@ -833,6 +833,18 @@ export function deleteNode(mapId: string, nodeId: string): Promise<void> {
   });
 }
 
+/**
+ * Release a parked ticket back into the pull queue: blockedReason cleared,
+ * `blocked` tag removed, status back to todo unless done. One call, one
+ * write — the server owns the rule (core `planUnblock`).
+ */
+export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node; statusReset: boolean }> {
+  return request<{ node: Node; statusReset: boolean }>(`/api/maps/${mapId}/nodes/${nodeId}/unblock`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 // ── Attachments ──────────────────────────────────────────────────
 
 export interface NewAttachment {

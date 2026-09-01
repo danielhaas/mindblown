@@ -16,6 +16,7 @@ import {
   dispatchQueueSnapshot,
   hasBrief,
   isBugNode,
+  planUnblock,
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
@@ -181,5 +182,28 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.state).toBe('empty');
     expect(s.needsBrief).toBe(1);
     expect(s.pullable).toBe(1);
+  });
+});
+
+describe('planUnblock', () => {
+  it("undoes the fleet's give-up: blocked (not a workflow status) → first todo, tag removed", () => {
+    expect(planUnblock({ status: 'blocked', tags: ['app:fm', 'blocked'] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: ['blocked'] });
+  });
+
+  it('re-queues in_progress (the worker is gone) and leaves the tag list alone when there is no blocked tag', () => {
+    expect(planUnblock({ status: 'in_progress', tags: ['bug'] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: [] });
+  });
+
+  it('never re-opens done work; matches status by name case-insensitively', () => {
+    expect(planUnblock({ status: 'done', tags: ['blocked'] }, WORKFLOW)).toEqual({ tagsRemove: ['blocked'] });
+    expect(planUnblock({ status: 'DONE', tags: [] }, WORKFLOW)).toEqual({ tagsRemove: [] });
+  });
+
+  it('is a status no-op when already todo / null, and falls back to null without a todo status', () => {
+    expect(planUnblock({ status: 'todo', tags: ['blocked'] }, WORKFLOW)).toEqual({ tagsRemove: ['blocked'] });
+    expect(planUnblock({ status: null, tags: [] }, WORKFLOW)).toEqual({ status: 'todo', tagsRemove: [] });
+    const noTodo = WORKFLOW.filter((s) => s.category !== 'todo');
+    expect(planUnblock({ status: 'blocked', tags: [] }, noTodo)).toEqual({ status: null, tagsRemove: [] });
+    expect(planUnblock({ status: null, tags: [] }, noTodo)).toEqual({ tagsRemove: [] });
   });
 });

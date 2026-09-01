@@ -3,6 +3,7 @@ import * as nodeDb from '../db/nodes.js';
 import { DependencyValidationError, PhaseIdValidationError, RequirementIdConflictError, RevisionConflictError, TagsModeConflictError } from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import * as events from '../db/events.js';
+import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
@@ -742,6 +743,32 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     const rows = await nodeDb.listDeleted(req.params.id, { sinceDays, limit });
     return reply.send({ deleted: rows });
   });
+
+  // ── POST /api/maps/:id/nodes/:nodeId/unblock — release a parked ticket ──
+  // Undoes the fleet's give-up write (status=blocked + blockedReason + tag)
+  // in one call; status rule in core `planUnblock`. Same fan-out as a PUT:
+  // change_events, node:updated, GitHub sync.
+  app.post<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/unblock',
+    async (req, reply) => {
+      try {
+        const result = await unblockNode(req.params.id, req.params.nodeId, req.userId ?? null);
+        broadcast(req.params.id, {
+          type: 'node:updated',
+          nodeId: req.params.nodeId,
+          fields: result.changedFields,
+          node: result.node,
+        });
+        syncNodeToGitHub(result.node, result.changedFields).catch(() => {});
+        return reply.send({ node: result.node, statusReset: result.statusReset });
+      } catch (err) {
+        if (err instanceof UnblockNotFoundError) {
+          return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: err.message } });
+        }
+        throw err;
+      }
+    },
+  );
 
   // ── GET /api/maps/:mapId/changes — Query the change log ─────
   app.get<{

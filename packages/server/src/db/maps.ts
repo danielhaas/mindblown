@@ -61,6 +61,15 @@ export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; 
   };
 }
 
+// ── Get (settings only) ────────────────────────────────────────────
+
+/** The map's status workflow without loading its nodes; null = no such map. */
+export async function getStatusWorkflow(mapId: string): Promise<StatusDef[] | null> {
+  const [row] = await db.select({ statusWorkflow: maps.statusWorkflow }).from(maps).where(eq(maps.id, mapId));
+  if (!row) return null;
+  return (row.statusWorkflow as StatusDef[]) ?? [];
+}
+
 // ── Get (with all nodes) ───────────────────────────────────────────
 
 export async function getMap(mapId: string): Promise<{ map: MindMap; nodes: CoreNode[] } | null> {

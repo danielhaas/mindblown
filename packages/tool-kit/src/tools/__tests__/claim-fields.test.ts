@@ -72,6 +72,7 @@ function backendFor(detail: MapDetail): ToolBackend {
     readyNodes: unimplemented,
     claimNode: unimplemented,
     releaseNode: unimplemented,
+    unblockNode: unimplemented,
     conflictScan: unimplemented,
   } as unknown as ToolBackend;
 }

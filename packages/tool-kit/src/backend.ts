@@ -158,6 +158,13 @@ export interface ReleaseNodeResult {
   alreadyReleased?: boolean;
 }
 
+/** Result of releasing a parked ("blocked") ticket back into the queue. */
+export interface UnblockNodeResult {
+  node: { id: string; text: string; status: string | null };
+  /** True when the status was moved back to the workflow's todo status. */
+  statusReset: boolean;
+}
+
 export interface ConflictEntry {
   id: string;
   text: string;
@@ -328,6 +335,12 @@ export interface ToolBackend {
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
   releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
+  /**
+   * Release a parked ticket back into the pull queue: blockedReason
+   * cleared, `blocked` tag removed, status back to todo unless done
+   * (`POST /api/maps/:id/nodes/:nodeId/unblock`).
+   */
+  unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────

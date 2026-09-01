@@ -57,6 +57,45 @@ export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boo
   return node.externalLinks.some((l) => l.provider === 'github');
 }
 
+/** Tag the fleet's give-up path (blocked.sh) sets next to status=blocked + blockedReason. */
+export const BLOCKED_TAG = 'blocked';
+
+export interface UnblockPlan {
+  /** New status, or undefined when the status stays as it is. */
+  status?: string | null;
+  /** Tags to remove — empty when the node never carried the blocked tag. */
+  tagsRemove: string[];
+}
+
+/**
+ * What "release this ticket back to the queue" writes, given the node and
+ * the map's workflow. Three fields latch a parked ticket out of the pull
+ * queue (status, blockedReason, tag); undoing one of them leaves it stuck
+ * and invisible — the old clear_blocker did exactly that.
+ *
+ * Status rule: anything not in a done category goes back to the
+ * workflow's first todo status (null when the map has none — null is the
+ * todo category too). `blocked` is usually not a workflow status at all;
+ * an in_progress ticket whose worker gave up is re-queued as well — the
+ * worker is gone, the queue is where it gets picked up again. Done stays
+ * done: finished work is never re-opened by an unblock.
+ */
+export function planUnblock(node: Pick<Node, 'status' | 'tags'>, workflow: StatusDef[]): UnblockPlan {
+  const tagsRemove = node.tags.includes(BLOCKED_TAG) ? [BLOCKED_TAG] : [];
+  const current = node.status;
+  const def =
+    current === null
+      ? undefined
+      : workflow.find((s) => s.id === current || s.name.toLowerCase() === current.toLowerCase());
+  if (def?.category === 'done') return { tagsRemove };
+  const target = workflow.find((s) => s.category === 'todo')?.id ?? null;
+  if (current === target || (current === null && target === null)) return { tagsRemove };
+  // A null status is already "todo" — only rewrite it when the workflow
+  // names an explicit todo status.
+  if (current === null && def === undefined && target === null) return { tagsRemove };
+  return { status: target, tagsRemove };
+}
+
 export type GateEntry =
   | { kind: 'version'; raw: string; versionId: string }
   | { kind: 'bugs'; raw: string }

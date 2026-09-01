@@ -224,6 +224,13 @@ export interface MindmapState {
   addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }, fields?: Partial<Node>) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   /**
+   * Release a parked ticket back into the pull queue (server-side rule:
+   * blockedReason null, `blocked` tag off, status → todo unless done).
+   * Not optimistic — the server decides the status; the returned node is
+   * applied. Resolves false on failure (error is set).
+   */
+  unblockNode: (id: string) => Promise<boolean>;
+  /**
    * Replace a node with what the server just returned, without writing
    * back. For sub-resource endpoints (attachments, dependencies) that have
    * already persisted the change and answered with the whole node —
@@ -1160,6 +1167,23 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     if (!state.nodes[node.id]) return;
     const nodes = { ...state.nodes, [node.id]: node };
     set({ nodes, computed: recomputeValues(nodes) });
+  },
+
+  unblockNode: async (id) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId || !state.nodes[id]) return false;
+    try {
+      const { node } = await api.unblockNode(mapId, id);
+      const current = get();
+      if (current.currentMapId !== mapId) return true;
+      const nodes = { ...current.nodes, [id]: node };
+      set({ nodes, computed: recomputeValues(nodes) });
+      return true;
+    } catch (e: any) {
+      set({ error: e?.message ?? 'Failed to release the ticket' });
+      return false;
+    }
   },
 
   updateNode: (id, updates) => {
