@@ -133,10 +133,12 @@ export interface DispatchQueueSnapshot {
 
 /**
  * What the pull queue looks like right now, from a full node list — the
- * FLEET-WIDE reading. Profile routing (`profilePolicy`) only splits this
- * set between heavy/standard/light pullers and a heavy puller takes
- * anything, so it does not change what is grantable to the fleet as a
- * whole; it is deliberately not modelled here.
+ * FLEET-WIDE reading, i.e. what a *heavy* puller could be granted.
+ * Profile routing (`profilePolicy`, server `isProfileEligible`) is not
+ * modelled: it reserves P0/big tickets for heavy pullers, so a fleet with
+ * only standard/light workers can receive fewer than `inGate` — how many
+ * depends on the fleet's composition, which the map does not know. The
+ * card says so when a profilePolicy is set. Known limitation.
  *
  * `state` precedence mirrors the server's refusal order: hold (cap 0) →
  * full (claims ≥ cap) → empty (nothing grantable inside the gate) →

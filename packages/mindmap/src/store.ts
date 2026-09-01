@@ -12,7 +12,10 @@ import type { ViewRole } from './roles.js';
 // ── Helpers ────────────────────────────────────────────────────
 
 /** Map fields a `map:updated` broadcast may overwrite locally (mirrors the
- *  server's AUDITED_MAP_FIELDS plus the timestamp). */
+ *  server's AUDITED_MAP_FIELDS plus the timestamp). Deliberately NOT the
+ *  whole row: the broadcast fires on every PUT (rename, phases, triage
+ *  flags too), and those keep their pre-existing no-live-sync behaviour —
+ *  merging them would revert optimistic edits such as an in-flight rename. */
 const BROADCAST_MAP_SETTINGS = [
   'maxActiveClaims',
   'dispatchGate',

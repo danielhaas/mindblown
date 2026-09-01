@@ -80,9 +80,9 @@ describe('dispatchQueueSnapshot ⇔ selectPullCandidates', () => {
     it(`grants exactly what the card calls grantable — ${name}`, () => {
       const server = selectPullCandidates(fixture, { workflow: WORKFLOW, cap: 6, gate, policy: [] });
       const card = dispatchQueueSnapshot(fixture, { workflow: WORKFLOW, cap: 6, gate });
-      // ranked = gated ∧ profile-eligible (no policy → all) incl. briefless; the
-      // pull grants ranked minus skipped.
-      const grantable = server.ranked.filter((x) => !server.skipped.includes(x)).map((x) => x.id);
+      // ranked = what the pull tries to claim (gated, with a brief, profile-
+      // eligible — no policy here → all); skipped = gated without a brief.
+      const grantable = server.ranked.map((x) => x.id);
       expect(sorted(card.inGateIds)).toEqual(sorted(grantable));
       expect(card.needsBrief).toBe(server.skipped.length);
       expect(card.activeClaims).toBe(server.active);
