@@ -26,6 +26,13 @@ import {
   buildInProgressIds,
   buildTodoIds,
   proseMirrorToPlainText,
+  effectiveVersionId,
+  isBugNode,
+  hasBrief,
+  matchesDispatchGate,
+  pullableNodes,
+  DEFAULT_DISPATCH_POLICY,
+  NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
 import type {
@@ -246,53 +253,10 @@ export async function releaseNode(
 
 // ── getNextTicket (Leidang pull queue) ──────────────────────────
 
-export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
-
-/** Tag auto-applied to ready nodes the pull queue refuses to hand out. */
-export const NEEDS_BRIEF_TAG = 'needs-brief';
-
-/**
- * Effective version of a node: its own versionId, or the nearest
- * ancestor's (explicit-assignment-wins walk — same semantics as the
- * search_nodes versionId filter and the lint engine).
- */
-function effectiveVersionId(node: CoreNode, nodeMap: NodeMap): string | null {
-  const seen = new Set<string>();
-  let cur: CoreNode | undefined = node;
-  while (cur) {
-    if (cur.versionId != null) return cur.versionId;
-    if (cur.parentId === null || seen.has(cur.parentId)) return null;
-    seen.add(cur.parentId);
-    cur = nodeMap.get(cur.parentId);
-  }
-  return null;
-}
-
-/** Bug detection for gate/policy purposes: node carries the "bug" tag
- *  (node.tags mirrors GitHub labels, so a GH `bug` label counts). */
-function isBugNode(node: CoreNode): boolean {
-  return node.tags.some((t) => t.toLowerCase() === 'bug');
-}
-
-/**
- * AND-filter over the map's dispatchGate. Vocabulary is deliberately
- * tiny: `version:<versionId>` and `type:bug`. Empty gate = no fence.
- * Unknown entries match NOTHING (fail-closed): a typo in the gate
- * empties the queue loudly instead of silently opening the fence.
- */
-export function matchesDispatchGate(
-  node: CoreNode,
-  gate: string[],
-  nodeMap: NodeMap,
-): boolean {
-  return gate.every((entry) => {
-    if (entry === 'type:bug') return isBugNode(node);
-    if (entry.startsWith('version:')) {
-      return effectiveVersionId(node, nodeMap) === entry.slice('version:'.length);
-    }
-    return false;
-  });
-}
+// Gate vocabulary, bug detection and the gate predicate live in
+// @mindblown/core (dispatch.ts) so the cockpit's Dispatch card applies the
+// exact fence the pull applies. Re-exported for existing imports/tests.
+export { DEFAULT_DISPATCH_POLICY, NEEDS_BRIEF_TAG, matchesDispatchGate };
 
 const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
 
@@ -345,16 +309,9 @@ export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): 
   });
 }
 
-/**
- * Empty-brief guard: a ticket is dispatchable only if the worker gets a
- * self-contained brief — a non-empty description, or a linked GitHub
- * issue it can read (inbound sync copies issue bodies into the
- * description, so a linked node normally carries the text locally too).
- */
-export function hasBrief(node: CoreNode): boolean {
-  if (proseMirrorToPlainText(node.description).trim() !== '') return true;
-  return node.externalLinks.some((l) => l.provider === 'github');
-}
+// Empty-brief guard lives in core (dispatch.ts) next to the gate predicate;
+// re-exported so existing imports keep working.
+export { hasBrief };
 
 /** Puller profiles the routing table recognizes. Anything else = standard. */
 export type PullProfile = 'heavy' | 'standard' | 'light';
@@ -439,17 +396,9 @@ export function selectPullCandidates(
   if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [] };
   if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [] };
 
-  const isDone = buildIsDonePredicate(opts.workflow);
-  const todoIds = buildTodoIds(opts.workflow);
-  const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
-
-  const ready = allNodes.filter(
-    (n) =>
-      n.parentId !== null && // the root is not a ticket
-      (n.status === null || todoIds.has(n.status)) &&
-      n.claimedBySession === null &&
-      isReady(n, nodeMap, isDone),
-  );
+  // Same pullable set the cockpit's Dispatch card renders (core/dispatch.ts):
+  // non-root, todo-or-null status, unclaimed, predecessors done.
+  const { pullable: ready, nodeMap } = pullableNodes(allNodes, opts.workflow);
   const gated = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Profile routing (#262): a configured policy FILTERS eligibility here;
   // ranking below is untouched. No policy = no filter = pre-#262 behavior.
@@ -579,7 +528,7 @@ export async function getNextTicket(
         priorityRank: winner.priorityRank,
         tags: winner.tags,
         scopes: winner.scopes,
-        versionId: effectiveVersionId(winner, nodeMap),
+        versionId: effectiveVersionId(winner.id, nodeMap),
         effortEstimate: winner.effortEstimate,
         githubLinks: winner.externalLinks
           .filter((l) => l.provider === 'github')

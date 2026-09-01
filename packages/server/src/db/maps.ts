@@ -3,6 +3,7 @@ import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
+import { recordMapFieldChanges } from './events.js';
 import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy } from '@mindblown/core';
 import { clampFocusFactor } from '@mindblown/core';
 
@@ -142,7 +143,21 @@ export interface UpdateMapInput {
   triageLabelWriteback?: boolean;
 }
 
-export async function updateMap(mapId: string, input: UpdateMapInput): Promise<MindMap | null> {
+/**
+ * Update map settings. `userId` attributes the change_events rows written
+ * for audited fields (dispatch knobs etc., see AUDITED_MAP_FIELDS); null
+ * for system writes. The before-row is read first so the diff is against
+ * what was persisted, not against what the caller assumed.
+ */
+export async function updateMap(
+  mapId: string,
+  input: UpdateMapInput,
+  userId: string | null = null,
+): Promise<MindMap | null> {
+  const [beforeRow] = await db.select().from(maps).where(eq(maps.id, mapId));
+  if (!beforeRow) return null;
+  const before = dbMapToCore(beforeRow as unknown as Record<string, unknown>);
+
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates.name = input.name;
   if (input.description !== undefined) updates.description = input.description;
@@ -172,7 +187,14 @@ export async function updateMap(mapId: string, input: UpdateMapInput): Promise<M
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;
-  return dbMapToCore(row as unknown as Record<string, unknown>);
+  const updated = dbMapToCore(row as unknown as Record<string, unknown>);
+  await recordMapFieldChanges(
+    mapId,
+    userId,
+    before as unknown as Record<string, unknown>,
+    updated as unknown as Record<string, unknown>,
+  );
+  return updated;
 }
 
 // ── Delete ─────────────────────────────────────────────────────────

@@ -11,7 +11,12 @@ export type EventType =
   | 'node.field_changed'
   // Version writes (#331): node_id is null, field_name is the version
   // field (name / status / targetDate / sortOrder).
-  | 'version.field_changed';
+  | 'version.field_changed'
+  // Map-setting writes (Leidang dispatch knobs and the other fleet-facing
+  // settings): node_id is null, field_name is the map field. Answers
+  // "who put the fleet on hold on Friday?" — before this the only trace of
+  // a knob write was the orchestrator's own tick log.
+  | 'map.field_changed';
 
 export interface ChangeEvent {
   id: string;
@@ -119,6 +124,49 @@ export async function recordFieldChanges(
     }
   }
   for (const e of events) await recordEvent(e);
+}
+
+/**
+ * Map settings that leave a change_events trail. The dispatch knobs are the
+ * reason this exists (every write moves the Leidang fleet within two
+ * minutes); the rest are the settings a PM flips that change what the
+ * forecast or the queue does. Name/description/layout are noise.
+ */
+export const AUDITED_MAP_FIELDS = [
+  'maxActiveClaims',
+  'dispatchGate',
+  'dispatchPolicy',
+  'profilePolicy',
+  'wipLimit',
+  'focusFactor',
+  'workerCount',
+] as const;
+export type AuditedMapField = (typeof AUDITED_MAP_FIELDS)[number];
+
+/**
+ * One `map.field_changed` row per audited map field that actually changed.
+ * Like recordFieldChanges: fire-and-forget, never throws.
+ */
+export async function recordMapFieldChanges(
+  mapId: string,
+  userId: string | null,
+  before: Record<string, unknown>,
+  after: Record<string, unknown>,
+): Promise<void> {
+  for (const field of AUDITED_MAP_FIELDS) {
+    const oldVal = before[field] ?? null;
+    const newVal = after[field] ?? null;
+    if (!valuesDiffer(oldVal, newVal)) continue;
+    await recordEvent({
+      mapId,
+      nodeId: null,
+      userId,
+      eventType: 'map.field_changed',
+      fieldName: field,
+      oldValue: oldVal,
+      newValue: newVal,
+    });
+  }
 }
 
 export interface ListEventsOptions {

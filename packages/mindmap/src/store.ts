@@ -11,6 +11,22 @@ import type { ViewRole } from './roles.js';
 
 // ── Helpers ────────────────────────────────────────────────────
 
+/** Map fields a `map:updated` broadcast may overwrite locally (mirrors the
+ *  server's AUDITED_MAP_FIELDS plus the timestamp). Deliberately NOT the
+ *  whole row: the broadcast fires on every PUT (rename, phases, triage
+ *  flags too), and those keep their pre-existing no-live-sync behaviour —
+ *  merging them would revert optimistic edits such as an in-flight rename. */
+const BROADCAST_MAP_SETTINGS = [
+  'maxActiveClaims',
+  'dispatchGate',
+  'dispatchPolicy',
+  'profilePolicy',
+  'wipLimit',
+  'focusFactor',
+  'workerCount',
+  'updatedAt',
+] as const satisfies readonly (keyof MindMap)[];
+
 function recomputeValues(nodes: Record<string, Node>): Map<NodeId, ComputedNodeValues> {
   const arr = Object.values(nodes);
   if (arr.length === 0) return new Map();
@@ -146,6 +162,13 @@ export interface MindmapState {
   createMap: (name: string) => Promise<void>;
   closeMap: () => void;
   updateMapName: (name: string) => void;
+  /**
+   * Write map settings (the Leidang dispatch knobs and friends) with an
+   * optimistic local update; reverts on failure and returns false. Every
+   * write moves the fleet within ~2 min, so callers apply explicitly, never
+   * on-change.
+   */
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy'>>) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -450,6 +473,31 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       // Revert on error
       set({ currentMap: state.currentMap });
     });
+  },
+
+  updateMapSettings: async (fields) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    const before = state.currentMap;
+    if (!mapId || !before) return false;
+
+    set({ currentMap: { ...before, ...fields } });
+    try {
+      const saved = await api.updateMap(mapId, fields);
+      // The server clamps (cap → int ≥ 0) — mirror what it kept, not what
+      // was sent. Guard against a map switch during the round trip.
+      const now = get();
+      if (now.currentMapId === mapId && now.currentMap) {
+        set({ currentMap: { ...now.currentMap, ...saved } });
+      }
+      return true;
+    } catch (e: any) {
+      const now = get();
+      if (now.currentMapId === mapId) {
+        set({ currentMap: before, error: e?.message ?? 'Failed to save map settings' });
+      }
+      return false;
+    }
   },
 
   createPhase: async (name: string) => {
@@ -1442,6 +1490,21 @@ function handleWsMessage(
 
       const nodes = { ...state.nodes, [serverNode.id]: serverNode };
       set({ nodes, computed: recomputeValues(nodes) });
+      break;
+    }
+
+    // Map settings changed by someone else (a PM in another tab, the
+    // Leidang orchestrator's cap/policy write). Only the fleet-facing
+    // settings are merged: an optimistic rename in flight (updateMapName is
+    // fire-and-forget) must not be reverted by an unrelated cap broadcast.
+    case 'map:updated': {
+      const serverMap = msg.map as MindMap;
+      if (!state.currentMap || state.currentMap.id !== serverMap.id) return;
+      const patch: Partial<MindMap> = {};
+      for (const key of BROADCAST_MAP_SETTINGS) {
+        if (key in serverMap) (patch as Record<string, unknown>)[key] = serverMap[key];
+      }
+      set({ currentMap: { ...state.currentMap, ...patch } });
       break;
     }
 

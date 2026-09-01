@@ -22,6 +22,8 @@ import {
 import type { ChangeEventLite } from './landing.js';
 import { pickCurrentCycle } from './roles.js';
 import { Shell, Card, Muted, Link } from './DigestView.js';
+import { LeidangCards } from './DispatchCards.js';
+import { linkifyRefs } from './dispatch.js';
 
 const WINDOW_DAYS = 3;
 const EVENT_CAP = 1000;
@@ -109,6 +111,11 @@ export function CockpitView() {
   if (!forecast) return <Shell><p style={{ color: '#64748b' }}>Loading…</p></Shell>;
 
   const totalBlocked = blockers.reduce((n, g) => n + g.nodeIds.length, 0);
+  // #NNNN in a blockedReason links to the bound repo — workers write
+  // "waiting on PR #8770" and a PM otherwise looks it up by hand.
+  const repo = currentMap?.githubRepoOwner && currentMap?.githubRepoName
+    ? { owner: currentMap.githubRepoOwner, name: currentMap.githubRepoName }
+    : null;
   const orphanedCount = blockers.find((g) => g.kind === 'orphaned_claim')?.nodeIds.length ?? 0;
   const overWip = sprint.wipLimit !== null && sprint.inProgress > sprint.wipLimit;
 
@@ -229,7 +236,17 @@ export function CockpitView() {
                               {duplicates > 0 && <span style={dupPillStyle}>×{duplicates + 1} — duplicate node</span>}
                               {breadcrumb(nodes, nodes[id]) && <span style={{ color: '#94a3b8' }}> — {breadcrumb(nodes, nodes[id])}</span>}
                               {g.kind !== 'orphaned_claim' && nodes[id].blockedReason && (
-                                <div style={{ color: '#94a3b8', fontSize: 11 }}>{nodes[id].blockedReason.slice(0, 140)}</div>
+                                <div style={{ color: '#94a3b8', fontSize: 11 }}>
+                                  {linkifyRefs(truncateReason(nodes[id].blockedReason), repo).map((seg, si) =>
+                                    'ref' in seg ? (
+                                      <a key={si} href={seg.url} target="_blank" rel="noreferrer" style={{ color: '#4f46e5' }} onClick={(e) => e.stopPropagation()}>
+                                        {seg.ref}
+                                      </a>
+                                    ) : (
+                                      <span key={si}>{seg.text}</span>
+                                    ),
+                                  )}
+                                </div>
                               )}
                             </li>
                           ) : null,
@@ -322,9 +339,20 @@ export function CockpitView() {
             </ul>
           )}
         </Card>
+
+        {/* Leidang fleet: steer (Dispatch) and see what the map holds
+            (Fleet). Last in the grid on purpose — the Monday questions
+            above come first; these are the operator's controls. */}
+        <LeidangCards />
       </div>
     </Shell>
   );
+}
+
+/** 140 chars, but never through the middle of a `#NNNN` (→ a wrong link). */
+function truncateReason(reason: string): string {
+  if (reason.length <= 140) return reason;
+  return reason.slice(0, 140).replace(/#\d*$/, '') + '…';
 }
 
 const listStyle: React.CSSProperties = { margin: 0, paddingLeft: 18, fontSize: 13, color: '#334155', lineHeight: 1.6 };

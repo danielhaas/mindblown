@@ -13,6 +13,7 @@ import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
 import { computeForecastScorecard } from '../lib/forecastScorecard.js';
 import * as events from '../db/events.js';
+import { broadcast } from '../ws.js';
 import {
   buildCalendarIcs,
   calendarTokenFor,
@@ -388,12 +389,16 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = req.body as mapDb.UpdateMapInput;
-    const updated = await mapDb.updateMap(req.params.id, body);
+    const updated = await mapDb.updateMap(req.params.id, body, userId);
     if (!updated) {
       return reply.status(404).send({
         error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
       });
     }
+    // Settings are shared state like nodes are: the orchestrator writes the
+    // cap from a cron while a PM has the cockpit open, and the cockpit must
+    // not keep showing the pre-write value. Map row only — no nodes.
+    broadcast(req.params.id, { type: 'map:updated', map: updated });
     return reply.send(updated);
   });
 

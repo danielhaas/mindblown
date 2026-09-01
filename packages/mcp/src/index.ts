@@ -2149,9 +2149,11 @@ server.tool(
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to a single node'),
     eventType: z
-      .enum(['node.created', 'node.deleted', 'node.moved', 'node.field_changed'])
+      .enum(['node.created', 'node.deleted', 'node.moved', 'node.field_changed', 'version.field_changed', 'map.field_changed'])
       .optional()
-      .describe('Filter by event type'),
+      .describe(
+        'Filter by event type. map.field_changed = map settings incl. the Leidang dispatch knobs (maxActiveClaims / dispatchGate / dispatchPolicy): who put the fleet on hold, when.',
+      ),
     fieldName: z
       .string()
       .optional()
@@ -2197,11 +2199,20 @@ server.tool(
         const when = e.createdAt.slice(0, 19).replace('T', ' ');
         const nodeLabel = e.nodeId
           ? `${nodeTextById.get(e.nodeId) ?? '(deleted)'} [${e.nodeId.slice(0, 8)}]`
-          : '(no node)';
-        if (e.eventType === 'node.field_changed') {
+          : e.eventType.startsWith('map.')
+            ? '(map settings)'
+            : e.eventType.startsWith('version.')
+              ? '(version)'
+              : '(no node)';
+        // "who" matters most for map settings (who put the fleet on hold?);
+        // the log only carries the user id, so it is shown short.
+        const by = e.userId ? `  by ${e.userId.slice(0, 8)}` : '';
+        if (e.eventType.endsWith('.field_changed')) {
           lines.push(
-            `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}`,
+            `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}${by}`,
           );
+        } else if (e.eventType === 'node.restored') {
+          lines.push(`${when}  restored  — ${nodeLabel}${by}`);
         } else if (e.eventType === 'node.created') {
           const newVal = e.newValue as { text?: string } | null;
           lines.push(`${when}  created: "${newVal?.text ?? ''}"  — ${nodeLabel}`);
