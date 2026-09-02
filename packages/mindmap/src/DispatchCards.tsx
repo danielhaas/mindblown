@@ -38,12 +38,15 @@ import {
   formatAge,
   formatKnobValue,
   gateChips,
+  isKnownPolicyKey,
   lastKnobWrites,
   lastNonZeroCap,
+  mixBugsRatio,
   movePolicyKey,
   newestKnobWrite,
   normalizePolicy,
   policyKeyLabel,
+  setMixBugs,
   shortSession,
   toggleGateEntry,
   togglePolicyKey,
@@ -54,6 +57,9 @@ import type { KnobField, KnobWrite, PresetId } from './dispatch.js';
 
 const AUDIT_LIMIT = 100;
 const CLAIM_PREVIEW = 8;
+/** Bug share the mix control starts at when first enabled — the middle of
+ *  the 30–50 % band the control exists for; every value 0–100 is settable. */
+const DEFAULT_MIX_RATIO = 40;
 /** Separator for value signatures — cannot occur in a version id or policy key. */
 const SIG_SEP = '|';
 
@@ -182,6 +188,8 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
 
   if (!currentMap || !snapshot) return null;
 
+  const mixRatio = mixBugsRatio(policyDraft);
+  const unknownPolicyKeys = normalizePolicy(policyDraft).filter((k) => !isKnownPolicyKey(k));
   const capNumber = Number(capDraft);
   const capValid = Number.isInteger(capNumber) && capNumber >= 0;
   const capDirty = capValid && capNumber !== cap;
@@ -319,24 +327,82 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
         field="dispatchPolicy"
         write={writes.dispatchPolicy}
         versions={versions}
-        hint="Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age)."
+        hint="Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age). The bug-share control adds one mix:bugs=N entry that weaves bugs into the stream at a fixed percentage."
       >
         <div style={{ ...row, flexWrap: 'wrap' }}>
-          {normalizePolicy(policyDraft).map((k, i, arr) => (
-            <span key={k} style={chip}>
-              <span style={{ color: '#94a3b8', marginRight: 4 }}>{i + 1}.</span>
-              {policyKeyLabel(k)}
-              <button style={chipX} aria-label={`Move ${k} earlier`} disabled={i === 0} onClick={() => setPolicyDraft(movePolicyKey(arr, k, -1))}>↑</button>
-              <button style={chipX} aria-label={`Move ${k} later`} disabled={i === arr.length - 1} onClick={() => setPolicyDraft(movePolicyKey(arr, k, 1))}>↓</button>
-              <button style={chipX} aria-label={`Remove ${k}`} onClick={() => setPolicyDraft(togglePolicyKey(arr, k))}>×</button>
-            </span>
-          ))}
+          {normalizePolicy(policyDraft).map((k, i, arr) => {
+            const known = isKnownPolicyKey(k);
+            return (
+              <span
+                key={k}
+                title={known ? undefined : 'This build cannot read this entry — it is kept and written on Apply; the server treats keys it does not know as inert.'}
+                style={{ ...chip, ...(known ? {} : chipWarn) }}
+              >
+                <span style={{ color: known ? '#94a3b8' : '#b91c1c', marginRight: 4 }}>{i + 1}.</span>
+                {policyKeyLabel(k)}
+                <button style={chipX} aria-label={`Move ${k} earlier`} disabled={i === 0} onClick={() => setPolicyDraft(movePolicyKey(arr, k, -1))}>↑</button>
+                <button style={chipX} aria-label={`Move ${k} later`} disabled={i === arr.length - 1} onClick={() => setPolicyDraft(movePolicyKey(arr, k, 1))}>↓</button>
+                <button style={chipX} aria-label={`Remove ${k}`} onClick={() => setPolicyDraft(togglePolicyKey(arr, k))}>×</button>
+              </span>
+            );
+          })}
           {DISPATCH_POLICY_KEYS.filter((k) => !policyDraft.includes(k)).map((k) => (
             <button key={k} style={{ ...chip, ...chipGhost }} onClick={() => setPolicyDraft(togglePolicyKey(policyDraft, k))} aria-label={`Add ${k}`}>
               + {policyKeyLabel(k)}
             </button>
           ))}
           <ApplyButton dirty={policyDirty} busy={busy === 'dispatchPolicy'} locked={busyAny} onClick={() => save('dispatchPolicy', { dispatchPolicy: normalizePolicy(policyDraft) })} />
+        </div>
+        {unknownPolicyKeys.length > 0 && (
+          <div style={{ fontSize: 12, color: '#b45309' }}>
+            <code>{unknownPolicyKeys.join(', ')}</code>: unknown to this build — kept and written on Apply (a newer server may read them; in the sort here they are inert). Remove the chip if it is a typo.
+          </div>
+        )}
+        {/* Mix control — writes/removes the ONE parametric entry mix:bugs=<N>.
+            Applied via the same policy Apply above, so the write lands in the
+            map.field_changed audit like every other knob change. */}
+        <div style={{ ...row, flexWrap: 'wrap' }}>
+          <label
+            title="Splits the queue into bugs and non-bugs, sorts each by the other policy keys, then weaves them deterministically at N:(100−N). 0 = off-pattern (bugs run in the stream normally), 100 = all bugs first. When one class runs dry the other fills every slot."
+            style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
+          >
+            <input
+              type="checkbox"
+              checked={mixRatio !== null}
+              onChange={() => setPolicyDraft(setMixBugs(policyDraft, mixRatio === null ? DEFAULT_MIX_RATIO : null))}
+            />
+            Steer bug share
+          </label>
+          {mixRatio !== null && (
+            <>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                value={mixRatio}
+                onChange={(e) => setPolicyDraft(setMixBugs(policyDraft, Number(e.target.value)))}
+                aria-label="Bug share percent (slider)"
+              />
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={1}
+                value={mixRatio}
+                onChange={(e) => {
+                  if (e.target.value === '') return; // half-typed — keep the draft
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v)) setPolicyDraft(setMixBugs(policyDraft, v));
+                }}
+                style={{ ...input, width: 64 }}
+                aria-label="Bug share percent"
+              />
+              <span style={{ fontSize: 12, color: '#64748b' }}>
+                % bugs{mixRatio === 0 ? ' — 0 = no fixed pattern, bugs run in the stream normally' : mixRatio === 100 ? ' — all bugs first, then the rest' : ''}
+              </span>
+            </>
+          )}
         </div>
         {policyDraft.length === 0 && (
           <div style={{ fontSize: 12, color: '#64748b' }}>Sorting by default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</div>
@@ -375,6 +441,9 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
                 <div style={{ lineHeight: 1.7 }}>
                   <div>Gate: <s style={{ color: '#94a3b8' }}>{formatKnobValue('dispatchGate', gate, versions)}</s> → <strong>{formatKnobValue('dispatchGate', next.gate, versions)}</strong></div>
                   <div>Policy: <s style={{ color: '#94a3b8' }}>{formatKnobValue('dispatchPolicy', policy, versions)}</s> → <strong>{formatKnobValue('dispatchPolicy', next.policy, versions)}</strong></div>
+                  {mixBugsRatio(policy) !== null && mixBugsRatio(next.policy) === null && (
+                    <div style={{ color: '#b45309' }}>Presets replace the whole policy — the current bug-share mix (Mix: {mixBugsRatio(policy)} % Bugs) is removed. Re-enable it after applying if you still want it.</div>
+                  )}
                   <div style={{ marginTop: 6 }}>
                     <button style={{ ...btn, ...btnPrimary }} disabled={busyAny} onClick={() => runPreset(pendingPreset)}>
                       {busy === 'preset' ? 'Applying…' : `Apply ${preset.label}`}

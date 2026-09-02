@@ -31,7 +31,9 @@ import {
   hasBrief,
   matchesDispatchGate,
   pullableNodes,
+  parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
+  MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
@@ -266,8 +268,36 @@ const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
  * `priority` (priorityRank ASC NULLS LAST, then P0–P3), `size` (effort
  * estimate ascending, nulls last), `age` (oldest createdAt first).
  * Ties after all keys fall back to createdAt, then id (stable output).
+ *
+ * `mix:bugs=<N>` (the one parametric entry, parsed by core's
+ * `parseMixBugs`): split the candidates into bugs (`isBugNode`) and
+ * non-bugs, sort each class by the REMAINING policy keys, then weave the
+ * two deterministically at N:(100−N) with a Bresenham-style running
+ * error accumulator — no randomness, no clock, same input ⇒ same output.
+ * N=0 is inert: exactly the ordering without the entry (bugs run in the
+ * stream normally, NOT last). N=100 = all bugs first, then the non-bugs
+ * (equivalent to a leading `bugs` key). When one class drains, the other
+ * fills every remaining slot — no holes, no throttling. A `bugs` key
+ * left in the policy next to a mix entry is naturally without effect
+ * INSIDE the classes (each class is homogeneous in bug-ness); it is
+ * tolerated, not rejected. Invalid mix shapes (`mix:bugs=101`,
+ * `mix:bugs=x`) never parse and stay inert like any unknown key.
+ *
+ * `startAcc` injects the persisted weave phase (maps.dispatch_mix_acc):
+ * getNextTicket consumes only ranked[0] per pull, so the accumulator must
+ * carry over between calls — a per-call restart would make slot 1 a
+ * non-bug for every N < 100, i.e. every single-ticket pull a non-bug
+ * until the features drain (spec inversion). Default 0 keeps batch
+ * consumers (tests, previews) on the pattern's natural start.
  */
-export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): CoreNode[] {
+export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[], startAcc = 0): CoreNode[] {
+  const mix = parseMixBugs(policy);
+  // The mix entry is a weave instruction, not a comparator — strip every
+  // valid mix-shaped entry before the per-class sort. (Only the FIRST one
+  // counts for the ratio; stripping all of them keeps a stray duplicate
+  // from reaching the comparator, where it would be inert anyway.)
+  const classPolicy = mix === null ? policy : policy.filter((k) => !MIX_BUGS_REGEX.test(k));
+
   const compareBy = (key: string, a: CoreNode, b: CoreNode): number => {
     switch (key) {
       case 'bugs':
@@ -298,20 +328,91 @@ export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): 
         return 0; // unknown keys are inert — validated at the tool layer
     }
   };
-  return [...candidates].sort((a, b) => {
-    for (const key of policy) {
-      const cmp = compareBy(key, a, b);
-      if (cmp !== 0) return cmp;
+  const byPolicy = (list: CoreNode[]): CoreNode[] =>
+    [...list].sort((a, b) => {
+      for (const key of classPolicy) {
+        const cmp = compareBy(key, a, b);
+        if (cmp !== 0) return cmp;
+      }
+      const byAge = a.createdAt.localeCompare(b.createdAt);
+      if (byAge !== 0) return byAge;
+      return a.id.localeCompare(b.id);
+    });
+
+  // N=0 → the key is inert by contract: today's ordering, bugs in the
+  // stream (the weave below would instead drain non-bugs first).
+  if (mix === null || mix.ratio === 0) return byPolicy(candidates);
+
+  const bugs = byPolicy(candidates.filter((n) => isBugNode(n)));
+  const others = byPolicy(candidates.filter((n) => !isBugNode(n)));
+
+  // Bresenham weave: each slot adds N to the accumulator; crossing 100
+  // emits a bug and pays 100 back. N=40 → over any 10 slots a stable
+  // 4:6 pattern (slots 3,5,8,10 are bugs); N=100 → a bug every slot.
+  const out: CoreNode[] = [];
+  let acc = clampMixAcc(startAcc);
+  let i = 0;
+  let j = 0;
+  while (i < bugs.length || j < others.length) {
+    if (i >= bugs.length) {
+      out.push(others[j++]);
+      continue;
     }
-    const byAge = a.createdAt.localeCompare(b.createdAt);
-    if (byAge !== 0) return byAge;
-    return a.id.localeCompare(b.id);
-  });
+    if (j >= others.length) {
+      out.push(bugs[i++]);
+      continue;
+    }
+    acc += mix.ratio;
+    if (acc >= 100) {
+      acc -= 100;
+      out.push(bugs[i++]);
+    } else {
+      out.push(others[j++]);
+    }
+  }
+  return out;
 }
 
 // Empty-brief guard lives in core (dispatch.ts) next to the gate predicate;
 // re-exported so existing imports keep working.
 export { hasBrief };
+
+// ── Persisted weave phase (maps.dispatch_mix_acc) ───────────────
+
+/** The stored weave-phase range is 0–99: one Bresenham period, exclusive
+ *  of 100 (a crossing is always paid back in the same step). */
+export function clampMixAcc(acc: number): number {
+  if (!Number.isFinite(acc)) return 0;
+  return Math.max(0, Math.min(99, Math.floor(acc)));
+}
+
+/**
+ * Advance the persisted weave phase by ONE actual grant.
+ *
+ * Normal walk: acc += N; a crossing (≥ 100) means this grant was owed to
+ * the BUG class and pays 100 back. The caller grants from the owed class
+ * whenever it has candidates (ranked[0] of the phase-aware sort), so the
+ * two regular cases land back inside 0–99 without clamping.
+ *
+ * Clamp semantics when the grant came from the OTHER class (owed class
+ * empty, or the owed candidate raced away by claim_node):
+ * - bug owed, non-bug granted → raw = acc+N ≥ 100, clamped DOWN to 99:
+ *   the debt is capped at "one bug owed", so the next arriving bug is
+ *   due immediately (99 + N ≥ 100 for every N ≥ 1) instead of the
+ *   accumulator running away and later granting a long all-bugs burst.
+ * - non-bug owed, bug granted → raw = acc+N−100 < 0, clamped UP to 0:
+ *   symmetric — the credit is capped, so the next arriving non-bug is
+ *   due immediately (0 + N < 100 for every N ≤ 99) instead of a long
+ *   all-features burst.
+ *
+ * Called only on an actual grant — a claim-race retry inside one pull
+ * must not double-count. With no valid mix entry, or N=0, the stored
+ * phase is left untouched entirely: 0–99 is ratio-agnostic, so a changed
+ * N simply converges from wherever the phase stands (no reset needed).
+ */
+export function advanceMixAcc(acc: number, ratio: number, grantedBug: boolean): number {
+  return clampMixAcc(clampMixAcc(acc) + ratio - (grantedBug ? 100 : 0));
+}
 
 /** Puller profiles the routing table recognizes. Anything else = standard. */
 export type PullProfile = 'heavy' | 'standard' | 'light';
@@ -389,6 +490,9 @@ export function selectPullCandidates(
     profile?: string;
     effortUnit?: EffortUnit;
     hoursPerDay?: number;
+    /** Persisted weave phase (maps.dispatch_mix_acc) so ranked[0] is the
+     *  class the mix:bugs pattern actually owes next. Default 0. */
+    mixAcc?: number;
   },
 ): PullDecision {
   const active = allNodes.filter((n) => n.claimedBySession !== null).length;
@@ -415,8 +519,11 @@ export function selectPullCandidates(
             opts.hoursPerDay ?? 8,
           ),
         );
+  // The weave runs AFTER the profile-eligibility filter: the mix pattern
+  // is woven from what THIS puller may actually be granted, so a filtered
+  // ticket can never occupy (and waste) a pattern slot.
   const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
-  const rankedAll = sortByDispatchPolicy(eligible, policy);
+  const rankedAll = sortByDispatchPolicy(eligible, policy, opts.mixAcc ?? 0);
 
   return {
     active,
@@ -445,6 +552,12 @@ export function selectPullCandidates(
  * light — see `isProfileEligible`). Maps without a policy stay
  * profile-blind: the parameter is accepted and ignored, exactly the
  * pre-#262 contract.
+ *
+ * `mix:bugs=<N>` in the policy: the weave phase (maps.dispatch_mix_acc)
+ * is read under the same advisory lock, injected into the ranking so
+ * ranked[0] is the class the pattern owes next, and advanced — only on
+ * an actual grant, from the winner's real class — in the same
+ * transaction as the claim (see `advanceMixAcc`).
  */
 export async function getNextTicket(
   mapId: string,
@@ -466,6 +579,11 @@ export async function getNextTicket(
     const allNodes = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
     const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
 
+    // Persisted mix:bugs weave phase — read under the same advisory lock
+    // that serializes pulls, advanced below only on an actual grant.
+    const mixAcc = (mapRow.dispatchMixAcc as number) ?? 0;
+    const mix = parseMixBugs((mapRow.dispatchPolicy as string[]) ?? []);
+
     const decision = selectPullCandidates(allNodes, {
       workflow: ((mapRow.statusWorkflow as StatusDef[]) ?? []),
       cap: (mapRow.maxActiveClaims as number) ?? 0,
@@ -475,6 +593,7 @@ export async function getNextTicket(
       profile,
       effortUnit: (mapRow.effortUnit as EffortUnit) ?? 'days',
       hoursPerDay: (mapRow.hoursPerDay as number) ?? 8,
+      mixAcc,
     });
 
     // Tag empty-brief nodes `needs-brief` so the queue starves loudly.
@@ -519,6 +638,21 @@ export async function getNextTicket(
       if (!row) continue; // claimed out from under us via claim_node — next
 
       const winner = dbNodeToCore(row as unknown as Record<string, unknown>);
+
+      // Advance the persisted weave phase — only here, on the ACTUAL
+      // grant (a raced-away candidate above must not count), inside the
+      // claim's transaction, from the winner's REAL class (a race can
+      // hand the grant to the other class than ranked[0]'s; advanceMixAcc
+      // clamps that case). Inert without a mix entry or at N=0: the
+      // stored phase stays untouched, no reset needed. Deliberately no
+      // updatedAt / audit write — internal state, not a knob change.
+      if (mix !== null && mix.ratio > 0) {
+        await tx
+          .update(maps)
+          .set({ dispatchMixAcc: advanceMixAcc(mixAcc, mix.ratio, isBugNode(winner)) })
+          .where(eq(maps.id, mapId));
+      }
+
       const ticket: TicketBrief = {
         id: winner.id,
         mapId,

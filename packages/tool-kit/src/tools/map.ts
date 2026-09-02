@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
 
@@ -67,7 +68,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, or GitHub auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps concurrently claimed nodes fleet-wide (0 = hold, grants nothing — the default); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\"; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, or GitHub auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new GitHub issues on the bound repo auto-create nodes under the map's GitHub Inbox. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps concurrently claimed nodes fleet-wide (0 = hold, grants nothing — the default); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\"; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -106,9 +107,28 @@ export const updateMapTool = defineTool({
       .optional()
       .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug" or "type:bug", case-insensitive — GitHub-mirrored labels arrive as "type:bug"). Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket.'),
     dispatchPolicy: z
-      .array(z.enum(['bugs', 'priority', 'size', 'age']))
+      .array(
+        // One refine, one message naming BOTH alternatives — a union of
+        // enum + regex reports only the regex branch's error for an
+        // off-vocabulary key like "chaos", which reads as if mix:bugs
+        // were the only accepted shape.
+        z.string().refine(
+          (k) => (DISPATCH_POLICY_KEYS as readonly string[]).includes(k) || MIX_BUGS_REGEX.test(k),
+          { message: 'policy entries must be "bugs", "priority", "size", "age", or "mix:bugs=<N>" with integer N 0-100' },
+        ),
+      )
+      .superRefine((arr, ctx) => {
+        const mixAt = arr.map((k, i) => (k.startsWith(MIX_BUGS_PREFIX) ? i : -1)).filter((i) => i >= 0);
+        if (mixAt.length > 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [mixAt[1]],
+            message: 'at most one "mix:bugs=<N>" entry is allowed',
+          });
+        }
+      })
       .optional()
-      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"].'),
+      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
     profilePolicy: z
       .object({
         heavyMinHours: z.number().positive().optional().describe("Heavy-class floor in hours (estimate at/above = heavy pullers only). Omitted = one day (the map's hoursPerDay)."),

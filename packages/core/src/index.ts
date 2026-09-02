@@ -105,6 +105,9 @@ export type { CalibrationSample, CalibrationAssessment } from './calibration.js'
 export {
   DEFAULT_DISPATCH_POLICY,
   DISPATCH_POLICY_KEYS,
+  MIX_BUGS_PREFIX,
+  MIX_BUGS_REGEX,
+  parseMixBugs,
   NEEDS_BRIEF_TAG,
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,

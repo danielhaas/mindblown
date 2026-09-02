@@ -11,12 +11,14 @@ import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '../types.js';
 import {
   parseGateEntry,
+  parseMixBugs,
   matchesDispatchGate,
   pullableNodes,
   dispatchQueueSnapshot,
   hasBrief,
   isBugNode,
   planUnblock,
+  MIX_BUGS_PREFIX,
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
@@ -63,6 +65,38 @@ describe('parseGateEntry', () => {
     expect(parseGateEntry('version:v1')).toEqual({ kind: 'version', raw: 'version:v1', versionId: 'v1' });
     expect(parseGateEntry('version:').kind).toBe('unknown');
     expect(parseGateEntry('priority:P0').kind).toBe('unknown');
+  });
+});
+
+describe('parseMixBugs', () => {
+  it('parses the full 0–100 range, anywhere in the policy', () => {
+    expect(parseMixBugs(['mix:bugs=0'])).toEqual({ ratio: 0 });
+    expect(parseMixBugs(['priority', 'mix:bugs=40', 'age'])).toEqual({ ratio: 40 });
+    expect(parseMixBugs(['mix:bugs=100'])).toEqual({ ratio: 100 });
+    expect(MIX_BUGS_PREFIX).toBe('mix:bugs=');
+  });
+
+  it('returns the FIRST valid entry; invalid ones are skipped over', () => {
+    expect(parseMixBugs(['mix:bugs=30', 'mix:bugs=70'])).toEqual({ ratio: 30 });
+    expect(parseMixBugs(['mix:bugs=101', 'mix:bugs=25'])).toEqual({ ratio: 25 });
+  });
+
+  it('treats invalid shapes as absent — unknown-key semantics', () => {
+    for (const bad of [
+      'mix:bugs=101',
+      'mix:bugs=-1',
+      'mix:bugs=x',
+      'mix:bugs=',
+      'mix:bugs=040',
+      'mix:bugs=4.5',
+      'MIX:BUGS=40',
+      'mix:bugs= 40',
+      'mix:bugs=40 ',
+    ]) {
+      expect(parseMixBugs([bad]), bad).toBeNull();
+    }
+    expect(parseMixBugs([])).toBeNull();
+    expect(parseMixBugs(['bugs', 'priority', 'size', 'age'])).toBeNull();
   });
 });
 

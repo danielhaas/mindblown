@@ -1025,5 +1025,16 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS profile_policy JSONB
   `);
 
+  // ── Pull queue: persisted mix:bugs weave phase ─────────────────
+  // dispatch_mix_acc: Bresenham accumulator (0–99) for the dispatchPolicy
+  // `mix:bugs=<N>` entry, advanced only on an actual grant inside the
+  // get_next_ticket transaction. Must persist across pulls: a per-call
+  // accumulator restarts the pattern at slot 1 on every pull, and slot 1
+  // is a non-bug for every N < 100. Internal state, not a knob — not
+  // exposed via REST/MCP/UI and not audited. DEFAULT 0 = pattern start.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_mix_acc INTEGER NOT NULL DEFAULT 0
+  `);
+
   console.log('[db] Migrations complete.');
 }
