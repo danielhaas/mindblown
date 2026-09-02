@@ -221,6 +221,18 @@ describe('audit trail', () => {
     // A custom fallback is honoured on a genuinely complete, capless audit.
     expect(startCap([], { limit, fallback: 5 })).toBe(5);
   });
+
+  it('startCap returns null when the audit fetch itself failed (`events === null`) — never invents a number', () => {
+    // `null` is the caller's signal for "the fetch errored", distinct from
+    // `[]` ("fetched fine, and it was empty"). A failed fetch is the
+    // purest "I don't know" there is, so it must not fall through to
+    // DEFAULT_START_CAP the way a genuinely complete-but-empty audit does
+    // (round 2 review: an errored audit used to still guess 12).
+    expect(startCap(null)).toBeNull();
+    expect(startCap(null, { limit: 3, fallback: 5 })).toBeNull();
+    // Contrast: the same options with a real (empty) array still fall back.
+    expect(startCap([], { limit: 3, fallback: 5 })).toBe(5);
+  });
 });
 
 describe('claimRows', () => {

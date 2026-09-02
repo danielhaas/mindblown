@@ -380,22 +380,30 @@ export const DEFAULT_START_CAP = 12;
 /**
  * The cap the one-click Start button writes: the audit's last non-zero
  * cap when there is one. Otherwise {@link DEFAULT_START_CAP} — but ONLY
- * when the fetched window actually covers the whole audit
- * (`events.length < limit`); a full window that never saw a non-zero cap
- * really does mean "always on hold", but a window that came back FULL
- * (`events.length >= limit`) means the audit was truncated and older
- * events — possibly the one non-zero cap that matters — were never
- * fetched. Same "never invents a number" contract `lastNonZeroCap`
- * documents, extended to the truncated case: silently writing 12 (maybe
- * double the fleet's usual cap) onto shared CI capacity because the
- * fetch window happened to be full of gate/policy writes is worse than
- * asking the operator to type one. Null in that case — the caller
- * disables Start and asks for a number instead of guessing.
+ * when the caller actually knows the whole audit:
+ *
+ * - `events === null` means the audit fetch itself failed — the purest
+ *   "I don't know" there is. A caller must pass `null` here (not `[]`)
+ *   when its `auditError` is set; `[]` means "fetched, and it was empty".
+ * - a window that came back FULL (`events.length >= limit`) means the
+ *   fetch succeeded but was truncated — older events, possibly the one
+ *   non-zero cap that matters, were never fetched.
+ *
+ * Either way this is the same "never invents a number" contract
+ * `lastNonZeroCap` documents, extended past the happy path: silently
+ * writing 12 (maybe double the fleet's usual cap) onto shared CI capacity
+ * because the fetch errored or the window happened to be full of
+ * gate/policy writes is worse than asking the operator to type one. Null
+ * in both cases — the caller disables Start and asks for a number instead
+ * of guessing. A full window that never saw a non-zero cap AND that the
+ * caller knows is complete really does mean "always on hold", so that
+ * case alone falls through to the fallback.
  */
 export function startCap(
-  events: ChangeEvent[],
+  events: ChangeEvent[] | null,
   opts: { limit?: number; fallback?: number } = {},
 ): number | null {
+  if (events === null) return null; // audit fetch failed — unknown, never guess
   const nonZero = lastNonZeroCap(events);
   if (nonZero !== null) return nonZero;
   const limit = opts.limit ?? AUDIT_LIMIT;

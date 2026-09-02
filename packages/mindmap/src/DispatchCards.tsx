@@ -183,10 +183,16 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
   }, [nodes, workflow, cap, gate, gateDraft]);
 
   const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
-  // Null only when the audit window came back FULL without ever seeing a
-  // non-zero cap — truncated, not "always on hold". The Start button
-  // disables rather than guessing (see `startCap`'s doc comment).
-  const startCapValue = useMemo(() => startCap(events, { limit: AUDIT_LIMIT }), [events]);
+  // Null when the audit window came back FULL without ever seeing a
+  // non-zero cap (truncated, not "always on hold") OR when the audit
+  // fetch itself failed (`auditError` — pass `null` events, not `[]`: an
+  // errored fetch is not the same as a fetch that succeeded and came back
+  // empty). Either way the Start button disables rather than guessing
+  // (see `startCap`'s doc comment).
+  const startCapValue = useMemo(
+    () => startCap(auditError ? null : events, { limit: AUDIT_LIMIT }),
+    [events, auditError],
+  );
 
   if (!currentMap || !snapshot) return null;
 
@@ -333,9 +339,11 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
               style={{ ...btn, ...btnPrimary }}
               disabled={busyAny || startCapValue === null}
               title={
-                startCapValue === null
-                  ? 'Audit trail truncated before any non-zero cap — type a cap below.'
-                  : `Cap → ${startCapValue}: satellites follow within ~2 min`
+                startCapValue !== null
+                  ? `Cap → ${startCapValue}: satellites follow within ~2 min`
+                  : auditError
+                    ? 'Audit trail unavailable — type a cap below.'
+                    : 'Audit trail truncated before any non-zero cap — type a cap below.'
               }
               onClick={() => startCapValue !== null && save('maxActiveClaims', { maxActiveClaims: startCapValue })}
             >
