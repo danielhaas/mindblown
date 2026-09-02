@@ -23,9 +23,36 @@ import { proseMirrorToPlainText } from './richtext.js';
 /** Default ranking when `dispatchPolicy` is empty. */
 export const DEFAULT_DISPATCH_POLICY = ['bugs', 'priority', 'age'];
 
-/** Every key `dispatchPolicy` understands, in the order the UI offers them. */
+/** Every FIXED key `dispatchPolicy` understands, in the order the UI offers
+ *  them. The one parametric key (`mix:bugs=<N>`, below) is deliberately not
+ *  in this list — it is not a chip the UI toggles but a valued entry with
+ *  its own control, and every consumer that iterates "the plain keys"
+ *  (chip pickers, per-key comparators) must not see it. */
 export const DISPATCH_POLICY_KEYS = ['bugs', 'size', 'priority', 'age'] as const;
 export type DispatchPolicyKey = (typeof DISPATCH_POLICY_KEYS)[number];
+
+/** Prefix of the one parametric policy entry, `mix:bugs=<N>`. */
+export const MIX_BUGS_PREFIX = 'mix:bugs=';
+/** The full valid shape: integer N in 0–100, no leading zeros, no signs. */
+export const MIX_BUGS_REGEX = /^mix:bugs=(100|[1-9]?[0-9])$/;
+
+/**
+ * Parse the `mix:bugs=<N>` entry out of a dispatchPolicy — the ONE shared
+ * reading of the parametric key (server weave, cockpit control, MCP schema
+ * all lean on this file so no second parser can drift).
+ *
+ * Returns the FIRST valid entry's ratio, or null when none is present.
+ * Invalid shapes (`mix:bugs=101`, `mix:bugs=x`, `mix:bugs=`) are simply
+ * not matched — downstream they behave like any unknown policy key:
+ * inert in the sort, rejected at the tool layer.
+ */
+export function parseMixBugs(policy: string[]): { ratio: number } | null {
+  for (const entry of policy) {
+    const m = MIX_BUGS_REGEX.exec(entry);
+    if (m) return { ratio: Number(m[1]) };
+  }
+  return null;
+}
 
 /** Tag auto-applied to ready nodes the pull queue refuses to hand out. */
 export const NEEDS_BRIEF_TAG = 'needs-brief';

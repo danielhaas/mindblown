@@ -8,6 +8,11 @@ import {
   normalizePolicy,
   effectivePolicy,
   movePolicyKey,
+  togglePolicyKey,
+  policyKeyLabel,
+  mixBugsEntry,
+  mixBugsRatio,
+  setMixBugs,
   applyPreset,
   formatAge,
   formatKnobValue,
@@ -65,6 +70,47 @@ describe('gate + policy editing', () => {
     expect(movePolicyKey(['bugs', 'size', 'age'], 'size', -1)).toEqual(['size', 'bugs', 'age']);
     expect(movePolicyKey(['bugs', 'size', 'age'], 'age', 1)).toEqual(['bugs', 'size', 'age']);
     expect(movePolicyKey(['bugs'], 'missing', 1)).toEqual(['bugs']);
+  });
+});
+
+describe('mix:bugs policy entry (UI helpers)', () => {
+  it('normalizePolicy keeps one valid mix entry in place, drops invalid shapes and duplicates', () => {
+    expect(normalizePolicy(['priority', 'mix:bugs=40', 'age'])).toEqual(['priority', 'mix:bugs=40', 'age']);
+    expect(normalizePolicy(['mix:bugs=101', 'age'])).toEqual(['age']);
+    expect(normalizePolicy(['mix:bugs=x', 'mix:bugs='])).toEqual([]);
+    expect(normalizePolicy(['mix:bugs=30', 'mix:bugs=60'])).toEqual(['mix:bugs=30']);
+  });
+
+  it('policyKeyLabel renders the mix entry readably', () => {
+    expect(policyKeyLabel('mix:bugs=40')).toBe('Mix: 40 % Bugs');
+    expect(policyKeyLabel('mix:bugs=0')).toBe('Mix: 0 % Bugs');
+    expect(policyKeyLabel('bugs')).toBe('bugs first');
+  });
+
+  it('setMixBugs writes, replaces, clamps to 0–100, and removes the one entry', () => {
+    expect(setMixBugs(['priority'], 40)).toEqual(['priority', 'mix:bugs=40']);
+    expect(setMixBugs(['mix:bugs=40', 'age'], 55)).toEqual(['age', 'mix:bugs=55']);
+    expect(setMixBugs(['mix:bugs=40', 'age'], null)).toEqual(['age']);
+    expect(setMixBugs([], 140)).toEqual(['mix:bugs=100']);
+    expect(setMixBugs([], -3)).toEqual(['mix:bugs=0']);
+    expect(setMixBugs([], 37.4)).toEqual(['mix:bugs=37']);
+    expect(mixBugsEntry(40)).toBe('mix:bugs=40');
+  });
+
+  it('mixBugsRatio reads the entry back (round trip with setMixBugs)', () => {
+    expect(mixBugsRatio(setMixBugs(['priority', 'age'], 35))).toBe(35);
+    expect(mixBugsRatio(['priority', 'age'])).toBeNull();
+  });
+
+  it('toggle and move neither swallow nor duplicate the mix entry', () => {
+    expect(togglePolicyKey(['mix:bugs=40'], 'age')).toEqual(['mix:bugs=40', 'age']);
+    expect(togglePolicyKey(['mix:bugs=40', 'age'], 'mix:bugs=40')).toEqual(['age']);
+    expect(movePolicyKey(['bugs', 'mix:bugs=40'], 'mix:bugs=40', -1)).toEqual(['mix:bugs=40', 'bugs']);
+    expect(normalizePolicy(togglePolicyKey(['mix:bugs=40', 'age'], 'size'))).toEqual(['mix:bugs=40', 'age', 'size']);
+  });
+
+  it('formatKnobValue renders the audit line readably', () => {
+    expect(formatKnobValue('dispatchPolicy', ['priority', 'age', 'mix:bugs=40'], [])).toBe('priority › age › Mix: 40 % Bugs');
   });
 });
 

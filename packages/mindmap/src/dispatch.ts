@@ -11,11 +11,14 @@
 import type { Node, Version } from '@mindblown/core';
 import {
   parseGateEntry,
+  parseMixBugs,
   compareVersions,
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,
   DISPATCH_POLICY_KEYS,
   DEFAULT_DISPATCH_POLICY,
+  MIX_BUGS_PREFIX,
+  MIX_BUGS_REGEX,
 } from '@mindblown/core';
 import type { ChangeEvent, MapMember } from './api.js';
 
@@ -108,11 +111,47 @@ export function versionGateOptions(versions: Version[]): Version[] {
 
 const POLICY_KEY_SET = new Set<string>(DISPATCH_POLICY_KEYS);
 
-/** Drop unknown keys and duplicates — the server would reject them. */
+/** Drop unknown keys and duplicates — the server would reject them. The
+ *  one parametric entry (`mix:bugs=<N>`, valid shape only) survives, at
+ *  most once: only the FIRST mix entry counts anywhere, so duplicates are
+ *  dropped rather than sent for the tool layer to reject. */
 export function normalizePolicy(policy: string[]): string[] {
   const out: string[] = [];
-  for (const k of policy) if (POLICY_KEY_SET.has(k) && !out.includes(k)) out.push(k);
+  let mixSeen = false;
+  for (const k of policy) {
+    if (POLICY_KEY_SET.has(k) && !out.includes(k)) {
+      out.push(k);
+    } else if (MIX_BUGS_REGEX.test(k) && !mixSeen) {
+      out.push(k);
+      mixSeen = true;
+    }
+  }
   return out;
+}
+
+// ── Mix control (`mix:bugs=<N>`) ───────────────────────────────────
+
+/** The policy entry for a given bug share. */
+export function mixBugsEntry(ratio: number): string {
+  return `${MIX_BUGS_PREFIX}${ratio}`;
+}
+
+/** The active bug-share ratio of a policy, or null when no valid entry. */
+export function mixBugsRatio(policy: string[]): number | null {
+  return parseMixBugs(policy)?.ratio ?? null;
+}
+
+/**
+ * Write (or remove, with null) the mix entry. Replaces any existing
+ * mix-prefixed entry — valid or not — so the control never duplicates;
+ * the ratio is clamped to an integer 0–100 so the draft can never hold a
+ * shape the server would treat as unknown.
+ */
+export function setMixBugs(policy: string[], ratio: number | null): string[] {
+  const stripped = policy.filter((k) => !k.startsWith(MIX_BUGS_PREFIX));
+  if (ratio === null || !Number.isFinite(ratio)) return stripped;
+  const r = Math.min(100, Math.max(0, Math.round(ratio)));
+  return [...stripped, mixBugsEntry(r)];
 }
 
 /** What the queue actually sorts by: an empty policy means the default. */
@@ -135,6 +174,8 @@ export function togglePolicyKey(policy: string[], key: string): string[] {
 }
 
 export function policyKeyLabel(key: string): string {
+  const mix = parseMixBugs([key]);
+  if (mix !== null) return `Mix: ${mix.ratio} % Bugs`;
   switch (key) {
     case 'bugs':
       return 'bugs first';
@@ -217,7 +258,11 @@ export function formatKnobValue(field: KnobField, value: unknown, versions: Vers
       .map((c) => c.label)
       .join(' + ');
   }
-  return list.length === 0 ? `default (${DEFAULT_DISPATCH_POLICY.join(' › ')})` : list.join(' › ');
+  // Fixed keys stay raw (they read fine); the parametric mix entry gets
+  // its label so the audit line says "Mix: 40 % Bugs", not "mix:bugs=40".
+  return list.length === 0
+    ? `default (${DEFAULT_DISPATCH_POLICY.join(' › ')})`
+    : list.map((k) => (MIX_BUGS_REGEX.test(k) ? policyKeyLabel(k) : k)).join(' › ');
 }
 
 // ── Audit trail ────────────────────────────────────────────────────

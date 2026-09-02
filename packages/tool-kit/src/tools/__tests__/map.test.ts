@@ -94,6 +94,38 @@ describe('update_map tool — dispatch knobs', () => {
   });
 });
 
+// mix:bugs=<N> — the one parametric dispatchPolicy entry. The MCP surface
+// must accept it next to the enum keys (round-trip to the backend) and
+// reject malformed or duplicated entries loudly.
+describe('update_map tool — dispatchPolicy mix:bugs entry', () => {
+  const schema = z.object(updateMapTool.schema);
+
+  it('accepts the enum keys plus one mix entry and round-trips it to the backend', async () => {
+    const policy = ['priority', 'size', 'age', 'mix:bugs=40'];
+    expect(schema.parse({ mapId: 'm1', dispatchPolicy: policy }).dispatchPolicy).toEqual(policy);
+
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', dispatchPolicy: policy } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ dispatchPolicy: policy });
+  });
+
+  it('accepts the boundary ratios 0 (inert) and 100 (bugs first)', () => {
+    expect(schema.parse({ mapId: 'm1', dispatchPolicy: ['mix:bugs=0'] }).dispatchPolicy).toEqual(['mix:bugs=0']);
+    expect(schema.parse({ mapId: 'm1', dispatchPolicy: ['bugs', 'mix:bugs=100'] }).dispatchPolicy).toEqual(['bugs', 'mix:bugs=100']);
+  });
+
+  it('rejects out-of-range and malformed mix entries', () => {
+    for (const bad of ['mix:bugs=101', 'mix:bugs=-1', 'mix:bugs=x', 'mix:bugs=', 'mix:bugs=4.5', 'mix:bugs=040']) {
+      expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: [bad] }), bad).toThrow();
+    }
+  });
+
+  it('rejects more than one mix entry', () => {
+    expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['mix:bugs=40', 'mix:bugs=60'] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['mix:bugs=40', 'priority', 'mix:bugs=40'] })).toThrow();
+  });
+});
+
 // Phase column — update_map is the write surface for the map's PhaseDef
 // list (add / rename / reorder in REPLACE mode). The handler normalizes:
 // missing ids are generated, missing positions default to the array index.

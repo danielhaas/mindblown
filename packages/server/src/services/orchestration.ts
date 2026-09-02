@@ -31,7 +31,9 @@ import {
   hasBrief,
   matchesDispatchGate,
   pullableNodes,
+  parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
+  MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
@@ -266,8 +268,29 @@ const PRIORITY_ORDER: Record<string, number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
  * `priority` (priorityRank ASC NULLS LAST, then P0–P3), `size` (effort
  * estimate ascending, nulls last), `age` (oldest createdAt first).
  * Ties after all keys fall back to createdAt, then id (stable output).
+ *
+ * `mix:bugs=<N>` (the one parametric entry, parsed by core's
+ * `parseMixBugs`): split the candidates into bugs (`isBugNode`) and
+ * non-bugs, sort each class by the REMAINING policy keys, then weave the
+ * two deterministically at N:(100−N) with a Bresenham-style running
+ * error accumulator — no randomness, no clock, same input ⇒ same output.
+ * N=0 is inert: exactly the ordering without the entry (bugs run in the
+ * stream normally, NOT last). N=100 = all bugs first, then the non-bugs
+ * (equivalent to a leading `bugs` key). When one class drains, the other
+ * fills every remaining slot — no holes, no throttling. A `bugs` key
+ * left in the policy next to a mix entry is naturally without effect
+ * INSIDE the classes (each class is homogeneous in bug-ness); it is
+ * tolerated, not rejected. Invalid mix shapes (`mix:bugs=101`,
+ * `mix:bugs=x`) never parse and stay inert like any unknown key.
  */
 export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): CoreNode[] {
+  const mix = parseMixBugs(policy);
+  // The mix entry is a weave instruction, not a comparator — strip every
+  // valid mix-shaped entry before the per-class sort. (Only the FIRST one
+  // counts for the ratio; stripping all of them keeps a stray duplicate
+  // from reaching the comparator, where it would be inert anyway.)
+  const classPolicy = mix === null ? policy : policy.filter((k) => !MIX_BUGS_REGEX.test(k));
+
   const compareBy = (key: string, a: CoreNode, b: CoreNode): number => {
     switch (key) {
       case 'bugs':
@@ -298,15 +321,49 @@ export function sortByDispatchPolicy(candidates: CoreNode[], policy: string[]): 
         return 0; // unknown keys are inert — validated at the tool layer
     }
   };
-  return [...candidates].sort((a, b) => {
-    for (const key of policy) {
-      const cmp = compareBy(key, a, b);
-      if (cmp !== 0) return cmp;
+  const byPolicy = (list: CoreNode[]): CoreNode[] =>
+    [...list].sort((a, b) => {
+      for (const key of classPolicy) {
+        const cmp = compareBy(key, a, b);
+        if (cmp !== 0) return cmp;
+      }
+      const byAge = a.createdAt.localeCompare(b.createdAt);
+      if (byAge !== 0) return byAge;
+      return a.id.localeCompare(b.id);
+    });
+
+  // N=0 → the key is inert by contract: today's ordering, bugs in the
+  // stream (the weave below would instead drain non-bugs first).
+  if (mix === null || mix.ratio === 0) return byPolicy(candidates);
+
+  const bugs = byPolicy(candidates.filter((n) => isBugNode(n)));
+  const others = byPolicy(candidates.filter((n) => !isBugNode(n)));
+
+  // Bresenham weave: each slot adds N to the accumulator; crossing 100
+  // emits a bug and pays 100 back. N=40 → over any 10 slots a stable
+  // 4:6 pattern (slots 3,5,8,10 are bugs); N=100 → a bug every slot.
+  const out: CoreNode[] = [];
+  let acc = 0;
+  let i = 0;
+  let j = 0;
+  while (i < bugs.length || j < others.length) {
+    if (i >= bugs.length) {
+      out.push(others[j++]);
+      continue;
     }
-    const byAge = a.createdAt.localeCompare(b.createdAt);
-    if (byAge !== 0) return byAge;
-    return a.id.localeCompare(b.id);
-  });
+    if (j >= others.length) {
+      out.push(bugs[i++]);
+      continue;
+    }
+    acc += mix.ratio;
+    if (acc >= 100) {
+      acc -= 100;
+      out.push(bugs[i++]);
+    } else {
+      out.push(others[j++]);
+    }
+  }
+  return out;
 }
 
 // Empty-brief guard lives in core (dispatch.ts) next to the gate predicate;

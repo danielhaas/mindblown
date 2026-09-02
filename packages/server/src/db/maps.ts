@@ -139,7 +139,8 @@ export interface UpdateMapInput {
   maxActiveClaims?: number;
   /** Pull-queue AND-filter: `version:<id>` / `type:bug`. Empty = open. */
   dispatchGate?: string[];
-  /** Pull-queue ranking keys (bugs|priority|size|age). Empty = default. */
+  /** Pull-queue ranking keys (bugs|priority|size|age, plus at most one
+   *  parametric `mix:bugs=<0-100>` weave entry). Empty = default. */
   dispatchPolicy?: string[];
   /** Profile routing table (#262); null clears = profile-blind queue. */
   profilePolicy?: ProfilePolicy | null;
