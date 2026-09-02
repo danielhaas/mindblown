@@ -80,6 +80,12 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
 
   const [snapshotNodes, setSnapshotNodes] = useState<Node[] | null>(null);
   const [nodesError, setNodesError] = useState<string | null>(null);
+  // When the current `snapshotNodes` was fetched, and whether a fetch is
+  // in flight — the counts derived from it are frozen between loads (no
+  // refetch on write, see below), so the age must be shown rather than
+  // implied (Ray's non-blocking "Should Fix" on approval).
+  const [nodesLoadedAt, setNodesLoadedAt] = useState<Date | null>(null);
+  const [nodesLoading, setNodesLoading] = useState(false);
   const [events, setEvents] = useState<ChangeEvent[]>([]);
   const [members, setMembers] = useState<MapMember[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
@@ -96,16 +102,21 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
   // app after every Start/Stop/Apply would pay for a snapshot input that
   // never moved (round 2 review). Runs on mount and on the manual ↻ below.
   const loadNodes = useCallback(() => {
+    setNodesLoading(true);
     api
       .fetchMap(mapId) // no `omit` — the snapshot needs description + externalLinks
       .then((d) => {
         if (mountedRef.current) {
           setSnapshotNodes(d.nodes);
           setNodesError(null);
+          setNodesLoadedAt(new Date());
         }
       })
       .catch((e: unknown) => {
         if (mountedRef.current) setNodesError(e instanceof Error ? e.message : 'unavailable');
+      })
+      .finally(() => {
+        if (mountedRef.current) setNodesLoading(false);
       });
   }, [mapId]);
 
@@ -145,14 +156,14 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
 
   const writes = useMemo(() => lastKnobWrites(events, members), [events, members]);
   // Null when the audit window came back FULL without ever seeing a
-  // non-zero cap (truncated) OR when the audit fetch itself failed
-  // (`auditError` set — pass `null` events, not `[]`: an errored fetch is
-  // not the same as a fetch that succeeded and came back empty). Either
-  // way the Start button disables rather than guessing (see `startCap`'s
-  // doc comment in dispatch.ts; round 2 review closed the fetch-failure
-  // gap).
+  // non-zero cap (truncated) OR when the audit fetch itself failed with
+  // NOTHING known yet (`auditError` set and `events` still empty). A
+  // transient refresh failure that still has a good earlier `events` list
+  // does NOT null this out — `events` (and the "last write" line below)
+  // keep rendering from that known-good history either way, so Start
+  // shouldn't refuse to trust the same data (approval-round nit).
   const startCapValue = useMemo(
-    () => startCap(auditError ? null : events, { limit: AUDIT_LIMIT }),
+    () => startCap(auditError && events.length === 0 ? null : events, { limit: AUDIT_LIMIT }),
     [events, auditError],
   );
 
@@ -230,9 +241,10 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
             style={{ fontSize: 16, padding: '0 4px', minHeight: 32 }}
             aria-label="Reload queue snapshot"
             title="Reload the queue snapshot (node list) — cap/gate follow the map automatically"
+            disabled={nodesLoading}
             onClick={() => loadNodes()}
           >
-            ↻
+            {nodesLoading ? '…' : '↻'}
           </button>
         </div>
 
@@ -256,6 +268,7 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
               </span>
               <span style={{ fontSize: 13, color: '#64748b' }}>
                 · <strong>{snapshot.inGate}</strong> grantable in gate
+                {nodesLoadedAt && <> · loaded {formatAge(nodesLoadedAt.toISOString(), new Date())} ago</>}
               </span>
             </>
           ) : (
@@ -330,7 +343,7 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
         </div>
         {auditError && (
           <div style={{ fontSize: 11, color: '#b45309', marginTop: 6 }}>
-            Audit trail unavailable ({auditError}) — the "last write" line is missing and Start disables until it recovers; Stop and the number input still work.
+            Audit trail unavailable ({auditError}) — Start disables only if no cap history is known yet; Stop and the number input always still work.
           </div>
         )}
 

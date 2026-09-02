@@ -184,13 +184,14 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
 
   const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
   // Null when the audit window came back FULL without ever seeing a
-  // non-zero cap (truncated, not "always on hold") OR when the audit
-  // fetch itself failed (`auditError` — pass `null` events, not `[]`: an
-  // errored fetch is not the same as a fetch that succeeded and came back
-  // empty). Either way the Start button disables rather than guessing
-  // (see `startCap`'s doc comment).
+  // non-zero cap (truncated, not "always on hold") OR when the audit fetch
+  // itself failed with NOTHING known yet (`auditError` set and `events`
+  // still empty). A transient refresh failure that still has a good
+  // earlier `events` list does NOT null this out — the "last write" line
+  // keeps rendering from that known-good history either way, so Start
+  // shouldn't refuse to trust the same data (approval-round nit).
   const startCapValue = useMemo(
-    () => startCap(auditError ? null : events, { limit: AUDIT_LIMIT }),
+    () => startCap(auditError && events.length === 0 ? null : events, { limit: AUDIT_LIMIT }),
     [events, auditError],
   );
 
