@@ -7,11 +7,12 @@ import { MobileKanbanView } from './MobileKanbanView.js';
 import { MobileGanttView } from './MobileGanttView.js';
 import { MobileMindmapView } from './MobileMindmapView.js';
 import { MobileRequirementsView } from './MobileRequirementsView.js';
+import { MobileFleetView } from './MobileFleetView.js';
 import { MobileNodeDetailSheet } from './MobileNodeDetailSheet.js';
 import { MobileAddNodeSheet } from './MobileAddNodeSheet.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
 
-type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap' | 'requirements';
+type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap' | 'requirements' | 'fleet';
 
 const VIEW_KEY = 'mb_mobile_view';
 
@@ -21,6 +22,7 @@ const VIEW_LABELS: Record<ViewKey, string> = {
   gantt: 'Gantt',
   mindmap: 'Mindmap',
   requirements: 'Reqs',
+  fleet: 'Fleet',
 };
 
 /**
@@ -270,14 +272,26 @@ export function MobileViewer({ map }: Props) {
               onSelect={setSelectedId}
             />
           )}
+          {view === 'fleet' && (
+            <MobileFleetView
+              mapId={map.id}
+              map={detail.map}
+              versions={versions}
+              onChanged={silentReload}
+            />
+          )}
 
-          <button
-            className="mb-fab"
-            aria-label="Add node"
-            onClick={() => setAdding(true)}
-          >
-            +
-          </button>
+          {/* "Add node" isn't the Fleet tab's job, and it floats over the
+              Apply row there. */}
+          {view !== 'fleet' && (
+            <button
+              className="mb-fab"
+              aria-label="Add node"
+              onClick={() => setAdding(true)}
+            >
+              +
+            </button>
+          )}
         </>
       )}
 

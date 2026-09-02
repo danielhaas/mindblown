@@ -8,7 +8,7 @@
  * come from @mindblown/core `dispatchQueueSnapshot`, the same predicate the
  * server's get_next_ticket applies.
  */
-import type { Node, Version } from '@mindblown/core';
+import type { Node, Version, DispatchState } from '@mindblown/core';
 import {
   parseGateEntry,
   parseMixBugs,
@@ -21,6 +21,19 @@ import {
   MIX_BUGS_REGEX,
 } from '@mindblown/core';
 import type { ChangeEvent, MapMember } from './api.js';
+
+/**
+ * Word/color/hint for each {@link DispatchState} — shared by the desktop
+ * Dispatch card (`DispatchCards.tsx`) and the mobile Fleet tab
+ * (`mobile/MobileFleetView.tsx`) so the vocabulary never drifts between
+ * the two surfaces the same operator switches between.
+ */
+export const STATE_WORD: Record<DispatchState, { label: string; color: string; bg: string; hint: string }> = {
+  hold: { label: 'Hold', color: '#475569', bg: '#e2e8f0', hint: 'Cap is 0 — no ticket is handed out.' },
+  full: { label: 'Full', color: '#9a3412', bg: '#ffedd5', hint: 'Every cap slot holds a claim. Check for stale claims before raising the cap.' },
+  empty: { label: 'Empty', color: '#991b1b', bg: '#fee2e2', hint: 'Cap is open but nothing grantable is inside the gate — phase-change signal, a fail-closed gate, or briefs missing.' },
+  running: { label: 'Running', color: '#166534', bg: '#dcfce7', hint: 'Tickets are being handed out inside the gate.' },
+};
 
 export const KNOB_FIELDS = ['maxActiveClaims', 'dispatchGate', 'dispatchPolicy'] as const;
 export type KnobField = (typeof KNOB_FIELDS)[number];
@@ -345,6 +358,57 @@ export function lastNonZeroCap(events: ChangeEvent[]): number | null {
     }
   }
   return null;
+}
+
+/**
+ * How many `map.field_changed` events the Dispatch/Fleet cards fetch for
+ * the audit trail — desktop and mobile MUST request the same window, or
+ * `startCap` can read a different "last non-zero cap" on each surface for
+ * the same map (desktop "Start → 6", phone "Start → 12" was exactly this
+ * bug: 100 vs. 40 before this constant existed).
+ */
+export const AUDIT_LIMIT = 100;
+
+/**
+ * Fallback cap for the one-click Start button when the audit trail has
+ * never seen a non-zero cap on this map (a fresh map, or one that has
+ * always been on hold) — the orchestrator's own fleet-wide ceiling
+ * (`claude-fleet` Leidang runbook, "Starting and stopping the fleet").
+ */
+export const DEFAULT_START_CAP = 12;
+
+/**
+ * The cap the one-click Start button writes: the audit's last non-zero
+ * cap when there is one. Otherwise {@link DEFAULT_START_CAP} — but ONLY
+ * when the caller actually knows the whole audit:
+ *
+ * - `events === null` means the audit fetch itself failed — the purest
+ *   "I don't know" there is. A caller must pass `null` here (not `[]`)
+ *   when its `auditError` is set; `[]` means "fetched, and it was empty".
+ * - a window that came back FULL (`events.length >= limit`) means the
+ *   fetch succeeded but was truncated — older events, possibly the one
+ *   non-zero cap that matters, were never fetched.
+ *
+ * Either way this is the same "never invents a number" contract
+ * `lastNonZeroCap` documents, extended past the happy path: silently
+ * writing 12 (maybe double the fleet's usual cap) onto shared CI capacity
+ * because the fetch errored or the window happened to be full of
+ * gate/policy writes is worse than asking the operator to type one. Null
+ * in both cases — the caller disables Start and asks for a number instead
+ * of guessing. A full window that never saw a non-zero cap AND that the
+ * caller knows is complete really does mean "always on hold", so that
+ * case alone falls through to the fallback.
+ */
+export function startCap(
+  events: ChangeEvent[] | null,
+  opts: { limit?: number; fallback?: number } = {},
+): number | null {
+  if (events === null) return null; // audit fetch failed — unknown, never guess
+  const nonZero = lastNonZeroCap(events);
+  if (nonZero !== null) return nonZero;
+  const limit = opts.limit ?? AUDIT_LIMIT;
+  if (events.length >= limit) return null; // truncated, no non-zero cap seen
+  return opts.fallback ?? DEFAULT_START_CAP;
 }
 
 /** Newest knob write overall — the Fleet card's "last write" fact line. */
