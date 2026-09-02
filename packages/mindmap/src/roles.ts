@@ -91,6 +91,8 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     hint: 'What do I pick up next, why does it exist, where is the PR?',
     // Fleet is observability for developers ("who else is pulling, is the
     // queue alive?") — the steering knobs render read-only in this lens.
+    // List stays tabs[0] = the landing page; on-screen ORDER comes from
+    // App.tsx VIEW_TABS, not from this array.
     tabs: ['list', 'kanban', 'mindmap', 'fleet'],
     panels: ['blocked', 'property', 'mapChat'],
   },

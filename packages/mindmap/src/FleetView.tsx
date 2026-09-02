@@ -29,7 +29,10 @@ export function FleetView() {
   return (
     <Shell>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-        <LeidangCards readOnly={viewRole === 'developer'} />
+        {/* Only PM and All steer. Anyone else who lands here (developer
+            tab, or a stakeholder following a shared ?view=fleet link)
+            observes — the lens is a filter, so this is UX, not security. */}
+        <LeidangCards readOnly={viewRole !== 'pm' && viewRole !== 'all'} />
       </div>
     </Shell>
   );

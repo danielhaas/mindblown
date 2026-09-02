@@ -217,12 +217,27 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
   );
   const accent = snapshot.state === 'empty' ? '#fecaca' : snapshot.state === 'full' ? '#fed7aa' : undefined;
 
+  // Why the queue is dead — the one question both lenses must answer. Only
+  // the call to action differs: the read-only lens has no "below" to act in.
+  const emptyDiagnosis = snapshot.state === 'empty' && (
+    <div style={warnBox}>
+      {snapshot.unknownGateEntries.length > 0
+        ? <>The gate contains an entry the server cannot read (<code>{snapshot.unknownGateEntries.join(', ')}</code>) — it matches nothing. {readOnly ? 'Ask the operator (PM/All lens) to remove it.' : 'Remove it below.'}</>
+        : snapshot.needsBrief > 0
+          ? <>{snapshot.needsBrief} tickets are inside the gate but have no brief (no description, no linked issue) — the pull refuses them. Write briefs, or nothing moves.</>
+          : snapshot.pullable > 0
+            ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done ({readOnly ? 'the operator switches the gate' : 'switch the gate'}) or the work is unversioned (see Fleet).</>
+            : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
+    </div>
+  );
+
   // Developer lens: the same facts, none of the levers. Saved values only —
   // no drafts, no Apply, no presets. Steering stays a PM/operator action.
   if (readOnly) {
     return (
       <Card title="Dispatch — Leidang pull queue" accent={accent}>
         {header}
+        {emptyDiagnosis}
         <KnobRow field="maxActiveClaims" write={writes.maxActiveClaims} versions={versions} hint={KNOB_HINT.maxActiveClaims}>
           <div style={row}>
             <span style={{ fontSize: 13, color: '#334155' }}>
@@ -244,12 +259,19 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
         </KnobRow>
         <KnobRow field="dispatchPolicy" write={writes.dispatchPolicy} versions={versions} hint={KNOB_HINT.dispatchPolicy}>
           <div style={{ ...row, flexWrap: 'wrap' }}>
-            {normalizePolicy(policy).map((k, i) => (
-              <span key={k} style={{ ...chip, ...(isKnownPolicyKey(k) ? {} : chipWarn) }}>
-                <span style={{ color: '#94a3b8', marginRight: 4 }}>{i + 1}.</span>
-                {policyKeyLabel(k)}
-              </span>
-            ))}
+            {normalizePolicy(policy).map((k, i) => {
+              const known = isKnownPolicyKey(k);
+              return (
+                <span
+                  key={k}
+                  title={known ? undefined : 'This build cannot read this entry — the server treats keys it does not know as inert.'}
+                  style={{ ...chip, ...(known ? {} : chipWarn) }}
+                >
+                  <span style={{ color: known ? '#94a3b8' : '#b91c1c', marginRight: 4 }}>{i + 1}.</span>
+                  {policyKeyLabel(k)}
+                </span>
+              );
+            })}
             {policy.length === 0 && (
               <span style={{ fontSize: 12, color: '#64748b' }}>default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</span>
             )}
@@ -283,17 +305,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
     <Card title="Dispatch — Leidang pull queue" accent={accent}>
       {/* Header: state word + the cap ratio, both from SAVED values */}
       {header}
-      {snapshot.state === 'empty' && (
-        <div style={warnBox}>
-          {snapshot.unknownGateEntries.length > 0
-            ? <>The gate contains an entry the server cannot read (<code>{snapshot.unknownGateEntries.join(', ')}</code>) — it matches nothing. Remove it below.</>
-            : snapshot.needsBrief > 0
-              ? <>{snapshot.needsBrief} tickets are inside the gate but have no brief (no description, no linked issue) — the pull refuses them. Write briefs, or nothing moves.</>
-              : snapshot.pullable > 0
-                ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done (switch the gate) or the work is unversioned (see Fleet).</>
-                : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
-        </div>
-      )}
+      {emptyDiagnosis}
       {saveError && <div style={{ ...warnBox, marginBottom: 8 }}>{saveError}</div>}
 
       {/* ── Cap ── */}

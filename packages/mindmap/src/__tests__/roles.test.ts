@@ -62,7 +62,8 @@ describe('ROLE_CONFIG invariants', () => {
     expect(isTabVisible('pm', 'fleet')).toBe(true);
     expect(isTabVisible('developer', 'fleet')).toBe(true);
     expect(isTabVisible('stakeholder', 'fleet')).toBe(false);
-    // List stays the developer landing page — Fleet is appended, not the default
+    // List stays the developer landing page (tabs[0]); tab ORDER on screen
+    // comes from App.tsx VIEW_TABS, where Fleet sits up front next to Today
     expect(defaultViewForRole('developer')).toBe('list');
   });
 });
