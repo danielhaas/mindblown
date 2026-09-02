@@ -47,7 +47,8 @@ export type ActiveView =
   | 'requirements'
   | 'guide'
   | 'digest'
-  | 'cockpit';
+  | 'cockpit'
+  | 'fleet';
 
 export interface VisibleNode {
   node: Node;

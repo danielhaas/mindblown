@@ -47,6 +47,7 @@ export interface RoleConfig {
 export const ALL_VIEWS: ActiveView[] = [
   'digest',
   'cockpit',
+  'fleet',
   'mindmap',
   'kanban',
   'gantt',
@@ -82,13 +83,15 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   pm: {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
-    tabs: ['cockpit', 'releases', 'list', 'kanban', 'mindmap'],
+    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {
     label: 'Developer',
     hint: 'What do I pick up next, why does it exist, where is the PR?',
-    tabs: ['list', 'kanban', 'mindmap'],
+    // Fleet is observability for developers ("who else is pulling, is the
+    // queue alive?") — the steering knobs render read-only in this lens.
+    tabs: ['list', 'kanban', 'mindmap', 'fleet'],
     panels: ['blocked', 'property', 'mapChat'],
   },
   all: {

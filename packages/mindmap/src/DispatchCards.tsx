@@ -102,7 +102,7 @@ function useKnobState(): KnobState | null {
 }
 
 /** Both cards, sharing ONE audit fetch + member load. */
-export function LeidangCards() {
+export function LeidangCards({ readOnly = false }: { readOnly?: boolean }) {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const members = useMindmapStore((s) => s.members);
   const loadMembers = useMindmapStore((s) => s.loadMembers);
@@ -137,13 +137,19 @@ export function LeidangCards() {
   if (!knobs) return null;
   return (
     <>
-      <DispatchCard knobs={knobs} writes={writes} events={events} auditError={auditError} />
+      <DispatchCard knobs={knobs} writes={writes} events={events} auditError={auditError} readOnly={readOnly} />
       <FleetCard knobs={knobs} writes={writes} />
     </>
   );
 }
 
-function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState; writes: Writes; events: ChangeEvent[]; auditError: string | null }) {
+const KNOB_HINT: Record<KnobField, string> = {
+  maxActiveClaims: 'Fleet-wide claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out.',
+  dispatchGate: 'AND-filter. version: matches the ticket\'s effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised.',
+  dispatchPolicy: 'Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age). The bug-share control adds one mix:bugs=N entry that weaves bugs into the stream at a fixed percentage.',
+};
+
+function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: KnobState; writes: Writes; events: ChangeEvent[]; auditError: string | null; readOnly: boolean }) {
   const currentMap = useMindmapStore((s) => s.currentMap);
   const nodes = useMindmapStore((s) => s.nodes);
   const versions = useMindmapStore((s) => s.versions);
@@ -198,6 +204,65 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
   const busyAny = busy !== null;
   const state = STATE_WORD[snapshot.state];
 
+  const header = (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+      <span title={state.hint} style={{ ...pill, background: state.bg, color: state.color }}>{state.label}</span>
+      <span style={{ fontSize: 13, color: '#334155' }}>
+        <strong>{snapshot.activeClaims}</strong> active / cap <strong>{cap}</strong>
+      </span>
+      <span style={{ fontSize: 12, color: '#64748b' }}>
+        · <strong>{snapshot.inGate}</strong> grantable in gate
+      </span>
+    </div>
+  );
+  const accent = snapshot.state === 'empty' ? '#fecaca' : snapshot.state === 'full' ? '#fed7aa' : undefined;
+
+  // Developer lens: the same facts, none of the levers. Saved values only —
+  // no drafts, no Apply, no presets. Steering stays a PM/operator action.
+  if (readOnly) {
+    return (
+      <Card title="Dispatch — Leidang pull queue" accent={accent}>
+        {header}
+        <KnobRow field="maxActiveClaims" write={writes.maxActiveClaims} versions={versions} hint={KNOB_HINT.maxActiveClaims}>
+          <div style={row}>
+            <span style={{ fontSize: 13, color: '#334155' }}>
+              <strong>{cap}</strong>
+              {cap === 0 && <span style={{ color: '#64748b' }}> — hold: satellites park, nothing is handed out</span>}
+            </span>
+          </div>
+        </KnobRow>
+        <KnobRow field="dispatchGate" write={writes.dispatchGate} versions={versions} hint={KNOB_HINT.dispatchGate}>
+          <div style={{ ...row, flexWrap: 'wrap' }}>
+            {gate.length === 0 && <span style={{ fontSize: 12, color: '#64748b' }}>open — no fence</span>}
+            {gateChips(gate, versions).map((c) => (
+              <span key={c.raw} title={c.warning ?? c.detail ?? undefined} style={{ ...chip, ...(c.warning ? chipWarn : {}) }}>
+                {c.label}
+                {c.detail && <span style={{ color: '#64748b', marginLeft: 4 }}>({c.detail})</span>}
+              </span>
+            ))}
+          </div>
+        </KnobRow>
+        <KnobRow field="dispatchPolicy" write={writes.dispatchPolicy} versions={versions} hint={KNOB_HINT.dispatchPolicy}>
+          <div style={{ ...row, flexWrap: 'wrap' }}>
+            {normalizePolicy(policy).map((k, i) => (
+              <span key={k} style={{ ...chip, ...(isKnownPolicyKey(k) ? {} : chipWarn) }}>
+                <span style={{ color: '#94a3b8', marginRight: 4 }}>{i + 1}.</span>
+                {policyKeyLabel(k)}
+              </span>
+            ))}
+            {policy.length === 0 && (
+              <span style={{ fontSize: 12, color: '#64748b' }}>default: {effectivePolicy([]).map(policyKeyLabel).join(' › ')}</span>
+            )}
+          </div>
+        </KnobRow>
+        <div style={{ fontSize: 12, color: '#64748b', marginTop: 12, paddingTop: 10, borderTop: '1px solid #f1f5f9' }}>
+          Read-only in the Developer lens — steering happens in the PM or All lens.
+        </div>
+        {auditError && <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Audit trail unavailable ({auditError}) — the "last write" lines are missing.</div>}
+      </Card>
+    );
+  }
+
   const save = async (field: KnobField | 'preset', fields: Parameters<typeof updateMapSettings>[0]) => {
     setBusy(field);
     setSaveError(null);
@@ -215,17 +280,9 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
   };
 
   return (
-    <Card title="Dispatch — Leidang pull queue" accent={snapshot.state === 'empty' ? '#fecaca' : snapshot.state === 'full' ? '#fed7aa' : undefined}>
+    <Card title="Dispatch — Leidang pull queue" accent={accent}>
       {/* Header: state word + the cap ratio, both from SAVED values */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-        <span title={state.hint} style={{ ...pill, background: state.bg, color: state.color }}>{state.label}</span>
-        <span style={{ fontSize: 13, color: '#334155' }}>
-          <strong>{snapshot.activeClaims}</strong> active / cap <strong>{cap}</strong>
-        </span>
-        <span style={{ fontSize: 12, color: '#64748b' }}>
-          · <strong>{snapshot.inGate}</strong> grantable in gate
-        </span>
-      </div>
+      {header}
       {snapshot.state === 'empty' && (
         <div style={warnBox}>
           {snapshot.unknownGateEntries.length > 0
@@ -244,7 +301,7 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
         field="maxActiveClaims"
         write={writes.maxActiveClaims}
         versions={versions}
-        hint="Fleet-wide claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out."
+        hint={KNOB_HINT.maxActiveClaims}
       >
         <div style={row}>
           <input
@@ -280,7 +337,7 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
         field="dispatchGate"
         write={writes.dispatchGate}
         versions={versions}
-        hint="AND-filter. version: matches the ticket's effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised."
+        hint={KNOB_HINT.dispatchGate}
       >
         <div style={{ ...row, flexWrap: 'wrap' }}>
           {gateDraft.length === 0 && <span style={{ fontSize: 12, color: '#64748b' }}>open — no fence</span>}
@@ -327,7 +384,7 @@ function DispatchCard({ knobs, writes, events, auditError }: { knobs: KnobState;
         field="dispatchPolicy"
         write={writes.dispatchPolicy}
         versions={versions}
-        hint="Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age). The bug-share control adds one mix:bugs=N entry that weaves bugs into the stream at a fixed percentage."
+        hint={KNOB_HINT.dispatchPolicy}
       >
         <div style={{ ...row, flexWrap: 'wrap' }}>
           {normalizePolicy(policyDraft).map((k, i, arr) => {

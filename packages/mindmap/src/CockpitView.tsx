@@ -22,7 +22,6 @@ import {
 import type { ChangeEventLite, BlockerKind } from './landing.js';
 import { pickCurrentCycle } from './roles.js';
 import { Shell, Card, Muted, Link } from './DigestView.js';
-import { LeidangCards } from './DispatchCards.js';
 import { linkifyRefs } from './dispatch.js';
 
 const WINDOW_DAYS = 3;
@@ -398,10 +397,8 @@ export function CockpitView() {
           )}
         </Card>
 
-        {/* Leidang fleet: steer (Dispatch) and see what the map holds
-            (Fleet). Last in the grid on purpose — the Monday questions
-            above come first; these are the operator's controls. */}
-        <LeidangCards />
+        {/* The Leidang cards (Dispatch + Fleet) moved to their own Fleet
+            tab — buried as the last grid items here, nobody found them. */}
       </div>
     </Shell>
   );

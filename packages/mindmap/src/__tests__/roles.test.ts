@@ -57,6 +57,14 @@ describe('ROLE_CONFIG invariants', () => {
     // "all" keeps today's default
     expect(defaultViewForRole('all')).toBe('mindmap');
   });
+
+  it('Fleet tab: PM and developer see it (dev read-only in the view), stakeholder does not', () => {
+    expect(isTabVisible('pm', 'fleet')).toBe(true);
+    expect(isTabVisible('developer', 'fleet')).toBe(true);
+    expect(isTabVisible('stakeholder', 'fleet')).toBe(false);
+    // List stays the developer landing page — Fleet is appended, not the default
+    expect(defaultViewForRole('developer')).toBe('list');
+  });
 });
 
 describe('reconcileView', () => {
