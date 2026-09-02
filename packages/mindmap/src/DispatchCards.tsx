@@ -28,6 +28,7 @@ import type { ChangeEvent } from './api.js';
 import { Card, Link } from './DigestView.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
 import {
+  AUDIT_LIMIT,
   KNOB_LABEL,
   STALE_CLAIM_HOURS,
   STATE_WORD,
@@ -55,8 +56,6 @@ import {
   versionGateOptions,
 } from './dispatch.js';
 import type { KnobField, KnobWrite, PresetId } from './dispatch.js';
-
-const AUDIT_LIMIT = 100;
 const CLAIM_PREVIEW = 8;
 /** Bug share the mix control starts at when first enabled — the middle of
  *  the 30–50 % band the control exists for; every value 0–100 is settable. */
@@ -184,17 +183,20 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
   }, [nodes, workflow, cap, gate, gateDraft]);
 
   const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
-  // Never null (unlike the raw audit lookup) — the Start button always has
-  // a number to write: the audit's last non-zero cap, or the orchestrator's
-  // fleet-wide ceiling when the audit has never seen one.
-  const startCapValue = useMemo(() => startCap(events), [events]);
+  // Null only when the audit window came back FULL without ever seeing a
+  // non-zero cap — truncated, not "always on hold". The Start button
+  // disables rather than guessing (see `startCap`'s doc comment).
+  const startCapValue = useMemo(() => startCap(events, { limit: AUDIT_LIMIT }), [events]);
 
   if (!currentMap || !snapshot) return null;
 
   const mixRatio = mixBugsRatio(policyDraft);
   const unknownPolicyKeys = normalizePolicy(policyDraft).filter((k) => !isKnownPolicyKey(k));
   const capNumber = Number(capDraft);
-  const capValid = Number.isInteger(capNumber) && capNumber >= 0;
+  // capDraft.trim() !== '' guards Number('') === 0 — an emptied input must
+  // be neither valid nor dirty, or clearing the box on a numeric keypad
+  // silently arms a write of 0 (a full fleet stop) the moment Apply lights up.
+  const capValid = capDraft.trim() !== '' && Number.isInteger(capNumber) && capNumber >= 0;
   const capDirty = capValid && capNumber !== cap;
   const gateDirty = !sameList(gateDraft, gate);
   const policyDirty = !sameList(normalizePolicy(policyDraft), normalizePolicy(policy));
@@ -329,11 +331,15 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
           {cap === 0 ? (
             <button
               style={{ ...btn, ...btnPrimary }}
-              disabled={busyAny}
-              title={`Cap → ${startCapValue}: satellites follow within ~2 min`}
-              onClick={() => save('maxActiveClaims', { maxActiveClaims: startCapValue })}
+              disabled={busyAny || startCapValue === null}
+              title={
+                startCapValue === null
+                  ? 'Audit trail truncated before any non-zero cap — type a cap below.'
+                  : `Cap → ${startCapValue}: satellites follow within ~2 min`
+              }
+              onClick={() => startCapValue !== null && save('maxActiveClaims', { maxActiveClaims: startCapValue })}
             >
-              {busy === 'maxActiveClaims' ? 'Starting…' : `Start → ${startCapValue}`}
+              {busy === 'maxActiveClaims' ? 'Starting…' : startCapValue === null ? 'Start' : `Start → ${startCapValue}`}
             </button>
           ) : (
             <button

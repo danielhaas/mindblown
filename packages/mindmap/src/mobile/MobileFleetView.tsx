@@ -12,16 +12,29 @@
  * action for now, per the ticket scope.
  *
  * `dispatchQueueSnapshot` (queue math) and the audit-trail helpers
- * (`STATE_WORD`, `startCap`, `lastKnobWrites`, `formatAge`,
+ * (`STATE_WORD`, `AUDIT_LIMIT`, `startCap`, `lastKnobWrites`, `formatAge`,
  * `formatKnobValue`) come from `dispatch.ts` — the same helpers
- * `DispatchCards.tsx` uses, so the two surfaces never drift.
+ * `DispatchCards.tsx` uses, so the two surfaces never drift (a duplicated
+ * `AUDIT_LIMIT` here used to make desktop and phone offer different
+ * "Start → N" values for the same map — see PR #356 review).
+ *
+ * IMPORTANT: `MobileViewer.tsx` loads the map with `?omit=description,
+ * externalLinks` to keep list/kanban/etc. light. `dispatchQueueSnapshot`'s
+ * `hasBrief` predicate reads exactly those two fields (core's
+ * `hasBrief(node)` does `node.externalLinks.some(...)`), so the stripped
+ * payload either throws (`undefined.some`) or, with a naive null-guard,
+ * makes every gated ticket look brief-less — the pill would read "Empty"
+ * forever while the server keeps granting tickets. This view therefore
+ * fetches its OWN un-omitted `fetchMap` for the snapshot instead of taking
+ * `nodes` as a prop; the other mobile views keep the light payload.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { MindMap, Version } from '@mindblown/core';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { MindMap, Node, Version } from '@mindblown/core';
 import { dispatchQueueSnapshot } from '@mindblown/core';
-import type { NodeWithComputed, ChangeEvent, MapMember } from '../api.js';
+import type { ChangeEvent, MapMember } from '../api.js';
 import * as api from '../api.js';
 import {
+  AUDIT_LIMIT,
   STATE_WORD,
   formatAge,
   formatKnobValue,
@@ -29,12 +42,9 @@ import {
   startCap,
 } from '../dispatch.js';
 
-const AUDIT_LIMIT = 40;
-
 interface Props {
   mapId: string;
   map: MindMap;
-  nodes: NodeWithComputed[];
   versions: Version[];
   /** Called after a successful write so the caller reloads the map detail —
    *  the header ("4 active / cap 9") must show the server value, not an
@@ -42,48 +52,73 @@ interface Props {
   onChanged: () => void;
 }
 
-export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Props) {
+type BusyAction = 'start' | 'stop' | 'apply' | null;
+
+export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
+  // Guards every async setState below against a tab switch mid-flight —
+  // one flag shared by all three loaders (nodes, audit, members) instead
+  // of a fresh cancellation closure per call site (a manual reload call
+  // used to drop its own closure's guard; see PR #356 review).
+  const mountedRef = useRef(true);
+  useEffect(
+    () => () => {
+      mountedRef.current = false;
+    },
+    [],
+  );
+
+  // This view's own un-omitted node fetch — see the file-level comment on
+  // why it cannot reuse MobileViewer's stripped `detail.nodes`.
+  const [snapshotNodes, setSnapshotNodes] = useState<Node[] | null>(null);
+  const [nodesError, setNodesError] = useState<string | null>(null);
   const [events, setEvents] = useState<ChangeEvent[]>([]);
   const [members, setMembers] = useState<MapMember[]>([]);
   const [auditError, setAuditError] = useState<string | null>(null);
   const [capDraft, setCapDraft] = useState<string>(String(map.maxActiveClaims));
-  const [busy, setBusy] = useState(false);
+  const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  const loadNodes = useCallback(() => {
+    api
+      .fetchMap(mapId) // no `omit` — the snapshot needs description + externalLinks
+      .then((d) => {
+        if (mountedRef.current) {
+          setSnapshotNodes(d.nodes);
+          setNodesError(null);
+        }
+      })
+      .catch((e: unknown) => {
+        if (mountedRef.current) setNodesError(e instanceof Error ? e.message : 'unavailable');
+      });
+  }, [mapId]);
+
   const loadAudit = useCallback(() => {
-    let cancelled = false;
     api
       .fetchChangeHistory(mapId, { eventType: 'map.field_changed', limit: AUDIT_LIMIT })
       .then((r) => {
-        if (!cancelled) {
+        if (mountedRef.current) {
           setEvents(r.events);
           setAuditError(null);
         }
       })
       .catch((e: unknown) => {
-        if (!cancelled) setAuditError(e instanceof Error ? e.message : 'unavailable');
+        if (mountedRef.current) setAuditError(e instanceof Error ? e.message : 'unavailable');
       });
-    return () => {
-      cancelled = true;
-    };
   }, [mapId]);
 
+  useEffect(() => loadNodes(), [loadNodes]);
   useEffect(() => loadAudit(), [loadAudit]);
 
   useEffect(() => {
-    let cancelled = false;
     api
       .fetchMapMembers(mapId)
       .then((r) => {
-        if (!cancelled) setMembers(r.members);
+        if (mountedRef.current) setMembers(r.members);
       })
       .catch(() => {
         // "last write" falls back to "API key / system" without names —
         // not worth failing the tab over.
       });
-    return () => {
-      cancelled = true;
-    };
   }, [mapId]);
 
   // Reset the fine-tune draft only when the SAVED cap changes underneath —
@@ -91,18 +126,25 @@ export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Prop
   useEffect(() => setCapDraft(String(map.maxActiveClaims)), [map.maxActiveClaims]);
 
   const writes = useMemo(() => lastKnobWrites(events, members), [events, members]);
-  const startCapValue = useMemo(() => startCap(events), [events]);
+  // Null only when the audit window came back FULL without ever seeing a
+  // non-zero cap — truncated, not "always on hold" (see `startCap`'s doc
+  // comment in dispatch.ts).
+  const startCapValue = useMemo(() => startCap(events, { limit: AUDIT_LIMIT }), [events]);
 
   const cap = map.maxActiveClaims;
+  // `statusWorkflow` is a non-optional StatusDef[]; `.length === 0` is the
+  // real "no workflow" check (an empty array is truthy) — same shape as
+  // FleetView.tsx's desktop guard.
+  const hasWorkflow = map.statusWorkflow.length > 0;
   const snapshot = useMemo(
     () =>
-      map.statusWorkflow
-        ? dispatchQueueSnapshot(nodes, { workflow: map.statusWorkflow, cap, gate: map.dispatchGate })
+      hasWorkflow && snapshotNodes
+        ? dispatchQueueSnapshot(snapshotNodes, { workflow: map.statusWorkflow, cap, gate: map.dispatchGate })
         : null,
-    [nodes, map.statusWorkflow, cap, map.dispatchGate],
+    [hasWorkflow, snapshotNodes, map.statusWorkflow, cap, map.dispatchGate],
   );
 
-  if (!map.statusWorkflow || !snapshot) {
+  if (!hasWorkflow) {
     return (
       <div className="mb-body">
         <div className="mb-card">
@@ -113,23 +155,44 @@ export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Prop
     );
   }
 
-  const write = async (maxActiveClaims: number) => {
-    setBusy(true);
+  if (!snapshot) {
+    return (
+      <div className="mb-body">
+        <div className="mb-card">
+          <div className="mb-card-title">Fleet</div>
+          {nodesError ? (
+            <div className="mb-error">Could not load the queue ({nodesError}).</div>
+          ) : (
+            <div className="mb-card-meta">Loading fleet…</div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const write = async (action: 'start' | 'stop' | 'apply', maxActiveClaims: number) => {
+    setBusyAction(action);
     setSaveError(null);
     try {
       await api.updateMap(mapId, { maxActiveClaims });
       onChanged();
       loadAudit();
+      loadNodes();
     } catch (e) {
       setSaveError(e instanceof Error ? e.message : 'Save failed — the value shown is what the server still has.');
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   };
 
   const capNumber = Number(capDraft);
-  const capValid = Number.isInteger(capNumber) && capNumber >= 0;
+  // capDraft.trim() !== '' guards Number('') === 0 — an emptied input must
+  // be neither valid nor dirty, or clearing the box on a phone's numeric
+  // keypad silently arms an Apply that writes maxActiveClaims: 0 (a full
+  // fleet stop) the instant the field is empty.
+  const capValid = capDraft.trim() !== '' && Number.isInteger(capNumber) && capNumber >= 0;
   const capDirty = capValid && capNumber !== cap;
+  const busy = busyAction !== null;
   const state = STATE_WORD[snapshot.state];
   const last = writes.maxActiveClaims;
 
@@ -157,11 +220,15 @@ export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Prop
             <button
               className="mb-btn-primary"
               style={{ width: '100%' }}
-              disabled={busy}
-              title={`Cap → ${startCapValue}: satellites follow within ~2 min`}
-              onClick={() => void write(startCapValue)}
+              disabled={busy || startCapValue === null}
+              title={
+                startCapValue === null
+                  ? 'Audit trail truncated before any non-zero cap — type a cap below.'
+                  : `Cap → ${startCapValue}: satellites follow within ~2 min`
+              }
+              onClick={() => startCapValue !== null && void write('start', startCapValue)}
             >
-              {busy ? 'Starting…' : `Start → ${startCapValue}`}
+              {busyAction === 'start' ? 'Starting…' : startCapValue === null ? 'Start' : `Start → ${startCapValue}`}
             </button>
           ) : (
             <button
@@ -169,9 +236,9 @@ export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Prop
               style={{ width: '100%' }}
               disabled={busy}
               title="Cap → 0: the fleet drains, in-flight tickets finish"
-              onClick={() => void write(0)}
+              onClick={() => void write('stop', 0)}
             >
-              {busy ? 'Stopping…' : 'Stop'}
+              {busyAction === 'stop' ? 'Stopping…' : 'Stop'}
             </button>
           )}
         </div>
@@ -190,9 +257,9 @@ export function MobileFleetView({ mapId, map, nodes, versions, onChanged }: Prop
             className="mb-btn-secondary"
             style={{ flex: 1 }}
             disabled={!capDirty || busy}
-            onClick={() => void write(capNumber)}
+            onClick={() => void write('apply', capNumber)}
           >
-            {busy ? 'Saving…' : 'Apply'}
+            {busyAction === 'apply' ? 'Saving…' : 'Apply'}
           </button>
         </div>
         {!capValid && <div style={{ fontSize: 12, color: '#b91c1c', marginTop: 4 }}>whole number ≥ 0</div>}

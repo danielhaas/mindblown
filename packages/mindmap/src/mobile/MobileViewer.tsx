@@ -276,19 +276,22 @@ export function MobileViewer({ map }: Props) {
             <MobileFleetView
               mapId={map.id}
               map={detail.map}
-              nodes={nodes}
               versions={versions}
               onChanged={silentReload}
             />
           )}
 
-          <button
-            className="mb-fab"
-            aria-label="Add node"
-            onClick={() => setAdding(true)}
-          >
-            +
-          </button>
+          {/* "Add node" isn't the Fleet tab's job, and it floats over the
+              Apply row there. */}
+          {view !== 'fleet' && (
+            <button
+              className="mb-fab"
+              aria-label="Add node"
+              onClick={() => setAdding(true)}
+            >
+              +
+            </button>
+          )}
         </>
       )}
 

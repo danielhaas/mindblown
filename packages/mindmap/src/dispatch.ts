@@ -361,6 +361,15 @@ export function lastNonZeroCap(events: ChangeEvent[]): number | null {
 }
 
 /**
+ * How many `map.field_changed` events the Dispatch/Fleet cards fetch for
+ * the audit trail — desktop and mobile MUST request the same window, or
+ * `startCap` can read a different "last non-zero cap" on each surface for
+ * the same map (desktop "Start → 6", phone "Start → 12" was exactly this
+ * bug: 100 vs. 40 before this constant existed).
+ */
+export const AUDIT_LIMIT = 100;
+
+/**
  * Fallback cap for the one-click Start button when the audit trail has
  * never seen a non-zero cap on this map (a fresh map, or one that has
  * always been on hold) — the orchestrator's own fleet-wide ceiling
@@ -370,11 +379,28 @@ export const DEFAULT_START_CAP = 12;
 
 /**
  * The cap the one-click Start button writes: the audit's last non-zero
- * cap when there is one, {@link DEFAULT_START_CAP} otherwise. Never null —
- * unlike `lastNonZeroCap`, a Start button always needs a number to write.
+ * cap when there is one. Otherwise {@link DEFAULT_START_CAP} — but ONLY
+ * when the fetched window actually covers the whole audit
+ * (`events.length < limit`); a full window that never saw a non-zero cap
+ * really does mean "always on hold", but a window that came back FULL
+ * (`events.length >= limit`) means the audit was truncated and older
+ * events — possibly the one non-zero cap that matters — were never
+ * fetched. Same "never invents a number" contract `lastNonZeroCap`
+ * documents, extended to the truncated case: silently writing 12 (maybe
+ * double the fleet's usual cap) onto shared CI capacity because the
+ * fetch window happened to be full of gate/policy writes is worse than
+ * asking the operator to type one. Null in that case — the caller
+ * disables Start and asks for a number instead of guessing.
  */
-export function startCap(events: ChangeEvent[], fallback = DEFAULT_START_CAP): number {
-  return lastNonZeroCap(events) ?? fallback;
+export function startCap(
+  events: ChangeEvent[],
+  opts: { limit?: number; fallback?: number } = {},
+): number | null {
+  const nonZero = lastNonZeroCap(events);
+  if (nonZero !== null) return nonZero;
+  const limit = opts.limit ?? AUDIT_LIMIT;
+  if (events.length >= limit) return null; // truncated, no non-zero cap seen
+  return opts.fallback ?? DEFAULT_START_CAP;
 }
 
 /** Newest knob write overall — the Fleet card's "last write" fact line. */

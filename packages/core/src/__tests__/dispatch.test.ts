@@ -217,6 +217,31 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.needsBrief).toBe(1);
     expect(s.pullable).toBe(1);
   });
+
+  it('an ?omit=description,externalLinks payload is UNSAFE input for hasBrief/dispatchQueueSnapshot', () => {
+    // Mirrors the server's omit handling verbatim (packages/server/src/
+    // routes/maps.ts GET /api/maps/:id): `delete node[f]` per omitted
+    // field — the fields are ABSENT, not null/undefined defaults.
+    const stripped = n({ id: 'stripped', status: 'todo' }) as unknown as Record<string, unknown>;
+    delete stripped.description;
+    delete stripped.externalLinks;
+
+    expect(() => hasBrief(stripped as unknown as Node)).toThrow(TypeError);
+    expect(() =>
+      dispatchQueueSnapshot([root, stripped as unknown as Node], { workflow: WORKFLOW, cap: 6, gate: [] }),
+    ).toThrow(TypeError);
+
+    // This is the documented contract, not a bug to silence: a caller
+    // that null-guards `externalLinks ?? []` instead of fetching an
+    // un-stripped payload makes every gated ticket read as brief-less —
+    // the queue then reports "Empty" forever while the server keeps
+    // granting tickets, a control surface that lies about what it
+    // controls (found in PR #356 review, mobile Fleet tab). Any consumer
+    // of an omit-stripped map (e.g. `MobileFleetView.tsx` in
+    // `@mindblown/mindmap`) MUST fetch its own un-stripped nodes before
+    // calling `dispatchQueueSnapshot` — this test is the tripwire for the
+    // next such consumer.
+  });
 });
 
 describe('planUnblock', () => {

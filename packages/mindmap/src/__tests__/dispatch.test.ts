@@ -185,7 +185,7 @@ describe('audit trail', () => {
     expect(lastNonZeroCap([])).toBeNull();
   });
 
-  it('startCap falls back to DEFAULT_START_CAP (12) with no audit history, else the last non-zero cap', () => {
+  it('startCap falls back to DEFAULT_START_CAP (12) with a COMPLETE, capless audit, else the last non-zero cap', () => {
     expect(DEFAULT_START_CAP).toBe(12);
     expect(startCap([])).toBe(12);
     expect(startCap(events)).toBe(6); // this fixture's last non-zero cap, per lastNonZeroCap above
@@ -194,6 +194,32 @@ describe('audit trail', () => {
       ev({ oldValue: 0, newValue: 9, createdAt: '2026-08-30T09:00:00Z' }),
     ];
     expect(startCap(holdThenNine)).toBe(9);
+  });
+
+  it('startCap returns null on a TRUNCATED window with no non-zero cap seen — never invents a number', () => {
+    // A fetch window that came back exactly at `limit`: from the caller's
+    // side that means "there may be older events past the edge" — an
+    // older non-zero cap could be sitting just outside it, so falling
+    // back to 12 here would be a guess a one-click Start button writes
+    // onto shared CI capacity. None of these three touch maxActiveClaims
+    // with a non-zero value, so lastNonZeroCap alone would already say
+    // null; the truncation check is what turns that into "type one"
+    // instead of "assume 12".
+    const limit = 3;
+    const truncatedNoHit = [
+      ev({ id: 't1', fieldName: 'dispatchPolicy', oldValue: [], newValue: ['bugs'], createdAt: '2026-09-01T09:00:00Z' }),
+      ev({ id: 't2', oldValue: 0, newValue: 0, createdAt: '2026-08-31T09:00:00Z' }),
+      ev({ id: 't3', fieldName: 'dispatchGate', oldValue: [], newValue: ['type:bug'], createdAt: '2026-08-30T09:00:00Z' }),
+    ];
+    expect(truncatedNoHit).toHaveLength(limit);
+    expect(startCap(truncatedNoHit, { limit })).toBeNull();
+
+    // One event short of the limit ⇒ the window was NOT truncated ⇒ the
+    // fallback still applies.
+    expect(startCap(truncatedNoHit.slice(0, limit - 1), { limit })).toBe(12);
+
+    // A custom fallback is honoured on a genuinely complete, capless audit.
+    expect(startCap([], { limit, fallback: 5 })).toBe(5);
   });
 });
 

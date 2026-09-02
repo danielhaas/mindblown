@@ -161,6 +161,10 @@ body.mobile {
   font-size: 15px;
 }
 
+.mb-btn-secondary:disabled {
+  opacity: 0.5;
+}
+
 .mb-link {
   background: none;
   border: none;
