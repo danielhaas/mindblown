@@ -18,6 +18,8 @@ import {
   formatKnobValue,
   lastKnobWrites,
   lastNonZeroCap,
+  startCap,
+  DEFAULT_START_CAP,
   claimRows,
   linkifyRefs,
 } from '../dispatch.js';
@@ -181,6 +183,17 @@ describe('audit trail', () => {
     expect(lastNonZeroCap(events)).toBe(6);
     expect(lastNonZeroCap([ev({ oldValue: 0, newValue: 0 })])).toBeNull();
     expect(lastNonZeroCap([])).toBeNull();
+  });
+
+  it('startCap falls back to DEFAULT_START_CAP (12) with no audit history, else the last non-zero cap', () => {
+    expect(DEFAULT_START_CAP).toBe(12);
+    expect(startCap([])).toBe(12);
+    expect(startCap(events)).toBe(6); // this fixture's last non-zero cap, per lastNonZeroCap above
+    const holdThenNine = [
+      ev({ oldValue: 9, newValue: 0, createdAt: '2026-09-01T09:00:00Z' }),
+      ev({ oldValue: 0, newValue: 9, createdAt: '2026-08-30T09:00:00Z' }),
+    ];
+    expect(startCap(holdThenNine)).toBe(9);
   });
 });
 

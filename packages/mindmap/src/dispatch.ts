@@ -8,7 +8,7 @@
  * come from @mindblown/core `dispatchQueueSnapshot`, the same predicate the
  * server's get_next_ticket applies.
  */
-import type { Node, Version } from '@mindblown/core';
+import type { Node, Version, DispatchState } from '@mindblown/core';
 import {
   parseGateEntry,
   parseMixBugs,
@@ -21,6 +21,19 @@ import {
   MIX_BUGS_REGEX,
 } from '@mindblown/core';
 import type { ChangeEvent, MapMember } from './api.js';
+
+/**
+ * Word/color/hint for each {@link DispatchState} — shared by the desktop
+ * Dispatch card (`DispatchCards.tsx`) and the mobile Fleet tab
+ * (`mobile/MobileFleetView.tsx`) so the vocabulary never drifts between
+ * the two surfaces the same operator switches between.
+ */
+export const STATE_WORD: Record<DispatchState, { label: string; color: string; bg: string; hint: string }> = {
+  hold: { label: 'Hold', color: '#475569', bg: '#e2e8f0', hint: 'Cap is 0 — no ticket is handed out.' },
+  full: { label: 'Full', color: '#9a3412', bg: '#ffedd5', hint: 'Every cap slot holds a claim. Check for stale claims before raising the cap.' },
+  empty: { label: 'Empty', color: '#991b1b', bg: '#fee2e2', hint: 'Cap is open but nothing grantable is inside the gate — phase-change signal, a fail-closed gate, or briefs missing.' },
+  running: { label: 'Running', color: '#166534', bg: '#dcfce7', hint: 'Tickets are being handed out inside the gate.' },
+};
 
 export const KNOB_FIELDS = ['maxActiveClaims', 'dispatchGate', 'dispatchPolicy'] as const;
 export type KnobField = (typeof KNOB_FIELDS)[number];
@@ -345,6 +358,23 @@ export function lastNonZeroCap(events: ChangeEvent[]): number | null {
     }
   }
   return null;
+}
+
+/**
+ * Fallback cap for the one-click Start button when the audit trail has
+ * never seen a non-zero cap on this map (a fresh map, or one that has
+ * always been on hold) — the orchestrator's own fleet-wide ceiling
+ * (`claude-fleet` Leidang runbook, "Starting and stopping the fleet").
+ */
+export const DEFAULT_START_CAP = 12;
+
+/**
+ * The cap the one-click Start button writes: the audit's last non-zero
+ * cap when there is one, {@link DEFAULT_START_CAP} otherwise. Never null —
+ * unlike `lastNonZeroCap`, a Start button always needs a number to write.
+ */
+export function startCap(events: ChangeEvent[], fallback = DEFAULT_START_CAP): number {
+  return lastNonZeroCap(events) ?? fallback;
 }
 
 /** Newest knob write overall — the Fleet card's "last write" fact line. */

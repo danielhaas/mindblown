@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { Version } from '@mindblown/core';
 import { dispatchQueueSnapshot, DISPATCH_POLICY_KEYS } from '@mindblown/core';
-import type { DispatchQueueSnapshot, DispatchState } from '@mindblown/core';
+import type { DispatchQueueSnapshot } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { ChangeEvent } from './api.js';
@@ -30,6 +30,7 @@ import { FleetTelemetry } from './FleetTelemetry.js';
 import {
   KNOB_LABEL,
   STALE_CLAIM_HOURS,
+  STATE_WORD,
   GATE_BUGS_ONLY,
   PRESETS,
   applyPreset,
@@ -40,7 +41,6 @@ import {
   gateChips,
   isKnownPolicyKey,
   lastKnobWrites,
-  lastNonZeroCap,
   mixBugsRatio,
   movePolicyKey,
   newestKnobWrite,
@@ -48,6 +48,7 @@ import {
   policyKeyLabel,
   setMixBugs,
   shortSession,
+  startCap,
   toggleGateEntry,
   togglePolicyKey,
   versionGateEntry,
@@ -62,13 +63,6 @@ const CLAIM_PREVIEW = 8;
 const DEFAULT_MIX_RATIO = 40;
 /** Separator for value signatures — cannot occur in a version id or policy key. */
 const SIG_SEP = '|';
-
-const STATE_WORD: Record<DispatchState, { label: string; color: string; bg: string; hint: string }> = {
-  hold: { label: 'Hold', color: '#475569', bg: '#e2e8f0', hint: 'Cap is 0 — no ticket is handed out.' },
-  full: { label: 'Full', color: '#9a3412', bg: '#ffedd5', hint: 'Every cap slot holds a claim. Check for stale claims before raising the cap.' },
-  empty: { label: 'Empty', color: '#991b1b', bg: '#fee2e2', hint: 'Cap is open but nothing grantable is inside the gate — phase-change signal, a fail-closed gate, or briefs missing.' },
-  running: { label: 'Running', color: '#166534', bg: '#dcfce7', hint: 'Tickets are being handed out inside the gate.' },
-};
 
 function sameList(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((x, i) => x === b[i]);
@@ -190,7 +184,10 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
   }, [nodes, workflow, cap, gate, gateDraft]);
 
   const versionOptions = useMemo(() => versionGateOptions(versions), [versions]);
-  const suggestedCap = useMemo(() => lastNonZeroCap(events), [events]);
+  // Never null (unlike the raw audit lookup) — the Start button always has
+  // a number to write: the audit's last non-zero cap, or the orchestrator's
+  // fleet-wide ceiling when the audit has never seen one.
+  const startCapValue = useMemo(() => startCap(events), [events]);
 
   if (!currentMap || !snapshot) return null;
 
@@ -325,18 +322,27 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
             style={{ ...input, width: 64 }}
             aria-label="Claim cap"
           />
+          {/* One click, writes immediately (no draft, no Apply) — the
+              friction the two-step Lift-hold/Hold draft used to add. The
+              number input + Apply below stay for fine-tuning any other
+              value. */}
           {cap === 0 ? (
             <button
-              style={btn}
-              disabled={busyAny || suggestedCap === null}
-              title={suggestedCap === null ? 'No earlier non-zero cap in the audit — type one.' : `Back to the last cap the audit saw (${suggestedCap})`}
-              onClick={() => suggestedCap !== null && setCapDraft(String(suggestedCap))}
+              style={{ ...btn, ...btnPrimary }}
+              disabled={busyAny}
+              title={`Cap → ${startCapValue}: satellites follow within ~2 min`}
+              onClick={() => save('maxActiveClaims', { maxActiveClaims: startCapValue })}
             >
-              Lift hold{suggestedCap !== null ? ` → ${suggestedCap}` : ''}
+              {busy === 'maxActiveClaims' ? 'Starting…' : `Start → ${startCapValue}`}
             </button>
           ) : (
-            <button style={btn} disabled={busyAny} onClick={() => setCapDraft('0')} title="Set the cap to 0 — the fleet drains and parks.">
-              Hold
+            <button
+              style={btn}
+              disabled={busyAny}
+              title="Cap → 0: the fleet drains, in-flight tickets finish"
+              onClick={() => save('maxActiveClaims', { maxActiveClaims: 0 })}
+            >
+              {busy === 'maxActiveClaims' ? 'Stopping…' : 'Stop'}
             </button>
           )}
           <ApplyButton dirty={capDirty} busy={busy === 'maxActiveClaims'} locked={busyAny} onClick={() => save('maxActiveClaims', { maxActiveClaims: capNumber })} />
