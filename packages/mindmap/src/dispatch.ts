@@ -111,28 +111,44 @@ export function versionGateOptions(versions: Version[]): Version[] {
 
 const POLICY_KEY_SET = new Set<string>(DISPATCH_POLICY_KEYS);
 
-/** Drop unknown keys and duplicates — the server would reject them. The
- *  one parametric entry (`mix:bugs=<N>`, valid shape only) survives, at
- *  most once: only the FIRST mix entry counts anywhere, so duplicates are
- *  dropped rather than sent for the tool layer to reject. */
+/**
+ * Dedupe the draft WITHOUT dropping vocabulary this build doesn't know.
+ * Exact duplicates collapse onto the first occurrence, and only the FIRST
+ * valid mix-shaped (`mix:bugs=…`) entry survives (only the first counts
+ * anywhere, and the control must never duplicate it). Everything else —
+ * including keys unknown to this build — is KEPT in place: a newer server
+ * may understand them (deploy skew), and a REPLACE-mode Apply that
+ * silently dropped them would rewrite the map's policy behind the PM's
+ * back. The server treats what it cannot read as inert; the card shows a
+ * warning chip instead (see `isKnownPolicyKey`).
+ */
 export function normalizePolicy(policy: string[]): string[] {
   const out: string[] = [];
   let mixSeen = false;
   for (const k of policy) {
-    if (POLICY_KEY_SET.has(k) && !out.includes(k)) {
+    if (MIX_BUGS_REGEX.test(k)) {
+      if (!mixSeen) {
+        out.push(k);
+        mixSeen = true;
+      }
+    } else if (!out.includes(k)) {
       out.push(k);
-    } else if (MIX_BUGS_REGEX.test(k) && !mixSeen) {
-      out.push(k);
-      mixSeen = true;
     }
   }
   return out;
 }
 
+/** Whether THIS build understands the key (fixed key or valid mix entry).
+ *  Unknown ≠ dropped: unknown keys are kept and saved, only flagged. */
+export function isKnownPolicyKey(key: string): boolean {
+  return POLICY_KEY_SET.has(key) || MIX_BUGS_REGEX.test(key);
+}
+
 // ── Mix control (`mix:bugs=<N>`) ───────────────────────────────────
 
-/** The policy entry for a given bug share. */
-export function mixBugsEntry(ratio: number): string {
+/** The policy entry for a given bug share. Internal on purpose —
+ *  `setMixBugs` is the one write surface for the entry. */
+function mixBugsEntry(ratio: number): string {
   return `${MIX_BUGS_PREFIX}${ratio}`;
 }
 
@@ -142,16 +158,33 @@ export function mixBugsRatio(policy: string[]): number | null {
 }
 
 /**
- * Write (or remove, with null) the mix entry. Replaces any existing
- * mix-prefixed entry — valid or not — so the control never duplicates;
- * the ratio is clamped to an integer 0–100 so the draft can never hold a
- * shape the server would treat as unknown.
+ * Write (or remove, with null) the one mix entry IN PLACE: an existing
+ * entry keeps its position, so a slider drag doesn't hop the chip to the
+ * end of the list (and the audit doesn't log a meaningless reorder) —
+ * only a first enable appends. Any further mix-prefixed entries
+ * (duplicates or invalid shapes) are dropped in the same pass; the ratio
+ * is clamped to an integer 0–100 so the draft can never hold a shape the
+ * server would treat as unknown.
  */
 export function setMixBugs(policy: string[], ratio: number | null): string[] {
-  const stripped = policy.filter((k) => !k.startsWith(MIX_BUGS_PREFIX));
-  if (ratio === null || !Number.isFinite(ratio)) return stripped;
-  const r = Math.min(100, Math.max(0, Math.round(ratio)));
-  return [...stripped, mixBugsEntry(r)];
+  if (ratio === null || !Number.isFinite(ratio)) {
+    return policy.filter((k) => !k.startsWith(MIX_BUGS_PREFIX));
+  }
+  const entry = mixBugsEntry(Math.min(100, Math.max(0, Math.round(ratio))));
+  let placed = false;
+  const out: string[] = [];
+  for (const k of policy) {
+    if (k.startsWith(MIX_BUGS_PREFIX)) {
+      if (!placed) {
+        out.push(entry);
+        placed = true;
+      }
+    } else {
+      out.push(k);
+    }
+  }
+  if (!placed) out.push(entry);
+  return out;
 }
 
 /** What the queue actually sorts by: an empty policy means the default. */

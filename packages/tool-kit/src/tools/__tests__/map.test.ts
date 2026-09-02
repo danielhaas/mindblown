@@ -124,6 +124,16 @@ describe('update_map tool — dispatchPolicy mix:bugs entry', () => {
     expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['mix:bugs=40', 'mix:bugs=60'] })).toThrow();
     expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['mix:bugs=40', 'priority', 'mix:bugs=40'] })).toThrow();
   });
+
+  it('an off-vocabulary key gets one message naming BOTH alternatives', () => {
+    // A union of enum + regex used to surface only the regex branch's
+    // message for ["nonsense"], reading as if mix:bugs were the only shape.
+    // (ZodError.message JSON-escapes the inner quotes, so match the
+    // unquoted fragments of the one refine message.)
+    const off = () => schema.parse({ mapId: 'm1', dispatchPolicy: ['nonsense'] });
+    expect(off).toThrow(/policy entries must be/);
+    expect(off).toThrow(/mix:bugs=<N>/);
+  });
 });
 
 // Phase column — update_map is the write surface for the map's PhaseDef

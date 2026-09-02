@@ -609,7 +609,13 @@ export interface MindMap {
    * interleaves bug and non-bug tickets at N:(100−N) — the remaining
    * keys sort within each class, N=0 is inert (exactly the ordering
    * without the entry), N=100 hands out all bugs first, and a drained
-   * class is back-filled gaplessly by the other. No weights, no
+   * class is back-filled gaplessly by the other. The weave PHASE is
+   * persisted server-side per map (maps.dispatch_mix_acc, advanced only
+   * on actual grants) so consecutive single-ticket pulls walk the
+   * pattern instead of restarting it — internal queue state, not
+   * configurable and deliberately absent from this type. Asymmetry by
+   * design: the tool schema rejects a second mix entry, the server
+   * tolerates one (the first valid entry wins). No weights, no
    * expressions beyond that — an ordered list is still the whole policy
    * language.
    */

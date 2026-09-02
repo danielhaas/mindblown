@@ -98,6 +98,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
     dispatchGate: (get('dispatchGate', 'dispatch_gate') as string[]) ?? [],
     dispatchPolicy: (get('dispatchPolicy', 'dispatch_policy') as string[]) ?? [],
+    // maps.dispatch_mix_acc (persisted mix:bugs weave phase) is DELIBERATELY
+    // not mapped: internal pull-queue state owned by services/orchestration,
+    // not part of the core MindMap surface (REST/MCP/UI never see it).
     profilePolicy: (get('profilePolicy', 'profile_policy') as MindMap['profilePolicy']) ?? null,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()

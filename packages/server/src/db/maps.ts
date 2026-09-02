@@ -140,7 +140,9 @@ export interface UpdateMapInput {
   /** Pull-queue AND-filter: `version:<id>` / `type:bug`. Empty = open. */
   dispatchGate?: string[];
   /** Pull-queue ranking keys (bugs|priority|size|age, plus at most one
-   *  parametric `mix:bugs=<0-100>` weave entry). Empty = default. */
+   *  parametric `mix:bugs=<0-100>` weave entry). Empty = default. The
+   *  weave PHASE (maps.dispatch_mix_acc) is deliberately NOT updatable
+   *  here — services/orchestration owns it, inside the grant tx. */
   dispatchPolicy?: string[];
   /** Profile routing table (#262); null clears = profile-blind queue. */
   profilePolicy?: ProfilePolicy | null;

@@ -17,6 +17,7 @@ import type { Node as CoreNode, StatusDef } from '@mindblown/core';
 vi.mock('../../db/connection.js', () => ({ db: {} }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
+import { parseMixBugs } from '@mindblown/core';
 import {
   selectPullCandidates,
   matchesDispatchGate,
@@ -24,6 +25,8 @@ import {
   hasBrief,
   isProfileEligible,
   resolveProfile,
+  advanceMixAcc,
+  clampMixAcc,
   DEFAULT_DISPATCH_POLICY,
 } from '../orchestration.js';
 
@@ -97,6 +100,7 @@ function select(
     profile: string;
     effortUnit: import('@mindblown/core').EffortUnit;
     hoursPerDay: number;
+    mixAcc: number;
   }> = {},
 ) {
   return selectPullCandidates([root, ...nodes], {
@@ -108,6 +112,7 @@ function select(
     profile: opts.profile,
     effortUnit: opts.effortUnit,
     hoursPerDay: opts.hoursPerDay,
+    mixAcc: opts.mixAcc,
   });
 }
 
@@ -350,6 +355,116 @@ describe('dispatchPolicy — mix:bugs weave', () => {
   it('flows through selectPullCandidates end to end', () => {
     const d = select([...mixed], { policy: ['age', 'mix:bugs=40'] });
     expect(ids(d.ranked)).toEqual(['f1', 'f2', 'b1', 'f3', 'b2', 'f4', 'f5', 'b3', 'f6', 'b4']);
+  });
+});
+
+// ── Persisted weave phase: repeated single-ticket pulls ────────────
+//
+// The BLOCKER the batch tests above cannot catch: getNextTicket consumes
+// only ranked[0] per pull, so the accumulator must persist between calls
+// (maps.dispatch_mix_acc). This loop reproduces the real pull path —
+// phase-aware sort → grant ranked[0] → advanceMixAcc from the winner's
+// ACTUAL class → winner leaves the pool — using the same two functions
+// getNextTicket wires to the DB.
+
+describe('mix:bugs weave phase across repeated pulls', () => {
+  const bug = (i: number) => makeNode({ id: `b${i}`, tags: ['bug'], createdAt: `2026-01-0${i}T00:00:00Z` });
+  const feat = (i: number) => makeNode({ id: `f${i}`, createdAt: `2026-02-0${i}T00:00:00Z` });
+  const isBug = (n: CoreNode) => n.tags.includes('bug');
+
+  /** Simulate N single-ticket pulls the way getNextTicket runs them. */
+  function pullAll(pool: CoreNode[], policy: string[], startAcc = 0): { granted: string[]; acc: number } {
+    let acc = startAcc;
+    let rest = [...pool];
+    const granted: string[] = [];
+    const mix = parseMixBugs(policy);
+    for (let k = 0; k < 100 && rest.length > 0; k++) {
+      const d = select(rest, { policy, cap: 100, mixAcc: acc });
+      if (d.ranked.length === 0) break;
+      const winner = d.ranked[0];
+      granted.push(winner.id);
+      if (mix !== null && mix.ratio > 0) acc = advanceMixAcc(acc, mix.ratio, isBug(winner));
+      rest = rest.filter((n) => n.id !== winner.id);
+    }
+    return { granted, acc };
+  }
+
+  it('N=40: ten consecutive pulls walk the 4:6 pattern instead of draining features first', () => {
+    const pool = [feat(3), bug(2), feat(1), bug(4), feat(6), bug(1), feat(5), bug(3), feat(2), feat(4)];
+    const { granted } = pullAll(pool, ['age', 'mix:bugs=40']);
+    // Identical to the batch weave — the persisted phase is what makes
+    // single-ticket pulls equivalent to consuming the batch in order.
+    expect(granted).toEqual(['f1', 'f2', 'b1', 'f3', 'b2', 'f4', 'f5', 'b3', 'f6', 'b4']);
+  });
+
+  it('N=50 alternates, first grant a non-bug (acc starts 0 — pinned as correct)', () => {
+    const pool = [bug(1), bug(2), bug(3), feat(1), feat(2), feat(3)];
+    expect(pullAll(pool, ['age', 'mix:bugs=50']).granted).toEqual(['f1', 'b1', 'f2', 'b2', 'f3', 'b3']);
+  });
+
+  it('N=99: the one-slot-late start is visible, then bugs run', () => {
+    const pool = [bug(1), bug(2), bug(3), feat(1), feat(2), feat(3)];
+    const { granted, acc } = pullAll(pool, ['age', 'mix:bugs=99']);
+    // acc: 0+99=99 → f1 · 198 → b1(98) · 197 → b2(97) · 196 → b3(96)
+    // · bug owed, none left → f2, clamp 99 · same → f3, stays 99.
+    expect(granted).toEqual(['f1', 'b1', 'b2', 'b3', 'f2', 'f3']);
+    expect(acc).toBe(99);
+  });
+
+  it('N=1: features first, then bugs back-fill with the credit clamped to 0', () => {
+    const pool = [bug(1), bug(2), feat(1), feat(2), feat(3)];
+    const { granted, acc } = pullAll(pool, ['age', 'mix:bugs=1']);
+    expect(granted).toEqual(['f1', 'f2', 'f3', 'b1', 'b2']);
+    expect(acc).toBe(0);
+  });
+
+  it('a single candidate is granted whatever class the pattern owes', () => {
+    const { granted, acc } = pullAll([bug(1)], ['age', 'mix:bugs=40']);
+    expect(granted).toEqual(['b1']);
+    expect(acc).toBe(0); // non-bug was owed; the credit clamps to 0
+  });
+
+  it('an all-bugs pool drains gaplessly at any N, phase clamped', () => {
+    const pool = [bug(1), bug(2), bug(3)];
+    const { granted, acc } = pullAll(pool, ['age', 'mix:bugs=40']);
+    expect(granted).toEqual(['b1', 'b2', 'b3']);
+    expect(acc).toBe(0);
+  });
+
+  it('sortByDispatchPolicy honours an injected phase: at acc=99 the first slot is a bug', () => {
+    const pool = [feat(1), feat(2), bug(1), bug(2)];
+    // acc walk from 99 at N=40: 139→b1(39) · 79→f1 · 119→b2(19) · f2.
+    expect(sortByDispatchPolicy(pool, ['age', 'mix:bugs=40'], 99).map((n) => n.id)).toEqual(['b1', 'f1', 'b2', 'f2']);
+    // Same input at phase 0: non-bugs lead.
+    expect(sortByDispatchPolicy(pool, ['age', 'mix:bugs=40'], 0)[0].id).toBe('f1');
+  });
+
+  it('the weave runs AFTER the profilePolicy eligibility filter', () => {
+    // P0 → heavy-class → invisible to a standard puller; it must not
+    // occupy a pattern slot, so ranked[0] is the small bug, not empty.
+    const heavyBug = makeNode({ id: 'heavy-bug', tags: ['bug'], priority: 'P0', effortEstimate: 0.1, createdAt: '2026-01-01T00:00:00Z' });
+    const smallBug = makeNode({ id: 'small-bug', tags: ['bug'], priority: 'P2', effortEstimate: 0.1, createdAt: '2026-01-02T00:00:00Z' });
+    const feature = makeNode({ id: 'feature', priority: 'P2', effortEstimate: 0.1, createdAt: '2026-02-01T00:00:00Z' });
+    const d = select([heavyBug, smallBug, feature], {
+      policy: ['age', 'mix:bugs=100'],
+      profilePolicy: {},
+      profile: 'standard',
+    });
+    expect(d.ranked.map((n) => n.id)).toEqual(['small-bug', 'feature']);
+  });
+
+  it('advanceMixAcc and clampMixAcc expose the exact grant-path arithmetic', () => {
+    // Regular walk.
+    expect(advanceMixAcc(0, 40, false)).toBe(40);
+    expect(advanceMixAcc(80, 40, true)).toBe(20);
+    expect(advanceMixAcc(99, 1, true)).toBe(0);
+    // Bug owed, non-bug granted → clamp down to 99 (next bug due at once).
+    expect(advanceMixAcc(80, 40, false)).toBe(99);
+    // Non-bug owed, bug granted → clamp up to 0 (next non-bug due at once).
+    expect(advanceMixAcc(10, 40, true)).toBe(0);
+    expect(clampMixAcc(150)).toBe(99);
+    expect(clampMixAcc(-5)).toBe(0);
+    expect(clampMixAcc(Number.NaN)).toBe(0);
   });
 });
 

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
+import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
 
@@ -108,20 +108,27 @@ export const updateMapTool = defineTool({
       .describe('Pull-queue AND-filter (REPLACE mode — the full new array). Entries: "version:<versionId>" (effective version, ancestor-inherited) and "type:bug" (node tagged "bug" or "type:bug", case-insensitive — GitHub-mirrored labels arrive as "type:bug"). Empty array = no fence. Tickets outside the gate are invisible to get_next_ticket.'),
     dispatchPolicy: z
       .array(
-        z.union([
-          z.enum(['bugs', 'priority', 'size', 'age']),
-          z
-            .string()
-            .regex(MIX_BUGS_REGEX, 'parametric policy entry must be "mix:bugs=<N>" with integer N 0-100'),
-        ]),
+        // One refine, one message naming BOTH alternatives — a union of
+        // enum + regex reports only the regex branch's error for an
+        // off-vocabulary key like "chaos", which reads as if mix:bugs
+        // were the only accepted shape.
+        z.string().refine(
+          (k) => (DISPATCH_POLICY_KEYS as readonly string[]).includes(k) || MIX_BUGS_REGEX.test(k),
+          { message: 'policy entries must be "bugs", "priority", "size", "age", or "mix:bugs=<N>" with integer N 0-100' },
+        ),
       )
       .superRefine((arr, ctx) => {
-        if (arr.filter((k) => k.startsWith(MIX_BUGS_PREFIX)).length > 1) {
-          ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'at most one "mix:bugs=<N>" entry is allowed' });
+        const mixAt = arr.map((k, i) => (k.startsWith(MIX_BUGS_PREFIX) ? i : -1)).filter((i) => i >= 0);
+        if (mixAt.length > 1) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [mixAt[1]],
+            message: 'at most one "mix:bugs=<N>" entry is allowed',
+          });
         }
       })
       .optional()
-      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other.'),
+      .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
     profilePolicy: z
       .object({
         heavyMinHours: z.number().positive().optional().describe("Heavy-class floor in hours (estimate at/above = heavy pullers only). Omitted = one day (the map's hoursPerDay)."),

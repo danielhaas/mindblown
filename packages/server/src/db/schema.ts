@@ -153,6 +153,15 @@ export const maps = pgTable('maps', {
   // NULL = profile-blind queue (the pre-#262 behavior) — deliberately
   // nullable with no default object so existing maps stay untouched.
   profilePolicy: jsonb('profile_policy'), // ProfilePolicy | null
+  // Persisted Bresenham weave phase (0–99) for the dispatchPolicy
+  // `mix:bugs=<N>` entry. get_next_ticket hands out ONE ticket per pull,
+  // so the phase must survive across pulls — a per-call accumulator would
+  // restart every pull at slot 1, which is a non-bug for every N < 100
+  // (spec inversion). Advanced only on an actual grant, inside the grant
+  // transaction. Internal queue state, NOT a knob: not exposed via
+  // REST/MCP/UI, not audited, not reset on policy changes (0–99 is
+  // ratio-agnostic; a changed N converges on its own).
+  dispatchMixAcc: integer('dispatch_mix_acc').notNull().default(0),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────
