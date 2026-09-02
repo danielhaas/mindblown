@@ -39,6 +39,7 @@ import type { MapSummary } from './api.js';
 import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.js';
 import { DigestView } from './DigestView.js';
 import { CockpitView } from './CockpitView.js';
+import { FleetView } from './FleetView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -865,6 +866,9 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // the PM's Monday cockpit. Listed first so they lead when their role is on.
   { id: 'digest', label: 'Overview', enabled: true },
   { id: 'cockpit', label: 'Today', enabled: true },
+  // The Leidang operator surface (Dispatch + Fleet cards). Own tab so
+  // nobody has to know it hides inside Today (it used to, and nobody found it).
+  { id: 'fleet', label: 'Fleet', enabled: true },
   { id: 'mindmap', label: 'Mindmap', enabled: true },
   { id: 'kanban', label: 'Kanban', enabled: true },
   { id: 'gantt', label: 'Gantt', enabled: true },
@@ -2238,6 +2242,7 @@ export function App() {
         <div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
           {activeView === 'digest' && <DigestView />}
           {activeView === 'cockpit' && <CockpitView />}
+          {activeView === 'fleet' && <FleetView />}
           {activeView === 'mindmap' && <MindmapEditor />}
           {activeView === 'kanban' && <KanbanView />}
           {activeView === 'gantt' && <GanttView />}
