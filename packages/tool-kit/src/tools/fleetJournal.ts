@@ -71,7 +71,9 @@ export function renderFleetJournal(j: FleetJournal): string {
     const pr = d.pr ? `PR #${d.pr.number}` : 'no PR on record';
     const eff = d.actualEffort !== null ? `actual ${d.actualEffort}` : 'no actual';
     const issues = d.issues.length ? ` — ${d.issues.map((i) => i.externalId).join(', ')}` : '';
-    lines.push(`  ${dayOf(d.completedAt)} ${hhmm(d.completedAt)}  ${pr}: ${d.text} — by ${worker(d.deliveredBy)} · ${eff}${d.versionName ? ` · ${d.versionName}` : ''}${issues}`);
+    // No worker on record = closed by a person, or before the claim trail existed.
+    const by = d.deliveredBy ? ` — by ${worker(d.deliveredBy)}` : '';
+    lines.push(`  ${dayOf(d.completedAt)} ${hhmm(d.completedAt)}  ${pr}: ${d.text}${by} · ${eff}${d.versionName ? ` · ${d.versionName}` : ''}${issues}`);
   }
   const closed = j.delivered.flatMap((d) => d.issues.map((i) => i.externalId));
   if (closed.length > 0) {

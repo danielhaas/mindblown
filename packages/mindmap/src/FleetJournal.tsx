@@ -153,7 +153,8 @@ export function FleetJournalSection() {
                     )}{' '}
                     {nodeLink(d.nodeId, d.text)}
                     <span style={{ color: '#64748b' }}>
-                      {' '}— {workerLabel(d.deliveredBy)}
+                      {/* No worker on record = closed by a person, or before the claim trail existed. */}
+                      {d.deliveredBy ? ` — ${workerLabel(d.deliveredBy)}` : ''}
                       {d.actualEffort !== null ? ` · actual ${d.actualEffort}` : ''}
                       {d.versionName ? ` · ${d.versionName}` : ''}
                     </span>
