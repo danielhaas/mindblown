@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput } from '@mindblown/core';
 
 /**
@@ -775,7 +775,11 @@ export interface ChangeEvent {
     | 'node.moved'
     | 'node.field_changed'
     | 'version.field_changed'
-    | 'map.field_changed';
+    | 'map.field_changed'
+    // Claim trail (payloads: ClaimedEvent / ReleasedEvent / PrMergedEvent in @mindblown/core)
+    | 'node.claimed'
+    | 'node.released'
+    | 'node.pr_merged';
   fieldName: string | null;
   oldValue: unknown;
   newValue: unknown;
@@ -784,11 +788,20 @@ export interface ChangeEvent {
 
 export function getChangeHistory(
   mapId: string,
-  opts: { nodeId?: string; eventType?: string; fieldName?: string; sinceDays?: number; limit?: number } = {},
+  opts: {
+    nodeId?: string;
+    eventType?: string;
+    /** Several types in one query; the route takes them comma-separated in `eventType`. */
+    eventTypes?: readonly string[];
+    fieldName?: string;
+    sinceDays?: number;
+    limit?: number;
+  } = {},
 ): Promise<{ events: ChangeEvent[] }> {
   const params = new URLSearchParams();
   if (opts.nodeId) params.set('nodeId', opts.nodeId);
-  if (opts.eventType) params.set('eventType', opts.eventType);
+  if (opts.eventTypes && opts.eventTypes.length > 0) params.set('eventType', opts.eventTypes.join(','));
+  else if (opts.eventType) params.set('eventType', opts.eventType);
   if (opts.fieldName) params.set('fieldName', opts.fieldName);
   if (opts.sinceDays != null) params.set('sinceDays', String(opts.sinceDays));
   if (opts.limit != null) params.set('limit', String(opts.limit));
@@ -1340,16 +1353,30 @@ export function releaseNode(
   mapId: string,
   nodeId: string,
   sessionId: string,
+  reason?: string,
 ): Promise<ReleaseNodeResultApi> {
   return request<ReleaseNodeResultApi>(
     `/api/maps/${mapId}/nodes/${nodeId}/release`,
-    { method: 'POST', body: JSON.stringify({ sessionId }) },
+    { method: 'POST', body: JSON.stringify({ sessionId, ...(reason ? { reason } : {}) }) },
   );
 }
 
-/** What MindBlown last received from the Leidang fleet (fleet_status). */
-export function getFleetStatus(mapId: string): Promise<FleetStatusResult> {
-  return request<FleetStatusResult>(`/api/maps/${mapId}/fleet`);
+/** What MindBlown last received from the Leidang fleet (fleet_status); `since`/`limit` select a tick history window. */
+export function getFleetStatus(mapId: string, opts: { since?: string; limit?: number } = {}): Promise<FleetStatusResult> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetStatusResult>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** What the fleet did in a window (fleet_journal). */
+export function getFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<FleetJournalResult> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request<FleetJournalResult>(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 // ── Asks inbox (/leidang-asks) ─────────────────────────────────────

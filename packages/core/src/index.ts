@@ -134,8 +134,24 @@ export {
   summarizeFleet,
   silentSatellites,
   estimateServerNow,
+  TICK_WINDOW_DEFAULT_LIMIT,
+  TICK_HISTORY_DEFAULT_LIMIT,
+  TICK_WINDOW_MAX_LIMIT,
+  parseTickWindow,
+  severityRank,
+  summarizeTick,
 } from './fleet.js';
-export type { FleetWorkerStatus, FleetRollup, FleetTickPayload, HostFreshness, HostSummary, FleetSummary, SilentReason } from './fleet.js';
+export type {
+  FleetWorkerStatus,
+  FleetRollup,
+  FleetTickPayload,
+  HostFreshness,
+  HostSummary,
+  FleetSummary,
+  SilentReason,
+  TickWindow,
+  TickSummary,
+} from './fleet.js';
 
 // Asks inbox — the fleet's open human questions + the write plan of an answer
 export {
@@ -225,3 +241,49 @@ export type {
   ForecastConfidenceInput,
   ForecastConfidenceLevel,
 } from './velocity.js';
+
+// Fleet journal — what the fleet did in a window (ticks, claims, delivered, follow-ups, knob writes)
+export { buildFleetJournal, journalWindow, splitSession, JOURNAL_EVENT_TYPES } from './fleetJournal.js';
+export type {
+  FleetJournal,
+  JournalInput,
+  JournalEventRow,
+  JournalNodeRow,
+  JournalWindow,
+  JournalPreset,
+  JournalWorker,
+  JournalClaim,
+  JournalRelease,
+  JournalDelivered,
+  JournalCreated,
+  JournalBlocked,
+  JournalKnobWrite,
+  JournalTick,
+  JournalTotals,
+  JournalIssue,
+} from './fleetJournal.js';
+
+// Claim trail — change_events payloads for claim/release/delivery + the pure reading of them
+export {
+  CLAIM_EVENT_TYPES,
+  parseSession,
+  heldMinutes,
+  buildClaimedEvent,
+  buildReleasedEvent,
+  describeSession,
+  formatHeld,
+  describeClaimEvent,
+  claimTrail,
+  claimTrailSummary,
+} from './claimTrail.js';
+export type {
+  ClaimVia,
+  ReleaseReason,
+  ParsedSession,
+  ClaimedEvent,
+  ReleasedEvent,
+  PrMergedEvent,
+  ClaimEventType,
+  ChangeEventLike,
+  ClaimTrailEntry,
+} from './claimTrail.js';

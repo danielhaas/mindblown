@@ -12,6 +12,7 @@
 import { useMindmapStore } from './store.js';
 import { Shell, Muted } from './DigestView.js';
 import { LeidangCards } from './DispatchCards.js';
+import { FleetJournalSection } from './FleetJournal.js';
 
 export function FleetView() {
   const currentMap = useMindmapStore((s) => s.currentMap);
@@ -33,6 +34,12 @@ export function FleetView() {
             tab, or a stakeholder following a shared ?view=fleet link)
             observes — the lens is a filter, so this is UX, not security. */}
         <LeidangCards readOnly={viewRole !== 'pm' && viewRole !== 'all'} />
+      </div>
+      {/* The journal is a report over a window, full width under the live
+          cards: "what did the fleet do last night?" is read top to bottom,
+          not glanced at like the cap or the worker states. */}
+      <div style={{ marginTop: 16 }}>
+        <FleetJournalSection />
       </div>
     </Shell>
   );

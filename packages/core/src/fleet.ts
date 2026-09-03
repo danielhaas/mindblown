@@ -258,3 +258,108 @@ export function estimateServerNow(serverNowIso: string, fetchedAtMs: number, now
   if (Number.isNaN(serverNow)) return new Date(nowMs);
   return new Date(serverNow + Math.max(0, nowMs - fetchedAtMs));
 }
+
+// ── Tick history ──────────────────────────────────────────────────
+//
+// The Fleet card and `fleet_status` show only the latest tick; the history
+// answers "what happened last night" without a terminal. Both read the
+// same flattening (`summarizeTick`) and the same window rules
+// (`parseTickWindow`) so a limit clamped on one surface is clamped on all.
+
+/** Ticks a plain read returns (the Fleet card renders `ticks[0]`, the rest is context). */
+export const TICK_WINDOW_DEFAULT_LIMIT = 20;
+/** Ticks a `since` read returns by default — 7 days at the 30-min cadence is 336. */
+export const TICK_HISTORY_DEFAULT_LIMIT = 500;
+/**
+ * Hard ceiling per read. Covers 7 days at the 30-min cadence (336); the
+ * store's row cap (2000) is higher, so a faster orchestrator can hold more
+ * than one read returns — the readers say "newest N only" when that happens.
+ */
+export const TICK_WINDOW_MAX_LIMIT = 500;
+
+export interface TickWindow {
+  since: Date | null;
+  until: Date | null;
+  limit: number;
+}
+
+/**
+ * Validate a history window from untrusted query/tool input. Unparsable
+ * dates and non-numeric limits are errors (a silently ignored `since`
+ * would hand the caller 20 recent ticks and look like "nothing happened
+ * last night"); an out-of-range limit is clamped, not refused.
+ */
+export function parseTickWindow(q: { since?: unknown; until?: unknown; limit?: unknown }): TickWindow | { error: string } {
+  const date = (v: unknown, name: string): Date | null | { error: string } => {
+    if (v === undefined || v === null || v === '') return null;
+    if (typeof v !== 'string') return { error: `${name} must be a single ISO 8601 timestamp` };
+    const d = new Date(v);
+    if (Number.isNaN(d.getTime())) return { error: `${name} must be an ISO 8601 timestamp, got "${v}"` };
+    return d;
+  };
+  const since = date(q.since, 'since');
+  if (since && 'error' in since) return since;
+  const until = date(q.until, 'until');
+  if (until && 'error' in until) return until;
+  let limit = since ? TICK_HISTORY_DEFAULT_LIMIT : TICK_WINDOW_DEFAULT_LIMIT;
+  if (q.limit !== undefined && q.limit !== null && q.limit !== '') {
+    const n = typeof q.limit === 'number' ? q.limit : typeof q.limit === 'string' ? Number(q.limit) : Number.NaN;
+    if (!Number.isFinite(n)) return { error: `limit must be a number, got "${String(q.limit)}"` };
+    limit = Math.min(TICK_WINDOW_MAX_LIMIT, Math.max(1, Math.trunc(n)));
+  }
+  return { since, until, limit };
+}
+
+/** critical > warn/warning > everything else (info, note, …). */
+export function severityRank(severity: string): number {
+  const s = severity.toLowerCase();
+  if (s === 'critical') return 2;
+  if (s === 'warn' || s === 'warning') return 1;
+  return 0;
+}
+
+export interface TickSummary {
+  /** The orchestrator's tick time (display; clamped to now by the server). */
+  at: string;
+  /** Server clock at receipt — what the window filters and orders by. */
+  receivedAt: string;
+  claims: number | null;
+  cap: number | null;
+  pullableInGate: number | null;
+  needsBrief: number | null;
+  heartbeat: string | null;
+  noJudgment: string | null;
+  /** Non-null only when the orchestrator actually wrote the cap this tick. */
+  capWrite: { set: number; reason: string | null } | null;
+  policyWrite: { set: string[]; reason: string | null } | null;
+  gateRecommendation: { set: string[]; reason: string | null } | null;
+  /** warn/warning/critical only, worst first — info-level noise would drown a 7-day table. */
+  anomalies: { severity: string; what: string; evidence?: string }[];
+  asksCount: number;
+  assessment: string | null;
+}
+
+/** Flatten one stored tick into what a history row needs. Pure; tolerant of partial payloads. */
+export function summarizeTick(tick: { tickAt: string; receivedAt: string; payload: FleetTickPayload }): TickSummary {
+  const p = tick.payload;
+  const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const anomalies = (p.anomalies ?? [])
+    .filter((a) => a && typeof a.severity === 'string' && severityRank(a.severity) > 0)
+    .sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
+  return {
+    at: tick.tickAt,
+    receivedAt: tick.receivedAt,
+    claims: num(p.summary?.claims),
+    cap: num(p.summary?.cap),
+    pullableInGate: num(p.summary?.pullableInGate),
+    needsBrief: num(p.summary?.needsBrief),
+    heartbeat: p.summary?.heartbeat ?? null,
+    noJudgment: p.noJudgment ?? null,
+    capWrite: p.cap && typeof p.cap.set === 'number' ? { set: p.cap.set, reason: p.cap.reason ?? null } : null,
+    policyWrite: p.policy?.set ? { set: p.policy.set, reason: p.policy.reason ?? null } : null,
+    gateRecommendation: p.gate_recommendation?.set ? { set: p.gate_recommendation.set, reason: p.gate_recommendation.reason ?? null } : null,
+    anomalies,
+    asksCount: (p.asks ?? []).length,
+    assessment: p.assessment ?? null,
+  };
+}

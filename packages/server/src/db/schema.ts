@@ -582,7 +582,8 @@ export const fleetStatus = pgTable(
 );
 
 // One row per orchestrator tick (decision.json + the numbers it judged
-// from); trimmed to TICK_RETENTION per map on insert.
+// from); trimmed per map on insert to TICK_RETENTION_DAYS of received_at
+// plus a TICK_HARD_CAP row guard (db/fleet.ts).
 export const fleetTicks = pgTable('fleet_ticks', {
   id: uuid('id').primaryKey().defaultRandom(),
   mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),

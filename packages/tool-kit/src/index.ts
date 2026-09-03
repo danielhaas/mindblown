@@ -16,6 +16,9 @@ export type {
   AskListOptions,
   AskListResult,
   AskAnswerResult,
+  FleetStatusOptions,
+  FleetJournalResult,
+  FleetJournalOptions,
   ConflictEntry,
   ConflictScanResult,
   // Pull queue (Leidang)
@@ -42,7 +45,8 @@ import { triageTools } from './tools/triage.js';
 import { orchestrationTools } from './tools/orchestration.js';
 import { githubAuditTools } from './tools/githubAudit.js';
 import { asksTools } from './tools/asks.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools };
+import { fleetJournalTools } from './tools/fleetJournal.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools };
 export { renderAskList } from './tools/asks.js';
 
 export const allTools = [
@@ -53,4 +57,5 @@ export const allTools = [
   ...orchestrationTools,
   ...githubAuditTools,
   ...asksTools,
+  ...fleetJournalTools,
 ];

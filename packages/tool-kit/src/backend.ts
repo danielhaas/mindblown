@@ -9,13 +9,33 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetRollup, FleetTickPayload } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
 export interface FleetStatusResult {
   hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock at read time — staleness is judged against this, not the caller's clock. */
+  now: string;
+  /** The tick window the server applied (defaults and clamps included) — absent from pre-history servers. */
+  window?: { since: string | null; until: string | null; limit: number };
+}
+
+/** History window for `getFleetStatus` — `since` ISO 8601; without it the read is "latest 20 ticks". */
+export interface FleetStatusOptions {
+  since?: string;
+  limit?: number;
+}
+
+/** Window for `getFleetJournal` — ISO 8601; the server defaults to the trailing 24 h and caps at 31 days. */
+export interface FleetJournalOptions {
+  from?: string;
+  to?: string;
+}
+
+/** GET /api/maps/:id/fleet-journal — what the fleet did in the window, assembled by core `buildFleetJournal`. */
+export interface FleetJournalResult {
+  journal: FleetJournal;
   now: string;
 }
 
@@ -378,7 +398,8 @@ export interface ToolBackend {
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
-  releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
+  /** `reason` is free text for the claim trail (why the holder let go); it never gates the release. */
+  releaseNode(mapId: string, nodeId: string, sessionId: string, reason?: string): Promise<ReleaseNodeResult>;
   /**
    * Release a parked ticket back into the pull queue: blockedReason
    * cleared, `blocked` tag removed, status back to todo unless done
@@ -386,8 +407,10 @@ export interface ToolBackend {
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
-  /** Last-known satellite rollups + recent orchestrator ticks (read-only). */
-  getFleetStatus(mapId: string): Promise<FleetStatusResult>;
+  /** Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window. */
+  getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
+  /** What the fleet did in a window — ticks, claims, delivered nodes with PR/effort, follow-ups, knob writes (read-only). */
+  getFleetJournal(mapId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
 
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   /** The fleet's open human questions as the collector pushed them (read-only). */

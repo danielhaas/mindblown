@@ -4,6 +4,7 @@
  *   PUT  /api/maps/:id/fleet-status/:host  — satellite rollup (rollup.sh, every ~2 min)
  *   POST /api/maps/:id/fleet-ticks         — orchestrator decision (every ~30 min)
  *   GET  /api/maps/:id/fleet               — what the cockpit's Fleet card renders
+ *        ?since=<ISO>&until=<ISO>&limit=<n>  — tick history for a window (Verlauf)
  *
  * Auth model mirrors the orchestration routes the same callers already
  * use (pull-next, claim, release): map-scoped, no per-route permission
@@ -12,11 +13,10 @@
  * workers, silent satellites) is core `fleet.ts`, shared with the card.
  */
 import type { FastifyInstance } from 'fastify';
-import { parseRollup, parseTick } from '@mindblown/core';
+import { parseRollup, parseTick, parseTickWindow } from '@mindblown/core';
 import * as fleetDb from '../db/fleet.js';
 import { broadcast } from '../ws.js';
 
-const TICK_LIST_LIMIT = 20;
 /** Hostnames as `hostname -s` / config `host` produce them. The PK is (map, host) and the route is unauthenticated — no free-form keys. */
 const HOST_RE = /^[A-Za-z0-9._-]{1,64}$/;
 /** A 10-worker rollup is ~15 kB; this leaves room for blocked_nodes histories, not for abuse. */
@@ -83,8 +83,21 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(201).send({ id: row.id, tickAt: row.tickAt, receivedAt: row.receivedAt });
   });
 
-  app.get<{ Params: { id: string } }>('/api/maps/:id/fleet', async (req, reply) => {
-    const [hosts, ticks] = await Promise.all([fleetDb.listRollups(req.params.id), fleetDb.listTicks(req.params.id, TICK_LIST_LIMIT)]);
-    return reply.send({ hosts, ticks, now: new Date().toISOString() });
+  app.get<{ Params: { id: string }; Querystring: { since?: unknown; until?: unknown; limit?: unknown } }>('/api/maps/:id/fleet', async (req, reply) => {
+    // Window rules (defaults, clamp, refusal of garbage) are core's, shared
+    // with the chat backend so `fleet_status since=` reads the same on both.
+    const window = parseTickWindow(req.query ?? {});
+    if ('error' in window) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: window.error } });
+    }
+    const [hosts, ticks] = await Promise.all([fleetDb.listRollups(req.params.id), fleetDb.listTicks(req.params.id, window)]);
+    return reply.send({
+      hosts,
+      ticks,
+      now: new Date().toISOString(),
+      // Echoed so the client knows what it got — a clamped limit or a
+      // defaulted one is otherwise invisible in a list of ticks.
+      window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
+    });
   });
 }

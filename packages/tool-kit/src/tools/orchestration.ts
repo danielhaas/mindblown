@@ -12,8 +12,9 @@
  */
 
 import { z } from 'zod';
-import { summarizeFleet, effectiveWorkerState, silentSatellites } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, summarizeTick, TICK_WINDOW_MAX_LIMIT } from '@mindblown/core';
 import { defineTool } from '../spec.js';
+import type { FleetStatusResult } from '../backend.js';
 
 export const readyNodesTool = defineTool({
   name: 'ready_nodes',
@@ -200,9 +201,15 @@ export const releaseNodeTool = defineTool({
     sessionId: z
       .string()
       .describe('Session identifier of the releasing session. Must match the current claim owner.'),
+    reason: z
+      .string()
+      .optional()
+      .describe(
+        'Why the claim is let go, free text ("never started", "dead worker", "handing off"). Recorded in the node\'s claim trail; does not gate the release.',
+      ),
   },
-  handler: async (backend, { mapId, nodeId, sessionId }) => {
-    const result = await backend.releaseNode(mapId, nodeId, sessionId);
+  handler: async (backend, { mapId, nodeId, sessionId, reason }) => {
+    const result = await backend.releaseNode(mapId, nodeId, sessionId, reason);
     if (result.alreadyReleased) {
       return `Node ${nodeId} ("${result.node.text}") was not claimed — no-op.`;
     }
@@ -315,12 +322,26 @@ export const fleetStatusTool = defineTool({
     'as capacity. Use this to answer "why is nothing being worked on?" before',
     'touching maxActiveClaims: parked/limit-parked workers, not the cap, are the',
     'usual reason. Empty until the satellites push (fleet-status route).',
+    'With `since`, a "Tick history" section follows: one line per tick in the',
+    'window (oldest first) — claims/cap, in-gate, needs-brief, knob writes,',
+    'warn+ anomalies — to see how a night went without a terminal.',
   ].join('\n'),
   schema: {
     mapId: z.string().describe('The map ID the fleet pulls from'),
+    since: z
+      .string()
+      .optional()
+      .describe('ISO 8601 timestamp — render the tick history since this time instead of only the latest tick (ticks are kept ~7 days)'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(TICK_WINDOW_MAX_LIMIT)
+      .optional()
+      .describe(`Max ticks in the history (newest kept), 1..${TICK_WINDOW_MAX_LIMIT}; default ${TICK_WINDOW_MAX_LIMIT} with since`),
   },
-  handler: async (backend, { mapId }) => {
-    const r = await backend.getFleetStatus(mapId);
+  handler: async (backend, { mapId, since, limit }) => {
+    const r = await backend.getFleetStatus(mapId, since !== undefined || limit !== undefined ? { since, limit } : undefined);
     const now = new Date(r.now);
     const summary = summarizeFleet(r.hosts.map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now);
     const lines: string[] = [];
@@ -383,9 +404,69 @@ export const fleetStatusTool = defineTool({
       lines.push('');
       lines.push('No orchestrator tick received yet.');
     }
+    if (since !== undefined) lines.push(...renderTickHistory(r, since));
     return lines.join('\n');
   },
 });
+
+/**
+ * One line per tick, oldest first, so a night reads top-down. Times are
+ * UTC (`HH:MMZ`) with a date line whenever the day changes — the tool runs
+ * on whatever host the MCP client sits on, and a local-time rendering would
+ * differ between the chat backend on prod and an MCP client in Zurich.
+ */
+function renderTickHistory(r: FleetStatusResult, since: string): string[] {
+  const lines: string[] = [''];
+  const rows = [...r.ticks].reverse().map(summarizeTick);
+  const window = r.window;
+  const n = (v: number | null) => (v === null ? '–' : String(v));
+  if (rows.length === 0) {
+    lines.push(`Tick history since ${since}: no ticks in this window (ticks are kept ~7 days).`);
+    return lines;
+  }
+  const truncated = window && rows.length >= window.limit ? ` — newest ${window.limit} only, narrow the window for the rest` : '';
+  lines.push(`Tick history since ${since} — ${rows.length} ticks, oldest first (times UTC)${truncated}:`);
+  let day = '';
+  let capWrites = 0;
+  let policyWrites = 0;
+  let anomalies = 0;
+  let noJudgment = 0;
+  for (const t of rows) {
+    // Receipt time — the axis the window and the order use (a lagging orchestrator clock would run tick_at backwards).
+    const d = new Date(t.receivedAt);
+    const valid = !Number.isNaN(d.getTime());
+    const iso = valid ? d.toISOString() : t.receivedAt;
+    const today = valid ? iso.slice(0, 10) : '';
+    if (today && today !== day) {
+      day = today;
+      lines.push(`  ${day}`);
+    }
+    const bits = [`claims ${n(t.claims)}/${n(t.cap)}`, `in-gate ${n(t.pullableInGate)}`, `needs-brief ${n(t.needsBrief)}`];
+    if (t.capWrite) {
+      capWrites += 1;
+      bits.push(`cap→${t.capWrite.set}${t.capWrite.reason ? ` (${t.capWrite.reason})` : ''}`);
+    }
+    if (t.policyWrite) {
+      policyWrites += 1;
+      bits.push(`policy→${t.policyWrite.set.join(' › ')}${t.policyWrite.reason ? ` (${t.policyWrite.reason})` : ''}`);
+    }
+    if (t.gateRecommendation) bits.push(`gate? ${t.gateRecommendation.set.join(' + ')}`);
+    for (const a of t.anomalies) bits.push(`[${a.severity}] ${a.what}`);
+    anomalies += t.anomalies.length;
+    if (t.asksCount > 0) bits.push(`${t.asksCount} ask${t.asksCount === 1 ? '' : 's'}`);
+    if (t.noJudgment) {
+      noJudgment += 1;
+      bits.push(`NO JUDGMENT (${t.noJudgment})`);
+    }
+    lines.push(`  ${valid ? iso.slice(11, 16) : iso} ${bits.join(' · ')}`);
+  }
+  const totals = [`${rows.length} ticks`, `${capWrites} cap write${capWrites === 1 ? '' : 's'}`];
+  if (policyWrites > 0) totals.push(`${policyWrites} policy write${policyWrites === 1 ? '' : 's'}`);
+  totals.push(`${anomalies} anomal${anomalies === 1 ? 'y' : 'ies'} warn+`);
+  if (noJudgment > 0) totals.push(`${noJudgment} without judgment`);
+  lines.push(`Total: ${totals.join(' · ')}`);
+  return lines;
+}
 
 export const orchestrationTools = [
   readyNodesTool,

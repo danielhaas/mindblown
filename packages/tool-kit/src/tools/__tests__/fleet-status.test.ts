@@ -11,9 +11,68 @@ import type { ToolBackend, FleetStatusResult } from '../../backend.js';
 const NOW = '2026-09-01T12:00:00Z';
 const ago = (min: number) => new Date(Date.parse(NOW) - min * 60_000).toISOString();
 
-function backendWith(result: FleetStatusResult): ToolBackend {
-  return { getFleetStatus: async () => result } as unknown as ToolBackend;
+function backendWith(result: FleetStatusResult, calls: unknown[][] = []): ToolBackend {
+  return {
+    getFleetStatus: async (...args: unknown[]) => {
+      calls.push(args);
+      return result;
+    },
+  } as unknown as ToolBackend;
 }
+
+describe('fleet_status tool — tick history (since)', () => {
+  const host = {
+    host: 'njoerd',
+    generatedAt: ago(1),
+    receivedAt: ago(1),
+    rollup: { v: 1, host: 'njoerd', generated_at: ago(1), workers: [{ session: 'njoerd:worker-1:default', worker: 'worker-1', state: 'working', last_activity: ago(1) }] },
+  };
+  // Stored newest-first, as the route returns them; spans midnight UTC.
+  const ticks: FleetStatusResult['ticks'] = [
+    { id: 't4', tickAt: '2026-09-01T00:30:00Z', receivedAt: '2026-09-01T00:30:02Z', payload: { summary: { claims: 2, cap: 6, pullableInGate: 11, needsBrief: 4 }, noJudgment: 'orchestrator at limit', cap: { set: null, reason: null } } },
+    { id: 't3', tickAt: '2026-09-01T00:00:00Z', receivedAt: '2026-09-01T00:00:02Z', payload: { summary: { claims: 3, cap: 9, pullableInGate: 11, needsBrief: 4 }, cap: { set: 6, reason: 'limit-parked x3' }, anomalies: [{ severity: 'warn', what: 'sat2 silent' }, { severity: 'info', what: 'noise' }], asks: ['#1'] } },
+    { id: 't2', tickAt: '2026-08-31T23:30:00Z', receivedAt: '2026-08-31T23:30:02Z', payload: { summary: { claims: 3, cap: 9, pullableInGate: 12, needsBrief: 4 }, policy: { set: ['heavy', 'light'], reason: 'P0 open' } } },
+    { id: 't1', tickAt: '2026-08-31T23:00:00Z', receivedAt: '2026-08-31T23:00:02Z', payload: { summary: { claims: 3, cap: 9, pullableInGate: 12, needsBrief: 5 }, gate_recommendation: { set: ['type:bug'], reason: 'queue dry' } } },
+  ];
+
+  it('passes since/limit to the backend and stays on the latest-tick rendering without since', async () => {
+    const calls: unknown[][] = [];
+    const out = await fleetStatusTool.handler(backendWith({ hosts: [host], ticks, now: NOW }, calls), { mapId: 'm1' } as never);
+    expect(calls).toEqual([['m1', undefined]]);
+    expect(out).not.toContain('Tick history');
+
+    await fleetStatusTool.handler(backendWith({ hosts: [host], ticks, now: NOW }, calls), { mapId: 'm1', since: '2026-08-31T22:00:00Z', limit: 100 } as never);
+    expect(calls[1]).toEqual(['m1', { since: '2026-08-31T22:00:00Z', limit: 100 }]);
+  });
+
+  it('renders one line per tick oldest first with a date line at midnight, writes, warn+ anomalies, and totals', async () => {
+    const out = await fleetStatusTool.handler(
+      backendWith({ hosts: [host], ticks, now: NOW, window: { since: '2026-08-31T22:00:00.000Z', until: null, limit: 500 } }),
+      { mapId: 'm1', since: '2026-08-31T22:00:00Z' } as never,
+    );
+    const history = out.slice(out.indexOf('Tick history'));
+    const lines = history.split('\n');
+    expect(lines[0]).toContain('Tick history since 2026-08-31T22:00:00Z — 4 ticks, oldest first (times UTC)');
+    expect(lines.slice(1)).toEqual([
+      '  2026-08-31',
+      '  23:00 claims 3/9 · in-gate 12 · needs-brief 5 · gate? type:bug',
+      '  23:30 claims 3/9 · in-gate 12 · needs-brief 4 · policy→heavy › light (P0 open)',
+      '  2026-09-01',
+      '  00:00 claims 3/9 · in-gate 11 · needs-brief 4 · cap→6 (limit-parked x3) · [warn] sat2 silent · 1 ask',
+      '  00:30 claims 2/6 · in-gate 11 · needs-brief 4 · NO JUDGMENT (orchestrator at limit)',
+      'Total: 4 ticks · 1 cap write · 1 policy write · 1 anomaly warn+ · 1 without judgment',
+    ]);
+    // The latest-tick block is still there above the history.
+    expect(out).toContain('Last orchestrator tick 2026-09-01T00:30:00Z — NO JUDGMENT (orchestrator at limit)');
+  });
+
+  it('says so for an empty window and flags a window cut by the limit', async () => {
+    const empty = await fleetStatusTool.handler(backendWith({ hosts: [host], ticks: [], now: NOW, window: { since: ago(60), until: null, limit: 500 } }), { mapId: 'm1', since: ago(60) } as never);
+    expect(empty).toContain('no ticks in this window');
+    const cut = await fleetStatusTool.handler(backendWith({ hosts: [host], ticks: ticks.slice(0, 2), now: NOW, window: { since: ago(600), until: null, limit: 2 } }), { mapId: 'm1', since: ago(600), limit: 2 } as never);
+    expect(cut).toContain('2 ticks, oldest first (times UTC) — newest 2 only');
+  });
+});
 
 describe('fleet_status tool', () => {
   it('says so when nothing was pushed yet', async () => {

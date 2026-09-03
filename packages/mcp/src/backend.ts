@@ -30,10 +30,11 @@ export const httpBackend: ToolBackend = {
   readyNodes: (mapId, opts) => api.readyNodes(mapId, opts),
   getNextTicket: (mapId, sessionId, profile) => api.getNextTicket(mapId, sessionId, profile),
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
-  releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
+  releaseNode: (mapId, nodeId, sessionId, reason) => api.releaseNode(mapId, nodeId, sessionId, reason),
   unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
-  getFleetStatus: (mapId) => api.getFleetStatus(mapId),
+  getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
+  getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   listAsks: (mapId, opts) => api.listAsks(mapId, opts),
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
