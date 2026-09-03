@@ -19,10 +19,10 @@ function ref(r: AskRow): string {
 }
 
 function title(r: AskRow): string {
-  const a = r.ask;
-  let t = (a.title ?? '').trim();
-  if (a.ticket != null) t = t.replace(new RegExp(`^#${a.ticket}\\s+`), '');
-  return t;
+  const t = (r.ask.title ?? '').trim();
+  const x = ref(r);
+  // The ref is printed in front of the title; don't print it twice.
+  return t.startsWith(x + ' ') ? t.slice(x.length + 1) : t;
 }
 
 export function renderAskList(res: AskListResult, mapId: string): string {

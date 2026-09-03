@@ -4,14 +4,18 @@
  * A push replaces the OPEN set: rows the collector no longer sends were
  * resolved elsewhere (ticket closed, node unparked by hand) and vanish;
  * rows already answered/deferred/delegated keep their state while the
- * collector keeps sending them (it will, until the next tick's map shows
- * the write) and go away with them. The collector is the truth for what
- * is open; MindBlown is the truth for what Dan answered.
+ * collector keeps sending them and survive its disappearance for
+ * ANSWER_RETENTION_DAYS (the digest of a round must not lose the rows the
+ * round itself resolved). The collector is the truth for what is open;
+ * MindBlown is the truth for what Dan answered.
  */
 import { and, eq, gte, inArray, notInArray, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { asks, asksPushes } from './schema.js';
 import type { Ask, AskAnswerInput, AskDocumentMeta, AskRow, AskStatus, AskWrite } from '@mindblown/core';
+
+/** Answered rows outlive the question this long — long enough for a weekly digest. */
+export const ANSWER_RETENTION_DAYS = 14;
 
 export interface AskListFilters {
   status?: AskStatus | 'all';
@@ -40,14 +44,23 @@ export async function replaceAsks(mapId: string, items: Ask[], meta: AskDocument
   const now = new Date();
   return db.transaction(async (tx) => {
     const ids = items.map((a) => a.id);
-    let removed = 0;
-    if (ids.length > 0) {
-      const gone = await tx.delete(asks).where(and(eq(asks.mapId, mapId), notInArray(asks.askId, ids))).returning({ askId: asks.askId });
-      removed = gone.length;
-    } else {
-      const gone = await tx.delete(asks).where(eq(asks.mapId, mapId)).returning({ askId: asks.askId });
-      removed = gone.length;
-    }
+    // Open rows the collector stopped sending were resolved elsewhere — gone.
+    // Answered/deferred/delegated rows stay ANSWER_RETENTION_DAYS after the
+    // answer even when the question vanished (the collector drops a question
+    // the moment the node is unparked — i.e. right after the answer), so the
+    // digest and the fold still show the round; then they are pruned.
+    const notSent = ids.length > 0 ? notInArray(asks.askId, ids) : sql`true`;
+    const gone = await tx
+      .delete(asks)
+      .where(
+        and(
+          eq(asks.mapId, mapId),
+          notSent,
+          sql`(${asks.status} = 'open' OR ${asks.answeredAt} IS NULL OR ${asks.answeredAt} < now() - make_interval(days => ${ANSWER_RETENTION_DAYS}))`,
+        ),
+      )
+      .returning({ askId: asks.askId });
+    const removed = gone.length;
     let kept = 0;
     for (const a of items) {
       const [row] = await tx

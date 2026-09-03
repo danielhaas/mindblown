@@ -39,10 +39,13 @@ function ref(a: Ask): string {
 }
 
 function title(a: Ask): string {
-  let t = (a.title ?? '').trim();
-  if (a.ticket != null) t = t.replace(new RegExp(`^#${a.ticket}\\s+`), '');
-  return t;
+  const t = (a.title ?? '').trim();
+  const r = ref(a);
+  // The ref is shown in front of the title; don't print it twice.
+  return t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
 }
+
+type AnswerResult = { ok: boolean; lines: string[] };
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -65,6 +68,10 @@ export function AsksView() {
   const [showDone, setShowDone] = useState(false);
   const [showNoQuestion, setShowNoQuestion] = useState(false);
   const [showVersionOnly, setShowVersionOnly] = useState(false);
+  // What each click wrote, kept per ask id: the refetch after asks:updated
+  // moves an answered row out of the open set, but the report of what was
+  // written (and what failed) must stay on screen where Dan clicked.
+  const [results, setResults] = useState<Record<string, AnswerResult>>({});
 
   useEffect(() => {
     const p = setInterval(() => setPoll((t) => t + 1), POLL_MS);
@@ -94,8 +101,8 @@ export function AsksView() {
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
-    const open = rows.filter((r) => r.status === 'open');
-    const done = rows.filter((r) => r.status !== 'open');
+    const open = rows.filter((r) => r.status === 'open' || results[r.ask.id]);
+    const done = rows.filter((r) => r.status !== 'open' && !results[r.ask.id]);
     const questions = open.filter((r) => !isNoQuestion(r.ask) && !isVersionOnly(r.ask));
     const noQuestion = open.filter((r) => isNoQuestion(r.ask));
     const versionOnly = open.filter((r) => isVersionOnly(r.ask) && !isNoQuestion(r.ask));
@@ -109,7 +116,9 @@ export function AsksView() {
       (r) => (!filter.answerer || r.ask.answerer === filter.answerer) && (!filter.hint || r.ask.hint === filter.hint),
     );
     return { questions, visible, noQuestion, versionOnly, done, byAnswerer, byHint };
-  }, [data, filter]);
+  }, [data, filter, results]);
+
+  const onResult = (id: string, r: AnswerResult) => setResults((m) => ({ ...m, [id]: r }));
 
   if (!currentMapId) return <Shell><Muted>Loading…</Muted></Shell>;
   if (error) return <Shell><Muted>Fragen nicht ladbar: {error}</Muted></Shell>;
@@ -162,7 +171,7 @@ export function AsksView() {
       {groups.visible.length === 0 && <Muted>Keine offene Frage{filter.answerer || filter.hint ? ' in diesem Filter' : ''}. 🎉</Muted>}
 
       {groups.visible.map((r) => (
-        <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} />
+        <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
       ))}
 
       {groups.versionOnly.length > 0 && (
@@ -172,7 +181,7 @@ export function AsksView() {
           onToggle={() => setShowVersionOnly((v) => !v)}
         >
           {groups.versionOnly.map((r) => (
-            <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} />
+            <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
           ))}
         </Fold>
       )}
@@ -266,7 +275,21 @@ const btn = (kind: 'primary' | 'plain', disabled: boolean): React.CSSProperties 
   opacity: disabled ? 0.5 : 1,
 });
 
-function AskCard({ row, mapId, by, readOnly }: { row: AskRow; mapId: string; by: string; readOnly: boolean }) {
+function AskCard({
+  row,
+  mapId,
+  by,
+  readOnly,
+  result,
+  onResult,
+}: {
+  row: AskRow;
+  mapId: string;
+  by: string;
+  readOnly: boolean;
+  result: AnswerResult | null;
+  onResult: (id: string, r: AnswerResult) => void;
+}) {
   const a = row.ask;
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
@@ -275,7 +298,7 @@ function AskCard({ row, mapId, by, readOnly }: { row: AskRow; mapId: string; by:
   const [noRequeue, setNoRequeue] = useState(false);
   const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ ok: boolean; lines: string[] } | null>(null);
+  const setResult = (r: AnswerResult) => onResult(a.id, r);
 
   const options = a.options.length > 0 ? a.options : ['Ja', 'Nein'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
@@ -291,9 +314,10 @@ function AskCard({ row, mapId, by, readOnly }: { row: AskRow; mapId: string; by:
     setBusy(true);
     try {
       const r = await api.answerAsk(mapId, a.id, input);
+      const head = `${STATUS_LABEL[r.ask.status] ?? r.ask.status}${r.ask.answeredBy ? ` (${r.ask.answeredBy})` : ''}`;
       setResult({
         ok: r.ok,
-        lines: r.ask.writes.map((w) => `${w.done ? '✓' : w.error ? '✗' : '…'} ${w.kind} ${w.target} — ${w.detail}${w.error ? ` (${w.error})` : ''}`),
+        lines: [head, ...r.ask.writes.map((w) => `${w.done ? '✓' : w.error ? '✗' : '…'} ${w.kind} ${w.target} — ${w.detail}${w.error ? ` (${w.error})` : ''}`)],
       });
     } catch (e) {
       setResult({ ok: false, lines: [e instanceof Error ? e.message : 'failed'] });
