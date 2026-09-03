@@ -392,16 +392,19 @@ function TickHistory({ mapId, fleetRev, now }: { mapId: string | null; fleetRev:
 }
 
 function HistoryRow({ t, prev }: { t: TickSummary; prev: TickSummary | undefined }) {
-  const d = new Date(t.at);
+  // Time column = receipt time: that is what the window filters and the
+  // rows are ordered by. Showing the orchestrator's own tick_at would run
+  // backwards against the sort when its clock lags (only the future is clamped).
+  const d = new Date(t.receivedAt);
   const valid = !Number.isNaN(d.getTime());
-  const prevDay = prev ? new Date(prev.at).toDateString() : '';
+  const prevDay = prev ? new Date(prev.receivedAt).toDateString() : '';
   const newDay = valid && d.toDateString() !== prevDay;
   const n = (v: number | null) => (v === null ? '–' : v);
   return (
     <tr style={{ borderTop: '1px solid #f1f5f9', color: t.noJudgment ? '#94a3b8' : '#334155' }}>
-      <td style={td} title={t.at}>
+      <td style={td} title={`received ${t.receivedAt} · tick ${t.at}`}>
         {newDay && <span style={{ color: '#94a3b8', marginRight: 4 }}>{d.toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>}
-        {valid ? localHHMM(t.at) : t.at}
+        {valid ? localHHMM(t.receivedAt) : t.receivedAt}
       </td>
       <td style={{ ...td, textAlign: 'right' }}>
         {n(t.claims)}/{n(t.cap)}

@@ -125,6 +125,11 @@ export function FleetJournalSection() {
             {t.claimsMax !== null ? ` · claims max ${t.claimsMax}` : ''} · {t.knobWrites} knob writes · {t.workers} workers
             {t.anomaliesWarn > 0 && <span style={{ color: '#b45309' }}> · {t.anomaliesWarn} warn+ anomalies</span>}
           </div>
+          {(journal.truncated?.events || journal.truncated?.ticks) && (
+            <div style={{ fontSize: 12, color: '#b45309' }}>
+              The read limit cut this window — the lists show its newest part and the totals undercount. Pick a shorter window.
+            </div>
+          )}
 
           {/* Ticks */}
           <Section id="ticks" label={`Ticks (${journal.ticks.length})`} open={!!open.ticks} onToggle={toggle}>

@@ -270,7 +270,11 @@ export function estimateServerNow(serverNowIso: string, fetchedAtMs: number, now
 export const TICK_WINDOW_DEFAULT_LIMIT = 20;
 /** Ticks a `since` read returns by default — 7 days at the 30-min cadence is 336. */
 export const TICK_HISTORY_DEFAULT_LIMIT = 500;
-/** Hard ceiling per read; the store keeps ~7 days, so this covers the whole retention. */
+/**
+ * Hard ceiling per read. Covers 7 days at the 30-min cadence (336); the
+ * store's row cap (2000) is higher, so a faster orchestrator can hold more
+ * than one read returns — the readers say "newest N only" when that happens.
+ */
 export const TICK_WINDOW_MAX_LIMIT = 500;
 
 export interface TickWindow {

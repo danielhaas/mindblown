@@ -59,6 +59,8 @@ export interface JournalInput {
   nodes: JournalNodeRow[];
   versions: { id: string; name: string }[];
   users: { id: string; name: string }[];
+  /** Set by the loader when a read limit cut the events or ticks — the lists are then the NEWEST part of the window. */
+  truncated?: { events: boolean; ticks: boolean };
 }
 
 export interface JournalWorker {
@@ -162,6 +164,8 @@ export interface FleetJournal {
   blocked: JournalBlocked[];
   knobWrites: JournalKnobWrite[];
   totals: JournalTotals;
+  /** A read limit cut the window: what is listed is the newest part, and the totals undercount. */
+  truncated: { events: boolean; ticks: boolean };
 }
 
 export const JOURNAL_EVENT_TYPES = ['node.claimed', 'node.released', 'node.pr_merged', 'map.field_changed'] as const;
@@ -199,6 +203,17 @@ function priorityFromTags(tags: string[]): string | null {
     if (m) return m[1].toUpperCase();
   }
   return null;
+}
+
+/**
+ * A block, as every surface understands it: status → blocked, OR a
+ * blockedReason appearing — `flag_blocker` writes only the reason and
+ * leaves the status alone, and blocked_digest / risk_scan key on that.
+ */
+function isBlockEvent(e: JournalEventRow): boolean {
+  if (e.fieldName === 'status') return e.newValue === 'blocked';
+  if (e.fieldName === 'blockedReason') return e.newValue != null && e.newValue !== '' && (e.oldValue == null || e.oldValue === '');
+  return false;
 }
 
 /** owner/repo from `owner/repo#123`. */
@@ -269,7 +284,10 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
         userId: e.userId,
         userName: e.userId ? (userName.get(e.userId) ?? null) : null,
       });
-    } else if (e.eventType === 'node.field_changed' && e.fieldName === 'status' && e.newValue === 'blocked' && e.nodeId && inside) {
+    } else if (e.eventType === 'node.field_changed' && e.nodeId && inside && isBlockEvent(e)) {
+      // One entry per node even when status and blockedReason land as two rows of one PUT.
+      const last = blocked[blocked.length - 1];
+      if (last && last.nodeId === e.nodeId && Date.parse(e.createdAt) - Date.parse(last.at) < 5_000) continue;
       blocked.push({ nodeId: e.nodeId, text: textOf(e.nodeId), at: e.createdAt, reason: nodeById.get(e.nodeId)?.blockedReason ?? null });
     }
   }
@@ -335,6 +353,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
   };
   const sessions = new Set<string>();
   for (const c of claims) sessions.add(c.session);
+  for (const r of releases) sessions.add(r.session);
   for (const d of delivered) if (d.deliveredBy) sessions.add(d.deliveredBy.session);
 
   return {
@@ -346,6 +365,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
     created,
     blocked,
     knobWrites,
+    truncated: input.truncated ?? { events: false, ticks: false },
     totals: {
       ticks: ticks.length,
       claims: claims.length,
@@ -377,14 +397,45 @@ export type JournalPreset = 'last-night' | '24h' | '7d';
  * 07:00 the window ends now — the night is still running. The other two
  * presets are plain trailing windows.
  */
-export function journalWindow(preset: JournalPreset, now: Date = new Date()): { from: Date; to: Date } {
+export function journalWindow(preset: JournalPreset, now: Date = new Date(), timeZone?: string): { from: Date; to: Date } {
   if (preset === '24h') return { from: new Date(now.getTime() - 24 * 3_600_000), to: now };
   if (preset === '7d') return { from: new Date(now.getTime() - 7 * 86_400_000), to: now };
-  const morning = new Date(now);
-  morning.setHours(7, 0, 0, 0);
+  if (!timeZone) {
+    const morning = new Date(now);
+    morning.setHours(7, 0, 0, 0);
+    const to = now.getTime() < morning.getTime() ? now : morning;
+    const from = new Date(to);
+    from.setDate(from.getDate() - 1);
+    from.setHours(17, 0, 0, 0);
+    return { from, to };
+  }
+  // Explicit zone: the tool runs where the process is (a UTC container for
+  // the chat backend) but the PM's night is in their zone.
+  const today = zonedDate(now, timeZone);
+  const morning = zonedWallClock(today.y, today.m, today.d, 7, timeZone);
   const to = now.getTime() < morning.getTime() ? now : morning;
-  const from = new Date(to);
-  from.setDate(from.getDate() - 1);
-  from.setHours(17, 0, 0, 0);
+  const y = zonedDate(new Date(to.getTime() - 86_400_000), timeZone);
+  const from = zonedWallClock(y.y, y.m, y.d, 17, timeZone);
   return { from, to };
+}
+
+function zonedDate(d: Date, timeZone: string): { y: number; m: number; d: number } {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(d);
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return { y: get('year'), m: get('month'), d: get('day') };
+}
+
+/** The instant of `y-m-d hour:00` on the wall clock of `timeZone`. */
+function zonedWallClock(y: number, m: number, d: number, hour: number, timeZone: string): Date {
+  // Guess UTC, read back the wall clock in the zone, correct by the difference (DST-safe: two passes).
+  let guess = Date.UTC(y, m - 1, d, hour);
+  for (let i = 0; i < 2; i++) {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23', year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric' }).formatToParts(new Date(guess));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+    const seen = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'));
+    const want = Date.UTC(y, m - 1, d, hour);
+    if (seen === want) break;
+    guess += want - seen;
+  }
+  return new Date(guess);
 }

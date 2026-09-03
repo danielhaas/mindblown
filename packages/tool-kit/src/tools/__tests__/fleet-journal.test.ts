@@ -31,6 +31,7 @@ const journal: FleetJournal = {
   created: [{ nodeId: 'n5', text: '#10264 follow-up A', createdAt: '2026-09-02T16:20:00Z', createdBy: 'Dan', priority: 'P2', versionName: 'V1.5 follow-up', effortEstimate: 0.5, tags: [], issues: [] }],
   blocked: [{ nodeId: 'n4', text: '#6386 payment reconciliation', at: '2026-09-02T18:00:00Z', reason: 'needs Dan' }],
   knobWrites: [{ at: '2026-09-02T16:10:00Z', field: 'maxActiveClaims', oldValue: 9, newValue: 12, userId: 'u1', userName: 'Dan' }],
+  truncated: { events: false, ticks: false },
   totals: { ticks: 2, claims: 1, releases: 1, delivered: 1, created: 1, blocked: 1, knobWrites: 1, anomaliesWarn: 1, capMin: 9, capMax: 9, claimsMax: 9, actualEffortSum: 0.1, prsMerged: 1, createdByVersion: { 'V1.5 follow-up': 1 }, createdByPriority: { P2: 1 }, workers: 2 },
 };
 
@@ -45,6 +46,11 @@ describe('renderFleetJournal', () => {
     expect(out).toContain('#6386 payment reconciliation — needs Dan');
     expect(out).toContain('by version: V1.5 follow-up: 1');
     expect(out).toContain('maxActiveClaims: 9 → 12 — Dan');
+  });
+
+  it('warns when the read limit cut the window', () => {
+    const out = renderFleetJournal({ ...journal, truncated: { events: true, ticks: false } });
+    expect(out).toContain('NOTE: the read limit cut this window (events)');
   });
 
   it('says so on an empty window', () => {

@@ -193,7 +193,9 @@ export function createChatBackend(userId: string): ToolBackend {
       if (before) {
         events.recordFieldChanges(mapId, nodeId, userId, before, updated).catch(() => {});
         const becameDone = updated.completedAt != null && before.completedAt == null;
-        const becameBlocked = updated.status === 'blocked' && before.status !== 'blocked';
+        // flag_blocker writes only blockedReason (status untouched) — same rule as the PUT route.
+        const becameBlocked =
+          (updated.status === 'blocked' && before.status !== 'blocked') || (updated.blockedReason != null && before.blockedReason == null);
         events
           .recordClaimTransition(mapId, nodeId, userId, before, updated, {
             reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',

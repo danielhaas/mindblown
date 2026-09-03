@@ -432,9 +432,10 @@ function renderTickHistory(r: FleetStatusResult, since: string): string[] {
   let anomalies = 0;
   let noJudgment = 0;
   for (const t of rows) {
-    const d = new Date(t.at);
+    // Receipt time — the axis the window and the order use (a lagging orchestrator clock would run tick_at backwards).
+    const d = new Date(t.receivedAt);
     const valid = !Number.isNaN(d.getTime());
-    const iso = valid ? d.toISOString() : t.at;
+    const iso = valid ? d.toISOString() : t.receivedAt;
     const today = valid ? iso.slice(0, 10) : '';
     if (today && today !== day) {
       day = today;

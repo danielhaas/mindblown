@@ -59,6 +59,12 @@ const base: JournalInput = {
     { eventType: 'node.claimed', nodeId: 'n3', userId: null, fieldName: null, oldValue: null, newValue: { session: 'sat3:worker-2:default', via: 'pull' }, createdAt: at(17) },
     { eventType: 'node.released', nodeId: 'n3', userId: null, fieldName: null, oldValue: null, newValue: { session: 'sat3:worker-2:default', reason: 'release', note: 'never started', heldMinutes: 5 }, createdAt: at(17, 5) },
     { eventType: 'node.field_changed', nodeId: 'n4', userId: null, fieldName: 'status', oldValue: 'in_progress', newValue: 'blocked', createdAt: at(18) },
+    // Same PUT wrote the reason a few ms later — one block, not two.
+    { eventType: 'node.field_changed', nodeId: 'n4', userId: null, fieldName: 'blockedReason', oldValue: null, newValue: 'needs Dan', createdAt: at(18, 0) },
+    // flag_blocker: reason only, status untouched — still a block.
+    { eventType: 'node.field_changed', nodeId: 'n8', userId: null, fieldName: 'blockedReason', oldValue: null, newValue: 'waiting on Rita', createdAt: at(19) },
+    // Editing an existing reason is not a new block.
+    { eventType: 'node.field_changed', nodeId: 'n8', userId: null, fieldName: 'blockedReason', oldValue: 'waiting on Rita', newValue: 'waiting on Rita (L2)', createdAt: at(19, 30) },
     { eventType: 'map.field_changed', nodeId: null, userId: 'u1', fieldName: 'maxActiveClaims', oldValue: 9, newValue: 12, createdAt: at(16, 10) },
     { eventType: 'map.field_changed', nodeId: null, userId: 'u1', fieldName: 'maxActiveClaims', oldValue: 0, newValue: 9, createdAt: at(8) }, // before the window
   ],
@@ -67,6 +73,7 @@ const base: JournalInput = {
     node('n2', '#9163 Formular V', { status: 'done', completedAt: at(16, 57), actualEffort: 0.19, versionId: 'v1', externalLinks: [link('FulcrumCRM/crm#9163', { mergedPrNumber: 10262, mergeCommitSha: 'abc' })] }),
     node('n3', '#9633 provenance', {}),
     node('n4', '#6386 payment reconciliation', { status: 'blocked', blockedReason: 'needs Dan' }),
+    node('n8', '#9243 PEP-Ableitungen', { status: 'in_progress', blockedReason: 'waiting on Rita (L2)' }),
     node('n5', '#10264 follow-up A', { createdAt: at(16, 20), priority: 'P2', versionId: 'v15', effortEstimate: 0.5, externalLinks: [link('FulcrumCRM/crm#10264')] }),
     node('n6', '#10266 follow-up B', { createdAt: at(20), priority: 'P1', versionId: 'v15' }),
     node('n7', 'old done', { status: 'done', completedAt: at(9) }), // before the window
@@ -115,7 +122,12 @@ describe('buildFleetJournal', () => {
     expect(j.totals.createdByVersion).toEqual({ 'V1.5 follow-up': 2 });
     expect(j.totals.createdByPriority).toEqual({ P2: 1, P1: 1 });
     expect(j.created[0].createdBy).toBe('Dan');
-    expect(j.blocked).toEqual([{ nodeId: 'n4', text: '#6386 payment reconciliation', at: at(18), reason: 'needs Dan' }]);
+    expect(j.blocked).toEqual([
+      { nodeId: 'n4', text: '#6386 payment reconciliation', at: at(18), reason: 'needs Dan' },
+      { nodeId: 'n8', text: '#9243 PEP-Ableitungen', at: at(19), reason: 'waiting on Rita (L2)' },
+    ]);
+    expect(j.totals.blocked).toBe(2);
+    expect(j.truncated).toEqual({ events: false, ticks: false });
     expect(j.knobWrites).toEqual([{ at: at(16, 10), field: 'maxActiveClaims', oldValue: 9, newValue: 12, userId: 'u1', userName: 'Dan' }]);
   });
 
@@ -134,6 +146,18 @@ describe('journalWindow', () => {
     const w2 = journalWindow('last-night', early);
     expect(w2.to.getTime()).toBe(early.getTime());
     expect([w2.from.getDate(), w2.from.getHours()]).toEqual([2, 17]);
+  });
+
+  it('resolves last night in an explicit zone regardless of the process zone (server runs in UTC)', () => {
+    // 09:30 CEST = 07:30Z on 3 Sept: window = 2 Sept 17:00 CEST (15:00Z) → 3 Sept 07:00 CEST (05:00Z)
+    const w = journalWindow('last-night', new Date('2026-09-03T07:30:00Z'), 'Europe/Zurich');
+    expect([w.from.toISOString(), w.to.toISOString()]).toEqual(['2026-09-02T15:00:00.000Z', '2026-09-03T05:00:00.000Z']);
+    // 03:40 CEST: the night is still running → ends now
+    const w2 = journalWindow('last-night', new Date('2026-09-03T01:40:00Z'), 'Europe/Zurich');
+    expect([w2.from.toISOString(), w2.to.toISOString()]).toEqual(['2026-09-02T15:00:00.000Z', '2026-09-03T01:40:00.000Z']);
+    // Winter time: 17:00 CET = 16:00Z
+    const w3 = journalWindow('last-night', new Date('2026-12-03T09:00:00Z'), 'Europe/Zurich');
+    expect(w3.from.toISOString()).toBe('2026-12-02T16:00:00.000Z');
   });
 
   it('24h / 7d are trailing windows', () => {

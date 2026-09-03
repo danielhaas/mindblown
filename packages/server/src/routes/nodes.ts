@@ -432,7 +432,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         // null in one PUT; anything else that drops the claim here is a
         // plain release. Same reason vocabulary as release_node / the sweeper.
         const becameDone = updated.completedAt != null && before.completedAt == null;
-        const becameBlocked = updated.status === 'blocked' && before.status !== 'blocked';
+        // flag_blocker writes only blockedReason and leaves the status alone
+        // (blocked_digest / risk_scan key on the reason too) — that is a block
+        // as much as status=blocked is.
+        const becameBlocked =
+          (updated.status === 'blocked' && before.status !== 'blocked') || (updated.blockedReason != null && before.blockedReason == null);
         events
           .recordClaimTransition(req.params.id, req.params.nodeId, req.userId ?? null, before, updated, {
             reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',

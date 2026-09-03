@@ -216,6 +216,27 @@ describe('PUT /api/maps/:id/nodes/:nodeId — claim transition rows', () => {
     expect(released.newValue).toMatchObject({ reason: 'blocked', note: 'waiting on PR #8770' });
   });
 
+  it('blockedReason alone (flag_blocker leaves the status) with the claim dropped is a blocked release too', async () => {
+    mocks.getNodeMock.mockResolvedValue(stubNode({ status: 'in_progress', claimedBySession: WORKER, claimedAt: new Date().toISOString() }));
+    mocks.updateNodeMock.mockResolvedValue(
+      stubNode({ status: 'in_progress', blockedReason: 'needs Rita', claimedBySession: null, claimedAt: null }),
+    );
+
+    const app = await buildApp();
+    await app.inject({
+      method: 'PUT',
+      url: `/api/maps/${MAP_ID}/nodes/${NODE_ID}`,
+      payload: { blockedReason: 'needs Rita', claimedBySession: null },
+    });
+    await app.close();
+
+    await vi.waitFor(() => {
+      expect(mocks.inserted.some((r) => r.eventType === 'node.released')).toBe(true);
+    });
+    const released = mocks.inserted.find((r) => r.eventType === 'node.released')!;
+    expect(released.newValue).toMatchObject({ reason: 'blocked', note: 'needs Rita' });
+  });
+
   it('a write that leaves the claim untouched records no claim row', async () => {
     mocks.getNodeMock.mockResolvedValue(stubNode({ claimedBySession: WORKER, claimedAt: new Date().toISOString() }));
     mocks.updateNodeMock.mockResolvedValue(

@@ -12,7 +12,7 @@
  * so those events are fetched per node over a longer reach, not by the
  * window. The assembly itself is pure and lives in core.
  */
-import { and, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { buildFleetJournal, JOURNAL_EVENT_TYPES } from '@mindblown/core';
 import type { ExternalLink, FleetJournal, FleetTickPayload, JournalEventRow, JournalNodeRow } from '@mindblown/core';
 import { db } from '../db/connection.js';
@@ -24,6 +24,8 @@ export const MAX_WINDOW_MS = 31 * 86_400_000;
 const TRAIL_REACH_MS = 14 * 86_400_000;
 const EVENT_LIMIT = 5000;
 const TICK_LIMIT = 2000;
+/** Nodes completed or created in the window — a month on a busy map is a few hundred; this is a runaway guard, not a page size. */
+const NODE_LIMIT = 5000;
 
 const CLAIM_TRAIL_TYPES = ['node.claimed', 'node.released', 'node.pr_merged'];
 
@@ -79,13 +81,16 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
           ),
         ),
       )
-      .orderBy(changeEvents.createdAt)
+      // Newest first under the cap: a window bigger than the limit keeps the
+      // END of the night, not its first hours, and the journal says it was cut.
+      // Core re-sorts ascending.
+      .orderBy(desc(changeEvents.createdAt))
       .limit(EVENT_LIMIT),
     db
       .select()
       .from(fleetTicks)
       .where(and(eq(fleetTicks.mapId, mapId), gte(fleetTicks.receivedAt, from), lte(fleetTicks.receivedAt, to)))
-      .orderBy(fleetTicks.receivedAt)
+      .orderBy(desc(fleetTicks.receivedAt))
       .limit(TICK_LIMIT),
     db
       .select()
@@ -99,7 +104,8 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
             and(gte(nodes.createdAt, from), lte(nodes.createdAt, to)),
           ),
         ),
-      ),
+      )
+      .limit(NODE_LIMIT),
   ]);
 
   // Nodes the events point at but the window did not select (a release of
@@ -110,7 +116,7 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
 
   const [extraNodes, trailEvents] = await Promise.all([
     eventNodeIds.length > 0
-      ? db.select().from(nodes).where(and(eq(nodes.mapId, mapId), inArray(nodes.id, eventNodeIds)))
+      ? db.select().from(nodes).where(and(eq(nodes.mapId, mapId), isNull(nodes.deletedAt), inArray(nodes.id, eventNodeIds)))
       : Promise.resolve([] as (typeof nodes.$inferSelect)[]),
     deliveredIds.length > 0
       ? db
@@ -154,6 +160,7 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
     nodes: allNodes.map(toNodeRow),
     versions: versionRows,
     users: userRows,
+    truncated: { events: windowEvents.length >= EVENT_LIMIT, ticks: tickRows.length >= TICK_LIMIT },
   });
 }
 

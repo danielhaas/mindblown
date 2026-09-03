@@ -50,6 +50,9 @@ export function renderFleetJournal(j: FleetJournal): string {
       `${t.delivered} delivered (${t.prsMerged} with PR, actual ${t.actualEffortSum}) · ${t.claims} picked up · ${t.releases} handed back · ` +
       `${t.blocked} blocked · ${t.created} follow-ups · ${t.knobWrites} knob writes · ${t.workers} workers`,
   );
+  if (j.truncated.events || j.truncated.ticks) {
+    lines.push(`NOTE: the read limit cut this window (${[j.truncated.events ? 'events' : '', j.truncated.ticks ? 'ticks' : ''].filter(Boolean).join(' + ')}) — lists show the newest part, totals undercount. Narrow the window.`);
+  }
 
   lines.push('');
   lines.push(`## Ticks (${j.ticks.length})`);
@@ -140,13 +143,17 @@ export const fleetJournalTool = defineTool({
   schema: {
     mapId: z.string().describe('The map ID the fleet pulls from'),
     preset: z.enum(['last-night', '24h', '7d']).optional().describe('Window preset; ignored when from/to are given'),
+    timeZone: z
+      .string()
+      .optional()
+      .describe('IANA zone the last-night preset (17:00 → 07:00) is resolved in, e.g. Europe/Zurich. Default: the zone of the process running this tool — UTC when it is the server.'),
     from: z.string().optional().describe('Window start, ISO 8601'),
     to: z.string().optional().describe('Window end, ISO 8601 (default now)'),
   },
-  handler: async (backend, { mapId, preset, from, to }) => {
+  handler: async (backend, { mapId, preset, timeZone, from, to }) => {
     let opts: { from?: string; to?: string } = { from, to };
     if (!from && !to && preset) {
-      const w = journalWindow(preset);
+      const w = journalWindow(preset, new Date(), timeZone);
       opts = { from: w.from.toISOString(), to: w.to.toISOString() };
     }
     const r = await backend.getFleetJournal(mapId, opts);
