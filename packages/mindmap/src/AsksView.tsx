@@ -10,7 +10,7 @@
  * top of the node, blocked → todo. «Später» and «an Rita/Susi/Dana» only
  * record. No answer is written without a click.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, proseMirrorToPlainText, sortAsks } from '@mindblown/core';
 import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
@@ -72,6 +72,12 @@ export function AsksView() {
   // moves an answered row out of the open set, but the report of what was
   // written (and what failed) must stay on screen where Dan clicked.
   const [results, setResults] = useState<Record<string, AnswerResult>>({});
+  // Questions that were open on screen and are missing from the next push:
+  // resolved elsewhere (terminal round, ticket closed, node unparked by hand).
+  // Kept as a stub until dismissed, so a card never vanishes under a click
+  // without a word (#5819, 2026-09-03).
+  const [gone, setGone] = useState<Record<string, { ask: Ask; at: string }>>({});
+  const lastOpen = useRef<Map<string, Ask> | null>(null);
 
   useEffect(() => {
     const p = setInterval(() => setPoll((t) => t + 1), POLL_MS);
@@ -85,6 +91,16 @@ export function AsksView() {
       .fetchAsks(currentMapId, { status: 'all' })
       .then((r) => {
         if (cancelled) return;
+        const now = new Map(r.items.map((x) => [x.ask.id, x.ask] as const));
+        const prev = lastOpen.current;
+        if (prev && prev.size > 0) {
+          const missing = [...prev].filter(([id]) => !now.has(id));
+          if (missing.length > 0) {
+            const at = r.pushedAt ?? r.now;
+            setGone((g) => ({ ...g, ...Object.fromEntries(missing.map(([id, ask]) => [id, { ask, at }])) }));
+          }
+        }
+        lastOpen.current = new Map(r.items.filter((x) => x.status === 'open').map((x) => [x.ask.id, x.ask] as const));
         setData(r);
         setError(null);
       })
@@ -171,6 +187,12 @@ export function AsksView() {
           </Chip>
         ))}
       </div>
+
+      {Object.entries(gone)
+        .filter(([, g]) => (!filter.answerer || g.ask.answerer === filter.answerer) && (!filter.hint || g.ask.hint === filter.hint))
+        .map(([id, g]) => (
+          <GoneCard key={`gone-${id}`} ask={g.ask} at={g.at} onDismiss={() => setGone((m) => { const n = { ...m }; delete n[id]; return n; })} />
+        ))}
 
       {groups.visible.length === 0 && <Muted>Keine offene Frage{filter.answerer || filter.hint ? ' in diesem Filter' : ''}. 🎉</Muted>}
 
@@ -336,7 +358,17 @@ function AskCard({
         lines: [head, ...r.ask.writes.map((w) => `${w.done ? '✓' : w.error ? '✗' : '…'} ${w.kind} ${w.target} — ${w.detail}${w.error ? ` (${w.error})` : ''}`)],
       });
     } catch (e) {
-      setResult({ ok: false, lines: [e instanceof Error ? e.message : 'failed'] });
+      const notFound = e instanceof api.ApiError && (e.code === 'ASK_NOT_FOUND' || e.status === 404);
+      setResult({
+        ok: false,
+        lines: [
+          notFound
+            ? 'Diese Frage ist seit dem letzten Push nicht mehr offen — anderswo beantwortet (Terminal-Runde), Ticket zu, oder Knoten von Hand entparkt. Nichts geschrieben.'
+            : e instanceof Error
+              ? e.message
+              : 'failed',
+        ],
+      });
     } finally {
       setBusy(false);
     }
@@ -489,6 +521,25 @@ function AskCard({
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+function GoneCard({ ask: a, at, onDismiss }: { ask: Ask; at: string; onDismiss: () => void }) {
+  return (
+    <section style={{ border: '1px dashed #cbd5e1', borderRadius: 8, padding: '8px 14px', marginBottom: 10, background: '#f8fafc', fontSize: 13, color: '#475569' }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap' }}>
+        {a.url ? (
+          <a href={a.url} target="_blank" rel="noreferrer" style={{ fontWeight: 700, color: '#1d4ed8' }}>{ref(a)}</a>
+        ) : (
+          <b>{ref(a)}</b>
+        )}
+        <span style={{ fontWeight: 600 }}>{title(a)}</span>
+        <span>· seit dem Push um {fmtTime(at)} nicht mehr offen — anderswo beantwortet (Terminal-Runde), Ticket zu, oder Knoten von Hand entparkt. Hier ist nichts mehr zu tun.</span>
+        <button onClick={onDismiss} style={{ marginLeft: 'auto', fontSize: 12, padding: '1px 8px', border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff', color: '#334155', cursor: 'pointer' }}>
+          Ausblenden
+        </button>
+      </div>
     </section>
   );
 }
