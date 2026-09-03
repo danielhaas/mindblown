@@ -153,6 +153,43 @@ export type {
   TickSummary,
 } from './fleet.js';
 
+// Asks inbox — the fleet's open human questions + the write plan of an answer
+export {
+  ASK_ANSWERERS,
+  ASK_HINTS,
+  ASK_ACTIONS,
+  ASK_STATUSES,
+  ASK_NO_QUESTION_HINTS,
+  parseAsk,
+  parseAskDocument,
+  decisionLine,
+  decisionCommentBody,
+  prependDecision,
+  planAskWrites,
+  sortAsks,
+  isNoQuestion,
+  isVersionOnly,
+  countAsks,
+  digestAsks,
+  formatAskDigest,
+} from './asks.js';
+export type {
+  Ask,
+  AskAnswerer,
+  AskHint,
+  AskAction,
+  AskStatus,
+  AskDocument,
+  AskDocumentMeta,
+  AskAnswerInput,
+  AskWrite,
+  AskRow,
+  AskNodeState,
+  AskWritePlan,
+  AskCounts,
+  AskDigest,
+} from './asks.js';
+
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';
 

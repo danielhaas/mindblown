@@ -48,6 +48,7 @@ export const ALL_VIEWS: ActiveView[] = [
   'digest',
   'cockpit',
   'fleet',
+  'asks',
   'mindmap',
   'kanban',
   'gantt',
@@ -83,7 +84,8 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   pm: {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
-    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap'],
+    // Fragen = the PM's decision inbox ("what do I decide today?" — literally).
+    tabs: ['cockpit', 'fleet', 'asks', 'releases', 'list', 'kanban', 'mindmap'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {

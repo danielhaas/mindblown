@@ -48,7 +48,8 @@ export type ActiveView =
   | 'guide'
   | 'digest'
   | 'cockpit'
-  | 'fleet';
+  | 'fleet'
+  | 'asks';
 
 export interface VisibleNode {
   node: Node;
@@ -148,6 +149,8 @@ export interface MindmapState {
   wsConnected: boolean;
   /** Bumped on every `fleet:updated` socket message — the Fleet card refetches on change. */
   fleetRev: number;
+  /** Bumped on every `asks:updated` socket message — the Fragen tab refetches on change. */
+  asksRev: number;
 
   // Presence / follow mode
   presence: Record<string, RemotePresence>;
@@ -307,6 +310,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   error: null,
   wsConnected: false,
   fleetRev: 0,
+  asksRev: 0,
   presence: {},
   followingUserId: null,
 
@@ -1600,6 +1604,12 @@ function handleWsMessage(
     // on the socket (rollups are large); the Fleet card refetches.
     case 'fleet:updated': {
       set({ fleetRev: state.fleetRev + 1 });
+      break;
+    }
+
+    // The orchestrator pushed a new asks set, or someone answered one.
+    case 'asks:updated': {
+      set({ asksRev: state.asksRev + 1 });
       break;
     }
   }

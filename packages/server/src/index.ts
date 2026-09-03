@@ -33,6 +33,7 @@ import { mcpRoutes } from './routes/mcp.js';
 import { mediaRoutes } from './routes/media.js';
 import { orchestrationRoutes } from './routes/orchestration.js';
 import { fleetRoutes } from './routes/fleet.js';
+import { asksRoutes } from './routes/asks.js';
 import { fleetJournalRoutes } from './routes/fleetJournal.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
   await app.register(mediaRoutes);
   await app.register(orchestrationRoutes);
   await app.register(fleetRoutes);
+  await app.register(asksRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(prRoutes);
   await app.register(systemRoutes);

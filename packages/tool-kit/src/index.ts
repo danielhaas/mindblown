@@ -12,6 +12,10 @@ export type {
   ReleaseNodeResult,
   UnblockNodeResult,
   FleetStatusResult,
+  // Asks inbox (/leidang-asks)
+  AskListOptions,
+  AskListResult,
+  AskAnswerResult,
   FleetStatusOptions,
   FleetJournalResult,
   FleetJournalOptions,
@@ -40,8 +44,10 @@ import { bulkTools } from './tools/bulk.js';
 import { triageTools } from './tools/triage.js';
 import { orchestrationTools } from './tools/orchestration.js';
 import { githubAuditTools } from './tools/githubAudit.js';
+import { asksTools } from './tools/asks.js';
 import { fleetJournalTools } from './tools/fleetJournal.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, fleetJournalTools };
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools };
+export { renderAskList } from './tools/asks.js';
 
 export const allTools = [
   ...mapTools,
@@ -50,5 +56,6 @@ export const allTools = [
   ...triageTools,
   ...orchestrationTools,
   ...githubAuditTools,
+  ...asksTools,
   ...fleetJournalTools,
 ];

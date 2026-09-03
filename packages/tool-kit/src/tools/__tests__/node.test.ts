@@ -100,6 +100,8 @@ function makeRecordingBackend(): {
     getFleetStatus: async () => { throw new Error('not implemented'); },
     getFleetJournal: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
+    listAsks: async () => { throw new Error('not implemented'); },
+    answerAsk: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

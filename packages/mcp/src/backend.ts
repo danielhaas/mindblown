@@ -35,6 +35,9 @@ export const httpBackend: ToolBackend = {
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
   getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),
+  // ── Asks inbox (/leidang-asks) ──────────────────────────────────
+  listAsks: (mapId, opts) => api.listAsks(mapId, opts),
+  answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
 };

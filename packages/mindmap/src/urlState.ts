@@ -75,6 +75,7 @@ const VIEW_IDS: ReadonlySet<string> = new Set<ActiveView>([
   'digest',
   'cockpit',
   'fleet',
+  'asks',
 ]);
 
 // ── Shape ──────────────────────────────────────────────────────

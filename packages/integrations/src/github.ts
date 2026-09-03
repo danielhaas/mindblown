@@ -1002,6 +1002,63 @@ export async function closeGitHubIssue(
   );
 }
 
+/**
+ * Post a comment on an issue — the «Entscheid (Dan, Datum): …» line the
+ * asks inbox writes, same body `leidang-asks-apply` posts via `gh`.
+ */
+export async function commentOnGitHubIssue(
+  repoOwner: string,
+  repoName: string,
+  issueNumber: number,
+  body: string,
+  token: string,
+): Promise<{ id: number; html_url: string }> {
+  return githubFetch<{ id: number; html_url: string }>(
+    `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/comments`,
+    token,
+    { method: 'POST', body: JSON.stringify({ body }) },
+  );
+}
+
+/**
+ * `gh issue edit --milestone M --remove-label NEEDS-VERSION`, as two REST
+ * calls. The milestone is looked up by title (open milestones first); an
+ * unknown title throws so the caller can report it instead of silently
+ * leaving the label on.
+ */
+export async function setGitHubIssueMilestone(
+  repoOwner: string,
+  repoName: string,
+  issueNumber: number,
+  milestoneTitle: string,
+  removeLabel: string | null,
+  token: string,
+): Promise<{ milestoneNumber: number }> {
+  const milestones = await githubFetch<{ number: number; title: string }[]>(
+    `/repos/${repoOwner}/${repoName}/milestones?state=all&per_page=100`,
+    token,
+  );
+  const m = milestones.find((x) => x.title === milestoneTitle);
+  if (!m) throw new Error(`Milestone "${milestoneTitle}" not found in ${repoOwner}/${repoName}`);
+  await githubFetch<GitHubIssue>(`/repos/${repoOwner}/${repoName}/issues/${issueNumber}`, token, {
+    method: 'PATCH',
+    body: JSON.stringify({ milestone: m.number }),
+  });
+  if (removeLabel) {
+    try {
+      await githubFetch<unknown>(
+        `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/labels/${encodeURIComponent(removeLabel)}`,
+        token,
+        { method: 'DELETE' },
+      );
+    } catch (err) {
+      // 404 = the label was not on the issue; nothing to remove.
+      if (!(err instanceof GitHubApiError && err.status === 404)) throw err;
+    }
+  }
+  return { milestoneNumber: m.number };
+}
+
 // ── Inbound: GitHub → MindBlown ───────────────────────────────────
 
 /**

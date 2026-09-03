@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { FleetJournal, FleetRollup, FleetTickPayload } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
 export interface FleetStatusResult {
@@ -37,6 +37,37 @@ export interface FleetJournalOptions {
 export interface FleetJournalResult {
   journal: FleetJournal;
   now: string;
+}
+
+// ── Asks inbox (/leidang-asks) ─────────────────────────────────────
+
+export interface AskListOptions {
+  /** Default open. */
+  status?: AskStatus | 'all';
+  hint?: string;
+  answerer?: string;
+  /** Rows answered at/after this ISO timestamp. */
+  since?: string;
+  limit?: number;
+}
+
+/** GET /api/maps/:id/asks */
+export interface AskListResult {
+  items: AskRow[];
+  counts: AskCounts;
+  /** When the collector last pushed — null until the first push. */
+  pushedAt: string | null;
+  meta: AskDocumentMeta | null;
+  now: string;
+}
+
+/** POST /api/maps/:id/asks/:askId/answer */
+export interface AskAnswerResult {
+  ask: AskRow;
+  plan: AskWritePlan;
+  /** False when a planned write failed — the row's `writes` say which. */
+  ok: boolean;
+  node: { id: string; status: string | null } | null;
 }
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
@@ -380,6 +411,12 @@ export interface ToolBackend {
   getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
   /** What the fleet did in a window — ticks, claims, delivered nodes with PR/effort, follow-ups, knob writes (read-only). */
   getFleetJournal(mapId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
+
+  // ── Asks inbox (/leidang-asks) ──────────────────────────────────
+  /** The fleet's open human questions as the collector pushed them (read-only). */
+  listAsks(mapId: string, opts?: AskListOptions): Promise<AskListResult>;
+  /** Record an answer and write it like `leidang-asks-apply` (ticket comment, node, worker flag). */
+  answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(
