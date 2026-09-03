@@ -204,3 +204,24 @@ export type {
   ForecastConfidenceInput,
   ForecastConfidenceLevel,
 } from './velocity.js';
+
+// Fleet journal — what the fleet did in a window (ticks, claims, delivered, follow-ups, knob writes)
+export { buildFleetJournal, journalWindow, splitSession, JOURNAL_EVENT_TYPES } from './fleetJournal.js';
+export type {
+  FleetJournal,
+  JournalInput,
+  JournalEventRow,
+  JournalNodeRow,
+  JournalWindow,
+  JournalPreset,
+  JournalWorker,
+  JournalClaim,
+  JournalRelease,
+  JournalDelivered,
+  JournalCreated,
+  JournalBlocked,
+  JournalKnobWrite,
+  JournalTick,
+  JournalTotals,
+  JournalIssue,
+} from './fleetJournal.js';

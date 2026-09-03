@@ -9,6 +9,7 @@ import type {
   RequirementStage,
   FleetRollup,
   FleetTickPayload,
+  FleetJournal,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -874,6 +875,15 @@ export function fetchFleet(mapId: string, opts: FleetWindowOptions = {}): Promis
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
   return request<FleetResponse>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
+export function fetchFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<{ journal: FleetJournal; now: string }> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 // ── Attachments ──────────────────────────────────────────────────

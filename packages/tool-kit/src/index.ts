@@ -13,6 +13,8 @@ export type {
   UnblockNodeResult,
   FleetStatusResult,
   FleetStatusOptions,
+  FleetJournalResult,
+  FleetJournalOptions,
   ConflictEntry,
   ConflictScanResult,
   // Pull queue (Leidang)
@@ -38,7 +40,8 @@ import { bulkTools } from './tools/bulk.js';
 import { triageTools } from './tools/triage.js';
 import { orchestrationTools } from './tools/orchestration.js';
 import { githubAuditTools } from './tools/githubAudit.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools };
+import { fleetJournalTools } from './tools/fleetJournal.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, fleetJournalTools };
 
 export const allTools = [
   ...mapTools,
@@ -47,4 +50,5 @@ export const allTools = [
   ...triageTools,
   ...orchestrationTools,
   ...githubAuditTools,
+  ...fleetJournalTools,
 ];

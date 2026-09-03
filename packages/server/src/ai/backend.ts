@@ -15,6 +15,7 @@ import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import * as fleetDb from '../db/fleet.js';
+import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
@@ -284,6 +285,13 @@ export function createChatBackend(userId: string): ToolBackend {
         now: new Date().toISOString(),
         window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
       };
+    },
+    async getFleetJournal(mapId, opts) {
+      // Same window rules as GET /fleet-journal (defaults, 31-day cap).
+      const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
+      if ('error' in window) throw new Error(window.error);
+      const journal = await loadFleetJournal(mapId, window.from, window.to);
+      return { journal, now: new Date().toISOString() };
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────

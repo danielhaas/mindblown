@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
+import type { FleetJournal, FleetRollup, FleetTickPayload } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
 export interface FleetStatusResult {
@@ -25,6 +25,18 @@ export interface FleetStatusResult {
 export interface FleetStatusOptions {
   since?: string;
   limit?: number;
+}
+
+/** Window for `getFleetJournal` — ISO 8601; the server defaults to the trailing 24 h and caps at 31 days. */
+export interface FleetJournalOptions {
+  from?: string;
+  to?: string;
+}
+
+/** GET /api/maps/:id/fleet-journal — what the fleet did in the window, assembled by core `buildFleetJournal`. */
+export interface FleetJournalResult {
+  journal: FleetJournal;
+  now: string;
 }
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
@@ -365,6 +377,8 @@ export interface ToolBackend {
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
   /** Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window. */
   getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
+  /** What the fleet did in a window — ticks, claims, delivered nodes with PR/effort, follow-ups, knob writes (read-only). */
+  getFleetJournal(mapId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

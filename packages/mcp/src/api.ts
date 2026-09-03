@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetStatusResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult } from '@mindblown/tool-kit';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1353,6 +1353,15 @@ export function getFleetStatus(mapId: string, opts: { since?: string; limit?: nu
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
   return request<FleetStatusResult>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** What the fleet did in a window (fleet_journal). */
+export function getFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<FleetJournalResult> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request<FleetJournalResult>(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

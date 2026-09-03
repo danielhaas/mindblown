@@ -34,6 +34,7 @@ export const httpBackend: ToolBackend = {
   unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
+  getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
 };
