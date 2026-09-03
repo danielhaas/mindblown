@@ -65,6 +65,9 @@ const mocks = vi.hoisted(() => {
     updateNodeMock: vi.fn(),
     selectNodesMock: vi.fn(),
     broadcastMock: vi.fn(),
+    recordFieldChangesMock: vi.fn(async () => {}),
+    recordClaimTransitionMock: vi.fn(async () => {}),
+    recordPrMergedMock: vi.fn(async () => {}),
     verifySignatureMock: vi.fn(async () => true),
     closeGitHubIssueMock: vi.fn(async () => undefined),
     handleAbandonedPrMock: vi.fn(
@@ -174,6 +177,15 @@ vi.mock('../../sync/githubIngest.js', () => ({
   findNodesByExternalIds: vi.fn(),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcastMock }));
+// The merge handler writes the node's history itself (it bypasses the PUT
+// route): field changes, the claim it cleared, the merge. Spied, not real —
+// the payload shape is what these tests pin.
+vi.mock('../../db/events.js', () => ({
+  recordEvent: vi.fn(async () => {}),
+  recordFieldChanges: mocks.recordFieldChangesMock,
+  recordClaimTransition: mocks.recordClaimTransitionMock,
+  recordPrMerged: mocks.recordPrMergedMock,
+}));
 vi.mock('../../sync/triage.js', () => ({
   triageIssue: vi.fn(),
   clearTriageDebounce: vi.fn(),
@@ -257,6 +269,9 @@ beforeEach(() => {
   // findNodeByExternalId scan — expect an array.
   mocks.selectNodesMock.mockResolvedValue([]);
   mocks.broadcastMock.mockReset();
+  mocks.recordFieldChangesMock.mockClear();
+  mocks.recordClaimTransitionMock.mockClear();
+  mocks.recordPrMergedMock.mockClear();
   mocks.verifySignatureMock.mockReset();
   mocks.verifySignatureMock.mockResolvedValue(true);
   mocks.closeGitHubIssueMock.mockReset();
@@ -315,6 +330,108 @@ describe('webhook: pull_request.closed merged=true (#152)', () => {
       'map-1',
       expect.objectContaining({ type: 'node:updated', source: 'github_webhook_pr_merge' }),
     );
+  });
+
+  it('writes the history the PUT route would have: field changes, the cleared claim, the merge', async () => {
+    const node = {
+      ...seedLinkedNode({ nodeId: 'n-100', externalId: 'owner/repo#100' }),
+      claimedBySession: 'njoerd:worker-3:default',
+      claimedAt: '2026-09-03T08:00:00.000Z',
+      completedAt: null,
+    };
+    const updated = {
+      ...node,
+      status: 'done',
+      percentComplete: 100,
+      claimedBySession: null,
+      claimedAt: null,
+      completedAt: '2026-09-03T08:42:00.000Z',
+    };
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(updated);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { 'x-github-event': 'pull_request', 'x-hub-signature-256': 'sha256=anything' },
+      payload: {
+        ...prMergedPayload({ number: 555, title: 'feat: add Y (Closes #100)', body: null }),
+        pull_request: {
+          ...(prMergedPayload({ number: 555, title: 'feat: add Y (Closes #100)', body: null }).pull_request as object),
+          merge_commit_sha: 'abc123',
+        },
+      },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+
+    expect(mocks.recordFieldChangesMock).toHaveBeenCalledWith('map-1', 'n-100', null, node, updated);
+    expect(mocks.recordClaimTransitionMock).toHaveBeenCalledWith('map-1', 'n-100', null, node, updated, {
+      reason: 'done',
+      note: 'PR #555 merged',
+    });
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledWith('map-1', 'n-100', null, {
+      prNumber: 555,
+      repo: 'owner/repo',
+      url: 'https://github.com/owner/repo/pull/555',
+      mergeCommitSha: 'abc123',
+      externalId: 'owner/repo#100',
+      alreadyDone: false,
+    });
+  });
+
+  it('records node.pr_merged(alreadyDone) once on the already-done path — not on a replay', async () => {
+    const node = seedLinkedNode({ nodeId: 'n-100', externalId: 'owner/repo#100', status: 'done', percentComplete: 100 });
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const base = prMergedPayload({ number: 556, title: 'fix (Closes #100)', body: null });
+    const payload = {
+      ...base,
+      pull_request: { ...(base.pull_request as object), merge_commit_sha: 'deadbeef' },
+    };
+    const app = await buildApp();
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { 'x-github-event': 'pull_request', 'x-hub-signature-256': 'sha256=anything' },
+      payload,
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json().transitions).toEqual([
+      { externalId: 'owner/repo#100', nodeId: 'n-100', status: 'already_done' },
+    ]);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledWith(
+      'map-1',
+      'n-100',
+      null,
+      expect.objectContaining({ prNumber: 556, mergeCommitSha: 'deadbeef', alreadyDone: true }),
+    );
+    // No status change happened, so no field-change / claim rows either.
+    expect(mocks.recordFieldChangesMock).not.toHaveBeenCalled();
+    expect(mocks.recordClaimTransitionMock).not.toHaveBeenCalled();
+
+    // Replay: the sha is already on the link → nothing stamped, nothing recorded.
+    const stamped = {
+      ...node,
+      externalLinks: [{ ...node.externalLinks[0], mergeCommitSha: 'deadbeef', mergedPrNumber: 556 }],
+    };
+    mocks.getNodeMock.mockResolvedValue(stamped);
+    mocks.recordPrMergedMock.mockClear();
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { 'x-github-event': 'pull_request', 'x-hub-signature-256': 'sha256=anything' },
+      payload,
+    });
+    await app.close();
+    expect(second.statusCode).toBe(200);
+    expect(mocks.recordPrMergedMock).not.toHaveBeenCalled();
   });
 
   it('iterates ALL closing refs in PR body (multi-issue support)', async () => {

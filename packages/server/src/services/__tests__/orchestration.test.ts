@@ -26,6 +26,15 @@ const mocks = vi.hoisted(() => ({
   txUpdateMock: vi.fn(),
   transactionMock: vi.fn(),
   broadcastMock: vi.fn(),
+  recordClaimedMock: vi.fn(async () => {}),
+  recordReleasedMock: vi.fn(async () => {}),
+}));
+
+// The claim trail is the only history a claim leaves once it clears —
+// the service must write it next to the broadcast, after commit.
+vi.mock('../../db/events.js', () => ({
+  recordClaimed: mocks.recordClaimedMock,
+  recordReleased: mocks.recordReleasedMock,
 }));
 
 vi.mock('../../db/connection.js', () => ({
@@ -85,11 +94,18 @@ vi.mock('drizzle-orm', () => ({
 // they're not invoked by the paths under test (claim/release don't read
 // schedule). For paths that DO use core (readyNodes, conflictScan), we
 // don't cover them here.
-vi.mock('@mindblown/core', () => ({
-  resolvedSiblingOrder: vi.fn(),
-  isReady: vi.fn(),
-  scopeOverlap: vi.fn(),
-}));
+vi.mock('@mindblown/core', async () => {
+  // The claim-trail payload builders are pure and are what the
+  // assertions below read; everything else stays stubbed.
+  const actual = await vi.importActual<typeof import('@mindblown/core')>('@mindblown/core');
+  return {
+    resolvedSiblingOrder: vi.fn(),
+    isReady: vi.fn(),
+    scopeOverlap: vi.fn(),
+    buildClaimedEvent: actual.buildClaimedEvent,
+    buildReleasedEvent: actual.buildReleasedEvent,
+  };
+});
 
 import { claimNode, releaseNode } from '../orchestration.js';
 
@@ -145,6 +161,8 @@ beforeEach(() => {
   mocks.txUpdateMock.mockReset();
   mocks.transactionMock.mockReset();
   mocks.broadcastMock.mockReset();
+  mocks.recordClaimedMock.mockClear();
+  mocks.recordReleasedMock.mockClear();
 });
 
 describe('claimNode (#118 issue 4 — transactional)', () => {
@@ -260,5 +278,107 @@ describe('releaseNode (#118 issue 5 — unclaimed = no-op success)', () => {
       /claimed by session "sess-other"/,
     );
     expect(mocks.updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('claim trail (change_events written by claim/release)', () => {
+  const WORKER = 'njoerd:worker-3:default';
+  const OTHER = 'claudia:worker-1:default';
+
+  it('claim_node on a free node records node.claimed via "claim"', async () => {
+    mocks.txSelectMock.mockResolvedValue([nodeRow({ claimedBySession: null })]);
+    mocks.txUpdateMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
+
+    await claimNode('m1', 'n1', WORKER);
+
+    expect(mocks.recordReleasedMock).not.toHaveBeenCalled();
+    expect(mocks.recordClaimedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordClaimedMock).toHaveBeenCalledWith('m1', 'n1', null, {
+      session: WORKER,
+      host: 'njoerd',
+      worker: 'worker-3',
+      profile: 'default',
+      via: 'claim',
+      previousSession: null,
+    });
+  });
+
+  it('a claim transfer records node.released(transfer) for the loser and node.claimed for the winner', async () => {
+    const claimedAt = new Date(Date.now() - 42 * 60_000);
+    mocks.txSelectMock.mockResolvedValue([nodeRow({ claimedBySession: OTHER, claimedAt })]);
+    mocks.txUpdateMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
+
+    await claimNode('m1', 'n1', WORKER);
+
+    expect(mocks.recordReleasedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordReleasedMock).toHaveBeenCalledWith(
+      'm1',
+      'n1',
+      null,
+      expect.objectContaining({
+        session: OTHER,
+        worker: 'worker-1',
+        reason: 'transfer',
+        note: `transferred to ${WORKER}`,
+        claimedAt: claimedAt.toISOString(),
+        heldMinutes: 42,
+      }),
+    );
+    expect(mocks.recordClaimedMock).toHaveBeenCalledWith(
+      'm1',
+      'n1',
+      null,
+      expect.objectContaining({ session: WORKER, via: 'claim', previousSession: OTHER }),
+    );
+  });
+
+  it('a same-session re-claim leaves no trail row (only claimedAt moved)', async () => {
+    mocks.txSelectMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
+    mocks.txUpdateMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
+
+    await claimNode('m1', 'n1', WORKER);
+
+    expect(mocks.recordClaimedMock).not.toHaveBeenCalled();
+    expect(mocks.recordReleasedMock).not.toHaveBeenCalled();
+  });
+
+  it('release_node records node.released(release) with the caller\'s reason as note', async () => {
+    const claimedAt = new Date(Date.now() - 7 * 60_000);
+    mocks.selectMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt })]);
+    mocks.updateMock.mockResolvedValue([nodeRow({ claimedBySession: null, claimedAt: null })]);
+
+    await releaseNode('m1', 'n1', WORKER, { reason: '  never started ' });
+
+    expect(mocks.recordReleasedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordReleasedMock).toHaveBeenCalledWith(
+      'm1',
+      'n1',
+      null,
+      expect.objectContaining({
+        session: WORKER,
+        host: 'njoerd',
+        reason: 'release',
+        note: 'never started',
+        claimedAt: claimedAt.toISOString(),
+        heldMinutes: 7,
+      }),
+    );
+  });
+
+  it('release_node without a reason records note: null; an unclaimed node records nothing', async () => {
+    mocks.selectMock.mockResolvedValue([nodeRow({ claimedBySession: WORKER, claimedAt: new Date() })]);
+    mocks.updateMock.mockResolvedValue([nodeRow({ claimedBySession: null, claimedAt: null })]);
+    await releaseNode('m1', 'n1', WORKER);
+    expect(mocks.recordReleasedMock).toHaveBeenCalledWith(
+      'm1',
+      'n1',
+      null,
+      expect.objectContaining({ reason: 'release', note: null }),
+    );
+
+    mocks.recordReleasedMock.mockClear();
+    mocks.selectMock.mockResolvedValue([nodeRow({ claimedBySession: null })]);
+    await releaseNode('m1', 'n1', WORKER, { reason: 'dead worker' });
+    expect(mocks.recordReleasedMock).not.toHaveBeenCalled();
   });
 });

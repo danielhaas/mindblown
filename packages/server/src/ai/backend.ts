@@ -10,6 +10,7 @@ import { computeTree } from '@mindblown/core';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
+import * as events from '../db/events.js';
 import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
@@ -174,6 +175,9 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     async updateNode(mapId, nodeId, fields) {
+      // Snapshot for the change log — this path bypasses the PUT route,
+      // which is where the history is otherwise written.
+      const before = await nodeDb.getNode(nodeId);
       const updated = await nodeDb.updateNode(nodeId, fields);
       if (!updated) throw new Error(`Node ${nodeId} not found`);
       broadcast(mapId, {
@@ -184,6 +188,17 @@ export function createChatBackend(userId: string): ToolBackend {
       });
       if ('text' in fields || 'description' in fields) {
         scheduleEmbedNode(nodeId);
+      }
+      if (before) {
+        events.recordFieldChanges(mapId, nodeId, userId, before, updated).catch(() => {});
+        const becameDone = updated.completedAt != null && before.completedAt == null;
+        const becameBlocked = updated.status === 'blocked' && before.status !== 'blocked';
+        events
+          .recordClaimTransition(mapId, nodeId, userId, before, updated, {
+            reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',
+            note: becameBlocked ? updated.blockedReason : null,
+          })
+          .catch(() => {});
       }
       return toNodeWithComputed(updated, undefined);
     },
@@ -262,7 +277,8 @@ export function createChatBackend(userId: string): ToolBackend {
     readyNodes: (mapId, opts) => orchestrationService.readyNodes(mapId, opts),
     getNextTicket: (mapId, sessionId, profile?) => orchestrationService.getNextTicket(mapId, sessionId, profile),
     claimNode: (mapId, nodeId, sessionId) => orchestrationService.claimNode(mapId, nodeId, sessionId),
-    releaseNode: (mapId, nodeId, sessionId) => orchestrationService.releaseNode(mapId, nodeId, sessionId),
+    releaseNode: (mapId, nodeId, sessionId, reason) =>
+      orchestrationService.releaseNode(mapId, nodeId, sessionId, { reason: reason ?? null }),
     async unblockNode(mapId, nodeId) {
       const result = await unblockNodeService(mapId, nodeId, userId);
       broadcast(mapId, { type: 'node:updated', nodeId, fields: result.changedFields, node: result.node });

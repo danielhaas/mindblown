@@ -188,3 +188,28 @@ export type {
   ForecastConfidenceInput,
   ForecastConfidenceLevel,
 } from './velocity.js';
+
+// Claim trail — change_events payloads for claim/release/delivery + the pure reading of them
+export {
+  CLAIM_EVENT_TYPES,
+  parseSession,
+  heldMinutes,
+  buildClaimedEvent,
+  buildReleasedEvent,
+  describeSession,
+  formatHeld,
+  describeClaimEvent,
+  claimTrail,
+  claimTrailSummary,
+} from './claimTrail.js';
+export type {
+  ClaimVia,
+  ReleaseReason,
+  ParsedSession,
+  ClaimedEvent,
+  ReleasedEvent,
+  PrMergedEvent,
+  ClaimEventType,
+  ChangeEventLike,
+  ClaimTrailEntry,
+} from './claimTrail.js';

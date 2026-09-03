@@ -26,6 +26,8 @@ import { nodes, maps } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import * as events from '../db/events.js';
+import { buildReleasedEvent } from '@mindblown/core';
 
 export interface StaleClaimSweepResult {
   inspected: number;
@@ -92,6 +94,23 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
           node: coreNode,
           source: 'stale_claim_sweep',
         });
+        // Claim trail: without this row a swept claim is indistinguishable
+        // from a worker that gave up, and the worker itself never learns
+        // it lost the node.
+        events
+          .recordReleased(
+            row.mapId as string,
+            row.id as string,
+            null,
+            buildReleasedEvent(
+              row.claimedBySession as string,
+              claimedAt.toISOString(),
+              'stale_sweep',
+              `no activity for ${threshold}h`,
+              now,
+            ),
+          )
+          .catch(() => {});
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { notDeleted } from '../db/nodes.js';
+import * as events from '../db/events.js';
 import {
   createGitHubIssue,
   getGitHubIssue,
@@ -1948,6 +1949,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         body: string | null;
         title: string;
         merge_commit_sha?: string | null;
+        html_url?: string | null;
       };
       // The one piece of durable proof that this issue's work shipped.
       // Stamped onto the link so the outbound sync can close the issue as
@@ -1994,6 +1996,17 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
                 mergedPrNumber: pr.number,
               };
               await nodeDb.updateNode(nodeId, { externalLinks: links });
+              // Same replay guard as the stamp: the delivery row lands once.
+              events
+                .recordPrMerged(node.mapId, nodeId, null, {
+                  prNumber: pr.number,
+                  repo: repoFullName,
+                  url: pr.html_url ?? null,
+                  mergeCommitSha,
+                  externalId,
+                  alreadyDone: true,
+                })
+                .catch(() => {});
             }
           }
           transitions.push({ externalId, nodeId, status: 'already_done' });
@@ -2028,6 +2041,26 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             node: updated,
             source: 'github_webhook_pr_merge',
           });
+          // This write bypasses the PUT route, so the history it keeps has
+          // to be written here too: the status/percent change, the claim
+          // the DB layer just cleared, and the merge itself.
+          events.recordFieldChanges(updated.mapId, nodeId, null, node, updated).catch(() => {});
+          events
+            .recordClaimTransition(updated.mapId, nodeId, null, node, updated, {
+              reason: 'done',
+              note: `PR #${pr.number} merged`,
+            })
+            .catch(() => {});
+          events
+            .recordPrMerged(updated.mapId, nodeId, null, {
+              prNumber: pr.number,
+              repo: repoFullName,
+              url: pr.html_url ?? null,
+              mergeCommitSha,
+              externalId,
+              alreadyDone: false,
+            })
+            .catch(() => {});
         }
         console.log(
           `[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`,

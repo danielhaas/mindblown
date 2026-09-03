@@ -1176,7 +1176,11 @@ export interface ChangeEvent {
     | 'node.moved'
     | 'node.field_changed'
     | 'version.field_changed'
-    | 'map.field_changed';
+    | 'map.field_changed'
+    // Claim trail (payloads: ClaimedEvent / ReleasedEvent / PrMergedEvent in @mindblown/core)
+    | 'node.claimed'
+    | 'node.released'
+    | 'node.pr_merged';
   fieldName: string | null;
   oldValue: unknown;
   newValue: unknown;
@@ -1185,11 +1189,20 @@ export interface ChangeEvent {
 
 export function fetchChangeHistory(
   mapId: string,
-  opts: { nodeId?: string; eventType?: ChangeEvent['eventType']; fieldName?: string; sinceDays?: number; limit?: number } = {},
+  opts: {
+    nodeId?: string;
+    eventType?: ChangeEvent['eventType'];
+    /** Several types in one query; the route takes them comma-separated in `eventType`. */
+    eventTypes?: readonly ChangeEvent['eventType'][];
+    fieldName?: string;
+    sinceDays?: number;
+    limit?: number;
+  } = {},
 ): Promise<{ events: ChangeEvent[] }> {
   const qs = new URLSearchParams();
   if (opts.nodeId) qs.set('nodeId', opts.nodeId);
-  if (opts.eventType) qs.set('eventType', opts.eventType);
+  if (opts.eventTypes && opts.eventTypes.length > 0) qs.set('eventType', opts.eventTypes.join(','));
+  else if (opts.eventType) qs.set('eventType', opts.eventType);
   if (opts.fieldName) qs.set('fieldName', opts.fieldName);
   if (opts.sinceDays !== undefined) qs.set('sinceDays', String(opts.sinceDays));
   if (opts.limit !== undefined) qs.set('limit', String(opts.limit));

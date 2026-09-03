@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Node, ComputedNodeValues, Priority } from '@mindblown/core';
+import type { Node, ComputedNodeValues, Priority, ClaimTrailEntry } from '@mindblown/core';
+import { CLAIM_EVENT_TYPES, claimTrail, describeSession, parseSession } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { GitHubNodeSection } from './GitHubPanel.js';
@@ -814,6 +815,11 @@ function PropertyPanelInner({
         {/* Divider */}
         <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
 
+        {/* Fleet trail — who picked the node up, released it, delivered it.
+            Reads the claim events, not claimedBySession: that field is
+            nulled on done, so the node alone can't say who delivered it. */}
+        <FleetTrailSection node={node} />
+
         {/* GitHub section */}
         <GitHubNodeSection mapId={node.mapId} node={node} />
 
@@ -824,6 +830,108 @@ function PropertyPanelInner({
         <CommentsPanel mapId={node.mapId} nodeId={nodeId} />
       </div>
     </div>
+  );
+}
+
+// ── Fleet trail ──────────────────────────────────────────────────
+
+const TRAIL_KIND_COLOR: Record<ClaimTrailEntry['kind'], string> = {
+  claimed: '#2563eb',
+  released: '#64748b',
+  delivered: '#166534',
+  done: '#166534',
+};
+
+function formatTrailTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function FleetTrailSection({ node }: { node: Node }) {
+  const [entries, setEntries] = useState<ClaimTrailEntry[]>([]);
+  const [failed, setFailed] = useState(false);
+
+  // Re-fetch on the node fields a claim write touches, so a release or a
+  // done-transition pushed over the socket shows up without reopening
+  // the panel.
+  const { id: nodeId, mapId, claimedBySession, status, completedAt, actualEffort } = node;
+  useEffect(() => {
+    let cancelled = false;
+    setFailed(false);
+    api
+      .fetchChangeHistory(mapId, { nodeId, eventTypes: CLAIM_EVENT_TYPES, limit: 50 })
+      .then(({ events }) => {
+        if (!cancelled) setEntries(claimTrail(events, { completedAt, actualEffort }));
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapId, nodeId, claimedBySession, status, completedAt, actualEffort]);
+
+  if (entries.length === 0 && !claimedBySession) return null;
+
+  const holder = claimedBySession
+    ? describeSession({ session: claimedBySession, ...parseSession(claimedBySession) })
+    : null;
+
+  return (
+    <>
+      <Field label="Fleet trail">
+        {holder && (
+          <div
+            style={{
+              fontSize: 12,
+              padding: '4px 8px',
+              borderRadius: 6,
+              background: '#dbeafe',
+              color: '#1e40af',
+              fontWeight: 600,
+            }}
+            title={claimedBySession ?? undefined}
+          >
+            held by {holder}
+          </div>
+        )}
+        {failed && (
+          <div style={{ fontSize: 12, color: '#94a3b8' }}>Trail unavailable</div>
+        )}
+        {entries.length > 0 && (
+          <ol style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {entries.map((e, i) => (
+              <li
+                key={`${e.at}-${e.kind}-${i}`}
+                style={{ display: 'flex', gap: 8, fontSize: 12, lineHeight: '16px' }}
+                title={e.session ?? undefined}
+              >
+                <span style={{ color: '#94a3b8', whiteSpace: 'nowrap', fontVariantNumeric: 'tabular-nums' }}>
+                  {formatTrailTime(e.at)}
+                </span>
+                <span
+                  style={{
+                    color: TRAIL_KIND_COLOR[e.kind],
+                    fontWeight: e.session !== null && e.session === claimedBySession && e.kind === 'claimed' ? 600 : 400,
+                  }}
+                >
+                  {e.text}
+                </span>
+              </li>
+            ))}
+          </ol>
+        )}
+      </Field>
+
+      {/* Divider */}
+      <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />
+    </>
   );
 }
 

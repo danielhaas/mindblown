@@ -774,7 +774,11 @@ export interface ChangeEvent {
     | 'node.moved'
     | 'node.field_changed'
     | 'version.field_changed'
-    | 'map.field_changed';
+    | 'map.field_changed'
+    // Claim trail (payloads: ClaimedEvent / ReleasedEvent / PrMergedEvent in @mindblown/core)
+    | 'node.claimed'
+    | 'node.released'
+    | 'node.pr_merged';
   fieldName: string | null;
   oldValue: unknown;
   newValue: unknown;
@@ -783,11 +787,20 @@ export interface ChangeEvent {
 
 export function getChangeHistory(
   mapId: string,
-  opts: { nodeId?: string; eventType?: string; fieldName?: string; sinceDays?: number; limit?: number } = {},
+  opts: {
+    nodeId?: string;
+    eventType?: string;
+    /** Several types in one query; the route takes them comma-separated in `eventType`. */
+    eventTypes?: readonly string[];
+    fieldName?: string;
+    sinceDays?: number;
+    limit?: number;
+  } = {},
 ): Promise<{ events: ChangeEvent[] }> {
   const params = new URLSearchParams();
   if (opts.nodeId) params.set('nodeId', opts.nodeId);
-  if (opts.eventType) params.set('eventType', opts.eventType);
+  if (opts.eventTypes && opts.eventTypes.length > 0) params.set('eventType', opts.eventTypes.join(','));
+  else if (opts.eventType) params.set('eventType', opts.eventType);
   if (opts.fieldName) params.set('fieldName', opts.fieldName);
   if (opts.sinceDays != null) params.set('sinceDays', String(opts.sinceDays));
   if (opts.limit != null) params.set('limit', String(opts.limit));
@@ -1339,10 +1352,11 @@ export function releaseNode(
   mapId: string,
   nodeId: string,
   sessionId: string,
+  reason?: string,
 ): Promise<ReleaseNodeResultApi> {
   return request<ReleaseNodeResultApi>(
     `/api/maps/${mapId}/nodes/${nodeId}/release`,
-    { method: 'POST', body: JSON.stringify({ sessionId }) },
+    { method: 'POST', body: JSON.stringify({ sessionId, ...(reason ? { reason } : {}) }) },
   );
 }
 

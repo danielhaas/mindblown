@@ -347,7 +347,8 @@ export interface ToolBackend {
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
-  releaseNode(mapId: string, nodeId: string, sessionId: string): Promise<ReleaseNodeResult>;
+  /** `reason` is free text for the claim trail (why the holder let go); it never gates the release. */
+  releaseNode(mapId: string, nodeId: string, sessionId: string, reason?: string): Promise<ReleaseNodeResult>;
   /**
    * Release a parked ticket back into the pull queue: blockedReason
    * cleared, `blocked` tag removed, status back to todo unless done
