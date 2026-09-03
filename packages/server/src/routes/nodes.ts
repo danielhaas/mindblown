@@ -427,6 +427,18 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         events
           .recordFieldChanges(req.params.id, req.params.nodeId, req.userId ?? null, before, updated)
           .catch(() => {});
+        // Claim trail. The DB layer nulls the claim on a move to done; a
+        // worker parking a ticket writes status=blocked + claimedBySession
+        // null in one PUT; anything else that drops the claim here is a
+        // plain release. Same reason vocabulary as release_node / the sweeper.
+        const becameDone = updated.completedAt != null && before.completedAt == null;
+        const becameBlocked = updated.status === 'blocked' && before.status !== 'blocked';
+        events
+          .recordClaimTransition(req.params.id, req.params.nodeId, req.userId ?? null, before, updated, {
+            reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',
+            note: becameBlocked ? updated.blockedReason : null,
+          })
+          .catch(() => {});
       }
 
       return reply.send(updated);
@@ -780,10 +792,17 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       sinceDays && !Number.isNaN(Number(sinceDays))
         ? new Date(Date.now() - Number(sinceDays) * 86_400_000)
         : undefined;
+    // `eventType` takes a comma-separated list (the claim trail reads all
+    // three claim types in one query); a single value keeps working.
+    const types = (eventType ?? '')
+      .split(',')
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0) as events.EventType[];
     const rows = await events.listEvents({
       mapId: req.params.id,
       nodeId,
-      eventType: eventType as events.EventType | undefined,
+      eventType: types.length === 1 ? types[0] : undefined,
+      eventTypes: types.length > 1 ? types : undefined,
       fieldName,
       since,
       limit: limit ? Math.min(1000, Math.max(1, Number(limit))) : 200,

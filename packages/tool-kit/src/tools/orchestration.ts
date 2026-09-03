@@ -201,9 +201,15 @@ export const releaseNodeTool = defineTool({
     sessionId: z
       .string()
       .describe('Session identifier of the releasing session. Must match the current claim owner.'),
+    reason: z
+      .string()
+      .optional()
+      .describe(
+        'Why the claim is let go, free text ("never started", "dead worker", "handing off"). Recorded in the node\'s claim trail; does not gate the release.',
+      ),
   },
-  handler: async (backend, { mapId, nodeId, sessionId }) => {
-    const result = await backend.releaseNode(mapId, nodeId, sessionId);
+  handler: async (backend, { mapId, nodeId, sessionId, reason }) => {
+    const result = await backend.releaseNode(mapId, nodeId, sessionId, reason);
     if (result.alreadyReleased) {
       return `Node ${nodeId} ("${result.node.text}") was not claimed — no-op.`;
     }

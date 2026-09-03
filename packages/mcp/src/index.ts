@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mc
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
@@ -2142,18 +2142,32 @@ server.tool(
   },
 );
 
+const CHANGE_EVENT_TYPES = [
+  'node.created',
+  'node.deleted',
+  'node.moved',
+  'node.field_changed',
+  'version.field_changed',
+  'map.field_changed',
+  ...CLAIM_EVENT_TYPES,
+] as const;
+
 server.tool(
   'change_history',
-  'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, and field changes (estimate, progress, status, priority, dates, assignees, version/cycle). Filter by node, event type, field name, or a time window. Use this for "what changed since last review?" digests, audit trails, or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
+  'Read the append-only change log for a map. Returns recent node mutations: creations, deletions, moves, field changes (estimate, progress, status, priority, dates, assignees, version/cycle), and the claim trail (node.claimed / node.released / node.pr_merged: which fleet worker picked a node up, when it was released and why, which PR delivered it). Filter by node, event type(s), field name, or a time window. Use this for "what changed since last review?" digests, audit trails, "who delivered this?", or to feed burnup trend lines. Requires change-events to have been recorded — only events since the feature shipped are present.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to a single node'),
     eventType: z
-      .enum(['node.created', 'node.deleted', 'node.moved', 'node.field_changed', 'version.field_changed', 'map.field_changed'])
+      .enum(CHANGE_EVENT_TYPES)
       .optional()
       .describe(
-        'Filter by event type. map.field_changed = map settings incl. the Leidang dispatch knobs (maxActiveClaims / dispatchGate / dispatchPolicy): who put the fleet on hold, when.',
+        'Filter by one event type. map.field_changed = map settings incl. the Leidang dispatch knobs (maxActiveClaims / dispatchGate / dispatchPolicy): who put the fleet on hold, when. node.claimed / node.released / node.pr_merged = the claim trail.',
       ),
+    eventTypes: z
+      .array(z.enum(CHANGE_EVENT_TYPES))
+      .optional()
+      .describe('Filter by several event types at once (e.g. the three claim-trail types for one node). Wins over eventType.'),
     fieldName: z
       .string()
       .optional()
@@ -2161,11 +2175,12 @@ server.tool(
     sinceDays: z.number().int().min(1).optional().describe('Only events from the last N days'),
     limit: z.number().int().min(1).max(1000).default(100).describe('Max events to return'),
   },
-  async ({ mapId, nodeId, eventType, fieldName, sinceDays, limit }) => {
+  async ({ mapId, nodeId, eventType, eventTypes, fieldName, sinceDays, limit }) => {
     try {
       const result = await api.getChangeHistory(mapId, {
         nodeId,
         eventType,
+        eventTypes,
         fieldName,
         sinceDays,
         limit,
@@ -2207,7 +2222,10 @@ server.tool(
         // "who" matters most for map settings (who put the fleet on hold?);
         // the log only carries the user id, so it is shown short.
         const by = e.userId ? `  by ${e.userId.slice(0, 8)}` : '';
-        if (e.eventType.endsWith('.field_changed')) {
+        const claimLine = describeClaimEvent(e);
+        if (claimLine !== null) {
+          lines.push(`${when}  ${claimLine}  — ${nodeLabel}${by}`);
+        } else if (e.eventType.endsWith('.field_changed')) {
           lines.push(
             `${when}  ${e.fieldName}: ${fmtValue(e.oldValue)} → ${fmtValue(e.newValue)}  — ${nodeLabel}${by}`,
           );

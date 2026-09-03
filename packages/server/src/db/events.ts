@@ -1,7 +1,14 @@
-import { eq, and, desc, gte, sql } from 'drizzle-orm';
+import { eq, and, desc, gte, inArray, sql } from 'drizzle-orm';
 import { db } from './connection.js';
 import { changeEvents } from './schema.js';
-import type { Node as CoreNode } from '@mindblown/core';
+import { buildClaimedEvent, buildReleasedEvent } from '@mindblown/core';
+import type {
+  Node as CoreNode,
+  ClaimedEvent,
+  ReleasedEvent,
+  PrMergedEvent,
+  ReleaseReason,
+} from '@mindblown/core';
 
 export type EventType =
   | 'node.created'
@@ -16,7 +23,16 @@ export type EventType =
   // settings): node_id is null, field_name is the map field. Answers
   // "who put the fleet on hold on Friday?" — before this the only trace of
   // a knob write was the orchestrator's own tick log.
-  | 'map.field_changed';
+  | 'map.field_changed'
+  // Claim trail: `claimedBySession` is not a tracked field (it is nulled on
+  // done / release / sweep), so once a claim clears nothing on the node
+  // says which worker had it. These three carry a structured payload in
+  // new_value (ClaimedEvent / ReleasedEvent / PrMergedEvent from core) —
+  // "picked up by worker-3 on njoerd", "released after 42 min because …",
+  // "PR #123 merged" — for the node panel and the fleet journal.
+  | 'node.claimed'
+  | 'node.released'
+  | 'node.pr_merged';
 
 export interface ChangeEvent {
   id: string;
@@ -169,10 +185,108 @@ export async function recordMapFieldChanges(
   }
 }
 
+// ── Claim trail ─────────────────────────────────────────────────
+
+export function recordClaimed(
+  mapId: string,
+  nodeId: string,
+  userId: string | null,
+  payload: ClaimedEvent,
+): Promise<void> {
+  return recordEvent({
+    mapId,
+    nodeId,
+    userId,
+    eventType: 'node.claimed',
+    fieldName: 'claimedBySession',
+    oldValue: payload.previousSession,
+    newValue: payload,
+  });
+}
+
+export function recordReleased(
+  mapId: string,
+  nodeId: string,
+  userId: string | null,
+  payload: ReleasedEvent,
+): Promise<void> {
+  return recordEvent({
+    mapId,
+    nodeId,
+    userId,
+    eventType: 'node.released',
+    fieldName: 'claimedBySession',
+    oldValue: payload.session,
+    newValue: payload,
+  });
+}
+
+export function recordPrMerged(
+  mapId: string,
+  nodeId: string,
+  userId: string | null,
+  payload: PrMergedEvent,
+): Promise<void> {
+  return recordEvent({
+    mapId,
+    nodeId,
+    userId,
+    eventType: 'node.pr_merged',
+    fieldName: 'externalLinks',
+    oldValue: null,
+    newValue: payload,
+  });
+}
+
+/**
+ * Diff the claim owner across a node write and record what happened to
+ * it. The generic node update path (PUT / update_node / the merge
+ * webhook) clears `claimedBySession` as a side effect of moving to done,
+ * and can set or swap it when a caller writes the field directly — this
+ * is the one place those transitions become events, so every writer that
+ * has a before/after pair calls it right after `recordFieldChanges`.
+ *
+ *   set → null            node.released (ctx.reason, held time from before.claimedAt)
+ *   null → set            node.claimed  (via 'claim')
+ *   set → different set   node.released (transfer) + node.claimed
+ *
+ * Fire-and-forget like recordEvent: never throws.
+ */
+export async function recordClaimTransition(
+  mapId: string,
+  nodeId: string,
+  userId: string | null,
+  before: Pick<CoreNode, 'claimedBySession' | 'claimedAt'>,
+  after: Pick<CoreNode, 'claimedBySession' | 'claimedAt'>,
+  ctx: { reason: ReleaseReason; note?: string | null },
+): Promise<void> {
+  const prev = before.claimedBySession ?? null;
+  const next = after.claimedBySession ?? null;
+  if (prev === next) return;
+  if (prev !== null) {
+    await recordReleased(
+      mapId,
+      nodeId,
+      userId,
+      buildReleasedEvent(
+        prev,
+        before.claimedAt ?? null,
+        next !== null ? 'transfer' : ctx.reason,
+        next !== null ? `transferred to ${next}` : (ctx.note ?? null),
+      ),
+    );
+  }
+  if (next !== null) {
+    await recordClaimed(mapId, nodeId, userId, buildClaimedEvent(next, 'claim', prev));
+  }
+}
+
 export interface ListEventsOptions {
   mapId: string;
   nodeId?: string;
   eventType?: EventType;
+  /** IN-filter; a caller reading the claim trail wants all three claim types in one query. */
+  eventTypes?: EventType[];
   fieldName?: string;
   since?: Date;
   limit?: number;
@@ -182,6 +296,9 @@ export async function listEvents(opts: ListEventsOptions): Promise<ChangeEvent[]
   const conditions = [eq(changeEvents.mapId, opts.mapId)];
   if (opts.nodeId) conditions.push(eq(changeEvents.nodeId, opts.nodeId));
   if (opts.eventType) conditions.push(eq(changeEvents.eventType, opts.eventType));
+  if (opts.eventTypes && opts.eventTypes.length > 0) {
+    conditions.push(inArray(changeEvents.eventType, opts.eventTypes));
+  }
   if (opts.fieldName) conditions.push(eq(changeEvents.fieldName, opts.fieldName));
   if (opts.since) conditions.push(gte(changeEvents.createdAt, opts.since));
 
