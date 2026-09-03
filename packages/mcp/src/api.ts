@@ -1346,9 +1346,13 @@ export function releaseNode(
   );
 }
 
-/** What MindBlown last received from the Leidang fleet (fleet_status). */
-export function getFleetStatus(mapId: string): Promise<FleetStatusResult> {
-  return request<FleetStatusResult>(`/api/maps/${mapId}/fleet`);
+/** What MindBlown last received from the Leidang fleet (fleet_status); `since`/`limit` select a tick history window. */
+export function getFleetStatus(mapId: string, opts: { since?: string; limit?: number } = {}): Promise<FleetStatusResult> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetStatusResult>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

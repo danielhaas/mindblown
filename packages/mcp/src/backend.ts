@@ -33,7 +33,7 @@ export const httpBackend: ToolBackend = {
   releaseNode: (mapId, nodeId, sessionId) => api.releaseNode(mapId, nodeId, sessionId),
   unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
-  getFleetStatus: (mapId) => api.getFleetStatus(mapId),
+  getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
 };

@@ -6,7 +6,7 @@
  */
 
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
-import { computeTree } from '@mindblown/core';
+import { computeTree, parseTickWindow } from '@mindblown/core';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
@@ -272,9 +272,18 @@ export function createChatBackend(userId: string): ToolBackend {
       };
     },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),
-    async getFleetStatus(mapId) {
-      const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, 20)]);
-      return { hosts, ticks, now: new Date().toISOString() };
+    async getFleetStatus(mapId, opts) {
+      // Same window rules as GET /fleet — the tool must not read differently
+      // in chat than over MCP.
+      const window = parseTickWindow({ since: opts?.since, limit: opts?.limit });
+      if ('error' in window) throw new Error(window.error);
+      const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, window)]);
+      return {
+        hosts,
+        ticks,
+        now: new Date().toISOString(),
+        window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
+      };
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────

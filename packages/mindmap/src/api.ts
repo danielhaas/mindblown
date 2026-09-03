@@ -854,11 +854,26 @@ export interface FleetResponse {
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock — staleness is judged against it, not the browser's. */
   now: string;
+  /** The tick window the server applied (defaults/clamps included); absent from pre-history servers. */
+  window?: { since: string | null; until: string | null; limit: number };
 }
 
-/** Last-known satellite rollups + recent orchestrator ticks. */
-export function fetchFleet(mapId: string): Promise<FleetResponse> {
-  return request<FleetResponse>(`/api/maps/${mapId}/fleet`);
+export interface FleetWindowOptions {
+  /** ISO 8601 — ticks received at/after this; default limit becomes 500 with it. */
+  since?: string;
+  until?: string;
+  /** 1..500, newest kept. */
+  limit?: number;
+}
+
+/** Last-known satellite rollups + recent orchestrator ticks; `opts` widens the ticks to a history window. */
+export function fetchFleet(mapId: string, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.until !== undefined) params.set('until', opts.until);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetResponse>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
 }
 
 // ── Attachments ──────────────────────────────────────────────────

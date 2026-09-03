@@ -12,6 +12,7 @@ export type {
   ReleaseNodeResult,
   UnblockNodeResult,
   FleetStatusResult,
+  FleetStatusOptions,
   ConflictEntry,
   ConflictScanResult,
   // Pull queue (Leidang)

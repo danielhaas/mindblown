@@ -9,6 +9,9 @@ import {
   summarizeFleet,
   silentSatellites,
   estimateServerNow,
+  parseTickWindow,
+  severityRank,
+  summarizeTick,
 } from '../fleet.js';
 
 const NOW = new Date('2026-09-01T12:00:00Z');
@@ -135,5 +138,70 @@ describe('estimateServerNow', () => {
     expect(estimateServerNow('nope', 0, 5_000).getTime()).toBe(5_000);
     // A clock that ran backwards does not subtract
     expect(estimateServerNow(server, 10_000, 5_000).toISOString()).toBe('2026-09-01T12:00:00.000Z');
+  });
+});
+
+describe('parseTickWindow', () => {
+  it('defaults to 20 without since and 500 with since; clamps limit to 1..500', () => {
+    expect(parseTickWindow({})).toEqual({ since: null, until: null, limit: 20 });
+    const w = parseTickWindow({ since: '2026-09-01T00:00:00Z' });
+    expect(w).toMatchObject({ until: null, limit: 500 });
+    expect((w as { since: Date }).since.toISOString()).toBe('2026-09-01T00:00:00.000Z');
+    expect(parseTickWindow({ limit: '9999' })).toMatchObject({ limit: 500 });
+    expect(parseTickWindow({ limit: 0 })).toMatchObject({ limit: 1 });
+    expect(parseTickWindow({ limit: '-3' })).toMatchObject({ limit: 1 });
+    expect(parseTickWindow({ limit: '7.9' })).toMatchObject({ limit: 7 });
+    expect(parseTickWindow({ since: '', until: '', limit: '' })).toEqual({ since: null, until: null, limit: 20 });
+  });
+  it('refuses garbage dates, repeated params and non-numeric limits instead of ignoring them', () => {
+    expect(parseTickWindow({ since: 'yesterday' })).toHaveProperty('error');
+    expect(parseTickWindow({ until: 'nope' })).toHaveProperty('error');
+    expect(parseTickWindow({ since: ['a', 'b'] })).toHaveProperty('error');
+    expect(parseTickWindow({ limit: 'many' })).toHaveProperty('error');
+  });
+});
+
+describe('summarizeTick', () => {
+  it('flattens the numbers, keeps only real knob writes and warn+ anomalies (worst first)', () => {
+    const s = summarizeTick({
+      tickAt: ago(30),
+      receivedAt: ago(29),
+      payload: {
+        assessment: 'two workers limit-parked',
+        summary: { claims: 3, cap: 9, pullableInGate: 12, needsBrief: 4 },
+        cap: { set: 6, reason: 'limit-parked x2' },
+        policy: { set: null, reason: null },
+        gate_recommendation: { set: ['type:bug'], reason: 'release queue dry' },
+        anomalies: [
+          { severity: 'info', what: 'noise' },
+          { severity: 'warn', what: 'sat2 silent' },
+          { severity: 'critical', what: 'nothing works' },
+        ],
+        asks: ['#1', '#2'],
+      },
+    });
+    expect(s).toMatchObject({
+      at: ago(30),
+      receivedAt: ago(29),
+      claims: 3,
+      cap: 9,
+      pullableInGate: 12,
+      needsBrief: 4,
+      heartbeat: null,
+      noJudgment: null,
+      capWrite: { set: 6, reason: 'limit-parked x2' },
+      policyWrite: null,
+      gateRecommendation: { set: ['type:bug'], reason: 'release queue dry' },
+      asksCount: 2,
+      assessment: 'two workers limit-parked',
+    });
+    expect(s.anomalies.map((a) => a.severity)).toEqual(['critical', 'warn']);
+  });
+  it('is tolerant of the bare heartbeat tick (no judgment, no summary numbers)', () => {
+    const s = summarizeTick({ tickAt: 'a', receivedAt: 'b', payload: { noJudgment: 'orchestrator at limit', cap: { set: null, reason: null } } });
+    expect(s).toMatchObject({ claims: null, cap: null, pullableInGate: null, needsBrief: null, capWrite: null, policyWrite: null, gateRecommendation: null, anomalies: [], asksCount: 0, assessment: null, noJudgment: 'orchestrator at limit' });
+    expect(severityRank('WARNING')).toBe(1);
+    expect(severityRank('critical')).toBe(2);
+    expect(severityRank('note')).toBe(0);
   });
 });

@@ -15,9 +15,9 @@
  * wait for the next push. Refetches on every `fleet:updated` socket
  * message and every 60 s as a backstop.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow } from '@mindblown/core';
-import type { FleetWorkerStatus, HostSummary, Node } from '@mindblown/core';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow, summarizeTick } from '@mindblown/core';
+import type { FleetWorkerStatus, HostSummary, Node, TickSummary } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetResponse } from './api.js';
@@ -178,6 +178,7 @@ export function FleetTelemetry() {
       <div style={{ marginTop: 8 }}>
         {tick ? <TickBlock tick={tick} now={now} /> : <div style={{ color: '#94a3b8', fontSize: 12 }}>No orchestrator tick received yet.</div>}
       </div>
+      <TickHistory mapId={currentMapId} fleetRev={fleetRev} now={now} />
     </div>
   );
 }
@@ -241,11 +242,12 @@ function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: D
   );
 }
 
+const sevColor = (s: string) => (s === 'critical' ? '#991b1b' : s === 'warn' || s === 'warning' ? '#b45309' : '#64748b');
+
 function TickBlock({ tick, now }: { tick: FleetResponse['ticks'][number]; now: Date }) {
   const p = tick.payload;
   const anomalies = p.anomalies ?? [];
   const asks = p.asks ?? [];
-  const sevColor = (s: string) => (s === 'critical' ? '#991b1b' : s === 'warn' || s === 'warning' ? '#b45309' : '#64748b');
   return (
     <div style={{ fontSize: 12 }}>
       <div style={{ color: '#334155' }}>
@@ -281,5 +283,166 @@ function TickBlock({ tick, now }: { tick: FleetResponse['ticks'][number]; now: D
     </div>
   );
 }
+
+/** 24 h at the 30-min cadence is ~48 ticks; 7 d is ~336 — the server keeps 7 days and serves at most 500. */
+const HISTORY_PRESETS = {
+  '24h': { label: '24 h', hours: 24, limit: 200 },
+  '7d': { label: '7 d', hours: 24 * 7, limit: 500 },
+} as const;
+type HistoryPreset = keyof typeof HISTORY_PRESETS;
+
+/**
+ * The tick history behind a collapsed disclosure — how cap / claims / gate
+ * / anomalies moved over a window, for "what happened last night" without
+ * a terminal. Fetched only while open and kept in its own state: the
+ * 60-s poll above must not pull hundreds of ticks for a table nobody has
+ * expanded. A socket push (`fleetRev`) refetches while open so a tick
+ * landing mid-read shows up.
+ */
+function TickHistory({ mapId, fleetRev, now }: { mapId: string | null; fleetRev: number; now: Date }) {
+  const [open, setOpen] = useState(false);
+  const [preset, setPreset] = useState<HistoryPreset>('24h');
+  const [history, setHistory] = useState<{ data: FleetResponse; preset: HistoryPreset } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The window is anchored on the SERVER clock estimate (the store filters
+  // by received_at); read through a ref so the 30-s ticker does not refetch.
+  const nowRef = useRef(now);
+  nowRef.current = now;
+
+  useEffect(() => {
+    if (!open || !mapId) return;
+    let cancelled = false;
+    const { hours, limit } = HISTORY_PRESETS[preset];
+    const since = new Date(nowRef.current.getTime() - hours * 3_600_000).toISOString();
+    setLoading(true);
+    api
+      .fetchFleet(mapId, { since, limit })
+      .then((r) => {
+        if (cancelled) return;
+        setHistory({ data: r, preset });
+        setError(null);
+      })
+      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : 'unavailable'))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mapId, preset, fleetRev]);
+
+  const rows = useMemo<TickSummary[]>(() => (history ? [...history.data.ticks].reverse().map(summarizeTick) : []), [history]);
+  const shown = history?.preset === preset ? history : null;
+  const cut = shown?.data.window && shown.data.ticks.length >= shown.data.window.limit ? shown.data.window.limit : null;
+
+  return (
+    <div style={{ marginTop: 6, fontSize: 12 }}>
+      <Link onClick={() => setOpen((o) => !o)}>
+        <span style={{ color: '#94a3b8', fontSize: 10 }}>{open ? '▾' : '▸'}</span> Tick history
+      </Link>
+      {open && (
+        <span style={{ marginLeft: 8 }}>
+          {(Object.keys(HISTORY_PRESETS) as HistoryPreset[]).map((p) => (
+            <button
+              key={p}
+              type="button"
+              onClick={() => setPreset(p)}
+              style={{
+                ...pill,
+                marginRight: 4,
+                border: '1px solid #e2e8f0',
+                cursor: 'pointer',
+                background: p === preset ? '#e2e8f0' : '#fff',
+                color: p === preset ? '#0f172a' : '#64748b',
+              }}
+            >
+              {HISTORY_PRESETS[p].label}
+            </button>
+          ))}
+          {loading && <span style={{ color: '#94a3b8' }}>loading…</span>}
+        </span>
+      )}
+      {open && error && <div style={{ color: '#b45309' }}>Tick history unavailable ({error}).</div>}
+      {open && !error && shown && rows.length === 0 && (
+        <div style={{ color: '#94a3b8' }}>No ticks in the last {HISTORY_PRESETS[preset].label} — the orchestrator was not running, or its push is off.</div>
+      )}
+      {open && !error && shown && rows.length > 0 && (
+        <div style={{ overflowX: 'auto', marginTop: 4 }}>
+          <table style={{ borderCollapse: 'collapse', fontSize: 11, fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
+            <thead>
+              <tr style={{ color: '#94a3b8', textAlign: 'left' }}>
+                <th style={th}>Time</th>
+                <th style={{ ...th, textAlign: 'right' }} title="active claims / maxActiveClaims">Claims</th>
+                <th style={{ ...th, textAlign: 'right' }} title="pullable tickets inside the gate">In gate</th>
+                <th style={{ ...th, textAlign: 'right' }} title="tickets still needing a brief">Brief</th>
+                <th style={th}>Writes</th>
+                <th style={th}>Anomalies (warn+)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t, i) => (
+                <HistoryRow key={t.receivedAt + i} t={t} prev={rows[i - 1]} />
+              ))}
+            </tbody>
+          </table>
+          {cut !== null && <div style={{ color: '#94a3b8', marginTop: 2 }}>Newest {cut} ticks of the window — switch to 24 h for a finer read.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HistoryRow({ t, prev }: { t: TickSummary; prev: TickSummary | undefined }) {
+  const d = new Date(t.at);
+  const valid = !Number.isNaN(d.getTime());
+  const prevDay = prev ? new Date(prev.at).toDateString() : '';
+  const newDay = valid && d.toDateString() !== prevDay;
+  const n = (v: number | null) => (v === null ? '–' : v);
+  return (
+    <tr style={{ borderTop: '1px solid #f1f5f9', color: t.noJudgment ? '#94a3b8' : '#334155' }}>
+      <td style={td} title={t.at}>
+        {newDay && <span style={{ color: '#94a3b8', marginRight: 4 }}>{d.toLocaleDateString([], { month: 'short', day: 'numeric' })}</span>}
+        {valid ? localHHMM(t.at) : t.at}
+      </td>
+      <td style={{ ...td, textAlign: 'right' }}>
+        {n(t.claims)}/{n(t.cap)}
+      </td>
+      <td style={{ ...td, textAlign: 'right' }}>{n(t.pullableInGate)}</td>
+      <td style={{ ...td, textAlign: 'right' }}>{n(t.needsBrief)}</td>
+      <td style={td}>
+        {t.capWrite && (
+          <span style={{ ...pill, background: '#dbeafe', color: '#1e40af', marginRight: 4 }} title={t.capWrite.reason ?? undefined}>
+            cap → {t.capWrite.set}
+          </span>
+        )}
+        {t.policyWrite && (
+          <span style={{ ...pill, background: '#ede9fe', color: '#5b21b6', marginRight: 4 }} title={t.policyWrite.reason ?? undefined}>
+            policy → {t.policyWrite.set.join(' › ')}
+          </span>
+        )}
+        {t.gateRecommendation && (
+          <span style={{ color: '#b45309', marginRight: 4 }} title={t.gateRecommendation.reason ?? undefined}>
+            gate? {t.gateRecommendation.set.join(' + ')}
+          </span>
+        )}
+        {t.noJudgment && (
+          <span style={{ ...pill, background: '#ffedd5', color: '#9a3412' }} title={t.noJudgment}>
+            no judgment
+          </span>
+        )}
+      </td>
+      <td style={td}>
+        {t.anomalies.map((a, i) => (
+          <span key={i} style={{ color: sevColor(a.severity), marginRight: 6 }} title={a.evidence}>
+            <strong>{a.severity}</strong> {a.what}
+          </span>
+        ))}
+        {t.asksCount > 0 && <span style={{ color: '#64748b' }}>· {t.asksCount} ask{t.asksCount === 1 ? '' : 's'}</span>}
+      </td>
+    </tr>
+  );
+}
+
+const th: React.CSSProperties = { padding: '1px 6px', fontWeight: 600, borderBottom: '1px solid #e2e8f0' };
+const td: React.CSSProperties = { padding: '1px 6px', verticalAlign: 'top' };
 
 const pill: React.CSSProperties = { display: 'inline-block', padding: '0 7px', borderRadius: 999, fontSize: 11, fontWeight: 600 };

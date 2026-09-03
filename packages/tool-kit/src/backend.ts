@@ -17,6 +17,14 @@ export interface FleetStatusResult {
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock at read time — staleness is judged against this, not the caller's clock. */
   now: string;
+  /** The tick window the server applied (defaults and clamps included) — absent from pre-history servers. */
+  window?: { since: string | null; until: string | null; limit: number };
+}
+
+/** History window for `getFleetStatus` — `since` ISO 8601; without it the read is "latest 20 ticks". */
+export interface FleetStatusOptions {
+  since?: string;
+  limit?: number;
 }
 
 // ── Triage shapes (#96 Phase 3) ────────────────────────────────────
@@ -355,8 +363,8 @@ export interface ToolBackend {
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
-  /** Last-known satellite rollups + recent orchestrator ticks (read-only). */
-  getFleetStatus(mapId: string): Promise<FleetStatusResult>;
+  /** Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window. */
+  getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

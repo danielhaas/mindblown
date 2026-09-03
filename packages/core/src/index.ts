@@ -134,8 +134,24 @@ export {
   summarizeFleet,
   silentSatellites,
   estimateServerNow,
+  TICK_WINDOW_DEFAULT_LIMIT,
+  TICK_HISTORY_DEFAULT_LIMIT,
+  TICK_WINDOW_MAX_LIMIT,
+  parseTickWindow,
+  severityRank,
+  summarizeTick,
 } from './fleet.js';
-export type { FleetWorkerStatus, FleetRollup, FleetTickPayload, HostFreshness, HostSummary, FleetSummary, SilentReason } from './fleet.js';
+export type {
+  FleetWorkerStatus,
+  FleetRollup,
+  FleetTickPayload,
+  HostFreshness,
+  HostSummary,
+  FleetSummary,
+  SilentReason,
+  TickWindow,
+  TickSummary,
+} from './fleet.js';
 
 // Rich-text rendering
 export { proseMirrorToPlainText } from './richtext.js';
