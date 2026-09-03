@@ -12,7 +12,7 @@
  * so those events are fetched per node over a longer reach, not by the
  * window. The assembly itself is pure and lives in core.
  */
-import { and, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 import { buildFleetJournal, JOURNAL_EVENT_TYPES } from '@mindblown/core';
 import type { ExternalLink, FleetJournal, FleetTickPayload, JournalEventRow, JournalNodeRow } from '@mindblown/core';
 import { db } from '../db/connection.js';
@@ -134,6 +134,13 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
   const allEvents = [...windowEvents, ...trailEvents.filter((e) => !seen.has(e.id))];
   const allNodes = [...windowNodes, ...extraNodes];
 
+  // Effective version: a follow-up ticket filed under a versioned branch
+  // inherits the branch's version (core `effectiveVersionId`); the journal
+  // tallies by that, not by the rarely-set own field. One recursive walk
+  // up the tree for the nodes that need it, instead of loading the map.
+  const inherited = await inheritedVersionIds(mapId, allNodes.filter((n) => !n.versionId).map((n) => n.id));
+  for (const n of allNodes) if (!n.versionId && inherited.has(n.id)) n.versionId = inherited.get(n.id) ?? null;
+
   const userIds = [...new Set([...allEvents.map((e) => e.userId), ...allNodes.map((n) => n.createdBy)].filter((id): id is string => !!id))];
   const [userRows, versionRows] = await Promise.all([
     userIds.length > 0 ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, userIds)) : Promise.resolve([]),
@@ -148,6 +155,29 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
     versions: versionRows,
     users: userRows,
   });
+}
+
+/** start node id → nearest ancestor's version_id, for the given nodes (own version null). */
+async function inheritedVersionIds(mapId: string, nodeIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (nodeIds.length === 0) return out;
+  const rows = await db.execute(sql`
+    with recursive anc as (
+      select n.id as start_id, n.parent_id, n.version_id, 0 as depth
+      from nodes n
+      where n.map_id = ${mapId} and n.id in ${nodeIds}
+      union all
+      select anc.start_id, p.parent_id, p.version_id, anc.depth + 1
+      from nodes p join anc on p.id = anc.parent_id
+      where anc.version_id is null and anc.depth < 64
+    )
+    select distinct on (start_id) start_id, version_id
+    from anc
+    where version_id is not null
+    order by start_id, depth
+  `);
+  for (const r of rows.rows as Array<{ start_id: string; version_id: string }>) out.set(r.start_id, r.version_id);
+  return out;
 }
 
 /**

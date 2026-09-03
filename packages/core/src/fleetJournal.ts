@@ -12,6 +12,7 @@
  * event payload shapes are the claim-trail ones (`claimTrail.ts`).
  */
 import { summarizeTick } from './fleet.js';
+import { parseSession } from './claimTrail.js';
 import type { FleetTickPayload, TickSummary } from './fleet.js';
 import type { ExternalLink } from './types.js';
 
@@ -165,11 +166,10 @@ export interface FleetJournal {
 
 export const JOURNAL_EVENT_TYPES = ['node.claimed', 'node.released', 'node.pr_merged', 'map.field_changed'] as const;
 
-/** `host:worker-N:profile` → parts; anything else keeps the raw session and nulls. */
+/** `host:worker-N:profile` → parts (claim-trail rule); anything else keeps the raw session and nulls. */
 export function splitSession(session: string): JournalWorker {
-  const parts = session.split(':');
-  if (parts.length >= 2 && parts[0] && parts[1]) return { session, host: parts[0], worker: parts[1] };
-  return { session, host: null, worker: null };
+  const p = parseSession(session);
+  return { session, host: p.host, worker: p.worker };
 }
 
 function num(x: unknown): number | null {
@@ -190,6 +190,15 @@ function inWindow(iso: string | null | undefined, from: Date, to: Date): boolean
 
 function githubIssues(links: ExternalLink[]): JournalIssue[] {
   return links.filter((l) => l.provider === 'github').map((l) => ({ externalId: l.externalId, url: l.url }));
+}
+
+/** GitHub-mirrored `priority:P2` label → `P2`, when the node's own priority is unset. */
+function priorityFromTags(tags: string[]): string | null {
+  for (const t of tags) {
+    const m = /^priority:\s*(P\d)$/i.exec(t);
+    if (m) return m[1].toUpperCase();
+  }
+  return null;
 }
 
 /** owner/repo from `owner/repo#123`. */
@@ -301,7 +310,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
       text: n.text,
       createdAt: n.createdAt,
       createdBy: n.createdBy ? (userName.get(n.createdBy) ?? null) : null,
-      priority: n.priority,
+      priority: n.priority ?? priorityFromTags(n.tags),
       versionName: n.versionId ? (versionName.get(n.versionId) ?? null) : null,
       effortEstimate: n.effortEstimate,
       tags: n.tags,
