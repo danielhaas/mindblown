@@ -9,6 +9,12 @@ import type {
   RequirementStage,
   FleetRollup,
   FleetTickPayload,
+  AskRow,
+  AskCounts,
+  AskDocumentMeta,
+  AskAnswerInput,
+  AskWritePlan,
+  AskStatus,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -859,6 +865,39 @@ export interface FleetResponse {
 /** Last-known satellite rollups + recent orchestrator ticks. */
 export function fetchFleet(mapId: string): Promise<FleetResponse> {
   return request<FleetResponse>(`/api/maps/${mapId}/fleet`);
+}
+
+// ── Asks inbox (/leidang-asks) ───────────────────────────────────
+
+export interface AsksResponse {
+  items: AskRow[];
+  counts: AskCounts;
+  pushedAt: string | null;
+  meta: AskDocumentMeta | null;
+  now: string;
+}
+
+export interface AnswerAskResponse {
+  ask: AskRow;
+  plan: AskWritePlan;
+  ok: boolean;
+  node: { id: string; status: string | null } | null;
+}
+
+/** The fleet's open human questions, as the orchestrator last pushed them. */
+export function fetchAsks(mapId: string, opts: { status?: AskStatus | 'all' } = {}): Promise<AsksResponse> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  const qs = params.toString();
+  return request<AsksResponse>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+}
+
+/** Record an answer — the server writes ticket comment + node like leidang-asks-apply. */
+export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AnswerAskResponse> {
+  return request<AnswerAskResponse>(`/api/maps/${mapId}/asks/${encodeURIComponent(askId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 // ── Attachments ──────────────────────────────────────────────────

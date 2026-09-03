@@ -24,6 +24,8 @@ export {
   githubFetchPage,
   parseLinkNext,
   reopenGitHubIssue,
+  commentOnGitHubIssue,
+  setGitHubIssueMilestone,
   getRepoDefaultBranch,
   findClosingPrsForIssue,
   probeIssueLanded,

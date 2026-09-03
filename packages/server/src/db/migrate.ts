@@ -1036,5 +1036,35 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_mix_acc INTEGER NOT NULL DEFAULT 0
   `);
 
+  // ── Asks inbox (the fleet's human questions, answered in the UI) ──
+  // One row per collector item; the open set is replaced on every push,
+  // answered rows survive until the collector stops sending them.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS asks (
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      ask_id TEXT NOT NULL,
+      payload JSONB NOT NULL,
+      pushed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      status TEXT NOT NULL DEFAULT 'open',
+      answer JSONB,
+      answered_by TEXT,
+      answered_at TIMESTAMPTZ,
+      writes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      worker_pending BOOLEAN NOT NULL DEFAULT FALSE,
+      PRIMARY KEY (map_id, ask_id)
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS asks_map_status_idx ON asks (map_id, status)
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS asks_pushes (
+      map_id UUID PRIMARY KEY REFERENCES maps(id) ON DELETE CASCADE,
+      pushed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      meta JSONB NOT NULL
+    )
+  `);
+
   console.log('[db] Migrations complete.');
 }

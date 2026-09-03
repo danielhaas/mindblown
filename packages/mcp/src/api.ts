@@ -14,7 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetStatusResult } from '@mindblown/tool-kit';
+import type { FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult } from '@mindblown/tool-kit';
+import type { AskAnswerInput } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1349,6 +1350,26 @@ export function releaseNode(
 /** What MindBlown last received from the Leidang fleet (fleet_status). */
 export function getFleetStatus(mapId: string): Promise<FleetStatusResult> {
   return request<FleetStatusResult>(`/api/maps/${mapId}/fleet`);
+}
+
+// ── Asks inbox (/leidang-asks) ─────────────────────────────────────
+
+export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+  const params = new URLSearchParams();
+  if (opts.status) params.set('status', opts.status);
+  if (opts.hint) params.set('hint', opts.hint);
+  if (opts.answerer) params.set('answerer', opts.answerer);
+  if (opts.since) params.set('since', opts.since);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<AskListResult>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+}
+
+export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult> {
+  return request<AskAnswerResult>(`/api/maps/${mapId}/asks/${encodeURIComponent(askId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

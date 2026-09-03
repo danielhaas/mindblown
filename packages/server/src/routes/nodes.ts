@@ -118,7 +118,7 @@ const SYNC_FIELDS = new Set([
  *
  * Pushes: title, body, state (open/closed), labels.
  */
-async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promise<void> {
+export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promise<void> {
   // Only sync if relevant fields changed
   if (!changedFields.some((f) => SYNC_FIELDS.has(f))) return;
 

@@ -15,6 +15,9 @@ import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import * as fleetDb from '../db/fleet.js';
+import * as asksDb from '../db/asks.js';
+import { answerAsk as answerAskService } from '../services/asks.js';
+import { countAsks } from '@mindblown/core';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
@@ -275,6 +278,20 @@ export function createChatBackend(userId: string): ToolBackend {
     async getFleetStatus(mapId) {
       const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, 20)]);
       return { hosts, ticks, now: new Date().toISOString() };
+    },
+
+    // ── Asks inbox (/leidang-asks) ────────────────────────────────
+    async listAsks(mapId, opts) {
+      const [items, push] = await Promise.all([asksDb.listAsks(mapId, opts ?? {}), asksDb.getPushMeta(mapId)]);
+      return { items, counts: countAsks(items), pushedAt: push?.pushedAt ?? null, meta: push?.meta ?? null, now: new Date().toISOString() };
+    },
+    async answerAsk(mapId, askId, input) {
+      const out = await answerAskService(mapId, askId, input, userId);
+      if (out.node) {
+        broadcast(mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
+      }
+      broadcast(mapId, { type: 'asks:updated', kind: 'answer', askId, status: out.row.status });
+      return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────

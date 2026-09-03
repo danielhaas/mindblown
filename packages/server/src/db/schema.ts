@@ -590,3 +590,34 @@ export const fleetTicks = pgTable('fleet_ticks', {
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   payload: jsonb('payload').notNull(),
 });
+
+// ── Asks inbox ────────────────────────────────────────────────────
+// The fleet's open human questions, one row per collector item, pushed
+// whole every orchestrator tick (PUT /maps/:id/asks). MindBlown never
+// derives this list itself — the collector is the truth; what lives here
+// is the answer state. `payload` is the collector item verbatim (core `Ask`).
+export const asks = pgTable(
+  'asks',
+  {
+    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    askId: text('ask_id').notNull(),
+    payload: jsonb('payload').notNull(),
+    pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    status: text('status').notNull().default('open'), // open | answered | later | delegated
+    answer: jsonb('answer'), // AskAnswerInput
+    answeredBy: text('answered_by'),
+    answeredAt: timestamp('answered_at', { withTimezone: true }),
+    writes: jsonb('writes').notNull().default([]), // AskWrite[]
+    workerPending: boolean('worker_pending').notNull().default(false),
+  },
+  (t) => [primaryKey({ columns: [t.mapId, t.askId] })],
+);
+
+// The last push's meta (tick id, generated_at, the collector's own counts)
+// — one row per map, overwritten on every push.
+export const asksPushes = pgTable('asks_pushes', {
+  mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
+  pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+  meta: jsonb('meta').notNull(),
+});
