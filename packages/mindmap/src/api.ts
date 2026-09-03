@@ -9,6 +9,7 @@ import type {
   RequirementStage,
   FleetRollup,
   FleetTickPayload,
+  FleetJournal,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -854,11 +855,35 @@ export interface FleetResponse {
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock — staleness is judged against it, not the browser's. */
   now: string;
+  /** The tick window the server applied (defaults/clamps included); absent from pre-history servers. */
+  window?: { since: string | null; until: string | null; limit: number };
 }
 
-/** Last-known satellite rollups + recent orchestrator ticks. */
-export function fetchFleet(mapId: string): Promise<FleetResponse> {
-  return request<FleetResponse>(`/api/maps/${mapId}/fleet`);
+export interface FleetWindowOptions {
+  /** ISO 8601 — ticks received at/after this; default limit becomes 500 with it. */
+  since?: string;
+  until?: string;
+  /** 1..500, newest kept. */
+  limit?: number;
+}
+
+/** Last-known satellite rollups + recent orchestrator ticks; `opts` widens the ticks to a history window. */
+export function fetchFleet(mapId: string, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.until !== undefined) params.set('until', opts.until);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetResponse>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
+export function fetchFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<{ journal: FleetJournal; now: string }> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 // ── Attachments ──────────────────────────────────────────────────
@@ -1176,7 +1201,11 @@ export interface ChangeEvent {
     | 'node.moved'
     | 'node.field_changed'
     | 'version.field_changed'
-    | 'map.field_changed';
+    | 'map.field_changed'
+    // Claim trail (payloads: ClaimedEvent / ReleasedEvent / PrMergedEvent in @mindblown/core)
+    | 'node.claimed'
+    | 'node.released'
+    | 'node.pr_merged';
   fieldName: string | null;
   oldValue: unknown;
   newValue: unknown;
@@ -1185,11 +1214,20 @@ export interface ChangeEvent {
 
 export function fetchChangeHistory(
   mapId: string,
-  opts: { nodeId?: string; eventType?: ChangeEvent['eventType']; fieldName?: string; sinceDays?: number; limit?: number } = {},
+  opts: {
+    nodeId?: string;
+    eventType?: ChangeEvent['eventType'];
+    /** Several types in one query; the route takes them comma-separated in `eventType`. */
+    eventTypes?: readonly ChangeEvent['eventType'][];
+    fieldName?: string;
+    sinceDays?: number;
+    limit?: number;
+  } = {},
 ): Promise<{ events: ChangeEvent[] }> {
   const qs = new URLSearchParams();
   if (opts.nodeId) qs.set('nodeId', opts.nodeId);
-  if (opts.eventType) qs.set('eventType', opts.eventType);
+  if (opts.eventTypes && opts.eventTypes.length > 0) qs.set('eventType', opts.eventTypes.join(','));
+  else if (opts.eventType) qs.set('eventType', opts.eventType);
   if (opts.fieldName) qs.set('fieldName', opts.fieldName);
   if (opts.sinceDays !== undefined) qs.set('sinceDays', String(opts.sinceDays));
   if (opts.limit !== undefined) qs.set('limit', String(opts.limit));

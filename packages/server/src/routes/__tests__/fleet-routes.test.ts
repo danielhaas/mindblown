@@ -153,6 +153,44 @@ describe('GET /api/maps/:id/fleet', () => {
     expect(res.json().hosts).toHaveLength(1);
     expect(res.json().ticks[0].payload.assessment).toBe('x');
     expect(typeof res.json().now).toBe('string');
-    expect(listTicksMock).toHaveBeenCalledWith(MAP_ID, 20);
+    expect(listTicksMock).toHaveBeenCalledWith(MAP_ID, { since: null, until: null, limit: 20 });
+    expect(res.json().window).toEqual({ since: null, until: null, limit: 20 });
+  });
+
+  it('forwards since/until/limit to the store and echoes the window', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?since=2026-09-01T20:00:00Z&until=2026-09-02T06:00:00Z&limit=50` });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const [mapId, window] = listTicksMock.mock.calls[0] as unknown as [string, { since: Date; until: Date; limit: number }];
+    expect(mapId).toBe(MAP_ID);
+    expect(window.since.toISOString()).toBe('2026-09-01T20:00:00.000Z');
+    expect(window.until.toISOString()).toBe('2026-09-02T06:00:00.000Z');
+    expect(window.limit).toBe(50);
+    expect(res.json().window).toEqual({ since: '2026-09-01T20:00:00.000Z', until: '2026-09-02T06:00:00.000Z', limit: 50 });
+  });
+
+  it('defaults to the full history limit with since, clamps limit to 1..500', async () => {
+    const app = await buildApp();
+    const dflt = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?since=2026-09-01T20:00:00Z` });
+    const high = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?limit=100000` });
+    const low = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?limit=0` });
+    await app.close();
+    expect(dflt.json().window.limit).toBe(500);
+    expect(high.json().window.limit).toBe(500);
+    expect(low.json().window.limit).toBe(1);
+    expect(listTicksMock.mock.calls.map((c) => (c as unknown as [string, { limit: number }])[1].limit)).toEqual([500, 500, 1]);
+  });
+
+  it('refuses an unparsable date or limit with 400 instead of silently returning the default window', async () => {
+    const app = await buildApp();
+    const since = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?since=yesterday` });
+    const until = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?until=soon` });
+    const limit = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?limit=many` });
+    const repeated = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet?since=2026-09-01T00:00:00Z&since=2026-09-02T00:00:00Z` });
+    await app.close();
+    expect([since.statusCode, until.statusCode, limit.statusCode, repeated.statusCode]).toEqual([400, 400, 400, 400]);
+    expect(since.json().error.code).toBe('VALIDATION_ERROR');
+    expect(listTicksMock).not.toHaveBeenCalled();
   });
 });

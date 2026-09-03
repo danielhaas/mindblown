@@ -18,7 +18,10 @@ import { nodes, maps } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
+import * as events from '../db/events.js';
 import {
+  buildClaimedEvent,
+  buildReleasedEvent,
   resolvedSiblingOrder,
   isReady,
   scopeOverlap,
@@ -147,7 +150,7 @@ export async function claimNode(
   // SELECT + UPDATE in a single transaction with FOR UPDATE so the
   // second tx blocks until the first commits, then observes the
   // first writer's claim and reports `warned: true`.
-  const { previousClaim, updatedNode } = await db.transaction(async (tx) => {
+  const { previousClaim, previousClaimedAt, updatedNode } = await db.transaction(async (tx) => {
     const [row] = await tx
       .select()
       .from(nodes)
@@ -167,6 +170,7 @@ export async function claimNode(
 
     return {
       previousClaim: before.claimedBySession,
+      previousClaimedAt: before.claimedAt,
       updatedNode: dbNodeToCore(updatedRow as unknown as Record<string, unknown>),
     };
   });
@@ -179,6 +183,25 @@ export async function claimNode(
     fields: ['claimedBySession', 'claimedAt'],
     node: updatedNode,
   });
+
+  // Claim trail, after commit like the broadcast. A same-session re-claim
+  // only refreshes claimedAt and is not a hand-over — no row for it, or a
+  // worker's restart loop would flood the node's history.
+  if (previousClaim !== sessionId) {
+    if (warned) {
+      events
+        .recordReleased(
+          mapId,
+          nodeId,
+          null,
+          buildReleasedEvent(previousClaim as string, previousClaimedAt, 'transfer', `transferred to ${sessionId}`),
+        )
+        .catch(() => {});
+    }
+    events
+      .recordClaimed(mapId, nodeId, null, buildClaimedEvent(sessionId, 'claim', previousClaim))
+      .catch(() => {});
+  }
 
   return {
     node: {
@@ -201,6 +224,7 @@ export async function releaseNode(
   mapId: string,
   nodeId: string,
   sessionId: string,
+  opts: { reason?: string | null } = {},
 ): Promise<ReleaseNodeResult> {
   const [row] = await db
     .select()
@@ -246,6 +270,18 @@ export async function releaseNode(
     fields: ['claimedBySession', 'claimedAt'],
     node: updatedNode,
   });
+
+  // The client scripts release for several reasons (never started, dead
+  // worker, resize reconcile, blocked.sh) — the free-text reason is the
+  // only place that distinction survives.
+  events
+    .recordReleased(
+      mapId,
+      nodeId,
+      null,
+      buildReleasedEvent(sessionId, node.claimedAt, 'release', opts.reason?.trim() || null, now),
+    )
+    .catch(() => {});
 
   return {
     node: { id: updatedNode.id, text: updatedNode.text },
@@ -706,6 +742,11 @@ export async function getNextTicket(
       fields: ['claimedBySession', 'claimedAt'],
       node: winnerNode,
     });
+    // The conditional UPDATE above only succeeds on an unclaimed node, so
+    // a pull never has a previous holder.
+    events
+      .recordClaimed(mapId, winnerNode.id, null, buildClaimedEvent(sessionId, 'pull', null))
+      .catch(() => {});
   }
 
   return result;

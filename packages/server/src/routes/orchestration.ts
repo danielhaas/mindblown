@@ -91,7 +91,9 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
     '/api/maps/:id/nodes/:nodeId/release',
     async (req, reply) => {
       const { id: mapId, nodeId } = req.params;
-      const body = req.body as { sessionId?: string };
+      // `reason` is free text for the claim trail ("never started", "dead
+      // worker", …); it does not gate the release.
+      const body = req.body as { sessionId?: string; reason?: string };
 
       if (!body.sessionId || typeof body.sessionId !== 'string') {
         return reply.status(400).send({
@@ -100,7 +102,9 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
       }
 
       try {
-        const result = await releaseNode(mapId, nodeId, body.sessionId);
+        const result = await releaseNode(mapId, nodeId, body.sessionId, {
+          reason: typeof body.reason === 'string' ? body.reason : null,
+        });
         return reply.status(200).send(result);
       } catch (err) {
         return handleOrchestrationError(err, reply);
