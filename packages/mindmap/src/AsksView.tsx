@@ -96,8 +96,11 @@ export function AsksView() {
 
   const readOnly = viewRole !== 'pm' && viewRole !== 'all';
   // First name only — «Entscheid (Dan, …)» is what the terminal round writes
-  // and what the collector recognises as an already-taken decision.
-  const by = user?.name?.trim().split(/\s+/)[0] || 'Dan';
+  // and what the collector recognises as an already-taken decision. Dan's
+  // account says «Daniel»; he asked for «Dan» (2026-09-03), same as the skill.
+  const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
+  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Dan';
+  const by = BY_ALIAS[firstName] ?? firstName;
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
