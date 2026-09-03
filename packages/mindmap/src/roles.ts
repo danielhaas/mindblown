@@ -95,7 +95,9 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // queue alive?") — the steering knobs render read-only in this lens.
     // List stays tabs[0] = the landing page; on-screen ORDER comes from
     // App.tsx VIEW_TABS, not from this array.
-    tabs: ['list', 'kanban', 'mindmap', 'fleet'],
+    // Fragen too (Dan, 2026-09-03): the developer lens answers as well —
+    // the questions are the fleet's, whoever is looking decides.
+    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'asks'],
     panels: ['blocked', 'property', 'mapChat'],
   },
   all: {

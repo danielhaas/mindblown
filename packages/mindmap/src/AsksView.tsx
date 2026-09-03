@@ -10,9 +10,9 @@
  * top of the node, blocked → todo. «Später» and «an Rita/Susi/Dana» only
  * record. No answer is written without a click.
  */
-import { useEffect, useMemo, useState } from 'react';
-import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, sortAsks } from '@mindblown/core';
-import type { Ask, AskAnswerInput, AskRow, AskWritePlan } from '@mindblown/core';
+import React, { useEffect, useMemo, useState } from 'react';
+import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, proseMirrorToPlainText, sortAsks } from '@mindblown/core';
+import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
@@ -94,7 +94,8 @@ export function AsksView() {
     };
   }, [currentMapId, asksRev, poll]);
 
-  const readOnly = viewRole !== 'pm' && viewRole !== 'all';
+  // Only the stakeholder lens is read-only; PM, developer and All answer.
+  const readOnly = viewRole === 'stakeholder';
   // First name only — «Entscheid (Dan, …)» is what the terminal round writes
   // and what the collector recognises as an already-taken decision. Dan's
   // account says «Daniel»; he asked for «Dan» (2026-09-03), same as the skill.
@@ -302,6 +303,18 @@ function AskCard({
   const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
   const [busy, setBusy] = useState(false);
   const setResult = (r: AnswerResult) => onResult(a.id, r);
+  // «Mehr»: everything the collector folded into this record plus the node
+  // itself (blockedReason, description) — fetched on first open only.
+  const [more, setMore] = useState(false);
+  const [node, setNode] = useState<Node | null | 'loading' | 'error'>(null);
+  useEffect(() => {
+    if (!more || node !== null || !a.unblocks.node_id) return;
+    setNode('loading');
+    api
+      .fetchNode(mapId, a.unblocks.node_id)
+      .then((n) => setNode(n))
+      .catch(() => setNode('error'));
+  }, [more, node, a.unblocks.node_id, mapId]);
 
   const options = a.options.length > 0 ? a.options : ['Ja', 'Nein'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
@@ -383,12 +396,17 @@ function AskCard({
         <span style={{ color: '#64748b', fontSize: 12 }}>Frage ({a.question_author ?? '?'}): </span>
         {a.question}
       </div>
-      {unb.length > 0 && (
-        <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-          <span>hängt dran:</span>
-          {unb}
-        </div>
-      )}
+      <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
+        {unb.length > 0 && <span>hängt dran:</span>}
+        {unb}
+        <button
+          onClick={() => setMore((v) => !v)}
+          style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: 4, padding: '1px 8px', color: '#334155', cursor: 'pointer', fontSize: 12 }}
+        >
+          {more ? 'Weniger' : 'Mehr…'}
+        </button>
+      </div>
+      {more && <AskDetails ask={a} row={row} node={node} />}
 
       {result ? (
         <div style={{ marginTop: 10, fontSize: 12, color: result.ok ? '#047857' : '#b91c1c', whiteSpace: 'pre-wrap' }}>
@@ -472,6 +490,71 @@ function AskCard({
         </div>
       )}
     </section>
+  );
+}
+
+const SOURCE_LABEL: Record<string, string> = {
+  'tick:decision': 'Orchestrator (Tick)',
+  'tick:map': 'Knoten (blockedReason)',
+  'mindblown:live': 'Knoten (blockedReason)',
+  'rollup:prompt': 'Worker-Dialog (PROMPT-BLOCKED)',
+  'pending-notes': 'Heartbeat-Backlog',
+  'github:human': 'GitHub «Warum nicht jetzt gefixt»',
+  'github:needs-version': 'GitHub NEEDS-VERSION',
+};
+
+function AskDetails({ ask: a, row, node }: { ask: Ask; row: AskRow; node: Node | null | 'loading' | 'error' }) {
+  const dl: [string, React.ReactNode][] = [];
+  if (a.url) dl.push(['Ticket', <a key="u" href={a.url} target="_blank" rel="noreferrer" style={{ color: '#1d4ed8' }}>{a.url}</a>]);
+  if (a.requirement) dl.push(['Requirement', a.requirement]);
+  if (a.labels && a.labels.length > 0) dl.push(['Labels', a.labels.join(', ')]);
+  if (a.milestone) dl.push(['Milestone', a.milestone]);
+  if (a.answerers && a.answerers.length > 1) dl.push(['Beteiligte', a.answerers.join(', ')]);
+  dl.push(['Quellen', a.sources.map((s) => SOURCE_LABEL[s] ?? s).join(' · ')]);
+  dl.push(['Gesehen', `seit ${fmtTime(row.firstSeenAt)}, zuletzt gepusht ${fmtTime(row.pushedAt)}`]);
+  if (a.unblocks.pr) dl.push(['PR', `${a.unblocks.pr}${a.unblocks.pr_state ? ` (${a.unblocks.pr_state})` : ''}`]);
+  const qs = (a.questions ?? []).filter((q) => q.text.trim() !== a.question.trim());
+  return (
+    <div style={{ marginTop: 8, padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12 }}>
+      <dl style={{ margin: 0, display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '2px 10px' }}>
+        {dl.map(([k, v]) => (
+          <React.Fragment key={k}>
+            <dt style={{ color: '#64748b' }}>{k}</dt>
+            <dd style={{ margin: 0, overflowWrap: 'anywhere' }}>{v}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+      {qs.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: '#64748b' }}>Dieselbe Frage, andere Wortlaute:</div>
+          {qs.map((q, i) => (
+            <div key={i} style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
+              <span style={{ color: '#64748b' }}>{SOURCE_LABEL[q.source] ?? q.source}{q.author ? ` (${q.author})` : ''}: </span>
+              {q.text}
+            </div>
+          ))}
+        </div>
+      )}
+      {a.unblocks.node_id && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ color: '#64748b' }}>Knoten</div>
+          {node === 'loading' && <Muted>lädt…</Muted>}
+          {node === 'error' && <Muted>Knoten nicht ladbar (gelöscht oder keine Berechtigung)</Muted>}
+          {node && node !== 'loading' && node !== 'error' && (
+            <div style={{ marginTop: 2 }}>
+              <div><b>{node.text}</b> · Status {node.status ?? '—'}{node.claimedBySession ? ` · geclaimt von ${node.claimedBySession}` : ''}{node.tags.length ? ` · Tags ${node.tags.join(', ')}` : ''}</div>
+              {node.blockedReason && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}><span style={{ color: '#64748b' }}>blockedReason: </span>{node.blockedReason}</div>}
+              {proseMirrorToPlainText(node.description) && (
+                <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>
+                  <span style={{ color: '#64748b' }}>Beschreibung: </span>
+                  {proseMirrorToPlainText(node.description)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

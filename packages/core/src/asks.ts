@@ -36,6 +36,8 @@ export interface Ask {
   sources: string[];
   question: string;
   question_author: string | null;
+  /** Every wording the collector folded into this record, by source (the «Mehr» view). */
+  questions?: { source: string; author: string | null; text: string }[];
   options: string[];
   answerer: AskAnswerer | string;
   answerers?: string[];
@@ -145,6 +147,11 @@ export function parseAsk(raw: unknown): Ask | null {
     title: str(o.title),
     url: str(o.url),
     sources: strList(o.sources),
+    questions: Array.isArray(o.questions)
+      ? o.questions
+          .filter((q): q is Record<string, unknown> => !!q && typeof q === 'object' && typeof (q as Record<string, unknown>).text === 'string')
+          .map((q) => ({ source: str(q.source) ?? '?', author: str(q.author), text: q.text as string }))
+      : [],
     question: o.question,
     question_author: str(o.question_author),
     options: strList(o.options),
