@@ -25,6 +25,7 @@ import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { descendantVersionIds } from './requirementScope.js';
@@ -743,14 +744,14 @@ server.tool(
           ghLinks: (() => {
             const ids = new Set<string>();
             for (const l of n.externalLinks ?? []) {
-              if (l.provider === 'github') ids.add(l.externalId);
+              if (isForgeLink(l)) ids.add(l.externalId);
             }
             const stack = [...(n.childrenIds ?? [])];
             while (stack.length) {
               const c = nodeById.get(stack.pop()!);
               if (!c) continue;
               for (const l of c.externalLinks ?? []) {
-                if (l.provider === 'github') ids.add(l.externalId);
+                if (isForgeLink(l)) ids.add(l.externalId);
               }
               stack.push(...(c.childrenIds ?? []));
             }
@@ -2765,18 +2766,21 @@ server.tool(
 
 server.tool(
   'connect_github_repo',
-  'Connect a GitHub repository to a workspace. Required before importing issues. Stores the owner, repo, and token for API access.',
+  'Connect a GitHub or Gitea/Forgejo repository to a workspace. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
   {
     workspaceId: z.string().describe('The workspace ID'),
-    owner: z.string().describe('GitHub repo owner (e.g. "danielhaas")'),
-    repo: z.string().describe('GitHub repo name (e.g. "mindblown")'),
-    token: z.string().describe('GitHub personal access token with repo scope'),
-    webhookSecret: z.string().optional().describe('Webhook secret for verifying GitHub webhook payloads'),
+    owner: z.string().describe('Repo owner (e.g. "danielhaas")'),
+    repo: z.string().describe('Repo name (e.g. "mindblown")'),
+    token: z.string().describe('Personal access token with repo scope (GitHub) or repository read/write (Gitea)'),
+    webhookSecret: z.string().optional().describe('Webhook secret for verifying webhook payloads'),
+    kind: z.enum(['github', 'gitea']).optional().describe('Forge kind; default "github". "gitea" also covers Forgejo.'),
+    apiBaseUrl: z.string().optional().describe('Self-hosted instance URL (e.g. "https://git.example.com"); required for gitea, optional GHES API URL for github'),
+    webBaseUrl: z.string().optional().describe('Web URL for issue links when it differs from apiBaseUrl'),
   },
-  async ({ workspaceId, owner, repo, token, webhookSecret }) => {
+  async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl }) => {
     try {
-      const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret);
-      return toolResult(`Connected GitHub repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
+      const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret, { kind, apiBaseUrl, webBaseUrl });
+      return toolResult(`Connected ${result.provider} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
     } catch (err) {
       return toolError(err);
     }
@@ -2860,7 +2864,7 @@ server.tool(
       }
       const externalId = `${owner}/${repo}#${issueNumber}`;
       const existing = node.externalLinks?.find(
-        (l) => l.provider === 'github' && l.externalId === externalId,
+        (l) => isForgeLink(l) && l.externalId === externalId,
       );
       if (existing) {
         return toolError(`Node ${nodeId} is already linked to ${externalId}. No duplicate created.`);
@@ -2894,7 +2898,7 @@ server.tool(
       }
       const links = node.externalLinks ?? [];
       const removed = links.filter(
-        (l) => l.provider === 'github' && (externalId === undefined || l.externalId === externalId),
+        (l) => isForgeLink(l) && (externalId === undefined || l.externalId === externalId),
       );
       if (removed.length === 0) {
         return toolError(
@@ -2978,7 +2982,7 @@ server.tool(
       if (!node) {
         return toolError(`Node ${nodeId} not found in map ${mapId}.`);
       }
-      const existing = node.externalLinks?.find((l) => l.provider === 'github');
+      const existing = node.externalLinks?.find((l) => isForgeLink(l));
       if (existing) {
         return toolError(
           `Node ${nodeId} is already linked to GitHub issue ${existing.externalId} (${existing.url}). Refusing to create a second issue for the same node. Unlink first if that's really what you want.`,
@@ -2986,7 +2990,7 @@ server.tool(
       }
 
       const result = await api.createGitHubIssueFromNode(mapId, nodeId);
-      const link = result.node.externalLinks.find((l) => l.provider === 'github');
+      const link = result.node.externalLinks.find((l) => isForgeLink(l));
       return toolResult(
         `Created GitHub issue #${result.issue.number} ("${result.issue.title}") and linked it to node ${nodeId}. URL: ${result.issue.html_url}${link ? ` — externalId: ${link.externalId}` : ''}. The node will now sync with GitHub on future edits.`,
       );

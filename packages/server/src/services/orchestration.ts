@@ -39,6 +39,7 @@ import {
   MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
 } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit } from '@mindblown/core';
 import type {
   ReadyNodesResult,
@@ -701,7 +702,7 @@ export async function getNextTicket(
         versionId: effectiveVersionId(winner.id, nodeMap),
         effortEstimate: winner.effortEstimate,
         githubLinks: winner.externalLinks
-          .filter((l) => l.provider === 'github')
+          .filter((l) => isForgeLink(l))
           .map((l) => ({ externalId: l.externalId, url: l.url })),
         claimedAt: winner.claimedAt,
       };
@@ -772,7 +773,7 @@ export async function conflictScan(
   const byLink = new Map<string, CoreNode[]>();
   for (const n of all) {
     for (const l of n.externalLinks) {
-      if (l.provider !== 'github') continue;
+      if (!isForgeLink(l)) continue;
       (byLink.get(l.externalId) ?? byLink.set(l.externalId, []).get(l.externalId)!).push(n);
     }
   }
@@ -800,7 +801,7 @@ export async function conflictScan(
   }
 
   const duplicateLinks = candidate.externalLinks
-    .filter((l) => l.provider === 'github')
+    .filter((l) => isForgeLink(l))
     .map((l) => [l.externalId, byLink.get(l.externalId) ?? []] as const)
     .filter(([, group]) => group.length > 1)
     .map(([ext, group]) => toGroup(ext, group));

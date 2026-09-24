@@ -8,6 +8,7 @@
  */
 
 import type { ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 
 export type RollbackOutcome =
@@ -52,7 +53,7 @@ export async function rollBackNodeOffDone(
 
   const links: ExternalLink[] = node.externalLinks.map((l) => ({ ...l }));
   const idx = links.findIndex(
-    (l) => l.provider === 'github' && l.externalId === externalId,
+    (l) => isForgeLink(l) && l.externalId === externalId,
   );
 
   let restoredPct: number | null = null;

@@ -1,9 +1,10 @@
 /**
  * GitHub implementation of `ForgeClient`.
  *
- * This is the ONE file in the codebase that knows GitHub's host names.
- * Everything else receives them through `ForgeEndpoint`. GitHub Enterprise
- * Server works by passing its own `apiBaseUrl` / `webBaseUrl`.
+ * Together with `constants.ts` this is the only place in the codebase that
+ * knows GitHub's host names. Everything else receives them through
+ * `ForgeEndpoint`. GitHub Enterprise Server works by passing its own
+ * `apiBaseUrl` / `webBaseUrl`.
  */
 
 import {
@@ -17,19 +18,17 @@ import {
   type ForgeRawResponse,
   type ForgeRequestInit,
   type ForgeResponse,
+  type IssueCloseEvent,
+  type IssuesListQuery,
   type ListPullRequestsQuery,
+  type MilestoneRef,
   type RequestOptions,
+  type UpdateIssueInput,
 } from './types.js';
+import { GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
+import { walkIssueScan } from './pagination.js';
 
-export const GITHUB_API_BASE = 'https://api.github.com';
-export const GITHUB_WEB_BASE = 'https://github.com';
-
-/** The public github.com endpoint — the default for every binding that predates #367. */
-export const GITHUB_ENDPOINT: ForgeEndpoint = {
-  kind: 'github',
-  apiBaseUrl: GITHUB_API_BASE,
-  webBaseUrl: GITHUB_WEB_BASE,
-};
+export { GITHUB_API_BASE, GITHUB_WEB_BASE, GITHUB_ENDPOINT } from './constants.js';
 
 export interface GitHubForgeOptions {
   token: string;
@@ -108,7 +107,12 @@ export class GitHubForge implements ForgeClient {
     return { status: res.status, bodyText: await res.text() };
   }
 
-  // ── Issues / labels ─────────────────────────────────────────────
+  // ── Issues ──────────────────────────────────────────────────────
+
+  /** GitHub's REST shape IS the shared shape. */
+  normalizeIssue<T extends object>(raw: T): T & ForgeIssue {
+    return raw as T & ForgeIssue;
+  }
 
   createIssue(owner: string, repo: string, input: CreateIssueInput): Promise<ForgeIssue> {
     return this.requestJson<ForgeIssue>(`/repos/${owner}/${repo}/issues`, {
@@ -116,6 +120,28 @@ export class GitHubForge implements ForgeClient {
       body: { title: input.title, body: input.body, labels: input.labels },
     });
   }
+
+  updateIssue(owner: string, repo: string, issueNumber: number, patch: UpdateIssueInput): Promise<ForgeIssue> {
+    // GitHub takes every field in one PATCH: labels replace the set,
+    // milestone is its `number`, state_reason is native.
+    return this.requestJson<ForgeIssue>(`/repos/${owner}/${repo}/issues/${issueNumber}`, {
+      method: 'PATCH',
+      body: patch,
+    });
+  }
+
+  issuesListPath(owner: string, repo: string, query: IssuesListQuery): string {
+    const params = new URLSearchParams({
+      state: query.state,
+      per_page: String(query.perPage),
+      sort: query.sort,
+      direction: query.direction,
+    });
+    if (query.since) params.set('since', query.since);
+    return `/repos/${owner}/${repo}/issues?${params.toString()}`;
+  }
+
+  // ── Labels ──────────────────────────────────────────────────────
 
   addIssueLabels(
     owner: string,
@@ -143,6 +169,81 @@ export class GitHubForge implements ForgeClient {
       `/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(label)}`,
       { method: 'DELETE', signal: opts?.signal },
     );
+  }
+
+  // ── Milestones ──────────────────────────────────────────────────
+
+  async listMilestones(owner: string, repo: string): Promise<MilestoneRef[]> {
+    const rows = await this.requestJson<Array<{ number: number; title: string; state: 'open' | 'closed' }>>(
+      `/repos/${owner}/${repo}/milestones?state=all&per_page=100`,
+    );
+    return rows.map((m) => ({ ref: m.number, title: m.title, state: m.state }));
+  }
+
+  // ── Issue history ───────────────────────────────────────────────
+
+  async listCrossReferencingPullRequests(owner: string, repo: string, issueNumber: number): Promise<number[]> {
+    interface TimelineEvent {
+      event?: string;
+      source?: {
+        type?: string;
+        issue?: {
+          number?: number;
+          pull_request?: unknown;
+          repository?: { full_name?: string };
+        };
+      };
+    }
+    // Writing `Closes #N` in a PR body makes GitHub post a `cross-referenced`
+    // timeline event on issue N, so the timeline is the reliable index of
+    // "which PRs point here". Read to its END (ascending) — on a long-lived
+    // ticket the closing PR sits behind page 1.
+    const fullName = `${owner}/${repo}`;
+    const events = await walkIssueScan<TimelineEvent>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/timeline?per_page=100`,
+      this,
+      'issue timeline',
+      `${fullName}#${issueNumber}`,
+    );
+    const seen: number[] = [];
+    for (const ev of events) {
+      if (ev.event !== 'cross-referenced') continue;
+      const src = ev.source?.issue;
+      if (!src?.pull_request) continue;
+      if (src.repository?.full_name && src.repository.full_name !== fullName) continue;
+      if (typeof src.number !== 'number') continue;
+      if (seen.includes(src.number)) continue;
+      seen.push(src.number);
+    }
+    return seen;
+  }
+
+  async getLatestCloseEvent(owner: string, repo: string, issueNumber: number): Promise<IssueCloseEvent | null> {
+    interface RawEvent {
+      event?: string;
+      actor?: { login?: string } | null;
+      commit_id?: string | null;
+      created_at?: string;
+      state_reason?: 'completed' | 'not_planned' | null;
+    }
+    const events = await walkIssueScan<RawEvent>(
+      `/repos/${owner}/${repo}/issues/${issueNumber}/events?per_page=100`,
+      this,
+      'issue events',
+      `${owner}/${repo}#${issueNumber}`,
+    );
+    let latest: RawEvent | null = null;
+    for (const ev of events) {
+      if (ev.event !== 'closed') continue;
+      latest = ev;
+    }
+    if (!latest) return null;
+    return {
+      actor: latest.actor?.login ?? null,
+      commitId: latest.commit_id ?? null,
+      createdAt: latest.created_at ?? null,
+      stateReason: latest.state_reason ?? null,
+    };
   }
 
   // ── Pull requests ───────────────────────────────────────────────

@@ -15,6 +15,7 @@
  * the queue loudly instead of silently opening the fence.
  */
 import type { Node, NodeMap, StatusDef } from './types.js';
+import { isForgeLink } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
 import { buildIsDonePredicate, buildTodoIds } from './statusWorkflow.js';
@@ -81,7 +82,7 @@ export function isBugNode(node: Pick<Node, 'tags'>): boolean {
  */
 export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boolean {
   if (proseMirrorToPlainText(node.description).trim() !== '') return true;
-  return node.externalLinks.some((l) => l.provider === 'github');
+  return node.externalLinks.some((l) => isForgeLink(l));
 }
 
 /** Tag the fleet's give-up path (blocked.sh) sets next to status=blocked + blockedReason. */

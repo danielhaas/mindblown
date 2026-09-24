@@ -42,8 +42,9 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
-import { forgeFromInstallation, forgeFromIntegration, FORGE_PROVIDERS } from '../lib/forge.js';
+import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { pickActiveLane } from '../lib/activeLane.js';
@@ -168,7 +169,7 @@ async function findNodeInMapByExternalId(
     .where(and(eq(nodes.mapId, mapId), nodeDb.notDeleted));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+    if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {
       return { id: row.id, parentId: (row.parentId as string | null) ?? null };
     }
   }
@@ -194,7 +195,7 @@ export async function findNodesByExternalIds(
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
-      if (l.provider === 'github' && l.externalId && wanted.has(l.externalId)) {
+      if (isForgeLink(l) && l.externalId && wanted.has(l.externalId)) {
         found.add(l.externalId);
       }
     }
@@ -562,7 +563,7 @@ async function findNodesByExternalIdAcrossMaps(
   const out: Array<{ id: string; mapId: string; tags: string[] }> = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+    if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {
       out.push({
         id: row.id,
         mapId: row.mapId as string,
@@ -756,7 +757,7 @@ async function ensureNodeForIssueViaTriage(
         );
         const parkLink: ExternalLink = stampMirrorHash(
           {
-            provider: 'github',
+            provider: forgeKindForRepoCached(ctx.owner, ctx.repo),
             externalId,
             url: issue.html_url,
             syncEnabled: true,
@@ -1183,7 +1184,7 @@ async function ensureNodeForIssueViaTriage(
       );
       const parkLink: ExternalLink = stampMirrorHash(
         {
-          provider: 'github',
+          provider: forgeKindForRepoCached(ctx.owner, ctx.repo),
           externalId,
           url: issue.html_url,
           syncEnabled: true,
@@ -1248,7 +1249,7 @@ async function ensureNodeForIssueViaTriage(
     // later (lib/descriptionMirror.ts).
     const link: ExternalLink = stampMirrorHash(
       {
-        provider: 'github',
+        provider: forgeKindForRepoCached(ctx.owner, ctx.repo),
         externalId,
         url: issue.html_url,
         syncEnabled: true,
@@ -1588,6 +1589,10 @@ export async function ensureNodeForIssue(
 
   const externalId = buildExternalId(ctx.owner, ctx.repo, issue.number);
 
+  // Warm the repo → forge-kind cache OUTSIDE the transactions below; the
+  // link writers read it synchronously (`forgeKindForRepoCached`).
+  await forgeKindForRepo(ctx.owner, ctx.repo);
+
   // (2) Closed-issue window filter.
   if (issue.state === 'closed') {
     const window = opts.allowClosedWithinDays ?? 0;
@@ -1677,7 +1682,7 @@ export async function ensureNodeForIssue(
     // later (lib/descriptionMirror.ts).
     const link: ExternalLink = stampMirrorHash(
       {
-        provider: 'github',
+        provider: forgeKindForRepoCached(ctx.owner, ctx.repo),
         externalId,
         url: issue.html_url,
         syncEnabled: true,

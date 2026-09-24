@@ -23,7 +23,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import { resolveStatusDef } from '@mindblown/core';
+import { resolveStatusDef, isForgeLink } from '@mindblown/core';
 import type { ExternalLink, StatusDef } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
@@ -100,7 +100,7 @@ export async function markWorkStarted(
   const matched: MatchedNode[] = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId && wanted.has(l.externalId))) {
+    if (links.some((l) => isForgeLink(l) && l.externalId && wanted.has(l.externalId))) {
       matched.push({
         id: row.id,
         mapId: row.mapId,

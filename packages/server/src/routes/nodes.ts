@@ -9,6 +9,7 @@ import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 
 // ── Auto-link helper (#58) ──────────────────────────────────────
 // Titles that begin with `#NNNN` are almost always referencing an existing
@@ -52,7 +53,7 @@ async function autoLinkNodeFromTitle(
   // link" via shouldAutoLinkOnUpdate, but we double-check defensively.
   const node = await nodeDb.getNode(nodeId);
   if (!node) return null;
-  const alreadyHasGithub = node.externalLinks.some((l) => l.provider === 'github');
+  const alreadyHasGithub = node.externalLinks.some((l) => isForgeLink(l));
   if (alreadyHasGithub) return null;
 
   const ghCtx = await getGitHubContextForMap(mapId);
@@ -82,7 +83,7 @@ async function autoLinkNodeFromTitle(
   // lib/descriptionMirror.ts).
   const externalLink: ExternalLink = stampMirrorHash(
     {
-      provider: 'github',
+      provider: ghCtx.forge.endpoint.kind,
       externalId: `${ghCtx.owner}/${ghCtx.repo}#${issueNumber}`,
       url: issue.html_url,
       syncEnabled: true,
@@ -124,7 +125,7 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
 
   // Find GitHub links with sync enabled
   const githubLinks = node.externalLinks.filter(
-    (l) => l.provider === 'github' && l.syncEnabled,
+    (l) => isForgeLink(l) && l.syncEnabled,
   );
   if (githubLinks.length === 0) return;
 
@@ -413,7 +414,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       // important one — we must never override an explicit prior link, even
       // if the new title points elsewhere.
       if (body.text !== undefined && before) {
-        const hadGithubLink = before.externalLinks.some((l) => l.provider === 'github');
+        const hadGithubLink = before.externalLinks.some((l) => isForgeLink(l));
         if (!hadGithubLink) {
           autoLinkNodeFromTitle(req.params.nodeId, req.params.id, updated.text).catch((err) => {
             console.warn('[github-autolink] update_node autolink failed:', err);

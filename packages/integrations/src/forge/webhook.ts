@@ -13,6 +13,8 @@ export interface WebhookHeaders {
   signature: string | undefined;
   /** Unique delivery id, when the forge sends one. */
   delivery: string | undefined;
+  /** Which forge sent it, by its own header: `gitea` when `X-Gitea-Event` is present, else `github`. */
+  kind: 'github' | 'gitea';
 }
 
 type HeaderBag = Record<string, string | string[] | undefined>;
@@ -23,15 +25,21 @@ function header(headers: HeaderBag, name: string): string | undefined {
 }
 
 /**
- * Read the forge event headers off an inbound request. GitHub-compatible
- * headers only for now — Gitea sends them too. #368 adds the `X-Gitea-*`
- * fallbacks once real deliveries have been captured as fixtures.
+ * Read the forge event headers off an inbound request. Gitea sends the
+ * GitHub-compatible headers as well (verified on 1.27), so the GitHub
+ * names win and the Gitea ones are the fallback; `kind` records who sent it
+ * so the ingest can normalise Gitea's action vocabulary.
  */
 export function readWebhookHeaders(headers: HeaderBag): WebhookHeaders {
+  const giteaEvent = header(headers, 'x-gitea-event');
+  const giteaSig = header(headers, 'x-gitea-signature');
   return {
-    event: header(headers, 'x-github-event'),
-    signature: header(headers, 'x-hub-signature-256'),
-    delivery: header(headers, 'x-github-delivery'),
+    event: header(headers, 'x-github-event') ?? giteaEvent,
+    signature:
+      header(headers, 'x-hub-signature-256') ??
+      (giteaSig ? (giteaSig.startsWith('sha256=') ? giteaSig : `sha256=${giteaSig}`) : undefined),
+    delivery: header(headers, 'x-github-delivery') ?? header(headers, 'x-gitea-delivery'),
+    kind: giteaEvent ? 'gitea' : 'github',
   };
 }
 

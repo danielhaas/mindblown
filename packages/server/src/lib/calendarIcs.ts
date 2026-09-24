@@ -98,7 +98,7 @@ export interface CalendarIcsInput {
   view: CalendarIcsView;
 }
 
-const EXTERNAL_PROVIDER_BLACKLIST = new Set(['github', 'jira', 'linear', 'gitlab']);
+const EXTERNAL_PROVIDER_BLACKLIST = new Set(['github', 'gitea', 'jira', 'linear', 'gitlab']);
 
 const isExternallySourced = (n: CoreNode): boolean =>
   (n.externalLinks ?? []).some((link) => EXTERNAL_PROVIDER_BLACKLIST.has(link.provider));

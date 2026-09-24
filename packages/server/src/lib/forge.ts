@@ -12,14 +12,20 @@
  * by path (nine of them) don't have to know about these helpers.
  */
 
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import {
   createForgeClient,
   githubForge,
   isForgeKind,
   mintInstallationToken,
+  resolveForgeEndpoint,
+  GITHUB_ENDPOINT,
   type ForgeClient,
+  type ForgeEndpoint,
   type ForgeKind,
 } from '@mindblown/integrations';
+import { db } from '../db/connection.js';
+import { integrations, maps } from '../db/schema.js';
 
 /**
  * Shape of `integrations.config` for a PAT-backed forge row. `apiBaseUrl`
@@ -71,4 +77,110 @@ export function forgeFromIntegration(row: { id?: string; provider: string; confi
 export async function forgeFromInstallation(installationId: string): Promise<ForgeClient> {
   const token = await mintInstallationToken(installationId);
   return githubForge(token);
+}
+
+/** The endpoint a PAT integration row points at, without a token (for web URLs). */
+export function forgeEndpointFromIntegration(row: { provider: string; config: unknown }): ForgeEndpoint | null {
+  const cfg = row.config as ForgeIntegrationConfig;
+  try {
+    return resolveForgeEndpoint({
+      kind: isForgeKind(row.provider) ? row.provider : 'github',
+      apiBaseUrl: cfg.apiBaseUrl,
+      webBaseUrl: cfg.webBaseUrl,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Which forge kind owns `owner/repo`: an App-bound map means github.com,
+ * otherwise the enabled PAT row that names the repo decides. Defaults to
+ * `github` when nothing is bound (a link written before the binding exists
+ * keeps the historical value). Cached for a minute — this is read on every
+ * ingested issue.
+ */
+const kindCache = new Map<string, { kind: ForgeKind; at: number }>();
+const KIND_CACHE_MS = 60_000;
+
+export async function forgeKindForRepo(owner: string, repo: string): Promise<ForgeKind> {
+  const key = `${owner}/${repo}`;
+  const hit = kindCache.get(key);
+  if (hit && Date.now() - hit.at < KIND_CACHE_MS) return hit.kind;
+
+  let kind: ForgeKind = 'github';
+  try {
+    const appBound = await db
+      .select({ id: maps.id })
+      .from(maps)
+      .where(and(eq(maps.githubRepoOwner, owner), eq(maps.githubRepoName, repo), isNotNull(maps.githubInstallationId)))
+      .limit(1);
+    if (!Array.isArray(appBound) || appBound.length === 0) {
+      const rows = await db
+        .select({ provider: integrations.provider, config: integrations.config })
+        .from(integrations)
+        .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
+      const match = (Array.isArray(rows) ? rows : []).find((r) => {
+        const cfg = r.config as ForgeIntegrationConfig | null;
+        return cfg?.owner === owner && cfg?.repo === repo;
+      });
+      if (match && isForgeKind(match.provider)) kind = match.provider;
+    }
+  } catch (err) {
+    // A lookup failure must not block an ingest; the historical value wins.
+    console.warn(`[forge] kind lookup for ${key} failed, assuming github:`, err instanceof Error ? err.message : err);
+  }
+  kindCache.set(key, { kind, at: Date.now() });
+  return kind;
+}
+
+/**
+ * Synchronous read for code running inside a DB transaction (an extra
+ * query there would take a second pool connection per ingest). Callers
+ * warm the cache with `forgeKindForRepo` before opening the transaction;
+ * an unwarmed read yields the historical `github`.
+ */
+export function forgeKindForRepoCached(owner: string, repo: string): ForgeKind {
+  return kindCache.get(`${owner}/${repo}`)?.kind ?? 'github';
+}
+
+/** Test hook: forget cached repo → kind lookups. */
+export function _resetForgeKindCacheForTests(): void {
+  kindCache.clear();
+}
+
+// ── Per-map endpoint cache (web URLs) ─────────────────────────────
+//
+// Filled by `getForgeEndpointForMap` (lib/githubContext.ts); read
+// synchronously by code that builds issue URLs inside sync callbacks.
+// Lives here rather than next to the resolver because nine test files
+// mock that module by path and the sync reader must keep working there.
+
+const endpointCache = new Map<string, { endpoint: ForgeEndpoint; at: number }>();
+const ENDPOINT_CACHE_MS = 60_000;
+
+export function rememberForgeEndpointForMap(mapId: string, endpoint: ForgeEndpoint): void {
+  endpointCache.set(mapId, { endpoint, at: Date.now() });
+}
+
+/** The cached endpoint if it is fresh, else null. */
+export function cachedForgeEndpointForMap(mapId: string): ForgeEndpoint | null {
+  const hit = endpointCache.get(mapId);
+  return hit && Date.now() - hit.at < ENDPOINT_CACHE_MS ? hit.endpoint : null;
+}
+
+/**
+ * Synchronous read of the last resolved endpoint for a map. Falls back to
+ * github.com when nothing has been resolved yet; route plugins prime it in
+ * a preHandler.
+ */
+export function forgeEndpointForMapCached(mapId: string): ForgeEndpoint {
+  return endpointCache.get(mapId)?.endpoint ?? GITHUB_ENDPOINT;
+}
+
+/** `owner/repo#N` → the kind that owns the repo (see `forgeKindForRepo`). */
+export async function forgeKindForExternalId(externalId: string): Promise<ForgeKind> {
+  const m = externalId.match(/^([^/]+)\/([^/#]+)#\d+$/);
+  if (!m) return 'github';
+  return forgeKindForRepo(m[1], m[2]);
 }

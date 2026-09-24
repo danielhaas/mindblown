@@ -133,6 +133,9 @@ The built files are in `packages/mindmap/dist/`. Serve them with any static file
 | `JWT_EXPIRES_IN` | `7d` | Token expiration time. Accepts values like `7d`, `24h`, `30m`. |
 | `MINDBLOWN_API_URL` | `http://localhost:3001` | MCP server only: URL of the MindBlown API |
 | `MINDBLOWN_TOKEN` | (empty) | MCP server only: JWT token for API authentication |
+| `KUMA_FORGE_CATCHUP_PUSH_URL` | (empty) | Optional Uptime-Kuma/Gatus push URL for the forge catch-up heartbeat (the older `KUMA_GITHUB_CATCHUP_PUSH_URL` still works) |
+| `KUMA_FORGE_AUTH_FAILURE_PUSH_URL` | (empty) | Optional push URL for the forge auth-failure alarm (`KUMA_GITHUB_AUTH_FAILURE_PUSH_URL` still works) |
+| `KUMA_FORGE_DRIFT_PUSH_URL` | (empty) | Optional push URL for the drift audit (`KUMA_GITHUB_DRIFT_PUSH_URL` still works) |
 
 ---
 
@@ -181,6 +184,36 @@ With both configured, chat, triage and the structured features use the admin-sel
 `GET /api/ai/config` reports the effective flags as `capabilities` and is served even in no-LLM mode.
 
 ---
+
+## Issue tracker: GitHub or Gitea (optional)
+
+MindBlown syncs nodes with the issues of one repository per workspace. Two forges are supported with the same feature set — import, issue-from-node, close on done, catch-up reconcile, drift audit, triage label writeback, and the PR gates that drive nodes to done when a pull request merges:
+
+| | GitHub | Gitea / Forgejo (self-hosted) |
+|---|---|---|
+| Auth | GitHub App installation (recommended) or a personal access token | Personal access token |
+| Connect | Settings → GitHub → *Install the app* or *Use legacy token* | Settings → GitHub → *Forge: Gitea*, instance URL + token |
+| Webhooks | Delivered by the App, or a repository webhook for token setups | Repository webhook |
+| Not available | — | Check-suite status on PR gates (Gitea has no `check_suite` event); close reasons (`not_planned`) |
+
+### Connecting a Gitea repository
+
+1. In Gitea, create an access token for a user who can read and write the repository (*Settings → Applications*, scopes `repository: read and write`, `issue: read and write`).
+2. In MindBlown open the map's GitHub panel, choose **Forge: Gitea / Forgejo**, enter the instance URL (`https://git.example.com` — the API is reached under `/api/v1` automatically), the token, owner and repository name, and press **Test connection**. The check reads the repository and reports whether the token can write to it.
+3. Press **Connect**. The MCP tool `connect_github_repo` does the same with `kind: "gitea"` and `apiBaseUrl`.
+4. In the repository's *Settings → Webhooks* add a Gitea webhook: target `https://<your-mindblown>/api/webhooks/github`, content type JSON, a secret, events *Issues*, *Issue comment*, *Pull request*. Store the same secret with the connection (`webhookSecret` on the connect call) so deliveries verify.
+5. If MindBlown lives on a private address, allow it in Gitea's `app.ini`: `[webhook] ALLOWED_HOST_LIST = private` (or the host name).
+
+Issue numbers and labels behave as on GitHub. Labels that don't exist on the repository are created when MindBlown publishes a node as an issue; the triage writeback (`triage:placed` / `triage:skipped`) expects them to exist and logs a warning otherwise, exactly as on GitHub.
+
+Existing GitHub installs need no change: connections created before the Gitea support default to github.com.
+
+Limits worth knowing:
+
+- Connecting a self-hosted forge (and the *Test connection* call for one) is an admin action done from a web session: the server fetches the URL you type with the token you type, so API keys — including the MCP HTTP transport — are refused for that. Connecting github.com is open to any authenticated user, as before.
+- A Gitea token scoped to the repository only cannot list organisation-level labels; those still resolve by name when MindBlown adds them, but a label MindBlown creates itself is always created on the repository.
+- One forge per workspace. A repository named `owner/repo` on both GitHub and Gitea in the same installation would share issue identities (`owner/repo#N`) — keep the names distinct.
+- Gitea has no close reason and its timeline does not attribute a merge-close to a commit. The abandoned-PR reopen and the closed-issue audit therefore only act on closes made by MindBlown's own login: set `MINDBLOWN_BOT_LOGIN` to the user whose token you connected, otherwise every close looks like a human decision and is left alone (the safe direction).
 
 ## Reverse Proxy (nginx)
 

@@ -24,6 +24,7 @@ import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import type { LinkedPrState, ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { extractClosingIssueRefs } from '@mindblown/integrations';
 
 // ── PR payload shapes (subset of GH webhook) ──────────────────────
@@ -121,7 +122,7 @@ async function findNodesByExternalIds(
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
-      if (l.provider === 'github' && l.externalId && wanted.has(l.externalId)) {
+      if (isForgeLink(l) && l.externalId && wanted.has(l.externalId)) {
         out.push({
           id: row.id,
           externalId: l.externalId,

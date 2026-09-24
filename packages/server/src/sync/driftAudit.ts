@@ -31,6 +31,7 @@
 
 import { eq, and, inArray, isNotNull } from 'drizzle-orm';
 import type { ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, FORGE_PROVIDERS } from '../lib/forge.js';
 import { notDeleted } from '../db/nodes.js';
@@ -228,7 +229,7 @@ async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
   for (const n of mapNodes) {
     const links = (n.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
-      if (l.provider === 'github' && l.externalId) {
+      if (isForgeLink(l) && l.externalId) {
         linkedExternalIds.add(l.externalId);
       }
     }
@@ -355,7 +356,7 @@ export function formatAutoBackfillMsg(summary: AutoBackfillSummary): string {
  * helper misbehaviour can't take down the run result.
  */
 export async function runDriftAudit(): Promise<DriftAuditRunResult> {
-  const url = process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
+  const url = process.env.KUMA_FORGE_DRIFT_PUSH_URL ?? process.env.KUMA_GITHUB_DRIFT_PUSH_URL;
   let reports: DriftReport[];
   let tokenErrors: TokenError[];
   try {

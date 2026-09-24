@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { OctocatIcon } from './icons/Octocat.js';
 import { pickCurrentCycle } from './roles.js';
@@ -696,7 +697,7 @@ export function ListView() {
             </span>
           )}
           {(() => {
-            const githubLink = node.externalLinks.find((l) => l.provider === 'github');
+            const githubLink = node.externalLinks.find((l) => isForgeLink(l));
             if (!githubLink) return null;
             const issueNum = githubLink.externalId.split('#')[1];
             return (

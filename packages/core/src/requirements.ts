@@ -1,3 +1,5 @@
+import { isForgeLink } from './types.js';
+
 /**
  * Requirement lifecycle stage — derived, never stored.
  *
@@ -170,7 +172,7 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
 
   const byId = new Map<string, RequirementGhLink>();
   for (const l of node.externalLinks ?? []) {
-    if (l.provider === 'github' && !byId.has(l.externalId)) {
+    if (isForgeLink(l) && !byId.has(l.externalId)) {
       byId.set(l.externalId, {
         externalId: l.externalId,
         url: l.url,
@@ -192,7 +194,7 @@ export function collectRequirementGhLinks<T extends GhLinkSource>(
     const child = nodeById(id);
     if (!child) continue;
     for (const l of child.externalLinks ?? []) {
-      if (l.provider === 'github' && !byId.has(l.externalId)) {
+      if (isForgeLink(l) && !byId.has(l.externalId)) {
         byId.set(l.externalId, {
           externalId: l.externalId,
           url: l.url,

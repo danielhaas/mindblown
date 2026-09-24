@@ -3,7 +3,7 @@ import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle, resolveStatusDef } from '@mindblown/core';
+import { hasCycle, resolveStatusDef, isForgeLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
@@ -677,7 +677,7 @@ export async function setExternalLinkState(
   const links = (row.externalLinks as ExternalLink[]) ?? [];
   let found = false;
   const next = links.map((l) => {
-    if (l.provider !== 'github' || l.externalId !== externalId) return l;
+    if (!isForgeLink(l) || l.externalId !== externalId) return l;
     found = true;
     return isPullRequest === undefined ? { ...l, state } : { ...l, state, isPullRequest };
   });
@@ -928,7 +928,7 @@ export async function findLinksMissingState(
   const out: Array<{ nodeId: string; externalId: string }> = [];
   for (const row of rows) {
     for (const l of (row.externalLinks as ExternalLink[]) ?? []) {
-      if (l.provider !== 'github' || l.state !== undefined) continue;
+      if (!isForgeLink(l) || l.state !== undefined) continue;
       if (!l.externalId.startsWith(`${repoFullName}#`)) continue;
       out.push({ nodeId: row.id, externalId: l.externalId });
       if (out.length >= limit) return out;
@@ -953,7 +953,7 @@ export async function findNodeIdByExternalId(
     .where(notDeleted);
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+    if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {
       return row.id;
     }
   }
@@ -980,7 +980,7 @@ export async function collectGitHubLinksInSubtree(
     if (row) {
       const links = (row.externalLinks as ExternalLink[]) ?? [];
       for (const l of links) {
-        if (l.provider === 'github' && l.syncEnabled) collected.push(l);
+        if (isForgeLink(l) && l.syncEnabled) collected.push(l);
       }
     }
     const children = await db

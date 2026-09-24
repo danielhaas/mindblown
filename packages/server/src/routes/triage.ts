@@ -69,11 +69,13 @@ import {
 } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
-import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { getGitHubContextForMap, getForgeEndpointForMap } from '../lib/githubContext.js';
+import { forgeEndpointForMapCached } from '../lib/forge.js';
 import { backfillMap, resolveIngestVersionId } from '../sync/githubIngest.js';
 import { sdNotifyWatchdog } from '../sync/sdNotify.js';
-import { importGitHubIssues, issueWebUrl, GITHUB_ENDPOINT } from '@mindblown/integrations';
+import { importGitHubIssues, issueWebUrl } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 
 /**
  * Inbox-fallback (#316): does this decision row's placedNodeId point
@@ -181,6 +183,20 @@ function broadcastTriageUpdated(
 // ── Routes ────────────────────────────────────────────────────────
 
 export async function triageRoutes(app: FastifyInstance): Promise<void> {
+  // Every handler below builds issue web URLs from the map's forge
+  // endpoint (github.com or a self-hosted Gitea). Resolve it once per
+  // request so the sync `buildIssueUrlFromExternalId` can read it from the
+  // cache; a lookup failure just leaves the github.com fallback in place.
+  app.addHook('preHandler', async (req) => {
+    const mapId = (req.params as { mapId?: string } | undefined)?.mapId;
+    if (!mapId) return;
+    try {
+      await getForgeEndpointForMap(mapId);
+    } catch {
+      /* fall back to github.com */
+    }
+  });
+
   // ── GET /api/maps/:mapId/triage-decisions ─────────────────────
   // Filter params (Phase 0 baseline + Phase 2 additions):
   //   reviewed=true|false           — exact-match on the boolean.
@@ -293,7 +309,12 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       mapId: req.params.mapId,
       total,
       returned: rows.length,
-      decisions: rows,
+      // `issueUrl` names the issue on the map's forge (github.com or a
+      // self-hosted Gitea) so the panel doesn't have to guess the host.
+      decisions: rows.map((row) => ({
+        ...row,
+        issueUrl: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
+      })),
     });
   });
 
@@ -465,7 +486,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             externalId: row.externalId,
             issueTitle: row.issueTitle,
             issueState: (row.issueState === 'closed' ? 'closed' : 'open'),
-            issueUrl: buildIssueUrlFromExternalId(row.externalId),
+            issueUrl: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
           });
         }
       }
@@ -524,7 +545,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             for (const n of linkedNodes) {
               const links = (n.externalLinks as ExternalLink[] | null) ?? [];
               for (const l of links) {
-                if (l.provider === 'github' && l.externalId) {
+                if (isForgeLink(l) && l.externalId) {
                   linkedExternalIds.add(l.externalId);
                 }
               }
@@ -738,7 +759,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           for (const n of mapNodes) {
             const links = (n.externalLinks as ExternalLink[] | null) ?? [];
             for (const l of links) {
-              if (l.provider === 'github' && l.externalId) {
+              if (isForgeLink(l) && l.externalId) {
                 linkedExternalIds.add(l.externalId);
               }
             }
@@ -1017,9 +1038,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           tx,
         );
         const link: ExternalLink = {
-          provider: 'github',
+          provider: forgeEndpointForMapCached(req.params.mapId).kind,
           externalId,
-          url: buildIssueUrlFromExternalId(externalId),
+          url: buildIssueUrlFromExternalId(externalId, req.params.mapId),
           syncEnabled: true,
           lastSyncedAt: new Date().toISOString(),
           state: isClosed ? 'closed' : 'open',
@@ -1566,7 +1587,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
         for (const n of mapNodes) {
           const links = (n.externalLinks as ExternalLink[]) ?? [];
-          if (links.some((l) => l.provider === 'github' && l.externalId === row.externalId)) {
+          if (links.some((l) => isForgeLink(l) && l.externalId === row.externalId)) {
             existingLinkedNodeId = n.id as string;
             break;
           }
@@ -1706,9 +1727,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             tx,
           );
           const link: ExternalLink = {
-            provider: 'github',
+            provider: forgeEndpointForMapCached(req.params.mapId).kind,
             externalId: row.externalId,
-            url: buildIssueUrlFromExternalId(row.externalId),
+            url: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
             syncEnabled: true,
             lastSyncedAt: new Date().toISOString(),
             state: isClosed ? 'closed' : 'open',
@@ -1918,7 +1939,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           labels: [],
           assignees: [],
           milestone: null,
-          html_url: buildIssueUrlFromExternalId(row.externalId),
+          html_url: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         },
@@ -2479,9 +2500,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 tx,
               );
               const link: ExternalLink = {
-                provider: 'github',
+                provider: forgeEndpointForMapCached(req.params.mapId).kind,
                 externalId: row.externalId,
-                url: buildIssueUrlFromExternalId(row.externalId),
+                url: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
                 syncEnabled: true,
                 lastSyncedAt: new Date().toISOString(),
                 state: isClosed ? 'closed' : 'open',
@@ -2643,7 +2664,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
               labels: [],
               assignees: [],
               milestone: null,
-              html_url: buildIssueUrlFromExternalId(row.externalId),
+              html_url: buildIssueUrlFromExternalId(row.externalId, req.params.mapId),
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             },
@@ -2756,13 +2777,13 @@ function parseIssueNumber(externalId: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-// Triage rows carry only an externalId, so the web URL is rebuilt here. The
-// endpoint is fixed to github.com until #368 threads the map's forge
-// endpoint through — grep `GITHUB_ENDPOINT` for every such assumption.
-function buildIssueUrlFromExternalId(externalId: string): string {
+// Triage rows carry only an externalId, so the web URL is rebuilt here from
+// the map's forge endpoint (primed per request by the plugin's preHandler;
+// github.com when the map has no binding).
+function buildIssueUrlFromExternalId(externalId: string, mapId: string): string {
   const idx = externalId.lastIndexOf('#');
   if (idx < 0) return '';
   const ownerRepo = externalId.slice(0, idx);
   const number = externalId.slice(idx + 1);
-  return issueWebUrl(GITHUB_ENDPOINT, ownerRepo, number);
+  return issueWebUrl(forgeEndpointForMapCached(mapId), ownerRepo, number);
 }

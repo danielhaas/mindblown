@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import type { LayoutNode } from './layout.js';
 import { OctocatIcon } from './icons/Octocat.js';
 
@@ -342,7 +343,7 @@ export function MindmapNode({
   const showProgress = node.percentComplete != null || (hasChildren && effort > 0);
   const showPriority = node.priority != null;
   const showAssignees = node.assigneeIds.length > 0;
-  const githubLink = node.externalLinks.find((l) => l.provider === 'github');
+  const githubLink = node.externalLinks.find((l) => isForgeLink(l));
 
   // ── Inline editing ─────────────────────────────────────────
 

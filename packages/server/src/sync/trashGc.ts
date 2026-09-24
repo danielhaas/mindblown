@@ -19,6 +19,7 @@ import { and, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import type { ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { closeGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
@@ -68,7 +69,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
   const linksByMap = new Map<string, ExternalLink[]>();
   for (const row of rows) {
     const links = ((row.externalLinks as ExternalLink[]) ?? []).filter(
-      (l) => l.provider === 'github' && l.syncEnabled,
+      (l) => isForgeLink(l) && l.syncEnabled,
     );
     if (links.length === 0) continue;
     const existing = linksByMap.get(row.mapId as string) ?? [];

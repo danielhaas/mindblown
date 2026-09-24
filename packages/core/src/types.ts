@@ -50,6 +50,17 @@ export interface Dependency {
 // ── External Link ───────────────────────────────────────────────
 
 /**
+ * `ExternalLink.provider` values that denote a code forge issue (GitHub or
+ * a self-hosted Gitea/Forgejo). The sync layer treats them alike; use
+ * `isForgeLink` instead of comparing to `'github'`.
+ */
+export const FORGE_LINK_PROVIDERS: readonly string[] = ['github', 'gitea'];
+
+export function isForgeLink(link: { provider: string }): boolean {
+  return FORGE_LINK_PROVIDERS.includes(link.provider);
+}
+
+/**
  * An external link to an integration object (GitHub Issue, Jira ticket, etc.).
  */
 export interface ExternalLink {
