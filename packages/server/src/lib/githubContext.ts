@@ -101,12 +101,14 @@ export async function getGitHubContextForMap(
   // Fallback: workspace PAT integration
   const integration = await getForgeIntegration(map.workspaceId);
   if (integration) {
-    const forge = forgeFromIntegration(integration);
+    const forge = await forgeFromIntegration(integration);
     if (!forge) return null;
     return {
       owner: integration.config.owner,
       repo: integration.config.repo,
-      token: integration.config.token,
+      // The resolved token, not the raw config one — an OAuth-bound row
+      // (#369) stores `token: ''` and authenticates through its identity.
+      token: forge.token,
       forge,
     };
   }

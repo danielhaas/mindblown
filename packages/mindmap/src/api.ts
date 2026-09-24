@@ -382,6 +382,57 @@ export function getGitHubInstallUrl(): Promise<{ installUrl: string }> {
   return request('/api/auth/github/install');
 }
 
+// ── Gitea sign-in + repo picker (#369) ─────────────────────────
+
+export interface GiteaAuthStatus {
+  configured: boolean;
+  instanceUrl: string | null;
+  connected: boolean;
+  identity: { login: string } | null;
+  /** The workspace's current OAuth-bound repository, when `workspaceId` was passed. */
+  binding: { repo: string; viaThisIdentity: boolean } | null;
+}
+
+export interface GiteaRepoInfo {
+  id: number;
+  fullName: string;
+  name: string;
+  owner: string;
+  private: boolean;
+  htmlUrl: string;
+  description: string | null;
+  canPush: boolean | null;
+}
+
+export function getGiteaAuthStatus(workspaceId?: string): Promise<GiteaAuthStatus> {
+  const qs = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
+  return request(`/api/auth/gitea/status${qs}`);
+}
+
+export function getGiteaAuthorizeUrl(): Promise<{ authorizeUrl: string; instanceUrl: string }> {
+  return request('/api/auth/gitea/authorize');
+}
+
+export function getGiteaRepositories(): Promise<{ instanceUrl: string; login: string; repositories: GiteaRepoInfo[] }> {
+  return request('/api/integrations/gitea/repositories');
+}
+
+export function bindGiteaRepo(
+  workspaceId: string,
+  owner: string,
+  repo: string,
+  webhookSecret?: string,
+): Promise<{ id: string; provider: string; enabled: boolean; repo: string }> {
+  return request('/api/integrations/gitea/bind', {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId, owner, repo, webhookSecret }),
+  });
+}
+
+export function disconnectGitea(): Promise<{ disconnected: boolean }> {
+  return request('/api/auth/gitea/disconnect', { method: 'POST' });
+}
+
 export function getGitHubInstallStatus(): Promise<GitHubInstallStatus> {
   return request('/api/auth/github/status');
 }

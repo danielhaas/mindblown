@@ -1601,10 +1601,11 @@ export function App() {
       const url = new URL(window.location.href);
       url.searchParams.delete('gh');
       url.searchParams.delete('reason');
+      url.searchParams.delete('forge');
       window.history.replaceState({}, '', url.pathname + url.search);
 
       if (gh === 'connected') {
-        setGhBanner('GitHub connected successfully!');
+        setGhBanner(params.get('forge') === 'gitea' ? 'Gitea connected successfully!' : 'GitHub connected successfully!');
         setTimeout(() => setGhBanner(null), 5000);
       } else if (gh === 'error') {
         const reason = params.get('reason') ?? 'unknown';

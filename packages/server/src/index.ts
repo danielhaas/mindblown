@@ -26,6 +26,7 @@ import { permissionRoutes } from './routes/permissions.js';
 import { integrationRoutes } from './routes/integrations.js';
 import { triageRoutes } from './routes/triage.js';
 import { githubAuthRoutes } from './routes/auth-github.js';
+import { giteaAuthRoutes } from './routes/auth-gitea.js';
 import { aiRoutes } from './routes/ai.js';
 import { feedbackRoutes } from './routes/feedback.js';
 import { apiKeyRoutes } from './routes/api-keys.js';
@@ -95,6 +96,7 @@ async function main(): Promise<void> {
   await app.register(integrationRoutes);
   await app.register(triageRoutes);
   await app.register(githubAuthRoutes);
+  await app.register(giteaAuthRoutes);
   await app.register(aiRoutes);
   await app.register(feedbackRoutes);
   await app.register(apiKeyRoutes);

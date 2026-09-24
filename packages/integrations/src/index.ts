@@ -26,6 +26,12 @@ export {
   giteaEndpoint,
   normalizeGiteaIssue,
   normalizeGiteaWebhookAction,
+  giteaAuthorizeUrl,
+  exchangeGiteaAuthorizationCode,
+  refreshGiteaAccessToken,
+  giteaUserForge,
+  getGiteaUser,
+  listGiteaUserRepos,
   GITHUB_API_BASE,
   GITHUB_WEB_BASE,
   GITHUB_ENDPOINT,
@@ -59,6 +65,10 @@ export type {
   RequestOptions,
   GitHubForgeOptions,
   GiteaForgeOptions,
+  GiteaOAuthApp,
+  GiteaOAuthTokens,
+  GiteaUser,
+  GiteaRepo,
   WebhookHeaders,
 } from './forge/index.js';
 

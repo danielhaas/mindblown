@@ -58,6 +58,7 @@ import {
 import {
   forgeFromInstallation,
   forgeFromIntegration,
+  isServableIntegrationConfig,
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
@@ -169,10 +170,10 @@ async function getGitHubContextForRepo(
     .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
   for (const integ of patIntegrations) {
     const cfg = integ.config as unknown as ForgeIntegrationConfig;
-    if (cfg?.owner === owner && cfg?.repo === repo && cfg?.token) {
-      const forge = forgeFromIntegration(integ);
+    if (cfg?.owner === owner && cfg?.repo === repo && isServableIntegrationConfig(cfg)) {
+      const forge = await forgeFromIntegration(integ);
       if (!forge) continue;
-      return { owner, repo, token: cfg.token, forge };
+      return { owner, repo, token: forge.token, forge };
     }
   }
 

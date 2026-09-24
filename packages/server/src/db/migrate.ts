@@ -425,6 +425,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_user_id ON github_installations(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
+  // #369: one identity per (user, forge kind). The original one-per-user
+  // unique constraint gives way to a composite unique index.
+  await db.execute(sql`ALTER TABLE user_github_identities ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'github'`);
+  await db.execute(sql`ALTER TABLE user_github_identities DROP CONSTRAINT IF EXISTS user_github_identities_user_id_unique`);
+  await db.execute(sql`ALTER TABLE user_github_identities DROP CONSTRAINT IF EXISTS user_github_identities_user_id_key`);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_user_github_identities_user_kind ON user_github_identities(user_id, kind)`);
 
   // ── System settings (key/value store) ─────────────────────────
   await db.execute(sql`

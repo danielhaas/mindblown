@@ -42,7 +42,7 @@
 import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
-import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, FORGE_PROVIDERS } from '../lib/forge.js';
+import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 
@@ -1954,11 +1954,11 @@ export async function backfillMap(
         ),
       );
     if (integ) {
-      const cfg = integ.config as { owner?: string; repo?: string; token?: string } | null;
-      if (cfg?.owner && cfg?.repo && cfg?.token) {
-        owner = cfg.owner;
-        repo = cfg.repo;
-        forge = forgeFromIntegration(integ);
+      const cfg = integ.config as { owner?: string; repo?: string; token?: string; oauthIdentityId?: string } | null;
+      if (isServableIntegrationConfig(cfg)) {
+        owner = cfg!.owner!;
+        repo = cfg!.repo!;
+        forge = await forgeFromIntegration(integ);
       }
     }
   }

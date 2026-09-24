@@ -67,7 +67,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     // Check if user already has an installation but no identity (failed callback recovery)
     const [existingIdentity] = await db.select({ id: userGithubIdentities.id })
       .from(userGithubIdentities)
-      .where(eq(userGithubIdentities.userId, userId))
+      .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
       .limit(1);
 
     if (existingIdentity) {
@@ -163,7 +163,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         // Upsert user GitHub identity
         const existingIdentity = await db.select({ id: userGithubIdentities.id })
           .from(userGithubIdentities)
-          .where(eq(userGithubIdentities.userId, userId))
+          .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
           .limit(1);
 
         const identityValues = {
@@ -244,7 +244,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       githubUserId: userGithubIdentities.githubUserId,
     })
       .from(userGithubIdentities)
-      .where(eq(userGithubIdentities.userId, userId))
+      .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
       .limit(1);
 
     const installations = await db.select({
@@ -324,7 +324,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    await db.delete(userGithubIdentities).where(eq(userGithubIdentities.userId, userId));
+    await db.delete(userGithubIdentities).where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')));
     await db.delete(githubInstallations).where(eq(githubInstallations.userId, userId));
 
     return reply.send({ disconnected: true });
