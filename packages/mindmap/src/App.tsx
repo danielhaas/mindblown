@@ -25,6 +25,7 @@ import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
+import { useAiCapabilities } from './aiCapabilities.js';
 import { MapChatPanel } from './MapChatPanel.js';
 import { useMapChatUnread } from './useMapChatUnread.js';
 import { useUrlState } from './useUrlState.js';
@@ -1540,6 +1541,10 @@ export function App() {
   const [trashDialogOpen, setTrashDialogOpen] = useState(false);
   const [githubSettingsOpen, setGithubSettingsOpen] = useState(false);
   const [aiChatOpen, setAiChatOpen] = useState(false);
+  // Server-declared AI capabilities: no chat affordance at all on a
+  // no-LLM install (role visibility via showPanel still applies on top).
+  const ai = useAiCapabilities();
+  const aiChatAvailable = ai.chat && showPanel('aiChat');
   const [aiChatMinimised, setAiChatMinimised] = useState(false);
   const [mapChatOpen, setMapChatOpen] = useState(false);
   const [mapChatMinimised, setMapChatMinimised] = useState(false);
@@ -2064,7 +2069,7 @@ export function App() {
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 
           {/* AI Chat toggle */}
-          {showPanel('aiChat') && (
+          {aiChatAvailable && (
           <button
             onClick={() => {
               // Three states: closed → fully open, minimised → restore,
@@ -2355,14 +2360,14 @@ export function App() {
       )}
 
       {/* AI Chat Panel — full panel when open & !minimised, chip when minimised */}
-      {aiChatOpen && showPanel('aiChat') && currentMapId && !aiChatMinimised && (
+      {aiChatOpen && aiChatAvailable && currentMapId && !aiChatMinimised && (
         <AIChatPanel
           mapId={currentMapId}
           onClose={() => setAiChatOpen(false)}
           onMinimise={() => setAiChatMinimised(true)}
         />
       )}
-      {aiChatOpen && showPanel('aiChat') && currentMapId && aiChatMinimised && (
+      {aiChatOpen && aiChatAvailable && currentMapId && aiChatMinimised && (
         <MinimisedChip
           label="AI Chat"
           color="#3b82f6"

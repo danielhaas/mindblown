@@ -7,7 +7,7 @@ import type { FastifyInstance } from 'fastify';
 import { aiEnabled, aiConfig, chatCompletion } from '../ai/client.js';
 import { getChatToolSpecs, executeTool, renderTreeForPrompt, renderFocusContext } from '../ai/tools.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
-import { anthropicAvailable } from '../ai/providers/anthropic.js';
+import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
 import type { NormalizedMessage, NormalizedToolCall } from '../ai/providers/types.js';
 import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/embeddings.js';
 import * as nodeDb from '../db/nodes.js';
@@ -100,17 +100,28 @@ function sanitizeBreakdownTree(value: unknown, depth = 0, maxDepth = 2): Breakdo
 // ── Routes ───────────────────────────────────────────────────────
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
+  // ── Config — always served, even in no-LLM mode ─────────────────
+  //
+  // The frontend and MCP layer read `capabilities` from here to decide
+  // which AI affordances to show. It must answer 200 with every flag
+  // false when nothing is configured; the catch-all below only covers
+  // the feature endpoints.
+  app.get('/api/ai/config', async () => {
+    const status = await providerStatus();
+    const capabilities = aiCapabilities();
+    return { ...aiConfig(), ...status, enabled: capabilities.enabled, capabilities };
+  });
+
   // Catch-all only if NO provider is configured. Individual endpoints below
   // gate themselves to Ollama when they specifically need it (embeddings,
   // legacy JSON-mode endpoints) — the chat endpoint works against either
   // backend via the provider resolver.
-  const anyProviderAvailable = aiEnabled || anthropicAvailable;
-  if (!anyProviderAvailable) {
+  if (!aiCapabilities().enabled) {
     app.all('/api/ai/*', async (_req, reply) => {
       return reply.status(503).send({
         error: {
           code: 'AI_NOT_CONFIGURED',
-          message: 'AI features require ANTHROPIC_API_KEY or AI_BASE_URL',
+          message: AI_DISABLED_MESSAGE,
         },
       });
     });
@@ -131,12 +142,6 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     });
     return false;
   };
-
-  // ── Config / health ────────────────────────────────────────────
-  app.get('/api/ai/config', async () => {
-    const status = await providerStatus();
-    return { ...aiConfig(), ...status };
-  });
 
   // ── Ping — quick round-trip to the LLM to verify connectivity ─
   app.get('/api/ai/ping', async (_req, reply) => {

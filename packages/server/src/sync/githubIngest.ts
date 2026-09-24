@@ -55,6 +55,7 @@ import { recordTriageHistory } from './triageHistory.js';
 import { applyTriageLabel } from './triageLabelWriteback.js';
 import {
   triageIssue,
+  triageAvailable,
   TRIAGE_AUTO_APPLY_CONFIDENCE,
   shouldAutoConfirmSkip,
   computeInputHash,
@@ -582,6 +583,16 @@ async function findNodesByExternalIdAcrossMaps(
  * queue should see "Claude couldn't decide" as a first-class entry,
  * not a silent gap.
  */
+let _triageUnavailableWarned = false;
+function warnTriageUnavailableOnce(mapId: string): void {
+  if (_triageUnavailableWarned) return;
+  _triageUnavailableWarned = true;
+  console.warn(
+    `[ingest] map ${mapId} has triage enabled but this server has no LLM configured — ` +
+      'issues go straight to the inbox. Set ANTHROPIC_API_KEY to enable triage.',
+  );
+}
+
 async function ensureNodeForIssueViaTriage(
   mapId: string,
   inboxNodeId: string,
@@ -1611,7 +1622,13 @@ export async function ensureNodeForIssue(
     triageEnabled = mapRow?.triageEnabled === true;
   }
   if (triageEnabled) {
-    return ensureNodeForIssueViaTriage(mapId, inboxNodeId, issue, ctx, externalId);
+    if (triageAvailable()) {
+      return ensureNodeForIssueViaTriage(mapId, inboxNodeId, issue, ctx, externalId);
+    }
+    // Map wants triage but this server has no LLM (no-LLM mode). Fall
+    // through to the plain inbox flow — one warning per process, not one
+    // `triage_error` decision row per issue.
+    warnTriageUnavailableOnce(mapId);
   }
 
   // (3) Wrap lock + precheck + create + link-update in a Postgres

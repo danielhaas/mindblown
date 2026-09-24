@@ -8,6 +8,7 @@ import { AttachmentsSection } from './AttachmentsSection.js';
 import { MediaUploadButton } from './MediaUploadButton.js';
 import * as api from './api.js';
 import type { EstimateResult } from './api.js';
+import { useAiCapabilities } from './aiCapabilities.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -201,6 +202,7 @@ function PropertyPanelInner({
 
   // ── AI Estimate state ─────────────────────────────────────────
   const [estimating, setEstimating] = useState(false);
+  const aiEstimateAvailable = useAiCapabilities().structured;
   const [estimateResult, setEstimateResult] = useState<EstimateResult | null>(null);
   const [estimateError, setEstimateError] = useState<string | null>(null);
 
@@ -626,7 +628,7 @@ function PropertyPanelInner({
               style={{ ...(hasChildren ? disabledInputStyle : inputStyle), flex: 1 }}
               placeholder={hasChildren ? 'Computed from children' : '0'}
             />
-            {!hasChildren && (
+            {!hasChildren && aiEstimateAvailable && (
               <button
                 type="button"
                 onClick={async () => {

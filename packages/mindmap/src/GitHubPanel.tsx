@@ -3,6 +3,7 @@ import type { Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { GitHubIssueStatus } from './api.js';
+import { useAiCapabilities } from './aiCapabilities.js';
 
 // ── Node-level GitHub section ────────────────────────────────────
 
@@ -459,6 +460,9 @@ export function GitHubSettingsDialog({
   // Cascade: triage requires auto-import; label-writeback requires triage.
   // Server defaults are false; we mirror that here so existing maps
   // don't suddenly start classifying issues.
+  // Triage needs an LLM on the server; without one the toggle stays
+  // visible (the map flag persists) but is disabled with an explanation.
+  const triageAvailable = useAiCapabilities().triage;
   const [triageEnabled, setTriageEnabled] = useState<boolean>(
     currentMap?.triageEnabled ?? false,
   );
@@ -825,17 +829,19 @@ export function GitHubSettingsDialog({
                 marginBottom: 12,
                 padding: '10px 14px',
                 borderRadius: 8,
-                background: triageDisabledByAutoImport ? '#f1f5f9' : '#f8fafc',
+                background: triageDisabledByAutoImport || !triageAvailable ? '#f1f5f9' : '#f8fafc',
                 border: '1px solid #e2e8f0',
                 display: 'flex',
                 alignItems: 'flex-start',
                 gap: 10,
-                opacity: triageDisabledByAutoImport ? 0.55 : 1,
+                opacity: triageDisabledByAutoImport || !triageAvailable ? 0.55 : 1,
               }}
               title={
-                triageDisabledByAutoImport
-                  ? 'Triage only fires on imported issues.'
-                  : undefined
+                !triageAvailable
+                  ? 'AI triage is not available on this server.'
+                  : triageDisabledByAutoImport
+                    ? 'Triage only fires on imported issues.'
+                    : undefined
               }
             >
               <input
@@ -843,14 +849,14 @@ export function GitHubSettingsDialog({
                 data-testid="map-settings-triage-enabled"
                 type="checkbox"
                 checked={triageEnabled && !triageDisabledByAutoImport}
-                disabled={triageDisabledByAutoImport || triageSaving}
+                disabled={triageDisabledByAutoImport || triageSaving || !triageAvailable}
                 onChange={(e) => handleToggleTriageEnabled(e.target.checked)}
                 style={{ marginTop: 3 }}
               />
               <label
                 htmlFor="github-triage-enabled"
                 style={{
-                  cursor: triageDisabledByAutoImport ? 'not-allowed' : 'pointer',
+                  cursor: triageDisabledByAutoImport || !triageAvailable ? 'not-allowed' : 'pointer',
                   flex: 1,
                 }}
               >
@@ -861,7 +867,13 @@ export function GitHubSettingsDialog({
                   Claude classifies new issues (skip/place/uncertain). High-confidence
                   places auto-create nodes; low-confidence ones wait in the Triage panel.
                 </div>
-                {triageDisabledByAutoImport && (
+                {!triageAvailable && (
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontStyle: 'italic' }}>
+                    Not available on this server — no LLM is configured for triage.
+                    {triageEnabled ? ' Incoming issues go straight to the inbox.' : ''}
+                  </div>
+                )}
+                {triageAvailable && triageDisabledByAutoImport && (
                   <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4, fontStyle: 'italic' }}>
                     Triage only fires on imported issues — enable auto-import first.
                   </div>

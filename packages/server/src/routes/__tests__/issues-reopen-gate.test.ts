@@ -98,6 +98,7 @@ vi.mock('../../sync/githubIngest.js', () => ({
 }));
 vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcastMock }));
 vi.mock('../../sync/triage.js', () => ({
+  triageAvailable: () => true,
   triageIssue: vi.fn(),
   clearTriageDebounce: vi.fn(),
   computeInputHash: vi.fn(),

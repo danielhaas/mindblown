@@ -187,6 +187,7 @@ vi.mock('../../db/events.js', () => ({
   recordPrMerged: mocks.recordPrMergedMock,
 }));
 vi.mock('../../sync/triage.js', () => ({
+  triageAvailable: () => true,
   triageIssue: vi.fn(),
   clearTriageDebounce: vi.fn(),
   computeInputHash: vi.fn(),

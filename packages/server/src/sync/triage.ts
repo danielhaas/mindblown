@@ -36,6 +36,7 @@
 
 import { createHash } from 'crypto';
 import Anthropic from '@anthropic-ai/sdk';
+import { aiCapabilities } from '../ai/capabilities.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { MapContext } from './mapContext.js';
 
@@ -74,6 +75,17 @@ export interface TriageDecision {
 // ── Config ────────────────────────────────────────────────────────
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? '';
+
+/**
+ * Whether this server can run LLM triage at all. The ingest layer checks
+ * this before entering the triage path so a no-LLM install falls through
+ * to the plain inbox flow instead of recording a `triage_error` decision
+ * for every incoming issue. Derived from the shared capability flags so
+ * there is exactly one answer to "is triage available?".
+ */
+export function triageAvailable(): boolean {
+  return aiCapabilities().triage;
+}
 /**
  * Default chosen to be Haiku-class: cheap, fast, good enough at
  * structured classification. Overridable via env. Falls back to a known

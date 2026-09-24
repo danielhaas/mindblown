@@ -426,6 +426,7 @@ vi.mock('../../sync/triageLabelWriteback.js', () => ({
 // `(mapId, externalId)` was passed.
 const clearTriageDebounceMock = vi.hoisted(() => vi.fn());
 vi.mock('../../sync/triage.js', () => ({
+  triageAvailable: () => true,
   triageIssue: mocks.triageIssueMock,
   clearTriageDebounce: clearTriageDebounceMock,
   computeInputHash: vi.fn(() => 'mock-hash'),

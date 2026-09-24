@@ -14,6 +14,7 @@ import { CursorPresence } from './CursorPresence.js';
 import { PresenceBar } from './PresenceBar.js';
 import { AIBreakdownModal } from './AIBreakdownModal.js';
 import { RefineModal } from './RefineModal.js';
+import { useAiCapabilities } from './aiCapabilities.js';
 import { DeepRefineModal } from './DeepRefineModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { exportPNG } from './ImportExport.js';
@@ -387,6 +388,9 @@ export function MindmapEditor() {
   // ── AI breakdown modal state ──────────────────────────────────
   const [aiBreakdown, setAiBreakdown] = useState<{ nodeId: string; nodeText: string } | null>(null);
   const [aiBraindump, setAiBraindump] = useState<{ parentId: string; parentText: string } | null>(null);
+  // Breakdown / brain dump / refine all need the server's structured-output
+  // backend; on a no-LLM install the menu items and the fan-out hint vanish.
+  const aiStructured = useAiCapabilities().structured;
   const [refine, setRefine] = useState<{ parentId: string; parentText: string } | null>(null);
   const [deepRefine, setDeepRefine] = useState<{ rootId: string; rootText: string } | null>(null);
 
@@ -1555,7 +1559,7 @@ export function MindmapEditor() {
                     // floor (≥4) on purpose — the endpoint is conservative
                     // about tiny subtrees, but the warning earns its place
                     // as soon as the layout starts column-wrapping.
-                    nodeData.childrenIds.length >= 8 && !nodeData.collapsed
+                    aiStructured && nodeData.childrenIds.length >= 8 && !nodeData.collapsed
                       ? nodeData.childrenIds.length
                       : undefined
                   }
@@ -1858,6 +1862,7 @@ export function MindmapEditor() {
             >
               Add sibling node
             </button>
+            {aiStructured && (
             <button
               style={{ ...ctxMenuItemStyle, color: '#3b82f6' }}
               onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
@@ -1870,6 +1875,8 @@ export function MindmapEditor() {
             >
               AI Breakdown
             </button>
+            )}
+            {aiStructured && (
             <button
               style={{ ...ctxMenuItemStyle, color: '#3b82f6' }}
               onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
@@ -1882,7 +1889,8 @@ export function MindmapEditor() {
             >
               AI Brain Dump
             </button>
-            {(nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
+            )}
+            {aiStructured && (nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
               <button
                 style={{ ...ctxMenuItemStyle, color: '#6366f1' }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = '#eef2ff')}
@@ -1896,7 +1904,7 @@ export function MindmapEditor() {
                 Review structure…
               </button>
             )}
-            {(nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
+            {aiStructured && (nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
               <button
                 style={{ ...ctxMenuItemStyle, color: '#6366f1' }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = '#eef2ff')}
