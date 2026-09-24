@@ -137,6 +137,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       workspaceId: string;
       createdBy?: string;
       effortUnit?: 'hours' | 'days' | 'points';
+      /** Per-map AI policy (#375): any | local | none. */
+      aiPolicy?: 'any' | 'local' | 'none';
     };
     let userId = req.userId ?? body.createdBy;
     if (!userId) {

@@ -673,7 +673,10 @@ export function fetchNodeActors(mapId: string): Promise<{ actors: NodeActor[] }>
   return request<{ actors: NodeActor[] }>(`/api/maps/${mapId}/nodes/actors`);
 }
 
-export function createMap(name: string): Promise<MindMap> {
+export function createMap(
+  name: string,
+  options: { aiPolicy?: 'any' | 'local' | 'none' } = {},
+): Promise<MindMap> {
   // createdBy will be inferred from the auth token on the server,
   // but we send it as fallback for compatibility
   return request<MindMap>('/api/maps', {
@@ -682,6 +685,7 @@ export function createMap(name: string): Promise<MindMap> {
       name,
       workspaceId: 'default',
       createdBy: 'current-user',
+      ...(options.aiPolicy ? { aiPolicy: options.aiPolicy } : {}),
     }),
   });
 }

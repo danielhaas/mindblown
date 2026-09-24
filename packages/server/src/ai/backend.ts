@@ -140,12 +140,13 @@ export function createChatBackend(userId: string): ToolBackend {
       };
     },
 
-    async createMap(name, description) {
+    async createMap(name, description, options) {
       const result = await mapDb.createMap({
         name,
         description,
         workspaceId: 'default',
         createdBy: userId,
+        ...(options?.aiPolicy ? { aiPolicy: options.aiPolicy } : {}),
       });
       return { id: result.map.id, name: result.map.name };
     },

@@ -310,7 +310,11 @@ export interface ConflictScanResult {
 export interface ToolBackend {
   listMaps(): Promise<MapSummary[]>;
   getMap(mapId: string): Promise<MapDetail>;
-  createMap(name: string, description?: string): Promise<{ id: string; name: string }>;
+  createMap(
+    name: string,
+    description?: string,
+    options?: { aiPolicy?: 'any' | 'local' | 'none' },
+  ): Promise<{ id: string; name: string }>;
   updateMap(
     mapId: string,
     fields: {

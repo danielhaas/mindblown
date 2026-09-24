@@ -54,14 +54,19 @@ export const getMapTool = defineTool({
 
 export const createMapTool = defineTool({
   name: 'create_map',
-  description: 'Create a new map/project',
+  description:
+    'Create a new map/project. For a private project set aiPolicy at creation: "local" keeps every AI feature on the self-hosted model, "none" disables AI for the map; "any" (default) follows the server-wide provider.',
   schema: {
     name: z.string().describe('Map name'),
     description: z.string().optional().describe('Map description'),
+    aiPolicy: z
+      .enum(['any', 'local', 'none'])
+      .optional()
+      .describe('Which LLM the map\'s content may reach (#375): "any" (default) follows the server-wide provider; "local" uses only the local model and never Claude; "none" disables every AI feature for this map. Can be changed later with update_map.'),
   },
-  handler: async (backend, { name, description }) => {
-    const result = await backend.createMap(name, description);
-    return `Created map "${name}" with id: ${result.id}`;
+  handler: async (backend, { name, description, aiPolicy }) => {
+    const result = await backend.createMap(name, description, aiPolicy ? { aiPolicy } : undefined);
+    return `Created map "${name}" with id: ${result.id}${aiPolicy ? ` (AI policy: ${aiPolicy})` : ''}`;
   },
 });
 

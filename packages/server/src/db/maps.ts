@@ -15,6 +15,8 @@ export interface CreateMapInput {
   workspaceId: string;
   createdBy: string;
   effortUnit?: EffortUnit;
+  /** Per-map AI policy (#375), chosen at creation. Invalid → 'any'. */
+  aiPolicy?: AiPolicy;
 }
 
 export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; rootNode: CoreNode }> {
@@ -27,6 +29,7 @@ export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; 
     workspaceId: input.workspaceId,
     createdBy: input.createdBy,
     effortUnit: input.effortUnit ?? 'days',
+    aiPolicy: isAiPolicy(input.aiPolicy) ? input.aiPolicy : 'any',
     createdAt: now,
     updatedAt: now,
   }).returning();

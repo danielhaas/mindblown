@@ -26,6 +26,7 @@ import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { useAiCapabilities } from './aiCapabilities.js';
+import { NewMapDialog } from './NewMapDialog.js';
 import { MapChatPanel } from './MapChatPanel.js';
 import { useMapChatUnread } from './useMapChatUnread.js';
 import { useUrlState } from './useUrlState.js';
@@ -1690,12 +1691,12 @@ export function App() {
   // that logic lives in one place instead of racing effects here.
   useUrlState();
 
+  // New-map dialog: name + AI policy (#375), asked up front instead of a
+  // bare prompt() so a private project starts with the right policy.
+  const [newMapOpen, setNewMapOpen] = useState(false);
   const handleCreateMap = useCallback(() => {
-    const name = prompt('Map name:');
-    if (name?.trim()) {
-      createMap(name.trim());
-    }
-  }, [createMap]);
+    setNewMapOpen(true);
+  }, []);
 
   // ── Auth check loading ───────────────────────────────────────
 
@@ -1758,6 +1759,15 @@ export function App() {
           <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
         )}
         {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
+        {newMapOpen && (
+          <NewMapDialog
+            onClose={() => setNewMapOpen(false)}
+            onCreate={(name, aiPolicy) => {
+              setNewMapOpen(false);
+              createMap(name, aiPolicy);
+            }}
+          />
+        )}
         <TicketButton />
       </div>
     );
@@ -2357,6 +2367,16 @@ export function App() {
         <HealthListDialog
           health={healthListHealth}
           onClose={() => setHealthListHealth(null)}
+        />
+      )}
+
+      {newMapOpen && (
+        <NewMapDialog
+          onClose={() => setNewMapOpen(false)}
+          onCreate={(name, aiPolicy) => {
+            setNewMapOpen(false);
+            createMap(name, aiPolicy);
+          }}
         />
       )}
 
