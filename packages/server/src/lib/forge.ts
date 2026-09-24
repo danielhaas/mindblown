@@ -44,15 +44,27 @@ export interface ForgeIntegrationConfig {
  */
 export const FORGE_PROVIDERS: string[] = ['github', 'gitea'] satisfies ForgeKind[];
 
-/** Build a client for a PAT integration row. */
-export function forgeFromIntegration(row: { provider: string; config: unknown }): ForgeClient {
+/**
+ * Build a client for a PAT integration row, or `null` when the row's kind
+ * cannot be served by this build (a `gitea` row before #368 lands, or a
+ * self-hosted row missing its URLs). Never throws: one bad row must skip
+ * that repo, not fail the whole catch-up tick / drift audit it sits in.
+ */
+export function forgeFromIntegration(row: { id?: string; provider: string; config: unknown }): ForgeClient | null {
   const cfg = row.config as ForgeIntegrationConfig;
-  return createForgeClient({
-    kind: isForgeKind(row.provider) ? row.provider : 'github',
-    apiBaseUrl: cfg.apiBaseUrl,
-    webBaseUrl: cfg.webBaseUrl,
-    token: cfg.token,
-  });
+  try {
+    return createForgeClient({
+      kind: isForgeKind(row.provider) ? row.provider : 'github',
+      apiBaseUrl: cfg.apiBaseUrl,
+      webBaseUrl: cfg.webBaseUrl,
+      token: cfg.token,
+    });
+  } catch (err) {
+    console.warn(
+      `[forge] integration ${row.id ?? '?'} (provider=${row.provider}) skipped: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }
 
 /** Build a github.com client from a freshly minted App installation token. */

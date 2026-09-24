@@ -403,8 +403,8 @@ describe('applyTriageLabel — timeout (#104 item 10)', () => {
       init,
     ) => {
       calls.push(init.method);
-      // Resolves quickly — production controller is on the real fetch,
-      // not the impl path.
+      // Resolves quickly — the 8 s timeout wraps every forge call, but a
+      // shim that answers immediately never trips it.
       return { status: 200, text: async () => '', json: async () => ({}) };
     };
     await applyTriageLabel({

@@ -159,12 +159,16 @@ async function resolveTargets(): Promise<ResolvedTargets> {
       const cfg = p.config as { owner?: string; repo?: string; token?: string } | null;
       return cfg?.owner === m.owner && cfg?.repo === m.repo && !!cfg.token;
     });
-    if (pat) {
+    const patForge = pat ? forgeFromIntegration(pat) : null;
+    if (pat && !patForge) {
+      // A PAT row exists but its forge kind can't be served by this build.
+      tokenErrors.push({ mapId: m.id, mapName: m.name, reason: `pat: unsupported forge kind ${pat.provider}` });
+    } else if (patForge) {
       // If we already pushed a tokenError for the failed App mint above,
       // drop it — we DID resolve a token in the end.
       const idx = tokenErrors.findIndex((te) => te.mapId === m.id);
       if (idx >= 0) tokenErrors.splice(idx, 1);
-      targets.push({ mapId: m.id, mapName: m.name, owner: m.owner, repo: m.repo, forge: forgeFromIntegration(pat) });
+      targets.push({ mapId: m.id, mapName: m.name, owner: m.owner, repo: m.repo, forge: patForge });
     } else if (!m.installationId) {
       // No App binding AND no matching PAT — this map silently fell
       // off the end of the resolver pre-#87. The docstring on

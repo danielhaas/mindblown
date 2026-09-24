@@ -252,7 +252,7 @@ export async function findIngestTargetMaps(
   const patIntegrations = await db
     .select()
     .from(integrations)
-    .where(and(eq(integrations.provider, 'github'), eq(integrations.enabled, true)));
+    .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
   for (const integ of patIntegrations) {
     const cfg = integ.config as { owner?: string; repo?: string } | null;
     if (cfg?.owner !== owner || cfg?.repo !== repo) continue;

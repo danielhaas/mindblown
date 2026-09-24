@@ -815,6 +815,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
     const key = `${cfg.owner}/${cfg.repo}`;
     if (seen.has(key)) continue;
     const forge = forgeFromIntegration(integ);
+    if (!forge) continue;
     seen.set(key, {
       source: 'pat',
       owner: cfg.owner,
