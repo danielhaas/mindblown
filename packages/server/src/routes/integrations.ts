@@ -407,12 +407,16 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       webBaseUrl?: string;
     };
 
-    // Binding a forge with an operator token — and pointing the server at
-    // an arbitrary base URL — is an admin action (the URL is fetched
-    // server-side with the caller's token; see forge/test below).
-    if (!(await requireAdmin(req))) {
+    // Pointing the server at a self-hosted forge (any URL, fetched
+    // server-side with the caller's token) is an admin action — an
+    // interactive session, never an API key (see requireAdmin). A plain
+    // github.com connection touches only api.github.com and stays open to
+    // every authenticated caller, as before #368, so the MCP tool keeps
+    // working over API keys for GitHub.
+    const selfHosted = (body.kind ?? 'github') !== 'github' || !!body.apiBaseUrl || !!body.webBaseUrl;
+    if (selfHosted && !(await requireAdmin(req))) {
       return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        error: { code: 'FORBIDDEN', message: 'Connecting a self-hosted forge needs an admin web session (API keys are not accepted)' },
       });
     }
 
@@ -495,12 +499,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: string;
       repo: string;
     };
-    // Admin only: the server fetches a caller-chosen URL with a
-    // caller-chosen token and echoes part of the answer — that is an SSRF
-    // primitive for anyone else.
-    if (!(await requireAdmin(req))) {
+    // Self-hosted target → admin session only: the server fetches a
+    // caller-chosen URL with a caller-chosen token and echoes part of the
+    // answer, an SSRF primitive for anyone else. github.com stays open.
+    const selfHosted = (body.kind ?? 'github') !== 'github' || !!body.apiBaseUrl || !!body.webBaseUrl;
+    if (selfHosted && !(await requireAdmin(req))) {
       return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+        error: { code: 'FORBIDDEN', message: 'Testing a self-hosted forge needs an admin web session (API keys are not accepted)' },
       });
     }
     if (!body.token || !body.owner || !body.repo) {

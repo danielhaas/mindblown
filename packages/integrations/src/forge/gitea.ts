@@ -234,7 +234,9 @@ export class GiteaForge implements ForgeClient {
       );
       all.push(...orgLabels);
     } catch (err) {
-      if (!(err instanceof ForgeApiError && err.status === 404)) throw err;
+      // 404: user-owned repo, no org. 403: a scoped token without
+      // read:organization — the repo's own labels are all we can see.
+      if (!(err instanceof ForgeApiError && (err.status === 404 || err.status === 403))) throw err;
     }
     // Repo labels win on a name clash (listed first).
     const map = new Map<string, GiteaLabel>();

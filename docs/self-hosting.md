@@ -210,7 +210,8 @@ Existing GitHub installs need no change: connections created before the Gitea su
 
 Limits worth knowing:
 
-- Connecting a forge (and the *Test connection* call) is an admin action: the server fetches the URL you type with the token you type.
+- Connecting a self-hosted forge (and the *Test connection* call for one) is an admin action done from a web session: the server fetches the URL you type with the token you type, so API keys — including the MCP HTTP transport — are refused for that. Connecting github.com is open to any authenticated user, as before.
+- A Gitea token scoped to the repository only cannot list organisation-level labels; those still resolve by name when MindBlown adds them, but a label MindBlown creates itself is always created on the repository.
 - One forge per workspace. A repository named `owner/repo` on both GitHub and Gitea in the same installation would share issue identities (`owner/repo#N`) — keep the names distinct.
 - Gitea has no close reason and its timeline does not attribute a merge-close to a commit. The abandoned-PR reopen and the closed-issue audit therefore only act on closes made by MindBlown's own login: set `MINDBLOWN_BOT_LOGIN` to the user whose token you connected, otherwise every close looks like a human decision and is left alone (the safe direction).
 

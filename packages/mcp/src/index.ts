@@ -2766,7 +2766,7 @@ server.tool(
 
 server.tool(
   'connect_github_repo',
-  'Connect a GitHub or Gitea/Forgejo repository to a workspace. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access.',
+  'Connect a GitHub or Gitea/Forgejo repository to a workspace. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
   {
     workspaceId: z.string().describe('The workspace ID'),
     owner: z.string().describe('Repo owner (e.g. "danielhaas")'),
