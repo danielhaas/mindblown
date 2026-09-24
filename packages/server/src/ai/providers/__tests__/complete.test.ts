@@ -82,7 +82,7 @@ describe('ollamaProvider.complete', () => {
 });
 
 describe('anthropicProvider.complete', () => {
-  it('json: cache breakpoints on the system prompt and cacheable parts only, temperature 0', async () => {
+  it('json: cache breakpoints on the system prompt and cacheable parts only, no temperature', async () => {
     vi.resetModules();
     const { anthropicProvider } = await import('../anthropic.js');
     anthropic.create.mockResolvedValue({
@@ -100,7 +100,7 @@ describe('anthropicProvider.complete', () => {
     const req = anthropic.create.mock.calls[0][0];
     expect(req.model).toBe('claude-haiku-4-5');
     expect(req.max_tokens).toBe(1024);
-    expect(req.temperature).toBe(0);
+    expect(req).not.toHaveProperty('temperature');
     expect(req.system).toEqual([
       { type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } },
     ]);
@@ -115,14 +115,16 @@ describe('anthropicProvider.complete', () => {
     ]);
   });
 
-  it('text: no temperature unless given, caller value clamped to the API range', async () => {
+  it('never forwards temperature — Opus 4.7 rejects the parameter with a 400', async () => {
     vi.resetModules();
     const { anthropicProvider } = await import('../anthropic.js');
     anthropic.create.mockResolvedValue({ content: [{ type: 'text', text: 'prose' }] });
     await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'text' });
-    expect(anthropic.create.mock.calls[0][0].temperature).toBeUndefined();
-    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'text', temperature: 1.5 });
-    expect(anthropic.create.mock.calls[1][0].temperature).toBe(1);
+    expect(anthropic.create.mock.calls[0][0]).not.toHaveProperty('temperature');
+    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'text', temperature: 0.4 });
+    expect(anthropic.create.mock.calls[1][0]).not.toHaveProperty('temperature');
+    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'json', temperature: 0 });
+    expect(anthropic.create.mock.calls[2][0]).not.toHaveProperty('temperature');
   });
 
   it('falls back to the provider default model', async () => {
