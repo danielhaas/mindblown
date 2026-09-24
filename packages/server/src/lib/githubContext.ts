@@ -48,7 +48,7 @@ export type GitHubMapContext = ForgeMapContext;
 async function getForgeIntegration(
   workspaceId: string,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
-  const [row] = await db
+  const rows = await db
     .select()
     .from(integrations)
     .where(
@@ -57,7 +57,15 @@ async function getForgeIntegration(
         inArray(integrations.provider, FORGE_PROVIDERS),
       ),
     );
-  if (!row || !row.enabled) return null;
+  // A workspace can hold a disabled leftover next to the live row (a
+  // disconnected GitHub PAT from July sat beside the new Gitea row on
+  // 2026-09-24 and, being first, hid it — "GitHub not configured"). Pick
+  // the ENABLED row, newest first; never the first row the DB happens to
+  // return.
+  const row = rows
+    .filter((r) => r.enabled)
+    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  if (!row) return null;
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
