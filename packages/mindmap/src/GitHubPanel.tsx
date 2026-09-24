@@ -462,7 +462,7 @@ export function GitHubSettingsDialog({
   // don't suddenly start classifying issues.
   // Triage needs an LLM on the server; without one the toggle stays
   // visible (the map flag persists) but is disabled with an explanation.
-  const triageAvailable = useAiCapabilities().triage;
+  const triageAvailable = useAiCapabilities(mapId).triage;
   const [triageEnabled, setTriageEnabled] = useState<boolean>(
     currentMap?.triageEnabled ?? false,
   );

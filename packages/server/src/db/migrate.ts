@@ -569,6 +569,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS triage_enabled BOOLEAN NOT NULL DEFAULT false
   `);
 
+  // Per-map AI policy (#375): which LLM a map's content may reach.
+  // 'any' = server preference, 'local' = local backend only, 'none' = no AI.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS ai_policy TEXT NOT NULL DEFAULT 'any'
+  `);
+
   await db.execute(sql`
     CREATE TABLE IF NOT EXISTS triage_decisions (
       id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

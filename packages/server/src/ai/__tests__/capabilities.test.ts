@@ -35,6 +35,22 @@ vi.mock('../../db/settings.js', () => ({
   getAiProviderSettings: vi.fn(async () => ({ preference: 'auto' })),
   setAiProviderSettings: vi.fn(async (s: unknown) => s),
 }));
+// Per-map policy (#375): a DB read in the real module. The route test only
+// needs "map-none reads all-false, map-any reads the server flags".
+const policyMocks = vi.hoisted(() => ({ policy: 'any' as 'any' | 'local' | 'none' }));
+vi.mock('../../ai/policy.js', async () => {
+  const NONE = { enabled: false, chat: false, structured: false, embeddings: false, triage: false };
+  return {
+    AiPolicyError: class extends Error { code = 'AI_POLICY'; policy = 'none'; },
+    getMapAiPolicy: async () => policyMocks.policy,
+    capabilitiesForMap: async () => {
+      if (policyMocks.policy === 'none') return NONE;
+      const caps = await import('../capabilities.js');
+      return caps.aiCapabilities();
+    },
+    resolveProviderForMap: async () => { throw new Error('not used'); },
+  };
+});
 
 interface Backends {
   ollama: boolean;
@@ -145,6 +161,24 @@ describe('aiRoutes in no-LLM mode', () => {
       expect(body.error.message).toMatch(/disabled on this server/);
       expect(body.error.message).toMatch(/AI_BASE_URL/);
     }
+    await app.close();
+  });
+
+  it('serves per-map flags with ?mapId= — a none map reads all-false on a configured server', async () => {
+    const app = await buildApp({ ollama: true, anthropic: true });
+    policyMocks.policy = 'none';
+    const res = await app.inject({ method: 'GET', url: '/api/ai/config?mapId=m1' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enabled).toBe(true); // server-wide answer unchanged
+    expect(body.policy).toBe('none');
+    expect(body.capabilities).toEqual({
+      enabled: false, chat: false, structured: false, embeddings: false, triage: false,
+    });
+    policyMocks.policy = 'any';
+    const res2 = await app.inject({ method: 'GET', url: '/api/ai/config?mapId=m1' });
+    expect(res2.json().capabilities.chat).toBe(true);
+    expect(res2.json().policy).toBe('any');
     await app.close();
   });
 

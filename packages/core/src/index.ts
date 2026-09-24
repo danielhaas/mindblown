@@ -22,6 +22,7 @@ export type {
   StatusDef,
   PhaseDef,
   ProfilePolicy,
+  AiPolicy,
   Baseline,
   MindMap,
   User,
@@ -88,6 +89,8 @@ export {
 
 // Release ordering
 export { compareVersions, effectiveVersionId, findVersionOrderInversions } from './versions.js';
+// Per-map AI policy (#375)
+export { AI_POLICIES, isAiPolicy } from './types.js';
 export type { VersionOrderFields, VersionOrderInversion, VersionMembershipNode } from './versions.js';
 
 // Estimation-calibration evidence gate

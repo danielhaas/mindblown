@@ -8,6 +8,12 @@ import { aiConfig } from '../ai/client.js';
 import { getChatToolSpecs, executeTool, renderTreeForPrompt, renderFocusContext } from '../ai/tools.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
+import {
+  AiPolicyError,
+  capabilitiesForMap,
+  getMapAiPolicy,
+  resolveProviderForMap,
+} from '../ai/policy.js';
 import type { NormalizedMessage, NormalizedToolCall } from '../ai/providers/types.js';
 import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/embeddings.js';
 import * as nodeDb from '../db/nodes.js';
@@ -106,11 +112,32 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   // which AI affordances to show. It must answer 200 with every flag
   // false when nothing is configured; the catch-all below only covers
   // the feature endpoints.
-  app.get('/api/ai/config', async () => {
+  app.get('/api/ai/config', async (req) => {
     const status = await providerStatus();
-    const capabilities = aiCapabilities();
-    return { ...aiConfig(), ...status, enabled: capabilities.enabled, capabilities };
+    const q = req.query as { mapId?: string };
+    // With ?mapId= the flags are the MAP's effective capabilities — its AI
+    // policy (#375) folded in — so the UI can hide per map. `enabled` stays
+    // the server-wide answer for the admin panel.
+    const capabilities = q.mapId ? await capabilitiesForMap(q.mapId) : aiCapabilities();
+    const policy = q.mapId ? await getMapAiPolicy(q.mapId) : undefined;
+    return {
+      ...aiConfig(),
+      ...status,
+      enabled: aiCapabilities().enabled,
+      capabilities,
+      ...(policy ? { policy } : {}),
+    };
   });
+
+  // A map's AI policy said no: 503 with a code the UI and MCP callers can
+  // tell apart from "server has no LLM". Used first thing in every catch.
+  const policyDenied = (reply: import('fastify').FastifyReply, err: unknown): boolean => {
+    if (!(err instanceof AiPolicyError)) return false;
+    reply.status(503).send({
+      error: { code: 'AI_POLICY', policy: err.policy, message: err.message },
+    });
+    return true;
+  };
 
   // Catch-all only if NO provider is configured. Individual endpoints below
   // gate themselves to Ollama when they specifically need it (embeddings,
@@ -172,6 +199,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
         response: result.trim(),
       };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(502).send({
         error: { code: 'AI_UNREACHABLE', message: err.message },
       });
@@ -263,7 +291,7 @@ Node to break down: "${targetNode.text}"`;
     }
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
       const raw = await provider.complete({
         systemPrompt,
         parts: [{ text: userPrompt }],
@@ -302,6 +330,7 @@ Node to break down: "${targetNode.text}"`;
 
       return { suggestions: trimmed };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       if (err instanceof SyntaxError) {
         return reply.status(502).send({
           error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
@@ -360,6 +389,7 @@ Node to break down: "${targetNode.text}"`;
       await createBranch(body.parentId, body.tasks);
       return reply.status(201).send({ created });
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(500).send({
         error: { code: 'CREATE_FAILED', message: err.message },
       });
@@ -404,6 +434,22 @@ Node to break down: "${targetNode.text}"`;
     if (!body.mapId || !Array.isArray(body.messages) || body.messages.length === 0) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'mapId and non-empty messages array required' },
+      });
+    }
+
+    // Per-map AI policy (#375) — decided before the SSE stream opens, so a
+    // refusal is a plain 503 the panel can show.
+    if (!(await capabilitiesForMap(body.mapId)).chat) {
+      const policy = await getMapAiPolicy(body.mapId);
+      return reply.status(503).send({
+        error: {
+          code: 'AI_POLICY',
+          policy,
+          message:
+            policy === 'none'
+              ? 'AI is disabled for this map by its AI policy.'
+              : 'This map allows only a local model and none is configured.',
+        },
       });
     }
 
@@ -454,7 +500,7 @@ Node to break down: "${targetNode.text}"`;
     reply.raw.on('close', onClientClose);
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
 
       // Pre-load the map tree so the model already has all node IDs
       const mapDetail = await mapDb.getMap(body.mapId);
@@ -637,6 +683,7 @@ Rules:
             mapId: body.mapId,
           });
         } catch (err: any) {
+      if (policyDenied(reply, err)) return;
           result = `Error: ${err.message}`;
         }
 
@@ -659,6 +706,7 @@ Rules:
       if (hitStepLimit) send('step_limit', { maxSteps: MAX_STEPS });
       send('done', {});
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       if (abortReason === 'client_disconnect') {
         // Client is gone, no one's listening \u2014 just unwind silently.
       } else if (abortReason === 'timeout') {
@@ -698,6 +746,7 @@ Rules:
       const matches = await semanticSearch(query.mapId, query.q, Number.isFinite(limit) ? limit : 10);
       return { matches };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(502).send({
         error: { code: 'AI_ERROR', message: err.message },
       });
@@ -722,6 +771,7 @@ Rules:
       const result = await backfillMapEmbeddings(body.mapId);
       return result;
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(502).send({
         error: { code: 'AI_ERROR', message: err.message },
       });
@@ -795,7 +845,7 @@ Parent node: "${parentNode.text}"`;
     userPrompt += `\n\nBrain dump:\n${body.prose.trim()}`;
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
       const raw = await provider.complete({
         systemPrompt,
         parts: [{ text: userPrompt }],
@@ -816,6 +866,7 @@ Parent node: "${parentNode.text}"`;
 
       return { tree };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       if (err instanceof SyntaxError) {
         return reply.status(502).send({
           error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
@@ -943,7 +994,7 @@ Title: "${targetText}"`;
     userPrompt += '\n\nReturn the JSON.';
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
       const raw = await provider.complete({
         systemPrompt,
         parts: [{ text: userPrompt }],
@@ -992,6 +1043,7 @@ Title: "${targetText}"`;
         effortUnit,
       };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       if (err instanceof SyntaxError) {
         return reply.status(502).send({
           error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
@@ -1046,6 +1098,7 @@ Title: "${targetText}"`;
       await createSubtree(body.parentId, body.tree);
       return reply.status(201).send({ createdCount });
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(500).send({
         error: { code: 'CREATE_FAILED', message: err.message },
       });
@@ -1176,7 +1229,7 @@ ${childrenList}
 Review the children and propose groupings.`;
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
       const raw = await provider.complete({
         systemPrompt,
         parts: [{ text: userPrompt }],
@@ -1224,6 +1277,7 @@ Review the children and propose groupings.`;
 
       return { proposals, summary };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       if (err instanceof SyntaxError) {
         return reply.status(502).send({
           error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
@@ -1309,6 +1363,7 @@ Review the children and propose groupings.`;
 
       return reply.status(200).send({ createdCount, movedCount });
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(500).send({
         error: { code: 'APPLY_FAILED', message: err.message, createdCount, movedCount },
       });
@@ -1384,7 +1439,7 @@ ${sections.join('\n')}
 Generate the standup.`;
 
     try {
-      const provider = await resolveProvider();
+      const provider = await resolveProviderForMap(body.mapId);
       const narrative = await provider.complete({
         systemPrompt,
         parts: [{ text: userPrompt }],
@@ -1401,6 +1456,7 @@ Generate the standup.`;
         sinceHours,
       };
     } catch (err: any) {
+      if (policyDenied(reply, err)) return;
       return reply.status(502).send({
         error: { code: 'AI_ERROR', message: err.message },
       });

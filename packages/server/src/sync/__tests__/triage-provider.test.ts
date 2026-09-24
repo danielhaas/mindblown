@@ -18,14 +18,36 @@ import type { MapContext } from '../mapContext.js';
 const mocks = vi.hoisted(() => ({
   pickProvider: vi.fn(),
   resolveProvider: vi.fn(),
+  policy: 'any' as 'any' | 'local' | 'none',
+  localAvailable: true,
 }));
 vi.mock('../../ai/providers/index.js', () => ({
   pickProvider: mocks.pickProvider,
   resolveProvider: mocks.resolveProvider,
 }));
+// This test env has no backend configured; the server-wide flags are stubbed
+// as "everything available" so the per-map policy is what decides below.
+vi.mock('../../ai/capabilities.js', () => ({
+  aiCapabilities: () => ({ enabled: true, chat: true, structured: true, embeddings: true, triage: true }),
+}));
+// The per-map policy (#375) is a DB read; stubbed here with the same
+// semantics the real module has for the two non-default policies.
+vi.mock('../../ai/policy.js', () => ({
+  getMapAiPolicy: async () => mocks.policy,
+  capabilitiesForMap: async () => ({ triage: mocks.policy === 'any' || (mocks.policy === 'local' && mocks.localAvailable) }),
+  resolveProviderForPolicy: async (policy: string) => {
+    if (policy === 'none') throw Object.assign(new Error('AI is disabled for this map by its AI policy.'), { code: 'AI_POLICY' });
+    if (policy === 'local') {
+      if (!mocks.localAvailable) throw Object.assign(new Error('no local model'), { code: 'AI_POLICY' });
+      return { name: 'ollama', model: 'ollama-local', complete: async () => PLACE };
+    }
+    return mocks.resolveProvider();
+  },
+}));
 
 import {
   triageIssue,
+  triageAvailable,
   resolveTriageProvider,
   triageModelFor,
   autoApplyThreshold,
@@ -73,6 +95,48 @@ const PLACE = JSON.stringify({ decision: 'place', parentNodeId: EPIC, reason: 'u
 beforeEach(() => {
   mocks.pickProvider.mockReset();
   mocks.resolveProvider.mockReset();
+  mocks.policy = 'any';
+  mocks.localAvailable = true;
+});
+
+describe('per-map AI policy (#375)', () => {
+  it('none: triage is unavailable for the map and a direct call is a triage_error, no provider consulted', async () => {
+    mocks.policy = 'none';
+    expect(await triageAvailable('m1')).toBe(false);
+    mocks.resolveProvider.mockResolvedValue(provider('anthropic', PLACE));
+    const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
+    expect(decision.decision).toBe('uncertain');
+    expect(decision.reason).toMatch(/^triage_error: AI is disabled for this map/);
+    expect(mocks.resolveProvider).not.toHaveBeenCalled();
+    expect(mocks.pickProvider).not.toHaveBeenCalled();
+  });
+
+  it('local: the local backend decides even when TRIAGE_PROVIDER/auto would pick Claude', async () => {
+    mocks.policy = 'local';
+    mocks.resolveProvider.mockResolvedValue(provider('anthropic', PLACE));
+    const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
+    expect(decision.decision).toBe('place');
+    expect(decision.provider?.name).toBe('ollama');
+    expect(mocks.resolveProvider).not.toHaveBeenCalled();
+  });
+
+  it('local without a local backend: off for the map, never Claude', async () => {
+    mocks.policy = 'local';
+    mocks.localAvailable = false;
+    expect(await triageAvailable('m1')).toBe(false);
+    mocks.resolveProvider.mockResolvedValue(provider('anthropic', PLACE));
+    const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
+    expect(decision.decision).toBe('uncertain');
+    expect(decision.provider).toBeUndefined();
+    expect(mocks.resolveProvider).not.toHaveBeenCalled();
+  });
+
+  it('any: the server-wide resolution applies', async () => {
+    mocks.resolveProvider.mockResolvedValue(provider('anthropic', PLACE));
+    expect(await triageAvailable('m1')).toBe(true);
+    const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
+    expect(decision.provider?.name).toBe('anthropic');
+  });
 });
 
 describe('resolveTriageProvider', () => {

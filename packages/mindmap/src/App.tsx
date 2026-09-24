@@ -1543,7 +1543,7 @@ export function App() {
   const [aiChatOpen, setAiChatOpen] = useState(false);
   // Server-declared AI capabilities: no chat affordance at all on a
   // no-LLM install (role visibility via showPanel still applies on top).
-  const ai = useAiCapabilities();
+  const ai = useAiCapabilities(currentMapId);
   const aiChatAvailable = ai.chat && showPanel('aiChat');
   const [aiChatMinimised, setAiChatMinimised] = useState(false);
   const [mapChatOpen, setMapChatOpen] = useState(false);

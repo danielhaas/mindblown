@@ -1478,9 +1478,12 @@ export interface AiCapabilities {
 }
 
 export interface AiConfigResponse {
-  /** Any LLM configured at all. */
+  /** Any LLM configured at all (server-wide). */
   enabled: boolean;
+  /** Effective flags — for the map when `aiConfig(mapId)` was asked, else server-wide. */
   capabilities: AiCapabilities;
+  /** The map's AI policy (#375), present only when asked for a map. */
+  policy?: 'any' | 'local' | 'none';
   model: string;
   active: { name: AiProviderName; model: string } | null;
   preference: AiProviderPreference;
@@ -1489,8 +1492,8 @@ export interface AiConfigResponse {
   models: { ollama: string | null; anthropic: string | null };
 }
 
-export function aiConfig(): Promise<AiConfigResponse> {
-  return request('/api/ai/config');
+export function aiConfig(mapId?: string): Promise<AiConfigResponse> {
+  return request(mapId ? `/api/ai/config?mapId=${encodeURIComponent(mapId)}` : '/api/ai/config');
 }
 
 export function getAiProvider(): Promise<AiProviderSettings> {

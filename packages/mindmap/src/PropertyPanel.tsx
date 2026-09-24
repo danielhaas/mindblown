@@ -202,7 +202,7 @@ function PropertyPanelInner({
 
   // ── AI Estimate state ─────────────────────────────────────────
   const [estimating, setEstimating] = useState(false);
-  const aiEstimateAvailable = useAiCapabilities().structured;
+  const aiEstimateAvailable = useAiCapabilities(node?.mapId).structured;
   const [estimateResult, setEstimateResult] = useState<EstimateResult | null>(null);
   const [estimateError, setEstimateError] = useState<string | null>(null);
 

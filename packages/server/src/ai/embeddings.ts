@@ -9,6 +9,7 @@ import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import { notDeleted } from '../db/nodes.js';
 import { embed, embedEnabled } from './client.js';
+import { mapAllowsEmbeddings } from './policy.js';
 
 // ── Pure helpers ───────────────────────────────────────────────
 
@@ -78,6 +79,7 @@ export async function embedNodeById(nodeId: string): Promise<void> {
     const [row] = await db
       .select({
         id: nodes.id,
+        mapId: nodes.mapId,
         text: nodes.text,
         description: nodes.description,
         embeddingText: nodes.embeddingText,
@@ -85,6 +87,8 @@ export async function embedNodeById(nodeId: string): Promise<void> {
       .from(nodes)
       .where(and(eq(nodes.id, nodeId), notDeleted));
     if (!row) return;
+    // Per-map AI policy (#375): a `none` map gets no embeddings at all.
+    if (!(await mapAllowsEmbeddings(row.mapId))) return;
     const source = embeddingSourceText({ text: row.text, description: row.description });
     if (!source) return;
     if (row.embeddingText === source) return; // unchanged — skip
@@ -134,6 +138,7 @@ export async function semanticSearch(
   limit = 10,
 ): Promise<SemanticMatch[]> {
   if (!embedEnabled) return [];
+  if (!(await mapAllowsEmbeddings(mapId))) return [];
   const queryVec = await embedText(query);
   if (!queryVec) return [];
 
@@ -163,6 +168,7 @@ export async function backfillMapEmbeddings(
   mapId: string,
 ): Promise<{ embedded: number; skipped: number; total: number }> {
   if (!embedEnabled) return { embedded: 0, skipped: 0, total: 0 };
+  if (!(await mapAllowsEmbeddings(mapId))) return { embedded: 0, skipped: 0, total: 0 };
 
   const rows = await db
     .select({

@@ -41,9 +41,11 @@
 
 import { createHash } from 'crypto';
 import { aiCapabilities } from '../ai/capabilities.js';
+import { capabilitiesForMap, getMapAiPolicy, resolveProviderForPolicy } from '../ai/policy.js';
 import { pickProvider, resolveProvider } from '../ai/providers/index.js';
 import type { ChatProvider, ProviderName } from '../ai/providers/types.js';
 import type { AiProviderPreference } from '../db/settings.js';
+import type { AiPolicy } from '@mindblown/core';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { MapContext } from './mapContext.js';
 
@@ -95,8 +97,12 @@ export interface TriageDecision {
  * for every incoming issue. Derived from the shared capability flags so
  * there is exactly one answer to "is triage available?".
  */
-export function triageAvailable(): boolean {
-  return aiCapabilities().triage;
+export async function triageAvailable(mapId?: string): Promise<boolean> {
+  if (!aiCapabilities().triage) return false;
+  // Per-map AI policy (#375): `none` turns triage off for that map, `local`
+  // keeps it only while a local backend exists.
+  if (mapId) return (await capabilitiesForMap(mapId)).triage;
+  return true;
 }
 
 /**
@@ -119,7 +125,11 @@ const TRIAGE_MODEL_OVERRIDE = process.env.TRIAGE_MODEL;
  */
 export async function resolveTriageProvider(
   preference: AiProviderPreference = TRIAGE_PROVIDER,
+  policy: AiPolicy = 'any',
 ): Promise<ChatProvider> {
+  // The map's policy outranks TRIAGE_PROVIDER: `local` never reaches Claude,
+  // `none` never reaches anything.
+  if (policy !== 'any') return resolveProviderForPolicy(policy);
   if (preference !== 'auto') {
     const pinned = pickProvider(preference);
     if (pinned) return pinned;
@@ -609,7 +619,9 @@ async function callTriageProvider(
   input: TriageInput,
   opts: TriageCallOpts = {},
 ): Promise<{ text: string; provider: { name: ProviderName; model: string } }> {
-  const provider: TriageProvider = opts.provider ?? (await resolveTriageProvider());
+  const provider: TriageProvider =
+    opts.provider ??
+    (await resolveTriageProvider(TRIAGE_PROVIDER, await getMapAiPolicy(input.mapContext.mapId)));
   const model = opts.model ?? triageModelFor(provider);
   const { context, issue } = buildUserMessage(input);
 

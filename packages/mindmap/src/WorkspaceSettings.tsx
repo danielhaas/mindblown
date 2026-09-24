@@ -18,6 +18,7 @@ import { AdminPasswordResetPanel } from './AdminPasswordResetPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 import { SettingsApiKeys } from './SettingsApiKeys.js';
 import { AiProviderPanel } from './AiProviderPanel.js';
+import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -433,6 +434,9 @@ export function WorkspaceSettings({
 
           {/* AI chat provider — shown only in workspace-wide view */}
           {!mapId && <AiProviderPanel />}
+
+          {/* Per-map AI policy (#375) — shown only for a map */}
+          {mapId && <MapAiPolicyPanel />}
         </div>
       </div>
     </div>
