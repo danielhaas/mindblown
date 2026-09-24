@@ -89,7 +89,7 @@ function fakeProvider(responseText: string): TriageProvider {
   return {
     name: 'anthropic',
     model: 'test-model',
-    completeJson: vi.fn(async () => responseText),
+    complete: vi.fn(async () => responseText),
   };
 }
 
@@ -97,7 +97,7 @@ function throwingProvider(err: Error): TriageProvider {
   return {
     name: 'anthropic',
     model: 'test-model',
-    completeJson: vi.fn(async () => {
+    complete: vi.fn(async () => {
       throw err;
     }),
   };
@@ -335,9 +335,9 @@ describe('triageIssue — request construction', () => {
       { provider },
     );
 
-    const completeJson = provider.completeJson as ReturnType<typeof vi.fn>;
-    expect(completeJson).toHaveBeenCalledTimes(1);
-    const arg = completeJson.mock.calls[0][0] as {
+    const complete = provider.complete as ReturnType<typeof vi.fn>;
+    expect(complete).toHaveBeenCalledTimes(1);
+    const arg = complete.mock.calls[0][0] as {
       systemPrompt: string;
       parts: Array<{ text: string; cacheable?: boolean }>;
     };
@@ -357,7 +357,7 @@ describe('triageIssue — request construction', () => {
       { issue: makeIssue(), mapContext: makeMapContext() },
       { provider, model: 'claude-haiku-test' },
     );
-    const arg = (provider.completeJson as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: string };
+    const arg = (provider.complete as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: string };
     expect(arg.model).toBe('claude-haiku-test');
   });
 

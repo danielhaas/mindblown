@@ -4,7 +4,7 @@
  */
 
 import type { FastifyInstance } from 'fastify';
-import { aiEnabled, aiConfig, chatCompletion } from '../ai/client.js';
+import { aiConfig } from '../ai/client.js';
 import { getChatToolSpecs, executeTool, renderTreeForPrompt, renderFocusContext } from '../ai/tools.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
@@ -128,16 +128,24 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     return;
   }
 
-  // Helper for endpoints that specifically require the Ollama backend
-  // (embeddings + legacy JSON-mode chat completions live there today).
-  const requireOllama = (
-    reply: import('fastify').FastifyReply,
-  ): boolean => {
-    if (aiEnabled) return true;
+  // Per-capability gates. `structured` (breakdown / brain dump / estimate /
+  // refine / standup / ping) runs on whichever backend the resolver picks;
+  // `embeddings` needs an OpenAI-compatible embeddings endpoint, which
+  // Claude does not offer.
+  const requireStructured = (reply: import('fastify').FastifyReply): boolean => {
+    if (aiCapabilities().structured) return true;
+    reply.status(503).send({
+      error: { code: 'AI_NOT_CONFIGURED', message: AI_DISABLED_MESSAGE },
+    });
+    return false;
+  };
+  const requireEmbeddings = (reply: import('fastify').FastifyReply): boolean => {
+    if (aiCapabilities().embeddings) return true;
     reply.status(503).send({
       error: {
         code: 'AI_NOT_CONFIGURED',
-        message: 'This endpoint requires the local AI backend (set AI_BASE_URL)',
+        message:
+          'Semantic search needs an embeddings endpoint — set AI_EMBED_BASE_URL (or AI_BASE_URL) to a local OpenAI-compatible model server.',
       },
     });
     return false;
@@ -145,17 +153,21 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
 
   // ── Ping — quick round-trip to the LLM to verify connectivity ─
   app.get('/api/ai/ping', async (_req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     try {
       const t0 = Date.now();
-      const result = await chatCompletion({
-        messages: [{ role: 'user', content: 'Respond with exactly: pong' }],
+      const provider = await resolveProvider();
+      const result = await provider.complete({
+        systemPrompt: 'You are a connectivity check.',
+        parts: [{ text: 'Respond with exactly: pong' }],
+        format: 'text',
         maxTokens: 16,
         temperature: 0,
       });
       return {
         status: 'ok',
-        model: aiConfig().model,
+        provider: provider.name,
+        model: provider.model,
         latencyMs: Date.now() - t0,
         response: result.trim(),
       };
@@ -176,7 +188,7 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
   // separate from the write so the user can preview.
 
   app.post('/api/ai/breakdown', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     const body = req.body as {
       mapId: string;
       nodeId: string;
@@ -251,14 +263,13 @@ Node to break down: "${targetNode.text}"`;
     }
 
     try {
-      const raw = await chatCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      const provider = await resolveProvider();
+      const raw = await provider.complete({
+        systemPrompt,
+        parts: [{ text: userPrompt }],
+        format: 'json',
         temperature: 0.5,
         maxTokens: 2048,
-        jsonSchema: { name: 'breakdown' },
       });
 
       // Parse — handle models that wrap JSON in markdown fences
@@ -578,7 +589,7 @@ Rules:
           for await (const ev of provider.runTurn({
             systemPrompt,
             messages,
-            tools: getChatToolSpecs(provider.name),
+            tools: getChatToolSpecs(provider),
             signal: controller.signal,
           })) {
             armWatchdog();
@@ -675,7 +686,7 @@ Rules:
   // first if coverage matters.
 
   app.get('/api/ai/search', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireEmbeddings(reply)) return;
     const query = req.query as { mapId?: string; q?: string; limit?: string };
     if (!query.mapId || !query.q?.trim()) {
       return reply.status(400).send({
@@ -700,7 +711,7 @@ Rules:
   // safe to run repeatedly.
 
   app.post('/api/ai/embeddings/backfill', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireEmbeddings(reply)) return;
     const body = req.body as { mapId: string };
     if (!body.mapId) {
       return reply.status(400).send({
@@ -727,7 +738,7 @@ Rules:
   // before committing via /accept — same split as /breakdown.
 
   app.post('/api/ai/braindump', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     const body = req.body as {
       mapId: string;
       parentId: string;
@@ -784,14 +795,13 @@ Parent node: "${parentNode.text}"`;
     userPrompt += `\n\nBrain dump:\n${body.prose.trim()}`;
 
     try {
-      const raw = await chatCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      const provider = await resolveProvider();
+      const raw = await provider.complete({
+        systemPrompt,
+        parts: [{ text: userPrompt }],
+        format: 'json',
         temperature: 0.4,
         maxTokens: 3072,
-        jsonSchema: { name: 'braindump' },
       });
 
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
@@ -831,7 +841,7 @@ Parent node: "${parentNode.text}"`;
   // time, so baking it into stored estimates double-corrected (fudge²).
 
   app.post('/api/ai/estimate', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     const body = req.body as {
       mapId: string;
       text?: string;
@@ -933,14 +943,13 @@ Title: "${targetText}"`;
     userPrompt += '\n\nReturn the JSON.';
 
     try {
-      const raw = await chatCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      const provider = await resolveProvider();
+      const raw = await provider.complete({
+        systemPrompt,
+        parts: [{ text: userPrompt }],
+        format: 'json',
         temperature: 0.2,
         maxTokens: 512,
-        jsonSchema: { name: 'estimate' },
       });
 
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
@@ -1056,7 +1065,7 @@ Title: "${targetText}"`;
   // later without changing the wire shape (proposals[].kind discriminator).
 
   app.post('/api/ai/refine_structure', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     const body = req.body as { mapId: string; nodeId: string };
 
     if (!body.mapId || !body.nodeId) {
@@ -1167,14 +1176,13 @@ ${childrenList}
 Review the children and propose groupings.`;
 
     try {
-      const raw = await chatCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      const provider = await resolveProvider();
+      const raw = await provider.complete({
+        systemPrompt,
+        parts: [{ text: userPrompt }],
+        format: 'json',
         temperature: 0.2,
         maxTokens: 1024,
-        jsonSchema: { name: 'refine_structure' },
       });
 
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
@@ -1316,7 +1324,7 @@ Review the children and propose groupings.`;
   // leaves, then asks the LLM to produce a short narrative standup.
 
   app.post('/api/ai/standup', async (req, reply) => {
-    if (!requireOllama(reply)) return;
+    if (!requireStructured(reply)) return;
     const body = req.body as { mapId: string; sinceHours?: number };
     if (!body.mapId) {
       return reply.status(400).send({
@@ -1376,11 +1384,11 @@ ${sections.join('\n')}
 Generate the standup.`;
 
     try {
-      const narrative = await chatCompletion({
-        messages: [
-          { role: 'system', content: systemPrompt },
-          { role: 'user', content: userPrompt },
-        ],
+      const provider = await resolveProvider();
+      const narrative = await provider.complete({
+        systemPrompt,
+        parts: [{ text: userPrompt }],
+        format: 'text',
         temperature: 0.4,
         maxTokens: 600,
       });

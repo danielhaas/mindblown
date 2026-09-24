@@ -48,11 +48,19 @@ export interface CompletionPart {
   cacheable?: boolean;
 }
 
-export interface JsonCompletionOptions {
+export interface CompletionOptions {
   systemPrompt: string;
   parts: CompletionPart[];
+  /**
+   * `json` (default): the reply is expected to be one JSON object and the
+   * backend is asked for JSON mode where it has one. `text`: free prose
+   * (standup narrative, connectivity ping).
+   */
+  format?: 'json' | 'text';
   /** Override the provider's default model (e.g. a cheaper class for triage). */
   model?: string;
+  /** Default 0 for json, the backend's default for text. */
+  temperature?: number;
   maxTokens?: number;
   signal?: AbortSignal;
 }
@@ -63,10 +71,10 @@ export interface ChatProvider {
   readonly model: string;
   runTurn(opts: RunTurnOptions): AsyncIterable<ProviderEvent>;
   /**
-   * Single non-streaming completion whose reply is expected to be one
-   * JSON object (triage, breakdown, estimate …). Returns the raw text;
-   * callers extract and validate the JSON themselves, because small
-   * local models occasionally wrap or trail it even in JSON mode.
+   * Single non-streaming completion (triage, breakdown, estimate, standup
+   * …). Returns the raw text; JSON callers extract and validate the
+   * object themselves, because small local models occasionally wrap or
+   * trail it even in JSON mode.
    */
-  completeJson(opts: JsonCompletionOptions): Promise<string>;
+  complete(opts: CompletionOptions): Promise<string>;
 }

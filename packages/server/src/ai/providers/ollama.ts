@@ -12,7 +12,7 @@ import { specToOpenAiTool } from '@mindblown/tool-kit';
 import { getClient, withAiSlot } from '../client.js';
 import type {
   ChatProvider,
-  JsonCompletionOptions,
+  CompletionOptions,
   NormalizedMessage,
   ProviderEvent,
   RunTurnOptions,
@@ -119,8 +119,9 @@ export const ollamaProvider: ChatProvider = {
     yield { type: 'turn_end', reason };
   },
 
-  async completeJson(opts: JsonCompletionOptions): Promise<string> {
+  async complete(opts: CompletionOptions): Promise<string> {
     const client = getClient();
+    const json = (opts.format ?? 'json') === 'json';
     const response = await withAiSlot(() =>
       client.chat.completions.create(
         {
@@ -130,11 +131,11 @@ export const ollamaProvider: ChatProvider = {
             // No prompt caching on this side — the parts simply concatenate.
             { role: 'user', content: opts.parts.map((p) => p.text).join('\n\n') },
           ],
-          temperature: 0,
+          temperature: opts.temperature ?? (json ? 0 : 0.4),
           max_tokens: opts.maxTokens ?? 1024,
           // OpenAI-compatible JSON mode; Ollama, vLLM and llama.cpp honour
           // it. Callers still validate — small models occasionally trail.
-          response_format: { type: 'json_object' },
+          ...(json ? { response_format: { type: 'json_object' as const } } : {}),
         },
         opts.signal ? { signal: opts.signal } : undefined,
       ),
