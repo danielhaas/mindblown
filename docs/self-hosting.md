@@ -144,6 +144,7 @@ MindBlown runs without any LLM. AI features are switched on by configuring a bac
 |----------|-------------|
 | `AI_BASE_URL` | OpenAI-compatible base URL of a local model server, e.g. `http://ollama.internal:11434/v1` (Ollama, vLLM, llama.cpp, LM Studio). |
 | `AI_MODEL` | Chat model on that server. Default `qwen2.5:14b`. |
+| `AI_EMBED_BASE_URL` | OpenAI-compatible embeddings endpoint. Defaults to `AI_BASE_URL`. Set it alone on a Claude-only install that wants semantic search from a local embedding model. |
 | `AI_EMBED_MODEL` | Embedding model on that server. Default `nomic-embed-text`. |
 | `ANTHROPIC_API_KEY` | Claude API key. Enables the Claude backend (public internet). |
 | `ANTHROPIC_MODEL` | Claude model for chat. |
@@ -159,11 +160,11 @@ What each mode offers today:
 |---------|--------|-----------------------------|------------------------------|
 | Mindmap, views, GitHub sync, MCP tools, fleet dispatch | yes | yes | yes |
 | AI chat panel | – | yes | yes |
-| Breakdown, brain dump, estimate, refine structure, standup | – | yes | – |
-| Semantic search (embeddings) | – | yes | – |
+| Breakdown, brain dump, estimate, refine structure, standup | – | yes | yes |
+| Semantic search (embeddings) | – | yes | only with `AI_EMBED_BASE_URL` pointing at a local embedding model |
 | GitHub issue triage | – | yes (review-only by default) | yes |
 
-With both configured, chat and triage use the admin-selected provider (Settings → AI Chat Provider) and every feature is available. A map with triage enabled on a server without any LLM logs one warning at startup and routes incoming issues straight to the inbox. Triage decisions made by a local model are never auto-applied unless `TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE` is lowered; they queue in the Triage panel for review.
+With both configured, chat, triage and the structured features use the admin-selected provider (Settings → AI Provider) and every feature is available. The chat's semantic-search tool is offered to Claude and to local models of roughly 30B parameters and up; smaller local models pick between text and semantic search at random, so they only get text search. A map with triage enabled on a server without any LLM logs one warning at startup and routes incoming issues straight to the inbox. Triage decisions made by a local model are never auto-applied unless `TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE` is lowered; they queue in the Triage panel for review.
 
 `GET /api/ai/config` reports the effective flags as `capabilities` and is served even in no-LLM mode.
 

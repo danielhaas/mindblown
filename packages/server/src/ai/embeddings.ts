@@ -8,7 +8,7 @@ import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import { notDeleted } from '../db/nodes.js';
-import { embed, aiEnabled } from './client.js';
+import { embed, embedEnabled } from './client.js';
 
 // ── Pure helpers ───────────────────────────────────────────────
 
@@ -60,7 +60,7 @@ function extractProseMirrorText(value: unknown): string {
 
 /** Compute a single embedding; returns null if AI is disabled. */
 export async function embedText(text: string): Promise<number[] | null> {
-  if (!aiEnabled) return null;
+  if (!embedEnabled) return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
   const [vec] = await embed([trimmed]);
@@ -73,7 +73,7 @@ export async function embedText(text: string): Promise<number[] | null> {
  * Callers that care about latency should not await this.
  */
 export async function embedNodeById(nodeId: string): Promise<void> {
-  if (!aiEnabled) return;
+  if (!embedEnabled) return;
   try {
     const [row] = await db
       .select({
@@ -110,7 +110,7 @@ export async function embedNodeById(nodeId: string): Promise<void> {
  * immediately after a DB mutation without awaiting.
  */
 export function scheduleEmbedNode(nodeId: string): void {
-  if (!aiEnabled) return;
+  if (!embedEnabled) return;
   queueMicrotask(() => {
     void embedNodeById(nodeId);
   });
@@ -133,7 +133,7 @@ export async function semanticSearch(
   query: string,
   limit = 10,
 ): Promise<SemanticMatch[]> {
-  if (!aiEnabled) return [];
+  if (!embedEnabled) return [];
   const queryVec = await embedText(query);
   if (!queryVec) return [];
 
@@ -162,7 +162,7 @@ export async function semanticSearch(
 export async function backfillMapEmbeddings(
   mapId: string,
 ): Promise<{ embedded: number; skipped: number; total: number }> {
-  if (!aiEnabled) return { embedded: 0, skipped: 0, total: 0 };
+  if (!embedEnabled) return { embedded: 0, skipped: 0, total: 0 };
 
   const rows = await db
     .select({

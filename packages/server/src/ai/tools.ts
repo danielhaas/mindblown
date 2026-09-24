@@ -20,7 +20,20 @@ import { defineTool } from '@mindblown/tool-kit';
 import type { Node as CoreNode } from '@mindblown/core';
 import { createChatBackend } from './backend.js';
 import { semanticSearch } from './embeddings.js';
-import type { ProviderName } from './providers/types.js';
+import type { ChatProvider, ProviderName } from './providers/types.js';
+
+/** What tool exposure is decided on: backend name + model label. */
+export type ToolAudience = Pick<ChatProvider, 'name' | 'model'>;
+
+/**
+ * Local models below ~30B parameters pick at random when text search and
+ * semantic search coexist. Matches "7b", "14b", "8x7b", "qwen2.5:14b" …
+ * but not "32b", "70b" or a Claude model name.
+ */
+const SMALL_LOCAL_MODEL = /(^|[^0-9.])(\d(\.\d+)?|1\d|2\d)(\.\d+)?b\b/i;
+export function isSmallLocalModel(audience: ToolAudience): boolean {
+  return audience.name !== 'anthropic' && SMALL_LOCAL_MODEL.test(audience.model);
+}
 
 // ── Tool exposure policy ──────────────────────────────────────
 
@@ -70,6 +83,8 @@ interface ChatExtraSpec {
   schema: z.ZodRawShape;
   /** Providers allowed to see this tool. Omit = all providers. */
   providers?: ProviderName[];
+  /** Finer gate on backend + model; omit = every model of the allowed providers. */
+  audience?: (audience: ToolAudience) => boolean;
   handler: (
     args: Record<string, unknown>,
     ctx: ChatExtraContext,
@@ -92,9 +107,10 @@ const chatExtras: ChatExtraSpec[] = [
         .optional()
         .describe('Max results to return (default 10, max 50)'),
     },
-    // Local 14B model is unreliable when text-search and semantic-search
-    // tools coexist — it picks at random. Gate to Anthropic only.
-    providers: ['anthropic'],
+    // Small local models are unreliable when text-search and semantic-search
+    // tools coexist — they pick at random. Claude and 30B+ local models
+    // get it; a 14B-class model does not.
+    audience: (a) => !isSmallLocalModel(a),
     handler: async (args, ctx) => {
       const query = String(args.query ?? '').trim();
       if (!query) return 'Error: query is required.';
@@ -120,14 +136,15 @@ const extraByName = new Map<string, ChatExtraSpec>(
 
 // ── Public surface ────────────────────────────────────────────
 
-/** Specs available to a given provider, after applying the allowlist + extras. */
-export function getChatToolSpecs(provider: ProviderName): ToolSpec[] {
+/** Specs available to a given backend + model, after applying the allowlist + extras. */
+export function getChatToolSpecs(audience: ToolAudience): ToolSpec[] {
   const sharedAllowed = sharedChatSpecs.filter((s) => {
     const allow = PROVIDER_ALLOWLIST[s.name];
-    return !allow || allow.includes(provider);
+    return !allow || allow.includes(audience.name);
   });
   const extrasAllowed = chatExtras
-    .filter((x) => !x.providers || x.providers.includes(provider))
+    .filter((x) => !x.providers || x.providers.includes(audience.name))
+    .filter((x) => !x.audience || x.audience(audience))
     .map(
       (x): ToolSpec =>
         defineTool({

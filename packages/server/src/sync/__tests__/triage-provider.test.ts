@@ -5,7 +5,7 @@
  *   1. `resolveTriageProvider()` honours TRIAGE_PROVIDER / the chat
  *      preference with the chat panel's availability fallback.
  *   2. A decision records which backend and model produced it, and the
- *      prompt reaches the backend through `completeJson` with the map
+ *      prompt reaches the backend through `complete` with the map
  *      context marked cacheable.
  *   3. Local-model decisions are review-only by default: neither
  *      auto-apply nor auto-confirm-skip fires at any confidence, while
@@ -64,8 +64,8 @@ function issue(): GitHubIssue {
   } as GitHubIssue;
 }
 
-function provider(name: 'ollama' | 'anthropic', reply: string): TriageProvider & { completeJson: ReturnType<typeof vi.fn> } {
-  return { name, model: `${name}-default`, completeJson: vi.fn(async () => reply) };
+function provider(name: 'ollama' | 'anthropic', reply: string): TriageProvider & { complete: ReturnType<typeof vi.fn> } {
+  return { name, model: `${name}-default`, complete: vi.fn(async () => reply) };
 }
 
 const PLACE = JSON.stringify({ decision: 'place', parentNodeId: EPIC, reason: 'ui', confidence: 99 });
@@ -106,7 +106,7 @@ describe('triageModelFor', () => {
   });
 });
 
-describe('triageIssue through completeJson', () => {
+describe('triageIssue through complete', () => {
   it('sends system prompt + cacheable map context + issue tail, records backend and model', async () => {
     const p = provider('ollama', PLACE);
     const decision = await triageIssue({ issue: issue(), mapContext: mapContext() }, { provider: p });
@@ -114,7 +114,7 @@ describe('triageIssue through completeJson', () => {
     expect(decision.decision).toBe('place');
     expect(decision.provider).toEqual({ name: 'ollama', model: 'ollama-default' });
 
-    const call = p.completeJson.mock.calls[0][0];
+    const call = p.complete.mock.calls[0][0];
     expect(call.model).toBe('ollama-default');
     expect(call.systemPrompt.length).toBeGreaterThan(100);
     expect(call.parts).toHaveLength(2);
@@ -129,7 +129,7 @@ describe('triageIssue through completeJson', () => {
     mocks.resolveProvider.mockResolvedValue(p);
     const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
     expect(decision.provider).toEqual({ name: 'anthropic', model: TRIAGE_MODEL });
-    expect(p.completeJson.mock.calls[0][0].model).toBe(TRIAGE_MODEL);
+    expect(p.complete.mock.calls[0][0].model).toBe(TRIAGE_MODEL);
   });
 
   it('a resolver failure becomes a triage_error decision without a provider', async () => {

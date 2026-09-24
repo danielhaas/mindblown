@@ -45,6 +45,7 @@ async function load(backends: Backends) {
   vi.resetModules();
   vi.doMock('../../ai/client.js', () => ({
     aiEnabled: backends.ollama,
+    embedEnabled: backends.ollama,
     aiConfig: () => ({
       enabled: backends.ollama,
       baseUrl: backends.ollama ? 'http://ollama' : '(not set)',
@@ -98,12 +99,12 @@ describe('aiCapabilities()', () => {
     });
   });
 
-  it('Anthropic alone offers chat + triage but not structured/embeddings', async () => {
+  it('Anthropic alone offers everything except embeddings (no embeddings API)', async () => {
     const { caps } = await load({ ollama: false, anthropic: true });
     expect(caps.aiCapabilities()).toEqual({
       enabled: true,
       chat: true,
-      structured: false,
+      structured: true,
       embeddings: false,
       triage: true,
     });

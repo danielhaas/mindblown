@@ -16,7 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { specToAnthropicTool } from '@mindblown/tool-kit';
 import type {
   ChatProvider,
-  JsonCompletionOptions,
+  CompletionOptions,
   NormalizedMessage,
   ProviderEvent,
   RunTurnOptions,
@@ -173,17 +173,27 @@ export const anthropicProvider: ChatProvider = {
     yield { type: 'turn_end', reason };
   },
 
-  async completeJson(opts: JsonCompletionOptions): Promise<string> {
+  async complete(opts: CompletionOptions): Promise<string> {
     const client = getClient();
     const content: Anthropic.TextBlockParam[] = opts.parts.map((p) => ({
       type: 'text',
       text: p.text,
       ...(p.cacheable ? { cache_control: { type: 'ephemeral' as const } } : {}),
     }));
+    // Claude has no JSON mode; the prompts already demand a bare object.
+    // Temperature: caller's value (clamped to the API's 0–1), else 0 for
+    // JSON so structured replies stay deterministic, else the default.
+    const temperature =
+      opts.temperature != null
+        ? Math.min(1, Math.max(0, opts.temperature))
+        : (opts.format ?? 'json') === 'json'
+          ? 0
+          : undefined;
     const response = await client.messages.create(
       {
         model: opts.model ?? ANTHROPIC_MODEL,
         max_tokens: opts.maxTokens ?? 1024,
+        ...(temperature != null ? { temperature } : {}),
         // Static system prompt — cache it so repeated structured calls
         // (one per incoming issue, say) pay full price only once per window.
         system: [

@@ -3,9 +3,13 @@
  * Ollama instance (or any OpenAI-compatible endpoint).
  *
  * Env vars:
- *   AI_BASE_URL   — e.g. http://192.168.178.101:11434/v1  (required for AI features)
- *   AI_MODEL      — chat model, default "qwen2.5:14b"
- *   AI_EMBED_MODEL — embedding model, default "nomic-embed-text"
+ *   AI_BASE_URL       — e.g. http://192.168.178.101:11434/v1 — the local chat backend
+ *   AI_MODEL          — chat model, default "qwen2.5:14b"
+ *   AI_EMBED_BASE_URL — OpenAI-compatible embeddings endpoint; defaults to
+ *                       AI_BASE_URL. Set it alone on a Claude-only install
+ *                       that still wants semantic search from a local
+ *                       embedding model (Claude has no embeddings API).
+ *   AI_EMBED_MODEL    — embedding model, default "nomic-embed-text"
  */
 
 import OpenAI from 'openai';
@@ -14,10 +18,13 @@ import OpenAI from 'openai';
 
 const AI_BASE_URL = process.env.AI_BASE_URL ?? '';
 const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
+const AI_EMBED_BASE_URL = process.env.AI_EMBED_BASE_URL ?? AI_BASE_URL;
 const AI_EMBED_MODEL = process.env.AI_EMBED_MODEL ?? 'nomic-embed-text';
 
-/** True when AI_BASE_URL is configured — gates all AI features. */
+/** True when AI_BASE_URL is configured — the local chat/completion backend. */
 export const aiEnabled = AI_BASE_URL.length > 0;
+/** True when an embeddings endpoint is configured (defaults to the chat backend). */
+export const embedEnabled = AI_EMBED_BASE_URL.length > 0;
 
 // ── Concurrency guard ──────────────────────────────────────────
 //
@@ -149,8 +156,20 @@ export async function chatCompletionStream(
  * Compute embeddings for one or more texts.
  * Returns an array of float arrays, one per input text.
  */
+let _embedClient: OpenAI | null = null;
+function getEmbedClient(): OpenAI {
+  if (AI_EMBED_BASE_URL === AI_BASE_URL) return getClient();
+  if (!_embedClient) {
+    if (!embedEnabled) {
+      throw new Error('Embeddings are disabled — set AI_EMBED_BASE_URL or AI_BASE_URL');
+    }
+    _embedClient = new OpenAI({ baseURL: AI_EMBED_BASE_URL, apiKey: 'ollama' });
+  }
+  return _embedClient;
+}
+
 export async function embed(texts: string[]): Promise<number[][]> {
-  const client = getClient();
+  const client = getEmbedClient();
 
   return withAiSlot(async () => {
     const res = await client.embeddings.create({
@@ -172,6 +191,7 @@ export function aiConfig() {
     enabled: aiEnabled,
     baseUrl: AI_BASE_URL || '(not set)',
     model: AI_MODEL,
+    embedBaseUrl: AI_EMBED_BASE_URL || '(not set)',
     embedModel: AI_EMBED_MODEL,
   };
 }

@@ -1,9 +1,10 @@
 /**
- * `completeJson()` on both chat providers (#365).
+ * `complete()` on both chat providers (#365, #366).
  *
  * The SDKs are stubbed at the module boundary; the tests pin the request
  * shape each backend sends (JSON mode + temperature 0 on the local side,
- * cache breakpoints on the Claude side) and the text that comes back.
+ * cache breakpoints on the Claude side, text format for prose) and the
+ * text that comes back.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -15,6 +16,7 @@ vi.mock('../../client.js', () => ({
   getClient: () => ({ chat: { completions: { create: openai.create } } }),
   withAiSlot: <T,>(fn: () => Promise<T>) => fn(),
   aiEnabled: true,
+  embedEnabled: true,
 }));
 
 // ── Anthropic ─────────────────────────────────────────────────────
@@ -33,13 +35,13 @@ beforeEach(() => {
   vi.stubEnv('ANTHROPIC_API_KEY', 'test-key');
 });
 
-describe('ollamaProvider.completeJson', () => {
-  it('asks for JSON mode at temperature 0 and returns the trimmed content', async () => {
+describe('ollamaProvider.complete', () => {
+  it('json: asks for JSON mode at temperature 0 and returns the trimmed content', async () => {
     const { ollamaProvider } = await import('../ollama.js');
     openai.create.mockResolvedValue({
       choices: [{ message: { content: '  {"decision":"skip"}\n' } }],
     });
-    const text = await ollamaProvider.completeJson({
+    const text = await ollamaProvider.complete({
       systemPrompt: 'SYS',
       parts: [{ text: 'CONTEXT', cacheable: true }, { text: 'ISSUE' }],
       model: 'qwen-test',
@@ -57,15 +59,30 @@ describe('ollamaProvider.completeJson', () => {
     ]);
   });
 
+  it('text: no JSON mode, caller temperature honoured', async () => {
+    const { ollamaProvider } = await import('../ollama.js');
+    openai.create.mockResolvedValue({ choices: [{ message: { content: 'Standup: all good.' } }] });
+    const text = await ollamaProvider.complete({
+      systemPrompt: 'SYS',
+      parts: [{ text: 'summarise' }],
+      format: 'text',
+      temperature: 0.4,
+    });
+    expect(text).toBe('Standup: all good.');
+    const req = openai.create.mock.calls[0][0];
+    expect(req.response_format).toBeUndefined();
+    expect(req.temperature).toBe(0.4);
+  });
+
   it('returns an empty string when the backend sends no choice', async () => {
     const { ollamaProvider } = await import('../ollama.js');
     openai.create.mockResolvedValue({ choices: [] });
-    expect(await ollamaProvider.completeJson({ systemPrompt: 's', parts: [{ text: 'x' }] })).toBe('');
+    expect(await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }] })).toBe('');
   });
 });
 
-describe('anthropicProvider.completeJson', () => {
-  it('places cache breakpoints on the system prompt and cacheable parts only', async () => {
+describe('anthropicProvider.complete', () => {
+  it('json: cache breakpoints on the system prompt and cacheable parts only, temperature 0', async () => {
     vi.resetModules();
     const { anthropicProvider } = await import('../anthropic.js');
     anthropic.create.mockResolvedValue({
@@ -74,7 +91,7 @@ describe('anthropicProvider.completeJson', () => {
         { type: 'text', text: '"place"}' },
       ],
     });
-    const text = await anthropicProvider.completeJson({
+    const text = await anthropicProvider.complete({
       systemPrompt: 'SYS',
       parts: [{ text: 'CONTEXT', cacheable: true }, { text: 'ISSUE' }],
       model: 'claude-haiku-4-5',
@@ -83,6 +100,7 @@ describe('anthropicProvider.completeJson', () => {
     const req = anthropic.create.mock.calls[0][0];
     expect(req.model).toBe('claude-haiku-4-5');
     expect(req.max_tokens).toBe(1024);
+    expect(req.temperature).toBe(0);
     expect(req.system).toEqual([
       { type: 'text', text: 'SYS', cache_control: { type: 'ephemeral' } },
     ]);
@@ -97,11 +115,21 @@ describe('anthropicProvider.completeJson', () => {
     ]);
   });
 
+  it('text: no temperature unless given, caller value clamped to the API range', async () => {
+    vi.resetModules();
+    const { anthropicProvider } = await import('../anthropic.js');
+    anthropic.create.mockResolvedValue({ content: [{ type: 'text', text: 'prose' }] });
+    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'text' });
+    expect(anthropic.create.mock.calls[0][0].temperature).toBeUndefined();
+    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], format: 'text', temperature: 1.5 });
+    expect(anthropic.create.mock.calls[1][0].temperature).toBe(1);
+  });
+
   it('falls back to the provider default model', async () => {
     vi.resetModules();
     const { anthropicProvider } = await import('../anthropic.js');
     anthropic.create.mockResolvedValue({ content: [{ type: 'text', text: '{}' }] });
-    await anthropicProvider.completeJson({ systemPrompt: 's', parts: [{ text: 'x' }] });
+    await anthropicProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }] });
     expect(anthropic.create.mock.calls[0][0].model).toBe(anthropicProvider.model);
   });
 });

@@ -9,16 +9,18 @@
  * checking env vars itself, so a feature is either fully offered or
  * cleanly absent — never a button that 503s on click.
  *
- * Derivation today (widened by #366):
+ * Derivation:
  *   chat        — either backend, via the provider resolver
  *   structured  — breakdown / brain dump / estimate / refine / standup:
- *                 JSON-mode completions on the local backend only
- *   embeddings  — semantic search + backfill: local embeddings endpoint only
- *   triage      — GitHub issue triage: either backend via `completeJson()`
+ *                 either backend via `ChatProvider.complete()`
+ *   embeddings  — semantic search + backfill: needs an OpenAI-compatible
+ *                 embeddings endpoint (`AI_EMBED_BASE_URL`, defaulting to
+ *                 `AI_BASE_URL`); Claude has no embeddings API
+ *   triage      — GitHub issue triage: either backend
  *                 (auto-apply is off by default on the local backend)
  */
 
-import { aiEnabled } from './client.js';
+import { aiEnabled, embedEnabled } from './client.js';
 import { anthropicAvailable } from './providers/anthropic.js';
 
 export interface AiCapabilities {
@@ -39,8 +41,8 @@ export function aiCapabilities(): AiCapabilities {
   return {
     enabled,
     chat: enabled,
-    structured: aiEnabled,
-    embeddings: aiEnabled,
+    structured: enabled,
+    embeddings: embedEnabled,
     triage: enabled,
   };
 }

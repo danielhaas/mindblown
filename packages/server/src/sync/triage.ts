@@ -16,7 +16,7 @@
  * NEVER block the upstream webhook/catchup. The caller persists the row
  * regardless, so an operator can re-classify or override after the fact.
  *
- * Provider: triage goes through the shared `ChatProvider.completeJson()`
+ * Provider: triage goes through the shared `ChatProvider.complete()`
  * primitive (`ai/providers/`), so it runs on Claude or on a local
  * OpenAI-compatible model — whichever `TRIAGE_PROVIDER` / the admin's
  * chat preference resolves to. Single-shot JSON classification, no
@@ -586,10 +586,10 @@ function validateDecision(
 
 /**
  * What triage needs from a backend: a name, a model label and one
- * JSON-shaped completion. Any `ChatProvider` satisfies it; tests inject
- * a stub without touching an SDK.
+ * completion call. Any `ChatProvider` satisfies it; tests inject a stub
+ * without touching an SDK.
  */
-export type TriageProvider = Pick<ChatProvider, 'name' | 'model' | 'completeJson'>;
+export type TriageProvider = Pick<ChatProvider, 'name' | 'model' | 'complete'>;
 
 interface TriageCallOpts {
   /** Override the model for this call (defaults per backend, see `triageModelFor`). */
@@ -613,8 +613,9 @@ async function callTriageProvider(
   const model = opts.model ?? triageModelFor(provider);
   const { context, issue } = buildUserMessage(input);
 
-  const text = await provider.completeJson({
+  const text = await provider.complete({
     systemPrompt: SYSTEM_PROMPT,
+    format: 'json',
     model,
     maxTokens: 1024,
     parts: [
