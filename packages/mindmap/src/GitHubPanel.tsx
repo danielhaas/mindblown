@@ -864,7 +864,7 @@ export function GitHubSettingsDialog({
                   AI triage incoming issues
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                  Claude classifies new issues (skip/place/uncertain). High-confidence
+                  The configured LLM classifies new issues (skip/place/uncertain). High-confidence
                   places auto-create nodes; low-confidence ones wait in the Triage panel.
                 </div>
                 {!triageAvailable && (

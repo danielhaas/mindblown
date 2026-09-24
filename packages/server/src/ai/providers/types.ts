@@ -37,9 +37,36 @@ export interface RunTurnOptions {
 
 export type ProviderName = 'ollama' | 'anthropic';
 
+/**
+ * One part of the user turn for a structured completion. Leading parts
+ * that stay stable across calls (a map summary, say) can be marked
+ * cacheable so a provider with prompt caching places a breakpoint after
+ * them; the issue-specific tail stays uncached.
+ */
+export interface CompletionPart {
+  text: string;
+  cacheable?: boolean;
+}
+
+export interface JsonCompletionOptions {
+  systemPrompt: string;
+  parts: CompletionPart[];
+  /** Override the provider's default model (e.g. a cheaper class for triage). */
+  model?: string;
+  maxTokens?: number;
+  signal?: AbortSignal;
+}
+
 export interface ChatProvider {
   readonly name: ProviderName;
   /** Human-facing model label, surfaced in the chat header. */
   readonly model: string;
   runTurn(opts: RunTurnOptions): AsyncIterable<ProviderEvent>;
+  /**
+   * Single non-streaming completion whose reply is expected to be one
+   * JSON object (triage, breakdown, estimate …). Returns the raw text;
+   * callers extract and validate the JSON themselves, because small
+   * local models occasionally wrap or trail it even in JSON mode.
+   */
+  completeJson(opts: JsonCompletionOptions): Promise<string>;
 }

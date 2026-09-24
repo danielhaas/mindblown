@@ -87,14 +87,14 @@ describe('aiCapabilities()', () => {
     });
   });
 
-  it('local backend alone offers chat/structured/embeddings but not triage', async () => {
+  it('local backend alone offers chat/structured/embeddings/triage', async () => {
     const { caps } = await load({ ollama: true, anthropic: false });
     expect(caps.aiCapabilities()).toEqual({
       enabled: true,
       chat: true,
       structured: true,
       embeddings: true,
-      triage: false,
+      triage: true,
     });
   });
 
@@ -154,7 +154,7 @@ describe('aiRoutes in no-LLM mode', () => {
     const body = res.json();
     expect(body.enabled).toBe(true);
     expect(body.capabilities.structured).toBe(true);
-    expect(body.capabilities.triage).toBe(false);
+    expect(body.capabilities.triage).toBe(true);
     expect(body.active).toEqual({ name: 'ollama', model: 'qwen2.5:14b' });
     await app.close();
   });

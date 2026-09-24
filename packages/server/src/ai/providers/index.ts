@@ -19,7 +19,7 @@ import type { ChatProvider, ProviderName } from './types.js';
 export type { ChatProvider, ProviderName, NormalizedMessage, ProviderEvent } from './types.js';
 
 /** Pick a provider given a preference, honoring availability. */
-function pickProvider(preference: AiProviderPreference): ChatProvider | null {
+export function pickProvider(preference: AiProviderPreference): ChatProvider | null {
   if (preference === 'anthropic' && anthropicAvailable) return anthropicProvider;
   if (preference === 'ollama' && aiEnabled) return ollamaProvider;
   // Auto, or the preferred backend isn't available — fall back.

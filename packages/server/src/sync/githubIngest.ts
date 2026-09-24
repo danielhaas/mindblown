@@ -56,7 +56,7 @@ import { applyTriageLabel } from './triageLabelWriteback.js';
 import {
   triageIssue,
   triageAvailable,
-  TRIAGE_AUTO_APPLY_CONFIDENCE,
+  autoApplyThreshold,
   shouldAutoConfirmSkip,
   computeInputHash,
   isWithinDebounceWindow,
@@ -906,7 +906,7 @@ async function ensureNodeForIssueViaTriage(
 
   const shouldAutoApply =
     decision.decision === 'place' &&
-    decision.confidence >= TRIAGE_AUTO_APPLY_CONFIDENCE &&
+    decision.confidence >= autoApplyThreshold(decision) &&
     decision.parentNodeId != null;
 
   // Persist the decision first, then (if auto-apply) create the node
