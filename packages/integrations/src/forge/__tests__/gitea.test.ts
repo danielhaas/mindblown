@@ -68,7 +68,10 @@ describeForgeContract({
   expectedIssueWebUrl: 'https://forge.example/o/r/issues/42',
   // Gitea maps label names to ids through the repo's label list first.
   prime: (t, op) => {
-    if (op === 'createIssue' || op === 'removeIssueLabel') t.respond({ status: 200, body: giteaLabels });
+    // repo labels, then the org-label lookup (404 for a user owner)
+    if (op === 'createIssue' || op === 'removeIssueLabel') {
+      t.respond({ status: 200, body: giteaLabels }, { status: 404, body: { message: 'not an org' } });
+    }
   },
 });
 
@@ -106,13 +109,17 @@ describe('GiteaForge wire format', () => {
   it('creates an issue with label IDs, creating unknown labels first', async () => {
     const t = fakeTransport();
     const forge = forgeWith(t);
+    const ORG_404 = { status: 404, body: { message: 'not an org' } };
     t.respond(
-      { status: 200, body: giteaLabels }, // GET labels
+      { status: 200, body: giteaLabels }, // GET repo labels
+      ORG_404, // GET org labels (user owner)
       { status: 201, body: { ...giteaLabels[0], id: 42, name: 'new-one' } }, // POST label new-one
       { status: 200, body: [...giteaLabels, { ...giteaLabels[0], id: 42, name: 'new-one' }] }, // refreshed GET labels
+      ORG_404,
       { status: 201, body: giteaIssue }, // POST issue
     );
     await forge.createIssue('dan', 'r', { title: 'x', body: 'y', labels: ['bug', 'new-one'] });
+    expect(t.calls[1].url).toBe('https://git.example/api/v1/orgs/dan/labels?limit=100');
     const posts = t.calls.filter((c) => c.method === 'POST');
     expect(posts.map((c) => c.url)).toEqual([
       'https://git.example/api/v1/repos/dan/r/labels',
@@ -127,14 +134,15 @@ describe('GiteaForge wire format', () => {
     const forge = forgeWith(t);
     t.respond(
       { status: 201, body: giteaIssue }, // PATCH (Gitea answers 201)
-      { status: 200, body: giteaLabels }, // GET labels (ensure)
+      { status: 200, body: giteaLabels }, // GET repo labels (ensure)
+      { status: 404, body: {} }, // GET org labels
       { status: 200, body: [giteaLabels[1]] }, // PUT labels
     );
     const issue = await forge.updateIssue('dan', 'r', 1, { title: 'T', state: 'closed', state_reason: 'completed', labels: ['bug'], milestone: 2 });
     expect(t.calls[0]).toMatchObject({ method: 'PATCH', url: 'https://git.example/api/v1/repos/dan/r/issues/1' });
     expect(JSON.parse(t.calls[0].body ?? '{}')).toEqual({ title: 'T', state: 'closed', milestone: 2 });
-    expect(t.calls[2]).toMatchObject({ method: 'PUT', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels' });
-    expect(JSON.parse(t.calls[2].body ?? '{}')).toEqual({ labels: ['bug'] });
+    expect(t.calls[3]).toMatchObject({ method: 'PUT', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels' });
+    expect(JSON.parse(t.calls[3].body ?? '{}')).toEqual({ labels: ['bug'] });
     expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
   });
 
@@ -150,13 +158,30 @@ describe('GiteaForge wire format', () => {
   it('removeIssueLabel: resolves the name to an id; unknown name → 404 without a DELETE', async () => {
     const t = fakeTransport();
     const forge = forgeWith(t);
-    t.respond({ status: 200, body: giteaLabels }, { status: 204 });
+    t.respond({ status: 200, body: giteaLabels }, { status: 404, body: {} }, { status: 204 });
     const ok = await forge.removeIssueLabel('dan', 'r', 1, 'triage:skipped');
     expect(ok.status).toBe(204);
-    expect(t.calls[1]).toMatchObject({ method: 'DELETE', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels/5' });
+    expect(t.calls[2]).toMatchObject({ method: 'DELETE', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels/5' });
     const missing = await forge.removeIssueLabel('dan', 'r', 1, 'nope');
     expect(missing.status).toBe(404);
-    expect(t.calls).toHaveLength(2); // label list cached, no DELETE sent
+    expect(t.calls).toHaveLength(3); // label list cached, no DELETE sent
+  });
+
+  it('labels: organisation labels are visible by name; repo labels win a clash', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond(
+      { status: 200, body: [giteaLabels[1]] }, // repo: bug (id 1)
+      { status: 200, body: [{ ...giteaLabels[1], id: 900 }, { ...giteaLabels[0], id: 901, name: 'org-only' }] }, // org
+      { status: 204 },
+    );
+    const res = await forge.removeIssueLabel('org', 'r', 1, 'org-only');
+    expect(res.status).toBe(204);
+    expect(t.calls[2].url).toBe('https://git.example/api/v1/repos/org/r/issues/1/labels/901');
+    // `bug` resolves to the repo's id 1, not the org's 900.
+    t.respond({ status: 204 });
+    await forge.removeIssueLabel('org', 'r', 1, 'bug');
+    expect(t.calls[3].url).toBe('https://git.example/api/v1/repos/org/r/issues/1/labels/1');
   });
 
   it('listMilestones: ref is the Gitea id', async () => {
@@ -269,13 +294,14 @@ describe('sync operations on Gitea', () => {
     t.respond(
       { status: 200, body: giteaMilestones }, // list milestones
       { status: 201, body: giteaIssue }, // PATCH milestone
-      { status: 200, body: giteaLabels }, // GET labels (remove)
+      { status: 200, body: giteaLabels }, // GET repo labels (remove)
+      { status: 404, body: {} }, // GET org labels
       { status: 204 }, // DELETE label 6
     );
     const r = await setGitHubIssueMilestone('dan', 'r', 1, 'V1: 2. Sync', 'NEEDS-VERSION', forge);
     expect(r).toEqual({ milestoneNumber: 1 });
     expect(JSON.parse(t.calls[1].body ?? '{}')).toEqual({ milestone: 1 });
-    expect(t.calls[3]).toMatchObject({ method: 'DELETE', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels/6' });
+    expect(t.calls[4]).toMatchObject({ method: 'DELETE', url: 'https://git.example/api/v1/repos/dan/r/issues/1/labels/6' });
   });
 });
 

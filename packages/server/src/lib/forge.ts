@@ -134,6 +134,16 @@ export async function forgeKindForRepo(owner: string, repo: string): Promise<For
   return kind;
 }
 
+/**
+ * Synchronous read for code running inside a DB transaction (an extra
+ * query there would take a second pool connection per ingest). Callers
+ * warm the cache with `forgeKindForRepo` before opening the transaction;
+ * an unwarmed read yields the historical `github`.
+ */
+export function forgeKindForRepoCached(owner: string, repo: string): ForgeKind {
+  return kindCache.get(`${owner}/${repo}`)?.kind ?? 'github';
+}
+
 /** Test hook: forget cached repo → kind lookups. */
 export function _resetForgeKindCacheForTests(): void {
   kindCache.clear();

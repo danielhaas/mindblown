@@ -431,6 +431,7 @@ export function GitHubSettingsDialog({
   const [repo, setRepo] = useState('');
   const [forgeKind, setForgeKind] = useState<api.ForgeKind>('github');
   const [forgeUrl, setForgeUrl] = useState('');
+  const [webhookSecret, setWebhookSecret] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [showLegacy, setShowLegacy] = useState(false);
@@ -439,6 +440,10 @@ export function GitHubSettingsDialog({
   const forgeOptions = (): api.ForgeConnectOptions | undefined =>
     forgeKind === 'gitea' ? { kind: 'gitea', apiBaseUrl: forgeUrl.trim() } : undefined;
   const forgeReady = !!ghToken && !!owner && !!repo && (forgeKind !== 'gitea' || !!forgeUrl.trim());
+  // A test result describes one set of inputs; any edit invalidates it.
+  useEffect(() => {
+    setTestResult(null);
+  }, [ghToken, owner, repo, forgeUrl, forgeKind]);
 
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ imported: number } | null>(null);
@@ -632,7 +637,7 @@ export function GitHubSettingsDialog({
     setConnecting(true);
     setError(null);
     try {
-      await api.connectGitHub(workspaceId, ghToken, owner, repo, undefined, forgeOptions());
+      await api.connectGitHub(workspaceId, ghToken, owner, repo, webhookSecret.trim() || undefined, forgeOptions());
       setConnected(true);
     } catch (e: any) {
       setError(e.message ?? 'Failed to connect');
@@ -1219,22 +1224,47 @@ export function GitHubSettingsDialog({
               </div>
             </div>
 
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                Webhook secret <span style={{ fontWeight: 400 }}>(optional — the same secret you put on the repository webhook)</span>
+              </label>
+              <input
+                type="password"
+                value={webhookSecret}
+                onChange={(e) => setWebhookSecret(e.target.value)}
+                onKeyDown={(e) => e.stopPropagation()}
+                placeholder="leave empty if deliveries are not signed"
+                style={{
+                  width: '100%',
+                  padding: '7px 10px',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  fontFamily: 'inherit',
+                  outline: 'none',
+                  boxSizing: 'border-box',
+                }}
+              />
+            </div>
+
             {testResult && (
               <div
                 style={{
                   marginBottom: 12,
                   padding: '8px 12px',
                   borderRadius: 6,
-                  background: testResult.canPush === false ? '#fef3c7' : '#dcfce7',
-                  color: testResult.canPush === false ? '#92400e' : '#166534',
+                  background: testResult.canPush === true ? '#dcfce7' : '#fef3c7',
+                  color: testResult.canPush === true ? '#166534' : '#92400e',
                   fontSize: 12,
                 }}
               >
                 Reached {testResult.fullName} on {testResult.endpoint.webBaseUrl} (default branch{' '}
                 {testResult.defaultBranch}).{' '}
-                {testResult.canPush === false
-                  ? 'The token cannot write to this repository — closing or labelling issues will fail.'
-                  : 'The token can write to it.'}
+                {testResult.canPush === true
+                  ? 'The token can write to it.'
+                  : testResult.canPush === false
+                    ? 'The token cannot write to this repository — closing or labelling issues will fail.'
+                    : 'Write permission could not be determined.'}
               </div>
             )}
 

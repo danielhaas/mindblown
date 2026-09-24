@@ -405,7 +405,10 @@ const fetchChangedIssuesMock = vi.mocked(fetchChangedIssues);
 // The integrations module is fully mocked above, so the "client" the
 // reconciler receives is an opaque token-carrying stub — the mocked
 // fetchChangedIssues/getGitHubIssue never call into it.
-const fakeForge = { token: 'tok' } as unknown as ForgeClient;
+const fakeForge = {
+  token: 'tok',
+  endpoint: { kind: 'github', apiBaseUrl: 'https://api.github.com', webBaseUrl: 'https://github.com' },
+} as unknown as ForgeClient;
 
 function makeTarget(owner: string, repo: string) {
   return {

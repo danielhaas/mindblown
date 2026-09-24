@@ -223,7 +223,22 @@ export class GiteaForge implements ForgeClient {
       'repo labels',
       key,
     );
-    const map = new Map(all.map((l) => [l.name, l]));
+    // Organisation-level labels apply to the repo too and resolve by name
+    // on POST/PUT; a user owner has no org (404) and is skipped.
+    try {
+      const orgLabels = await walkIssueScan<GiteaLabel>(
+        `/orgs/${owner}/labels?limit=100`,
+        this,
+        'org labels',
+        owner,
+      );
+      all.push(...orgLabels);
+    } catch (err) {
+      if (!(err instanceof ForgeApiError && err.status === 404)) throw err;
+    }
+    // Repo labels win on a name clash (listed first).
+    const map = new Map<string, GiteaLabel>();
+    for (const l of all) if (!map.has(l.name)) map.set(l.name, l);
     this.labelCache.set(key, map);
     return map;
   }
@@ -324,7 +339,9 @@ export class GiteaForge implements ForgeClient {
     } catch {
       return res;
     }
-    const missing = labels.filter((name) => !applied.some((l) => l.name === name));
+    // Case-insensitive: Gitea on MySQL/SQLite collates label names that way.
+    const applied_lc = applied.map((l) => l.name.toLowerCase());
+    const missing = labels.filter((name) => !applied_lc.includes(name.toLowerCase()));
     if (missing.length > 0) {
       return { status: 422, bodyText: `label(s) not found on ${owner}/${repo}: ${missing.join(', ')}` };
     }

@@ -208,6 +208,12 @@ Issue numbers and labels behave as on GitHub. Labels that don't exist on the rep
 
 Existing GitHub installs need no change: connections created before the Gitea support default to github.com.
 
+Limits worth knowing:
+
+- Connecting a forge (and the *Test connection* call) is an admin action: the server fetches the URL you type with the token you type.
+- One forge per workspace. A repository named `owner/repo` on both GitHub and Gitea in the same installation would share issue identities (`owner/repo#N`) — keep the names distinct.
+- Gitea has no close reason and its timeline does not attribute a merge-close to a commit. The abandoned-PR reopen and the closed-issue audit therefore only act on closes made by MindBlown's own login: set `MINDBLOWN_BOT_LOGIN` to the user whose token you connected, otherwise every close looks like a human decision and is left alone (the safe direction).
+
 ## Reverse Proxy (nginx)
 
 For production, put MindBlown behind a reverse proxy with SSL.

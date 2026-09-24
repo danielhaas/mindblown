@@ -381,19 +381,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // webhook handler can verify the HMAC over the bytes the forge actually
   // sent (Gitea pretty-prints; a re-serialised body never matches). Scoped
   // to this plugin by Fastify's encapsulation.
+  // Parsing itself stays Fastify's own (secure-json-parse: prototype
+  // poisoning rejected, empty / invalid bodies → the usual 400s).
+  const defaultJson = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
     const text = typeof body === 'string' ? body : body.toString('utf8');
     (req as { rawBody?: string }).rawBody = text;
-    if (text.length === 0) {
-      done(null, {});
-      return;
-    }
-    try {
-      done(null, JSON.parse(text));
-    } catch (err) {
-      done(err as Error, undefined);
-    }
+    defaultJson(req, text, done);
   });
 
   // ── POST /api/integrations/github/connect ─────────────────────
@@ -412,9 +407,24 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       webBaseUrl?: string;
     };
 
+    // Binding a forge with an operator token — and pointing the server at
+    // an arbitrary base URL — is an admin action (the URL is fetched
+    // server-side with the caller's token; see forge/test below).
+    if (!(await requireAdmin(req))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
+
     if (!body.workspaceId || !body.token || !body.owner || !body.repo) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'workspaceId, token, owner, and repo are required' },
+      });
+    }
+    const badUrl = [body.apiBaseUrl, body.webBaseUrl].find((u) => u && !/^https?:\/\//i.test(u));
+    if (badUrl) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `Forge URL must start with http(s)://: ${badUrl}` },
       });
     }
 
@@ -485,9 +495,23 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: string;
       repo: string;
     };
+    // Admin only: the server fetches a caller-chosen URL with a
+    // caller-chosen token and echoes part of the answer — that is an SSRF
+    // primitive for anyone else.
+    if (!(await requireAdmin(req))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Admin access required' },
+      });
+    }
     if (!body.token || !body.owner || !body.repo) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'token, owner and repo are required' },
+      });
+    }
+    const badUrl = [body.apiBaseUrl, body.webBaseUrl].find((u) => u && !/^https?:\/\//i.test(u));
+    if (badUrl) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `Forge URL must start with http(s)://: ${badUrl}` },
       });
     }
     const kind = body.kind ?? 'github';

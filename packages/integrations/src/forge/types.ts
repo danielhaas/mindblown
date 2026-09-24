@@ -215,7 +215,8 @@ export class ForgeApiError extends Error {
   readonly kind: ForgeKind;
   constructor(status: number, body: string, kind: ForgeKind = 'github') {
     super(`${forgeLabel(kind)} API ${status}: ${body}`);
-    this.name = 'GitHubApiError';
+    // Historical name for GitHub (log greps, tests); honest for other forges.
+    this.name = kind === 'github' ? 'GitHubApiError' : 'ForgeApiError';
     this.status = status;
     this.body = body;
     this.kind = kind;

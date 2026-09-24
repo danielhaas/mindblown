@@ -1195,6 +1195,26 @@ describe('webhook: Gitea deliveries (#368)', () => {
     expect(rawSeen).not.toBe(JSON.stringify(JSON.parse(pretty)));
   });
 
+  it("keeps Fastify's JSON guards: prototype poisoning and empty bodies are 400s", async () => {
+    const app = await buildApp();
+    const poisoned = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { ...giteaHeaders('issues'), 'content-type': 'application/json' },
+      payload: '{"__proto__":{"polluted":true},"action":"opened"}',
+    });
+    const empty = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { ...giteaHeaders('issues'), 'content-type': 'application/json' },
+      payload: '',
+    });
+    await app.close();
+    expect(poisoned.statusCode).toBe(400);
+    expect(empty.statusCode).toBe(400);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   it('a delivery carrying only the X-Gitea-* headers is still routed', async () => {
     const app = await buildApp();
     const res = await app.inject({

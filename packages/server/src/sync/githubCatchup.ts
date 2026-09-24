@@ -722,7 +722,19 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // updated_at — the next tick resumes there and drains the tail,
   // instead of jumping to startedAt and permanently skipping every
   // change the backstop cut off.
-  if (ingestErrored === 0 && stateSyncErrored === 0) {
+  //
+  // That prefix reasoning holds only where the list IS updated-ASC —
+  // GitHub. Gitea has no sort on its issue list (newest-created first),
+  // so a truncated slice there is not a prefix of anything: leave the
+  // cursor where it was and let the next tick re-read the window.
+  const orderedByUpdated = forge.endpoint.kind === 'github';
+  if (ingestErrored === 0 && stateSyncErrored === 0 && fetchTruncated && !orderedByUpdated) {
+    console.warn(
+      '[catchup] fetch was truncated for',
+      repoLabel,
+      `and ${forge.endpoint.kind} lists are not updated-ordered — keeping the cursor; narrow the window or raise the backstop.`,
+    );
+  } else if (ingestErrored === 0 && stateSyncErrored === 0) {
     const nextCursor = computeCursorAdvance(startedAt, fetchTruncated, issues);
     await setLastSyncedAt(target.owner, target.repo, nextCursor);
     if (nextCursor !== startedAt) {
