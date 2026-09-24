@@ -110,6 +110,9 @@ export const maps = pgTable('maps', {
   // suggested parent. Default false → ingest behaves exactly like
   // before (flat under the GitHub Inbox).
   triageEnabled: boolean('triage_enabled').notNull().default(false),
+  // Per-map AI policy (#375): 'any' | 'local' | 'none' — which LLM this
+  // map's content may reach; consulted by every AI entry point.
+  aiPolicy: text('ai_policy').notNull().default('any'),
   // Per-map opt-in for Phase 3 GitHub label write-back (#96). When true,
   // finalized triage decisions write `triage:placed` / `triage:skipped`
   // labels back to the source GitHub issue. Default false so existing

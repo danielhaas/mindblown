@@ -672,6 +672,24 @@ export interface MindMap {
    * Server source: `maps.triage_label_writeback`.
    */
   triageLabelWriteback?: boolean;
+  /**
+   * Which LLM this map's content may reach (#375):
+   *   - `any`   (default) follow the server-wide provider preference;
+   *   - `local` only the local OpenAI-compatible backend — never Claude;
+   *             with no local backend configured, AI is simply off here;
+   *   - `none`  no AI at all for this map, embeddings included.
+   * Every AI entry point (chat, structured features, semantic search,
+   * node embedding, issue triage) consults it. Server source:
+   * `maps.ai_policy`. Absent = `any`.
+   */
+  aiPolicy?: AiPolicy;
+}
+
+/** Per-map AI policy — see `MindMap.aiPolicy`. */
+export type AiPolicy = 'any' | 'local' | 'none';
+export const AI_POLICIES: readonly AiPolicy[] = ['any', 'local', 'none'];
+export function isAiPolicy(v: unknown): v is AiPolicy {
+  return v === 'any' || v === 'local' || v === 'none';
 }
 
 // ── User / Workspace / Team ─────────────────────────────────────

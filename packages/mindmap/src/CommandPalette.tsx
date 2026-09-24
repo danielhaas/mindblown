@@ -80,7 +80,7 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   // to the top of the goto- list. Falls back to fuzzy-only if the AI layer
   // isn't available or the query is too short.
   const [semanticRank, setSemanticRank] = useState<Map<string, number>>(new Map());
-  const semanticAvailable = useAiCapabilities().embeddings;
+  const semanticAvailable = useAiCapabilities(currentMapId).embeddings;
   useEffect(() => {
     if (!semanticAvailable || !currentMapId || query.trim().length < 3) {
       setSemanticRank((prev) => (prev.size === 0 ? prev : new Map()));

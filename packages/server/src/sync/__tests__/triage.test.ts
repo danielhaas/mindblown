@@ -16,6 +16,14 @@
  *   - confidence is clamped to [0, 100].
  *   - Reason and decision text are preserved verbatim.
  */
+import { vi as _vi } from 'vitest';
+// Every test injects its provider; the per-map policy read (#375) would
+// otherwise hit the DB. `any` = the pre-#375 behaviour.
+_vi.mock('../../ai/policy.js', () => ({
+  getMapAiPolicy: async () => 'any',
+  capabilitiesForMap: async () => ({ triage: true }),
+  resolveProviderForPolicy: async () => { throw new Error('not used'); },
+}));
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { GitHubIssue } from '@mindblown/integrations';

@@ -129,6 +129,10 @@ export const updateMapTool = defineTool({
       })
       .optional()
       .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
+    aiPolicy: z
+      .enum(['any', 'local', 'none'])
+      .optional()
+      .describe('Which LLM this map\'s content may reach (#375): "any" (default) follows the server-wide provider preference; "local" uses only the local OpenAI-compatible backend and never Claude (with no local backend configured, AI is off for this map); "none" disables every AI feature for this map, embeddings included. Enforced server-side on chat, breakdown/brain dump/estimate/refine/standup, semantic search, node embedding and issue triage.'),
     profilePolicy: z
       .object({
         heavyMinHours: z.number().positive().optional().describe("Heavy-class floor in hours (estimate at/above = heavy pullers only). Omitted = one day (the map's hoursPerDay)."),
@@ -167,7 +171,7 @@ export const updateMapTool = defineTool({
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, phases }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, phases }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -181,6 +185,7 @@ export const updateMapTool = defineTool({
       dispatchPolicy?: string[];
       profilePolicy?: { heavyMinHours?: number; lightMaxHours?: number } | null;
       autoImportNewIssues?: boolean;
+      aiPolicy?: 'any' | 'local' | 'none';
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
     } = {};
     if (name !== undefined) fields.name = name;
@@ -195,6 +200,7 @@ export const updateMapTool = defineTool({
     if (dispatchPolicy !== undefined) fields.dispatchPolicy = dispatchPolicy;
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
+    if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
       // array index — callers reordering can just send the array in the

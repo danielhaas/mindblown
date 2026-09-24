@@ -164,6 +164,18 @@ What each mode offers today:
 | Semantic search (embeddings) | – | yes | only with `AI_EMBED_BASE_URL` pointing at a local embedding model |
 | GitHub issue triage | – | yes (review-only by default) | yes |
 
+### Per-map AI policy
+
+The provider choice above is server-wide. A map can narrow it in its settings (gear icon on the map → "AI policy for this map"), or via the `update_map` MCP tool's `aiPolicy`:
+
+| Policy | Effect |
+|--------|--------|
+| `any` (default) | Follows the server-wide provider. |
+| `local` | Only the local model is ever used for this map. If no local backend is configured the AI features are off for the map — it never falls back to Claude. |
+| `none` | No AI at all for this map: chat, structured features, semantic search, node embeddings and issue triage are all off, and `/api/ai/*` answers `503 AI_POLICY` for it. |
+
+Enforced on the server, so it holds for the web UI, the REST API and MCP clients alike. `GET /api/ai/config?mapId=<id>` reports a map's effective capabilities. Use `local` or `none` for projects whose content must not reach a public LLM while other maps on the same server keep using Claude.
+
 With both configured, chat, triage and the structured features use the admin-selected provider (Settings → AI Provider) and every feature is available. The chat's semantic-search tool is offered to Claude and to local models of roughly 30B parameters and up; smaller local models pick between text and semantic search at random, so they only get text search. A map with triage enabled on a server without any LLM logs one warning at startup and routes incoming issues straight to the inbox. Triage decisions made by a local model are never auto-applied unless `TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE` is lowered; they queue in the Triage panel for review.
 
 `GET /api/ai/config` reports the effective flags as `capabilities` and is served even in no-LLM mode.

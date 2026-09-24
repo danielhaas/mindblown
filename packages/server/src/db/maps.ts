@@ -4,8 +4,8 @@ import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
-import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy } from '@mindblown/core';
-import { clampFocusFactor } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
+import { clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -153,6 +153,8 @@ export interface UpdateMapInput {
   githubInboxNodeId?: string | null;
   triageEnabled?: boolean;
   triageLabelWriteback?: boolean;
+  /** Per-map AI policy (#375). Invalid values are ignored, not stored. */
+  aiPolicy?: AiPolicy;
 }
 
 /**
@@ -196,6 +198,7 @@ export async function updateMap(
   if (input.githubInboxNodeId !== undefined) updates.githubInboxNodeId = input.githubInboxNodeId;
   if (input.triageEnabled !== undefined) updates.triageEnabled = input.triageEnabled;
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
+  if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

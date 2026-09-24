@@ -326,6 +326,7 @@ export interface ToolBackend {
       dispatchPolicy?: string[];
       profilePolicy?: ProfilePolicy | null;
       autoImportNewIssues?: boolean;
+      aiPolicy?: 'any' | 'local' | 'none';
       phases?: PhaseDef[];
     },
   ): Promise<MapSummary>;

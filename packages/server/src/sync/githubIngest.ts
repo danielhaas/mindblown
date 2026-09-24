@@ -1623,12 +1623,12 @@ export async function ensureNodeForIssue(
     triageEnabled = mapRow?.triageEnabled === true;
   }
   if (triageEnabled) {
-    if (triageAvailable()) {
+    if (await triageAvailable(mapId)) {
       return ensureNodeForIssueViaTriage(mapId, inboxNodeId, issue, ctx, externalId);
     }
-    // Map wants triage but this server has no LLM (no-LLM mode). Fall
-    // through to the plain inbox flow — one warning per process, not one
-    // `triage_error` decision row per issue.
+    // Map wants triage but this server has no LLM (no-LLM mode), or the
+    // map's AI policy forbids it (#375). Fall through to the plain inbox
+    // flow — one warning per process, not one `triage_error` row per issue.
     warnTriageUnavailableOnce(mapId);
   }
 

@@ -16,6 +16,7 @@ vi.mock('../api.js', () => ({
 import {
   loadAiCapabilities,
   currentAiCapabilities,
+  invalidateAiCapabilities,
   resetAiCapabilities,
   NO_AI_CAPABILITIES,
 } from '../aiCapabilities.js';
@@ -49,6 +50,30 @@ describe('loadAiCapabilities', () => {
 
     aiConfigMock.mockResolvedValueOnce({ capabilities: ALL_ON });
     expect(await loadAiCapabilities()).toEqual(ALL_ON);
+    expect(aiConfigMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches per map: a none map and the workspace answer do not bleed into each other (#375)', async () => {
+    const NONE = { enabled: false, chat: false, structured: false, embeddings: false, triage: false };
+    aiConfigMock.mockImplementation(async (mapId?: string) => ({
+      capabilities: mapId === 'private' ? NONE : ALL_ON,
+    }));
+    expect(await loadAiCapabilities('private')).toEqual(NONE);
+    expect(await loadAiCapabilities('other')).toEqual(ALL_ON);
+    expect(await loadAiCapabilities()).toEqual(ALL_ON);
+    expect(aiConfigMock).toHaveBeenCalledTimes(3);
+    expect(aiConfigMock).toHaveBeenCalledWith('private');
+    expect(aiConfigMock).toHaveBeenCalledWith(undefined);
+    expect(currentAiCapabilities('private')).toEqual(NONE);
+    expect(currentAiCapabilities('other')).toEqual(ALL_ON);
+  });
+
+  it('invalidate re-fetches one map after its policy changed', async () => {
+    aiConfigMock.mockResolvedValueOnce({ capabilities: ALL_ON });
+    expect(await loadAiCapabilities('m')).toEqual(ALL_ON);
+    aiConfigMock.mockResolvedValueOnce({ capabilities: { enabled: false } });
+    expect(await invalidateAiCapabilities('m')).toEqual(NO_AI_CAPABILITIES);
+    expect(currentAiCapabilities('m')).toEqual(NO_AI_CAPABILITIES);
     expect(aiConfigMock).toHaveBeenCalledTimes(2);
   });
 

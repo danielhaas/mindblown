@@ -1,4 +1,5 @@
 import type { Node as CoreNode, MindMap, CustomFieldValue } from '@mindblown/core';
+import { isAiPolicy } from '@mindblown/core';
 
 /**
  * Convert a database node row to the core Node type.
@@ -119,5 +120,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     githubInboxNodeId: (get('githubInboxNodeId', 'github_inbox_node_id') as string) ?? null,
     triageEnabled: (get('triageEnabled', 'triage_enabled') as boolean) ?? false,
     triageLabelWriteback: (get('triageLabelWriteback', 'triage_label_writeback') as boolean) ?? false,
+    aiPolicy: (() => {
+      const v = get('aiPolicy', 'ai_policy');
+      return isAiPolicy(v) ? v : 'any';
+    })(),
   };
 }

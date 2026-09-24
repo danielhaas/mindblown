@@ -390,7 +390,7 @@ export function MindmapEditor() {
   const [aiBraindump, setAiBraindump] = useState<{ parentId: string; parentText: string } | null>(null);
   // Breakdown / brain dump / refine all need the server's structured-output
   // backend; on a no-LLM install the menu items and the fan-out hint vanish.
-  const aiStructured = useAiCapabilities().structured;
+  const aiStructured = useAiCapabilities(currentMapId).structured;
   const [refine, setRefine] = useState<{ parentId: string; parentText: string } | null>(null);
   const [deepRefine, setDeepRefine] = useState<{ rootId: string; rootText: string } | null>(null);
 
