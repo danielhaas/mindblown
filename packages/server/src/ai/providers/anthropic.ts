@@ -16,6 +16,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { specToAnthropicTool } from '@mindblown/tool-kit';
 import type {
   ChatProvider,
+  JsonCompletionOptions,
   NormalizedMessage,
   ProviderEvent,
   RunTurnOptions,
@@ -170,5 +171,37 @@ export const anthropicProvider: ChatProvider = {
             ? 'max_tokens'
             : 'other';
     yield { type: 'turn_end', reason };
+  },
+
+  async completeJson(opts: JsonCompletionOptions): Promise<string> {
+    const client = getClient();
+    const content: Anthropic.TextBlockParam[] = opts.parts.map((p) => ({
+      type: 'text',
+      text: p.text,
+      ...(p.cacheable ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    }));
+    const response = await client.messages.create(
+      {
+        model: opts.model ?? ANTHROPIC_MODEL,
+        max_tokens: opts.maxTokens ?? 1024,
+        // Static system prompt — cache it so repeated structured calls
+        // (one per incoming issue, say) pay full price only once per window.
+        system: [
+          {
+            type: 'text',
+            text: opts.systemPrompt,
+            cache_control: { type: 'ephemeral' },
+          },
+        ],
+        messages: [{ role: 'user', content }],
+      },
+      opts.signal ? { signal: opts.signal } : undefined,
+    );
+    // Concatenate every text block defensively; a JSON reply should be one.
+    const parts: string[] = [];
+    for (const block of response.content ?? []) {
+      if (block.type === 'text') parts.push(block.text);
+    }
+    return parts.join('').trim();
   },
 };

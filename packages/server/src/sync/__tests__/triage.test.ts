@@ -87,21 +87,19 @@ function makeIssue(overrides: Partial<GitHubIssue> = {}): GitHubIssue {
 
 function fakeProvider(responseText: string): TriageProvider {
   return {
-    messages: {
-      create: vi.fn(async () => ({
-        content: [{ type: 'text', text: responseText }],
-      })),
-    },
+    name: 'anthropic',
+    model: 'test-model',
+    completeJson: vi.fn(async () => responseText),
   };
 }
 
 function throwingProvider(err: Error): TriageProvider {
   return {
-    messages: {
-      create: vi.fn(async () => {
-        throw err;
-      }),
-    },
+    name: 'anthropic',
+    model: 'test-model',
+    completeJson: vi.fn(async () => {
+      throw err;
+    }),
   };
 }
 
@@ -313,10 +311,8 @@ describe('triageIssue — error normalisation (never throws)', () => {
     expect(result.reason).toMatch(/^triage_error:/);
   });
 
-  it('empty content blocks → uncertain (no JSON found)', async () => {
-    const provider: TriageProvider = {
-      messages: { create: vi.fn(async () => ({ content: [] })) },
-    };
+  it('empty reply → uncertain (no JSON found)', async () => {
+    const provider: TriageProvider = fakeProvider('');
     const result = await triageIssue(
       { issue: makeIssue(), mapContext: makeMapContext() },
       { provider },
@@ -329,60 +325,39 @@ describe('triageIssue — error normalisation (never throws)', () => {
 // ── Prompt construction ───────────────────────────────────────────
 
 describe('triageIssue — request construction', () => {
-  it('passes the system prompt with cache_control set', async () => {
-    const create = vi.fn(async () => ({
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({
-            decision: 'skip',
-            reason: 'no',
-            confidence: 70,
-          }),
-        },
-      ],
-    }));
-    const provider: TriageProvider = { messages: { create } };
+  it('passes the system prompt and marks only the map-context part cacheable', async () => {
+    const provider = fakeProvider(
+      JSON.stringify({ decision: 'skip', reason: 'no', confidence: 70 }),
+    );
 
     await triageIssue(
       { issue: makeIssue(), mapContext: makeMapContext() },
       { provider },
     );
 
-    expect(create).toHaveBeenCalledTimes(1);
-    const arg = (create.mock.calls as unknown as Array<Array<Record<string, unknown>>>)[0][0];
-    // System prompt is an array of text blocks; the first must carry
-    // cache_control so the static guidance caches across calls.
-    const system = arg.system as Array<{ text: string; cache_control?: unknown }>;
-    expect(Array.isArray(system)).toBe(true);
-    expect(system[0].cache_control).toEqual({ type: 'ephemeral' });
-    // The user message has the map context block FIRST and the
-    // issue-specific block second. The map-context block is the cached
-    // one (changes infrequently); the issue block changes per call.
-    const messages = arg.messages as Array<{
-      role: string;
-      content: Array<{ type: string; text: string; cache_control?: unknown }>;
-    }>;
-    expect(messages[0].role).toBe('user');
-    expect(messages[0].content[0].cache_control).toEqual({ type: 'ephemeral' });
-    expect(messages[0].content[1].cache_control).toBeUndefined();
+    const completeJson = provider.completeJson as ReturnType<typeof vi.fn>;
+    expect(completeJson).toHaveBeenCalledTimes(1);
+    const arg = completeJson.mock.calls[0][0] as {
+      systemPrompt: string;
+      parts: Array<{ text: string; cacheable?: boolean }>;
+    };
+    expect(arg.systemPrompt.length).toBeGreaterThan(0);
+    // The map context part comes FIRST and is the cached one (changes
+    // infrequently); the issue-specific part second, uncached.
+    expect(arg.parts).toHaveLength(2);
+    expect(arg.parts[0].cacheable).toBe(true);
+    expect(arg.parts[1].cacheable).toBeUndefined();
   });
 
-  it('uses TRIAGE_MODEL by default but honors the opts override', async () => {
-    const create = vi.fn(async () => ({
-      content: [
-        {
-          type: 'text',
-          text: JSON.stringify({ decision: 'skip', reason: 'x', confidence: 80 }),
-        },
-      ],
-    }));
-    const provider: TriageProvider = { messages: { create } };
+  it('uses the backend default model but honors the opts override', async () => {
+    const provider = fakeProvider(
+      JSON.stringify({ decision: 'skip', reason: 'x', confidence: 80 }),
+    );
     await triageIssue(
       { issue: makeIssue(), mapContext: makeMapContext() },
       { provider, model: 'claude-haiku-test' },
     );
-    const arg = (create.mock.calls as unknown as Array<Array<Record<string, unknown>>>)[0][0];
+    const arg = (provider.completeJson as ReturnType<typeof vi.fn>).mock.calls[0][0] as { model?: string };
     expect(arg.model).toBe('claude-haiku-test');
   });
 

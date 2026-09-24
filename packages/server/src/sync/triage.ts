@@ -16,27 +16,34 @@
  * NEVER block the upstream webhook/catchup. The caller persists the row
  * regardless, so an operator can re-classify or override after the fact.
  *
- * Provider: we use the existing `ai/providers/anthropic.ts` plumbing
- * (same SDK, same env-var pattern) but issue a one-shot non-streaming
- * `messages.create` call rather than going through the chat tool-use
- * loop. The chat ChatProvider abstraction is built around streaming and
- * tool calls; triage is single-shot JSON classification with no tools,
- * so spinning up the streaming infrastructure would be pure overhead.
+ * Provider: triage goes through the shared `ChatProvider.completeJson()`
+ * primitive (`ai/providers/`), so it runs on Claude or on a local
+ * OpenAI-compatible model — whichever `TRIAGE_PROVIDER` / the admin's
+ * chat preference resolves to. Single-shot JSON classification, no
+ * tools, no streaming.
  *
  * Prompt caching: the map context is the bulk of input tokens and
- * changes infrequently. We mark it with `cache_control: ephemeral` so
- * subsequent triage calls in the same 5-min window pay only for the
- * delta (the issue's title + body + labels). With dozens of webhook
+ * changes infrequently. It is passed as a `cacheable` part so a backend
+ * with prompt caching (Claude) pays only for the delta (the issue's
+ * title + body + labels) within a cache window. With dozens of webhook
  * ticks per hour this drops Anthropic spend ~80%.
  *
- * Default model: Haiku-class. Triage is a cheap classification task and
- * the top-tier reasoning models (Opus) would be 10× the cost for no
- * material accuracy lift. Overridable via TRIAGE_MODEL env var.
+ * Default model: Haiku-class on Claude — triage is a cheap classification
+ * task and the top-tier reasoning models would be 10× the cost for no
+ * material accuracy lift. A local backend uses its own default model.
+ * Overridable via TRIAGE_MODEL env var.
+ *
+ * Local backends are review-only by default: their confidence numbers
+ * are not calibrated against the Claude thresholds, so auto-apply and
+ * auto-confirm-skip are disabled unless the operator lowers the
+ * `TRIAGE_LOCAL_*` levers.
  */
 
 import { createHash } from 'crypto';
-import Anthropic from '@anthropic-ai/sdk';
 import { aiCapabilities } from '../ai/capabilities.js';
+import { pickProvider, resolveProvider } from '../ai/providers/index.js';
+import type { ChatProvider, ProviderName } from '../ai/providers/types.js';
+import type { AiProviderPreference } from '../db/settings.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { MapContext } from './mapContext.js';
 
@@ -70,11 +77,16 @@ export interface TriageDecision {
   reason: string;
   /** 0-100. We treat <0 / >100 as clamped at the boundary. */
   confidence: number;
+  /**
+   * Which backend produced this decision. Drives the auto-apply
+   * thresholds (local models are review-only by default) and is worth
+   * keeping in the audit reason trail. Absent when the call never
+   * reached a provider (no LLM configured, resolver threw).
+   */
+  provider?: { name: ProviderName; model: string };
 }
 
 // ── Config ────────────────────────────────────────────────────────
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? '';
 
 /**
  * Whether this server can run LLM triage at all. The ingest layer checks
@@ -85,6 +97,40 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? '';
  */
 export function triageAvailable(): boolean {
   return aiCapabilities().triage;
+}
+
+/**
+ * Which backend runs triage. `auto` (default) follows the admin-selected
+ * chat preference in system_settings, with the same availability
+ * fallback as the chat panel; `anthropic` / `ollama` pin a backend but
+ * still fall back when it isn't configured.
+ */
+export const TRIAGE_PROVIDER: AiProviderPreference = (() => {
+  const raw = process.env.TRIAGE_PROVIDER;
+  return raw === 'anthropic' || raw === 'ollama' ? raw : 'auto';
+})();
+
+/** Explicit `TRIAGE_MODEL` from env, applied to whichever backend runs. */
+const TRIAGE_MODEL_OVERRIDE = process.env.TRIAGE_MODEL;
+
+/**
+ * Resolve the backend for one triage call. Exported for tests and for
+ * the re-triage routes, which want the same answer the ingest path gets.
+ */
+export async function resolveTriageProvider(
+  preference: AiProviderPreference = TRIAGE_PROVIDER,
+): Promise<ChatProvider> {
+  if (preference !== 'auto') {
+    const pinned = pickProvider(preference);
+    if (pinned) return pinned;
+  }
+  return resolveProvider();
+}
+
+/** Model for a given backend: env override, else Haiku on Claude, else the backend's own default. */
+export function triageModelFor(provider: Pick<ChatProvider, 'name' | 'model'>): string {
+  if (TRIAGE_MODEL_OVERRIDE) return TRIAGE_MODEL_OVERRIDE;
+  return provider.name === 'anthropic' ? TRIAGE_MODEL : provider.model;
 }
 /**
  * Default chosen to be Haiku-class: cheap, fast, good enough at
@@ -133,18 +179,52 @@ export const TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE = parseConfidenceEnv(
 );
 
 /**
+ * Local-model counterparts of the two levers above. The Claude thresholds
+ * were calibrated on Haiku; a 14B local model's confidence numbers are
+ * not comparable, so by default nothing a local backend decides is
+ * applied or confirmed without a human — 101 disables both levers
+ * (confidence caps at 100). Operators lower these once they trust the
+ * model they run.
+ */
+export const TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE = parseConfidenceEnv(
+  process.env.TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE,
+  101,
+  101,
+);
+export const TRIAGE_LOCAL_AUTO_CONFIRM_SKIP_CONFIDENCE = parseConfidenceEnv(
+  process.env.TRIAGE_LOCAL_AUTO_CONFIRM_SKIP_CONFIDENCE,
+  101,
+  101,
+);
+
+/** A decision made by anything other than Claude counts as "local". */
+function isLocalDecision(decision: Pick<TriageDecision, 'provider'>): boolean {
+  return decision.provider != null && decision.provider.name !== 'anthropic';
+}
+
+/** Auto-apply threshold that applies to this decision's backend. */
+export function autoApplyThreshold(decision: Pick<TriageDecision, 'provider'>): number {
+  return isLocalDecision(decision)
+    ? TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE
+    : TRIAGE_AUTO_APPLY_CONFIDENCE;
+}
+
+/**
  * Gate for the auto-confirm-skip lever. Callers pass the freshly
  * decided (or re-decided) triage outcome plus the issue state captured
  * at decision time.
  */
 export function shouldAutoConfirmSkip(
-  decision: Pick<TriageDecision, 'decision' | 'confidence'>,
+  decision: Pick<TriageDecision, 'decision' | 'confidence' | 'provider'>,
   issueState: 'open' | 'closed',
 ): boolean {
+  const threshold = isLocalDecision(decision)
+    ? TRIAGE_LOCAL_AUTO_CONFIRM_SKIP_CONFIDENCE
+    : TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE;
   return (
     decision.decision === 'skip' &&
     issueState === 'closed' &&
-    decision.confidence >= TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE
+    decision.confidence >= threshold
   );
 }
 
@@ -314,30 +394,6 @@ export function clearTriageDebounce(
   externalId: string,
 ): void {
   _debounceMap.delete(debounceKey(mapId, externalId));
-}
-
-// ── Anthropic client (lazy) ───────────────────────────────────────
-
-let _client: Anthropic | null = null;
-function getClient(): Anthropic {
-  if (!_client) {
-    if (ANTHROPIC_API_KEY.length === 0) {
-      throw new Error('Triage requires ANTHROPIC_API_KEY (no fallback yet)');
-    }
-    _client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
-  }
-  return _client;
-}
-
-/**
- * Test-only override for the underlying Anthropic client. Lets the
- * unit tests inject a fake `messages.create` without monkey-patching
- * the SDK. The runTriageDirect export below also supports passing an
- * explicit client, which is the cleaner injection point — this is the
- * escape hatch for code paths that go through `triageIssue` itself.
- */
-export function _setTriageClientForTests(client: unknown | null): void {
-  _client = client as Anthropic | null;
 }
 
 // ── Prompts ───────────────────────────────────────────────────────
@@ -529,80 +585,48 @@ function validateDecision(
 // ── Provider call ─────────────────────────────────────────────────
 
 /**
- * Minimal shape we depend on from the Anthropic SDK. Test code can
- * inject any object that satisfies it — no need to mock the full SDK.
+ * What triage needs from a backend: a name, a model label and one
+ * JSON-shaped completion. Any `ChatProvider` satisfies it; tests inject
+ * a stub without touching an SDK.
  */
-export interface TriageProvider {
-  messages: {
-    create: (req: unknown) => Promise<{ content: Array<{ type: string; text?: string }> }>;
-  };
-}
+export type TriageProvider = Pick<ChatProvider, 'name' | 'model' | 'completeJson'>;
 
 interface TriageCallOpts {
+  /** Override the model for this call (defaults per backend, see `triageModelFor`). */
   model?: string;
   /**
-   * Inject an alternate provider for tests. Defaults to the lazy
-   * Anthropic client. When set, ANTHROPIC_API_KEY isn't required.
+   * Inject a backend for tests or for callers that already resolved
+   * one. Defaults to `resolveTriageProvider()`.
    */
   provider?: TriageProvider;
 }
 
 /**
- * Single Anthropic round-trip. Extracted so the test suite can call
- * this with an injected provider without going through the env-gated
- * `getClient()` path.
+ * Single structured round-trip against the resolved backend. Returns
+ * the raw reply plus which backend/model produced it.
  */
 async function callTriageProvider(
   input: TriageInput,
   opts: TriageCallOpts = {},
-): Promise<string> {
-  const provider: TriageProvider = opts.provider ?? (getClient() as unknown as TriageProvider);
-  const model = opts.model ?? TRIAGE_MODEL;
+): Promise<{ text: string; provider: { name: ProviderName; model: string } }> {
+  const provider: TriageProvider = opts.provider ?? (await resolveTriageProvider());
+  const model = opts.model ?? triageModelFor(provider);
   const { context, issue } = buildUserMessage(input);
 
-  const response = await provider.messages.create({
+  const text = await provider.completeJson({
+    systemPrompt: SYSTEM_PROMPT,
     model,
-    max_tokens: 1024,
-    system: [
-      {
-        type: 'text',
-        text: SYSTEM_PROMPT,
-        // System prompt is static across all triage calls — cache it
-        // so we only pay full-tokens cost the first time per 5-min window.
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            // Map context is the bulk of the per-call tokens but
-            // changes only when the map's epics change. Mark it
-            // cacheable so multiple triage calls in the same window
-            // share the cost. Anthropic supports multiple cache
-            // breakpoints per request; placing one here keeps the
-            // issue-specific content uncached (it changes every call).
-            type: 'text',
-            text: context,
-            cache_control: { type: 'ephemeral' },
-          },
-          { type: 'text', text: issue },
-        ],
-      },
+    maxTokens: 1024,
+    parts: [
+      // Map context is the bulk of the per-call tokens but changes only
+      // when the map's epics change — cacheable on backends that support
+      // prompt caching; the issue-specific tail changes every call.
+      { text: context, cacheable: true },
+      { text: issue },
     ],
   });
 
-  // Concatenate every `text` content block in the response. Triage
-  // doesn't use tool_use, so the response should be a single text
-  // block, but we tolerate multiples defensively.
-  const parts: string[] = [];
-  for (const block of response.content ?? []) {
-    if (block.type === 'text' && typeof block.text === 'string') {
-      parts.push(block.text);
-    }
-  }
-  return parts.join('').trim();
+  return { text: text.trim(), provider: { name: provider.name, model } };
 }
 
 // ── Public entry point ────────────────────────────────────────────
@@ -626,8 +650,11 @@ export async function triageIssue(
   );
 
   let text: string;
+  let provider: TriageDecision['provider'];
   try {
-    text = await callTriageProvider(input, opts);
+    const call = await callTriageProvider(input, opts);
+    text = call.text;
+    provider = call.provider;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return {
@@ -643,6 +670,7 @@ export async function triageIssue(
       decision: 'uncertain',
       reason: `triage_error: LLM returned no parseable JSON (got ${JSON.stringify(text.slice(0, 200))})`,
       confidence: 0,
+      provider,
     };
   }
 
@@ -655,8 +683,9 @@ export async function triageIssue(
       decision: 'uncertain',
       reason: `triage_error: invalid JSON: ${msg}`,
       confidence: 0,
+      provider,
     };
   }
 
-  return validateDecision(parsed, validEpicIds, validVersionIds);
+  return { ...validateDecision(parsed, validEpicIds, validVersionIds), provider };
 }

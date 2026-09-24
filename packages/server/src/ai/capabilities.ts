@@ -9,12 +9,13 @@
  * checking env vars itself, so a feature is either fully offered or
  * cleanly absent — never a button that 503s on click.
  *
- * Derivation today (widened by #365 / #366):
+ * Derivation today (widened by #366):
  *   chat        — either backend, via the provider resolver
  *   structured  — breakdown / brain dump / estimate / refine / standup:
  *                 JSON-mode completions on the local backend only
  *   embeddings  — semantic search + backfill: local embeddings endpoint only
- *   triage      — GitHub issue triage: Anthropic only
+ *   triage      — GitHub issue triage: either backend via `completeJson()`
+ *                 (auto-apply is off by default on the local backend)
  */
 
 import { aiEnabled } from './client.js';
@@ -40,7 +41,7 @@ export function aiCapabilities(): AiCapabilities {
     chat: enabled,
     structured: aiEnabled,
     embeddings: aiEnabled,
-    triage: anthropicAvailable,
+    triage: enabled,
   };
 }
 

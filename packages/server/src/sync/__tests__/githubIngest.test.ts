@@ -439,6 +439,7 @@ vi.mock('../triage.js', () => ({
     return { ...triageMockResponse };
   }),
   TRIAGE_AUTO_APPLY_CONFIDENCE: 75,
+  autoApplyThreshold: () => 75,
   TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE: 95,
   // Mirror the real gate (skip + closed + conf >= 95) so ingest tests
   // exercise the auto-confirm lever without importing the real module.
