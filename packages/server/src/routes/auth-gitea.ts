@@ -16,6 +16,7 @@
  * this path needs no admin gate.
  */
 
+import { randomBytes } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import jwt from 'jsonwebtoken';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -49,7 +50,7 @@ interface StatePayload {
 }
 
 function signState(userId: string): string {
-  const nonce = Math.random().toString(36).slice(2);
+  const nonce = randomBytes(16).toString('hex');
   return jwt.sign({ userId, nonce, kind: 'gitea' } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
 }
 
@@ -93,7 +94,8 @@ async function canManageWorkspaceForge(
 }
 
 function nonceCookie(nonce: string, clear = false): string {
-  const secure = (process.env.PUBLIC_URL ?? '').startsWith('https://') ? '; Secure' : '';
+  // Same origin rule as giteaOAuthApp(): PUBLIC_URL, else FRONTEND_URL.
+  const secure = (giteaOAuthApp()?.redirectUri ?? '').startsWith('https://') ? '; Secure' : '';
   const maxAge = clear ? 0 : 15 * 60;
   return `${NONCE_COOKIE}=${clear ? '' : nonce}; Path=/api/auth/gitea; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
 }

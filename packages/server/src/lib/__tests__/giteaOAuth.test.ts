@@ -30,9 +30,16 @@ vi.mock('../../db/connection.js', () => ({
     select: () => ({ from: () => ({ where: () => ({ limit: async () => (mocks.identityRow ? [mocks.identityRow] : []) }) }) }),
     update: () => ({
       set: (values: Record<string, unknown>) => ({
-        where: async () => {
-          mocks.updates.push(values);
-        },
+        // Resolves on a later tick so an un-awaited store would NOT have
+        // landed by the time the caller returns — that is what the
+        // store-before-return assertion relies on.
+        where: () =>
+          new Promise<void>((resolve) =>
+            setTimeout(() => {
+              mocks.updates.push(values);
+              resolve();
+            }, 5),
+          ),
       }),
     }),
   },
@@ -78,8 +85,9 @@ describe('giteaAccessTokenFor', () => {
       return { accessToken: 'new-access', refreshToken: 'new-refresh', expiresIn: 3600, tokenType: 'bearer', scope: null };
     });
     const token = await giteaAccessTokenFor(row);
-    storedAtReturn = mocks.updates[0];
+    storedAtReturn = mocks.updates[0]; // read synchronously at return time
     expect(token).toBe('new-access');
+    expect(storedAtReturn).toBeDefined();
     expect(storedAtReturn).toMatchObject({ encryptedAccessToken: 'enc(new-access)', encryptedRefreshToken: 'enc(new-refresh)' });
     expect((storedAtReturn!.tokenExpiresAt as Date).getTime()).toBeGreaterThan(Date.now() + 3_000_000);
   });
@@ -102,6 +110,23 @@ describe('giteaAccessTokenFor', () => {
     const stale = identity(0);
     mocks.identityRow = { ...identity(3_600_000), encryptedAccessToken: 'enc(already-new)' };
     expect(await giteaAccessTokenFor(stale)).toBe('already-new');
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it('a failed refresh clears the in-flight entry so the next call retries', async () => {
+    const row = identity(0);
+    mocks.identityRow = row;
+    mocks.refresh.mockRejectedValueOnce(new Error('invalid_grant'));
+    await expect(giteaAccessTokenFor(row)).rejects.toThrow('invalid_grant');
+    mocks.refresh.mockResolvedValueOnce({ accessToken: 'second-try', refreshToken: 'r2', expiresIn: 3600, tokenType: 'bearer', scope: null });
+    expect(await giteaAccessTokenFor(row)).toBe('second-try');
+    expect(mocks.refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it('a re-read row without an expiry counts as fresh (same rule as the first check)', async () => {
+    const stale = identity(0);
+    mocks.identityRow = { ...identity(0), tokenExpiresAt: null, encryptedRefreshToken: null, encryptedAccessToken: 'enc(no-expiry)' };
+    expect(await giteaAccessTokenFor(stale)).toBe('no-expiry');
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 

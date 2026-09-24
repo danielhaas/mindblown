@@ -106,7 +106,9 @@ export async function getGitHubContextForMap(
     return {
       owner: integration.config.owner,
       repo: integration.config.repo,
-      token: integration.config.token,
+      // The resolved token, not the raw config one — an OAuth-bound row
+      // (#369) stores `token: ''` and authenticates through its identity.
+      token: forge.token,
       forge,
     };
   }

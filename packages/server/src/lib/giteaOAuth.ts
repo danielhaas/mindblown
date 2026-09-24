@@ -124,7 +124,8 @@ export async function giteaAccessTokenFor(identity: GiteaIdentityRow): Promise<s
     // since this row was loaded.
     const current = (await findGiteaIdentityById(identity.id)) ?? identity;
     const nowExpires = current.tokenExpiresAt?.getTime() ?? null;
-    if (nowExpires !== null && nowExpires - Date.now() > REFRESH_SKEW_MS) {
+    // Same freshness rule as above: no expiry recorded = never expires.
+    if (nowExpires === null || nowExpires - Date.now() > REFRESH_SKEW_MS) {
       return decrypt(current.encryptedAccessToken);
     }
     if (!current.encryptedRefreshToken) {
