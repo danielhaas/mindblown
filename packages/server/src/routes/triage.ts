@@ -72,7 +72,7 @@ import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { backfillMap, resolveIngestVersionId } from '../sync/githubIngest.js';
 import { sdNotifyWatchdog } from '../sync/sdNotify.js';
-import { importGitHubIssues } from '@mindblown/integrations';
+import { importGitHubIssues, issueWebUrl, GITHUB_ENDPOINT } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 
 /**
@@ -506,7 +506,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             const imported = await importGitHubIssues(
               ghCtx.owner,
               ghCtx.repo,
-              ghCtx.token,
+              ghCtx.forge,
               { includeAll: true },
             );
             // Build the set of externalIds already on a node in this
@@ -726,7 +726,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           const importedIssues = await importGitHubIssues(
             ghCtx.owner,
             ghCtx.repo,
-            ghCtx.token,
+            ghCtx.forge,
             { includeAll: true },
           );
 
@@ -2756,10 +2756,13 @@ function parseIssueNumber(externalId: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+// Triage rows carry only an externalId, so the web URL is rebuilt here. The
+// endpoint is fixed to github.com until #368 threads the map's forge
+// endpoint through — grep `GITHUB_ENDPOINT` for every such assumption.
 function buildIssueUrlFromExternalId(externalId: string): string {
   const idx = externalId.lastIndexOf('#');
   if (idx < 0) return '';
   const ownerRepo = externalId.slice(0, idx);
   const number = externalId.slice(idx + 1);
-  return `https://github.com/${ownerRepo}/issues/${number}`;
+  return issueWebUrl(GITHUB_ENDPOINT, ownerRepo, number);
 }

@@ -343,7 +343,7 @@ export function createChatBackend(userId: string): ToolBackend {
       return auditClosedIssues({
         owner: ctx.owner,
         repo: ctx.repo,
-        token: ctx.token,
+        forge: ctx.forge,
         dryRun: true,
         closedBy: opts.closedBy,
         since: opts.since ?? null,

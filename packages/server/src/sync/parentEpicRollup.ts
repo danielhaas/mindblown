@@ -39,7 +39,7 @@
  */
 
 import { eq } from 'drizzle-orm';
-import type { GitHubIssue } from '@mindblown/integrations';
+import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import { fetchChangedIssues } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
 
@@ -267,7 +267,7 @@ export async function applyRollupToParent(
 export interface RollupContext {
   owner: string;
   repo: string;
-  token: string;
+  forge: ForgeClient;
 }
 
 /**
@@ -297,7 +297,7 @@ export async function rollupParentsForChildTitle(
     // initial import makes. For the webhook path we accept the cost (a few
     // hundred ms per child-close on a busy repo); for the catch-up path the
     // caller can batch and pass `allIssues` in via `applyRollupForFetchedIssues`.
-    const fetchResult = await fetchChangedIssues(ctx.owner, ctx.repo, ctx.token, null);
+    const fetchResult = await fetchChangedIssues(ctx.owner, ctx.repo, ctx.forge, null);
     if (fetchResult.truncated) {
       // A truncated list is missing exactly the newest-updated issues —
       // sibling counts computed from it would be wrong, and a wrong

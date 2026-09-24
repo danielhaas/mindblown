@@ -11,6 +11,7 @@ import {
   assertSamePaginationOrigin,
   type GitHubPage,
 } from './github.js';
+import { GitHubForge, GITHUB_API_BASE, GITHUB_WEB_BASE } from './forge/github.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -159,7 +160,7 @@ export async function mintInstallationToken(installationId: string): Promise<str
   const appJwt = await mintAppJwt();
 
   const res = await fetch(
-    `https://api.github.com/app/installations/${installationId}/access_tokens`,
+    `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
     {
       method: 'POST',
       headers: {
@@ -179,7 +180,7 @@ export async function mintInstallationToken(installationId: string): Promise<str
       // does — both flow through the same `err.message` path in logs.
       // Other statuses (5xx, etc.) stay as plain Error: those are
       // transient, the auth-failure counter shouldn't tick on them.
-      throw new GitHubApiError(res.status, body);
+      throw new GitHubApiError(res.status, body, 'github');
     }
     throw new Error(`Failed to mint installation token: ${res.status} ${body}`);
   }
@@ -222,13 +223,13 @@ export async function listInstallationRepositories(installationId: string): Prom
   // short page; the first cut of this conversion dropped that and put
   // nothing in its place.
   const MAX_PAGES = 100; // 100 × 100 repos — far past any real installation.
-  const FIRST_URL = 'https://api.github.com/installation/repositories?per_page=100';
+  const FIRST_URL = `${GITHUB_API_BASE}/installation/repositories?per_page=100`;
 
   let url: string | null = FIRST_URL;
   let pages = 0;
   while (url) {
     const page: GitHubPage<{ total_count: number; repositories: GitHubRepo[] }> =
-      await githubFetchPage(url, token);
+      await githubFetchPage(url, new GitHubForge({ token }));
     repos.push(...(page.data.repositories ?? []));
     pages += 1;
 
@@ -262,7 +263,7 @@ export async function listInstallationRepositories(installationId: string): Prom
 export async function exchangeUserAuthorizationCode(code: string): Promise<UserOAuthTokens> {
   const config = getGitHubAppConfig();
 
-  const res = await fetch('https://github.com/login/oauth/access_token', {
+  const res = await fetch(`${GITHUB_WEB_BASE}/login/oauth/access_token`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -311,7 +312,7 @@ export async function exchangeUserAuthorizationCode(code: string): Promise<UserO
 export async function refreshUserAccessToken(refreshToken: string): Promise<UserOAuthTokens> {
   const config = getGitHubAppConfig();
 
-  const res = await fetch('https://github.com/login/oauth/access_token', {
+  const res = await fetch(`${GITHUB_WEB_BASE}/login/oauth/access_token`, {
     method: 'POST',
     headers: {
       Accept: 'application/json',
@@ -361,7 +362,7 @@ export async function refreshUserAccessToken(refreshToken: string): Promise<User
  * Fetch the authenticated user's GitHub profile.
  */
 export async function getGitHubUser(accessToken: string): Promise<GitHubUser> {
-  const res = await fetch('https://api.github.com/user', {
+  const res = await fetch(`${GITHUB_API_BASE}/user`, {
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${accessToken}`,
@@ -387,7 +388,7 @@ export async function getInstallationDetails(installationId: string): Promise<{
   const appJwt = await mintAppJwt();
 
   const res = await fetch(
-    `https://api.github.com/app/installations/${installationId}`,
+    `${GITHUB_API_BASE}/app/installations/${installationId}`,
     {
       headers: {
         Accept: 'application/vnd.github+json',
@@ -412,7 +413,7 @@ export async function getInstallationDetails(installationId: string): Promise<{
  */
 export function buildInstallUrl(state: string): string {
   const config = getGitHubAppConfig();
-  return `https://github.com/apps/${config.appName}/installations/new?state=${encodeURIComponent(state)}`;
+  return `${GITHUB_WEB_BASE}/apps/${config.appName}/installations/new?state=${encodeURIComponent(state)}`;
 }
 
 /**
@@ -421,7 +422,7 @@ export function buildInstallUrl(state: string): string {
  */
 export function buildOAuthAuthorizeUrl(state: string): string {
   const config = getGitHubAppConfig();
-  return `https://github.com/login/oauth/authorize?client_id=${encodeURIComponent(config.clientId)}&state=${encodeURIComponent(state)}`;
+  return `${GITHUB_WEB_BASE}/login/oauth/authorize?client_id=${encodeURIComponent(config.clientId)}&state=${encodeURIComponent(state)}`;
 }
 
 /**
@@ -434,7 +435,7 @@ export async function listAppInstallations(): Promise<Array<{
 }>> {
   const appJwt = await mintAppJwt();
 
-  const res = await fetch('https://api.github.com/app/installations', {
+  const res = await fetch(`${GITHUB_API_BASE}/app/installations`, {
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${appJwt}`,

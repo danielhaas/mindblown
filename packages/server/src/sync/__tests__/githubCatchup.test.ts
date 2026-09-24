@@ -31,6 +31,7 @@ vi.mock('drizzle-orm', async () => {
     ...actual,
     eq: () => ({ __pred: true }),
     and: () => ({ __pred: true }),
+    inArray: () => ({ __pred: true }),
     isNotNull: () => ({ __pred: true }),
     sql: Object.assign(
       (..._args: unknown[]) => ({ __sql: true }),
@@ -140,7 +141,7 @@ import {
   _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
-import { fetchChangedIssues, getGitHubIssue, GitHubApiError } from '@mindblown/integrations';
+import { fetchChangedIssues, getGitHubIssue, GitHubApiError, type ForgeClient } from '@mindblown/integrations';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
 import * as nodeDb from '../../db/nodes.js';
 
@@ -401,11 +402,16 @@ describe('isHealthyTick', () => {
 
 const fetchChangedIssuesMock = vi.mocked(fetchChangedIssues);
 
+// The integrations module is fully mocked above, so the "client" the
+// reconciler receives is an opaque token-carrying stub — the mocked
+// fetchChangedIssues/getGitHubIssue never call into it.
+const fakeForge = { token: 'tok' } as unknown as ForgeClient;
+
 function makeTarget(owner: string, repo: string) {
   return {
     owner,
     repo,
-    resolveToken: async (): Promise<string> => 'tok',
+    resolveForge: async (): Promise<ForgeClient> => fakeForge,
   };
 }
 
@@ -581,11 +587,11 @@ function makeMintFailingTarget(
   owner: string,
   repo: string,
   err: Error,
-): { owner: string; repo: string; resolveToken: () => Promise<string> } {
+): { owner: string; repo: string; resolveForge: () => Promise<ForgeClient> } {
   return {
     owner,
     repo,
-    resolveToken: async (): Promise<string> => {
+    resolveForge: async (): Promise<ForgeClient> => {
       throw err;
     },
   };
@@ -647,7 +653,7 @@ describe('reconcileRepo → 401 auth-failure escalation, token-resolution path (
     const okTarget = {
       owner: 'o',
       repo: 'r',
-      resolveToken: async (): Promise<string> => 'tok',
+      resolveForge: async (): Promise<ForgeClient> => fakeForge,
     };
     await reconcileRepo(okTarget);
     expect(_getAuthFailureCountForTests('o/r')).toBe(0);
@@ -979,9 +985,9 @@ describe('resolveUnlistedLinks', () => {
       pull_request: { merged_at: '2026-05-10T01:24:14Z' },
     } as never);
 
-    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge);
 
-    expect(getIssueMock).toHaveBeenCalledWith('o', 'r', 856, 'tok');
+    expect(getIssueMock).toHaveBeenCalledWith('o', 'r', 856, fakeForge);
     expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#856', 'closed', true);
     expect(res).toEqual({ resolved: 1, unresolvable: 0 });
   });
@@ -992,7 +998,7 @@ describe('resolveUnlistedLinks', () => {
     ]);
     getIssueMock.mockResolvedValue({ number: 14, state: 'closed' } as never);
 
-    await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge);
 
     expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#14', 'closed', false);
   });
@@ -1004,7 +1010,7 @@ describe('resolveUnlistedLinks', () => {
     getIssueMock.mockRejectedValue(new MockGitHubApiError(404, 'Not Found'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge);
     warnSpy.mockRestore();
 
     expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
@@ -1021,7 +1027,7 @@ describe('resolveUnlistedLinks', () => {
       .mockResolvedValueOnce({ number: 2, state: 'open' } as never);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge);
     warnSpy.mockRestore();
 
     expect(res).toEqual({ resolved: 1, unresolvable: 1 });
@@ -1030,13 +1036,13 @@ describe('resolveUnlistedLinks', () => {
 
   it('passes the per-tick budget through to the candidate query', async () => {
     vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([]);
-    await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok', 7);
+    await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge, 7);
     expect(nodeDb.findLinksMissingState).toHaveBeenCalledWith('o/r', 7);
   });
 
   it('makes no API call when there is nothing to resolve', async () => {
     vi.mocked(nodeDb.findLinksMissingState).mockResolvedValue([]);
-    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), 'tok');
+    const res = await resolveUnlistedLinks(makeTarget('o', 'r'), fakeForge);
     expect(getIssueMock).not.toHaveBeenCalled();
     expect(res).toEqual({ resolved: 0, unresolvable: 0 });
   });

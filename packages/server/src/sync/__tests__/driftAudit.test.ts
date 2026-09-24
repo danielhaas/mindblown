@@ -77,6 +77,10 @@ vi.mock('drizzle-orm', async () => {
       __pred: true,
       check: (row) => row[column.__col ?? ''] != null,
     }),
+    inArray: (column: { __col?: string }, values: unknown[]): Pred => ({
+      __pred: true,
+      check: (row) => values.includes(row[column.__col ?? '']),
+    }),
     // Soft-delete filter relies on this. Test rows don't carry deletedAt
     // so IS NULL holds (returns true).
     isNull: (column: { __col?: string }): Pred => ({
@@ -177,24 +181,31 @@ const importedByRepo = new Map<string, Array<{ issue: GitHubIssue; externalLink:
 const mintErrors = new Map<string, string>(); // installationId → error message
 const importErrors = new Map<string, string>(); // owner/repo → error message
 
-vi.mock('@mindblown/integrations', () => ({
-  importGitHubIssues: async (
-    owner: string,
-    repo: string,
-    _token: string,
-    _opts?: unknown,
-  ) => {
-    const key = `${owner}/${repo}`;
-    const err = importErrors.get(key);
-    if (err) throw new Error(err);
-    return importedByRepo.get(key) ?? [];
-  },
-  mintInstallationToken: async (installationId: string) => {
-    const err = mintErrors.get(installationId);
-    if (err) throw new Error(err);
-    return `tok-${installationId}`;
-  },
-}));
+vi.mock('@mindblown/integrations', async () => {
+  // Real module for the pure forge client/factory; network calls mocked.
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  return {
+    ...actual,
+    importGitHubIssues: async (
+      owner: string,
+      repo: string,
+      _forge: unknown,
+      _opts?: unknown,
+    ) => {
+      const key = `${owner}/${repo}`;
+      const err = importErrors.get(key);
+      if (err) throw new Error(err);
+      return importedByRepo.get(key) ?? [];
+    },
+    mintInstallationToken: async (installationId: string) => {
+      const err = mintErrors.get(installationId);
+      if (err) throw new Error(err);
+      return `tok-${installationId}`;
+    },
+  };
+});
 
 // ── SUT import (after mocks) ──────────────────────────────────────
 

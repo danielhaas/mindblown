@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fetchMergedPrsSince, clearThroughputCache } from '../repoThroughput.js';
 import type { GitHubMapContext } from '../githubContext.js';
+import { GitHubForge } from '@mindblown/integrations';
 
-const ctx: GitHubMapContext = { owner: 'acme', repo: 'widgets', token: 't' };
+// GitHubForge reads the global `fetch` at call time, so `vi.stubGlobal`
+// below still intercepts every request.
+const ctx: GitHubMapContext = {
+  owner: 'acme',
+  repo: 'widgets',
+  token: 't',
+  forge: new GitHubForge({ token: 't' }),
+};
 
 const DAY = 86_400_000;
 

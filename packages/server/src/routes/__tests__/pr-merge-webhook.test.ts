@@ -203,6 +203,7 @@ vi.mock('../../lib/githubContext.js', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn(() => ({ __pred: true, check: () => true })),
   and: vi.fn(() => ({ __pred: true, check: () => true })),
+  inArray: vi.fn(() => ({ __pred: true, check: () => true })),
 }));
 
 import { integrationRoutes } from '../integrations.js';

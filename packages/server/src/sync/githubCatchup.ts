@@ -14,14 +14,19 @@
  * inferred by comparing GitHub state against the node's MindBlown state.
  */
 
-import { eq, and, isNotNull, sql } from 'drizzle-orm';
-import type { GitHubIssue } from '@mindblown/integrations';
+import { eq, and, inArray, isNotNull, sql } from 'drizzle-orm';
+import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import {
   fetchChangedIssues,
   getGitHubIssue,
-  mintInstallationToken,
   GitHubApiError,
 } from '@mindblown/integrations';
+import {
+  forgeFromInstallation,
+  forgeFromIntegration,
+  FORGE_PROVIDERS,
+  type ForgeIntegrationConfig,
+} from '../lib/forge.js';
 import type { ExternalLink, Node } from '@mindblown/core';
 import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
 
@@ -99,18 +104,11 @@ async function pushAuthFailureAlarm(repoLabel: string): Promise<void> {
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface GitHubConfig {
-  owner: string;
-  repo: string;
-  token: string;
-  webhookSecret?: string;
-}
-
 interface RepoTarget {
   owner: string;
   repo: string;
-  /** Resolves a fresh access token at fetch time (App tokens are short-lived). */
-  resolveToken: () => Promise<string>;
+  /** Resolves an authenticated client at fetch time (App tokens are short-lived). */
+  resolveForge: () => Promise<ForgeClient>;
 }
 
 export interface ReconcileResult {
@@ -339,7 +337,7 @@ const UNRESOLVED_LINK_BUDGET = 25;
  */
 export async function resolveUnlistedLinks(
   target: RepoTarget,
-  token: string,
+  forge: ForgeClient,
   budget: number = UNRESOLVED_LINK_BUDGET,
 ): Promise<{ resolved: number; unresolvable: number }> {
   const repoFullName = `${target.owner}/${target.repo}`;
@@ -354,7 +352,7 @@ export async function resolveUnlistedLinks(
     if (!Number.isFinite(number)) { unresolvable++; continue; }
 
     try {
-      const item = await getGitHubIssue(target.owner, target.repo, number, token);
+      const item = await getGitHubIssue(target.owner, target.repo, number, forge);
       await nodeDb.setExternalLinkState(
         c.nodeId,
         c.externalId,
@@ -443,9 +441,9 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     ? new Date(new Date(since).getTime() - 60_000).toISOString()
     : null;
 
-  let token: string;
+  let forge: ForgeClient;
   try {
-    token = await target.resolveToken();
+    forge = await target.resolveForge();
   } catch (err) {
     // Mirror the fetch-401 escalation below (#83 follow-up, #86): a
     // suspended/uninstalled GitHub App install throws at
@@ -478,7 +476,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   let issues: GitHubIssue[];
   let fetchTruncated = false;
   try {
-    const fetchResult = await fetchChangedIssues(target.owner, target.repo, token, sinceWithOverlap);
+    const fetchResult = await fetchChangedIssues(target.owner, target.repo, forge, sinceWithOverlap);
     issues = fetchResult.issues;
     fetchTruncated = fetchResult.truncated;
   } catch (err) {
@@ -594,7 +592,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // or hold the cursor, since the candidates are re-derived next time.
   let directResolved = 0;
   try {
-    const r = await resolveUnlistedLinks(target, token);
+    const r = await resolveUnlistedLinks(target, forge);
     directResolved = r.resolved;
     mirrorRepaired += r.resolved;
   } catch (err) {
@@ -684,7 +682,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       // rollup rather than write a wrong parent percentage — stale
       // beats wrong, next cycle retries.
       const { issues: allIssues, truncated: rollupTruncated } =
-        await fetchChangedIssues(target.owner, target.repo, token, null);
+        await fetchChangedIssues(target.owner, target.repo, forge, null);
       if (rollupTruncated) {
         console.warn(
           '[catchup] skipping parent-epic rollup for',
@@ -802,26 +800,27 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
       source: 'app',
       owner: m.owner,
       repo: m.repo,
-      resolveToken: () => mintInstallationToken(installationId),
+      resolveForge: () => forgeFromInstallation(installationId),
     });
   }
 
-  // Legacy PAT integrations
+  // PAT integrations (any forge kind)
   const patIntegrations = await db
     .select()
     .from(integrations)
-    .where(and(eq(integrations.provider, 'github'), eq(integrations.enabled, true)));
+    .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
   for (const integ of patIntegrations) {
-    const cfg = integ.config as unknown as GitHubConfig;
+    const cfg = integ.config as unknown as ForgeIntegrationConfig;
     if (!cfg?.owner || !cfg?.repo || !cfg?.token) continue;
     const key = `${cfg.owner}/${cfg.repo}`;
     if (seen.has(key)) continue;
-    const token = cfg.token;
+    const forge = forgeFromIntegration(integ);
+    if (!forge) continue;
     seen.set(key, {
       source: 'pat',
       owner: cfg.owner,
       repo: cfg.repo,
-      resolveToken: async () => token,
+      resolveForge: async () => forge,
     });
   }
 

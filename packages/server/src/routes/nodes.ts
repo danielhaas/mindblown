@@ -63,7 +63,7 @@ async function autoLinkNodeFromTitle(
   // swallowed; we never want auto-link failure to bubble up.
   let issue: Awaited<ReturnType<typeof getGitHubIssue>>;
   try {
-    issue = await getGitHubIssue(ghCtx.owner, ghCtx.repo, issueNumber, ghCtx.token);
+    issue = await getGitHubIssue(ghCtx.owner, ghCtx.repo, issueNumber, ghCtx.forge);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     // Don't spam logs for 404s — that's the "not really an issue ref" case.
@@ -134,7 +134,7 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
 
   for (const link of githubLinks) {
     try {
-      const result = await updateGitHubIssue(node, link, ghCtx.token);
+      const result = await updateGitHubIssue(node, link, ghCtx.forge);
       if (result.holdReason) {
         console.log(
           `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})` +

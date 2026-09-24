@@ -53,6 +53,7 @@ import { buildMapContext } from '../sync/mapContext.js';
 import { triageIssue } from '../sync/triage.js';
 import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
+import { issueWebUrl, GITHUB_ENDPOINT } from '@mindblown/integrations';
 
 function parseIssueNumber(externalId: string): number {
   const idx = externalId.lastIndexOf('#');
@@ -61,12 +62,13 @@ function parseIssueNumber(externalId: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+// github.com assumed until #368 threads the map's forge endpoint through.
 function buildIssueUrlFromExternalId(externalId: string): string {
   const idx = externalId.lastIndexOf('#');
   if (idx < 0) return '';
   const ownerRepo = externalId.slice(0, idx);
   const number = externalId.slice(idx + 1);
-  return `https://github.com/${ownerRepo}/issues/${number}`;
+  return issueWebUrl(GITHUB_ENDPOINT, ownerRepo, number);
 }
 
 interface BackfillRow {

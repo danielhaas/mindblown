@@ -18,7 +18,10 @@ const getStatusWorkflowMock = vi.fn(async () => [
   { id: 'done', name: 'Done', category: 'done' },
 ]);
 const recordFieldChangesMock = vi.fn(async () => {});
-const ghCtxMock = vi.fn(async () => ({ owner: 'FulcrumCRM', repo: 'crm', token: 't' }));
+// The integrations module is fully mocked below, so the forge client is an
+// opaque stub — the mocked comment/milestone calls never call into it.
+const FORGE = { token: 't' };
+const ghCtxMock = vi.fn(async () => ({ owner: 'FulcrumCRM', repo: 'crm', token: 't', forge: FORGE }));
 const commentMock = vi.fn(async () => ({ id: 1, html_url: 'u' }));
 const milestoneMock = vi.fn(async () => ({ milestoneNumber: 3 }));
 
@@ -66,7 +69,7 @@ const today = new Date().toISOString().slice(0, 10);
 describe('answerAsk — answered', () => {
   it('comments the ticket, rewrites the node like apply, records the writes', async () => {
     const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
-    expect(commentMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, `**Entscheid (Dan, ${today}): skip**\n\n_via /leidang-asks_`, 't');
+    expect(commentMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, `**Entscheid (Dan, ${today}): skip**\n\n_via /leidang-asks_`, FORGE);
     expect(milestoneMock).not.toHaveBeenCalled();
     expect(updateNodeMock).toHaveBeenCalledWith(NODE, {
       blockedReason: null,
@@ -87,7 +90,7 @@ describe('answerAsk — answered', () => {
   it('sets the milestone and drops NEEDS-VERSION when that was the question', async () => {
     getAskMock.mockResolvedValue(askRow({ needs_version: true }));
     await answerAsk(MAP, '#6823', { action: 'answered', decision: 'V1.5', milestone: 'V1.5' }, 'u1');
-    expect(milestoneMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, 'V1.5', 'NEEDS-VERSION', 't');
+    expect(milestoneMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, 'V1.5', 'NEEDS-VERSION', FORGE);
   });
 
   it('keeps a claimed node\'s status, and honours noRequeue', async () => {
