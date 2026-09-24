@@ -165,7 +165,7 @@ export interface MindmapState {
   // Actions — map level
   loadMaps: () => Promise<void>;
   loadMap: (id: string) => Promise<void>;
-  createMap: (name: string) => Promise<void>;
+  createMap: (name: string, aiPolicy?: 'any' | 'local' | 'none') => Promise<void>;
   closeMap: () => void;
   updateMapName: (name: string) => void;
   /**
@@ -436,10 +436,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
   },
 
-  createMap: async (name: string) => {
+  createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none') => {
     set({ loading: true, error: null });
     try {
-      const map = await api.createMap(name);
+      const map = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
       // Reload maps list
       const maps = await api.fetchMaps();
       set({ maps, loading: false });
