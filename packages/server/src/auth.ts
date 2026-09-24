@@ -73,13 +73,22 @@ export function verifyToken(token: string): JwtPayload {
 // Caller receives the FastifyRequest (or a stub with `userId` +
 // `authSource`) so this helper can enforce both invariants without each
 // route re-wiring the same check.
+//
+// `allowApiKey` (opt-in per route, default off): the private-deployment
+// flow (#363) is driven by the operator's own agent over the operator's
+// own API key — connecting the workspace to a self-hosted forge is the one
+// admin action that flow needs. The key's user must still be an admin;
+// a leaked admin key can then bind a forge, which is also the blast radius
+// of the UI click it replaces. System-wide switches (registration policy,
+// AI provider, drift fan-out) keep the session-only rule.
 
 export async function requireAdmin(
   req: { userId?: string; authSource?: 'jwt' | 'api-key' },
+  opts: { allowApiKey?: boolean } = {},
 ): Promise<boolean> {
   // API keys never reach admin endpoints, even if the issuing user is an
-  // admin. See security note above.
-  if (req.authSource === 'api-key') return false;
+  // admin — unless the route opted in. See security note above.
+  if (req.authSource === 'api-key' && !opts.allowApiKey) return false;
   if (!req.userId) return false;
   const [row] = await db
     .select({ isAdmin: users.isAdmin })
