@@ -196,7 +196,20 @@ MindBlown syncs nodes with the issues of one repository per workspace. Two forge
 | Webhooks | Delivered by the App, or a repository webhook for token setups | Repository webhook |
 | Not available | — | Check-suite status on PR gates (Gitea has no `check_suite` event); close reasons (`not_planned`) |
 
-### Connecting a Gitea repository
+### Signing in with Gitea instead of pasting a token
+
+Register an OAuth2 application on the Gitea instance (*Settings → Applications → Manage OAuth2 Applications*, confidential, redirect URI `https://<your-mindblown>/api/auth/gitea/callback`) and set on the server:
+
+| Variable | Description |
+|----------|-------------|
+| `GITEA_URL` | Instance root, e.g. `https://git.example.com` |
+| `GITEA_OAUTH_CLIENT_ID` / `GITEA_OAUTH_CLIENT_SECRET` | The application's credentials |
+| `PUBLIC_URL` | This server's public origin (the callback is built from it) |
+| `ENCRYPTION_KEY` | Already required for GitHub sign-in; the user's Gitea tokens are stored encrypted with it |
+
+The GitHub panel then shows **Sign in with Gitea** and, once signed in, a picker of the repositories that user can see; **Use this repository** binds the workspace. Tokens are refreshed automatically; revoking the grant on Gitea (or *Disconnect*) stops the sync until someone signs in again or connects with a token.
+
+### Connecting a Gitea repository with a token
 
 1. In Gitea, create an access token for a user who can read and write the repository (*Settings → Applications*, scopes `repository: read and write`, `issue: read and write`).
 2. In MindBlown open the map's GitHub panel, choose **Forge: Gitea / Forgejo**, enter the instance URL (`https://git.example.com` — the API is reached under `/api/v1` automatically), the token, owner and repository name, and press **Test connection**. The check reads the repository and reports whether the token can write to it.

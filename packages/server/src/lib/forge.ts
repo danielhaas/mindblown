@@ -26,6 +26,7 @@ import {
 } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
+import { findGiteaIdentityById, giteaAccessTokenFor } from './giteaOAuth.js';
 
 /**
  * Shape of `integrations.config` for a PAT-backed forge row. `apiBaseUrl`
@@ -35,10 +36,16 @@ import { integrations, maps } from '../db/schema.js';
 export interface ForgeIntegrationConfig {
   owner: string;
   repo: string;
+  /** PAT. Empty when the row is bound to an OAuth identity instead (#369). */
   token: string;
   webhookSecret?: string;
   apiBaseUrl?: string | null;
   webBaseUrl?: string | null;
+  /**
+   * `user_github_identities.id` of the Gitea OAuth identity whose (refreshed)
+   * access token authenticates this binding. Set by the repo picker flow.
+   */
+  oauthIdentityId?: string | null;
 }
 
 /**
@@ -56,14 +63,25 @@ export const FORGE_PROVIDERS: string[] = ['github', 'gitea'] satisfies ForgeKind
  * self-hosted row missing its URLs). Never throws: one bad row must skip
  * that repo, not fail the whole catch-up tick / drift audit it sits in.
  */
-export function forgeFromIntegration(row: { id?: string; provider: string; config: unknown }): ForgeClient | null {
+export async function forgeFromIntegration(row: { id?: string; provider: string; config: unknown }): Promise<ForgeClient | null> {
   const cfg = row.config as ForgeIntegrationConfig;
   try {
+    let token = cfg.token;
+    if (cfg.oauthIdentityId) {
+      // OAuth-bound (Gitea sign-in, #369): a live token from the identity,
+      // refreshed and re-stored when the stored one is about to expire.
+      const identity = await findGiteaIdentityById(cfg.oauthIdentityId);
+      if (!identity) {
+        console.warn(`[forge] integration ${row.id ?? '?'} skipped: OAuth identity ${cfg.oauthIdentityId} is gone (user disconnected?)`);
+        return null;
+      }
+      token = await giteaAccessTokenFor(identity);
+    }
     return createForgeClient({
       kind: isForgeKind(row.provider) ? row.provider : 'github',
       apiBaseUrl: cfg.apiBaseUrl,
       webBaseUrl: cfg.webBaseUrl,
-      token: cfg.token,
+      token,
     });
   } catch (err) {
     console.warn(

@@ -170,7 +170,7 @@ async function getGitHubContextForRepo(
   for (const integ of patIntegrations) {
     const cfg = integ.config as unknown as ForgeIntegrationConfig;
     if (cfg?.owner === owner && cfg?.repo === repo && cfg?.token) {
-      const forge = forgeFromIntegration(integ);
+      const forge = await forgeFromIntegration(integ);
       if (!forge) continue;
       return { owner, repo, token: cfg.token, forge };
     }

@@ -437,6 +437,59 @@ export function GitHubSettingsDialog({
   const [showLegacy, setShowLegacy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<api.ForgeTestResult | null>(null);
+
+  // ── Gitea sign-in + repo picker (#369) — shown only when the server has
+  // a Gitea OAuth app configured; the user never types a URL or token.
+  const [giteaStatus, setGiteaStatus] = useState<api.GiteaAuthStatus | null>(null);
+  const [giteaRepos, setGiteaRepos] = useState<api.GiteaRepoInfo[]>([]);
+  const [giteaSelected, setGiteaSelected] = useState('');
+  const [giteaBusy, setGiteaBusy] = useState(false);
+  const [giteaBound, setGiteaBound] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await api.getGiteaAuthStatus();
+        if (cancelled) return;
+        setGiteaStatus(s);
+        if (s.configured && s.connected) {
+          const r = await api.getGiteaRepositories();
+          if (!cancelled) setGiteaRepos(r.repositories);
+        }
+      } catch {
+        /* status is optional UI; the PAT form still works */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const handleGiteaSignIn = async () => {
+    setError(null);
+    try {
+      const { authorizeUrl } = await api.getGiteaAuthorizeUrl();
+      window.location.href = authorizeUrl;
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to start Gitea sign-in');
+    }
+  };
+  const handleGiteaBind = async () => {
+    if (!giteaSelected) return;
+    setGiteaBusy(true);
+    setError(null);
+    try {
+      const [o, r] = giteaSelected.split('/');
+      const res = await api.bindGiteaRepo(workspaceId, o, r, webhookSecret.trim() || undefined);
+      setGiteaBound(res.repo);
+      setConnected(true);
+      setOwner(o);
+      setRepo(r);
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to bind repository');
+    } finally {
+      setGiteaBusy(false);
+    }
+  };
   const forgeOptions = (): api.ForgeConnectOptions | undefined =>
     forgeKind === 'gitea' ? { kind: 'gitea', apiBaseUrl: forgeUrl.trim() } : undefined;
   const forgeReady = !!ghToken && !!owner && !!repo && (forgeKind !== 'gitea' || !!forgeUrl.trim());
@@ -1080,6 +1133,91 @@ export function GitHubSettingsDialog({
             >
               {showLegacy ? 'Hide legacy token' : 'Use legacy token instead...'}
             </button>
+          </div>
+        )}
+
+        {/* Gitea sign-in + repo picker (#369): parity with the App install flow. */}
+        {giteaStatus?.configured && !hasAppRepo && (
+          <div style={{ marginBottom: 20, padding: '12px', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', marginBottom: 6 }}>
+              Gitea — {giteaStatus.instanceUrl}
+            </div>
+            {!giteaStatus.connected ? (
+              <>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 10 }}>
+                  Sign in with your Gitea account and pick a repository. No token to paste; the sign-in
+                  can be revoked on Gitea at any time.
+                </div>
+                <button
+                  onClick={handleGiteaSignIn}
+                  style={{
+                    background: '#4f46e5',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: 6,
+                    padding: '8px 16px',
+                    fontSize: 12,
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  Sign in with Gitea
+                </button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 11, color: '#64748b', marginBottom: 8 }}>
+                  Signed in as <strong>{giteaStatus.identity?.login}</strong>.
+                  {giteaBound ? ` This workspace syncs with ${giteaBound}.` : ' Choose the repository this workspace should sync with.'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <select
+                    value={giteaSelected}
+                    onChange={(e) => setGiteaSelected(e.target.value)}
+                    style={{
+                      flex: 1,
+                      padding: '7px 10px',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontFamily: 'inherit',
+                      background: '#fff',
+                    }}
+                  >
+                    <option value="">Select a repository…</option>
+                    {giteaRepos.map((r) => (
+                      <option key={r.id} value={r.fullName} disabled={r.canPush === false}>
+                        {r.fullName}
+                        {r.private ? ' (private)' : ''}
+                        {r.canPush === false ? ' — read-only' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={handleGiteaBind}
+                    disabled={giteaBusy || !giteaSelected}
+                    style={{
+                      background: '#4f46e5',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 6,
+                      padding: '8px 16px',
+                      fontSize: 12,
+                      fontWeight: 600,
+                      cursor: giteaBusy ? 'default' : 'pointer',
+                      fontFamily: 'inherit',
+                    }}
+                  >
+                    {giteaBusy ? 'Binding…' : 'Use this repository'}
+                  </button>
+                </div>
+                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>
+                  Add a repository webhook on Gitea for <code>/api/webhooks/github</code> (issues, issue comment, pull
+                  request); its secret goes in the field below before you bind.
+                </div>
+              </>
+            )}
           </div>
         )}
 

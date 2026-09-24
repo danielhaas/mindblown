@@ -1958,7 +1958,7 @@ export async function backfillMap(
       if (cfg?.owner && cfg?.repo && cfg?.token) {
         owner = cfg.owner;
         repo = cfg.repo;
-        forge = forgeFromIntegration(integ);
+        forge = await forgeFromIntegration(integ);
       }
     }
   }

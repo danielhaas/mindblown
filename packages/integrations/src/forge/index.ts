@@ -11,6 +11,7 @@ export * from './types.js';
 export * from './constants.js';
 export { GitHubForge, issueWebUrl, type GitHubForgeOptions } from './github.js';
 export * from './gitea.js';
+export * from './gitea-oauth.js';
 export * from './webhook.js';
 export * from './pagination.js';
 

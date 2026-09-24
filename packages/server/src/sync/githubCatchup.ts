@@ -827,13 +827,18 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
     if (!cfg?.owner || !cfg?.repo || !cfg?.token) continue;
     const key = `${cfg.owner}/${cfg.repo}`;
     if (seen.has(key)) continue;
-    const forge = forgeFromIntegration(integ);
-    if (!forge) continue;
     seen.set(key, {
       source: 'pat',
       owner: cfg.owner,
       repo: cfg.repo,
-      resolveForge: async () => forge,
+      // Resolved at fetch time: an OAuth-bound row (#369) may need a token
+      // refresh, and a row this build cannot serve throws here — the same
+      // path a failed App-token mint takes.
+      resolveForge: async () => {
+        const forge = await forgeFromIntegration(integ);
+        if (!forge) throw new Error(`integration ${integ.id} (${integ.provider}) cannot be served`);
+        return forge;
+      },
     });
   }
 

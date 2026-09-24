@@ -160,7 +160,7 @@ async function resolveTargets(): Promise<ResolvedTargets> {
       const cfg = p.config as { owner?: string; repo?: string; token?: string } | null;
       return cfg?.owner === m.owner && cfg?.repo === m.repo && !!cfg.token;
     });
-    const patForge = pat ? forgeFromIntegration(pat) : null;
+    const patForge = pat ? await forgeFromIntegration(pat) : null;
     if (pat && !patForge) {
       // A PAT row exists but its forge kind can't be served by this build.
       tokenErrors.push({ mapId: m.id, mapName: m.name, reason: `pat: unsupported forge kind ${pat.provider}` });

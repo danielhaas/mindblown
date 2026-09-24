@@ -321,7 +321,11 @@ export const githubInstallations = pgTable('github_installations', {
 
 export const userGithubIdentities = pgTable('user_github_identities', {
   id: uuid('id').primaryKey().defaultRandom(),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }).unique(),
+  // One identity per (user, forge kind) — the unique index lives in the
+  // migration (`uq_user_github_identities_user_kind`, #369).
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  /** 'github' | 'gitea' — which forge this identity signs in to. */
+  kind: text('kind').notNull().default('github'),
   githubUserId: text('github_user_id').notNull(),
   githubLogin: text('github_login').notNull(),
   avatarUrl: text('avatar_url'),
