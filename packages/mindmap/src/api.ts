@@ -400,16 +400,50 @@ export function disconnectGitHub(): Promise<{ disconnected: boolean }> {
 
 // ── GitHub Integration (legacy PAT) ────────────────────────────
 
+export type ForgeKind = 'github' | 'gitea';
+
+/** Self-hosted forge location; omitted for github.com. */
+export interface ForgeConnectOptions {
+  kind?: ForgeKind;
+  /** Instance URL, e.g. `https://git.example.com` (Gitea) or a GHES API URL. */
+  apiBaseUrl?: string;
+  webBaseUrl?: string;
+}
+
 export function connectGitHub(
   workspaceId: string,
   token: string,
   owner: string,
   repo: string,
   webhookSecret?: string,
+  forge?: ForgeConnectOptions,
 ): Promise<{ id: string; provider: string; enabled: boolean }> {
   return request(`/api/integrations/github/connect`, {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, token, owner, repo, webhookSecret }),
+    body: JSON.stringify({ workspaceId, token, owner, repo, webhookSecret, ...(forge ?? {}) }),
+  });
+}
+
+export interface ForgeTestResult {
+  ok: boolean;
+  kind: ForgeKind;
+  endpoint: { kind: ForgeKind; apiBaseUrl: string; webBaseUrl: string };
+  fullName: string;
+  defaultBranch: string;
+  canPush: boolean | null;
+  webhookUrl: string;
+}
+
+/** "Test connection": reads the repo with the credentials the connect form holds; stores nothing. */
+export function testForgeConnection(
+  token: string,
+  owner: string,
+  repo: string,
+  forge?: ForgeConnectOptions,
+): Promise<ForgeTestResult> {
+  return request(`/api/integrations/forge/test`, {
+    method: 'POST',
+    body: JSON.stringify({ token, owner, repo, ...(forge ?? {}) }),
   });
 }
 
@@ -1629,6 +1663,8 @@ export interface TriageDecision {
   reviewed: boolean;
   reviewedAt: string | null;
   reviewedBy: string | null;
+  /** Web URL of the issue on the map's forge (github.com or self-hosted). */
+  issueUrl?: string;
 }
 
 export interface ListTriageDecisionsFilters {

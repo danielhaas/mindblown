@@ -1247,7 +1247,12 @@ function TriageCard({
 }) {
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
-  const issueUrl = useMemo(() => buildIssueUrl(decision.externalId), [decision.externalId]);
+  // The server knows the map's forge (github.com or a self-hosted Gitea);
+  // the github.com builder is only the fallback for an older payload.
+  const issueUrl = useMemo(
+    () => decision.issueUrl ?? buildIssueUrl(decision.externalId),
+    [decision.issueUrl, decision.externalId],
+  );
   const colors = decisionColors(decision.decision);
 
   const jumpToPlacedNode = () => {

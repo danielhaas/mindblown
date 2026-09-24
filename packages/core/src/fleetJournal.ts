@@ -15,6 +15,7 @@ import { summarizeTick } from './fleet.js';
 import { parseSession } from './claimTrail.js';
 import type { FleetTickPayload, TickSummary } from './fleet.js';
 import type { ExternalLink } from './types.js';
+import { isForgeLink } from './types.js';
 
 export interface JournalWindow {
   from: string;
@@ -193,7 +194,7 @@ function inWindow(iso: string | null | undefined, from: Date, to: Date): boolean
 }
 
 function githubIssues(links: ExternalLink[]): JournalIssue[] {
-  return links.filter((l) => l.provider === 'github').map((l) => ({ externalId: l.externalId, url: l.url }));
+  return links.filter((l) => isForgeLink(l)).map((l) => ({ externalId: l.externalId, url: l.url }));
 }
 
 /** GitHub-mirrored `priority:P2` label → `P2`, when the node's own priority is unset. */
@@ -301,7 +302,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
         // The webhook stamps the merged PR on the issue link; the mirror
         // itself is cleared on a default-branch merge, so this is the
         // only place the number survives without a pr_merged event.
-        const l = n.externalLinks.find((x) => x.provider === 'github' && typeof x.mergedPrNumber === 'number');
+        const l = n.externalLinks.find((x) => isForgeLink(x) && typeof x.mergedPrNumber === 'number');
         if (l && typeof l.mergedPrNumber === 'number') {
           const repo = repoOf(l.externalId);
           pr = { number: l.mergedPrNumber, url: repo ? `https://github.com/${repo}/pull/${l.mergedPrNumber}` : `#${l.mergedPrNumber}`, repo, mergedAt: null };

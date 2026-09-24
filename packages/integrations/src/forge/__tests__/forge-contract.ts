@@ -95,6 +95,19 @@ export const EXPECTED_ISSUE: ForgeIssue = {
   closed_at: null,
 };
 
+/**
+ * What the contract asserts an issue against: `EXPECTED_ISSUE` minus the
+ * milestone `number`, which is a GitHub notion (Gitea addresses milestones
+ * by id and mirrors it into `number`).
+ */
+export const EXPECTED_ISSUE_MATCH = {
+  ...EXPECTED_ISSUE,
+  milestone: (() => {
+    const { number: _n, ...rest } = EXPECTED_ISSUE.milestone!;
+    return rest;
+  })(),
+};
+
 export const EXPECTED_PR: ForgePullRequest = {
   number: 77,
   title: 'Fix the thing',
@@ -119,6 +132,12 @@ export interface ForgeContractSpec {
   };
   /** What `issueWebUrl('o', 'r', 42)` must return for this client. */
   expectedIssueWebUrl: string;
+  /**
+   * Queue any responses the forge needs BEFORE the operation's own
+   * response (e.g. Gitea reads the repo's labels to map names to ids).
+   * Called right before the contract queues the operation's response.
+   */
+  prime?: (t: FakeTransport, op: 'createIssue' | 'addIssueLabels' | 'removeIssueLabel') => void;
 }
 
 function pathOf(url: string): string {
@@ -204,38 +223,55 @@ export function describeForgeContract(spec: ForgeContractSpec): void {
       expect(JSON.parse(t.calls[0].body ?? '{}')).toEqual({ title: 'x' });
     });
 
+    it('normalizeIssue(): the wire issue becomes a ForgeIssue', () => {
+      const t = fakeTransport();
+      const forge = spec.create(t.fetchImpl);
+      expect(forge.normalizeIssue(spec.wire.issue as object)).toMatchObject(EXPECTED_ISSUE_MATCH);
+    });
+
     it('createIssue(): sends title, body and labels and returns the normalised issue', async () => {
       const t = fakeTransport();
       const forge = spec.create(t.fetchImpl);
+      spec.prime?.(t, 'createIssue');
       t.respond({ status: 201, body: spec.wire.issue });
       const issue = await forge.createIssue('o', 'r', { title: 'Contract issue', body: 'Body text', labels: ['bug'] });
-      expect(t.calls[0].method).toBe('POST');
-      expect(pathOf(t.calls[0].url)).toMatch(/^\/repos\/o\/r\//);
-      const sent = JSON.parse(t.calls[0].body ?? '{}');
+      const post = t.calls.find((c) => c.method === 'POST' && /\/repos\/o\/r\/issues(\?|$)/.test(pathOf(c.url)));
+      expect(post).toBeDefined();
+      const sent = JSON.parse(post!.body ?? '{}');
       expect(sent.title).toBe('Contract issue');
       expect(sent.body).toBe('Body text');
-      expect(issue).toMatchObject(EXPECTED_ISSUE);
+      expect(issue).toMatchObject(EXPECTED_ISSUE_MATCH);
     });
 
-    it('label add/remove return the raw status instead of throwing on 404/422', async () => {
+    it('addIssueLabels() returns the raw status instead of throwing on 422', async () => {
       const t = fakeTransport();
       const forge = spec.create(t.fetchImpl);
-      t.respond({ status: 422, body: { message: 'Validation Failed' } }, { status: 404, body: {} });
+      spec.prime?.(t, 'addIssueLabels');
+      t.respond({ status: 422, body: { message: 'Validation Failed' } });
       const added = await forge.addIssueLabels('o', 'r', 42, ['triage:placed']);
-      const removed = await forge.removeIssueLabel('o', 'r', 42, 'triage:skipped');
       expect(added.status).toBe(422);
       expect(added.bodyText).toContain('Validation Failed');
+    });
+
+    it('removeIssueLabel() returns the raw status instead of throwing on 404', async () => {
+      const t = fakeTransport();
+      const forge = spec.create(t.fetchImpl);
+      spec.prime?.(t, 'removeIssueLabel');
+      t.respond({ status: 404, body: {} });
+      const removed = await forge.removeIssueLabel('o', 'r', 42, 'triage:skipped');
       expect(removed.status).toBe(404);
-      expect(t.calls[1].method).toBe('DELETE');
+      expect(t.calls[t.calls.length - 1].method).toBe('DELETE');
     });
 
     it('label calls pass an AbortSignal through to the transport', async () => {
       const t = fakeTransport();
       const forge = spec.create(t.fetchImpl);
       const controller = new AbortController();
+      spec.prime?.(t, 'addIssueLabels');
       t.respond({ status: 200, body: [] });
       await forge.addIssueLabels('o', 'r', 42, ['x'], { signal: controller.signal });
-      expect(t.calls[0].signal).toBe(controller.signal);
+      const post = t.calls.find((c) => c.method === 'POST');
+      expect(post?.signal).toBe(controller.signal);
     });
 
     it('getPullRequest(): normalises to ForgePullRequest', async () => {
@@ -246,15 +282,33 @@ export function describeForgeContract(spec: ForgeContractSpec): void {
       expect(pr).toMatchObject(EXPECTED_PR);
     });
 
-    it('pullRequestsListPath(): a relative first page carrying state/sort/direction/per_page', () => {
+    it('pullRequestsListPath(): a relative first page carrying state + page size, never `page`', () => {
       const t = fakeTransport();
       const forge = spec.create(t.fetchImpl);
       const path = forge.pullRequestsListPath('o', 'r', { state: 'closed', sort: 'updated', direction: 'desc', perPage: 100 });
       expect(path.startsWith('/repos/o/r/')).toBe(true);
       const q = new URL(`${forge.endpoint.apiBaseUrl}${path}`).searchParams;
       expect(q.get('state')).toBe('closed');
-      expect(q.get('per_page')).toBe('100');
+      expect(q.get('per_page') ?? q.get('limit')).toBe('100');
       // Never a `page` parameter: the walk follows the Link header.
+      expect(q.get('page')).toBeNull();
+    });
+
+    it('issuesListPath(): state, page size and since reach the wire, never `page`', () => {
+      const t = fakeTransport();
+      const forge = spec.create(t.fetchImpl);
+      const path = forge.issuesListPath('o', 'r', {
+        state: 'all',
+        perPage: 100,
+        sort: 'updated',
+        direction: 'asc',
+        since: '2026-09-01T00:00:00Z',
+      });
+      expect(path.startsWith('/repos/o/r/issues?')).toBe(true);
+      const q = new URL(`${forge.endpoint.apiBaseUrl}${path}`).searchParams;
+      expect(q.get('state')).toBe('all');
+      expect(q.get('per_page') ?? q.get('limit')).toBe('100');
+      expect(q.get('since')).toBe('2026-09-01T00:00:00Z');
       expect(q.get('page')).toBeNull();
     });
 

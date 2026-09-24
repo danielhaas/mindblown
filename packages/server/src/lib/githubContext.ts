@@ -22,11 +22,14 @@
 import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
-import type { ForgeClient } from '@mindblown/integrations';
+import { GITHUB_ENDPOINT, type ForgeClient, type ForgeEndpoint } from '@mindblown/integrations';
 import {
   FORGE_PROVIDERS,
+  cachedForgeEndpointForMap,
+  forgeEndpointFromIntegration,
   forgeFromInstallation,
   forgeFromIntegration,
+  rememberForgeEndpointForMap,
   type ForgeIntegrationConfig,
 } from './forge.js';
 
@@ -113,3 +116,33 @@ export async function getGitHubContextForMap(
 
 /** Forge-neutral name for `getGitHubContextForMap` — same function. */
 export const getForgeContextForMap = getGitHubContextForMap;
+
+/**
+ * The forge endpoint a map's binding points at, WITHOUT minting a token —
+ * for building web URLs (triage rows carry only an externalId). An
+ * App-bound map is github.com; a PAT row decides by its kind + URLs; an
+ * unbound map falls back to github.com, which is what every link written
+ * before #368 assumed.
+ */
+export async function getForgeEndpointForMap(mapId: string): Promise<ForgeEndpoint> {
+  const hit = cachedForgeEndpointForMap(mapId);
+  if (hit) return hit;
+  const endpoint = await lookupForgeEndpointForMap(mapId);
+  rememberForgeEndpointForMap(mapId, endpoint);
+  return endpoint;
+}
+
+async function lookupForgeEndpointForMap(mapId: string): Promise<ForgeEndpoint> {
+  const [map] = await db
+    .select({
+      githubInstallationId: maps.githubInstallationId,
+      workspaceId: maps.workspaceId,
+    })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!map) return GITHUB_ENDPOINT;
+  if (map.githubInstallationId) return GITHUB_ENDPOINT;
+  const integration = await getForgeIntegration(map.workspaceId);
+  if (!integration) return GITHUB_ENDPOINT;
+  return forgeEndpointFromIntegration(integration) ?? GITHUB_ENDPOINT;
+}

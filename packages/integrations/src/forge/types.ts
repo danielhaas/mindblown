@@ -100,6 +100,48 @@ export interface CreateIssueInput {
   labels: string[];
 }
 
+/** Fields the sync layer patches on an issue. Everything optional; only present keys are sent. */
+export interface UpdateIssueInput {
+  title?: string;
+  body?: string;
+  state?: 'open' | 'closed';
+  /** GitHub-only semantics; a forge without the concept ignores it. */
+  state_reason?: 'completed' | 'not_planned' | 'reopened';
+  /** Replaces the label set (names). */
+  labels?: string[];
+  /** A `MilestoneRef.ref` from `listMilestones`, or null to clear. */
+  milestone?: number | null;
+}
+
+export interface IssuesListQuery {
+  state: 'open' | 'closed' | 'all';
+  perPage: number;
+  sort: 'created' | 'updated';
+  direction: 'asc' | 'desc';
+  /** Only issues updated at or after this ISO timestamp. */
+  since?: string | null;
+}
+
+/** A milestone as the forge addresses it in `updateIssue` — GitHub by `number`, Gitea by `id`. */
+export interface MilestoneRef {
+  ref: number;
+  title: string;
+  state: 'open' | 'closed';
+}
+
+export interface IssueCloseEvent {
+  /** Who closed it — `mindblown-by-project-li[bot]` for our own closes. */
+  actor: string | null;
+  /**
+   * The commit the forge attributes the close to. `null` whenever the close
+   * came from an API call rather than from a commit landing on the
+   * default branch — i.e. every close MindBlown itself performed.
+   */
+  commitId: string | null;
+  createdAt: string | null;
+  stateReason: 'completed' | 'not_planned' | null;
+}
+
 export interface ListPullRequestsQuery {
   state: 'open' | 'closed' | 'all';
   perPage: number;
@@ -203,11 +245,26 @@ export interface ForgeClient {
    */
   requestJson<T>(pathOrUrl: string, init?: { method?: string; body?: unknown }, opts?: RequestOptions): Promise<T>;
 
-  // Typed calls (the server's former hand-rolled fetches)
+  // Typed calls — everything whose wire shape differs between forges.
+  /** Bring a raw issue body (list page, single fetch, webhook) onto `ForgeIssue`. Identity on GitHub. */
+  normalizeIssue<T extends object>(raw: T): T & ForgeIssue;
   createIssue(owner: string, repo: string, input: CreateIssueInput): Promise<ForgeIssue>;
+  updateIssue(owner: string, repo: string, issueNumber: number, patch: UpdateIssueInput): Promise<ForgeIssue>;
+  /** The first-page path for an issue listing — walked with `paginateGitHub` (Link header). */
+  issuesListPath(owner: string, repo: string, query: IssuesListQuery): string;
   /** Raw status because the writeback treats 404/422 as no-ops. */
   addIssueLabels(owner: string, repo: string, issueNumber: number, labels: string[], opts?: RequestOptions): Promise<ForgeRawResponse>;
   removeIssueLabel(owner: string, repo: string, issueNumber: number, label: string, opts?: RequestOptions): Promise<ForgeRawResponse>;
+  listMilestones(owner: string, repo: string): Promise<MilestoneRef[]>;
+  /**
+   * Numbers of the pull requests in the SAME repo that reference this
+   * issue, oldest first (a mention is enough — callers re-check the PR
+   * body for a closing keyword). Throws `GitHubScanTruncatedError` if the
+   * scan would answer from a prefix.
+   */
+  listCrossReferencingPullRequests(owner: string, repo: string, issueNumber: number): Promise<number[]>;
+  /** The most recent close of an issue, or null if never closed. Same truncation rule. */
+  getLatestCloseEvent(owner: string, repo: string, issueNumber: number): Promise<IssueCloseEvent | null>;
   getPullRequest(owner: string, repo: string, prNumber: number): Promise<ForgePullRequest>;
   /** The first-page path for a PR listing — walked with `paginateGitHub` (Link header). */
   pullRequestsListPath(owner: string, repo: string, query: ListPullRequestsQuery): string;

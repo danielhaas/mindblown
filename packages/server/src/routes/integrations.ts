@@ -20,6 +20,9 @@ import {
   isForgeKind,
   resolveForgeEndpoint,
   createForgeClient,
+  normalizeGiteaIssue,
+  normalizeGiteaWebhookAction,
+  GitHubApiError,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
@@ -43,7 +46,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { broadcast } from '../ws.js';
@@ -374,6 +377,24 @@ export async function syncTriageRowsForReopen(
 // ── Routes ────────────────────────────────────────────────────────
 
 export async function integrationRoutes(app: FastifyInstance): Promise<void> {
+  // Keep the raw JSON string of every request in this plugin's scope so the
+  // webhook handler can verify the HMAC over the bytes the forge actually
+  // sent (Gitea pretty-prints; a re-serialised body never matches). Scoped
+  // to this plugin by Fastify's encapsulation.
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (req, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    (req as { rawBody?: string }).rawBody = text;
+    if (text.length === 0) {
+      done(null, {});
+      return;
+    }
+    try {
+      done(null, JSON.parse(text));
+    } catch (err) {
+      done(err as Error, undefined);
+    }
+  });
 
   // ── POST /api/integrations/github/connect ─────────────────────
   // Store a forge PAT + repo binding for a workspace. `kind` defaults to
@@ -450,6 +471,69 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(201).send({ id: row.id, provider: kind, enabled: true });
   });
 
+  // ── POST /api/integrations/forge/test ──────────────────────────
+  // "Test connection" for the connect form (#368): build the client the
+  // connect route would store and read the repo with it. Nothing is
+  // persisted. Returns the repo's default branch and the token's write
+  // permission so the operator sees a wrong scope before the first sync.
+  app.post('/api/integrations/forge/test', async (req, reply) => {
+    const body = req.body as {
+      kind?: string;
+      apiBaseUrl?: string;
+      webBaseUrl?: string;
+      token: string;
+      owner: string;
+      repo: string;
+    };
+    if (!body.token || !body.owner || !body.repo) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'token, owner and repo are required' },
+      });
+    }
+    const kind = body.kind ?? 'github';
+    if (!isForgeKind(kind)) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: `Unknown forge kind "${kind}"` } });
+    }
+    let forge;
+    try {
+      forge = createForgeClient({ kind, apiBaseUrl: body.apiBaseUrl, webBaseUrl: body.webBaseUrl, token: body.token });
+    } catch (err) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: err instanceof Error ? err.message : String(err) },
+      });
+    }
+    try {
+      const repo = await forge.requestJson<{
+        full_name: string;
+        default_branch: string;
+        permissions?: { push?: boolean; admin?: boolean };
+      }>(`/repos/${body.owner}/${body.repo}`);
+      return reply.send({
+        ok: true,
+        kind,
+        endpoint: forge.endpoint,
+        fullName: repo.full_name,
+        defaultBranch: repo.default_branch,
+        canPush: repo.permissions?.push ?? null,
+        webhookUrl: `${(process.env.PUBLIC_URL ?? process.env.FRONTEND_URL ?? '').replace(/\/+$/, '')}/api/webhooks/github`,
+      });
+    } catch (err) {
+      if (err instanceof GitHubApiError) {
+        return reply.status(502).send({
+          ok: false,
+          error: {
+            code: err.status === 401 || err.status === 403 ? 'FORGE_AUTH' : err.status === 404 ? 'FORGE_REPO_NOT_FOUND' : 'FORGE_ERROR',
+            message: `${forge.endpoint.kind} answered ${err.status}: ${err.body.slice(0, 200)}`,
+          },
+        });
+      }
+      return reply.status(502).send({
+        ok: false,
+        error: { code: 'FORGE_UNREACHABLE', message: err instanceof Error ? err.message : String(err) },
+      });
+    }
+  });
+
   // ── POST /api/maps/:mapId/nodes/:nodeId/github/link ───────────
   // Link a node to an existing GitHub Issue.
   app.post<{ Params: { mapId: string; nodeId: string } }>(
@@ -487,7 +571,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // curated instead of hitting the weaker legacy fallback.
       const externalLink: ExternalLink = stampMirrorHash(
         {
-          provider: 'github',
+          provider: ghCtx.forge.endpoint.kind,
           externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
           url: issue.html_url,
           syncEnabled: true,
@@ -499,7 +583,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       // Add to existing external links
       const existingLinks = node.externalLinks.filter(
-        (l) => !(l.provider === 'github' && l.externalId === externalLink.externalId),
+        (l) => !(isForgeLink(l) && l.externalId === externalLink.externalId),
       );
       existingLinks.push(externalLink);
 
@@ -589,7 +673,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       for (const n of mapNodes) {
         const links = (n.externalLinks as ExternalLink[]) ?? [];
         for (const l of links) {
-          if (l.provider === 'github' && l.externalId) {
+          if (isForgeLink(l) && l.externalId) {
             linkedByExternalId.set(l.externalId, { nodeId: n.id, text: n.text });
           }
         }
@@ -656,7 +740,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         if (parentIdSet.has(n.id)) continue; // has children → structural
         if (n.parentId === null) continue; // root → never a GitHub issue
         const links = (n.externalLinks as ExternalLink[]) ?? [];
-        const hasGithub = links.some((l) => l.provider === 'github');
+        const hasGithub = links.some((l) => isForgeLink(l));
         if (hasGithub) continue;
         onlyInMindBlown.push({ nodeId: n.id, text: n.text });
       }
@@ -784,7 +868,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       for (const n of existingNodes) {
         const links = (n.externalLinks as ExternalLink[]) ?? [];
         for (const l of links) {
-          if (l.provider === 'github' && l.externalId) {
+          if (isForgeLink(l) && l.externalId) {
             existingByExternalId.set(l.externalId, n.id);
           }
         }
@@ -1289,7 +1373,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/webhooks/github ─────────────────────────────────
   // Webhook endpoint for GitHub events.
   app.post('/api/webhooks/github', async (req, reply) => {
-    const { event, signature } = readWebhookHeaders(req.headers);
+    const { event, signature, kind: forgeKind } = readWebhookHeaders(req.headers);
 
     if (!event) {
       return reply.status(400).send({ error: 'Missing X-GitHub-Event header' });
@@ -1299,7 +1383,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     const payload = req.body as Record<string, unknown>;
 
     // Verify webhook signature — try App webhook secret first, then PAT secrets
-    const rawBody = typeof req.body === 'string' ? req.body : JSON.stringify(req.body);
+    // The HMAC covers the bytes the forge sent. GitHub sends compact JSON,
+    // so re-serialising the parsed body used to round-trip; Gitea
+    // pretty-prints its payload and never verified that way (#368). The
+    // parser registered at the top of this plugin keeps the raw string.
+    const rawBody =
+      (req as { rawBody?: string }).rawBody ??
+      (typeof req.body === 'string' ? req.body : JSON.stringify(req.body));
     const repoFullName = (payload.repository as { full_name?: string })?.full_name;
     let signatureVerified = false;
 
@@ -1344,6 +1434,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // reject any unsigned/invalid-signed request before touching the DB.
     if (!signatureVerified) {
       return reply.status(401).send({ error: 'invalid signature' });
+    }
+
+    // Gitea deliveries (#368): same envelope, two deltas the handlers
+    // below must not see — `label_updated` instead of `labeled`, and
+    // `assignees: null`. Normalised AFTER signature verification, which
+    // ran over the raw body.
+    if (forgeKind === 'gitea') {
+      if (typeof payload.action === 'string') {
+        payload.action = normalizeGiteaWebhookAction(event, payload.action);
+      }
+      if (payload.issue && typeof payload.issue === 'object') {
+        payload.issue = normalizeGiteaIssue(payload.issue as object);
+      }
     }
 
     // Special handling for issues.closed / issues.reopened: preserve and restore
@@ -1614,7 +1717,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       const links = node.externalLinks.map((l) => ({ ...l }));
       const linkIdx = links.findIndex(
-        (l) => l.provider === 'github' && l.externalId === externalId,
+        (l) => isForgeLink(l) && l.externalId === externalId,
       );
       if (linkIdx < 0) {
         return reply.send({ received: true, action: actionLabel, matched: false });
@@ -2006,7 +2109,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           if (mergeCommitSha) {
             const links = node.externalLinks.map((l) => ({ ...l }));
             const idx = links.findIndex(
-              (l) => l.provider === 'github' && l.externalId === externalId,
+              (l) => isForgeLink(l) && l.externalId === externalId,
             );
             if (idx >= 0 && links[idx].mergeCommitSha !== mergeCommitSha) {
               links[idx] = {
@@ -2033,7 +2136,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         }
         const links = node.externalLinks.map((l) => ({ ...l }));
         const linkIdx = links.findIndex(
-          (l) => l.provider === 'github' && l.externalId === externalId,
+          (l) => isForgeLink(l) && l.externalId === externalId,
         );
         if (linkIdx >= 0) {
           links[linkIdx] = {
@@ -2104,7 +2207,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             try {
               await closeGitHubIssue(
                 {
-                  provider: 'github',
+                  provider: ctx.forge.endpoint.kind,
                   externalId: `${repoFullName}#${n}`,
                   url: ctx.forge.issueWebUrl(ctx.owner, ctx.repo, n),
                   syncEnabled: true,
@@ -2183,7 +2286,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
             | undefined;
           const priorBody = changes?.body?.from ?? null;
           const linkIdx = node.externalLinks.findIndex(
-            (l) => l.provider === 'github' && l.externalId === result.externalId,
+            (l) => isForgeLink(l) && l.externalId === result.externalId,
           );
           const link = linkIdx >= 0 ? node.externalLinks[linkIdx] : null;
           if (link && isMirrorDescription(node.description, link, priorBody)) {
@@ -2275,7 +2378,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const githubLinks = node.externalLinks.filter((l) => l.provider === 'github');
+      const githubLinks = node.externalLinks.filter((l) => isForgeLink(l));
       if (githubLinks.length === 0) {
         return reply.send({ linked: false, issues: [] });
       }

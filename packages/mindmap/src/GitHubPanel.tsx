@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Node } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { GitHubIssueStatus } from './api.js';
@@ -21,7 +22,7 @@ export function GitHubNodeSection({
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const githubLinks = node.externalLinks?.filter((l) => l.provider === 'github') ?? [];
+  const githubLinks = node.externalLinks?.filter((l) => isForgeLink(l)) ?? [];
   const hasGitHubLink = githubLinks.length > 0;
 
   const fetchStatus = useCallback(async () => {
@@ -424,13 +425,20 @@ export function GitHubSettingsDialog({
   const hasAppRepo = !!(currentMap?.githubRepoOwner && currentMap?.githubRepoName);
   const appRepoLabel = hasAppRepo ? `${currentMap!.githubRepoOwner}/${currentMap!.githubRepoName}` : null;
 
-  // Legacy PAT state
+  // PAT connect state (GitHub token, or a self-hosted Gitea/Forgejo — #368)
   const [ghToken, setGhToken] = useState('');
   const [owner, setOwner] = useState('');
   const [repo, setRepo] = useState('');
+  const [forgeKind, setForgeKind] = useState<api.ForgeKind>('github');
+  const [forgeUrl, setForgeUrl] = useState('');
   const [connecting, setConnecting] = useState(false);
   const [connected, setConnected] = useState(false);
   const [showLegacy, setShowLegacy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<api.ForgeTestResult | null>(null);
+  const forgeOptions = (): api.ForgeConnectOptions | undefined =>
+    forgeKind === 'gitea' ? { kind: 'gitea', apiBaseUrl: forgeUrl.trim() } : undefined;
+  const forgeReady = !!ghToken && !!owner && !!repo && (forgeKind !== 'gitea' || !!forgeUrl.trim());
 
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ imported: number } | null>(null);
@@ -620,16 +628,30 @@ export function GitHubSettingsDialog({
   };
 
   const handleConnect = async () => {
-    if (!ghToken || !owner || !repo) return;
+    if (!forgeReady) return;
     setConnecting(true);
     setError(null);
     try {
-      await api.connectGitHub(workspaceId, ghToken, owner, repo);
+      await api.connectGitHub(workspaceId, ghToken, owner, repo, undefined, forgeOptions());
       setConnected(true);
     } catch (e: any) {
       setError(e.message ?? 'Failed to connect');
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!forgeReady) return;
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      setTestResult(await api.testForgeConnection(ghToken, owner, repo, forgeOptions()));
+    } catch (e: any) {
+      setError(e.message ?? 'Connection test failed');
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -1078,14 +1100,67 @@ export function GitHubSettingsDialog({
             <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 20 }}>
               <div>
                 <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
-                  GitHub Personal Access Token
+                  Forge
+                </label>
+                <select
+                  value={forgeKind}
+                  onChange={(e) => {
+                    setForgeKind(e.target.value as api.ForgeKind);
+                    setTestResult(null);
+                  }}
+                  style={{
+                    width: '100%',
+                    padding: '7px 10px',
+                    border: '1px solid #e2e8f0',
+                    borderRadius: 6,
+                    fontSize: 13,
+                    fontFamily: 'inherit',
+                    outline: 'none',
+                    boxSizing: 'border-box',
+                    background: '#fff',
+                  }}
+                >
+                  <option value="github">GitHub (github.com)</option>
+                  <option value="gitea">Gitea / Forgejo (self-hosted)</option>
+                </select>
+              </div>
+              {forgeKind === 'gitea' && (
+                <div>
+                  <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                    Gitea URL
+                  </label>
+                  <input
+                    value={forgeUrl}
+                    onChange={(e) => setForgeUrl(e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    placeholder="https://git.example.com"
+                    style={{
+                      width: '100%',
+                      padding: '7px 10px',
+                      border: '1px solid #e2e8f0',
+                      borderRadius: 6,
+                      fontSize: 13,
+                      fontFamily: 'inherit',
+                      outline: 'none',
+                      boxSizing: 'border-box',
+                    }}
+                  />
+                  <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                    The instance root; the API is reached under <code>/api/v1</code>. Point a repository webhook
+                    (JSON, events: issues, issue comment, pull request) at this server's <code>/api/webhooks/github</code>.
+                  </div>
+                </div>
+              )}
+              <div>
+                <label style={{ display: 'block', fontSize: 11, fontWeight: 600, color: '#64748b', marginBottom: 4 }}>
+                  {forgeKind === 'gitea' ? 'Gitea access token' : 'GitHub Personal Access Token'}
                 </label>
                 <input
                   type="password"
                   value={ghToken}
                   onChange={(e) => setGhToken(e.target.value)}
                   onKeyDown={(e) => e.stopPropagation()}
-                  placeholder="ghp_..."
+                  placeholder={forgeKind === 'gitea' ? 'token with repository read/write' : 'ghp_...'}
                   style={{
                     width: '100%',
                     padding: '7px 10px',
@@ -1144,10 +1219,46 @@ export function GitHubSettingsDialog({
               </div>
             </div>
 
+            {testResult && (
+              <div
+                style={{
+                  marginBottom: 12,
+                  padding: '8px 12px',
+                  borderRadius: 6,
+                  background: testResult.canPush === false ? '#fef3c7' : '#dcfce7',
+                  color: testResult.canPush === false ? '#92400e' : '#166534',
+                  fontSize: 12,
+                }}
+              >
+                Reached {testResult.fullName} on {testResult.endpoint.webBaseUrl} (default branch{' '}
+                {testResult.defaultBranch}).{' '}
+                {testResult.canPush === false
+                  ? 'The token cannot write to this repository — closing or labelling issues will fail.'
+                  : 'The token can write to it.'}
+              </div>
+            )}
+
             <div style={{ display: 'flex', gap: 8 }}>
               <button
+                onClick={handleTestConnection}
+                disabled={testing || !forgeReady}
+                style={{
+                  background: '#f1f5f9',
+                  border: '1px solid #e2e8f0',
+                  borderRadius: 6,
+                  padding: '8px 16px',
+                  fontSize: 12,
+                  fontWeight: 600,
+                  color: '#475569',
+                  cursor: testing ? 'default' : 'pointer',
+                  fontFamily: 'inherit',
+                }}
+              >
+                {testing ? 'Testing...' : 'Test connection'}
+              </button>
+              <button
                 onClick={handleConnect}
-                disabled={connecting || !ghToken || !owner || !repo}
+                disabled={connecting || !forgeReady}
                 style={{
                   background: '#4f46e5',
                   color: '#fff',
@@ -1160,7 +1271,7 @@ export function GitHubSettingsDialog({
                   fontFamily: 'inherit',
                 }}
               >
-                {connecting ? 'Connecting...' : connected ? 'Reconnect' : 'Connect GitHub'}
+                {connecting ? 'Connecting...' : connected ? 'Reconnect' : forgeKind === 'gitea' ? 'Connect Gitea' : 'Connect GitHub'}
               </button>
 
               {connected && (

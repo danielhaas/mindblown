@@ -150,7 +150,7 @@ vi.mock('../../db/nodes.js', () => ({
   findNodeIdByExternalId: async (externalId: string) => {
     for (const row of await mocks.selectNodesMock()) {
       const links = (row.externalLinks ?? []) as Array<{ provider: string; externalId: string }>;
-      if (links.some((l) => l.provider === 'github' && l.externalId === externalId)) {
+      if (links.some((l) => (l.provider === 'github' || l.provider === 'gitea') && l.externalId === externalId)) {
         return row.id as string;
       }
     }
@@ -1011,5 +1011,201 @@ describe('webhook: pull_request.closed merged=false → reopen sweep', () => {
     await app.close();
 
     expect(res.statusCode).toBe(200);
+  });
+});
+
+// ── Gitea deliveries (#368) ──────────────────────────────────────
+//
+// Shapes as captured from Gitea 1.27 (see
+// packages/integrations/src/forge/__tests__/fixtures/gitea.ts): the
+// GitHub-compatible headers are present next to `X-Gitea-*`,
+// `assignees` is null, label changes arrive as `label_updated`.
+
+function giteaHeaders(event: string): Record<string, string> {
+  return {
+    'x-gitea-event': event,
+    'x-gitea-delivery': 'af9a1bb4-b8b2-4ed4-a2c9-551c4bff231d',
+    'x-gitea-signature': 'deadbeef',
+    'x-github-event': event,
+    'x-github-delivery': 'af9a1bb4-b8b2-4ed4-a2c9-551c4bff231d',
+    'x-hub-signature-256': 'sha256=deadbeef',
+  };
+}
+
+const GITEA_REPO = { full_name: 'dan/forge-test', default_branch: 'main', html_url: 'https://git.example/dan/forge-test' };
+
+function giteaIssue(number: number, state: 'open' | 'closed', labels: string[] = []): Record<string, unknown> {
+  return {
+    id: 30 + number,
+    number,
+    title: `Gitea issue ${number}`,
+    body: 'Part of #1',
+    state,
+    labels: labels.map((name, i) => ({ id: i + 1, name, color: 'ededed', exclusive: false, is_archived: false, description: '' })),
+    assignees: null,
+    assignee: null,
+    milestone: null,
+    pull_request: null,
+    html_url: `https://git.example/dan/forge-test/issues/${number}`,
+    created_at: '2026-09-24T06:08:12+02:00',
+    updated_at: '2026-09-24T06:09:48+02:00',
+    closed_at: state === 'closed' ? '2026-09-24T06:09:48+02:00' : null,
+    repository: { full_name: 'dan/forge-test', id: 5, name: 'forge-test', owner: 'dan' },
+    user: { id: 1, login: 'dan' },
+  };
+}
+
+function seedGiteaNode(nodeId: string, externalId: string): NodeRecord {
+  const node = seedLinkedNode({ nodeId, externalId });
+  node.externalLinks[0].provider = 'gitea';
+  node.externalLinks[0].url = `https://git.example/${externalId.replace('#', '/issues/')}`;
+  return node;
+}
+
+describe('webhook: Gitea deliveries (#368)', () => {
+  it('pull_request.closed merged=true on main transitions a gitea-linked node to done', async () => {
+    const node = seedGiteaNode('n-g3', 'dan/forge-test#3');
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue({ ...node, status: 'done', percentComplete: 100 });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('pull_request'),
+      payload: {
+        action: 'closed',
+        commit_id: '',
+        pull_request: {
+          number: 4,
+          title: 'Implement task two',
+          body: 'Closes #3\n\nAlso mentions #2 without closing it.',
+          state: 'closed',
+          merged: true,
+          merged_at: '2026-09-24T06:09:48+02:00',
+          merge_commit_sha: 'd179e753af96c5a035729346febc7f4c4d5d142f',
+          html_url: 'https://git.example/dan/forge-test/pulls/4',
+          base: { ref: 'main', sha: 'd179e75', label: 'main' },
+          head: { ref: 'fix/task-two', sha: '0cd8f91', label: 'fix/task-two' },
+          user: { id: 1, login: 'dan' },
+          draft: false,
+          mergeable: true,
+        },
+        repository: GITEA_REPO,
+        sender: { id: 1, login: 'dan' },
+      },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ received: true, action: 'pull_request.merged', prNumber: 4, matched: true });
+    expect(res.json().transitions).toEqual([{ externalId: 'dan/forge-test#3', nodeId: 'n-g3', status: 'transitioned' }]);
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
+    );
+    expect(doneCalls).toHaveLength(1);
+    expect(doneCalls[0][0]).toBe('n-g3');
+    // The merge commit is stamped on the link like on GitHub.
+    const linkCall = mocks.updateNodeMock.mock.calls.find(
+      (call: unknown[]) => Array.isArray((call[1] as Record<string, unknown> | undefined)?.externalLinks),
+    );
+    expect(linkCall).toBeDefined();
+    const links = (linkCall![1] as { externalLinks: Array<Record<string, unknown>> }).externalLinks;
+    expect(links[0]).toMatchObject({ provider: 'gitea', mergeCommitSha: 'd179e753af96c5a035729346febc7f4c4d5d142f', mergedPrNumber: 4 });
+  });
+
+  it('issues.closed with null assignees is normalised and closes the node', async () => {
+    const node = seedGiteaNode('n-g2', 'dan/forge-test#2');
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue({ ...node, status: 'done', percentComplete: 100 });
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('issues'),
+      payload: {
+        action: 'closed',
+        commit_id: 'd179e753af96c5a035729346febc7f4c4d5d142f',
+        issue: giteaIssue(2, 'closed', ['triage:placed']),
+        repository: GITEA_REPO,
+        sender: { id: 1, login: 'dan' },
+      },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ received: true, action: 'issues.closed', matched: true });
+    // (`assignees: null` → [] is pinned by the integrations unit tests; here
+    // the point is that the Gitea-shaped delivery drives the same state
+    // transition the GitHub one does.)
+    const doneCalls = mocks.updateNodeMock.mock.calls.filter(
+      (call: unknown[]) => (call[1] as Record<string, unknown> | undefined)?.status === 'done',
+    );
+    expect(doneCalls).toHaveLength(1);
+    expect(doneCalls[0][0]).toBe('n-g2');
+  });
+
+  it("issues.label_updated reaches the handlers as GitHub's `labeled`", async () => {
+    const node = seedGiteaNode('n-g1', 'dan/forge-test#1');
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('issues'),
+      payload: {
+        action: 'label_updated',
+        commit_id: '',
+        issue: giteaIssue(1, 'open', ['bug', 'priority:P1']),
+        repository: GITEA_REPO,
+        sender: { id: 1, login: 'dan' },
+      },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const seen = mocks.processWebhookMock.mock.calls.map((c) => (c[0] as { action?: string }).action);
+    expect(seen).toContain('labeled');
+    expect(seen).not.toContain('label_updated');
+  });
+
+  it('verifies the signature over the raw bytes, not a re-serialised body (Gitea pretty-prints)', async () => {
+    const pretty = JSON.stringify(
+      { action: 'opened', issue: giteaIssue(9, 'open'), repository: GITEA_REPO, sender: { id: 1, login: 'dan' } },
+      null,
+      2,
+    );
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { ...giteaHeaders('issues'), 'content-type': 'application/json' },
+      payload: pretty,
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const [rawSeen] = mocks.verifySignatureMock.mock.calls[0] as unknown as [string, string, string];
+    expect(rawSeen).toBe(pretty);
+    expect(rawSeen).not.toBe(JSON.stringify(JSON.parse(pretty)));
+  });
+
+  it('a delivery carrying only the X-Gitea-* headers is still routed', async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: { 'x-gitea-event': 'issues', 'x-gitea-signature': 'deadbeef' },
+      payload: { action: 'opened', issue: giteaIssue(9, 'open'), repository: GITEA_REPO, sender: { id: 1, login: 'dan' } },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    // The signature reached the verifier in GitHub's `sha256=` form.
+    expect(mocks.verifySignatureMock).toHaveBeenCalledWith(expect.any(String), 'sha256=deadbeef', expect.any(String));
   });
 });

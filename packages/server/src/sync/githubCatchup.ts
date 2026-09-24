@@ -28,7 +28,7 @@ import {
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import type { ExternalLink, Node } from '@mindblown/core';
-import { prBlocksNodeReopen, hasCloseSnapshot } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, githubRepoSync } from '../db/schema.js';
@@ -92,7 +92,8 @@ export function _getAuthFailureCountForTests(repoLabel: string): number {
  * don't need to wire this).
  */
 async function pushAuthFailureAlarm(repoLabel: string): Promise<void> {
-  const url = process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
+  // Forge-neutral name first (#368); the old GitHub-named variable keeps working.
+  const url = process.env.KUMA_FORGE_AUTH_FAILURE_PUSH_URL ?? process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
   if (!url) return;
   await pushKumaHeartbeat(
     url,
@@ -220,7 +221,7 @@ export function computeStateUpdates(
   externalId: string,
 ): nodeDb.UpdateNodeInput | null {
   const linkIdx = node.externalLinks.findIndex(
-    (l) => l.provider === 'github' && l.externalId === externalId,
+    (l) => isForgeLink(l) && l.externalId === externalId,
   );
   if (linkIdx < 0) return null;
 
@@ -400,7 +401,7 @@ async function findNodesByExternalIds(
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
-      if (l.provider !== 'github' || !l.externalId) continue;
+      if (!isForgeLink(l) || !l.externalId) continue;
       if (!wanted.has(l.externalId)) continue;
       // First match wins — duplicates are unusual but possible.
       if (!result.has(l.externalId)) {
@@ -547,7 +548,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         // or stale. Repair it in place — no revision bump, no broadcast,
         // since nothing the user authored has changed.
         const link = node.externalLinks.find(
-          (l) => l.provider === 'github' && l.externalId === externalId,
+          (l) => isForgeLink(l) && l.externalId === externalId,
         );
         const ghState = issue.state === 'closed' ? 'closed' : 'open';
         if (link && link.state !== ghState) {
@@ -969,7 +970,7 @@ export function isHealthyTick(results: ReconcileResult[]): boolean {
  * `runAllCatchups` which invokes this at end of sweep.
  */
 export async function pushCatchupHeartbeat(results: ReconcileResult[]): Promise<void> {
-  const url = process.env.KUMA_GITHUB_CATCHUP_PUSH_URL;
+  const url = process.env.KUMA_FORGE_CATCHUP_PUSH_URL ?? process.env.KUMA_GITHUB_CATCHUP_PUSH_URL;
   if (!url) return;
 
   const sum = (pick: (r: ReconcileResult) => number): number =>

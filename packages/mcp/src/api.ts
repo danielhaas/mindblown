@@ -640,10 +640,11 @@ export function connectGitHubRepo(
   repo: string,
   token: string,
   webhookSecret?: string,
+  forge?: { kind?: 'github' | 'gitea'; apiBaseUrl?: string; webBaseUrl?: string },
 ): Promise<{ id: string; provider: string; enabled: boolean }> {
   return request('/api/integrations/github/connect', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret }),
+    body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret, ...(forge ?? {}) }),
   });
 }
 

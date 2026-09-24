@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import { OctocatIcon } from './icons/Octocat.js';
 
 // ── Constants ────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ function Card({
   const overdue = isOverdue(node.dueDate);
   const borderColor = HEALTH_BORDER[healthSignal];
   const progress = node.percentComplete ?? computedProgress;
-  const githubLink = node.externalLinks.find((l) => l.provider === 'github');
+  const githubLink = node.externalLinks.find((l) => isForgeLink(l));
 
   return (
     <div

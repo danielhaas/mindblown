@@ -30,6 +30,7 @@ import { sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import type { LinkedPrState, ExternalLink } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 
 export async function prRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Querystring: { repo?: string } }>(
@@ -63,7 +64,7 @@ export async function prRoutes(app: FastifyInstance): Promise<void> {
         if (repo && linkedPr.repo !== repo) continue;
         const links = (row.externalLinks as ExternalLink[]) ?? [];
         const externalIds = links
-          .filter((l) => l.provider === 'github' && l.externalId)
+          .filter((l) => isForgeLink(l) && l.externalId)
           .map((l) => l.externalId as string);
         out.push({
           nodeId: row.id,

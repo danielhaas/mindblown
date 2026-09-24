@@ -213,9 +213,9 @@ describe('createForgeClient', () => {
     expect(() => resolveForgeEndpoint({ kind: 'gitea' })).toThrow(/apiBaseUrl/);
   });
 
-  it('gitea is not served yet (#368)', () => {
-    expect(() =>
-      createForgeClient({ kind: 'gitea', apiBaseUrl: 'https://git.example/api/v1', webBaseUrl: 'https://git.example', token: 't' }),
-    ).toThrow(/#368/);
+  it('gitea resolves to a GiteaForge on the instance URL (#368)', () => {
+    const forge = createForgeClient({ kind: 'gitea', apiBaseUrl: 'https://git.example', token: 't' });
+    expect(forge.endpoint).toEqual({ kind: 'gitea', apiBaseUrl: 'https://git.example/api/v1', webBaseUrl: 'https://git.example' });
+    expect(forge).not.toBeInstanceOf(GitHubForge);
   });
 });

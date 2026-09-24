@@ -2,12 +2,17 @@
  * Forge factory + defaults.
  */
 
-import { GitHubForge, GITHUB_ENDPOINT } from './github.js';
+import { GitHubForge } from './github.js';
+import { GiteaForge, giteaEndpoint } from './gitea.js';
+import { GITHUB_ENDPOINT } from './constants.js';
 import type { ForgeClient, ForgeConnection, ForgeEndpoint, ForgeFetch, ForgeKind } from './types.js';
 
 export * from './types.js';
-export * from './github.js';
+export * from './constants.js';
+export { GitHubForge, issueWebUrl, type GitHubForgeOptions } from './github.js';
+export * from './gitea.js';
 export * from './webhook.js';
+export * from './pagination.js';
 
 /** Public defaults per kind. Gitea has no public default — the operator's URL is required. */
 export function forgeDefaults(kind: ForgeKind): ForgeEndpoint | null {
@@ -18,11 +23,17 @@ export function forgeDefaults(kind: ForgeKind): ForgeEndpoint | null {
  * Resolve an operator-supplied connection to a concrete endpoint, filling in
  * the kind's public defaults. Rows written before #367 have neither `kind`
  * nor URLs and resolve to github.com — that is the whole back-compat story.
+ * A Gitea row needs at least its instance URL (root or `/api/v1`).
  */
 export function resolveForgeEndpoint(
   conn: Pick<ForgeConnection, 'kind' | 'apiBaseUrl' | 'webBaseUrl'>,
 ): ForgeEndpoint {
   const kind: ForgeKind = conn.kind ?? 'github';
+  if (kind === 'gitea') {
+    const base = conn.apiBaseUrl || conn.webBaseUrl;
+    if (!base) throw new Error('Forge kind "gitea" needs apiBaseUrl (the instance URL)');
+    return giteaEndpoint(base, conn.webBaseUrl);
+  }
   const defaults = forgeDefaults(kind);
   const apiBaseUrl = conn.apiBaseUrl || defaults?.apiBaseUrl;
   const webBaseUrl = conn.webBaseUrl || defaults?.webBaseUrl;
@@ -47,8 +58,12 @@ export function createForgeClient(conn: ForgeConnection, fetchImpl?: ForgeFetch)
         fetchImpl,
       });
     case 'gitea':
-      // #368 lands GiteaForge here.
-      throw new Error('Forge kind "gitea" is not supported yet (see #368)');
+      return new GiteaForge({
+        token: conn.token,
+        apiBaseUrl: endpoint.apiBaseUrl,
+        webBaseUrl: endpoint.webBaseUrl,
+        fetchImpl,
+      });
   }
 }
 

@@ -42,6 +42,7 @@ import { eq } from 'drizzle-orm';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import { fetchChangedIssues } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
@@ -198,7 +199,7 @@ async function findNodesByExternalId(externalId: string): Promise<Node[]> {
   const out: Node[] = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
-    if (!links.some((l) => l.provider === 'github' && l.externalId === externalId)) continue;
+    if (!links.some((l) => isForgeLink(l) && l.externalId === externalId)) continue;
     const node = await nodeDb.getNode(row.id);
     if (node) out.push(node);
   }
