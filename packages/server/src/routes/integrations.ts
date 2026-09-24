@@ -68,12 +68,17 @@ import {
 async function getForgeIntegration(
   workspaceId: string,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
-  const [row] = await db
+  const rows = await db
     .select()
     .from(integrations)
     .where(and(eq(integrations.workspaceId, workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)));
 
-  if (!row || !row.enabled) return null;
+  // Same rule as lib/githubContext.ts: the ENABLED row, newest first — a
+  // disabled leftover must never shadow the live connection (2026-09-24).
+  const row = rows
+    .filter((r) => r.enabled)
+    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  if (!row) return null;
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
