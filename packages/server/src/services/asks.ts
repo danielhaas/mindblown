@@ -119,7 +119,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
       w.error = 'map has no GitHub integration — comment not posted';
     } else {
       try {
-        await commentOnGitHubIssue(ctx.owner, ctx.repo, plan.github.ticket, plan.github.body, ctx.token);
+        await commentOnGitHubIssue(ctx.owner, ctx.repo, plan.github.ticket, plan.github.body, ctx.forge);
         w.done = true;
       } catch (err) {
         w.error = err instanceof Error ? err.message : String(err);
@@ -128,7 +128,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
         const e: AskWrite = { kind: 'gh-edit', target, detail: `--milestone ${plan.github.milestone} --remove-label ${NEEDS_VERSION_LABEL}`, done: false };
         writes.push(e);
         try {
-          await setGitHubIssueMilestone(ctx.owner, ctx.repo, plan.github.ticket, plan.github.milestone, NEEDS_VERSION_LABEL, ctx.token);
+          await setGitHubIssueMilestone(ctx.owner, ctx.repo, plan.github.ticket, plan.github.milestone, NEEDS_VERSION_LABEL, ctx.forge);
           e.done = true;
         } catch (err) {
           e.error = err instanceof Error ? err.message : String(err);

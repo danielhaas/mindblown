@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -13,10 +13,13 @@ import {
   extractClosingIssueRefs,
   processWebhook,
   verifyWebhookSignature,
-  mintInstallationToken,
+  readWebhookHeaders,
   isGitHubAppConfigured,
   closeGitHubIssue,
   GitHubPaginationLimitError,
+  isForgeKind,
+  resolveForgeEndpoint,
+  createForgeClient,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
@@ -49,24 +52,25 @@ import {
   getGitHubContextForMap as getGitHubContextForMapImpl,
   type GitHubMapContext as GitHubMapContextImpl,
 } from '../lib/githubContext.js';
+import {
+  forgeFromInstallation,
+  forgeFromIntegration,
+  FORGE_PROVIDERS,
+  type ForgeIntegrationConfig,
+} from '../lib/forge.js';
 
-// ── Helper: find integration config for a workspace (legacy PAT) ──
+// ── Helper: find integration config for a workspace (PAT) ─────────
 
-interface GitHubConfig {
-  owner: string;
-  repo: string;
-  token: string;
-  webhookSecret?: string;
-}
-
-async function getGitHubIntegration(workspaceId: string): Promise<{ id: string; config: GitHubConfig } | null> {
+async function getForgeIntegration(
+  workspaceId: string,
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const [row] = await db
     .select()
     .from(integrations)
-    .where(and(eq(integrations.workspaceId, workspaceId), eq(integrations.provider, 'github')));
+    .where(and(eq(integrations.workspaceId, workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)));
 
   if (!row || !row.enabled) return null;
-  return { id: row.id, config: row.config as unknown as GitHubConfig };
+  return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
 // ── Helper: resolve GitHub token + repo for a map ─────────────────
@@ -97,17 +101,11 @@ export const getGitHubContextForMap = getGitHubContextForMapImpl;
 async function fetchPrFiles(repoFullName: string, prNumber: number): Promise<string[]> {
   const ctx = await getGitHubContextForRepo(repoFullName);
   if (!ctx) return [];
-  const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}/files?per_page=100`;
-  const r = await fetch(url, {
-    headers: {
-      authorization: `token ${ctx.token}`,
-      accept: 'application/vnd.github+json',
-      'user-agent': 'mindblown-pr-sync',
-    },
-  });
-  if (!r.ok) return [];
-  const rows = (await r.json()) as Array<{ filename: string }>;
-  return rows.map((f) => f.filename);
+  try {
+    return await ctx.forge.listPullRequestFiles(ctx.owner, ctx.repo, prNumber);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -118,16 +116,12 @@ async function fetchPrFiles(repoFullName: string, prNumber: number): Promise<str
 async function fetchPrText(repoFullName: string, prNumber: number): Promise<string | null> {
   const ctx = await getGitHubContextForRepo(repoFullName);
   if (!ctx) return null;
-  const url = `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls/${prNumber}`;
-  const r = await fetch(url, {
-    headers: {
-      authorization: `token ${ctx.token}`,
-      accept: 'application/vnd.github+json',
-      'user-agent': 'mindblown-pr-sync',
-    },
-  });
-  if (!r.ok) return null;
-  const data = (await r.json()) as { title?: string | null; body: string | null };
+  let data: { title?: string | null; body: string | null };
+  try {
+    data = await ctx.forge.getPullRequest(ctx.owner, ctx.repo, prNumber);
+  } catch {
+    return null;
+  }
   // Title AND body — closing refs live in either (same convention as
   // closesRefsFromPr in sync/prSync.ts).
   return `${data.title ?? ''}\n${data.body ?? ''}`;
@@ -158,8 +152,8 @@ async function getGitHubContextForRepo(
   for (const m of appMaps) {
     if (!m.installationId) continue;
     try {
-      const token = await mintInstallationToken(m.installationId);
-      return { owner, repo, token };
+      const forge = await forgeFromInstallation(m.installationId);
+      return { owner, repo, token: forge.token, forge };
     } catch (err) {
       console.warn('[github] Failed to mint installation token in repo lookup:', err);
     }
@@ -169,11 +163,11 @@ async function getGitHubContextForRepo(
   const patIntegrations = await db
     .select()
     .from(integrations)
-    .where(and(eq(integrations.provider, 'github'), eq(integrations.enabled, true)));
+    .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
   for (const integ of patIntegrations) {
-    const cfg = integ.config as unknown as GitHubConfig;
+    const cfg = integ.config as unknown as ForgeIntegrationConfig;
     if (cfg?.owner === owner && cfg?.repo === repo && cfg?.token) {
-      return { owner, repo, token: cfg.token };
+      return { owner, repo, token: cfg.token, forge: forgeFromIntegration(integ) };
     }
   }
 
@@ -380,7 +374,9 @@ export async function syncTriageRowsForReopen(
 export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /api/integrations/github/connect ─────────────────────
-  // Store GitHub token + repo info for a workspace.
+  // Store a forge PAT + repo binding for a workspace. `kind` defaults to
+  // `github`; `apiBaseUrl` / `webBaseUrl` are only needed for a
+  // self-hosted forge (#367 stores them, #368 adds the Gitea client).
   app.post('/api/integrations/github/connect', async (req, reply) => {
     const body = req.body as {
       workspaceId: string;
@@ -388,6 +384,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: string;
       repo: string;
       webhookSecret?: string;
+      kind?: string;
+      apiBaseUrl?: string;
+      webBaseUrl?: string;
     };
 
     if (!body.workspaceId || !body.token || !body.owner || !body.repo) {
@@ -396,24 +395,43 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // Upsert: check if integration already exists
-    const existing = await getGitHubIntegration(body.workspaceId);
+    const kind = body.kind ?? 'github';
+    if (!isForgeKind(kind)) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `Unknown forge kind "${kind}"` },
+      });
+    }
+    // Resolve + instantiate once so a kind we can't serve yet, or a
+    // self-hosted kind without URLs, is rejected before anything is stored.
+    try {
+      resolveForgeEndpoint({ kind, apiBaseUrl: body.apiBaseUrl, webBaseUrl: body.webBaseUrl });
+      createForgeClient({ kind, apiBaseUrl: body.apiBaseUrl, webBaseUrl: body.webBaseUrl, token: body.token });
+    } catch (err) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: err instanceof Error ? err.message : String(err) },
+      });
+    }
 
-    const config: GitHubConfig = {
+    // Upsert: check if integration already exists
+    const existing = await getForgeIntegration(body.workspaceId);
+
+    const config: ForgeIntegrationConfig = {
       owner: body.owner,
       repo: body.repo,
       token: body.token,
       webhookSecret: body.webhookSecret,
+      ...(body.apiBaseUrl ? { apiBaseUrl: body.apiBaseUrl } : {}),
+      ...(body.webBaseUrl ? { webBaseUrl: body.webBaseUrl } : {}),
     };
 
     if (existing) {
       // Update existing
       await db
         .update(integrations)
-        .set({ config, enabled: true, updatedAt: new Date() })
+        .set({ provider: kind, config, enabled: true, updatedAt: new Date() })
         .where(eq(integrations.id, existing.id));
 
-      return reply.send({ id: existing.id, provider: 'github', enabled: true });
+      return reply.send({ id: existing.id, provider: kind, enabled: true });
     }
 
     // Create new
@@ -421,13 +439,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       .insert(integrations)
       .values({
         workspaceId: body.workspaceId,
-        provider: 'github',
+        provider: kind,
         config,
         enabled: true,
       })
       .returning();
 
-    return reply.status(201).send({ id: row.id, provider: 'github', enabled: true });
+    return reply.status(201).send({ id: row.id, provider: kind, enabled: true });
   });
 
   // ── POST /api/maps/:mapId/nodes/:nodeId/github/link ───────────
@@ -459,7 +477,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Fetch the issue from GitHub to get its URL
-      const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, ghCtx.token);
+      const issue = await getGitHubIssue(body.owner, body.repo, body.issueNumber, ghCtx.forge);
 
       // "Mirror wrote nothing": manual linking does not write the
       // description, so whatever the node holds is node-authored —
@@ -511,7 +529,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
 
       // Create the issue on GitHub
-      const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.token);
+      const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.forge);
 
       // Store the link on the node. The description here is NODE-
       // authored (it was pushed TO GitHub, not mirrored from it) —
@@ -545,7 +563,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const includeClosed = req.query.includeClosed === 'true';
-      const { owner, repo, token } = ghCtx;
+      const { owner, repo, forge } = ghCtx;
 
       // Fetch all nodes in this map
       const mapNodes = await db
@@ -579,7 +597,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // group/milestone metadata and just use the raw issue objects).
       let importedIssues;
       try {
-        importedIssues = await importGitHubIssues(owner, repo, token, { includeAll: includeClosed });
+        importedIssues = await importGitHubIssues(owner, repo, forge, { includeAll: includeClosed });
       } catch (err) {
         return reply.status(400).send({
           error: {
@@ -668,7 +686,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const { owner, repo, token } = ghCtx;
+      const { owner, repo, forge } = ghCtx;
 
       // Get workspace ID for version creation
       const workspaceId = await getWorkspaceIdForMap(req.params.mapId);
@@ -698,7 +716,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Fetch issues from GitHub (optionally include closed issues for full roadmap)
       let importedIssues;
       try {
-        importedIssues = await importGitHubIssues(owner, repo, token, {
+        importedIssues = await importGitHubIssues(owner, repo, forge, {
           includeAll: body.includeAll,
         });
       } catch (err) {
@@ -1093,7 +1111,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         const result = await auditClosedIssues({
           owner: ctx.owner,
           repo: ctx.repo,
-          token: ctx.token,
+          forge: ctx.forge,
           // Explicit `=== false` so a missing/garbled field reports
           // rather than writes.
           dryRun: body.dryRun !== false,
@@ -1138,9 +1156,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const result = await reconcileRepo({
         owner: ghCtx.owner,
         repo: ghCtx.repo,
-        // Token captured at request time. The reconcile completes within
+        // Client captured at request time. The reconcile completes within
         // a single HTTP turn, so we don't need to re-mint mid-flight.
-        resolveToken: async () => ghCtx.token,
+        resolveForge: async () => ghCtx.forge,
       });
 
       if (result.error) {
@@ -1186,7 +1204,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // filters those out for us.
       let importedIssues;
       try {
-        importedIssues = await importGitHubIssues(ghCtx.owner, ghCtx.repo, ghCtx.token, {
+        importedIssues = await importGitHubIssues(ghCtx.owner, ghCtx.repo, ghCtx.forge, {
           includeAll: true,
         });
       } catch (err) {
@@ -1269,8 +1287,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/webhooks/github ─────────────────────────────────
   // Webhook endpoint for GitHub events.
   app.post('/api/webhooks/github', async (req, reply) => {
-    const event = req.headers['x-github-event'] as string;
-    const signature = req.headers['x-hub-signature-256'] as string | undefined;
+    const { event, signature } = readWebhookHeaders(req.headers);
 
     if (!event) {
       return reply.status(400).send({ error: 'Missing X-GitHub-Event header' });
@@ -1295,9 +1312,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
     // Try legacy PAT webhook secrets
     if (!signatureVerified && repoFullName) {
-      const allIntegrations = await db.select().from(integrations).where(eq(integrations.provider, 'github'));
+      const allIntegrations = await db.select().from(integrations).where(inArray(integrations.provider, FORGE_PROVIDERS));
       for (const integ of allIntegrations) {
-        const config = integ.config as unknown as GitHubConfig;
+        const config = integ.config as unknown as ForgeIntegrationConfig;
         if (`${config.owner}/${config.repo}` === repoFullName && config.webhookSecret) {
           const valid = await verifyWebhookSignature(rawBody, signature, config.webhookSecret);
           if (valid) {
@@ -2087,11 +2104,11 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
                 {
                   provider: 'github',
                   externalId: `${repoFullName}#${n}`,
-                  url: `https://github.com/${repoFullName}/issues/${n}`,
+                  url: ctx.forge.issueWebUrl(ctx.owner, ctx.repo, n),
                   syncEnabled: true,
                   lastSyncedAt: null,
                 },
-                ctx.token,
+                ctx.forge,
                 'completed',
               );
             } catch (err) {
@@ -2274,7 +2291,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           if (!match) return { externalId: link.externalId, error: 'invalid_id' };
 
           try {
-            const issue = await getGitHubIssue(match[1], match[2], parseInt(match[3], 10), ghCtx.token);
+            const issue = await getGitHubIssue(match[1], match[2], parseInt(match[3], 10), ghCtx.forge);
             return {
               externalId: link.externalId,
               url: link.url,

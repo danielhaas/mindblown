@@ -68,6 +68,10 @@ vi.mock('drizzle-orm', async () => {
       __pred: true,
       check: (row) => row[column.__col ?? ''] != null,
     }),
+    inArray: (column: { __col?: string }, values: unknown[]): Pred => ({
+      __pred: true,
+      check: (row) => values.includes(row[column.__col ?? '']),
+    }),
   };
 });
 
@@ -161,13 +165,20 @@ import type { GitHubIssue } from '@mindblown/integrations';
 const importedByRepo = new Map<string, Array<{ issue: GitHubIssue; externalLink: { externalId: string } }>>();
 let importThrows: Error | null = null;
 
-vi.mock('@mindblown/integrations', () => ({
-  importGitHubIssues: async (owner: string, repo: string, _t: string, _o?: unknown) => {
-    if (importThrows) throw importThrows;
-    return importedByRepo.get(`${owner}/${repo}`) ?? [];
-  },
-  mintInstallationToken: async (installationId: string) => `tok-${installationId}`,
-}));
+vi.mock('@mindblown/integrations', async () => {
+  // Real module for the pure forge client/factory; network calls mocked.
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  return {
+    ...actual,
+    importGitHubIssues: async (owner: string, repo: string, _forge: unknown, _o?: unknown) => {
+      if (importThrows) throw importThrows;
+      return importedByRepo.get(`${owner}/${repo}`) ?? [];
+    },
+    mintInstallationToken: async (installationId: string) => `tok-${installationId}`,
+  };
+});
 
 vi.mock('../autoBackfill.js', () => ({
   runAutoBackfill: (...args: unknown[]) => runAutoBackfillMock(...args),

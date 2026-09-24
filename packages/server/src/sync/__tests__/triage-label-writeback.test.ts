@@ -20,11 +20,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let labelWritebackEnabled = false;
 let mapExists = true;
-let ghContext: { owner: string; repo: string; token: string } | null = {
-  owner: 'octocat',
-  repo: 'demo',
-  token: 't_test',
-};
+// The context carries a real GitHubForge (github.com endpoint); the test's
+// `fetchImpl` shim replaces its transport inside applyTriageLabel.
+function makeContext() {
+  return {
+    owner: 'octocat',
+    repo: 'demo',
+    token: 't_test',
+    forge: new GitHubForge({ token: 't_test' }),
+  };
+}
+let ghContext: ReturnType<typeof makeContext> | null = makeContext();
 
 vi.mock('../../db/connection.js', () => {
   const db = {
@@ -56,19 +62,16 @@ vi.mock('../../lib/githubContext.js', () => ({
   getGitHubContextForMap: async () => ghContext,
 }));
 
-vi.mock('@mindblown/integrations', () => ({
-  GitHubApiError: class GitHubApiError extends Error {
-    status: number;
-    body: string;
-    constructor(status: number, body: string) {
-      super(`GitHub API ${status}: ${body}`);
-      this.name = 'GitHubApiError';
-      this.status = status;
-      this.body = body;
-    }
-  },
-}));
+// Real module: the forge client + factory are pure (no network until a
+// request is made, and the request goes through the injected shim).
+vi.mock('@mindblown/integrations', async () => {
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  return { ...actual };
+});
 
+import { GitHubForge } from '@mindblown/integrations';
 import { applyTriageLabel } from '../triageLabelWriteback.js';
 
 // Build a fetch-impl shim the tests can wire into `applyTriageLabel`
@@ -97,6 +100,7 @@ function fetchShim(
     return {
       status,
       text: async () => body,
+      json: async () => JSON.parse(body),
     };
   };
   return { calls, impl };
@@ -105,7 +109,7 @@ function fetchShim(
 beforeEach(() => {
   labelWritebackEnabled = false;
   mapExists = true;
-  ghContext = { owner: 'octocat', repo: 'demo', token: 't_test' };
+  ghContext = makeContext();
 });
 
 // ── Disabled paths ───────────────────────────────────────────────
@@ -353,7 +357,7 @@ describe('applyTriageLabel — active', () => {
       init,
     ) => {
       capturedAuth = (init.headers as Record<string, string>).Authorization;
-      return { status: 200, text: async () => '' };
+      return { status: 200, text: async () => '', json: async () => ({}) };
     };
     await applyTriageLabel({
       mapId: 'm1',
@@ -401,7 +405,7 @@ describe('applyTriageLabel — timeout (#104 item 10)', () => {
       calls.push(init.method);
       // Resolves quickly — production controller is on the real fetch,
       // not the impl path.
-      return { status: 200, text: async () => '' };
+      return { status: 200, text: async () => '', json: async () => ({}) };
     };
     await applyTriageLabel({
       mapId: 'm1',

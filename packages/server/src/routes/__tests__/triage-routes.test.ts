@@ -493,9 +493,14 @@ const importGitHubIssuesMock = vi.hoisted(() =>
     _opts?: { includeAll?: boolean },
   ): Promise<FakeImportedIssue[]> => []),
 );
-vi.mock('@mindblown/integrations', () => ({
-  importGitHubIssues: importGitHubIssuesMock,
-}));
+vi.mock('@mindblown/integrations', async () => {
+  // Real module for the pure forge helpers (issue URL builder); only the
+  // network-touching import is stubbed.
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  return { ...actual, importGitHubIssues: importGitHubIssuesMock };
+});
 
 import { triageRoutes } from '../triage.js';
 

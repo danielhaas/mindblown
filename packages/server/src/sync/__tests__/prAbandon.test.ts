@@ -47,8 +47,11 @@ vi.mock('../../db/nodes.js', () => ({
 }));
 
 import { handleAbandonedPr } from '../prAbandon.js';
+import { GitHubForge } from '@mindblown/integrations';
 
-const CTX = { owner: 'FulcrumCRM', repo: 'crm', token: 'tok' };
+// The client the handler hands to every (mocked) integrations call (#367).
+const FORGE = new GitHubForge({ token: 'tok' });
+const CTX = { owner: 'FulcrumCRM', repo: 'crm', forge: FORGE };
 const ABANDONED_PR = {
   number: 6089,
   title: 'fix(compliance): retention prune audit records',
@@ -97,7 +100,7 @@ describe('handleAbandonedPr', () => {
     ]);
     expect(mocks.reopenGitHubIssue).toHaveBeenCalledWith(
       { externalId: 'FulcrumCRM/crm#6085' },
-      'tok',
+      FORGE,
     );
   });
 

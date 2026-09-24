@@ -35,7 +35,7 @@ import {
   probeIssueLanded,
   reopenGitHubIssue,
 } from '@mindblown/integrations';
-import type { GitHubIssue } from '@mindblown/integrations';
+import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 
 import { findNodeIdByExternalId } from '../db/nodes.js';
 import { rollBackNodeOffDone } from './nodeRollback.js';
@@ -43,7 +43,7 @@ import { rollBackNodeOffDone } from './nodeRollback.js';
 export interface AuditOptions {
   owner: string;
   repo: string;
-  token: string;
+  forge: ForgeClient;
   /**
    * Write mode. `true` (the default) reports only. `false` reopens every
    * issue the check condemns and rolls its node back off done.
@@ -145,7 +145,7 @@ export interface AuditResult {
  * probe's timeline and PR reads come out of.
  */
 export async function auditOneIssue(
-  opts: Pick<AuditOptions, 'owner' | 'repo' | 'token' | 'closedBy'>,
+  opts: Pick<AuditOptions, 'owner' | 'repo' | 'forge' | 'closedBy'>,
   issue: Pick<GitHubIssue, 'number' | 'title' | 'html_url' | 'state' | 'state_reason'>,
   defaultBranch?: string,
 ): Promise<AuditFinding> {
@@ -176,7 +176,7 @@ export async function auditOneIssue(
       opts.owner,
       opts.repo,
       issue.number,
-      opts.token,
+      opts.forge,
     );
     base.closedAt = closeEvent?.createdAt ?? null;
     base.closedBy = closeEvent?.actor ?? null;
@@ -193,7 +193,7 @@ export async function auditOneIssue(
       opts.owner,
       opts.repo,
       issue.number,
-      opts.token,
+      opts.forge,
       defaultBranch,
     );
     base.closingPrs = probe.closingPrs.map((p) => p.number);
@@ -236,13 +236,13 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
   const defaultBranch = await getRepoDefaultBranch(
     opts.owner,
     opts.repo,
-    opts.token,
+    opts.forge,
   );
 
   const fetched = await fetchChangedIssues(
     opts.owner,
     opts.repo,
-    opts.token,
+    opts.forge,
     opts.since ?? null,
   );
   // `fetchChangedIssues` sorts `updated:asc`, so a plain `.slice(0,
@@ -259,7 +259,7 @@ export async function auditClosedIssues(opts: AuditOptions): Promise<AuditResult
     const finding = await auditOneIssue(opts, issue, defaultBranch);
     if (finding.verdict === 'unbacked' && !dryRun) {
       try {
-        await reopenGitHubIssue({ externalId: finding.externalId }, opts.token);
+        await reopenGitHubIssue({ externalId: finding.externalId }, opts.forge);
         const rollback = finding.nodeId
           ? await rollBackNodeOffDone(finding.nodeId, finding.externalId)
           : null;

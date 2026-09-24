@@ -36,6 +36,7 @@ import {
   probeIssueLanded,
   reopenGitHubIssue,
   extractClosingIssueRefs,
+  type ForgeClient,
 } from '@mindblown/integrations';
 
 import { findNodeIdByExternalId } from '../db/nodes.js';
@@ -44,7 +45,7 @@ import { rollBackNodeOffDone } from './nodeRollback.js';
 export interface AbandonedPrContext {
   owner: string;
   repo: string;
-  token: string;
+  forge: ForgeClient;
 }
 
 /**
@@ -131,7 +132,7 @@ export async function handleAbandonedPr(
     const externalId = `${repoFullName}#${issueNumber}`;
     const nodeId = await findNodeIdByExternalId(externalId);
     try {
-      const issue = await getGitHubIssue(ctx.owner, ctx.repo, issueNumber, ctx.token);
+      const issue = await getGitHubIssue(ctx.owner, ctx.repo, issueNumber, ctx.forge);
       if (issue.state !== 'closed') {
         outcomes.push({ externalId, status: 'already_open', nodeId });
         continue;
@@ -141,7 +142,7 @@ export async function handleAbandonedPr(
         ctx.owner,
         ctx.repo,
         issueNumber,
-        ctx.token,
+        ctx.forge,
       );
       if (closeEvent?.commitId) {
         outcomes.push({ externalId, status: 'closed_by_commit', nodeId });
@@ -181,7 +182,7 @@ export async function handleAbandonedPr(
         ctx.owner,
         ctx.repo,
         issueNumber,
-        ctx.token,
+        ctx.forge,
       );
       if (probe.landed && probe.landed.number !== pr.number) {
         outcomes.push({ externalId, status: 'landed_elsewhere', nodeId });
@@ -195,7 +196,7 @@ export async function handleAbandonedPr(
         continue;
       }
 
-      await reopenGitHubIssue({ externalId }, ctx.token);
+      await reopenGitHubIssue({ externalId }, ctx.forge);
       const rollback = nodeId
         ? await rollBackNodeOffDone(nodeId, externalId)
         : null;

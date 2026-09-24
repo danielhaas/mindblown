@@ -90,7 +90,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
 
     for (const link of links) {
       try {
-        await closeGitHubIssue(link, ghCtx.token, 'not_planned');
+        await closeGitHubIssue(link, ghCtx.forge, 'not_planned');
         summary.githubClosed++;
       } catch (err) {
         summary.githubFailed++;

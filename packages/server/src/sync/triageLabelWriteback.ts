@@ -1,28 +1,28 @@
 /**
- * Optional GitHub label write-back for triage decisions (#96, Phase 3).
+ * Optional forge label write-back for triage decisions (#96, Phase 3).
  *
  * When a map opts into `triage_label_writeback`, finalised triage
  * decisions write a `triage:placed` or `triage:skipped` label back to
- * the source GitHub issue:
+ * the source issue:
  *
  *   - decision='place'     → add `triage:placed`, remove `triage:skipped`
  *   - decision='skip'      → add `triage:skipped`, remove `triage:placed`
  *   - decision='uncertain' → no label change (intermediate state, don't
- *                            spam GitHub)
+ *                            spam the forge)
  *
  * Best-effort: a label-write failure must NEVER block the triage flow.
  * We log + ignore. If the operator hasn't created the label in their
  * repo, GitHub returns 422 — we treat that as a no-op and warn.
  *
  * We don't auto-create labels: the operator is expected to set them up
- * in their GitHub repo first. That's a deliberate UX choice — silent
+ * in their repo first. That's a deliberate UX choice — silent
  * label creation surprises owners of public repos.
  *
- * Token resolution flows through the existing `getGitHubContextForMap`
+ * Client resolution flows through the existing `getGitHubContextForMap`
  * helper so App installations and PAT integrations both work.
  */
 
-import { GitHubApiError } from '@mindblown/integrations';
+import { GitHubApiError, createForgeClient, type ForgeClient, type ForgeFetch } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { maps } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -48,23 +48,19 @@ interface WriteLabelOpts {
    */
   placedNodeId?: string | null;
   /**
-   * Test injection: replace the `githubFetch` HTTP call. Production
-   * callers omit this; tests pass a mock to assert request shape.
+   * Test injection: replace the HTTP transport underneath the forge
+   * client. Production callers omit this; tests pass a mock to assert
+   * request shape.
    */
-  fetchImpl?: (
-    url: string,
-    init: { method: string; headers: Record<string, string>; body?: string },
-  ) => Promise<{ status: number; text: () => Promise<string> }>;
+  fetchImpl?: ForgeFetch;
 }
 
-const GITHUB_API = 'https://api.github.com';
-
-// Phase 3 follow-up (#104 item 10): GitHub API per-request timeout for
-// label writeback. The write-back is best-effort, so a hung GH request
-// must NEVER block the parent triage flow. 8 s is generous for GH's p99
-// (~1 s) but short enough that a wedged connection clears before the
-// operator's own request returns. AbortError is treated identically to
-// any other error in the try/catch below (warn + continue).
+// Phase 3 follow-up (#104 item 10): per-request timeout for label
+// writeback. The write-back is best-effort, so a hung request must NEVER
+// block the parent triage flow. 8 s is generous for GitHub's p99 (~1 s)
+// but short enough that a wedged connection clears before the operator's
+// own request returns. AbortError is treated identically to any other
+// error in the try/catch below (warn + continue).
 const LABEL_WRITEBACK_TIMEOUT_MS = 8_000;
 
 // Phase 3 follow-up (#104 item 13): tighter regex than the previous
@@ -84,51 +80,23 @@ function parseExternalId(
   };
 }
 
-async function ghRequest(
-  url: string,
-  method: string,
-  token: string,
-  body: unknown | undefined,
-  fetchImpl: WriteLabelOpts['fetchImpl'],
-): Promise<{ status: number; bodyText: string }> {
-  const headers: Record<string, string> = {
-    Accept: 'application/vnd.github+json',
-    Authorization: `Bearer ${token}`,
-    'X-GitHub-Api-Version': '2022-11-28',
-    'Content-Type': 'application/json',
-  };
-  if (fetchImpl) {
-    // Tests inject their own response shim — they're synchronous in
-    // practice (no real network) so no timeout is needed.
-    const res = await fetchImpl(url, {
-      method,
-      headers,
-      body: body == null ? undefined : JSON.stringify(body),
-    });
-    const text = await res.text();
-    return { status: res.status, bodyText: text };
-  }
-  // Phase 3 follow-up (#104 item 10): 8 s AbortController-backed
-  // timeout. AbortError thrown here propagates to the caller's try/catch
-  // and lands in the standard "best-effort, warn and continue" branch.
+/**
+ * Run one forge call under the 8 s AbortController-backed timeout. The
+ * injected test transport ignores the signal — it never hits the network
+ * — so the timer is harmless there.
+ */
+async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), LABEL_WRITEBACK_TIMEOUT_MS);
   try {
-    const res = await fetch(url, {
-      method,
-      headers,
-      body: body == null ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    return { status: res.status, bodyText: text };
+    return await run(controller.signal);
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * Apply the desired triage label state to the GitHub issue. Best-effort:
+ * Apply the desired triage label state to the issue. Best-effort:
  * never throws. Callers do `await applyTriageLabel(...)` and continue
  * regardless of outcome.
  *
@@ -165,6 +133,12 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
     return;
   }
 
+  // Same endpoint + token as the map's client, on the injected transport
+  // when a test asks for one.
+  const forge: ForgeClient = opts.fetchImpl
+    ? createForgeClient({ ...ghCtx.forge.endpoint, token: ghCtx.forge.token }, opts.fetchImpl)
+    : ghCtx.forge;
+
   // #178: gate the ADD step for place decisions that haven't actually
   // placed a node. Without this, the row's GH label says "we put it in
   // the map" even though `placed_node_id IS NULL` (pending operator
@@ -189,18 +163,12 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
 
   const { owner, repo, issueNumber } = parsed;
 
-  // 1) Add the new label. POST /repos/{owner}/{repo}/issues/{number}/labels
-  //    is additive — GitHub merges with existing labels rather than
-  //    replacing the set.
+  // 1) Add the new label. The forge's add call is additive — existing
+  //    labels are kept rather than replaced.
   if (shouldAddLabel) {
     try {
-      const addUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels`;
-      const { status, bodyText } = await ghRequest(
-        addUrl,
-        'POST',
-        ghCtx.token,
-        { labels: [addLabel] },
-        opts.fetchImpl,
+      const { status, bodyText } = await withTimeout((signal) =>
+        forge.addIssueLabels(owner, repo, issueNumber, [addLabel], { signal }),
       );
       if (status === 422) {
         // GitHub returns 422 when the label doesn't exist on the repo.
@@ -232,13 +200,8 @@ export async function applyTriageLabel(opts: WriteLabelOpts): Promise<void> {
   //    For uncertain decisions this loop walks both placed and skipped.
   for (const removeLabel of removeLabels) {
     try {
-      const removeUrl = `${GITHUB_API}/repos/${owner}/${repo}/issues/${issueNumber}/labels/${encodeURIComponent(removeLabel)}`;
-      const { status, bodyText } = await ghRequest(
-        removeUrl,
-        'DELETE',
-        ghCtx.token,
-        undefined,
-        opts.fetchImpl,
+      const { status, bodyText } = await withTimeout((signal) =>
+        forge.removeIssueLabel(owner, repo, issueNumber, removeLabel, { signal }),
       );
       if (status === 404) {
         // Label wasn't on the issue — common, silent skip.

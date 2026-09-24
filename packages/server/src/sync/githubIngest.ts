@@ -39,9 +39,10 @@
  *     persists the new id.
  */
 
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
-import { extractVersionFromMilestone, importGitHubIssues, mintInstallationToken } from '@mindblown/integrations';
+import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
+import { forgeFromInstallation, forgeFromIntegration, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink } from '@mindblown/core';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
@@ -1916,16 +1917,16 @@ export async function backfillMap(
   }
   const triageEnabled = mapRow.triageEnabled === true;
 
-  // Resolve owner/repo + token. App-binding first, then workspace PAT.
-  // This mirrors `getGitHubContextForMap` in routes/integrations.ts —
-  // we don't import it to avoid a cycle (it lives in the routes layer).
+  // Resolve owner/repo + forge client. App-binding first, then workspace PAT.
+  // This mirrors `getForgeContextForMap` in lib/githubContext.ts — kept
+  // inline so the (map-level) error text stays specific to the backfill.
   let owner: string | null = null;
   let repo: string | null = null;
-  let token: string | null = null;
+  let forge: ForgeClient | null = null;
 
   if (mapRow.githubInstallationId && mapRow.githubRepoOwner && mapRow.githubRepoName) {
     try {
-      token = await mintInstallationToken(mapRow.githubInstallationId);
+      forge = await forgeFromInstallation(mapRow.githubInstallationId);
       owner = mapRow.githubRepoOwner;
       repo = mapRow.githubRepoName;
     } catch (err) {
@@ -1936,14 +1937,14 @@ export async function backfillMap(
     }
   }
 
-  if (!token) {
+  if (!forge) {
     const [integ] = await db
       .select()
       .from(integrations)
       .where(
         and(
           eq(integrations.workspaceId, mapRow.workspaceId),
-          eq(integrations.provider, 'github'),
+          inArray(integrations.provider, FORGE_PROVIDERS),
           eq(integrations.enabled, true),
         ),
       );
@@ -1952,16 +1953,16 @@ export async function backfillMap(
       if (cfg?.owner && cfg?.repo && cfg?.token) {
         owner = cfg.owner;
         repo = cfg.repo;
-        token = cfg.token;
+        forge = forgeFromIntegration(integ);
       }
     }
   }
 
-  if (!owner || !repo || !token) {
+  if (!owner || !repo || !forge) {
     throw new Error(`backfillMap: no GitHub binding resolvable for map ${mapId}`);
   }
 
-  const importedIssues = await importGitHubIssues(owner, repo, token, {
+  const importedIssues = await importGitHubIssues(owner, repo, forge, {
     includeAll: true,
   });
 

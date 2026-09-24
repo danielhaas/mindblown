@@ -15,6 +15,14 @@ import {
   parseLinkNext,
   type IssueLandingProbe,
 } from './github.js';
+import { GitHubForge } from './forge/github.js';
+
+/**
+ * The client every operation under test receives (#367). It reads the
+ * global `fetch` at call time, so the `vi.stubGlobal('fetch', …)` doubles
+ * below still intercept every request exactly as they did for the token.
+ */
+const FORGE = new GitHubForge({ token: 'tok' });
 
 /**
  * Regression cover for the premature-close bug (2026-08-03).
@@ -147,7 +155,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('open') }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch()).not.toHaveProperty('state');
@@ -157,7 +165,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('closed') }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch()).not.toHaveProperty('state');
@@ -167,7 +175,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('open'), tags: ['compliance'] }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     const patch = sentPatch();
@@ -183,7 +191,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('merged') }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch().state).toBe('closed');
@@ -195,7 +203,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     // It now costs a probe first: "our mirror is empty" is not the same
     // claim as "GitHub has no PR for this issue".
     const probe = probeStub({});
-    await updateGitHubIssue(node({ status: 'done', linkedPr: null }), LINK, 'tok', {
+    await updateGitHubIssue(node({ status: 'done', linkedPr: null }), LINK, FORGE, {
       probe,
     });
 
@@ -204,7 +212,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
   });
 
   it('closes on percentComplete=100 alone when no PR is linked', async () => {
-    await updateGitHubIssue(node({ percentComplete: 100 }), LINK, 'tok', {
+    await updateGitHubIssue(node({ percentComplete: 100 }), LINK, FORGE, {
       probe: probeStub({}),
     });
 
@@ -212,7 +220,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
   });
 
   it('reopens an unfinished node with no linked PR', async () => {
-    await updateGitHubIssue(node({ status: 'in_progress', percentComplete: 40 }), LINK, 'tok');
+    await updateGitHubIssue(node({ status: 'in_progress', percentComplete: 40 }), LINK, FORGE);
 
     expect(sentPatch().state).toBe('open');
   });
@@ -227,7 +235,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
         linkedPr: { ...pr('merged'), landedOnDefault: false },
       }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch()).not.toHaveProperty('state');
@@ -245,7 +253,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
         linkedPr: { ...pr('closed'), lastSyncedAt: '2026-08-01T00:00:00.000Z' },
       }),
       LINK,
-      'tok',
+      FORGE,
       { probe: probeStub({}) },
     );
 
@@ -261,7 +269,7 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     await updateGitHubIssue(
       node({ status: 'in_progress', percentComplete: 40, linkedPr: pr('open') }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch().state).toBe('open');
@@ -294,7 +302,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),
       LINK,
-      'tok',
+      FORGE,
       { probe },
     );
 
@@ -307,7 +315,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),
       LINK,
-      'tok',
+      FORGE,
       { probe: async () => { throw new Error('GitHub API 502'); } },
     );
 
@@ -319,7 +327,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),
       LINK,
-      'tok',
+      FORGE,
       {
         probe: probeStub({
           landed: {
@@ -348,7 +356,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),
       { ...LINK, mergeCommitSha: 'deadbeefcafe', mergedPrNumber: 7794 },
-      'tok',
+      FORGE,
       { probe },
     );
 
@@ -365,7 +373,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('merged') }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(sentPatch().state_reason).toBe('completed');
@@ -377,7 +385,7 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('open') }),
       LINK,
-      'tok',
+      FORGE,
       { probe },
     );
 
@@ -479,7 +487,7 @@ describe('findClosingPrsForIssue', () => {
   it('returns a PR whose body carries a closing keyword for the issue', async () => {
     stubResponses([[crossRef(7794)], prPayload()]);
 
-    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(prs).toHaveLength(1);
     expect(prs[0]).toMatchObject({
@@ -498,13 +506,13 @@ describe('findClosingPrsForIssue', () => {
       prPayload({ body: 'Context: see #6096 for background', title: 'chore: unrelated' }),
     ]);
 
-    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok')).toEqual([]);
+    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE)).toEqual([]);
   });
 
   it('ignores cross-references from another repo', async () => {
     stubResponses([[crossRef(7794, 'other/repo')]]);
 
-    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok')).toEqual([]);
+    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE)).toEqual([]);
   });
 
   it('ignores cross-references from issues that are not PRs', async () => {
@@ -520,7 +528,7 @@ describe('findClosingPrsForIssue', () => {
       ],
     ]);
 
-    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok')).toEqual([]);
+    expect(await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE)).toEqual([]);
   });
 
   it('treats a merge onto a NON-default branch as not landed', async () => {
@@ -530,7 +538,7 @@ describe('findClosingPrsForIssue', () => {
       prPayload({ base: { ref: 'release/v1' } }),
     ]);
 
-    const probe = await probeIssueLanded('FulcrumCRM', 'crm', 6096, 'tok');
+    const probe = await probeIssueLanded('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(probe.closingPrs).toHaveLength(1);
     expect(probe.landed).toBeNull();
@@ -551,7 +559,7 @@ describe('findClosingPrsForIssue', () => {
       { match: isPull, body: prPayload() },
     ]);
 
-    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(prs.map((p) => p.number)).toEqual([7794]);
   });
@@ -582,7 +590,7 @@ describe('findClosingPrsForIssue', () => {
       }),
     );
 
-    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(prs).toHaveLength(25);
     expect(prs.map((p) => p.number)).toEqual(
@@ -605,7 +613,7 @@ describe('findClosingPrsForIssue', () => {
     ]);
 
     await expect(
-      findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok'),
+      findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE),
     ).rejects.toBeInstanceOf(GitHubScanTruncatedError);
   });
 
@@ -624,7 +632,7 @@ describe('findClosingPrsForIssue', () => {
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),
       LINK,
-      'tok',
+      FORGE,
     );
 
     expect(result.stateAction).toBe('held');
@@ -639,7 +647,7 @@ describe('findClosingPrsForIssue', () => {
       prPayload({ state: 'open', merged: false, merged_at: null, merge_commit_sha: null }),
     ]);
 
-    const probe = await probeIssueLanded('FulcrumCRM', 'crm', 6096, 'tok');
+    const probe = await probeIssueLanded('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(probe.inFlight).toBe(true);
     expect(probe.landed).toBeNull();
@@ -666,7 +674,7 @@ describe('getIssueCloseEvent', () => {
       })),
     );
 
-    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 6096, 'tok');
+    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(ev).toMatchObject({
       actor: 'mindblown-by-project-li[bot]',
@@ -692,7 +700,7 @@ describe('getIssueCloseEvent', () => {
       })),
     );
 
-    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 7357, 'tok');
+    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 7357, FORGE);
 
     expect(ev?.commitId).toBeNull();
   });
@@ -736,7 +744,7 @@ describe('getIssueCloseEvent', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 6096, 'tok');
+    const ev = await getIssueCloseEvent('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(ev?.commitId).toBe('newest');
   });
@@ -751,13 +759,13 @@ describe('getIssueCloseEvent', () => {
       })),
     );
 
-    expect(await getIssueCloseEvent('FulcrumCRM', 'crm', 5468, 'tok')).toBeNull();
+    expect(await getIssueCloseEvent('FulcrumCRM', 'crm', 5468, FORGE)).toBeNull();
   });
 });
 
 describe('reopenGitHubIssue', () => {
   it('PATCHes state=open with an explicit reopened reason', async () => {
-    await reopenGitHubIssue({ externalId: 'FulcrumCRM/crm#6085' }, 'tok');
+    await reopenGitHubIssue({ externalId: 'FulcrumCRM/crm#6085' }, FORGE);
 
     const call = vi.mocked(globalThis.fetch).mock.calls[0];
     expect(String(call[0])).toContain('/repos/FulcrumCRM/crm/issues/6085');
@@ -976,7 +984,7 @@ describe('pagination stays on the origin it started on', () => {
     const seen = evilLinkStub('http://evil.example/steal?after=1');
 
     await expect(
-      fetchChangedIssues('FulcrumCRM', 'crm', 'ghs_SUPER_SECRET', null),
+      fetchChangedIssues('FulcrumCRM', 'crm', new GitHubForge({ token: 'ghs_SUPER_SECRET' }), null),
     ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
 
     // The point of the guard, stated as the property that matters: the
@@ -994,7 +1002,7 @@ describe('pagination stays on the origin it started on', () => {
     evilLinkStub('http://api.github.com/repos/FulcrumCRM/crm/issues?after=1');
 
     await expect(
-      fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null),
+      fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null),
     ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
   });
 
@@ -1002,7 +1010,7 @@ describe('pagination stays on the origin it started on', () => {
     evilLinkStub('/repos/FulcrumCRM/crm/issues?after=1');
 
     await expect(
-      fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null),
+      fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null),
     ).rejects.toBeInstanceOf(GitHubCrossOriginPaginationError);
   });
 
@@ -1010,7 +1018,7 @@ describe('pagination stays on the origin it started on', () => {
     // The guard must not be so tight that it breaks the fix it protects.
     const fetchMock = bigRepo({ pages: [issuePage([1]), issuePage([2])] });
 
-    const result = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
+    const result = await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null);
 
     expect(result.issues.map((i) => i.number)).toEqual([1, 2]);
     expect(fetchMock.mock.calls).toHaveLength(2);
@@ -1022,7 +1030,7 @@ describe('pagination stays on the origin it started on', () => {
     // the exact fail-open this PR removes.
     evilLinkStub('http://evil.example/steal?after=1');
 
-    const err = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null).catch((e) => e);
+    const err = await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null).catch((e) => e);
 
     expect(err).toBeInstanceOf(GitHubCrossOriginPaginationError);
     expect(err.message).toContain('evil.example');
@@ -1035,7 +1043,7 @@ describe('pagination on a repo too large for ?page=', () => {
     // 422; only a Link-follower reaches pages 2 and 3.
     bigRepo({ pages: [issuePage([1, 2]), issuePage([3, 4]), issuePage([5])] });
 
-    const result = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
+    const result = await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null);
 
     expect(result.issues.map((i) => i.number)).toEqual([1, 2, 3, 4, 5]);
     expect(result.truncated).toBe(false);
@@ -1045,7 +1053,7 @@ describe('pagination on a repo too large for ?page=', () => {
     // Same endpoint, second call site — it carried its own copy of the loop.
     bigRepo({ pages: [issuePage([1]), issuePage([2]), issuePage([3])] });
 
-    const imported = await importGitHubIssues('FulcrumCRM', 'crm', 'tok', {
+    const imported = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, {
       includeAll: true,
     });
 
@@ -1066,7 +1074,7 @@ describe('pagination on a repo too large for ?page=', () => {
       pages: [issuePage(Array.from({ length: 100 }, (_, i) => i + 1)), issuePage([101])],
     });
 
-    await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
+    await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null);
 
     for (const call of fetchMock.mock.calls) {
       expect(new URL(String(call[0])).searchParams.get('page')).toBeNull();
@@ -1076,7 +1084,7 @@ describe('pagination on a repo too large for ?page=', () => {
   it('follows the cursor GitHub advertises rather than one we invent', async () => {
     const fetchMock = bigRepo({ pages: [issuePage([1]), issuePage([2])] });
 
-    await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null);
+    await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null);
 
     expect(fetchMock.mock.calls).toHaveLength(2);
     expect(String(fetchMock.mock.calls[1][0])).toContain('after=1');
@@ -1088,7 +1096,7 @@ describe('pagination on a repo too large for ?page=', () => {
     // window.
     const fetchMock = bigRepo({ pages: [issuePage([1]), issuePage([2])] });
 
-    await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', '2026-08-01T00:00:00Z');
+    await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, '2026-08-01T00:00:00Z');
 
     // Assert the plural in the name before asserting the property: the
     // loop below is vacuously true on a single call, so without this the
@@ -1158,7 +1166,7 @@ describe('pagination on a repo too large for ?page=', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, 'tok');
+    const prs = await findClosingPrsForIssue('FulcrumCRM', 'crm', 6096, FORGE);
 
     expect(prs.map((p) => p.number)).toEqual([7794]);
   });
@@ -1181,7 +1189,7 @@ describe('GitHubPaginationLimitError', () => {
       })),
     );
 
-    const err = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null).catch((e) => e);
+    const err = await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null).catch((e) => e);
 
     expect(err).toBeInstanceOf(GitHubPaginationLimitError);
     expect(err.status).toBe(422);
@@ -1200,7 +1208,7 @@ describe('GitHubPaginationLimitError', () => {
       })),
     );
 
-    const err = await fetchChangedIssues('FulcrumCRM', 'crm', 'tok', null).catch((e) => e);
+    const err = await fetchChangedIssues('FulcrumCRM', 'crm', FORGE, null).catch((e) => e);
 
     expect(err).toBeInstanceOf(GitHubApiError);
     expect(err).not.toBeInstanceOf(GitHubPaginationLimitError);

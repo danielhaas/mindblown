@@ -42,16 +42,24 @@ const ingestMock = mocks.ingestMock;
 const processWebhookMock = mocks.processWebhookMock;
 const verifySignatureMock = mocks.verifySignatureMock;
 
-vi.mock('@mindblown/integrations', () => ({
-  createGitHubIssue: vi.fn(),
-  getGitHubIssue: vi.fn(),
-  importGitHubIssues: vi.fn(),
-  extractVersionFromMilestone: vi.fn(),
-  processWebhook: mocks.processWebhookMock,
-  verifyWebhookSignature: mocks.verifySignatureMock,
-  mintInstallationToken: vi.fn(),
-  isGitHubAppConfigured: vi.fn(() => true),
-}));
+vi.mock('@mindblown/integrations', async () => {
+  // Real module for the pure forge helpers (header reading, client
+  // factory); network + signature functions stay mocked.
+  const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
+    '@mindblown/integrations',
+  );
+  return {
+    ...actual,
+    createGitHubIssue: vi.fn(),
+    getGitHubIssue: vi.fn(),
+    importGitHubIssues: vi.fn(),
+    extractVersionFromMilestone: vi.fn(),
+    processWebhook: mocks.processWebhookMock,
+    verifyWebhookSignature: mocks.verifySignatureMock,
+    mintInstallationToken: vi.fn(),
+    isGitHubAppConfigured: vi.fn(() => true),
+  };
+});
 
 vi.mock('../../db/connection.js', () => ({
   db: {
@@ -123,6 +131,7 @@ vi.mock('../../lib/githubContext.js', () => ({
 vi.mock('drizzle-orm', () => ({
   eq: vi.fn(() => ({ __pred: true, check: () => true })),
   and: vi.fn(() => ({ __pred: true, check: () => true })),
+  inArray: vi.fn(() => ({ __pred: true, check: () => true })),
 }));
 
 import { integrationRoutes } from '../integrations.js';

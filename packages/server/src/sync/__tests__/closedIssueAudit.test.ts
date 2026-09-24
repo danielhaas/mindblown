@@ -50,8 +50,11 @@ vi.mock('../../db/nodes.js', () => ({
 }));
 
 import { auditClosedIssues, auditOneIssue } from '../closedIssueAudit.js';
+import { GitHubForge } from '@mindblown/integrations';
 
-const OPTS = { owner: 'FulcrumCRM', repo: 'crm', token: 'tok' };
+// The client the audit hands to every (mocked) integrations call (#367).
+const FORGE = new GitHubForge({ token: 'tok' });
+const OPTS = { owner: 'FulcrumCRM', repo: 'crm', forge: FORGE };
 
 function issue(overrides: Record<string, unknown> = {}) {
   return {
@@ -331,7 +334,7 @@ describe('auditClosedIssues', () => {
     expect(result.findings[0].reopened).toBe(true);
     expect(mocks.reopenGitHubIssue).toHaveBeenCalledWith(
       { externalId: 'FulcrumCRM/crm#7357' },
-      'tok',
+      FORGE,
     );
     const [nodeId, fields] = mocks.updateNode.mock.calls[0];
     expect(nodeId).toBe('n-7357');

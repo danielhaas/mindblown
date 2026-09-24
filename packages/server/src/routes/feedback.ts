@@ -6,6 +6,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
+import { GitHubApiError, createForgeClient } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
 
@@ -56,37 +57,31 @@ export async function feedbackRoutes(app: FastifyInstance): Promise<void> {
     if (user) bodyParts.push(`**Submitted by:** ${user.name} (${user.email})`);
     const issueBody = bodyParts.join('\n');
 
+    // The operator's feedback repo lives on github.com; #368 adds the env
+    // knobs to point it at a self-hosted forge.
+    const forge = createForgeClient({ kind: 'github', token: githubToken });
+    const slash = githubRepo.indexOf('/');
+    const repoOwner = githubRepo.slice(0, slash);
+    const repoName = githubRepo.slice(slash + 1);
+
     try {
-      const res = await fetch(`https://api.github.com/repos/${githubRepo}/issues`, {
-        method: 'POST',
-        headers: {
-          Authorization: `token ${githubToken}`,
-          Accept: 'application/vnd.github.v3+json',
-          'Content-Type': 'application/json',
-          'User-Agent': 'mindblown-feedback',
-        },
-        body: JSON.stringify({
-          title,
-          body: issueBody,
-          labels: ['user-feedback'],
-        }),
+      const issue = await forge.createIssue(repoOwner, repoName, {
+        title,
+        body: issueBody,
+        labels: ['user-feedback'],
       });
-
-      if (res.status !== 201) {
-        const text = await res.text().catch(() => '');
-        app.log.error({ status: res.status, body: text }, 'GitHub issue creation failed');
-        return reply.status(502).send({
-          error: { code: 'GITHUB_ERROR', message: `GitHub API error (${res.status})` },
-        });
-      }
-
-      const issue = (await res.json()) as { number: number; html_url: string };
       return {
         success: true,
         issueNumber: issue.number,
         url: issue.html_url,
       };
     } catch (err) {
+      if (err instanceof GitHubApiError) {
+        app.log.error({ status: err.status, body: err.body }, 'GitHub issue creation failed');
+        return reply.status(502).send({
+          error: { code: 'GITHUB_ERROR', message: `GitHub API error (${err.status})` },
+        });
+      }
       app.log.error({ err }, 'Failed to reach GitHub API');
       return reply.status(502).send({
         error: { code: 'GITHUB_UNREACHABLE', message: 'Could not connect to GitHub' },

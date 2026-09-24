@@ -1,56 +1,66 @@
 /**
- * GitHub token + repo resolution for a map.
+ * Forge client + repo resolution for a map.
  *
  * Extracted from `routes/integrations.ts` so non-route consumers (the
  * triage label writeback in `sync/triageLabelWriteback.ts`, etc.) can
- * resolve a token without dragging the route module — which would
+ * resolve a client without dragging the route module — which would
  * create a routes ↔ sync import cycle.
  *
  * Resolution order:
  *   1. The map's own GitHub App installation binding (mint a fresh
- *      installation token).
- *   2. The workspace's legacy PAT integration row.
+ *      installation token → github.com client).
+ *   2. The workspace's PAT integration row (any forge kind; the row's
+ *      `provider` column is the kind, `config` may carry base URLs).
  *
  * Returns `null` when neither is configured.
+ *
+ * The file keeps its historical name (`githubContext`) and its historical
+ * export (`getGitHubContextForMap`) because nine test files mock it by
+ * path and name; `getForgeContextForMap` is the same function.
  */
 
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
-import { mintInstallationToken } from '@mindblown/integrations';
+import type { ForgeClient } from '@mindblown/integrations';
+import {
+  FORGE_PROVIDERS,
+  forgeFromInstallation,
+  forgeFromIntegration,
+  type ForgeIntegrationConfig,
+} from './forge.js';
 
-export interface GitHubMapContext {
+export interface ForgeMapContext {
   owner: string;
   repo: string;
+  /** Raw token — kept for callers that log or compare it; prefer `forge`. */
   token: string;
+  /** Authenticated client for this binding's forge. */
+  forge: ForgeClient;
 }
 
-interface GitHubConfig {
-  owner: string;
-  repo: string;
-  token: string;
-  webhookSecret?: string;
-}
+/** @deprecated use `ForgeMapContext` */
+export type GitHubMapContext = ForgeMapContext;
 
-async function getGitHubIntegration(
+async function getForgeIntegration(
   workspaceId: string,
-): Promise<{ id: string; config: GitHubConfig } | null> {
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const [row] = await db
     .select()
     .from(integrations)
     .where(
       and(
         eq(integrations.workspaceId, workspaceId),
-        eq(integrations.provider, 'github'),
+        inArray(integrations.provider, FORGE_PROVIDERS),
       ),
     );
   if (!row || !row.enabled) return null;
-  return { id: row.id, config: row.config as unknown as GitHubConfig };
+  return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
 export async function getGitHubContextForMap(
   mapId: string,
-): Promise<GitHubMapContext | null> {
+): Promise<ForgeMapContext | null> {
   const [map] = await db
     .select({
       githubInstallationId: maps.githubInstallationId,
@@ -70,11 +80,12 @@ export async function getGitHubContextForMap(
     map.githubRepoName
   ) {
     try {
-      const token = await mintInstallationToken(map.githubInstallationId);
+      const forge = await forgeFromInstallation(map.githubInstallationId);
       return {
         owner: map.githubRepoOwner,
         repo: map.githubRepoName,
-        token,
+        token: forge.token,
+        forge,
       };
     } catch (err) {
       console.warn(
@@ -85,14 +96,18 @@ export async function getGitHubContextForMap(
   }
 
   // Fallback: workspace PAT integration
-  const integration = await getGitHubIntegration(map.workspaceId);
+  const integration = await getForgeIntegration(map.workspaceId);
   if (integration) {
     return {
       owner: integration.config.owner,
       repo: integration.config.repo,
       token: integration.config.token,
+      forge: forgeFromIntegration(integration),
     };
   }
 
   return null;
 }
+
+/** Forge-neutral name for `getGitHubContextForMap` — same function. */
+export const getForgeContextForMap = getGitHubContextForMap;

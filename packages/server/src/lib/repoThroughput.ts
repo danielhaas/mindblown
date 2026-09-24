@@ -98,9 +98,13 @@ async function fetchMergedPrsUncached(
     // 422. This endpoint sits on the same repo and the same depth
     // budget, so it was one busy repo away from the identical break.
     const walk = await paginateGitHub<PrRow>(
-      `https://api.github.com/repos/${ctx.owner}/${ctx.repo}/pulls` +
-        `?state=closed&sort=updated&direction=desc&per_page=${PER_PAGE}`,
-      ctx.token,
+      ctx.forge.pullRequestsListPath(ctx.owner, ctx.repo, {
+        state: 'closed',
+        sort: 'updated',
+        direction: 'desc',
+        perPage: PER_PAGE,
+      }),
+      ctx.forge,
       {
         maxPages,
         onPage: (rows) => {

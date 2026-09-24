@@ -1,12 +1,19 @@
 /**
- * GitHub Issues integration for MindBlown.
+ * Issue-sync operations for MindBlown, GitHub REST-shaped.
  *
- * Bidirectional sync between MindBlown nodes and GitHub Issues.
- * Uses the GitHub REST API with native fetch() — no external dependencies.
+ * Bidirectional sync between MindBlown nodes and forge issues. Every
+ * function takes a `ForgeClient` (#367) where it used to take a token: the
+ * client owns the host, the auth header and the transport, this file owns
+ * the paths, payloads, pagination and field mapping. Names still say
+ * "GitHub" because fourteen server test files mock them by name; the paths
+ * are GitHub's REST API, which Gitea/Forgejo mirror under `/api/v1` (#368
+ * verifies each one).
  */
 
 import type { Node, ExternalLink, Priority } from '@mindblown/core';
 import { proseMirrorToPlainText, issueCloseAction } from '@mindblown/core';
+import { ForgeApiError, type ForgeClient } from './forge/types.js';
+import { GITHUB_API_BASE } from './forge/github.js';
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -84,11 +91,9 @@ const PRIORITY_PREFIX = 'priority:';
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-const GITHUB_API = 'https://api.github.com';
-
 /**
  * Thrown by every `githubFetch` call that hits a non-2xx response from
- * the GitHub REST API.
+ * the forge's REST API.
  *
  * Callers that need to react to specific HTTP statuses (auth expiry, rate
  * limit, etc.) should branch on `err instanceof GitHubApiError` and read
@@ -96,17 +101,12 @@ const GITHUB_API = 'https://api.github.com';
  * string for "GitHub API 401" was both fragile and a foot-gun once the
  * message format changed. The string body is still preserved on `.body`
  * for log lines.
+ *
+ * Since #367 this is the forge-neutral `ForgeApiError` under its historical
+ * name — the same class, so `instanceof` works with either.
  */
-export class GitHubApiError extends Error {
-  readonly status: number;
-  readonly body: string;
-  constructor(status: number, body: string) {
-    super(`GitHub API ${status}: ${body}`);
-    this.name = 'GitHubApiError';
-    this.status = status;
-    this.body = body;
-  }
-}
+export const GitHubApiError = ForgeApiError;
+export type GitHubApiError = ForgeApiError;
 
 /**
  * A 422 that means "this list is too deep for `page` — use cursors".
@@ -122,9 +122,9 @@ export class GitHubApiError extends Error {
  * build from before this fix, still produces it, and then the message is
  * the only self-help the operator gets.
  */
-export class GitHubPaginationLimitError extends GitHubApiError {
+export class GitHubPaginationLimitError extends ForgeApiError {
   constructor(body: string) {
-    super(422, body);
+    super(422, body, 'github');
     this.name = 'GitHubPaginationLimitError';
     this.message =
       'GitHub refused page-based pagination on this dataset — it is too large. ' +
@@ -176,8 +176,8 @@ export class GitHubCrossOriginPaginationError extends Error {
  * relative paths resolve against the API base, which is what
  * `githubFetchPage` does with them.
  */
-function absoluteUrl(pathOrUrl: string): string {
-  return pathOrUrl.startsWith('http') ? pathOrUrl : `${GITHUB_API}${pathOrUrl}`;
+function absoluteUrl(pathOrUrl: string, apiBaseUrl: string): string {
+  return pathOrUrl.startsWith('http') ? pathOrUrl : `${apiBaseUrl}${pathOrUrl}`;
 }
 
 /**
@@ -186,12 +186,16 @@ function absoluteUrl(pathOrUrl: string): string {
  * Throws rather than stopping quietly: a `Link` we refuse to follow
  * means the listing is incomplete, and returning a prefix as if it were
  * the whole list is the fail-open shape this PR exists to remove.
+ *
+ * `apiBaseUrl` is the forge the walk runs against (relative first paths
+ * resolve against it); defaults to github.com for the direct callers.
  */
 export function assertSamePaginationOrigin(
   firstPathOrUrl: string,
   nextUrl: string,
+  apiBaseUrl: string = GITHUB_API_BASE,
 ): void {
-  const fromOrigin = new URL(absoluteUrl(firstPathOrUrl)).origin;
+  const fromOrigin = new URL(absoluteUrl(firstPathOrUrl, apiBaseUrl)).origin;
   let toOrigin: string;
   try {
     toOrigin = new URL(nextUrl).origin;
@@ -290,25 +294,22 @@ function splitLinkEntries(header: string): Array<{ target: string; params: strin
 
 export async function githubFetchPage<T>(
   path: string,
-  token: string,
+  forge: ForgeClient,
   options: RequestInit = {},
 ): Promise<GitHubPage<T>> {
-  const url = path.startsWith('http') ? path : `${GITHUB_API}${path}`;
-  const res = await fetch(url, {
-    ...options,
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${token}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'Content-Type': 'application/json',
-      ...((options.headers as Record<string, string>) ?? {}),
-    },
+  // The client resolves relative paths against its API base and adds the
+  // auth + API headers; `options.headers` still override them as before.
+  const res = await forge.request(path, {
+    method: options.method ?? undefined,
+    body: typeof options.body === 'string' ? options.body : undefined,
+    headers: (options.headers as Record<string, string> | undefined) ?? undefined,
+    signal: options.signal ?? undefined,
   });
 
-  if (!res.ok) {
+  if (!(res.ok ?? (res.status >= 200 && res.status < 300))) {
     const body = await res.text();
     if (isPaginationLimit(res.status, body)) throw new GitHubPaginationLimitError(body);
-    throw new GitHubApiError(res.status, body);
+    throw new ForgeApiError(res.status, body, forge.endpoint.kind);
   }
 
   // 204 No Content
@@ -324,10 +325,10 @@ export async function githubFetchPage<T>(
 
 async function githubFetch<T>(
   path: string,
-  token: string,
+  forge: ForgeClient,
   options: RequestInit = {},
 ): Promise<T> {
-  return (await githubFetchPage<T>(path, token, options)).data;
+  return (await githubFetchPage<T>(path, forge, options)).data;
 }
 
 /**
@@ -348,7 +349,7 @@ async function githubFetch<T>(
  */
 export async function paginateGitHub<T>(
   firstPath: string,
-  token: string,
+  forge: ForgeClient,
   opts: {
     maxPages: number;
     onPage: (batch: T[]) => boolean | void;
@@ -360,7 +361,7 @@ export async function paginateGitHub<T>(
   let pages = 0;
 
   while (url) {
-    const page: GitHubPage<T[]> = await githubFetchPage<T[]>(url, token);
+    const page: GitHubPage<T[]> = await githubFetchPage<T[]>(url, forge);
     // A non-array body (a shape change, or an error GitHub answered 200
     // to) must not read as "the list ended here".
     if (!Array.isArray(page.data)) {
@@ -375,7 +376,7 @@ export async function paginateGitHub<T>(
     }
     // The next URL comes out of a response header and the next request
     // carries the API token. It does not leave the origin we started on.
-    assertSamePaginationOrigin(firstPath, page.nextUrl);
+    assertSamePaginationOrigin(firstPath, page.nextUrl, forge.endpoint.apiBaseUrl);
     url = page.nextUrl;
   }
 
@@ -451,11 +452,11 @@ export interface IssueLandingProbe {
 export async function getRepoDefaultBranch(
   repoOwner: string,
   repoName: string,
-  token: string,
+  forge: ForgeClient,
 ): Promise<string> {
   const repo = await githubFetch<{ default_branch: string }>(
     `/repos/${repoOwner}/${repoName}`,
-    token,
+    forge,
   );
   return repo.default_branch;
 }
@@ -518,7 +519,7 @@ export class GitHubScanTruncatedError extends Error {
  */
 async function fetchAllIssuePages<T>(
   path: string,
-  token: string,
+  forge: ForgeClient,
   what: string,
   ref: string,
 ): Promise<T[]> {
@@ -526,7 +527,7 @@ async function fetchAllIssuePages<T>(
   const sep = path.includes('?') ? '&' : '?';
   const { truncated } = await paginateGitHub<T>(
     `${path}${sep}per_page=100`,
-    token,
+    forge,
     {
       maxPages: MAX_ISSUE_SCAN_PAGES,
       onPage: (batch) => {
@@ -562,7 +563,7 @@ export async function findClosingPrsForIssue(
   repoOwner: string,
   repoName: string,
   issueNumber: number,
-  token: string,
+  forge: ForgeClient,
 ): Promise<ClosingPrRef[]> {
   interface TimelineEvent {
     event?: string;
@@ -579,7 +580,7 @@ export async function findClosingPrsForIssue(
   const fullName = `${repoOwner}/${repoName}`;
   const events = await fetchAllIssuePages<TimelineEvent>(
     `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/timeline`,
-    token,
+    forge,
     'issue timeline',
     `${fullName}#${issueNumber}`,
   );
@@ -611,7 +612,7 @@ export async function findClosingPrsForIssue(
       html_url: string;
       title: string | null;
       body: string | null;
-    }>(`/repos/${repoOwner}/${repoName}/pulls/${prNumber}`, token);
+    }>(`/repos/${repoOwner}/${repoName}/pulls/${prNumber}`, forge);
 
     const refs = extractClosingIssueRefs(`${pr.title ?? ''}\n${pr.body ?? ''}`);
     if (!refs.includes(issueNumber)) continue;
@@ -650,7 +651,7 @@ export async function getIssueCloseEvent(
   repoOwner: string,
   repoName: string,
   issueNumber: number,
-  token: string,
+  forge: ForgeClient,
 ): Promise<IssueCloseEvent | null> {
   interface RawEvent {
     event?: string;
@@ -662,7 +663,7 @@ export async function getIssueCloseEvent(
 
   const events = await fetchAllIssuePages<RawEvent>(
     `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/events`,
-    token,
+    forge,
     'issue events',
     `${repoOwner}/${repoName}#${issueNumber}`,
   );
@@ -694,7 +695,7 @@ export async function probeIssueLanded(
   repoOwner: string,
   repoName: string,
   issueNumber: number,
-  token: string,
+  forge: ForgeClient,
   /**
    * The repo's default branch, when the caller already knows it. It does
    * not change between issues, and the closed-issue audit probes up to
@@ -707,8 +708,8 @@ export async function probeIssueLanded(
   const [defaultBranch, closingPrs] = await Promise.all([
     defaultBranchHint != null
       ? Promise.resolve(defaultBranchHint)
-      : getRepoDefaultBranch(repoOwner, repoName, token),
-    findClosingPrsForIssue(repoOwner, repoName, issueNumber, token),
+      : getRepoDefaultBranch(repoOwner, repoName, forge),
+    findClosingPrsForIssue(repoOwner, repoName, issueNumber, forge),
   ]);
 
   const landed =
@@ -728,7 +729,7 @@ export async function createGitHubIssue(
   node: Node,
   repoOwner: string,
   repoName: string,
-  token: string,
+  forge: ForgeClient,
 ): Promise<{ issue: GitHubIssue; externalLink: ExternalLink }> {
   // Build labels from tags + priority
   const labels = [...node.tags];
@@ -742,7 +743,7 @@ export async function createGitHubIssue(
 
   const issue = await githubFetch<GitHubIssue>(
     `/repos/${repoOwner}/${repoName}/issues`,
-    token,
+    forge,
     {
       method: 'POST',
       body: JSON.stringify({
@@ -799,7 +800,7 @@ export interface UpdateIssueOptions {
     owner: string,
     repo: string,
     issueNumber: number,
-    token: string,
+    forge: ForgeClient,
     defaultBranchHint?: string,
   ) => Promise<IssueLandingProbe>;
 }
@@ -850,7 +851,7 @@ export interface UpdateIssueOptions {
 export async function updateGitHubIssue(
   node: Node,
   externalLink: ExternalLink,
-  token: string,
+  forge: ForgeClient,
   options: UpdateIssueOptions = {},
 ): Promise<UpdateIssueResult> {
   const parsed = parseExternalId(externalLink.externalId);
@@ -897,7 +898,7 @@ export async function updateGitHubIssue(
     } else {
       const probe = options.probe ?? probeIssueLanded;
       try {
-        const result = await probe(owner, repo, issueNumber, token);
+        const result = await probe(owner, repo, issueNumber, forge);
         if (result.landed) {
           patchBody.state = 'closed';
           patchBody.state_reason = 'completed';
@@ -925,7 +926,7 @@ export async function updateGitHubIssue(
 
   const updatedIssue = await githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
-    token,
+    forge,
     {
       method: 'PATCH',
       body: JSON.stringify(patchBody),
@@ -953,7 +954,7 @@ export async function updateGitHubIssue(
  */
 export async function reopenGitHubIssue(
   externalLink: Pick<ExternalLink, 'externalId'>,
-  token: string,
+  forge: ForgeClient,
 ): Promise<GitHubIssue> {
   const parsed = parseExternalId(externalLink.externalId);
   if (!parsed) throw new Error(`Invalid externalId: ${externalLink.externalId}`);
@@ -962,7 +963,7 @@ export async function reopenGitHubIssue(
 
   return githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
-    token,
+    forge,
     {
       method: 'PATCH',
       body: JSON.stringify({ state: 'open', state_reason: 'reopened' }),
@@ -981,7 +982,7 @@ export async function reopenGitHubIssue(
  */
 export async function closeGitHubIssue(
   externalLink: ExternalLink,
-  token: string,
+  forge: ForgeClient,
   reason: 'completed' | 'not_planned' = 'completed',
 ): Promise<GitHubIssue> {
   const parsed = parseExternalId(externalLink.externalId);
@@ -991,7 +992,7 @@ export async function closeGitHubIssue(
 
   return githubFetch<GitHubIssue>(
     `/repos/${owner}/${repo}/issues/${issueNumber}`,
-    token,
+    forge,
     {
       method: 'PATCH',
       body: JSON.stringify({
@@ -1011,11 +1012,11 @@ export async function commentOnGitHubIssue(
   repoName: string,
   issueNumber: number,
   body: string,
-  token: string,
+  forge: ForgeClient,
 ): Promise<{ id: number; html_url: string }> {
   return githubFetch<{ id: number; html_url: string }>(
     `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/comments`,
-    token,
+    forge,
     { method: 'POST', body: JSON.stringify({ body }) },
   );
 }
@@ -1032,15 +1033,15 @@ export async function setGitHubIssueMilestone(
   issueNumber: number,
   milestoneTitle: string,
   removeLabel: string | null,
-  token: string,
+  forge: ForgeClient,
 ): Promise<{ milestoneNumber: number }> {
   const milestones = await githubFetch<{ number: number; title: string }[]>(
     `/repos/${repoOwner}/${repoName}/milestones?state=all&per_page=100`,
-    token,
+    forge,
   );
   const m = milestones.find((x) => x.title === milestoneTitle);
   if (!m) throw new Error(`Milestone "${milestoneTitle}" not found in ${repoOwner}/${repoName}`);
-  await githubFetch<GitHubIssue>(`/repos/${repoOwner}/${repoName}/issues/${issueNumber}`, token, {
+  await githubFetch<GitHubIssue>(`/repos/${repoOwner}/${repoName}/issues/${issueNumber}`, forge, {
     method: 'PATCH',
     body: JSON.stringify({ milestone: m.number }),
   });
@@ -1048,7 +1049,7 @@ export async function setGitHubIssueMilestone(
     try {
       await githubFetch<unknown>(
         `/repos/${repoOwner}/${repoName}/issues/${issueNumber}/labels/${encodeURIComponent(removeLabel)}`,
-        token,
+        forge,
         { method: 'DELETE' },
       );
     } catch (err) {
@@ -1329,7 +1330,7 @@ const MAX_FETCHED_ISSUES = 50_000;
 export async function importGitHubIssues(
   repoOwner: string,
   repoName: string,
-  token: string,
+  forge: ForgeClient,
   options?: { includeAll?: boolean },
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
@@ -1341,7 +1342,7 @@ export async function importGitHubIssues(
   // on a repo of this size, the same way `fetchChangedIssues` did.
   await paginateGitHub<GitHubIssue>(
     `/repos/${repoOwner}/${repoName}/issues?state=${state}&per_page=${perPage}&sort=created&direction=asc`,
-    token,
+    forge,
     {
       maxPages: Math.ceil(MAX_FETCHED_ISSUES / perPage),
       onPage: (batch) => {
@@ -1411,7 +1412,7 @@ export interface ChangedIssuesResult {
 export async function fetchChangedIssues(
   repoOwner: string,
   repoName: string,
-  token: string,
+  forge: ForgeClient,
   since: string | null | undefined,
 ): Promise<ChangedIssuesResult> {
   const issues: GitHubIssue[] = [];
@@ -1433,7 +1434,7 @@ export async function fetchChangedIssues(
   // instead, so GitHub picks the scheme and we are right under either.
   const { truncated } = await paginateGitHub<GitHubIssue>(
     `/repos/${repoOwner}/${repoName}/issues?${params.toString()}`,
-    token,
+    forge,
     {
       maxPages: Math.ceil(MAX_FETCHED_ISSUES / perPage),
       onPage: (batch) => {
@@ -1457,43 +1458,14 @@ export async function getGitHubIssue(
   repoOwner: string,
   repoName: string,
   issueNumber: number,
-  token: string,
+  forge: ForgeClient,
 ): Promise<GitHubIssue> {
   return githubFetch<GitHubIssue>(
     `/repos/${repoOwner}/${repoName}/issues/${issueNumber}`,
-    token,
+    forge,
   );
 }
 
-/**
- * Verify a GitHub webhook signature (HMAC-SHA256).
- * Returns true if the signature is valid.
- */
-export async function verifyWebhookSignature(
-  payload: string,
-  signature: string | undefined,
-  secret: string,
-): Promise<boolean> {
-  if (!signature) return false;
-
-  // Use Node.js crypto via dynamic import to keep this file
-  // free of Node.js-specific imports at the top level
-  const { createHmac } = await import('node:crypto');
-
-  const expected = 'sha256=' + createHmac('sha256', secret)
-    .update(payload)
-    .digest('hex');
-
-  // Constant-time comparison
-  if (expected.length !== signature.length) return false;
-
-  const { timingSafeEqual } = await import('node:crypto');
-  try {
-    return timingSafeEqual(
-      Buffer.from(expected),
-      Buffer.from(signature),
-    );
-  } catch {
-    return false;
-  }
-}
+// `verifyWebhookSignature` moved to `./forge/webhook.ts` (#367) — it is
+// forge-neutral (Gitea signs the same way) and re-exported from the index.
+export { verifyWebhookSignature } from './forge/webhook.js';
