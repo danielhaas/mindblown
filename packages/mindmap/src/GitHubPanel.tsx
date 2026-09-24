@@ -449,9 +449,13 @@ export function GitHubSettingsDialog({
     let cancelled = false;
     (async () => {
       try {
-        const s = await api.getGiteaAuthStatus();
+        const s = await api.getGiteaAuthStatus(workspaceId);
         if (cancelled) return;
         setGiteaStatus(s);
+        if (s.binding) {
+          setGiteaBound(s.binding.repo);
+          setGiteaSelected(s.binding.repo);
+        }
         if (s.configured && s.connected) {
           const r = await api.getGiteaRepositories();
           if (!cancelled) setGiteaRepos(r.repositories);
@@ -463,7 +467,7 @@ export function GitHubSettingsDialog({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspaceId]);
   const handleGiteaSignIn = async () => {
     setError(null);
     try {
@@ -486,6 +490,21 @@ export function GitHubSettingsDialog({
       setRepo(r);
     } catch (e: any) {
       setError(e.message ?? 'Failed to bind repository');
+    } finally {
+      setGiteaBusy(false);
+    }
+  };
+  const handleGiteaDisconnect = async () => {
+    if (!window.confirm('Disconnect your Gitea account? Repositories bound through it stop syncing until someone signs in again.')) return;
+    setGiteaBusy(true);
+    setError(null);
+    try {
+      await api.disconnectGitea();
+      setGiteaStatus((s) => (s ? { ...s, connected: false, identity: null } : s));
+      setGiteaRepos([]);
+      setGiteaSelected('');
+    } catch (e: any) {
+      setError(e.message ?? 'Failed to disconnect');
     } finally {
       setGiteaBusy(false);
     }
@@ -1216,6 +1235,23 @@ export function GitHubSettingsDialog({
                   Add a repository webhook on Gitea for <code>/api/webhooks/github</code> (issues, issue comment, pull
                   request); its secret goes in the field below before you bind.
                 </div>
+                <button
+                  onClick={handleGiteaDisconnect}
+                  disabled={giteaBusy}
+                  style={{
+                    marginTop: 8,
+                    background: 'none',
+                    border: 'none',
+                    padding: 0,
+                    fontSize: 11,
+                    color: '#94a3b8',
+                    textDecoration: 'underline',
+                    cursor: giteaBusy ? 'default' : 'pointer',
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  Disconnect Gitea account
+                </button>
               </>
             )}
           </div>

@@ -24,6 +24,7 @@ import {
 import {
   forgeFromInstallation,
   forgeFromIntegration,
+  isServableIntegrationConfig,
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
@@ -824,7 +825,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
     .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
   for (const integ of patIntegrations) {
     const cfg = integ.config as unknown as ForgeIntegrationConfig;
-    if (!cfg?.owner || !cfg?.repo || !cfg?.token) continue;
+    if (!isServableIntegrationConfig(cfg)) continue;
     const key = `${cfg.owner}/${cfg.repo}`;
     if (seen.has(key)) continue;
     seen.set(key, {

@@ -33,7 +33,7 @@ import { eq, and, inArray, isNotNull } from 'drizzle-orm';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
-import { forgeFromInstallation, forgeFromIntegration, FORGE_PROVIDERS } from '../lib/forge.js';
+import { forgeFromInstallation, forgeFromIntegration, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';
 import { notDeleted } from '../db/nodes.js';
 
 import { db } from '../db/connection.js';
@@ -158,12 +158,14 @@ async function resolveTargets(): Promise<ResolvedTargets> {
       );
     const pat = pats.find((p) => {
       const cfg = p.config as { owner?: string; repo?: string; token?: string } | null;
-      return cfg?.owner === m.owner && cfg?.repo === m.repo && !!cfg.token;
+      return cfg?.owner === m.owner && cfg?.repo === m.repo && isServableIntegrationConfig(cfg);
     });
     const patForge = pat ? await forgeFromIntegration(pat) : null;
     if (pat && !patForge) {
-      // A PAT row exists but its forge kind can't be served by this build.
-      tokenErrors.push({ mapId: m.id, mapName: m.name, reason: `pat: unsupported forge kind ${pat.provider}` });
+      // A row exists but no client came out of it: unsupported kind, or an
+      // OAuth identity that is gone / could not be refreshed (logged by
+      // forgeFromIntegration).
+      tokenErrors.push({ mapId: m.id, mapName: m.name, reason: `pat: ${pat.provider} row not servable (kind or OAuth identity)` });
     } else if (patForge) {
       // If we already pushed a tokenError for the failed App mint above,
       // drop it — we DID resolve a token in the end.

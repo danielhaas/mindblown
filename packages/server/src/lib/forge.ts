@@ -58,6 +58,17 @@ export interface ForgeIntegrationConfig {
 export const FORGE_PROVIDERS: string[] = ['github', 'gitea'] satisfies ForgeKind[];
 
 /**
+ * Can a forge integration row authenticate against its repo? A PAT row
+ * carries `token`; an OAuth-bound row (#369) carries `token: ''` and an
+ * `oauthIdentityId` whose access token `forgeFromIntegration` resolves. The
+ * catch-up, drift-audit, ingest and route call sites all gate on this
+ * instead of `cfg.token`, so OAuth rows are not silently skipped.
+ */
+export function isServableIntegrationConfig(cfg: Partial<ForgeIntegrationConfig> | null | undefined): boolean {
+  return !!cfg && !!cfg.owner && !!cfg.repo && (!!cfg.token || !!cfg.oauthIdentityId);
+}
+
+/**
  * Build a client for a PAT integration row, or `null` when the row's kind
  * cannot be served by this build (a `gitea` row before #368 lands, or a
  * self-hosted row missing its URLs). Never throws: one bad row must skip

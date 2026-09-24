@@ -28,8 +28,9 @@ import {
   listGiteaUserRepos,
 } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
-import { integrations, userGithubIdentities } from '../db/schema.js';
+import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
+import { requireAdmin } from '../auth.js';
 import { FORGE_PROVIDERS, type ForgeIntegrationConfig } from '../lib/forge.js';
 import {
   findGiteaIdentity,
@@ -58,6 +59,54 @@ function verifyState(token: string): StatePayload {
   return payload;
 }
 
+// The state alone would let anyone who saw it (proxy log, Gitea's request
+// log, a screen) finish the flow from their own browser and bind the
+// victim's MindBlown account to *their* Gitea identity. Bind the state to
+// the browser that started it: the nonce also travels in an httpOnly
+// cookie scoped to the callback path, and the callback demands both.
+const NONCE_COOKIE = 'mb_gitea_oauth';
+
+/**
+ * May this user (re)bind the workspace's forge? Admins, the workspace
+ * owner, and anyone holding `admin` permission on a map of the workspace.
+ * Without this any signed-in user could point another workspace's sync at
+ * their own repository. Also gates the status binding lookup, so the
+ * bound repo of a foreign workspace is not readable by id.
+ */
+async function canManageWorkspaceForge(
+  req: { userId?: string; authSource?: 'jwt' | 'api-key' },
+  workspaceId: string,
+): Promise<boolean> {
+  const userId = req.userId;
+  if (!userId) return false;
+  if (await requireAdmin(req)) return true;
+  const [ws] = await db.select({ ownerId: workspaces.ownerId }).from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1);
+  if (!ws) return false;
+  if (ws.ownerId === userId) return true;
+  const [perm] = await db
+    .select({ mapId: mapPermissions.mapId })
+    .from(mapPermissions)
+    .innerJoin(maps, eq(maps.id, mapPermissions.mapId))
+    .where(and(eq(maps.workspaceId, workspaceId), eq(mapPermissions.userId, userId), eq(mapPermissions.permission, 'admin')))
+    .limit(1);
+  return !!perm;
+}
+
+function nonceCookie(nonce: string, clear = false): string {
+  const secure = (process.env.PUBLIC_URL ?? '').startsWith('https://') ? '; Secure' : '';
+  const maxAge = clear ? 0 : 15 * 60;
+  return `${NONCE_COOKIE}=${clear ? '' : nonce}; Path=/api/auth/gitea; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function readNonceCookie(cookieHeader: string | undefined): string | null {
+  if (!cookieHeader) return null;
+  for (const part of cookieHeader.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === NONCE_COOKIE) return v.join('=') || null;
+  }
+  return null;
+}
+
 export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/auth/gitea/authorize ────────────────────────────────
   app.get('/api/auth/gitea/authorize', async (req, reply) => {
@@ -71,7 +120,10 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'GITEA_NOT_CONFIGURED', message: 'Gitea OAuth is not configured on this server (GITEA_URL, GITEA_OAUTH_CLIENT_ID, GITEA_OAUTH_CLIENT_SECRET, PUBLIC_URL)' },
       });
     }
-    return reply.send({ authorizeUrl: giteaAuthorizeUrl(oauth, signState(userId)), instanceUrl: oauth.instanceUrl });
+    const state = signState(userId);
+    const { nonce } = jwt.decode(state) as StatePayload;
+    reply.header('Set-Cookie', nonceCookie(nonce));
+    return reply.send({ authorizeUrl: giteaAuthorizeUrl(oauth, state), instanceUrl: oauth.instanceUrl });
   });
 
   // ── GET /api/auth/gitea/callback ─────────────────────────────────
@@ -84,6 +136,10 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
     } catch {
       return reply.redirect(`${FRONTEND_URL}/?gh=error&forge=gitea&reason=invalid_state`);
     }
+    if (readNonceCookie(req.headers.cookie) !== state.nonce) {
+      return reply.redirect(`${FRONTEND_URL}/?gh=error&forge=gitea&reason=state_not_from_this_browser`);
+    }
+    reply.header('Set-Cookie', nonceCookie('', true));
     if (query.error || !query.code) {
       return reply.redirect(`${FRONTEND_URL}/?gh=error&forge=gitea&reason=${encodeURIComponent(query.error ?? 'missing_code')}`);
     }
@@ -117,16 +173,32 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   // ── GET /api/auth/gitea/status ───────────────────────────────────
+  // `?workspaceId=` adds the workspace's current OAuth-bound repository (if
+  // any) so the panel can show "syncs with owner/repo" on reopen.
   app.get('/api/auth/gitea/status', async (req, reply) => {
     const userId = (req as { userId?: string }).userId;
     if (!userId) return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
     const oauth = giteaOAuthApp();
     const identity = oauth ? await findGiteaIdentity(userId) : null;
+    const { workspaceId } = req.query as { workspaceId?: string };
+    let binding: { repo: string; viaThisIdentity: boolean } | null = null;
+    if (workspaceId && oauth && (await canManageWorkspaceForge(req as { userId?: string }, workspaceId))) {
+      const [row] = await db
+        .select({ config: integrations.config, enabled: integrations.enabled })
+        .from(integrations)
+        .where(and(eq(integrations.workspaceId, workspaceId), eq(integrations.provider, 'gitea')))
+        .limit(1);
+      const cfg = row?.config as ForgeIntegrationConfig | undefined;
+      if (row?.enabled && cfg?.oauthIdentityId) {
+        binding = { repo: `${cfg.owner}/${cfg.repo}`, viaThisIdentity: !!identity && cfg.oauthIdentityId === identity.id };
+      }
+    }
     return reply.send({
       configured: !!oauth,
       instanceUrl: oauth?.instanceUrl ?? null,
       connected: !!identity,
       identity: identity ? { login: identity.githubLogin } : null,
+      binding,
     });
   });
 
@@ -175,6 +247,11 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
     }
     const oauth = giteaOAuthApp();
     if (!oauth) return reply.status(503).send({ error: { code: 'GITEA_NOT_CONFIGURED', message: 'Gitea OAuth is not configured' } });
+    if (!(await canManageWorkspaceForge(req as { userId?: string; authSource?: 'jwt' | 'api-key' }, body.workspaceId))) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Only the workspace owner, a map admin of this workspace, or a MindBlown admin may bind its repository' },
+      });
+    }
     const identity = await findGiteaIdentity(userId);
     if (!identity) return reply.status(404).send({ error: { code: 'NO_IDENTITY', message: 'Sign in with Gitea first.' } });
 

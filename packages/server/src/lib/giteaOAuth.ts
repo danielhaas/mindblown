@@ -111,12 +111,36 @@ export async function giteaAccessTokenFor(identity: GiteaIdentityRow): Promise<s
   const fresh = expiresAt === null || expiresAt - Date.now() > REFRESH_SKEW_MS;
   if (fresh) return decrypt(identity.encryptedAccessToken);
 
-  const app = giteaOAuthApp();
-  if (!app) throw new Error('Gitea OAuth is not configured on this server');
-  if (!identity.encryptedRefreshToken) {
-    throw new Error(`Gitea token for ${identity.githubLogin} expired and cannot be refreshed — sign in again`);
+  // Gitea rotates the refresh token on every use, so two concurrent
+  // refreshes (catch-up tick + webhook + UI) would race: the loser would
+  // hand in an already-consumed refresh token and get invalid_grant.
+  // Serialise per identity within this process.
+  const pending = inflightRefresh.get(identity.id);
+  if (pending) return pending;
+  const run = (async () => {
+    const app = giteaOAuthApp();
+    if (!app) throw new Error('Gitea OAuth is not configured on this server');
+    // Re-read: another process (or an earlier caller) may have refreshed
+    // since this row was loaded.
+    const current = (await findGiteaIdentityById(identity.id)) ?? identity;
+    const nowExpires = current.tokenExpiresAt?.getTime() ?? null;
+    if (nowExpires !== null && nowExpires - Date.now() > REFRESH_SKEW_MS) {
+      return decrypt(current.encryptedAccessToken);
+    }
+    if (!current.encryptedRefreshToken) {
+      throw new Error(`Gitea token for ${current.githubLogin} expired and cannot be refreshed — sign in again`);
+    }
+    const tokens = await refreshGiteaAccessToken(app, decrypt(current.encryptedRefreshToken));
+    // Stored BEFORE it is handed out: the old refresh token is dead now.
+    await storeGiteaTokens(current.id, tokens);
+    return tokens.accessToken;
+  })();
+  inflightRefresh.set(identity.id, run);
+  try {
+    return await run;
+  } finally {
+    inflightRefresh.delete(identity.id);
   }
-  const tokens = await refreshGiteaAccessToken(app, decrypt(identity.encryptedRefreshToken));
-  await storeGiteaTokens(identity.id, tokens);
-  return tokens.accessToken;
 }
+
+const inflightRefresh = new Map<string, Promise<string>>();

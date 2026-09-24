@@ -204,10 +204,12 @@ Register an OAuth2 application on the Gitea instance (*Settings → Applications
 |----------|-------------|
 | `GITEA_URL` | Instance root, e.g. `https://git.example.com` |
 | `GITEA_OAUTH_CLIENT_ID` / `GITEA_OAUTH_CLIENT_SECRET` | The application's credentials |
-| `PUBLIC_URL` | This server's public origin (the callback is built from it) |
+| `PUBLIC_URL` | This server's public origin (the callback is built from it; falls back to `FRONTEND_URL`) |
 | `ENCRYPTION_KEY` | Already required for GitHub sign-in; the user's Gitea tokens are stored encrypted with it |
 
-The GitHub panel then shows **Sign in with Gitea** and, once signed in, a picker of the repositories that user can see; **Use this repository** binds the workspace. Tokens are refreshed automatically; revoking the grant on Gitea (or *Disconnect*) stops the sync until someone signs in again or connects with a token.
+The GitHub panel then shows **Sign in with Gitea** and, once signed in, a picker of the repositories that user can see; **Use this repository** binds the workspace (allowed for MindBlown admins, the workspace owner and map admins of that workspace). Tokens are refreshed automatically; revoking the grant on Gitea (or *Disconnect Gitea account*) stops the sync until someone signs in again or connects with a token.
+
+The sign-in state is bound to the browser with a cookie on `/api/auth/gitea`, so the app and the API must be served from the same host (as in the setup above); a callback arriving without that cookie is rejected with `reason=state_not_from_this_browser`.
 
 ### Connecting a Gitea repository with a token
 

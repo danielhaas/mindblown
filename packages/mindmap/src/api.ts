@@ -389,6 +389,8 @@ export interface GiteaAuthStatus {
   instanceUrl: string | null;
   connected: boolean;
   identity: { login: string } | null;
+  /** The workspace's current OAuth-bound repository, when `workspaceId` was passed. */
+  binding: { repo: string; viaThisIdentity: boolean } | null;
 }
 
 export interface GiteaRepoInfo {
@@ -402,8 +404,9 @@ export interface GiteaRepoInfo {
   canPush: boolean | null;
 }
 
-export function getGiteaAuthStatus(): Promise<GiteaAuthStatus> {
-  return request('/api/auth/gitea/status');
+export function getGiteaAuthStatus(workspaceId?: string): Promise<GiteaAuthStatus> {
+  const qs = workspaceId ? `?workspaceId=${encodeURIComponent(workspaceId)}` : '';
+  return request(`/api/auth/gitea/status${qs}`);
 }
 
 export function getGiteaAuthorizeUrl(): Promise<{ authorizeUrl: string; instanceUrl: string }> {
