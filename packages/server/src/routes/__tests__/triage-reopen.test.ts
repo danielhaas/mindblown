@@ -189,7 +189,10 @@ const hoisted = vi.hoisted(() => ({
   })),
 }));
 const triageMock = hoisted.triageMock;
-vi.mock('../../sync/triage.js', () => ({ triageIssue: hoisted.triageMock }));
+vi.mock('../../sync/triage.js', () => ({
+  triageAvailable: () => true,
+  triageIssue: hoisted.triageMock,
+}));
 
 vi.mock('../../sync/mapContext.js', () => ({
   buildMapContext: vi.fn(async (mapId: string) => ({

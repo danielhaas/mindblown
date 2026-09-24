@@ -136,6 +136,35 @@ The built files are in `packages/mindmap/dist/`. Serve them with any static file
 
 ---
 
+## AI Backends (optional)
+
+MindBlown runs without any LLM. AI features are switched on by configuring a backend; anything not offered by the configured backend is hidden in the UI and answered with `503 AI_NOT_CONFIGURED` by the API and the MCP tools. Private installs that must not talk to public LLM providers simply leave both variables unset, or point `AI_BASE_URL` at a model inside their own network.
+
+| Variable | Description |
+|----------|-------------|
+| `AI_BASE_URL` | OpenAI-compatible base URL of a local model server, e.g. `http://ollama.internal:11434/v1` (Ollama, vLLM, llama.cpp, LM Studio). |
+| `AI_MODEL` | Chat model on that server. Default `qwen2.5:14b`. |
+| `AI_EMBED_MODEL` | Embedding model on that server. Default `nomic-embed-text`. |
+| `ANTHROPIC_API_KEY` | Claude API key. Enables the Claude backend (public internet). |
+| `ANTHROPIC_MODEL` | Claude model for chat. |
+| `TRIAGE_MODEL` | Claude model for GitHub issue triage. Default `claude-haiku-4-5`. |
+
+What each mode offers today:
+
+| Feature | No LLM | Local model (`AI_BASE_URL`) | Claude (`ANTHROPIC_API_KEY`) |
+|---------|--------|-----------------------------|------------------------------|
+| Mindmap, views, GitHub sync, MCP tools, fleet dispatch | yes | yes | yes |
+| AI chat panel | – | yes | yes |
+| Breakdown, brain dump, estimate, refine structure, standup | – | yes | – |
+| Semantic search (embeddings) | – | yes | – |
+| GitHub issue triage | – | – | yes |
+
+With both configured, chat uses the admin-selected provider (Settings → AI Chat Provider) and every feature is available. A map with triage enabled on a server without a triage-capable backend logs one warning at startup and routes incoming issues straight to the inbox.
+
+`GET /api/ai/config` reports the effective flags as `capabilities` and is served even in no-LLM mode.
+
+---
+
 ## Reverse Proxy (nginx)
 
 For production, put MindBlown behind a reverse proxy with SSL.

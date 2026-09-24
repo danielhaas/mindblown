@@ -3,6 +3,7 @@ import { useMindmapStore } from './store.js';
 import type { ActiveView } from './store.js';
 import type { LayoutType } from './layout.js';
 import * as api from './api.js';
+import { useAiCapabilities } from './aiCapabilities.js';
 
 // ── Fuzzy match ──────────────────────────────────────────────
 
@@ -79,8 +80,9 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   // to the top of the goto- list. Falls back to fuzzy-only if the AI layer
   // isn't available or the query is too short.
   const [semanticRank, setSemanticRank] = useState<Map<string, number>>(new Map());
+  const semanticAvailable = useAiCapabilities().embeddings;
   useEffect(() => {
-    if (!currentMapId || query.trim().length < 3) {
+    if (!semanticAvailable || !currentMapId || query.trim().length < 3) {
       setSemanticRank((prev) => (prev.size === 0 ? prev : new Map()));
       return;
     }
@@ -100,7 +102,7 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [query, currentMapId]);
+  }, [query, currentMapId, semanticAvailable]);
 
   const addNode = useMindmapStore((s) => s.addNode);
   const deleteNode = useMindmapStore((s) => s.deleteNode);

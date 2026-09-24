@@ -427,6 +427,7 @@ function debounceKey(mapId: string, externalId: string): string {
 }
 
 vi.mock('../triage.js', () => ({
+  triageAvailable: () => true,
   triageIssue: vi.fn(async (input: { issue: { number: number }; mapContext: { mapId: string } }) => {
     triageMockCalls.push({
       issueNumber: input.issue.number,

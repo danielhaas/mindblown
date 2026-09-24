@@ -1465,8 +1465,22 @@ export interface AiProviderSettings {
   preference: AiProviderPreference;
 }
 
-export interface AiConfigResponse {
+/**
+ * Which AI features this server offers. All false = no-LLM mode; the UI
+ * hides the matching affordances instead of showing buttons that 503.
+ */
+export interface AiCapabilities {
   enabled: boolean;
+  chat: boolean;
+  structured: boolean;
+  embeddings: boolean;
+  triage: boolean;
+}
+
+export interface AiConfigResponse {
+  /** Any LLM configured at all. */
+  enabled: boolean;
+  capabilities: AiCapabilities;
   model: string;
   active: { name: AiProviderName; model: string } | null;
   preference: AiProviderPreference;
