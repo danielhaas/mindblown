@@ -97,6 +97,33 @@ describe('requireAdmin', () => {
     ).toBe(false);
   });
 
+  // #363: the forge connect/test routes opt in so the operator's own agent
+  // (running on the operator's API key) can bind a self-hosted forge.
+  it('allowApiKey: an ADMIN\'s API key passes', async () => {
+    isAdminByUserId.set('admin-uid', true);
+    expect(
+      await requireAdmin({ userId: 'admin-uid', authSource: 'api-key' }, { allowApiKey: true }),
+    ).toBe(true);
+  });
+
+  it('allowApiKey: a non-admin\'s API key still fails', async () => {
+    isAdminByUserId.set('user-uid', false);
+    expect(
+      await requireAdmin({ userId: 'user-uid', authSource: 'api-key' }, { allowApiKey: true }),
+    ).toBe(false);
+  });
+
+  it('allowApiKey: an unknown user\'s API key still fails', async () => {
+    expect(
+      await requireAdmin({ userId: 'ghost', authSource: 'api-key' }, { allowApiKey: true }),
+    ).toBe(false);
+  });
+
+  it('allowApiKey defaults to off — the #69 rule is unchanged for every other caller', async () => {
+    isAdminByUserId.set('admin-uid', true);
+    expect(await requireAdmin({ userId: 'admin-uid', authSource: 'api-key' }, {})).toBe(false);
+  });
+
   it('returns true when authSource is jwt and user is admin', async () => {
     isAdminByUserId.set('admin-uid', true);
     expect(

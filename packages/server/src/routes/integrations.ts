@@ -409,15 +409,16 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     };
 
     // Pointing the server at a self-hosted forge (any URL, fetched
-    // server-side with the caller's token) is an admin action — an
-    // interactive session, never an API key (see requireAdmin). A plain
-    // github.com connection touches only api.github.com and stays open to
-    // every authenticated caller, as before #368, so the MCP tool keeps
-    // working over API keys for GitHub.
+    // server-side with the caller's token) is an admin action. An admin's
+    // own API key is accepted here (requireAdmin allowApiKey): the private
+    // deployment flow is driven by the operator's agent, and this is the
+    // one admin step it needs (#363). A plain github.com connection touches
+    // only api.github.com and stays open to every authenticated caller, as
+    // before #368, so the MCP tool keeps working over API keys for GitHub.
     const selfHosted = (body.kind ?? 'github') !== 'github' || !!body.apiBaseUrl || !!body.webBaseUrl;
-    if (selfHosted && !(await requireAdmin(req))) {
+    if (selfHosted && !(await requireAdmin(req, { allowApiKey: true }))) {
       return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Connecting a self-hosted forge needs an admin web session (API keys are not accepted)' },
+        error: { code: 'FORBIDDEN', message: 'Connecting a self-hosted forge needs an admin (web session or an admin\'s API key)' },
       });
     }
 
@@ -500,13 +501,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: string;
       repo: string;
     };
-    // Self-hosted target → admin session only: the server fetches a
-    // caller-chosen URL with a caller-chosen token and echoes part of the
-    // answer, an SSRF primitive for anyone else. github.com stays open.
+    // Self-hosted target → admin only (session or an admin's own API key,
+    // same rule as the connect route): the server fetches a caller-chosen
+    // URL with a caller-chosen token and echoes part of the answer, an
+    // SSRF primitive for anyone else. github.com stays open.
     const selfHosted = (body.kind ?? 'github') !== 'github' || !!body.apiBaseUrl || !!body.webBaseUrl;
-    if (selfHosted && !(await requireAdmin(req))) {
+    if (selfHosted && !(await requireAdmin(req, { allowApiKey: true }))) {
       return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Testing a self-hosted forge needs an admin web session (API keys are not accepted)' },
+        error: { code: 'FORBIDDEN', message: 'Testing a self-hosted forge needs an admin (web session or an admin\'s API key)' },
       });
     }
     if (!body.token || !body.owner || !body.repo) {
