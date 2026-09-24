@@ -9,7 +9,14 @@ import * as api from './api.js';
 export const httpBackend: ToolBackend = {
   listMaps: () => api.listMaps(),
   getMap: (mapId) => api.getMap(mapId),
-  createMap: (name, description) => api.createMap(name, description),
+  // POST /api/maps answers { map, rootNode }; the tool contract is { id, name }.
+  // Before this, create_map over MCP reported "id: undefined" and dropped
+  // aiPolicy on the floor — a private map created by an agent came out `any`.
+  createMap: async (name, description, options) => {
+    const r = await api.createMap(name, description, 'default', options);
+    const map = r?.map ?? r;
+    return { id: map?.id, name: map?.name ?? name };
+  },
   updateMap: (mapId, fields) => api.updateMap(mapId, fields),
   deleteMap: (mapId) => api.deleteMap(mapId),
   createNode: (mapId, parentId, text, fields) => api.createNode(mapId, parentId, text, fields),

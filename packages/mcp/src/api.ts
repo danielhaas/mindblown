@@ -452,10 +452,20 @@ export function getMap(mapId: string): Promise<MapDetail> {
   return request<MapDetail>(`/api/maps/${mapId}`);
 }
 
-export function createMap(name: string, description?: string, workspaceId = 'default'): Promise<any> {
+export function createMap(
+  name: string,
+  description?: string,
+  workspaceId = 'default',
+  options?: { aiPolicy?: 'any' | 'local' | 'none' },
+): Promise<any> {
   return request('/api/maps', {
     method: 'POST',
-    body: JSON.stringify({ name, description, workspaceId }),
+    body: JSON.stringify({
+      name,
+      description,
+      workspaceId,
+      ...(options?.aiPolicy ? { aiPolicy: options.aiPolicy } : {}),
+    }),
   });
 }
 
