@@ -280,6 +280,64 @@ describe('create_node tool', () => {
 
 // ── Soft-delete / restore (#107) ────────────────────────────────
 
+describe('create_node tool — description and schema parity (#389)', () => {
+  // create_node with a `description` argument returned success while the
+  // node landed without one: the key was missing from the zod schema, so
+  // parsing stripped it silently. A create_github_issue_from_node right
+  // after then filed an issue with an empty body.
+  it('accepts description in the schema and forwards it to the backend', async () => {
+    const schema = z.object(createNodeTool.schema);
+    const parsed = schema.parse({
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'ticket',
+      description: '## Why\n\nbecause',
+    });
+    expect(parsed.description).toBe('## Why\n\nbecause');
+
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, parsed as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ description: '## Why\n\nbecause' });
+  });
+
+  it('forwards tags, scopes and percentComplete on create', async () => {
+    const parsed = z.object(createNodeTool.schema).parse({
+      mapId: 'm1',
+      parentId: 'p1',
+      text: 'ticket',
+      tags: ['a', 'b'],
+      scopes: ['apps/workflows'],
+      percentComplete: 40,
+    });
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, parsed as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({
+      tags: ['a', 'b'],
+      scopes: ['apps/workflows'],
+      percentComplete: 40,
+    });
+  });
+
+  // The guard for the whole class: every data field update_node accepts
+  // must be accepted by create_node too, unless it is update-only by
+  // design. autoProgress, assigneeIds and description were each added
+  // to create_node in separate fixes after being found missing at runtime;
+  // this pins the set so the next field cannot slip through.
+  it('create_node accepts every update_node field except the update-only ones', () => {
+    const updateOnly = new Set([
+      'nodeId', // addressing, not data
+      'tagsAppend', // merge semantics only make sense against an existing set
+      'tagsRemove',
+      'blockedReason', // a node is blocked after it exists, not at birth
+    ]);
+    const createKeys = new Set(Object.keys(createNodeTool.schema));
+    const missing = Object.keys(updateNodeTool.schema).filter(
+      (k) => !updateOnly.has(k) && !createKeys.has(k),
+    );
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('update_node tool — assigneeIds', () => {
   it('forwards an assignee set to the backend', async () => {
     const recorder = makeRecordingBackend();

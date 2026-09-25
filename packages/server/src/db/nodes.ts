@@ -249,6 +249,12 @@ export interface CreateNodeInput {
   verificationVideoUrl?: string | null;
   verificationVideoPosterUrl?: string | null;
   assigneeIds?: string[];
+  /** Rich text (ProseMirror JSON) or a plain markdown string — same as UpdateNodeInput. */
+  description?: unknown;
+  tags?: string[];
+  scopes?: string[];
+  versionId?: string | null;
+  cycleId?: string | null;
 }
 
 export async function createNode(
@@ -302,7 +308,14 @@ export async function createNode(
       verificationVideoUrl: input.verificationVideoUrl ?? null,
       verificationVideoPosterUrl: input.verificationVideoPosterUrl ?? null,
       assigneeIds: input.assigneeIds ?? [],
-      tags: [],
+      // Every field below used to be silently dropped on create (hardcoded
+      // or absent) while updateNode accepted it — REST returned 201 and the
+      // caller only found out on the round trip (#389, #346).
+      description: input.description ?? null,
+      tags: input.tags ?? [],
+      scopes: input.scopes ?? [],
+      versionId: input.versionId ?? null,
+      cycleId: input.cycleId ?? null,
       customFields: {},
       dependencies: [],
       externalLinks: [],
