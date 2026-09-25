@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
-import { OctocatIcon } from './icons/Octocat.js';
+import { ForgeIcon } from './icons/ForgeIcon.js';
 import { pickCurrentCycle } from './roles.js';
 
 // ── Constants ──────────────────────────────────────────────────
@@ -719,7 +719,7 @@ export function ListView() {
                   textDecoration: 'none',
                 }}
               >
-                <OctocatIcon size={11} color="currentColor" />
+                <ForgeIcon kind={githubLink.provider} size={11} color="currentColor" />
                 {issueNum && <span>#{issueNum}</span>}
               </a>
             );

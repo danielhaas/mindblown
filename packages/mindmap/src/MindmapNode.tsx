@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import type { LayoutNode } from './layout.js';
-import { OctocatIcon } from './icons/Octocat.js';
+import { ForgeIcon } from './icons/ForgeIcon.js';
 
 // ── Color palette ──────────────────────────────────────────────
 
@@ -254,6 +254,8 @@ interface MindmapNodeProps {
    * Set from the editor when `node.id === map.githubInboxNodeId`.
    */
   isGithubInbox?: boolean;
+  /** The map's forge ('github' | 'gitea'), for the inbox marker's logo. */
+  forgeKind?: string | null;
   /**
    * When true, render an orange conflict-warning border.
    * Set by the editor when this todo node's scopes overlap with an
@@ -297,6 +299,7 @@ export function MindmapNode({
   hasHiddenChildren = false,
   hiddenDescendantCount = 0,
   isGithubInbox = false,
+  forgeKind = null,
   hasConflict = false,
   wideFanoutCount,
   textScale = 1,
@@ -543,7 +546,8 @@ export function MindmapNode({
           }}
         >
           <title>{githubLink.externalId}</title>
-          <OctocatIcon
+          <ForgeIcon
+            kind={githubLink.provider}
             x={x + width - 14 * textScale}
             y={y + 3 * textScale}
             size={11 * textScale}
@@ -594,7 +598,8 @@ export function MindmapNode({
       {isGithubInbox && !githubLink && (
         <g>
           <title>Issue inbox — auto-imported issues land here</title>
-          <OctocatIcon
+          <ForgeIcon
+            kind={forgeKind}
             x={x + width - 14 * textScale}
             y={y + 3 * textScale}
             size={11 * textScale}

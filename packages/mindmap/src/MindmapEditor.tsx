@@ -1552,6 +1552,7 @@ export function MindmapEditor() {
                   hasHiddenChildren={meta?.hasHiddenChildren ?? false}
                   hiddenDescendantCount={meta?.hiddenDescendantCount ?? 0}
                   isGithubInbox={ln.id === currentMap?.githubInboxNodeId}
+                  forgeKind={currentMap?.forgeKind}
                   hasConflict={conflictNodeIds.has(ln.id)}
                   wideFanoutCount={
                     // Offer grouping help once the fanout is past the wrap
