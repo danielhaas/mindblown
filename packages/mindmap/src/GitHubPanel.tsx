@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { Node } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, forgeLabel } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { GitHubIssueStatus } from './api.js';
@@ -16,6 +16,7 @@ export function GitHubNodeSection({
   node: Node;
 }) {
   const updateNode = useMindmapStore((s) => s.updateNode);
+  const currentMap = useMindmapStore((s) => s.currentMap);
   const [statuses, setStatuses] = useState<GitHubIssueStatus[]>([]);
   const [loading, setLoading] = useState(false);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
@@ -68,7 +69,7 @@ export function GitHubNodeSection({
           marginBottom: 8,
         }}
       >
-        GitHub
+        {forgeLabel(githubLinks[0]?.provider ?? currentMap?.forgeKind)}
       </div>
 
       {error && (
@@ -130,7 +131,7 @@ export function GitHubNodeSection({
                   rel="noopener noreferrer"
                   style={{ fontSize: 10, color: '#4f46e5', textDecoration: 'none' }}
                 >
-                  Open on GitHub
+                  Open on {forgeLabel(githubLinks.find((l) => l.externalId === s.externalId)?.provider ?? githubLinks[0]?.provider)}
                 </a>
               )}
               {s.error && (
@@ -238,6 +239,7 @@ function LinkIssueDialog({
   onLinked: () => void;
 }) {
   const updateNode = useMindmapStore((s) => s.updateNode);
+  const forge = forgeLabel(useMindmapStore((s) => s.currentMap)?.forgeKind);
   const [owner, setOwner] = useState('');
   const [repo, setRepo] = useState('');
   const [issueNumber, setIssueNumber] = useState('');
@@ -283,7 +285,7 @@ function LinkIssueDialog({
         }}
       >
         <h3 style={{ margin: '0 0 16px', fontSize: 15, fontWeight: 700, color: '#1e293b' }}>
-          Link to GitHub Issue
+          Link to {forge} Issue
         </h3>
 
         {error && (
@@ -418,6 +420,8 @@ export function GitHubSettingsDialog({
   onClose: () => void;
 }) {
   const currentMap = useMindmapStore((s) => s.currentMap);
+  // "GitHub" or "Gitea" in every label of this panel, from the map's forge.
+  const forge = forgeLabel(currentMap?.forgeKind);
   const user = useMindmapStore((s) => s.user);
   const loadMap = useMindmapStore((s) => s.loadMap);
 
@@ -638,14 +642,14 @@ export function GitHubSettingsDialog({
           const dry = await api.ingestNewIssues(mapId, { dryRun: true });
           if (dry.wouldImport > 0) {
             const ok = window.confirm(
-              `Auto-import is now ON. There are ${dry.wouldImport} unlinked GitHub issues (open + closed-within-30d). Backfill them into the GitHub Inbox now?`,
+              `Auto-import is now ON. There are ${dry.wouldImport} unlinked ${forge} issues (open + closed-within-30d). Backfill them into the ${forge} Inbox now?`,
             );
             if (ok) {
               const result = await api.ingestNewIssues(mapId);
               const capNote = result.capped
                 ? ` (capped at 200; ${result.total} total — run again for the rest)`
                 : '';
-              setIngestNotice(`Imported ${result.imported} issues to GitHub Inbox${capNote}.`);
+              setIngestNotice(`Imported ${result.imported} issues to ${forge} Inbox${capNote}.`);
             }
           }
         } catch (err: any) {
@@ -700,7 +704,7 @@ export function GitHubSettingsDialog({
       await handleSyncOverview(syncIncludeClosed); // refresh
       loadMap(mapId);
     } catch (e: any) {
-      setError(e.message ?? 'Failed to promote node to GitHub issue');
+      setError(e.message ?? `Failed to promote node to ${forge} issue`);
     }
   };
 
@@ -775,7 +779,7 @@ export function GitHubSettingsDialog({
       >
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: '#1e293b' }}>
-            GitHub Integration
+            {forge} Integration
           </h2>
           <button
             onClick={onClose}
@@ -822,7 +826,7 @@ export function GitHubSettingsDialog({
           <button
             onClick={handleReconcile}
             disabled={reconciling}
-            title="Pull recent issue state changes from GitHub (catch up missed webhooks)"
+            title={`Pull recent issue state changes from ${forge} (catch up missed webhooks)`}
             style={{
               background: '#f1f5f9',
               border: '1px solid #e2e8f0',
@@ -835,7 +839,7 @@ export function GitHubSettingsDialog({
               fontFamily: 'inherit',
             }}
           >
-            {reconciling ? 'Reconciling...' : 'Reconcile with GitHub'}
+            {reconciling ? 'Reconciling...' : `Reconcile with ${forge}`}
           </button>
           {reconcileResult && !reconcileResult.error && (
             <span style={{ fontSize: 11, color: '#475569' }}>
@@ -916,7 +920,7 @@ export function GitHubSettingsDialog({
                   Auto-import new GitHub issues
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                  New issues on {appRepoLabel} appear under the "GitHub Inbox" node
+                  New issues on {appRepoLabel} appear under the "{forge} Inbox" node
                   (created on demand). Catchup sweep + webhook both feed this.
                 </div>
               </label>
@@ -1016,10 +1020,10 @@ export function GitHubSettingsDialog({
                 }}
               >
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
-                  Write triage labels back to GitHub
+                  Write triage labels back to {forge}
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-                  Writes <code>triage:placed</code> / <code>triage:skipped</code> labels to GitHub
+                  Writes <code>triage:placed</code> / <code>triage:skipped</code> labels to {forge}
                   when decisions are reviewed. Requires labels to exist in the repo.
                 </div>
                 {labelWritebackDisabledByTriage && (
@@ -1052,7 +1056,7 @@ export function GitHubSettingsDialog({
                 AI triage active
                 {triageLabelWriteback && !labelWritebackDisabledByTriage && (
                   <span style={{ fontWeight: 500, color: '#15803d' }}>
-                    · labels write back to GitHub
+                    · labels write back to {forge}
                   </span>
                 )}
               </div>
@@ -1543,6 +1547,7 @@ function TriageDisableConfirmModal({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const forge = forgeLabel(useMindmapStore((s) => s.currentMap)?.forgeKind);
   return (
     <div
       data-testid="map-settings-triage-disable-confirm"
@@ -1573,8 +1578,8 @@ function TriageDisableConfirmModal({
           Disable AI triage?
         </h3>
         <p style={{ margin: '0 0 18px', fontSize: 12, lineHeight: 1.5, color: '#475569' }}>
-          Disabling AI triage stops automatic classification of new GitHub issues.
-          Existing decisions stay; new issues will land flat under "GitHub Inbox" again.
+          Disabling AI triage stops automatic classification of new {forge} issues.
+          Existing decisions stay; new issues will land flat under "{forge} Inbox" again.
           Continue?
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>

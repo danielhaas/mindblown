@@ -69,6 +69,23 @@ async function getForgeIntegration(
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
+/**
+ * The map's forge kind for labels — cheap (no token minted, no network):
+ * a GitHub App installation binding is GitHub; otherwise the workspace's
+ * enabled forge integration decides; nothing bound → null.
+ */
+export async function getMapForgeKind(mapId: string): Promise<'github' | 'gitea' | null> {
+  const [map] = await db
+    .select({ githubInstallationId: maps.githubInstallationId, workspaceId: maps.workspaceId })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!map) return null;
+  if (map.githubInstallationId) return 'github';
+  const integration = await getForgeIntegration(map.workspaceId);
+  if (!integration) return null;
+  return integration.provider === 'gitea' ? 'gitea' : 'github';
+}
+
 export async function getGitHubContextForMap(
   mapId: string,
 ): Promise<ForgeMapContext | null> {

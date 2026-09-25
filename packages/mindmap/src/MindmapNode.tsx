@@ -593,7 +593,7 @@ export function MindmapNode({
       {/* GitHub Inbox marker — surfaces the auto-import landing zone. */}
       {isGithubInbox && !githubLink && (
         <g>
-          <title>GitHub Inbox — auto-imported issues land here</title>
+          <title>Issue inbox — auto-imported issues land here</title>
           <OctocatIcon
             x={x + width - 14 * textScale}
             y={y + 3 * textScale}

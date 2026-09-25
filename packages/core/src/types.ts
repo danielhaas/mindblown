@@ -60,6 +60,18 @@ export function isForgeLink(link: { provider: string }): boolean {
   return FORGE_LINK_PROVIDERS.includes(link.provider);
 }
 
+/** A map's issue tracker as the UI names it. */
+export type ForgeKindName = 'github' | 'gitea';
+
+/**
+ * Human name of a forge for labels, tooltips and notices: 'Gitea' for a
+ * Gitea/Forgejo link or map, 'GitHub' otherwise (also the fallback while
+ * the kind is unknown). Pass a link's `provider` or a map's `forgeKind`.
+ */
+export function forgeLabel(kind?: string | null): string {
+  return kind === 'gitea' ? 'Gitea' : 'GitHub';
+}
+
 /**
  * An external link to an integration object (GitHub Issue, Jira ticket, etc.).
  */
@@ -666,6 +678,13 @@ export interface MindMap {
    * is handled by treating a dangling ID as "recreate on next ingest").
    */
   githubInboxNodeId?: string | null;
+  /**
+   * Which issue tracker the map syncs with, derived at read time from the
+   * binding (GitHub App installation → github; else the workspace's
+   * enabled forge integration). Not stored; null when nothing is bound.
+   * The UI labels links, the inbox and the settings with it (`forgeLabel`).
+   */
+  forgeKind?: ForgeKindName | null;
   /**
    * Per-map opt-in for the AI triage pipeline. When true, new GitHub
    * issues bound to this map go through the LLM triage classifier
