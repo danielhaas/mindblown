@@ -9,6 +9,7 @@ import * as permDb from '../db/permissions.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
+import { getMapForgeKind } from '../lib/githubContext.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
 import { computeForecastScorecard } from '../lib/forecastScorecard.js';
@@ -255,8 +256,12 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
+    // Derived, not stored: which forge the map syncs with, so the UI can say
+    // "Gitea" where it used to say "GitHub" (labels, inbox, settings).
+    const forgeKind = await getMapForgeKind(req.params.id);
+
     return reply.send({
-      map: data.map,
+      map: { ...data.map, forgeKind },
       nodes: nodesWithComputed,
     });
   });

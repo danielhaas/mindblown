@@ -1740,7 +1740,7 @@ function NotInMindBlownView({
             borderBottom: '1px solid #fde68a',
           }}
         >
-          Orphan bucket unavailable: {orphansError ?? 'GitHub fetch failed'}
+          Orphan bucket unavailable: {orphansError ?? 'issue tracker fetch failed'}
         </div>
       )}
 

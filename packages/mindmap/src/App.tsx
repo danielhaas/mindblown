@@ -462,7 +462,7 @@ function UserMenu({
           />
           <MenuDivider />
           <MenuItem
-            label="GitHub integration…"
+            label="Issue tracker integration…"
             onClick={() => {
               setOpen(false);
               onGitHub();

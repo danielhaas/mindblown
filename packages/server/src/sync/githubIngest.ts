@@ -44,7 +44,8 @@ import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, forgeLabel } from '@mindblown/core';
+import { getMapForgeKind } from '../lib/githubContext.js';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { pickActiveLane } from '../lib/activeLane.js';
@@ -285,7 +286,10 @@ export async function findIngestTargetMaps(
 
 // ── Inbox node lifecycle ──────────────────────────────────────────
 
-const INBOX_NODE_TITLE = 'GitHub Inbox';
+/** "GitHub Inbox" or "Gitea Inbox" — named after the map's forge at creation. */
+async function inboxNodeTitle(mapId: string): Promise<string> {
+  return `${forgeLabel(await getMapForgeKind(mapId))} Inbox`;
+}
 
 /**
  * Return the map's inbox node id, lazy-creating it if absent OR if the
@@ -328,7 +332,7 @@ export async function ensureInboxNode(
   const inbox = await nodeDb.createNode({
     mapId,
     parentId: mapRow.rootNodeId,
-    text: INBOX_NODE_TITLE,
+    text: await inboxNodeTitle(mapId),
     createdBy,
   });
   await db

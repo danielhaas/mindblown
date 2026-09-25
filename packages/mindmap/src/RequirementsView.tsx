@@ -761,7 +761,7 @@ export function RequirementsView() {
                     and exactly what a sign-off does NOT follow from. */}
                 <th style={thStyle}>Code Progress</th>
                 <th style={{ ...thStyle, textAlign: 'right' }}>Remaining</th>
-                <th style={thStyle}>GitHub</th>
+                <th style={thStyle}>Issues</th>
                 <th style={thStyle}>Acceptance</th>
               </tr>
             </thead>
