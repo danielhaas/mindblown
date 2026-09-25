@@ -26,6 +26,7 @@ import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
+import { TicketIntakeModal } from './TicketIntakeModal.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { NewMapDialog } from './NewMapDialog.js';
 import { MapChatPanel } from './MapChatPanel.js';
@@ -1550,6 +1551,11 @@ export function App() {
   // no-LLM install (role visibility via showPanel still applies on top).
   const ai = useAiCapabilities(currentMapId);
   const aiChatAvailable = ai.chat && showPanel('aiChat');
+  // Ticket intake (#387) — "add a ticket to the plan" lives in the top bar
+  // and the command palette, in every view; the node context menu stays as
+  // the secondary way in. Parent hint = the selected node, else the root.
+  const [ticketIntakeOpen, setTicketIntakeOpen] = useState(false);
+  const ticketIntakeAvailable = ai.chat && !!currentMapId;
   const [aiChatMinimised, setAiChatMinimised] = useState(false);
   const [mapChatOpen, setMapChatOpen] = useState(false);
   const [mapChatMinimised, setMapChatMinimised] = useState(false);
@@ -1870,6 +1876,41 @@ export function App() {
 
         {/* Right: sprint indicator + stats */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+          {/* New ticket (AI intake) */}
+          {ticketIntakeAvailable && (
+            <button
+              onClick={() => setTicketIntakeOpen(true)}
+              style={{
+                padding: '3px 10px',
+                borderRadius: 4,
+                border: '1px solid #bfdbfe',
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+                background: '#fff',
+                color: '#2563eb',
+                transition: 'all 0.15s',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+              onMouseOver={(e) => {
+                e.currentTarget.style.background = '#eff6ff';
+                e.currentTarget.style.borderColor = '#93c5fd';
+              }}
+              onMouseOut={(e) => {
+                e.currentTarget.style.background = '#fff';
+                e.currentTarget.style.borderColor = '#bfdbfe';
+              }}
+              title="Describe a ticket in prose — the AI drafts it against this plan and asks before creating"
+            >
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                <path d="M8 3v10M3 8h10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+              </svg>
+              Ticket
+            </button>
+          )}
           {/* Search button */}
           <button
             onClick={() => setCommandPaletteOpen(true)}
@@ -2324,7 +2365,22 @@ export function App() {
         onFitToScreen={handleFitToScreen}
         onZoomIn={handleZoomIn}
         onZoomOut={handleZoomOut}
+        onNewTicket={ticketIntakeAvailable ? () => setTicketIntakeOpen(true) : undefined}
       />
+
+      {/* Ticket intake (#387) — from the top bar or the palette */}
+      {ticketIntakeOpen && currentMapId && (() => {
+        const hintId = (selectedNodeId && nodes[selectedNodeId] ? selectedNodeId : rootNodeId) ?? null;
+        if (!hintId) return null;
+        return (
+          <TicketIntakeModal
+            mapId={currentMapId}
+            parentId={hintId}
+            parentText={nodes[hintId]?.text ?? ''}
+            onClose={() => setTicketIntakeOpen(false)}
+          />
+        );
+      })()}
 
       {/* Quick Add */}
       <QuickAdd
