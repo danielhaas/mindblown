@@ -28,6 +28,7 @@ import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
+import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
 import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings } from './formatters.js';
@@ -373,6 +374,24 @@ server.tool(
         lines.push(`  - ${n.id} ${n.text}: ${est} → ${act} (${ratio}x)`);
       }
       return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'list_attachments',
+  'Every file and link hung on nodes in a map, as one flat list, newest first — the same rows the Files tab shows. Answers "where is the spec / the screenshot / the export?" without paging through get_map. Each row names the node it hangs on ("Map" for a map-level file on the root node), the URL, type, size and the attachment id remove_attachment takes. Scope with nodeId (subtree) and/or kind.',
+  {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().optional().describe('Only this node and its descendants'),
+    kind: z.enum(['file', 'link']).optional().describe('Only files (uploaded, served by MindBlown) or only links (external URLs)'),
+  },
+  async ({ mapId, nodeId, kind }) => {
+    try {
+      const data = await api.getMap(mapId);
+      return toolResult(formatAttachmentList(data, { nodeId, kind }));
     } catch (err) {
       return toolError(err);
     }

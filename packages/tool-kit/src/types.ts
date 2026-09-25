@@ -59,6 +59,24 @@ export interface NodeWithComputed {
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;
+  /**
+   * Files and links hung on the node (core `Attachment`). Optional here
+   * because this is a hand-maintained mirror and older servers omit it;
+   * the attachment tools only read it to report a count.
+   */
+  attachments?: AttachmentSummary[];
+}
+
+/** One attachment as the tools report it (mirrors core `Attachment`). */
+export interface AttachmentSummary {
+  id: string;
+  kind: 'file' | 'link';
+  url: string;
+  title: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+  addedAt: string;
+  addedBy?: string | null;
 }
 
 /** Pull-queue profile routing thresholds (mirrors core ProfilePolicy, #262). */

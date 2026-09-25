@@ -20,6 +20,7 @@ import { WorkloadView } from './WorkloadView.js';
 import { ReleasesView } from './ReleasesView.js';
 import { RequirementsView } from './RequirementsView.js';
 import { GuideView } from './GuideView.js';
+import { FilesView } from './FilesView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { ShareDialog } from './ShareDialog.js';
@@ -884,6 +885,9 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // reader: "how do I check this?" rather than "where does this stand?".
   // Sits next to it so the switch between the two is one click.
   { id: 'guide', label: 'How to verify', enabled: true },
+  // The shared shelf: every file and link hung anywhere in the map, plus
+  // a place to drop what belongs to the map rather than to one node.
+  { id: 'files', label: 'Files', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -2270,6 +2274,7 @@ export function App() {
           {activeView === 'releases' && <ReleasesView />}
           {activeView === 'requirements' && <RequirementsView />}
           {activeView === 'guide' && <GuideView />}
+          {activeView === 'files' && <FilesView />}
           {activeView === 'list' && <ListView />}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}

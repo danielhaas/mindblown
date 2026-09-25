@@ -47,4 +47,8 @@ export const httpBackend: ToolBackend = {
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
+  // ── Attachments ─────────────────────────────────────────────────
+  addAttachment: (mapId, nodeId, input) => api.addAttachment(mapId, nodeId, input),
+  attachFile: (mapId, nodeId, file) => api.attachFile(mapId, nodeId, file),
+  removeAttachment: (mapId, nodeId, attachmentId) => api.removeAttachment(mapId, nodeId, attachmentId),
 };

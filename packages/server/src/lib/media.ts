@@ -57,6 +57,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -262,4 +263,63 @@ export function downloadName(storedName: string): string {
  */
 export function mediaUrl(id: string, filename: string): string {
   return `${mediaBaseUrl()}${MEDIA_ROUTE_PREFIX}/${id}/${encodeURIComponent(filename)}`;
+}
+
+/** What a stored upload looks like to whoever hands the URL on. */
+export interface StoredMedia {
+  id: string;
+  /** Absolute URL the file is reachable at. */
+  url: string;
+  /** Name on disk — carries `.bin` for anything served as a download. */
+  filename: string;
+  /** The name to show a person: the stored name without our `.bin`. */
+  displayName: string;
+  contentType: string;
+  size: number;
+}
+
+/**
+ * Store bytes that already sit in memory, under the same rules as a
+ * streamed upload: our id, our extension, one directory per file.
+ *
+ * The streaming route (`POST /api/media`) cannot use this — it has to
+ * write while the bytes arrive, and its invariants around a destroyed
+ * stream are its own. This is for the callers that hold the whole file
+ * already: an agent attaching a report through the MCP tool sends it as
+ * base64 in a JSON body, small by construction. Both paths end in the same
+ * layout, so a file is served the same way whichever door it came in.
+ *
+ * On any write failure the directory is removed again, so a half-stored
+ * file never lingers under an id nothing points at.
+ */
+export async function storeMediaBytes(
+  root: string,
+  original: string | undefined,
+  contentType: string,
+  bytes: Buffer,
+): Promise<StoredMedia> {
+  const id = newMediaId();
+  const filename = safeFilename(original, contentType);
+  const dir = path.join(root, id);
+  await mkdir(dir, { recursive: true });
+  try {
+    await writeFile(path.join(dir, filename), bytes);
+  } catch (err) {
+    await rm(dir, { recursive: true, force: true });
+    throw err;
+  }
+  return {
+    id,
+    url: mediaUrl(id, filename),
+    filename,
+    displayName: downloadName(filename),
+    contentType,
+    size: bytes.length,
+  };
+}
+
+/** Undo `storeMediaBytes` — for a caller whose next step failed. */
+export async function discardStoredMedia(root: string, id: string): Promise<void> {
+  if (!isMediaId(id)) return;
+  await rm(path.join(root, id), { recursive: true, force: true });
 }

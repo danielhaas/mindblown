@@ -191,7 +191,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 
 ---
 
-## Available Tools (57)
+## Available Tools (61)
 
 ### Map Tools
 
@@ -213,6 +213,17 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `move_node` | Move a node to a new parent | `mapId`, `nodeId`, `newParentId`, `index?` |
 | `search_nodes` | Search by text with optional structured filters | `mapId`, `query`, `status?`, `priority?`, `tag?` |
 | `change_history` | Read the append-only change log for a map | `mapId`, `nodeId?`, `eventType?`, `fieldName?`, `sinceDays?`, `limit?` |
+
+### Attachment Tools
+
+Files and links hung on nodes. `get_map` shows them under each node; these tools list them across the map and add or remove them. For a file that belongs to the whole map, use the map's root node id -- the Files tab shows those as "Map".
+
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `list_attachments` | Every file and link in the map (or a subtree), newest first, with the node it hangs on and the attachment id | `mapId`, `nodeId?`, `kind?` |
+| `attach_link` | Hang a link on a node; also the second step after a multipart upload to `POST /api/media` (pass `kind: 'file'`) | `mapId`, `nodeId`, `url`, `title?`, `kind?`, `mimeType?`, `sizeBytes?` |
+| `attach_file` | Upload a small file (up to 8 MB, base64) and hang it on a node in one step. Larger files: multipart `POST /api/media` with an API key, then `attach_link` | `mapId`, `nodeId`, `filename`, `contentType?`, `contentBase64` |
+| `remove_attachment` | Take one attachment off a node by its id. The stored file stays readable for anyone with the link | `mapId`, `nodeId`, `attachmentId` |
 
 ### Bulk Tools
 

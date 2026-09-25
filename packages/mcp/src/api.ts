@@ -1427,6 +1427,41 @@ export async function unblockNode(mapId: string, nodeId: string): Promise<Unbloc
   };
 }
 
+// ── Attachments ───────────────────────────────────────────────────
+
+export function addAttachment(
+  mapId: string,
+  nodeId: string,
+  input: { kind: 'file' | 'link'; url: string; title?: string; mimeType?: string | null; sizeBytes?: number | null },
+): Promise<NodeWithComputed> {
+  return request<NodeWithComputed>(`/api/maps/${mapId}/nodes/${nodeId}/attachments`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export function attachFile(
+  mapId: string,
+  nodeId: string,
+  file: { filename: string; contentType?: string; contentBase64: string },
+): Promise<NodeWithComputed> {
+  return request<NodeWithComputed>(`/api/maps/${mapId}/nodes/${nodeId}/attachments/file`, {
+    method: 'POST',
+    body: JSON.stringify(file),
+  });
+}
+
+export function removeAttachment(
+  mapId: string,
+  nodeId: string,
+  attachmentId: string,
+): Promise<NodeWithComputed> {
+  return request<NodeWithComputed>(
+    `/api/maps/${mapId}/nodes/${nodeId}/attachments/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' },
+  );
+}
+
 export function conflictScan(
   mapId: string,
   candidateNodeId?: string,
