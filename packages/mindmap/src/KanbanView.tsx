@@ -3,7 +3,7 @@ import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
-import { OctocatIcon } from './icons/Octocat.js';
+import { ForgeIcon } from './icons/ForgeIcon.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ function Card({
               textDecoration: 'none',
             }}
           >
-            <OctocatIcon size={12} color="currentColor" />
+            <ForgeIcon kind={githubLink.provider} size={12} color="currentColor" />
           </a>
         )}
       </div>
