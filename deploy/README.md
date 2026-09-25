@@ -213,8 +213,14 @@ The API should log `MindBlown API listening on http://localhost:3001` and the mi
 From your old machine:
 ```bash
 ./scripts/backup.sh
-scp backups/mindblown-*.sql.gz root@<new-host>:/tmp/
+scp backups/mindblown-*.sql.gz backups/mindblown-*.media.tar.gz root@<new-host>:/tmp/
 ```
+
+`backup.sh` writes two files: the dump, and (if anything was ever uploaded) a
+tarball of `MEDIA_DIR`. If the old machine is a production host rather than a
+dev checkout, take the newest dump from `/var/backups/mindblown/` and the
+media mirror `/var/backups/mindblown/media/` instead — same content, no
+docker needed.
 
 On the new host:
 ```bash
@@ -239,6 +245,14 @@ END
 $$;
 SQL
 
+# Uploaded files. The dump only holds their URLs; the files come from the
+# tarball (dev checkout) or the mirror (production host). /var/lib/mindblown
+# exists once mindblown-api has started at least once (StateDirectory).
+mkdir -p /var/lib/mindblown/media
+tar -C /var/lib/mindblown/media -xzf /tmp/mindblown-*.media.tar.gz   # from backup.sh
+# rsync -a root@<old-host>:/var/backups/mindblown/media/ /var/lib/mindblown/media/   # from the nightly mirror
+chown -R mindblown:mindblown /var/lib/mindblown
+
 systemctl start mindblown-api
 ```
 
@@ -259,6 +273,7 @@ curl http://localhost:3001/api/health
 curl -k https://mindblown.example.com/api/health
 systemctl list-timers mindblown-backup.timer
 ls -lh /var/backups/mindblown/
+diff -r /var/lib/mindblown/media /var/backups/mindblown/media   # empty after the first nightly run
 ```
 
 ---
@@ -277,6 +292,13 @@ systemctl reload caddy   # only if you changed the Caddyfile
 ```
 
 The API runs migrations on every startup, so schema changes apply automatically.
+
+If the release touched a unit under `deploy/`, `git pull` alone does not install
+it — re-copy the file and reload:
+```bash
+cp /opt/mindblown/deploy/mindblown-backup.service /etc/systemd/system/   # whichever unit changed
+systemctl daemon-reload
+```
 
 **The `sudo -u mindblown` covers the pull, not just the build — keep it that way.**
 Pulling as root and building as `mindblown` works for a long time and then doesn't:
@@ -626,9 +648,9 @@ systemctl restart mindblown-api
 
 ## What's NOT in the LXC backup
 
-Proxmox container snapshots cover the whole rootfs (code, configs, Postgres data). The systemd timer also dumps the DB nightly to `/var/backups/mindblown/`. The dumps are kept for 30 days; copy them off-host periodically if you care about disaster recovery beyond a single Proxmox node.
+Proxmox container snapshots cover the whole rootfs (code, configs, Postgres data). The systemd timer also backs up nightly to `/var/backups/mindblown/`: a dump `mindblown-<timestamp>.sql.gz` (kept 30 days) and a mirror of the uploaded files in `media/`. Copy **both** off-host periodically if you care about disaster recovery beyond a single Proxmox node — a dump restored without the media brings back attachment URLs that point at nothing.
 
-**The nightly dump is Postgres only.** Since #286 there is a second place with state in it: `MEDIA_DIR` (see below). A restore from `mindblown-*.sql.gz` brings back the `verification_video_url` values but not the files they point at — those ride on the Proxmox snapshot, and nothing else. If you care about the clips, either add `MEDIA_DIR` to whatever copies the dumps off-host, or accept that they're only as safe as the container.
+The media part is a mirror, not a dated copy, because the store is append-only: each upload gets its own random directory, a stored file is never rewritten, and nothing deletes one after the upload succeeded. So any dump of any age restores against the one mirror, and the mirror only grows (no `--delete`). Its size is the size of the uploads, once.
 
 ## Uploaded media (#286)
 
