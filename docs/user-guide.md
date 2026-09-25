@@ -258,8 +258,17 @@ Everything we have covered so far happens on the mindmap -- and the mindmap is a
 | Calendar    | "What is due this week" at a glance                                      |
 | Hill Chart  | Honest status without percent-complete theatre -- are we figuring it out, or executing? |
 | Workload    | Who is overloaded, who has slack, who should take the next item          |
+| Files       | Every file and link hung anywhere in the map, in one list -- and the place to drop what belongs to the map rather than to one node |
 
 A node tagged into V1, assigned to Sprint 3, and living under `Compliance > Reporting` appears everywhere the moment you add the tag. You never file the same work in two places.
+
+### Sharing files
+
+Any node can carry **attachments** -- files you upload, or links to somewhere else -- from the Attachments section of its property panel. The **Files** view collects all of them across the map, newest first, with the node each one hangs on; click the node to jump to it in the mindmap. Filter by files or links, or search titles, URLs and node names.
+
+Files that belong to the plan as a whole (a prospectus, an export, a spec that covers everything) go on the Files view's drop zone. They are stored on the map itself and show up as "Map" in the list. Uploaded files are served under an unguessable link; anyone who has the link can open it.
+
+AI agents see the same list through the `list_attachments` MCP tool and add to it with `attach_link` and `attach_file`.
 
 [screenshot: the view picker in the toolbar with all seven view options]
 

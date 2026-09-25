@@ -102,6 +102,9 @@ function makeRecordingBackend(): {
     auditClosedIssues: async () => { throw new Error('not implemented'); },
     listAsks: async () => { throw new Error('not implemented'); },
     answerAsk: async () => { throw new Error('not implemented'); },
+    addAttachment: async () => { throw new Error('not implemented'); },
+    attachFile: async () => { throw new Error('not implemented'); },
+    removeAttachment: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,

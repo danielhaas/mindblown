@@ -49,7 +49,8 @@ export type ActiveView =
   | 'digest'
   | 'cockpit'
   | 'fleet'
-  | 'asks';
+  | 'asks'
+  | 'files';
 
 export interface VisibleNode {
   node: Node;

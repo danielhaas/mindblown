@@ -22,6 +22,18 @@ import { isForgeLink } from '@mindblown/core';
 // import cycle. Re-exported here for existing importers.
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
+import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
+
+/**
+ * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
+ * decoded: a screenshot, a PDF report, an export — the things an agent
+ * produces and wants to hand back. Base64 costs 4/3, plus the JSON around
+ * it, so the body limit sits above the decoded cap with room to spare;
+ * the route's own 413 then names the multipart alternative instead of
+ * Fastify's bare "body too large".
+ */
+const ATTACH_FILE_MAX_BYTES = 8 * 1024 * 1024;
+const ATTACH_FILE_BODY_LIMIT = 12 * 1024 * 1024;
 export { extractAutoLinkIssueNumber };
 
 /**
@@ -541,6 +553,92 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
 
         return reply.status(201).send(updated);
       } catch (err) {
+        if (err instanceof nodeDb.AttachmentValidationError) {
+          return reply.status(400).send({
+            error: { code: 'ATTACHMENT_VALIDATION_ERROR', message: err.message },
+          });
+        }
+        throw err;
+      }
+    },
+  );
+
+  // ── POST /api/maps/:id/nodes/:nodeId/attachments/file — Upload + hang, in one ──
+  //
+  // The door for callers that hold the whole file in memory and cannot
+  // speak multipart: an MCP tool handler receives its arguments as JSON,
+  // so an agent attaching a report sends the bytes as base64. Small by
+  // construction — the ceiling below is a fraction of the streaming
+  // route's — and anything bigger is pointed at `POST /api/media` with
+  // curl and an API key, which already works for them.
+  //
+  // Store first, then attach; if the attach is refused (no such node, the
+  // per-node ceiling) the stored file is removed again, so a rejected
+  // request leaves nothing behind — same guarantee the streaming route
+  // gives for a rejected upload.
+  app.post<{ Params: { id: string; nodeId: string } }>(
+    '/api/maps/:id/nodes/:nodeId/attachments/file',
+    { bodyLimit: ATTACH_FILE_BODY_LIMIT },
+    async (req, reply) => {
+      const body = (req.body ?? {}) as {
+        filename?: string;
+        contentType?: string;
+        contentBase64?: string;
+      };
+      if (!body.filename || typeof body.contentBase64 !== 'string' || body.contentBase64.length === 0) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'filename and contentBase64 are required' },
+        });
+      }
+      // Buffer's base64 decoder skips anything it does not understand
+      // rather than complaining, so a body of junk would "decode" to a
+      // few bytes and get stored. Reject what is not base64 up front.
+      if (!/^[A-Za-z0-9+/=\s]+$/.test(body.contentBase64)) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'contentBase64 is not base64' },
+        });
+      }
+      const bytes = Buffer.from(body.contentBase64, 'base64');
+      if (bytes.length === 0) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: 'The file is empty' },
+        });
+      }
+      if (bytes.length > ATTACH_FILE_MAX_BYTES) {
+        return reply.status(413).send({
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: `Inline uploads are capped at ${Math.floor(ATTACH_FILE_MAX_BYTES / (1024 * 1024))} MB. Upload larger files with multipart: curl -H "Authorization: Bearer <api key>" -F file=@<path> <base>/api/media, then attach the returned url with POST …/attachments.`,
+            maxBytes: ATTACH_FILE_MAX_BYTES,
+          },
+        });
+      }
+      const contentType =
+        (body.contentType ?? '').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
+
+      const root = mediaDir();
+      const stored = await storeMediaBytes(root, body.filename, contentType, bytes);
+      try {
+        const updated = await nodeDb.addAttachment(
+          req.params.nodeId,
+          {
+            kind: 'file',
+            url: stored.url,
+            title: stored.displayName,
+            mimeType: stored.contentType,
+            sizeBytes: stored.size,
+          },
+          (req as { userId?: string }).userId ?? null,
+        );
+        broadcast(req.params.id, {
+          type: 'node:updated',
+          nodeId: req.params.nodeId,
+          fields: ['attachments'],
+          node: updated,
+        });
+        return reply.status(201).send(updated);
+      } catch (err) {
+        await discardStoredMedia(root, stored.id);
         if (err instanceof nodeDb.AttachmentValidationError) {
           return reply.status(400).send({
             error: { code: 'ATTACHMENT_VALIDATION_ERROR', message: err.message },

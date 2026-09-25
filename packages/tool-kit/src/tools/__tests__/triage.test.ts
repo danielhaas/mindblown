@@ -138,6 +138,9 @@ function makeRecorder(): Recorder {
     auditClosedIssues: async () => { throw new Error('not used'); },
     listAsks: async () => { throw new Error('not used'); },
     answerAsk: async () => { throw new Error('not used'); },
+    addAttachment: async () => { throw new Error('not used'); },
+    attachFile: async () => { throw new Error('not used'); },
+    removeAttachment: async () => { throw new Error('not used'); },
   };
   return state;
 }

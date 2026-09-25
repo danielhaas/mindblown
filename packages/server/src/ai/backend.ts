@@ -22,6 +22,7 @@ import { countAsks } from '@mindblown/core';
 import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -91,6 +92,7 @@ function toNodeWithComputed(
     computedEffort: computed?.computedEffort ?? 0,
     computedProgress: computed?.computedProgress ?? 0,
     healthSignal: computed?.healthSignal ?? 'on_track',
+    attachments: node.attachments ?? [],
   };
 }
 
@@ -350,6 +352,39 @@ export function createChatBackend(userId: string): ToolBackend {
         since: opts.since ?? null,
         limit: opts.limit,
       });
+    },
+
+    // ── Attachments ─────────────────────────────────────────────────
+    // Same two DB calls the routes make, same broadcast; the routes are
+    // where the shape is documented.
+    addAttachment: async (mapId, nodeId, input) => {
+      const updated = await nodeDb.addAttachment(nodeId, input, userId);
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: ['attachments'], node: updated });
+      return toNodeWithComputed(updated, undefined);
+    },
+    attachFile: async (mapId, nodeId, file) => {
+      const bytes = Buffer.from(file.contentBase64, 'base64');
+      if (bytes.length === 0) throw new Error('The file is empty');
+      const root = mediaDir();
+      const stored = await storeMediaBytes(root, file.filename, file.contentType || 'application/octet-stream', bytes);
+      try {
+        const updated = await nodeDb.addAttachment(
+          nodeId,
+          { kind: 'file', url: stored.url, title: stored.displayName, mimeType: stored.contentType, sizeBytes: stored.size },
+          userId,
+        );
+        broadcast(mapId, { type: 'node:updated', nodeId, fields: ['attachments'], node: updated });
+        return toNodeWithComputed(updated, undefined);
+      } catch (err) {
+        await discardStoredMedia(root, stored.id);
+        throw err;
+      }
+    },
+    removeAttachment: async (mapId, nodeId, attachmentId) => {
+      const updated = await nodeDb.removeAttachment(nodeId, attachmentId);
+      if (!updated) throw new Error('Node or attachment not found');
+      broadcast(mapId, { type: 'node:updated', nodeId, fields: ['attachments'], node: updated });
+      return toNodeWithComputed(updated, undefined);
     },
   };
 }

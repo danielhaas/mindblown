@@ -59,6 +59,7 @@ export const ALL_VIEWS: ActiveView[] = [
   'calendar',
   'hill',
   'workload',
+  'files',
 ];
 
 export const ALL_PANELS: PanelKey[] = [
@@ -85,7 +86,9 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
     // Fragen = the PM's decision inbox ("what do I decide today?" — literally).
-    tabs: ['cockpit', 'fleet', 'asks', 'releases', 'list', 'kanban', 'mindmap'],
+    // Files: the shared shelf — specs, exports, screenshots — for whoever
+    // works the plan. Not for the stakeholder lens, which stays two tabs.
+    tabs: ['cockpit', 'fleet', 'asks', 'releases', 'list', 'kanban', 'mindmap', 'files'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {
@@ -97,7 +100,7 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // App.tsx VIEW_TABS, not from this array.
     // Fragen too (Dan, 2026-09-03): the developer lens answers as well —
     // the questions are the fleet's, whoever is looking decides.
-    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'asks'],
+    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'asks', 'files'],
     panels: ['blocked', 'property', 'mapChat'],
   },
   all: {

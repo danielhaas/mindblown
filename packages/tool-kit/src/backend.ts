@@ -428,6 +428,31 @@ export interface ToolBackend {
     mapId: string,
     opts: ClosedIssueAuditOptions,
   ): Promise<ClosedIssueAuditResult>;
+
+  // ── Attachments (files and links hung on a node) ────────────────
+  /** Hang a link (or an already-uploaded file's URL) on a node — `POST …/attachments`. Answers the whole node. */
+  addAttachment(mapId: string, nodeId: string, input: NewAttachmentInput): Promise<NodeWithComputed>;
+  /** Upload bytes held in memory and hang them on the node in one step — `POST …/attachments/file`. */
+  attachFile(mapId: string, nodeId: string, file: InlineFileInput): Promise<NodeWithComputed>;
+  /** Drop one attachment by id — `DELETE …/attachments/:attachmentId`. */
+  removeAttachment(mapId: string, nodeId: string, attachmentId: string): Promise<NodeWithComputed>;
+}
+
+// ── Attachments ────────────────────────────────────────────────────
+
+export interface NewAttachmentInput {
+  kind: 'file' | 'link';
+  url: string;
+  title?: string;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+}
+
+/** A file sent inline. The server caps the decoded size (8 MB) and names the multipart route for anything bigger. */
+export interface InlineFileInput {
+  filename: string;
+  contentType?: string;
+  contentBase64: string;
 }
 
 // ── Closed-issue audit (premature-close backfill) ─────────────────

@@ -30,10 +30,13 @@ export type {
   ClosedIssueAuditVerdict,
   ClosedIssueAuditFinding,
   ClosedIssueAuditResult,
+  // Attachments
+  NewAttachmentInput,
+  InlineFileInput,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
-export type { MapDetail, MapSummary, NodeWithComputed } from './types.js';
+export type { MapDetail, MapSummary, NodeWithComputed, AttachmentSummary } from './types.js';
 export { filterMapData, formatMapTree, type MapFilters } from './formatters.js';
 export { specToOpenAiTool, type OpenAiTool } from './openai.js';
 export { specToAnthropicTool, type AnthropicTool } from './anthropic.js';
@@ -46,7 +49,8 @@ import { orchestrationTools } from './tools/orchestration.js';
 import { githubAuditTools } from './tools/githubAudit.js';
 import { asksTools } from './tools/asks.js';
 import { fleetJournalTools } from './tools/fleetJournal.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools };
+import { attachmentTools } from './tools/attachments.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools };
 export { renderAskList } from './tools/asks.js';
 
 export const allTools = [
@@ -58,4 +62,5 @@ export const allTools = [
   ...githubAuditTools,
   ...asksTools,
   ...fleetJournalTools,
+  ...attachmentTools,
 ];
