@@ -1103,6 +1103,7 @@ export interface IntakeTurnResponse {
   questions: IntakeQuestion[];
   stepLimit: boolean;
   repoConnected: boolean;
+  provider?: { name: string; model: string };
 }
 
 export interface IntakeAcceptDraft {

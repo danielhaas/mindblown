@@ -1521,6 +1521,8 @@ export interface IntakeTurnResponse {
   questions: IntakeQuestion[];
   stepLimit: boolean;
   repoConnected: boolean;
+  /** Which backend drafted this turn (Claude runs the tool loop, a local model the JSON path). */
+  provider?: { name: string; model: string };
 }
 
 /** What the accept step writes — the card's edited state, not the model's proposal. */

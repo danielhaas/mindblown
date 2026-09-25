@@ -10,7 +10,6 @@ import {
   executeTool,
   renderTreeForPrompt,
   renderFocusContext,
-  isSmallLocalModel,
 } from '../ai/tools.js';
 import { estimateEffort, AiBadResponseError } from '../ai/estimate.js';
 import {
@@ -1031,17 +1030,8 @@ Parent node: "${parentNode.text}"`;
 
     try {
       const provider = await resolveProviderForMap(body.mapId);
-      // A 14B-class local model drifts on a multi-tool question loop; the
-      // feature is Anthropic-first by decision (#387). Refuse cleanly rather
-      // than hand the user a broken dialog.
-      if (isSmallLocalModel(provider)) {
-        return reply.status(503).send({
-          error: {
-            code: 'AI_MODEL_TOO_SMALL',
-            message: `Ticket intake needs a larger model than ${provider.model}.`,
-          },
-        });
-      }
+      // Claude runs the tool loop; a local model gets the JSON-mode path
+      // (intakeModeFor) — same prompt context, one completion per turn.
       session ??= createIntakeSession(body.mapId, userId);
       const ctx: IntakeContext = {
         map: mapDetail.map,
@@ -1052,9 +1042,17 @@ Parent node: "${parentNode.text}"`;
       };
       const result = await runIntakeTurn({ provider, session, ctx, message: body.message });
       const repoConnected = (await getMapForgeKind(body.mapId)) !== null;
-      return { intakeId: session.id, ...result, repoConnected };
+      return {
+        intakeId: session.id,
+        ...result,
+        repoConnected,
+        provider: { name: provider.name, model: provider.model },
+      };
     } catch (err: any) {
       if (policyDenied(reply, err)) return;
+      if (err instanceof AiBadResponseError) {
+        return reply.status(502).send({ error: { code: 'AI_BAD_RESPONSE', message: err.message } });
+      }
       return reply.status(502).send({ error: { code: 'AI_ERROR', message: err.message } });
     }
   });

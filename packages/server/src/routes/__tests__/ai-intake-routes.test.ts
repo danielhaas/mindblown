@@ -222,13 +222,50 @@ describe('POST /api/ai/intake', () => {
     expect(res.json().error.code).toBe('INTAKE_EXPIRED');
   });
 
-  it('refuses a small local model instead of running a broken dialog', async () => {
+  it('runs the JSON-mode path for a local model and reports the provider', async () => {
+    const app = await buildApp();
+    getMapMock.mockResolvedValueOnce({
+      map: { id: MAP_ID, name: 'M', effortUnit: 'days', phases: [] },
+      nodes: [{ id: 'r1', mapId: MAP_ID, parentId: null, childrenIds: [], text: 'Root' }],
+    });
+    const completions: string[] = [];
+    resolveProviderMock.mockResolvedValueOnce({
+      name: 'ollama',
+      model: 'qwen2.5:14b',
+      async *runTurn() {
+        throw new Error('tool loop must not run for a local model');
+      },
+      async complete(o: { systemPrompt: string }) {
+        completions.push(o.systemPrompt);
+        // First call = the intake turn, second = the estimator.
+        return completions.length === 1
+          ? '```json\n{"text":"ok","draft":{"title":"T","description":"D","parentId":"r1","parentReason":"root"},"questions":[{"id":"q","question":"Q?"}]}\n```'
+          : '{"estimate": 1, "confidence": "low"}';
+      },
+    });
+    const res = await app.inject({ method: 'POST', url: '/api/ai/intake', payload: { mapId: MAP_ID, message: 'x' } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.draft).toMatchObject({ title: 'T', parentText: 'Root', estimate: { estimate: 1 } });
+    expect(body.questions).toEqual([{ id: 'q', question: 'Q?', options: [], why: null }]);
+    expect(body.provider).toEqual({ name: 'ollama', model: 'qwen2.5:14b' });
+    expect(completions[0]).toContain('Return ONLY one JSON object');
+  });
+
+  it('answers 502 AI_BAD_RESPONSE when the local model returns no JSON', async () => {
     const app = await buildApp();
     getMapMock.mockResolvedValueOnce({ map: { id: MAP_ID, name: 'M', phases: [] }, nodes: [] });
-    resolveProviderMock.mockResolvedValueOnce({ name: 'ollama', model: 'qwen2.5:14b' });
+    resolveProviderMock.mockResolvedValueOnce({
+      name: 'ollama',
+      model: 'qwen2.5:14b',
+      async *runTurn() {},
+      async complete() {
+        return 'Sure! Here is your ticket: ...';
+      },
+    });
     const res = await app.inject({ method: 'POST', url: '/api/ai/intake', payload: { mapId: MAP_ID, message: 'x' } });
-    expect(res.statusCode).toBe(503);
-    expect(res.json().error.code).toBe('AI_MODEL_TOO_SMALL');
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error.code).toBe('AI_BAD_RESPONSE');
   });
 
   it('runs a turn and returns the draft with the session id', async () => {
