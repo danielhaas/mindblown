@@ -5,7 +5,24 @@
 
 import type { FastifyInstance } from 'fastify';
 import { aiConfig } from '../ai/client.js';
-import { getChatToolSpecs, executeTool, renderTreeForPrompt, renderFocusContext } from '../ai/tools.js';
+import {
+  getChatToolSpecs,
+  executeTool,
+  renderTreeForPrompt,
+  renderFocusContext,
+  isSmallLocalModel,
+} from '../ai/tools.js';
+import { estimateEffort, AiBadResponseError } from '../ai/estimate.js';
+import {
+  createIntakeSession,
+  getIntakeSession,
+  runIntakeTurn,
+  recordAccepted,
+  type IntakeContext,
+} from '../ai/intake.js';
+import { createForgeIssueForNode, NoForgeIntegrationError } from '../services/forgeIssue.js';
+import { getMapForgeKind } from '../lib/githubContext.js';
+import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
 import {
@@ -19,7 +36,7 @@ import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
-import { computeTree, assessCalibration, type Node as CoreNode } from '@mindblown/core';
+import { computeTree, type Node as CoreNode } from '@mindblown/core';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -936,123 +953,217 @@ Parent node: "${parentNode.text}"`;
       });
     }
 
-    // Pull calibration samples: completed leaves with estimate and actual set.
-    // Take the 30 most recent by updatedAt so old noisy data doesn't dominate.
-    const calibrationLeaves = mapDetail.nodes
-      .filter(
-        (n) =>
-          (n.childrenIds?.length ?? 0) === 0 &&
-          n.effortEstimate != null &&
-          n.actualEffort != null,
-      )
-      .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
-      .slice(0, 30);
-
-    // Evidence-gated fudge — REPORTED to the caller, never multiplied into
-    // the estimate. Baking it in double-corrected: the forecast applies the
-    // fudge to remaining effort again, so AI-estimated nodes got fudge².
-    // Estimates are stored in raw planning units; corrections happen at
-    // forecast time only.
-    const calibration = assessCalibration(
-      calibrationLeaves.map((n) => ({
-        effortEstimate: n.effortEstimate as number,
-        actualEffort: n.actualEffort as number,
-        completedAt: n.completedAt ?? null,
-      })),
-    );
-    const effortUnit = mapDetail.map.effortUnit ?? 'days';
-
-    const samplesText = calibrationLeaves.length > 0
-      ? calibrationLeaves
-          .map(
-            (n, i) =>
-              `${i + 1}. "${n.text}" — estimated ${n.effortEstimate} ${effortUnit}, actual ${n.actualEffort} ${effortUnit}`,
-          )
-          .join('\n')
-      : '(no calibration data yet — give an unscaled best-guess estimate)';
-
-    const systemPrompt = `You are a project estimation assistant. You produce calibrated effort estimates by reasoning from past completed work on the same project.
-
-Rules:
-- Return ONLY a JSON object: {"estimate": <number>, "confidence": "low" | "medium" | "high", "notes": "<one short sentence>"}
-- The raw estimate you produce should be in ${effortUnit}, in the SAME scale the team uses when planning (uncalibrated — velocity corrections happen at forecast time, never in stored estimates)
-- Confidence is "high" when multiple samples strongly match, "medium" when you're inferring from loose analogies, "low" when calibration data is thin or the task is unusual
-- Notes should be one brief sentence justifying the estimate (e.g. "Similar to #3 and #7; added buffer for migration")
-- No preamble, no markdown fences, no explanation outside the JSON`;
-
-    let userPrompt = `Project: ${mapDetail.map.name}
-Effort unit: ${effortUnit}
-
-Past completed work (planned → actual):
-${samplesText}
-
-New item to estimate:
-Title: "${targetText}"`;
-    if (targetContext) userPrompt += `\nPath: ${targetContext}`;
-    if (targetDescription) userPrompt += `\nDescription: ${targetDescription}`;
-    if (body.hint) userPrompt += `\nHint: ${body.hint}`;
-    userPrompt += '\n\nReturn the JSON.';
-
+    // The calibration prompt and the raw-planning-units rule live in
+    // ai/estimate.ts, shared with ticket intake (#387).
     try {
       const provider = await resolveProviderForMap(body.mapId);
-      const raw = await provider.complete({
-        systemPrompt,
-        parts: [{ text: userPrompt }],
-        format: 'json',
-        temperature: 0.2,
-        maxTokens: 512,
+      return await estimateEffort(provider, mapDetail, {
+        text: targetText,
+        description: targetDescription || undefined,
+        path: targetContext || undefined,
+        hint: body.hint,
       });
-
-      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
-      const parsed = JSON.parse(cleaned) as {
-        estimate: unknown;
-        confidence: unknown;
-        notes?: unknown;
-      };
-
-      const rawEstimate = typeof parsed.estimate === 'number' ? parsed.estimate : NaN;
-      if (!Number.isFinite(rawEstimate) || rawEstimate < 0) {
-        return reply.status(502).send({
-          error: { code: 'AI_BAD_RESPONSE', message: 'Model did not return a usable numeric estimate' },
-        });
-      }
-
-      const confidence =
-        parsed.confidence === 'high' || parsed.confidence === 'medium' || parsed.confidence === 'low'
-          ? parsed.confidence
-          : 'low';
-      const notes = typeof parsed.notes === 'string' ? parsed.notes.trim() : undefined;
-
-      // The LLM's output stays in raw planning space — the same scale humans
-      // estimate in. The gated fudge is reported for transparency but NOT
-      // multiplied in: forecasts apply it to remaining effort, so pre-baking
-      // it here double-corrected every AI-estimated node (fudge²).
-      const estimate = Math.round(rawEstimate * 100) / 100;
-
-      return {
-        estimate,
-        rawEstimate,
-        confidence,
-        notes,
-        samplesUsed: calibrationLeaves.length,
-        fudgeFactor:
-          calibration.fudgeFactor != null
-            ? Math.round(calibration.fudgeFactor * 100) / 100
-            : null,
-        calibrationNote: calibration.note,
-        effortUnit,
-      };
     } catch (err: any) {
       if (policyDenied(reply, err)) return;
-      if (err instanceof SyntaxError) {
+      if (err instanceof AiBadResponseError) {
         return reply.status(502).send({
-          error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' },
+          error: { code: 'AI_BAD_RESPONSE', message: err.message },
         });
       }
       return reply.status(502).send({
         error: { code: 'AI_ERROR', message: err.message },
       });
     }
+  });
+
+  // ── POST /api/ai/intake — ticket intake turn (#387) ────────────
+  //
+  // Request:  { mapId, message, intakeId?, parentHintId? }
+  // Response: { intakeId, text, draft, questions, stepLimit, repoConnected }
+  //
+  // One dialog = one intakeId; omit it to start a session, pass it back
+  // to continue (answers to questions, corrections, the next ticket).
+  // Nothing is written here — see /intake/accept.
+
+  app.post('/api/ai/intake', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      message: string;
+      intakeId?: string | null;
+      parentHintId?: string | null;
+    };
+    if (!body.mapId || typeof body.message !== 'string' || !body.message.trim()) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and a non-empty message are required' },
+      });
+    }
+    if (!(await capabilitiesForMap(body.mapId)).chat) {
+      const policy = await getMapAiPolicy(body.mapId);
+      return reply.status(503).send({
+        error: {
+          code: 'AI_POLICY',
+          policy,
+          message:
+            policy === 'none'
+              ? 'AI is disabled for this map by its AI policy.'
+              : 'This map allows only a local model and none is configured.',
+        },
+      });
+    }
+
+    const userId = (req as any).userId ?? 'system';
+    let session = body.intakeId ? getIntakeSession(body.intakeId, body.mapId) : null;
+    if (body.intakeId && !session) {
+      return reply.status(410).send({
+        error: {
+          code: 'INTAKE_EXPIRED',
+          message: 'This intake session has expired. Start a new one.',
+        },
+      });
+    }
+
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` },
+      });
+    }
+
+    try {
+      const provider = await resolveProviderForMap(body.mapId);
+      // A 14B-class local model drifts on a multi-tool question loop; the
+      // feature is Anthropic-first by decision (#387). Refuse cleanly rather
+      // than hand the user a broken dialog.
+      if (isSmallLocalModel(provider)) {
+        return reply.status(503).send({
+          error: {
+            code: 'AI_MODEL_TOO_SMALL',
+            message: `Ticket intake needs a larger model than ${provider.model}.`,
+          },
+        });
+      }
+      session ??= createIntakeSession(body.mapId, userId);
+      const ctx: IntakeContext = {
+        map: mapDetail.map,
+        nodes: mapDetail.nodes,
+        versions: await versionDb.listVersions(body.mapId),
+        parentHintId: body.parentHintId ?? null,
+        accepted: session.accepted,
+      };
+      const result = await runIntakeTurn({ provider, session, ctx, message: body.message });
+      const repoConnected = (await getMapForgeKind(body.mapId)) !== null;
+      return { intakeId: session.id, ...result, repoConnected };
+    } catch (err: any) {
+      if (policyDenied(reply, err)) return;
+      return reply.status(502).send({ error: { code: 'AI_ERROR', message: err.message } });
+    }
+  });
+
+  // ── POST /api/ai/intake/accept — create the reviewed draft ─────
+  //
+  // Request:  { mapId, draft: { title, description, parentId, priority?,
+  //             versionId?, phaseId?, tags?, effortEstimate?,
+  //             dependencies?: [{ nodeId }] }, intakeId?, createIssue? }
+  // Response: 201 { node, issue: { number, html_url } | null, issueError? }
+  //
+  // The client sends the draft as edited on the card, so the server
+  // writes what the user saw — not what the model proposed. The estimate
+  // is only in the payload when the user kept it (medium/high confidence
+  // by default; low stays a suggestion).
+
+  app.post('/api/ai/intake/accept', async (req, reply) => {
+    const body = req.body as {
+      mapId: string;
+      intakeId?: string | null;
+      createIssue?: boolean;
+      draft: {
+        title: string;
+        description: string;
+        parentId: string;
+        priority?: 'P0' | 'P1' | 'P2' | 'P3' | null;
+        versionId?: string | null;
+        phaseId?: string | null;
+        tags?: string[];
+        effortEstimate?: number | null;
+        dependencies?: Array<{ nodeId: string }>;
+      };
+    };
+    const d = body.draft;
+    if (!body.mapId || !d || !d.title?.trim() || !d.parentId) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and draft.title/parentId are required' },
+      });
+    }
+    const parent = await nodeDb.getNode(d.parentId);
+    if (!parent || parent.mapId !== body.mapId) {
+      return reply.status(400).send({
+        error: { code: 'PARENT_NOT_FOUND', message: `Parent ${d.parentId} is not on this map` },
+      });
+    }
+
+    const userId = (req as any).userId ?? 'system';
+    const effortEstimate =
+      typeof d.effortEstimate === 'number' && Number.isFinite(d.effortEstimate) && d.effortEstimate >= 0
+        ? d.effortEstimate
+        : undefined;
+
+    let node: CoreNode;
+    try {
+      node = await nodeDb.createNode({
+        mapId: body.mapId,
+        parentId: d.parentId,
+        text: d.title.trim(),
+        createdBy: userId,
+        description: d.description?.trim() ? d.description.trim() : undefined,
+        priority: d.priority ?? undefined,
+        versionId: d.versionId ?? undefined,
+        phaseId: d.phaseId ?? undefined,
+        tags: Array.isArray(d.tags) ? d.tags.filter((t) => typeof t === 'string' && t.trim()) : undefined,
+        effortEstimate,
+      });
+    } catch (err: any) {
+      return reply.status(400).send({ error: { code: 'CREATE_FAILED', message: err.message } });
+    }
+    broadcast(body.mapId, { type: 'node:created', node });
+    scheduleEmbedNode(node.id);
+
+    // Finish-to-start on each dependency the user kept. A bad id is the
+    // user's edit, not a reason to lose the node — report and continue.
+    const dependencyErrors: string[] = [];
+    for (const dep of d.dependencies ?? []) {
+      if (!dep?.nodeId) continue;
+      try {
+        node = await nodeDb.addDependency(node.id, dep.nodeId, 'FS', 0);
+      } catch (err: any) {
+        dependencyErrors.push(`${dep.nodeId}: ${err.message}`);
+      }
+    }
+    if ((d.dependencies ?? []).length > 0) {
+      broadcast(body.mapId, { type: 'node:updated', nodeId: node.id, fields: ['dependencies'], node });
+    }
+
+    let issue: { number: number; html_url: string } | null = null;
+    let issueError: string | undefined;
+    if (body.createIssue) {
+      try {
+        const created = await createForgeIssueForNode(body.mapId, node);
+        node = created.node;
+        issue = { number: created.issue.number, html_url: created.issue.html_url };
+      } catch (err: any) {
+        issueError =
+          err instanceof NoForgeIntegrationError ? err.message : `Issue not created: ${err.message}`;
+      }
+    }
+
+    const session = body.intakeId ? getIntakeSession(body.intakeId, body.mapId) : null;
+    if (session) recordAccepted(session, node.id, node.text);
+
+    return reply.status(201).send({
+      node,
+      issue,
+      ...(issueError ? { issueError } : {}),
+      ...(dependencyErrors.length > 0 ? { dependencyErrors } : {}),
+    });
   });
 
   // ── POST /api/ai/braindump/accept — create the proposed tree ───

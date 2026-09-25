@@ -6,7 +6,6 @@ import * as nodeDb from '../db/nodes.js';
 import { notDeleted } from '../db/nodes.js';
 import * as events from '../db/events.js';
 import {
-  createGitHubIssue,
   getGitHubIssue,
   importGitHubIssues,
   extractVersionFromMilestone,
@@ -49,6 +48,7 @@ import type { ExternalLink } from '@mindblown/core';
 import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
+import { createForgeIssueForNode, NoForgeIntegrationError } from '../services/forgeIssue.js';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -644,30 +644,17 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const ghCtx = await getGitHubContextForMap(req.params.mapId);
-      if (!ghCtx) {
-        return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
-        });
+      // Shared with the ticket-intake accept step (#387): forge call,
+      // mirror-hash stamp, link write and broadcast live in the service.
+      try {
+        const { node: updated, issue } = await createForgeIssueForNode(req.params.mapId, node);
+        return reply.status(201).send({ node: updated, issue });
+      } catch (err) {
+        if (err instanceof NoForgeIntegrationError) {
+          return reply.status(400).send({ error: { code: 'NO_INTEGRATION', message: err.message } });
+        }
+        throw err;
       }
-
-      // Create the issue on GitHub
-      const { issue, externalLink } = await createGitHubIssue(node, ghCtx.owner, ghCtx.repo, ghCtx.forge);
-
-      // Store the link on the node. The description here is NODE-
-      // authored (it was pushed TO GitHub, not mirrored from it) —
-      // stamp the link as "mirror wrote nothing" so the issues.edited
-      // guard treats the description as curated from day one instead
-      // of falling back to the prior-body equality check, which a
-      // GH-side edit would misread as a mirror one round-trip later.
-      const existingLinks = [...node.externalLinks];
-      existingLinks.push(stampMirrorHash(externalLink, null));
-
-      const updated = await nodeDb.updateNode(req.params.nodeId, { externalLinks: existingLinks });
-
-      broadcast(req.params.mapId, { type: 'node:updated', nodeId: req.params.nodeId, fields: ['externalLinks'], node: updated });
-
-      return reply.status(201).send({ node: updated, issue });
     },
   );
 

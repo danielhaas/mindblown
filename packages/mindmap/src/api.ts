@@ -1474,6 +1474,107 @@ export function aiBraindumpAccept(
   });
 }
 
+// ── Ticket intake (#387) ─────────────────────────────────────────
+
+export interface IntakeRef {
+  nodeId: string;
+  text: string;
+  reason: string;
+}
+
+export interface IntakeEstimate {
+  estimate: number;
+  confidence: 'low' | 'medium' | 'high';
+  notes?: string;
+  samplesUsed: number;
+  effortUnit: string;
+}
+
+export interface IntakeDraft {
+  title: string;
+  description: string;
+  parentId: string;
+  parentText: string;
+  parentReason: string;
+  priority: 'P0' | 'P1' | 'P2' | 'P3' | null;
+  versionId: string | null;
+  versionName: string | null;
+  phaseId: string | null;
+  phaseName: string | null;
+  tags: string[];
+  dependencies: IntakeRef[];
+  duplicates: IntakeRef[];
+  estimate: IntakeEstimate | null;
+}
+
+export interface IntakeQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  why: string | null;
+}
+
+export interface IntakeTurnResponse {
+  intakeId: string;
+  text: string;
+  draft: IntakeDraft | null;
+  questions: IntakeQuestion[];
+  stepLimit: boolean;
+  repoConnected: boolean;
+}
+
+/** What the accept step writes — the card's edited state, not the model's proposal. */
+export interface IntakeAcceptDraft {
+  title: string;
+  description: string;
+  parentId: string;
+  priority?: 'P0' | 'P1' | 'P2' | 'P3' | null;
+  versionId?: string | null;
+  phaseId?: string | null;
+  tags?: string[];
+  effortEstimate?: number | null;
+  dependencies?: Array<{ nodeId: string }>;
+}
+
+export interface IntakeAcceptResponse {
+  node: { id: string; text: string };
+  issue: { number: number; html_url: string } | null;
+  issueError?: string;
+  dependencyErrors?: string[];
+}
+
+export function aiIntake(
+  mapId: string,
+  message: string,
+  opts: { intakeId?: string | null; parentHintId?: string | null } = {},
+): Promise<IntakeTurnResponse> {
+  return request<IntakeTurnResponse>('/api/ai/intake', {
+    method: 'POST',
+    body: JSON.stringify({
+      mapId,
+      message,
+      intakeId: opts.intakeId ?? null,
+      parentHintId: opts.parentHintId ?? null,
+    }),
+  });
+}
+
+export function aiIntakeAccept(
+  mapId: string,
+  draft: IntakeAcceptDraft,
+  opts: { intakeId?: string | null; createIssue?: boolean } = {},
+): Promise<IntakeAcceptResponse> {
+  return request<IntakeAcceptResponse>('/api/ai/intake/accept', {
+    method: 'POST',
+    body: JSON.stringify({
+      mapId,
+      draft,
+      intakeId: opts.intakeId ?? null,
+      createIssue: opts.createIssue === true,
+    }),
+  });
+}
+
 export interface GroupProposal {
   kind: 'group';
   memberIds: string[];
