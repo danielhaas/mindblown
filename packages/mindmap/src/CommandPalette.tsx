@@ -63,9 +63,11 @@ interface CommandPaletteProps {
   onFitToScreen: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
+  /** Opens ticket intake (#387); absent when the map has no chat-capable AI. */
+  onNewTicket?: () => void;
 }
 
-export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomOut }: CommandPaletteProps) {
+export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomOut, onNewTicket }: CommandPaletteProps) {
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -119,6 +121,17 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   // Build commands list
   const commands = useMemo((): Command[] => {
     const cmds: Command[] = [];
+
+    // Ticket intake — first in the list: "add a ticket" is the most common
+    // reason to open the palette on a planning map.
+    if (onNewTicket) {
+      cmds.push({
+        id: 'new-ticket',
+        label: 'New ticket (AI intake)',
+        section: 'Nodes',
+        action: () => onNewTicket(),
+      });
+    }
 
     // Node operations
     cmds.push({
@@ -271,7 +284,7 @@ export function CommandPalette({ open, onClose, onFitToScreen, onZoomIn, onZoomO
   }, [
     selectedNodeId, nodes, rootNodeId, setFocusNode, addNode, deleteNode, updateNode, toggleCollapse,
     expandAll, collapseAll, selectNode, setActiveView, setLayoutType,
-    onFitToScreen, onZoomIn, onZoomOut,
+    onFitToScreen, onZoomIn, onZoomOut, onNewTicket,
   ]);
 
   // Filter commands
