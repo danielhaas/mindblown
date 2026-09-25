@@ -3,12 +3,19 @@
 # Restores a mindblown Postgres database from a gzipped SQL dump produced by
 # ./scripts/backup.sh. DESTRUCTIVE: drops and recreates the public schema.
 #
+# If backup.sh also wrote <same-name>.media.tar.gz next to the dump, the
+# uploaded files in it are unpacked into MEDIA_DIR afterwards. That step
+# only adds files (each upload has its own directory, and a stored file is
+# never rewritten), so it is safe on a MEDIA_DIR that already has content.
+#
 # Usage:
 #   ./scripts/restore.sh <backup-file.sql.gz> [--yes]
 #
 # Environment:
 #   MINDBLOWN_DB_CONTAINER  Name of the running Postgres container.
 #                           Defaults to 'mindblown-db'.
+#   MEDIA_DIR               Where the API stores uploads. Defaults to
+#                           packages/server/.media, the API's own default.
 #
 set -euo pipefail
 
@@ -29,6 +36,8 @@ if [[ ! -f "$BACKUP_FILE" ]]; then
 fi
 
 CONTAINER="${MINDBLOWN_DB_CONTAINER:-mindblown-db}"
+MEDIA_DIR="${MEDIA_DIR:-$REPO_ROOT/packages/server/.media}"
+MEDIA_FILE="${BACKUP_FILE%.sql.gz}.media.tar.gz"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "error: 'docker' is not available on PATH" >&2
@@ -43,6 +52,11 @@ fi
 
 echo "[restore] container: $CONTAINER"
 echo "[restore] source:    $BACKUP_FILE"
+if [[ -f "$MEDIA_FILE" ]]; then
+  echo "[restore] media:     $MEDIA_FILE -> $MEDIA_DIR"
+else
+  echo "[restore] media:     none ($MEDIA_FILE not found)"
+fi
 echo "[restore] WARNING: this will DROP and recreate the public schema in the 'mindblown' database."
 
 if [[ "$ASSUME_YES" != "--yes" ]]; then
@@ -72,5 +86,11 @@ SQL
 echo "[restore] streaming dump into psql..."
 gunzip -c "$BACKUP_FILE" \
   | docker exec -i "$CONTAINER" psql --username=mindblown --dbname=mindblown -v ON_ERROR_STOP=1
+
+if [[ -f "$MEDIA_FILE" ]]; then
+  echo "[restore] unpacking uploads into $MEDIA_DIR..."
+  mkdir -p "$MEDIA_DIR"
+  tar -C "$MEDIA_DIR" -xzf "$MEDIA_FILE"
+fi
 
 echo "[restore] done."

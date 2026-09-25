@@ -1,5 +1,5 @@
 [Unit]
-Description=MindBlown nightly Postgres backup
+Description=MindBlown nightly backup (Postgres dump + media mirror)
 After=postgresql.service
 Requires=postgresql.service
 
@@ -8,4 +8,19 @@ Type=oneshot
 User=postgres
 Group=postgres
 ExecStart=/bin/bash -c '/usr/bin/pg_dump --clean --if-exists --no-owner --no-privileges mindblown | /bin/gzip -9 > /var/backups/mindblown/mindblown-$(date -u +%%Y%%m%%d-%%H%%M%%SZ).sql.gz'
+# Uploaded files (MEDIA_DIR, see mindblown-api.service) are the second place
+# with state in it, and a dump alone restores URLs that point at nothing.
+#
+# A mirror, not a dated tarball, because the media store is append-only:
+# every upload gets a fresh random directory, a stored file is never
+# rewritten, and nothing deletes one after the upload succeeded (only a
+# failed upload removes its own directory). So there is no point in time to
+# preserve — any dump of any age restores against this one mirror — and a
+# dated copy would repeat the whole store every night. No --delete for the
+# same reason: the mirror only ever grows, like the store.
+#
+# The api unit's UMask=0022 leaves every file 644 and every directory 755,
+# which is what lets this run as postgres without any group juggling.
+# The guard keeps a fresh install (no upload yet, no media dir) from failing.
+ExecStart=/bin/bash -c 'if [ -d /var/lib/mindblown/media ]; then /usr/bin/rsync -a /var/lib/mindblown/media/ /var/backups/mindblown/media/; fi'
 ExecStartPost=/usr/bin/find /var/backups/mindblown -name 'mindblown-*.sql.gz' -mtime +30 -delete

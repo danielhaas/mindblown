@@ -356,6 +356,8 @@ pg_dump -U mindblown -h localhost -d mindblown > mindblown_backup_$(date +%Y%m%d
 psql -U mindblown -h localhost -d mindblown < mindblown_backup_20250901_120000.sql
 ```
 
+Uploaded files are not in the database. They live under `MEDIA_DIR` (default `packages/server/.media`; see `deploy/README.md`), and a restore needs that directory too. `./scripts/backup.sh` writes both.
+
 ### Automated daily backup (cron)
 
 ```bash
