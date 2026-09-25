@@ -9,12 +9,21 @@ export const createNodeTool = defineTool({
     mapId: z.string().describe('The map ID'),
     parentId: z.string().describe('Parent node ID to create under'),
     text: z.string().describe('Node title/label'),
+    description: z.string().optional().describe('Rich text description'),
     effortEstimate: z.number().optional().describe('Effort estimate (leaf nodes only)'),
+    percentComplete: z.number().optional().describe('Percent complete (0-100)'),
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).optional().describe('Priority level'),
     status: z.string().optional().describe("Status (must match map's status workflow)"),
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
+    tags: z.array(z.string()).optional().describe('Tags to set on the new node'),
+    scopes: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Free-form scope tags declaring what work this node touches (see update_node.scopes). Examples: 'apps/workflows', 'model:Mandate'.",
+      ),
     assigneeIds: z
       .array(z.string())
       .optional()

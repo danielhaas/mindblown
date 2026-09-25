@@ -206,6 +206,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       verificationVideoUrl?: string | null;
       verificationVideoPosterUrl?: string | null;
       assigneeIds?: string[];
+      description?: unknown;
+      tags?: string[];
+      scopes?: string[];
+      versionId?: string | null;
+      cycleId?: string | null;
       /**
        * Set to `true` when the caller wants to disable the `^#NNNN`
        * auto-link backstop (#58). Useful when the leading `#NNNN` is
