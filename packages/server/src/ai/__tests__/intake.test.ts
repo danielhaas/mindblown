@@ -18,6 +18,7 @@ import {
   resetIntakeSessions,
   buildIntakeSystemPrompt,
   INTAKE_MAX_STEPS,
+  parseJsonObject,
   type IntakeContext,
   type IntakeIo,
 } from '../intake.js';
@@ -226,6 +227,69 @@ describe('runIntakeTurn', () => {
     });
     expect(r.draft?.estimate).toBeNull();
     expect((session.messages[0] as { content: string }).content).not.toContain('Server note');
+  });
+});
+
+// ── JSON mode (local models) ──────────────────────────────────────
+
+describe('runIntakeTurn in JSON mode', () => {
+  function jsonProvider(replies: string[]): ChatProvider & { prompts: string[]; parts: string[][] } {
+    const prompts: string[] = [];
+    const parts: string[][] = [];
+    let i = 0;
+    return {
+      name: 'ollama',
+      model: 'qwen2.5:14b',
+      prompts,
+      parts,
+      async *runTurn() {
+        throw new Error('tool loop must not run in JSON mode');
+      },
+      async complete(o) {
+        prompts.push(o.systemPrompt);
+        parts.push(o.parts.map((p) => p.text));
+        return replies[Math.min(i++, replies.length - 1)];
+      },
+    };
+  }
+
+  it('drafts from one JSON completion, carries the conversation, and still gets the server estimate', async () => {
+    const provider = jsonProvider([
+      JSON.stringify({ text: 'first', draft: goodDraft, questions: [{ id: 'v', question: 'Which version?', options: ['V1'] }] }),
+      'Here you go:\n' + JSON.stringify({ text: 'updated', draft: { ...goodDraft, priority: 'P1' }, questions: [] }) + '\nHope this helps!',
+    ]);
+    const session = createIntakeSession('m1', 'u1');
+    const r1 = await runIntakeTurn({ provider, session, ctx: ctx(), message: 'close issue on merge', io: io() });
+    expect(r1.draft).toMatchObject({ title: goodDraft.title, parentText: 'Sync', estimate: { estimate: 2 } });
+    expect(r1.questions).toEqual([{ id: 'v', question: 'Which version?', options: ['V1'], why: null }]);
+    expect(provider.prompts[0]).toContain('Return ONLY one JSON object');
+    expect(provider.prompts[0]).not.toContain('propose_ticket');
+    expect(provider.parts[0][0]).toContain('[l1] score 0.71'); // duplicate note reaches the model
+
+    const r2 = await runIntakeTurn({ provider, session, ctx: ctx(), message: 'V1, and make it P1', io: io() });
+    expect(r2.draft?.priority).toBe('P1');
+    expect(r2.text).toBe('updated');
+    // The second call saw the first exchange.
+    expect(provider.parts[1][0]).toContain('Assistant (JSON):');
+    expect(provider.parts[1][0]).toContain('"first"');
+    expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('throws AiBadResponseError on unusable output', async () => {
+    const provider = jsonProvider(['no json here']);
+    const session = createIntakeSession('m1', 'u1');
+    await expect(
+      runIntakeTurn({ provider, session, ctx: ctx(), message: 'x', io: io() }),
+    ).rejects.toThrow(/usable JSON/);
+  });
+});
+
+describe('parseJsonObject', () => {
+  it('handles fences, leading prose and trailing chatter', () => {
+    expect(parseJsonObject('```json\n{"a":1}\n```')).toEqual({ a: 1 });
+    expect(parseJsonObject('Sure: {"a":{"b":2}} done.')).toEqual({ a: { b: 2 } });
+    expect(parseJsonObject('[1,2]')).toBeNull();
+    expect(parseJsonObject('nope')).toBeNull();
   });
 });
 

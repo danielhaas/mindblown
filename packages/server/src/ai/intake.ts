@@ -34,7 +34,11 @@ import type {
 import type { ChatProvider, NormalizedMessage, NormalizedToolCall } from './providers/types.js';
 import { executeTool as defaultExecuteTool, getChatToolSpecs, renderTreeForPrompt } from './tools.js';
 import { semanticSearch as defaultSemanticSearch } from './embeddings.js';
-import { estimateEffort as defaultEstimateEffort, type EstimateResult } from './estimate.js';
+import {
+  estimateEffort as defaultEstimateEffort,
+  AiBadResponseError,
+  type EstimateResult,
+} from './estimate.js';
 
 // ── Sessions ──────────────────────────────────────────────────────
 
@@ -206,7 +210,53 @@ export interface IntakeContext {
 
 const TREE_CAP = 400;
 
-export function buildIntakeSystemPrompt(ctx: IntakeContext): string {
+/**
+ * How the model hands the draft back. `tools`: Claude calls propose_ticket /
+ * ask_user and may search first. `json`: one JSON object per turn, no tool
+ * use — what a local 14B-class model does reliably (it drifts on a multi-
+ * tool loop, so the duplicate pre-search is its only search).
+ */
+export type IntakeMode = 'tools' | 'json';
+
+export function intakeModeFor(provider: Pick<ChatProvider, 'name'>): IntakeMode {
+  return provider.name === 'anthropic' ? 'tools' : 'json';
+}
+
+const TURN_RULES_TOOLS = `How a turn works:
+1. Duplicates first. A server note under the user's message lists existing nodes that are semantically close; use semantic_search or search_nodes when you need more. If an existing node already covers the request, say so in one sentence and list it under duplicates — still propose the draft so the user decides.
+2. Placement. Pick parentId from the tree below: a functional area, never a release. Prefer the parent hint unless the work clearly belongs elsewhere. Say why in parentReason.
+3. Version and phase. Suggest what the siblings under that parent use; leave null and ask when it is genuinely ambiguous.
+4. Dependencies. Only ids from the tree or from tickets accepted earlier in this session, each with a reason. Most tickets have none.
+5. Call propose_ticket on EVERY turn where you have enough to draft — the first one included. If details are missing that change the ticket, ALSO call ask_user with at most three questions (options where a choice is natural). Never ask what you can infer. When the user answers, call propose_ticket again with the updated draft.
+6. Keep prose to one or two sentences; the draft carries the content.`;
+
+const TURN_RULES_JSON = `How a turn works:
+1. Duplicates first. A server note under the user's message lists existing nodes that are semantically close. If one already covers the request, say so in "text" and list it under "duplicates" — still produce the draft so the user decides.
+2. Placement. Pick "parentId" from the tree below: a functional area, never a release. Prefer the parent hint unless the work clearly belongs elsewhere. Say why in "parentReason".
+3. Version and phase. Suggest what the siblings under that parent use; use null when unsure.
+4. Dependencies. Only ids from the tree or from tickets accepted earlier in this session, each with a reason. Most tickets have none.
+5. Produce the draft on EVERY turn where you have enough — the first one included. If details are missing that change the ticket, ALSO list at most three questions (options where a choice is natural). Never ask what you can infer. When the user answers, produce the updated draft.
+6. Keep "text" to one or two sentences; the draft carries the content.
+
+Return ONLY one JSON object, no markdown fences, no prose outside it:
+{
+  "text": "<one or two sentences>",
+  "draft": {
+    "title": "<one line>",
+    "description": "<markdown with the four headings>",
+    "parentId": "<id from the tree>",
+    "parentReason": "<one sentence>",
+    "priority": "P0" | "P1" | "P2" | "P3" | null,
+    "versionId": "<id from the versions list>" | null,
+    "phaseId": "<id from the phases list>" | null,
+    "tags": ["<tag>"],
+    "dependencies": [{"nodeId": "<id>", "reason": "<why>"}],
+    "duplicates": [{"nodeId": "<id>", "reason": "<why>"}]
+  } | null,
+  "questions": [{"id": "<key>", "question": "<text>", "options": ["<a>", "<b>"], "why": "<what it decides>"}]
+}`;
+
+export function buildIntakeSystemPrompt(ctx: IntakeContext, mode: IntakeMode = 'tools'): string {
   const byId = new Map(ctx.nodes.map((n) => [n.id, n]));
   const root = ctx.nodes.find((n) => n.parentId === null);
   const hint = ctx.parentHintId ? byId.get(ctx.parentHintId) : undefined;
@@ -230,13 +280,7 @@ export function buildIntakeSystemPrompt(ctx: IntakeContext): string {
 
 Effort unit of this map: ${effortUnit}. Estimation is done by the server after you draft — do not estimate.
 
-How a turn works:
-1. Duplicates first. A server note under the user's message lists existing nodes that are semantically close; use semantic_search or search_nodes when you need more. If an existing node already covers the request, say so in one sentence and list it under duplicates — still propose the draft so the user decides.
-2. Placement. Pick parentId from the tree below: a functional area, never a release. Prefer the parent hint unless the work clearly belongs elsewhere. Say why in parentReason.
-3. Version and phase. Suggest what the siblings under that parent use; leave null and ask when it is genuinely ambiguous.
-4. Dependencies. Only ids from the tree or from tickets accepted earlier in this session, each with a reason. Most tickets have none.
-5. Call propose_ticket on EVERY turn where you have enough to draft — the first one included. If details are missing that change the ticket, ALSO call ask_user with at most three questions (options where a choice is natural). Never ask what you can infer. When the user answers, call propose_ticket again with the updated draft.
-6. Keep prose to one or two sentences; the draft carries the content.
+${mode === 'tools' ? TURN_RULES_TOOLS : TURN_RULES_JSON}
 
 Ticket template for description (markdown, exactly these headings, in the user's language):
 ## Why — one short paragraph: the problem or motivation
@@ -386,6 +430,26 @@ const defaultIo: IntakeIo = {
 };
 
 export const INTAKE_MAX_STEPS = 8;
+/** JSON mode: how many prior messages (user + assistant) travel with each turn. */
+const JSON_HISTORY_CAP = 12;
+
+/** Strip fences and trailing chatter a small model adds even in JSON mode. */
+export function parseJsonObject(raw: string): Record<string, unknown> | null {
+  const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+  const candidates = [cleaned];
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start >= 0 && end > start) candidates.push(cleaned.slice(start, end + 1));
+  for (const c of candidates) {
+    try {
+      const v = JSON.parse(c);
+      if (v && typeof v === 'object' && !Array.isArray(v)) return v as Record<string, unknown>;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
 /** Below this cosine score a pre-search hit is noise, not a duplicate candidate. */
 const DUPLICATE_MIN_SCORE = 0.55;
 
@@ -431,15 +495,51 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
   }
   session.messages.push({ role: 'user', content: userContent });
 
-  const systemPrompt = buildIntakeSystemPrompt(ctx);
-  const tools = intakeToolSpecs(provider);
+  const mode = intakeModeFor(provider);
+  const systemPrompt = buildIntakeSystemPrompt(ctx, mode);
 
   let text = '';
   let draftArgs: Record<string, unknown> | null = null;
   let questionArgs: Record<string, unknown> | null = null;
   let stepLimit = false;
 
-  for (let step = 0; step < INTAKE_MAX_STEPS; step++) {
+  if (mode === 'json') {
+    // One completion per turn. The conversation so far is rendered into the
+    // user turn (the local backend has no prompt caching to lose), capped
+    // so a long session cannot overrun a small context window.
+    const history = session.messages.slice(-JSON_HISTORY_CAP);
+    const rendered = history
+      .map((m) =>
+        m.role === 'user'
+          ? `User:\n${m.content}`
+          : m.role === 'assistant'
+            ? `Assistant (JSON):\n${m.content}`
+            : '',
+      )
+      .filter((s) => s.length > 0)
+      .join('\n\n');
+    const raw = await provider.complete({
+      systemPrompt,
+      parts: [{ text: rendered }, { text: 'Return the JSON object now.' }],
+      format: 'json',
+      temperature: 0,
+      maxTokens: 2048,
+      signal: opts.signal,
+    });
+    const parsed = parseJsonObject(raw);
+    if (!parsed) throw new AiBadResponseError('Model did not return a usable JSON object');
+    session.messages.push({ role: 'assistant', content: JSON.stringify(parsed), toolCalls: [] });
+    text = str(parsed.text);
+    if (parsed.draft && typeof parsed.draft === 'object') {
+      draftArgs = parsed.draft as Record<string, unknown>;
+    }
+    if (Array.isArray(parsed.questions) && parsed.questions.length > 0) {
+      questionArgs = { questions: parsed.questions };
+    }
+  }
+
+  const tools = mode === 'tools' ? intakeToolSpecs(provider) : [];
+  for (let step = 0; mode === 'tools' && step < INTAKE_MAX_STEPS; step++) {
     let assistantText = '';
     const toolCalls: NormalizedToolCall[] = [];
     for await (const ev of provider.runTurn({

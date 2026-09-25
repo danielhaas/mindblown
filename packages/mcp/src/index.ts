@@ -3193,7 +3193,7 @@ server.tool(
 // with ticket_intake_accept. Nothing is created before accept.
 
 function formatIntakeTurn(r: api.IntakeTurnResponse): string {
-  const lines: string[] = [`intakeId: ${r.intakeId}`];
+  const lines: string[] = [`intakeId: ${r.intakeId}${r.provider ? ` (via ${r.provider.model})` : ''}`];
   if (r.text) lines.push('', r.text);
   if (r.draft) {
     const d = r.draft;

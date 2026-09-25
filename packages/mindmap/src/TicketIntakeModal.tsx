@@ -39,6 +39,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
   const [questions, setQuestions] = useState<IntakeQuestion[]>([]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [repoConnected, setRepoConnected] = useState(false);
+  const [modelLabel, setModelLabel] = useState<string | null>(null);
   const [createIssue, setCreateIssue] = useState<boolean | null>(null);
   const [loading, setLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -57,6 +58,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
   const applyTurn = useCallback((r: api.IntakeTurnResponse) => {
     setIntakeId(r.intakeId);
     setRepoConnected(r.repoConnected);
+    if (r.provider) setModelLabel(r.provider.model);
     setCreateIssue((prev) => (prev === null ? r.repoConnected : prev));
     if (r.text) setLog((l) => [...l, { role: 'assistant', text: r.text }]);
     if (r.draft) {
@@ -147,6 +149,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
             <div style={{ fontWeight: 600, fontSize: 15, color: '#0f172a' }}>Ticket intake</div>
             <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
               Under: {parentText}
+              {modelLabel ? ` · ${modelLabel}` : ''}
               {acceptedCount > 0 ? ` · ${acceptedCount} created this session` : ''}
             </div>
           </div>
