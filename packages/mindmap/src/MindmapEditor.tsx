@@ -17,6 +17,7 @@ import { RefineModal } from './RefineModal.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { DeepRefineModal } from './DeepRefineModal.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
+import { TicketIntakeModal } from './TicketIntakeModal.js';
 import { exportPNG } from './ImportExport.js';
 import type { LayoutNode } from './layout.js';
 import type { Node, Priority } from '@mindblown/core';
@@ -390,7 +391,13 @@ export function MindmapEditor() {
   const [aiBraindump, setAiBraindump] = useState<{ parentId: string; parentText: string } | null>(null);
   // Breakdown / brain dump / refine all need the server's structured-output
   // backend; on a no-LLM install the menu items and the fan-out hint vanish.
-  const aiStructured = useAiCapabilities(currentMapId).structured;
+  const aiCaps = useAiCapabilities(currentMapId);
+  const aiStructured = aiCaps.structured;
+  // Ticket intake (#387) runs the chat tool loop, so it follows the chat
+  // capability — hidden on no-LLM installs and on `none`/`local`-without-
+  // backend maps, same as the chat dock.
+  const aiIntakeAvailable = aiCaps.chat;
+  const [ticketIntake, setTicketIntake] = useState<{ parentId: string; parentText: string } | null>(null);
   const [refine, setRefine] = useState<{ parentId: string; parentText: string } | null>(null);
   const [deepRefine, setDeepRefine] = useState<{ rootId: string; rootText: string } | null>(null);
 
@@ -1891,6 +1898,20 @@ export function MindmapEditor() {
               AI Brain Dump
             </button>
             )}
+            {aiIntakeAvailable && (
+            <button
+              style={{ ...ctxMenuItemStyle, color: '#3b82f6' }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
+              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+              onClick={() => {
+                const node = nodes[contextMenu.nodeId];
+                setTicketIntake({ parentId: contextMenu.nodeId, parentText: node?.text ?? '' });
+                setContextMenu(null);
+              }}
+            >
+              AI Ticket Intake
+            </button>
+            )}
             {aiStructured && (nodes[contextMenu.nodeId]?.childrenIds?.length ?? 0) >= 4 && (
               <button
                 style={{ ...ctxMenuItemStyle, color: '#6366f1' }}
@@ -2059,6 +2080,16 @@ export function MindmapEditor() {
           parentId={aiBraindump.parentId}
           parentText={aiBraindump.parentText}
           onClose={() => setAiBraindump(null)}
+        />
+      )}
+
+      {/* Ticket intake modal (#387) */}
+      {ticketIntake && currentMapId && (
+        <TicketIntakeModal
+          mapId={currentMapId}
+          parentId={ticketIntake.parentId}
+          parentText={ticketIntake.parentText}
+          onClose={() => setTicketIntake(null)}
         />
       )}
 

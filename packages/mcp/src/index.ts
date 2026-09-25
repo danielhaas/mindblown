@@ -3165,6 +3165,112 @@ server.tool(
   },
 );
 
+// ── Ticket intake (#387) ───────────────────────────────────────
+//
+// The same refine-then-ask loop the mindmap modal runs, for agents:
+// describe the work, get a draft that fits the plan (duplicate check,
+// placement, version/phase, calibrated estimate, dependencies) plus up
+// to three questions; answer by calling again with the intakeId; write
+// with ticket_intake_accept. Nothing is created before accept.
+
+function formatIntakeTurn(r: api.IntakeTurnResponse): string {
+  const lines: string[] = [`intakeId: ${r.intakeId}`];
+  if (r.text) lines.push('', r.text);
+  if (r.draft) {
+    const d = r.draft;
+    lines.push('', '## Draft', `Title: ${d.title}`, `Parent: "${d.parentText}" [${d.parentId}] — ${d.parentReason}`);
+    if (d.priority) lines.push(`Priority: ${d.priority}`);
+    lines.push(`Version: ${d.versionName ? `${d.versionName} [${d.versionId}]` : '(none)'}`);
+    lines.push(`Phase: ${d.phaseName ? `${d.phaseName} [${d.phaseId}]` : '(none)'}`);
+    if (d.tags.length > 0) lines.push(`Tags: ${d.tags.join(', ')}`);
+    if (d.estimate) {
+      lines.push(
+        `Estimate: ${d.estimate.estimate} ${d.estimate.effortUnit} (confidence ${d.estimate.confidence}, ${d.estimate.samplesUsed} samples)${d.estimate.notes ? ` — ${d.estimate.notes}` : ''}`,
+        d.estimate.confidence === 'low'
+          ? '  (low confidence — pass effortEstimate on accept only if you agree with it)'
+          : '  (pass effortEstimate on accept to keep it)',
+      );
+    }
+    if (d.dependencies.length > 0) {
+      lines.push('Dependencies (finish-to-start):');
+      for (const x of d.dependencies) lines.push(`  - "${x.text}" [${x.nodeId}] — ${x.reason}`);
+    }
+    if (d.duplicates.length > 0) {
+      lines.push('Possible duplicates — check before accepting:');
+      for (const x of d.duplicates) lines.push(`  - "${x.text}" [${x.nodeId}] — ${x.reason}`);
+    }
+    lines.push('', 'Description:', d.description);
+  }
+  if (r.questions.length > 0) {
+    lines.push('', '## Questions');
+    r.questions.forEach((q, i) => {
+      lines.push(`${i + 1}. ${q.question}${q.why ? ` (${q.why})` : ''}`);
+      if (q.options.length > 0) lines.push(`   options: ${q.options.join(' | ')}`);
+    });
+    lines.push('', 'Answer by calling ticket_intake again with this intakeId and your answers as the message.');
+  }
+  if (r.stepLimit) lines.push('', '(The model ran out of steps before drafting — send a shorter or clearer description.)');
+  if (r.draft) {
+    lines.push(
+      '',
+      `Accept with ticket_intake_accept(mapId, intakeId, draft) — edit the draft fields first if needed.${r.repoConnected ? ' createIssue=true also files the issue on the connected repo.' : ''}`,
+    );
+  }
+  return lines.join('\n');
+}
+
+server.tool(
+  'ticket_intake',
+  'Turn a rough ticket description into a well-formed ticket that fits this plan, the way the mindmap "Ticket intake" dialog does: duplicate check, proposed parent, version/phase, calibrated estimate, dependencies, plus up to three clarifying questions. Nothing is created — call ticket_intake_accept with the draft to write it. Pass the returned intakeId on follow-up calls (answers, corrections, the next ticket in the same session so it can depend on earlier ones).',
+  {
+    mapId: z.string().describe('The map ID'),
+    message: z.string().min(1).describe('The rough description, or answers to the previous questions'),
+    intakeId: z.string().optional().describe('Session id from a previous call — omit to start a new session'),
+    parentHintId: z.string().optional().describe('Node the ticket probably belongs under; the model may place it elsewhere'),
+  },
+  async ({ mapId, message, intakeId, parentHintId }) => {
+    try {
+      const r = await api.aiIntake(mapId, message, { intakeId, parentHintId });
+      return toolResult(formatIntakeTurn(r));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
+  'ticket_intake_accept',
+  'Create the node from a ticket_intake draft (as reviewed — pass the fields you want written). Adds finish-to-start dependencies and, with createIssue, files the issue on the connected repo. Pass the intakeId so later tickets in the session can depend on this one.',
+  {
+    mapId: z.string().describe('The map ID'),
+    intakeId: z.string().optional().describe('Session id from ticket_intake'),
+    createIssue: z.boolean().optional().describe('Also create the GitHub/Gitea issue (default false)'),
+    draft: z.object({
+      title: z.string().min(1),
+      description: z.string().describe('Markdown body (the reviewed draft description)'),
+      parentId: z.string(),
+      priority: z.enum(['P0', 'P1', 'P2', 'P3']).nullable().optional(),
+      versionId: z.string().nullable().optional(),
+      phaseId: z.string().nullable().optional(),
+      tags: z.array(z.string()).optional(),
+      effortEstimate: z.number().nullable().optional().describe('Omit to leave the node unestimated'),
+      dependencies: z.array(z.object({ nodeId: z.string() })).optional(),
+    }),
+  },
+  async ({ mapId, intakeId, createIssue, draft }) => {
+    try {
+      const r = await api.aiIntakeAccept(mapId, draft, { intakeId, createIssue });
+      const lines = [`Created node "${r.node.text}" (id: ${r.node.id}) under ${draft.parentId}.`];
+      if (r.issue) lines.push(`Filed issue #${r.issue.number}: ${r.issue.html_url}`);
+      if (r.issueError) lines.push(`Issue: ${r.issueError}`);
+      if (r.dependencyErrors?.length) lines.push(`Dependency errors: ${r.dependencyErrors.join('; ')}`);
+      return toolResult(lines.join('\n'));
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 server.tool(
   'ai_estimate',
   'Generate an effort estimate for a task using the LLM, in RAW planning units — the same scale humans estimate in. Uses up to 30 recently completed leaves (with both estimate and actual) as reference samples. The velocity fudge factor is reported alongside but never multiplied into the estimate: forecasts apply it at read time, so stored estimates stay uncalibrated by design. Pass either text (freeform) or nodeId (existing node — pulls its title, description, and ancestor path).',
