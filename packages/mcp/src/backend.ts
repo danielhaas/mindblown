@@ -51,4 +51,5 @@ export const httpBackend: ToolBackend = {
   addAttachment: (mapId, nodeId, input) => api.addAttachment(mapId, nodeId, input),
   attachFile: (mapId, nodeId, file) => api.attachFile(mapId, nodeId, file),
   removeAttachment: (mapId, nodeId, attachmentId) => api.removeAttachment(mapId, nodeId, attachmentId),
+  readAttachment: (mapId, nodeId, attachmentId, opts) => api.readAttachment(mapId, nodeId, attachmentId, opts),
 };

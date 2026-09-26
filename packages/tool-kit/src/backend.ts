@@ -437,9 +437,50 @@ export interface ToolBackend {
   attachFile(mapId: string, nodeId: string, file: InlineFileInput): Promise<NodeWithComputed>;
   /** Drop one attachment by id — `DELETE …/attachments/:attachmentId`. */
   removeAttachment(mapId: string, nodeId: string, attachmentId: string): Promise<NodeWithComputed>;
+  /**
+   * One page of a stored file's text — `GET …/attachments/:attachmentId/text`.
+   * Answers `readable: false` with a reason for a link, an external file or
+   * a type with no text in it; throws only for a missing node/attachment.
+   */
+  readAttachment(mapId: string, nodeId: string, attachmentId: string, opts?: ReadAttachmentOptions): Promise<AttachmentText>;
 }
 
 // ── Attachments ────────────────────────────────────────────────────
+
+export interface ReadAttachmentOptions {
+  /** Character offset the page starts at. Default 0. */
+  offset?: number;
+  /** Page size in characters. The server defaults to 20 000 and caps at 200 000. */
+  limit?: number;
+}
+
+export interface AttachmentTextPage {
+  readable: true;
+  attachmentId: string;
+  /** The name a person knows the file by. */
+  filename: string;
+  contentType: string;
+  sizeBytes: number;
+  /** Length of the whole extracted text, before paging. */
+  totalChars: number;
+  offset: number;
+  text: string;
+  /** More text follows this page — call again with `offset + text.length`. */
+  truncated: boolean;
+  /** PDFs only. */
+  pages?: number | null;
+}
+
+export interface AttachmentNotReadable {
+  readable: false;
+  attachmentId: string;
+  /** `link` | `external` | `missing` | `too_large` | `binary` | `unreadable` */
+  reason: string;
+  message: string;
+  url: string;
+}
+
+export type AttachmentText = AttachmentTextPage | AttachmentNotReadable;
 
 export interface NewAttachmentInput {
   kind: 'file' | 'link';

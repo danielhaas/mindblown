@@ -108,7 +108,7 @@ export const attachFileTool = defineTool({
     if (size <= 0) return 'Error: contentBase64 decodes to nothing.';
     if (size > INLINE_FILE_MAX_BYTES) {
       return (
-        `Error: the file decodes to ${(size / (1024 * 1024)).toFixed(1)} MB; inline uploads are capped at ` +
+        `Error: the file decodes to ${formatBytes(size)}; inline uploads are capped at ` +
         `${INLINE_FILE_MAX_BYTES / (1024 * 1024)} MB. ${MULTIPART_HINT}`
       );
     }
@@ -121,7 +121,7 @@ export const attachFileTool = defineTool({
     // by recency rather than by name.
     const added = [...(node.attachments ?? [])].sort((a, b) => b.addedAt.localeCompare(a.addedAt))[0];
     return (
-      `Uploaded "${args.filename}" (${size} bytes) and attached it to node ${args.nodeId} ("${node.text}").` +
+      `Uploaded "${args.filename}" (${formatBytes(size)}) and attached it to node ${args.nodeId} ("${node.text}").` +
       (added ? `\nAttachment id: ${added.id}\nURL: ${added.url}` : '') +
       countLine(node)
     );
@@ -131,7 +131,7 @@ export const attachFileTool = defineTool({
 export const removeAttachmentTool = defineTool({
   name: 'remove_attachment',
   description:
-    'Take one attachment (file or link) off a node by its attachment id — the id get_map / list_attachments show. Removing a file attachment does not delete the stored file; the URL stays readable for anyone who has it.',
+    'Take one attachment (file or link) off a node by its attachment id — the id get_map / list_attachments / read_attachment show. Removing a file attachment does not delete the stored file; the URL stays readable for anyone who has it.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node the attachment hangs on'),
@@ -143,4 +143,62 @@ export const removeAttachmentTool = defineTool({
   },
 });
 
-export const attachmentTools = [attachLinkTool, attachFileTool, removeAttachmentTool];
+/** Default page size — mirrors the server's `DEFAULT_PAGE_CHARS`. */
+export const READ_DEFAULT_CHARS = 20_000;
+/** Largest page the tool asks for — mirrors the server's `MAX_PAGE_CHARS`. */
+export const READ_MAX_CHARS = 200_000;
+
+/** One byte formatter for every attachment message, tool-kit and server alike. */
+export function formatBytes(n: number): string {
+  if (n < 1024) return `${n} bytes`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export const readAttachmentTool = defineTool({
+  name: 'read_attachment',
+  description:
+    "Read the contents of a file attached to a node, as text — a spec, a CSV, a log, source code, a PDF. Use the attachment id from get_map / list_attachments. Text-like files come back verbatim, PDFs as extracted text; images, video, archives and office documents have no text and are refused with the URL to open instead, as are links. Long files are paged: the result says how many characters remain and the offset to continue from. Only files stored in MindBlown are read; nothing external is fetched.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+    nodeId: z.string().describe('The node the attachment hangs on'),
+    attachmentId: z.string().describe('The attachment id'),
+    offset: z.number().int().min(0).optional().describe('Character offset to start from (default 0). Use the value the previous page named to continue.'),
+    maxChars: z
+      .number()
+      .int()
+      .min(1)
+      .max(READ_MAX_CHARS)
+      .optional()
+      .describe(`Characters per page (default ${READ_DEFAULT_CHARS}, max ${READ_MAX_CHARS})`),
+  },
+  handler: async (backend, args) => {
+    const res = await backend.readAttachment(args.mapId, args.nodeId, args.attachmentId, {
+      offset: args.offset,
+      limit: args.maxChars,
+    });
+    if (!res.readable) {
+      return `Cannot read attachment ${args.attachmentId}: ${res.message}\nURL: ${res.url}`;
+    }
+    const end = res.offset + res.text.length;
+    const meta = [res.contentType, formatBytes(res.sizeBytes), res.pages != null ? `${res.pages} page${res.pages === 1 ? '' : 's'}` : null]
+      .filter(Boolean)
+      .join(', ');
+    // An empty page is either an empty file or an offset at the end; say
+    // so outright rather than printing a range that does not exist, which
+    // a model would read as one more character to fetch.
+    const range =
+      res.totalChars === 0
+        ? 'empty file'
+        : res.text.length === 0
+          ? `end of file (${res.totalChars} chars in total)`
+          : `chars ${res.offset}–${end - 1} of ${res.totalChars}`;
+    const header = `# ${res.filename} (${meta}) — ${range}`;
+    const tail = res.truncated
+      ? `\n\n[${res.totalChars - end} characters remain — call read_attachment again with offset ${end}]`
+      : '';
+    return `${header}\n\n${res.text}${tail}`;
+  },
+});
+
+export const attachmentTools = [attachLinkTool, attachFileTool, removeAttachmentTool, readAttachmentTool];

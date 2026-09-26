@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions } from '@mindblown/tool-kit';
 import type { AskAnswerInput } from '@mindblown/core';
 
 /**
@@ -1564,6 +1564,21 @@ export function removeAttachment(
   return request<NodeWithComputed>(
     `/api/maps/${mapId}/nodes/${nodeId}/attachments/${encodeURIComponent(attachmentId)}`,
     { method: 'DELETE' },
+  );
+}
+
+export function readAttachment(
+  mapId: string,
+  nodeId: string,
+  attachmentId: string,
+  opts: ReadAttachmentOptions = {},
+): Promise<AttachmentText> {
+  const q = new URLSearchParams();
+  if (opts.offset != null) q.set('offset', String(opts.offset));
+  if (opts.limit != null) q.set('limit', String(opts.limit));
+  const qs = q.size > 0 ? `?${q}` : '';
+  return request<AttachmentText>(
+    `/api/maps/${mapId}/nodes/${nodeId}/attachments/${encodeURIComponent(attachmentId)}/text${qs}`,
   );
 }
 

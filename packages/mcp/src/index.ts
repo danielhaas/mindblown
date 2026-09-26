@@ -382,7 +382,7 @@ server.tool(
 
 server.tool(
   'list_attachments',
-  'Every file and link hung on nodes in a map, as one flat list, newest first — the same rows the Files tab shows. Answers "where is the spec / the screenshot / the export?" without paging through get_map. Each row names the node it hangs on ("Map" for a map-level file on the root node), the URL, type, size and the attachment id remove_attachment takes. Scope with nodeId (subtree) and/or kind.',
+  'Every file and link hung on nodes in a map, as one flat list, newest first — the same rows the Files tab shows. Answers "where is the spec / the screenshot / the export?" without paging through get_map. Each row names the node it hangs on ("Map" for a map-level file on the root node), the URL, type, size and the attachment id read_attachment and remove_attachment take. Scope with nodeId (subtree) and/or kind.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Only this node and its descendants'),
