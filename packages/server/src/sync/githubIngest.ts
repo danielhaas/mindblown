@@ -39,7 +39,7 @@
  *     persists the new id.
  */
 
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';
@@ -239,6 +239,7 @@ export async function findIngestTargetMaps(
         eq(maps.githubRepoOwner, owner),
         eq(maps.githubRepoName, repo),
         eq(maps.autoImportNewIssues, true),
+        isNull(maps.archivedAt), // archived = on hold, no ingest, no triage
       ),
     );
   for (const m of appMaps) {
@@ -269,6 +270,7 @@ export async function findIngestTargetMaps(
         and(
           eq(maps.workspaceId, integ.workspaceId),
           eq(maps.autoImportNewIssues, true),
+          isNull(maps.archivedAt),
         ),
       );
     for (const m of wsMaps) {
@@ -563,7 +565,7 @@ async function findNodesByExternalIdAcrossMaps(
       externalLinks: nodes.externalLinks,
     })
     .from(nodes)
-    .where(nodeDb.notDeleted);
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap)); // archived maps: no label sync
   const out: Array<{ id: string; mapId: string; tags: string[] }> = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];

@@ -5,16 +5,25 @@ import { filterMapData, formatMapTree } from '../formatters.js';
 
 export const listMapsTool = defineTool({
   name: 'list_maps',
-  description: 'List all maps with name, progress percentage, and health signal',
+  description:
+    'List all maps with name, progress percentage, and health signal. Archived maps are listed last and marked [ARCHIVED] — they are on hold: do not create, update, claim, triage or sync anything on them unless a human explicitly asks. Unarchive with update_map(archived: false).',
   schema: {},
   handler: async (backend) => {
     const maps = await backend.listMaps();
     if (maps.length === 0) return 'No maps found.';
-    const lines = maps.map((m) => {
+    const active = maps.filter((m) => !m.archivedAt);
+    const archived = maps.filter((m) => m.archivedAt);
+    const line = (m: (typeof maps)[number]) => {
       const health =
         m.healthSignal === 'on_track' ? '[OK]' : m.healthSignal === 'at_risk' ? '[AT RISK]' : '[BEHIND]';
-      return `- ${m.name} (id: ${m.id}, workspaceId: ${m.workspaceId}) — ${Math.round(m.computedProgress)}% complete ${health}`;
-    });
+      const tag = m.archivedAt ? ` [ARCHIVED since ${m.archivedAt.slice(0, 10)}]` : '';
+      return `- ${m.name} (id: ${m.id}, workspaceId: ${m.workspaceId}) — ${Math.round(m.computedProgress)}% complete ${health}${tag}`;
+    };
+    const lines = active.map(line);
+    if (archived.length > 0) {
+      lines.push('', `Archived (${archived.length}) — on hold, no automated actions:`);
+      lines.push(...archived.map(line));
+    }
     return lines.join('\n');
   },
 });
@@ -134,6 +143,10 @@ export const updateMapTool = defineTool({
       })
       .optional()
       .describe('Pull-queue ranking keys in order (REPLACE mode): bugs = bug-tagged ("bug"/"type:bug") first, priority = priorityRank then P0–P3, size = smallest estimate first (nulls last), age = oldest first. Empty array = default ["bugs","priority","age"]. May additionally contain at most ONE parametric entry "mix:bugs=<N>" (integer N 0-100): candidates are split into bugs and non-bugs, each class is sorted by the remaining keys, then interleaved deterministically at N:(100-N) — N=0 is inert (exactly the ordering without the entry), N=100 hands out all bugs first, and a drained class is back-filled gaplessly by the other. The weave phase is persisted server-side per map and advances only on actual grants, so repeated single-ticket get_next_ticket pulls walk the pattern instead of restarting it; it is internal state, not configurable.'),
+    archived: z
+      .boolean()
+      .optional()
+      .describe('Archive (true) or unarchive (false) the map. An archived map is on hold: forge webhooks and catch-up sync, issue triage, the get_next_ticket pull queue, sprint rollover and every other automated or agent-driven write (including your own tool calls) get 409 MAP_ARCHIVED until it is unarchived. People can still open and edit it in the browser. Only archive or unarchive when a person asked for it.'),
     aiPolicy: z
       .enum(['any', 'local', 'none'])
       .optional()
@@ -176,7 +189,7 @@ export const updateMapTool = defineTool({
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, phases }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, phases, archived }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -192,6 +205,7 @@ export const updateMapTool = defineTool({
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
+      archived?: boolean;
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
@@ -206,6 +220,7 @@ export const updateMapTool = defineTool({
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
+    if (archived !== undefined) fields.archived = archived;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
       // array index — callers reordering can just send the array in the

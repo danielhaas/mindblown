@@ -33,6 +33,7 @@ vi.mock('drizzle-orm', async () => {
     and: () => ({ __pred: true }),
     inArray: () => ({ __pred: true }),
     isNotNull: () => ({ __pred: true }),
+    isNull: () => ({ __pred: true }),
     sql: Object.assign(
       (..._args: unknown[]) => ({ __sql: true }),
       { raw: (s: string) => ({ __sql: true, raw: s }) },
@@ -73,6 +74,7 @@ vi.mock('../../db/nodes.js', () => ({
   // for every pre-existing case in this file.
   findLinksMissingState: vi.fn(async () => []),
   notDeleted: { __pred: true },
+  onActiveMap: { __pred: true },
 }));
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));

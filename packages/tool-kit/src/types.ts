@@ -15,6 +15,8 @@ export interface MapSummary {
   healthSignal: string;
   createdAt: string;
   updatedAt: string;
+  /** ISO timestamp when the map was archived; null/absent = active. */
+  archivedAt?: string | null;
 }
 
 export interface NodeWithComputed {

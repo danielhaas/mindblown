@@ -71,15 +71,22 @@ export function MobileMapList({ onPick }: Props) {
       <div style={{ fontSize: 12, color: '#64748b', textTransform: 'uppercase', letterSpacing: 0.04 }}>
         Pick a map to view
       </div>
-      {maps.map((m) => {
+      {[...maps.filter((m) => !m.archivedAt), ...maps.filter((m) => m.archivedAt)].map((m) => {
         const pct = Math.round(m.computedProgress ?? 0);
+        const archived = m.archivedAt != null;
         return (
-          <button key={m.id} className="mb-card" onClick={() => onPick(m)}>
+          <button
+            key={m.id}
+            className="mb-card"
+            onClick={() => onPick(m)}
+            style={archived ? { opacity: 0.6 } : undefined}
+          >
             <div className="mb-card-title">
               <span className={`mb-health-dot ${healthClass(m.healthSignal)}`} />
               {m.name}
             </div>
             <div className="mb-card-meta">
+              {archived ? 'Archived · ' : ''}
               {pct}% complete · {m.healthSignal?.replace('_', ' ') ?? 'unknown'}
             </div>
           </button>

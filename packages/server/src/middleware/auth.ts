@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { verifyToken } from '../auth.js';
+import { verifyToken, type JwtPayload } from '../auth.js';
 import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
 import { isMediaPlaybackPath } from '../lib/media.js';
 
@@ -10,6 +10,11 @@ declare module 'fastify' {
      * minting more API keys) consult this so a leaked key can't bootstrap
      * fresh keys. */
     authSource?: 'jwt' | 'api-key';
+    /** Who is behind the request: a person in the browser (an interactive
+     * session JWT) or a robot (API key, the /mcp loopback JWT, a headless
+     * long-lived token). Unauthenticated = undefined, treated as a robot
+     * by the archive guard. */
+    actor?: 'person' | 'agent';
   }
 }
 
@@ -40,13 +45,20 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
     }
     req.userId = result.userId;
     req.authSource = 'api-key';
+    req.actor = 'agent';
     return;
   }
 
   try {
-    const payload = verifyToken(token);
+    const payload = verifyToken(token) as JwtPayload & { iat?: number; exp?: number };
     req.userId = payload.userId;
     req.authSource = 'jwt';
+    // A person holds an interactive session token: no `kind`, and a
+    // lifetime of JWT_EXPIRES_IN (days, not a year). Long-lived tokens
+    // minted before `kind` existed carry no marker, so the lifetime is
+    // the tie-breaker — anything living longer than 8 days is a script.
+    const lifetimeSec = payload.exp != null && payload.iat != null ? payload.exp - payload.iat : 0;
+    req.actor = payload.kind || lifetimeSec > 8 * 86_400 ? 'agent' : 'person';
   } catch {
     return reply.status(401).send({
       error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' },

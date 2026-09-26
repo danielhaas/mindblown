@@ -332,6 +332,7 @@ export interface ToolBackend {
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       phases?: PhaseDef[];
+      archived?: boolean;
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;

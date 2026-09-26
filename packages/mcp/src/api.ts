@@ -107,6 +107,7 @@ export interface MapSummary {
   healthSignal: string;
   createdAt: string;
   updatedAt: string;
+  archivedAt?: string | null;
 }
 
 export interface NodeWithComputed {
@@ -485,6 +486,7 @@ export function updateMap(
     profilePolicy?: ProfilePolicy | null;
     autoImportNewIssues?: boolean;
     phases?: PhaseDef[];
+    archived?: boolean;
   },
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {

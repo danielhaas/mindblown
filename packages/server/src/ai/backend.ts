@@ -43,6 +43,7 @@ function toMapSummary(m: MindMap, computedProgress = 0, healthSignal = 'on_track
     healthSignal,
     createdAt: toIsoString((m as unknown as { createdAt: unknown }).createdAt),
     updatedAt: toIsoString((m as unknown as { updatedAt: unknown }).updatedAt),
+    archivedAt: m.archivedAt ?? null,
   };
 }
 

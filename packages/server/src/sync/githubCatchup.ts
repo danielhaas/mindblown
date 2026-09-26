@@ -14,7 +14,7 @@
  * inferred by comparing GitHub state against the node's MindBlown state.
  */
 
-import { eq, and, inArray, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import {
   fetchChangedIssues,
@@ -398,7 +398,8 @@ async function findNodesByExternalIds(
   const rows = await db
     .select({ id: nodes.id, mapId: nodes.mapId, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(nodeDb.notDeleted);
+    // Archived maps are frozen: their links are invisible to the reconciler.
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
@@ -803,6 +804,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
         isNotNull(maps.githubInstallationId),
         isNotNull(maps.githubRepoOwner),
         isNotNull(maps.githubRepoName),
+        isNull(maps.archivedAt), // archived = on hold, no sync
       ),
     );
   for (const m of appMaps) {

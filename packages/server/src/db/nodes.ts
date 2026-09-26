@@ -13,6 +13,16 @@ import { invalidateMapContext } from '../sync/mapContext.js';
 export const notDeleted = isNull(nodes.deletedAt);
 
 /**
+ * Node lives on a map that is not archived. Every cross-map node scan
+ * that an unattended path uses to find its target (webhook branches,
+ * catch-up, label sync, PR sync, parent rollup, trash GC) ANDs this in,
+ * so an archived map's nodes are simply never found by a robot. A plain
+ * SQL fragment, not a subquery builder: this module is imported by
+ * route tests that stub `db`, and must load without touching it.
+ */
+export const onActiveMap = sql`${nodes.mapId} IN (SELECT ${maps.id} FROM ${maps} WHERE ${maps.archivedAt} IS NULL)`;
+
+/**
  * A handle that can issue queries — either the global `db` or a transaction
  * handle (`tx`) from `db.transaction(async (tx) => ...)`. Both expose the
  * same drizzle query-builder surface (`select`, `insert`, `update`, ...);
@@ -936,7 +946,7 @@ export async function findLinksMissingState(
   const rows = await db
     .select({ id: nodes.id, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(and(isNotNull(nodes.externalLinks), notDeleted));
+    .where(and(isNotNull(nodes.externalLinks), notDeleted, onActiveMap));
 
   const out: Array<{ nodeId: string; externalId: string }> = [];
   for (const row of rows) {
@@ -963,7 +973,7 @@ export async function findNodeIdByExternalId(
   const rows = await db
     .select({ id: nodes.id, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(notDeleted);
+    .where(and(notDeleted, onActiveMap));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {
@@ -1316,7 +1326,7 @@ export async function purgeExpiredTrash(retentionDays: number): Promise<string[]
   const rows = await db
     .select({ id: nodes.id })
     .from(nodes)
-    .where(and(isNotNull(nodes.deletedAt), sql`${nodes.deletedAt} < ${cutoff}`));
+    .where(and(isNotNull(nodes.deletedAt), sql`${nodes.deletedAt} < ${cutoff}`, onActiveMap));
   if (rows.length === 0) return [];
   const ids = rows.map((r) => r.id);
   await db.delete(nodes).where(inArray(nodes.id, ids));

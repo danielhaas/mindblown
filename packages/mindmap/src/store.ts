@@ -24,6 +24,9 @@ const BROADCAST_MAP_SETTINGS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Archive flips in another tab must land here: the banner and the
+  // agent-refusal state follow the server, never an optimistic edit.
+  'archivedAt',
   'updatedAt',
 ] as const satisfies readonly (keyof MindMap)[];
 
@@ -175,7 +178,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy'>>) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy'>> & { archived?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers

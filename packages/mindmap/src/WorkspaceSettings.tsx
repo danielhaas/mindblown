@@ -21,6 +21,7 @@ import { AiProviderPanel } from './AiProviderPanel.js';
 import { forgeLabel } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
+import { MapArchivePanel } from './MapArchivePanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -437,6 +438,9 @@ export function WorkspaceSettings({
 
           {/* Per-map AI policy (#375) — shown only for a map */}
           {mapId && <MapAiPolicyPanel />}
+
+          {/* Archive switch — last, it is the "stop everything" lever */}
+          {mapId && <MapArchivePanel />}
         </div>
       </div>
     </div>
