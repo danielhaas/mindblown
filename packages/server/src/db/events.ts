@@ -156,6 +156,9 @@ export const AUDITED_MAP_FIELDS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Archive flips are the loudest setting of all: every automation goes
+  // quiet on the map. Journal who did it and when.
+  'archivedAt',
 ] as const;
 export type AuditedMapField = (typeof AUDITED_MAP_FIELDS)[number];
 

@@ -102,6 +102,7 @@ vi.mock('../../db/schema.js', () => {
       githubRepoOwner: col('githubRepoOwner'),
       githubRepoName: col('githubRepoName'),
       autoImportNewIssues: col('autoImportNewIssues'),
+      archivedAt: col('archivedAt'),
     },
     nodes: {
       __name: 'nodes',

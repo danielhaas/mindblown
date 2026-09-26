@@ -539,6 +539,12 @@ function MapList({
   onSettings: () => void;
   onHelp: () => void;
 }) {
+  // Archived maps are on hold — parked under a collapsed group so the
+  // active list stays short, still one click away to reopen or unarchive.
+  const [showArchived, setShowArchived] = useState(false);
+  const activeMaps = maps.filter((m) => !m.archivedAt);
+  const archivedMaps = maps.filter((m) => m.archivedAt);
+  const visibleMaps = showArchived ? [...activeMaps, ...archivedMaps] : activeMaps;
   return (
     <div
       style={{
@@ -684,12 +690,16 @@ function MapList({
           )}
 
           {!loading &&
-            maps.map((map) => {
-              const healthInfo = HEALTH_LABEL[map.healthSignal] ?? HEALTH_LABEL.on_track;
+            visibleMaps.map((map) => {
+              const isArchived = map.archivedAt != null;
+              const healthInfo = isArchived
+                ? { text: 'Archived', bg: '#f1f5f9', fg: '#64748b' }
+                : HEALTH_LABEL[map.healthSignal] ?? HEALTH_LABEL.on_track;
               return (
                 <button
                   key={map.id}
                   onClick={() => onSelect(map.id)}
+                  data-archived={isArchived || undefined}
                   style={{
                     width: '100%',
                     display: 'flex',
@@ -703,6 +713,7 @@ function MapList({
                     fontFamily: 'inherit',
                     textAlign: 'left',
                     transition: 'background 0.15s',
+                    opacity: isArchived ? 0.6 : 1,
                   }}
                   onMouseOver={(e) => (e.currentTarget.style.background = '#f8fafc')}
                   onMouseOut={(e) => (e.currentTarget.style.background = 'transparent')}
@@ -782,6 +793,29 @@ function MapList({
                 </button>
               );
             })}
+
+          {!loading && !error && archivedMaps.length > 0 && (
+            <button
+              onClick={() => setShowArchived((v) => !v)}
+              data-testid="toggle-archived-maps"
+              style={{
+                width: '100%',
+                marginTop: 8,
+                padding: '8px 16px',
+                border: 'none',
+                borderRadius: 8,
+                background: 'transparent',
+                color: '#94a3b8',
+                fontSize: 12,
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                textAlign: 'left',
+              }}
+            >
+              {showArchived ? '▾' : '▸'} Archived ({archivedMaps.length})
+            </button>
+          )}
         </div>
       </div>
     </div>
@@ -2234,6 +2268,44 @@ export function App() {
           />
         </div>
       </div>
+
+      {/* Archived banner — the map is on hold, nothing automated runs */}
+      {currentMap?.archivedAt && (
+        <div
+          data-testid="archived-banner"
+          style={{
+            padding: '6px 16px',
+            background: '#f8fafc',
+            borderBottom: '1px solid #e2e8f0',
+            color: '#475569',
+            fontSize: 12,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <span>
+            This map is archived (since {currentMap.archivedAt.slice(0, 10)}). Issue sync, triage, dispatch and
+            other automated actions are paused; you can still edit it.
+          </span>
+          <button
+            onClick={() => setWorkspaceSettingsOpen(true)}
+            style={{
+              background: 'none',
+              border: '1px solid #cbd5e1',
+              borderRadius: 6,
+              color: 'inherit',
+              cursor: 'pointer',
+              fontSize: 11,
+              fontWeight: 600,
+              padding: '2px 8px',
+              fontFamily: 'inherit',
+            }}
+          >
+            Unarchive…
+          </button>
+        </div>
+      )}
 
       {/* GitHub connection banner */}
       {ghBanner && (

@@ -335,6 +335,7 @@ vi.mock('../../db/schema.js', () => {
       triageEnabled: col('triageEnabled'),
       name: col('name'),
       description: col('description'),
+      archivedAt: col('archivedAt'),
     },
     nodes: {
       __name: 'nodes',
@@ -391,6 +392,11 @@ vi.mock('drizzle-orm', async () => {
     isNotNull: (column: { __col?: string }): Pred => ({
       __pred: true,
       check: (row) => row[column.__col ?? ''] != null,
+    }),
+    // Archive filter: rows here never carry archivedAt, so IS NULL holds.
+    isNull: (column: { __col?: string }): Pred => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] == null,
     }),
   };
 });
@@ -519,6 +525,8 @@ let updateNodeMockShouldThrow: ((callIndex: number) => Error | null) | null = nu
 
 vi.mock('../../db/nodes.js', () => ({
   getNode: (id: string) => getNodeMock(id),
+  // Archive filter on cross-map scans; no archived maps in this harness.
+  onActiveMap: { __pred: true, check: () => true },
   moveNode: async (nodeId: string, newParentId: string) => {
     moveNodeCalls.push({ nodeId, newParentId });
     const row = dbState.nodes.get(nodeId);

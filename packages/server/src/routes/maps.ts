@@ -1101,8 +1101,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const forecast = computeReleaseForecast(data.map, data.nodes, allVersions, new Date(), rates);
 
     // Optional manual refresh — writes today's snapshot before reading
-    // deltas, so a button click produces a fresh history row.
-    if (wantRefresh) {
+    // deltas, so a button click produces a fresh history row. Not on an
+    // archived map: it is frozen, and this is a GET the request guard
+    // does not see.
+    if (wantRefresh && !(await mapDb.isMapArchived(req.params.id))) {
       await snapshotReleaseForecastForMap(req.params.id, forecast).catch((err) => {
         req.log.error({ err, mapId: req.params.id }, 'manual snapshot failed');
       });

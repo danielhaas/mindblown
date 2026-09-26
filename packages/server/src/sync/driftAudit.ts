@@ -29,7 +29,7 @@
  *     in the Kuma message so a token outage shows up in the dashboard.
  */
 
-import { eq, and, inArray, isNotNull } from 'drizzle-orm';
+import { eq, and, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
@@ -126,6 +126,7 @@ async function resolveTargets(): Promise<ResolvedTargets> {
         eq(maps.autoImportNewIssues, true),
         isNotNull(maps.githubRepoOwner),
         isNotNull(maps.githubRepoName),
+        isNull(maps.archivedAt), // archived = on hold, no audit, no backfill
       ),
     );
 

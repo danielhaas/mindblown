@@ -281,12 +281,12 @@ export async function syncTriageRowsForReopen(
     if (row.reviewed === true && row.decidedBy === 'operator') {
       continue;
     }
-    // Map-level triage_enabled gate.
+    // Map-level triage_enabled gate; an archived map is on hold entirely.
     const [mapRow] = await db
-      .select({ triageEnabled: maps.triageEnabled })
+      .select({ triageEnabled: maps.triageEnabled, archivedAt: maps.archivedAt })
       .from(maps)
       .where(eq(maps.id, row.mapId));
-    if (!mapRow || mapRow.triageEnabled !== true) {
+    if (!mapRow || mapRow.triageEnabled !== true || mapRow.archivedAt != null) {
       continue;
     }
 

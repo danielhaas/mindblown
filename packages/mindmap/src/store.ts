@@ -175,7 +175,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy'>>) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy'>> & { archived?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers

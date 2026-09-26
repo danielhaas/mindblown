@@ -8,7 +8,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { updateMapTool } from '../map.js';
+import { listMapsTool, updateMapTool } from '../map.js';
 import type { ToolBackend } from '../../backend.js';
 
 function makeRecordingBackend(): {
@@ -245,3 +245,41 @@ describe('update_map tool — profilePolicy', () => {
   });
 });
 
+
+// Archive switch — the one write that has to reach agents, because "on
+// hold" only means anything if the fleet's own tools can see and set it.
+describe('update_map tool — archived', () => {
+  const schema = z.object(updateMapTool.schema);
+
+  it('accepts archived true/false and rejects non-booleans', () => {
+    expect(schema.parse({ mapId: 'm1', archived: true }).archived).toBe(true);
+    expect(schema.parse({ mapId: 'm1', archived: false }).archived).toBe(false);
+    expect(() => schema.parse({ mapId: 'm1', archived: 'yes' })).toThrow();
+  });
+
+  it('forwards archived to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', archived: true } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ archived: true });
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', archived: false } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ archived: false });
+  });
+});
+
+describe('list_maps tool — archived maps', () => {
+  it('lists archived maps last, marked, under an on-hold header', async () => {
+    const backend = {
+      listMaps: async () => [
+        { id: 'a', workspaceId: 'w', name: 'Frozen', computedProgress: 40, healthSignal: 'behind', archivedAt: '2026-09-26T08:00:00.000Z' },
+        { id: 'b', workspaceId: 'w', name: 'Live', computedProgress: 10, healthSignal: 'on_track', archivedAt: null },
+      ],
+    } as unknown as ToolBackend;
+    const out = await listMapsTool.handler(backend, {} as never);
+    const lines = out.split('\n');
+    expect(lines[0]).toContain('Live');
+    expect(lines[0]).not.toContain('ARCHIVED');
+    expect(out).toContain('Archived (1) — on hold, no automated actions:');
+    expect(lines[lines.length - 1]).toContain('Frozen');
+    expect(lines[lines.length - 1]).toContain('[ARCHIVED since 2026-09-26]');
+  });
+});

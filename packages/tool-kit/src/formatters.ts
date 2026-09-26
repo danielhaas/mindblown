@@ -133,6 +133,11 @@ export function formatMapTree(data: MapDetail): string {
 
   const lines: string[] = [];
   lines.push(`# ${data.map.name}`);
+  if (data.map.archivedAt) {
+    lines.push(
+      `[ARCHIVED since ${data.map.archivedAt.slice(0, 10)}] This map is on hold: every write is refused (409 MAP_ARCHIVED) until a human unarchives it via update_map(archived: false). Read only.`,
+    );
+  }
   if (data.map.description) lines.push(`${data.map.description}`);
   lines.push(`Effort unit: ${data.map.effortUnit ?? 'hours'}`);
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);

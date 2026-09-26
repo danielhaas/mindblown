@@ -20,7 +20,7 @@
  *   - Any per-node error is caught + logged; the sweep continues.
  */
 
-import { and, eq, isNotNull, lte, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, lte, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes, maps } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
@@ -55,6 +55,7 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
         notDeleted,
         isNotNull(nodes.claimedBySession),
         isNotNull(nodes.claimedAt),
+        isNull(maps.archivedAt), // archived = frozen, claims stay as they were
       ),
     );
 

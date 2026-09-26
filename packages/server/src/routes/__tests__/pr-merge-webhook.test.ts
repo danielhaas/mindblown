@@ -157,6 +157,7 @@ vi.mock('../../db/nodes.js', () => ({
     return null;
   },
   notDeleted: { __pred: true, check: () => true },
+  onActiveMap: { __pred: true, check: () => true },
 }));
 
 vi.mock('../../sync/githubCatchup.js', () => ({ reconcileRepo: vi.fn() }));

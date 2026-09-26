@@ -15,6 +15,7 @@ import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
 import { registerAuthMiddleware } from './middleware/auth.js';
+import { registerArchiveGuard } from './middleware/archiveGuard.js';
 import { mapRoutes } from './routes/maps.js';
 import { lintRoutes } from './routes/lint.js';
 import { nodeRoutes } from './routes/nodes.js';
@@ -83,6 +84,8 @@ async function main(): Promise<void> {
 
   // ── Auth middleware (protects all subsequent /api/ routes) ──────
   await registerAuthMiddleware(app);
+  // Archived maps are frozen: every mutating request on one is refused.
+  await registerArchiveGuard(app);
 
   // ── Protected Routes ───────────────────────────────────────────
   await app.register(mapRoutes);

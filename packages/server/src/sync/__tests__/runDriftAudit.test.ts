@@ -72,6 +72,11 @@ vi.mock('drizzle-orm', async () => {
       __pred: true,
       check: (row) => values.includes(row[column.__col ?? '']),
     }),
+    // Archive filter: rows here never carry archivedAt, so IS NULL holds.
+    isNull: (column: { __col?: string }): Pred => ({
+      __pred: true,
+      check: (row) => row[column.__col ?? ''] == null,
+    }),
   };
 });
 
@@ -87,6 +92,7 @@ vi.mock('../../db/schema.js', () => {
       githubRepoOwner: col('githubRepoOwner'),
       githubRepoName: col('githubRepoName'),
       autoImportNewIssues: col('autoImportNewIssues'),
+      archivedAt: col('archivedAt'),
     },
     nodes: {
       __name: 'nodes',

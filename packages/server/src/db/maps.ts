@@ -158,7 +158,20 @@ export interface UpdateMapInput {
   triageLabelWriteback?: boolean;
   /** Per-map AI policy (#375). Invalid values are ignored, not stored. */
   aiPolicy?: AiPolicy;
+  /**
+   * Archive switch. `true` stamps `archivedAt` now (idempotent — an
+   * already-archived map keeps its original stamp), `false` clears it.
+   * An archived map is read-only for every unattended path: no forge
+   * ingest, no triage, no dispatch, no housekeeping, no snapshots — see
+   * isMapArchived(). Humans can still open, edit and unarchive it.
+   */
+  archived?: boolean;
 }
+
+// The archive check and error live in ./archived.ts (nodes.ts needs them
+// too and this module already imports nodes.ts). Re-exported so callers
+// keep the `mapDb.isMapArchived(id)` spelling.
+export { isMapArchived, MapArchivedError } from './archived.js';
 
 /**
  * Update map settings. `userId` attributes the change_events rows written
@@ -202,6 +215,10 @@ export async function updateMap(
   if (input.triageEnabled !== undefined) updates.triageEnabled = input.triageEnabled;
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
+  if (input.archived !== undefined) {
+    if (!input.archived) updates.archivedAt = null;
+    else if (before.archivedAt == null) updates.archivedAt = new Date();
+  }
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;

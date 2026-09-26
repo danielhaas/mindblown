@@ -18,6 +18,7 @@
 import { and, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
+import { onActiveMap } from '../db/nodes.js';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { closeGitHubIssue } from '@mindblown/integrations';
@@ -59,7 +60,9 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
       externalLinks: nodes.externalLinks,
     })
     .from(nodes)
-    .where(and(isNotNull(nodes.deletedAt), sql`${nodes.deletedAt} < ${cutoff}`));
+    // An archived map's trash is left alone too: GC would close issues
+    // on the forge, and "archived" promises no outward action at all.
+    .where(and(isNotNull(nodes.deletedAt), sql`${nodes.deletedAt} < ${cutoff}`, onActiveMap));
 
   summary.inspected = rows.length;
   if (rows.length === 0) return summary;
