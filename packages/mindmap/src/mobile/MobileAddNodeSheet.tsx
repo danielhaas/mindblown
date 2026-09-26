@@ -9,6 +9,8 @@ interface Props {
   onClose: () => void;
   /** Called with the created node so the owner can patch it in locally. */
   onCreated: (created: Node) => void;
+  /** Switch to AI ticket intake (#387); absent when the map has no chat-capable AI. */
+  onIntake?: () => void;
 }
 
 interface ParentOption {
@@ -33,7 +35,7 @@ function parentOptions(nodes: NodeWithComputed[], rootId: string, rootText: stri
   return out;
 }
 
-export function MobileAddNodeSheet({ nodes, map, onClose, onCreated }: Props) {
+export function MobileAddNodeSheet({ nodes, map, onClose, onCreated, onIntake }: Props) {
   const root = nodes.find((n) => n.id === map.rootNodeId);
   const options = useMemo(
     () => parentOptions(nodes, map.rootNodeId, root?.text ?? map.name),
@@ -81,6 +83,20 @@ export function MobileAddNodeSheet({ nodes, map, onClose, onCreated }: Props) {
         </div>
         <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
           {error && <div className="mb-error">{error}</div>}
+
+          {onIntake && (
+            <button
+              type="button"
+              className="mb-btn-secondary"
+              style={{ color: '#2563eb', borderColor: '#bfdbfe', background: '#eff6ff', textAlign: 'left' }}
+              onClick={onIntake}
+            >
+              ✨ Draft a ticket with AI
+              <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
+                Describe it in prose — duplicates, placement, estimate and questions handled for you
+              </div>
+            </button>
+          )}
 
           <div>
             <div className="mb-detail-label">Under</div>
