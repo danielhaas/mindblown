@@ -34,18 +34,22 @@ const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5180';
 interface StatePayload {
   userId: string;
   nonce: string;
+  /** Which flow minted it — a Gitea state must not finish here (its
+   *  nonce-cookie binding lives on the Gitea callback only). */
+  kind: 'github';
   /** Marks this as an OAuth state token, never a bearer (#397). */
   typ: typeof OAUTH_STATE_TYP;
 }
 
 function signState(userId: string): string {
   const nonce = Math.random().toString(36).slice(2);
-  return jwt.sign({ userId, nonce, typ: OAUTH_STATE_TYP } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
+  return jwt.sign({ userId, nonce, kind: 'github', typ: OAUTH_STATE_TYP } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
 }
 
 function verifyState(token: string): StatePayload {
   const payload = jwt.verify(token, JWT_SECRET) as StatePayload;
   if (payload.typ !== OAUTH_STATE_TYP) throw new Error('not an OAuth state token');
+  if (payload.kind !== 'github') throw new Error('state is not a github flow');
   return payload;
 }
 
