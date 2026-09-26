@@ -69,6 +69,11 @@ function renderTreeNode(
   if (node.externalLinks?.length > 0) {
     parts.push(node.externalLinks.map((l) => `[${l.externalId}]`).join(' '));
   }
+  if (node.attachments && node.attachments.length > 0) {
+    // Title plus id, so read_attachment / remove_attachment can be called
+    // straight from the tree without a list_attachments round trip.
+    parts.push(`files: ${node.attachments.map((a) => `${a.title} (att ${a.id})`).join(', ')}`);
+  }
   parts.push(formatClaim(node.claimedBySession, node.claimedAt));
   if (node.dependencies.length > 0) {
     const depLabels = node.dependencies.map((d) => {

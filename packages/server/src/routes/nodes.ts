@@ -23,6 +23,7 @@ import { isForgeLink } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
+import { readAttachmentText } from '../lib/attachmentText.js';
 
 /**
  * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
@@ -681,6 +682,45 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       });
 
       return reply.send(updated);
+    },
+  );
+
+  // ── GET /api/maps/:id/nodes/:nodeId/attachments/:attachmentId/text ──
+  //
+  // One page of a stored file's contents as text — the read path the
+  // `read_attachment` tool and the in-app chat sit on. Authenticated like
+  // every other node route, unlike the file's own capability URL: this
+  // answers extracted text for an attachment the caller can already see
+  // in the map, so the map is the boundary here, not the 160-bit id.
+  //
+  // A file that cannot be read as text (a link, an image, a file stored
+  // elsewhere) is a 200 with `readable: false` and a reason, not an error:
+  // the request was answered, and the caller wants the reason verbatim
+  // to pass on. 404 is reserved for a node or attachment that isn't there.
+  app.get<{
+    Params: { id: string; nodeId: string; attachmentId: string };
+    Querystring: { offset?: string; limit?: string };
+  }>(
+    '/api/maps/:id/nodes/:nodeId/attachments/:attachmentId/text',
+    async (req, reply) => {
+      const node = await nodeDb.getNode(req.params.nodeId);
+      const attachment = node?.attachments?.find((a) => a.id === req.params.attachmentId);
+      if (!node || !attachment) {
+        return reply.status(404).send({
+          error: { code: 'NOT_FOUND', message: 'Node or attachment not found' },
+        });
+      }
+      const offset = Number.parseInt(req.query.offset ?? '', 10);
+      const limit = Number.parseInt(req.query.limit ?? '', 10);
+      const res = await readAttachmentText(attachment, {
+        offset: Number.isFinite(offset) ? offset : undefined,
+        limit: Number.isFinite(limit) ? limit : undefined,
+      });
+      return reply.send(
+        res.readable
+          ? { ...res, attachmentId: attachment.id }
+          : { ...res, attachmentId: attachment.id, url: attachment.url },
+      );
     },
   );
 

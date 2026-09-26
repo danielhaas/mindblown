@@ -23,6 +23,7 @@ import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.j
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
+import { readAttachmentText } from '../lib/attachmentText.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -386,6 +387,15 @@ export function createChatBackend(userId: string): ToolBackend {
       if (!updated) throw new Error('Node or attachment not found');
       broadcast(mapId, { type: 'node:updated', nodeId, fields: ['attachments'], node: updated });
       return toNodeWithComputed(updated, undefined);
+    },
+    readAttachment: async (_mapId, nodeId, attachmentId, opts = {}) => {
+      const node = await nodeDb.getNode(nodeId);
+      const attachment = node?.attachments?.find((a) => a.id === attachmentId);
+      if (!attachment) throw new Error('Node or attachment not found');
+      const res = await readAttachmentText(attachment, opts);
+      return res.readable
+        ? { ...res, attachmentId }
+        : { ...res, attachmentId, url: attachment.url };
     },
   };
 }

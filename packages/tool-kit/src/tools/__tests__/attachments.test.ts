@@ -12,6 +12,7 @@ import {
   attachLinkTool,
   attachFileTool,
   removeAttachmentTool,
+  readAttachmentTool,
   base64DecodedLength,
   INLINE_FILE_MAX_BYTES,
 } from '../attachments.js';
@@ -145,6 +146,71 @@ describe('remove_attachment', () => {
     expect(calls.remove).toEqual([{ mapId: 'm', nodeId: 'n1', attachmentId: 'att-1' }]);
     expect(out).toContain('Removed attachment att-1');
     expect(out).toContain('now has 0 attachments');
+  });
+});
+
+describe('read_attachment', () => {
+  type ReadCall = { mapId: string; nodeId: string; attachmentId: string; opts: Record<string, unknown> | undefined };
+  function readBackend(answer: Awaited<ReturnType<ToolBackend['readAttachment']>>): { backend: ToolBackend; calls: ReadCall[] } {
+    const calls: ReadCall[] = [];
+    const backend = {
+      readAttachment: async (mapId: string, nodeId: string, attachmentId: string, opts?: Record<string, unknown>) => {
+        calls.push({ mapId, nodeId, attachmentId, opts });
+        return answer;
+      },
+    } as unknown as ToolBackend;
+    return { backend, calls };
+  }
+
+  it('forwards ids and paging and renders header, text and the continue hint', async () => {
+    const { backend, calls } = readBackend({
+      readable: true,
+      attachmentId: 'att-1',
+      filename: 'spec.pdf',
+      contentType: 'application/pdf',
+      sizeBytes: 3 * 1024 * 1024,
+      totalChars: 50,
+      offset: 10,
+      text: 'x'.repeat(20),
+      truncated: true,
+      pages: 3,
+    });
+    const out = await readAttachmentTool.handler(backend, { mapId: 'm', nodeId: 'n1', attachmentId: 'att-1', offset: 10, maxChars: 20 });
+    expect(calls).toEqual([{ mapId: 'm', nodeId: 'n1', attachmentId: 'att-1', opts: { offset: 10, limit: 20 } }]);
+    expect(out).toContain('# spec.pdf (application/pdf, 3.0 MB, 3 pages) — chars 10–29 of 50');
+    expect(out).toContain('\n\n' + 'x'.repeat(20));
+    expect(out).toContain('[20 characters remain — call read_attachment again with offset 30]');
+  });
+
+  it('renders a complete text file without a continue hint', async () => {
+    const { backend, calls } = readBackend({
+      readable: true,
+      attachmentId: 'att-2',
+      filename: 'notes.md',
+      contentType: 'text/markdown',
+      sizeBytes: 12,
+      totalChars: 12,
+      offset: 0,
+      text: '# Notes\nhi!\n',
+      truncated: false,
+      pages: null,
+    });
+    const out = await readAttachmentTool.handler(backend, { mapId: 'm', nodeId: 'n1', attachmentId: 'att-2' });
+    expect(calls[0].opts).toEqual({ offset: undefined, limit: undefined });
+    expect(out).toContain('# notes.md (text/markdown, 12 bytes) — chars 0–11 of 12');
+    expect(out).not.toContain('remain');
+  });
+
+  it('passes the reason and the URL on when the file has no text', async () => {
+    const { backend } = readBackend({
+      readable: false,
+      attachmentId: 'att-3',
+      reason: 'binary',
+      message: '"shot.png" (image/png) has no text to extract.',
+      url: 'https://mind.example/api/media/abc/shot.png',
+    });
+    const out = await readAttachmentTool.handler(backend, { mapId: 'm', nodeId: 'n1', attachmentId: 'att-3' });
+    expect(out).toBe('Cannot read attachment att-3: "shot.png" (image/png) has no text to extract.\nURL: https://mind.example/api/media/abc/shot.png');
   });
 });
 

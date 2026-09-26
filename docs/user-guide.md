@@ -268,7 +268,7 @@ Any node can carry **attachments** -- files you upload, or links to somewhere el
 
 Files that belong to the plan as a whole (a prospectus, an export, a spec that covers everything) go on the Files view's drop zone. They are stored on the map itself and show up as "Map" in the list. Uploaded files are served under an unguessable link; anyone who has the link can open it.
 
-AI agents see the same list through the `list_attachments` MCP tool and add to it with `attach_link` and `attach_file`.
+AI agents see the same list through the `list_attachments` MCP tool, add to it with `attach_link` and `attach_file`, and read a stored file's contents with `read_attachment` -- text files, source code, CSV/JSON and PDFs. The in-app AI assistant has the same read tool, so it can answer questions about an attached spec. Images, video and office documents are listed but not read.
 
 [screenshot: the view picker in the toolbar with all seven view options]
 

@@ -33,6 +33,10 @@ export type {
   // Attachments
   NewAttachmentInput,
   InlineFileInput,
+  ReadAttachmentOptions,
+  AttachmentText,
+  AttachmentTextPage,
+  AttachmentNotReadable,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';

@@ -216,7 +216,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 
 ### Attachment Tools
 
-Files and links hung on nodes. `get_map` shows them under each node; these tools list them across the map and add or remove them. For a file that belongs to the whole map, use the map's root node id -- the Files tab shows those as "Map".
+Files and links hung on nodes. `get_map` shows them on each node's line (`files: spec.pdf (att <id>)`); these tools list them across the map, read a stored file's text, and add or remove them. For a file that belongs to the whole map, use the map's root node id -- the Files tab shows those as "Map".
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
@@ -224,6 +224,7 @@ Files and links hung on nodes. `get_map` shows them under each node; these tools
 | `attach_link` | Hang a link on a node; also the second step after a multipart upload to `POST /api/media` (pass `kind: 'file'`) | `mapId`, `nodeId`, `url`, `title?`, `kind?`, `mimeType?`, `sizeBytes?` |
 | `attach_file` | Upload a small file (up to 8 MB, base64) and hang it on a node in one step. Larger files: multipart `POST /api/media` with an API key, then `attach_link` | `mapId`, `nodeId`, `filename`, `contentType?`, `contentBase64` |
 | `remove_attachment` | Take one attachment off a node by its id. The stored file stays readable for anyone with the link | `mapId`, `nodeId`, `attachmentId` |
+| `read_attachment` | The contents of a stored file as text, one page at a time: text files, source, CSV/JSON verbatim, PDFs extracted. Images, video, archives, office files and links are refused with the URL to open instead. Files up to 32 MB; pages default to 20 000 characters and the result names the offset to continue from | `mapId`, `nodeId`, `attachmentId`, `offset?`, `maxChars?` |
 
 ### Bulk Tools
 

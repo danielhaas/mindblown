@@ -61,6 +61,7 @@ const SHARED_CHAT_TOOL_NAMES = new Set<string>([
   'bulk_update_nodes',
   'bulk_set_estimate',
   'bulk_set_progress',
+  'read_attachment',
 ]);
 
 // Cast widens the union of concrete ToolSpec<{...}> shapes back to the
