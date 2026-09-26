@@ -19,7 +19,7 @@ import {
   recordAccepted,
   type IntakeContext,
 } from '../ai/intake.js';
-import { createForgeIssueForNode, NoForgeIntegrationError } from '../services/forgeIssue.js';
+import { createForgeIssueForNode, NoForgeIntegrationError, type IssueAuthor } from '../services/forgeIssue.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
@@ -1140,13 +1140,13 @@ Parent node: "${parentNode.text}"`;
       broadcast(body.mapId, { type: 'node:updated', nodeId: node.id, fields: ['dependencies'], node });
     }
 
-    let issue: { number: number; html_url: string } | null = null;
+    let issue: { number: number; html_url: string; author: IssueAuthor } | null = null;
     let issueError: string | undefined;
     if (body.createIssue) {
       try {
-        const created = await createForgeIssueForNode(body.mapId, node);
+        const created = await createForgeIssueForNode(body.mapId, node, { actorUserId: userId });
         node = created.node;
-        issue = { number: created.issue.number, html_url: created.issue.html_url };
+        issue = { number: created.issue.number, html_url: created.issue.html_url, author: created.author };
       } catch (err: any) {
         issueError =
           err instanceof NoForgeIntegrationError ? err.message : `Issue not created: ${err.message}`;

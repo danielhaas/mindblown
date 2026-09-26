@@ -111,7 +111,11 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
       onCreated(r.node);
       setAcceptedCount((n) => n + 1);
       const parts = [`Created «${r.node.text}»`];
-      if (r.issue) parts.push(`issue #${r.issue.number}`);
+      if (r.issue) {
+        const a = r.issue.author;
+        parts.push(`issue #${r.issue.number}${a?.as === 'user' ? ` as ${a.login}` : a?.as === 'binding' ? ' as the repo binding' : ''}`);
+        if (a?.fallbackReason) parts.push(a.fallbackReason);
+      }
       if (r.issueError) parts.push(r.issueError);
       setLog((l) => [...l, { role: 'system', text: parts.join(' — ') }]);
       setDraft(null);

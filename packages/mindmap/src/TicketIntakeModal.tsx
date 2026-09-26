@@ -122,7 +122,15 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
       await loadMap(mapId);
       setAcceptedCount((n) => n + 1);
       const parts = [`Created «${r.node.text}»`];
-      if (r.issue) parts.push(`filed issue #${r.issue.number}`);
+      if (r.issue) {
+        const a = r.issue.author;
+        parts.push(
+          `filed issue #${r.issue.number}${
+            a?.as === 'user' ? ` as ${a.login}` : a?.as === 'binding' ? ' as the repo binding' : ''
+          }`,
+        );
+        if (a?.fallbackReason) parts.push(a.fallbackReason);
+      }
       if (r.issueError) parts.push(r.issueError);
       if (r.dependencyErrors?.length) parts.push(`dependency errors: ${r.dependencyErrors.join('; ')}`);
       setLog((l) => [...l, { role: 'system', text: parts.join(' — ') }]);
