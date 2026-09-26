@@ -2285,8 +2285,8 @@ export function App() {
           }}
         >
           <span>
-            This map is archived (since {currentMap.archivedAt.slice(0, 10)}). Issue sync, triage, dispatch and
-            other automated actions are paused; you can still edit it.
+            This map is archived (since {currentMap.archivedAt.slice(0, 10)}). Issue sync, triage, dispatch,
+            agent tool calls and other automated actions are paused; you can still edit it by hand.
           </span>
           <button
             onClick={() => setWorkspaceSettingsOpen(true)}

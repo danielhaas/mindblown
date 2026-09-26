@@ -146,7 +146,7 @@ export const updateMapTool = defineTool({
     archived: z
       .boolean()
       .optional()
-      .describe('Archive (true) or unarchive (false) the map. An archived map is on hold: forge webhooks and catch-up sync, issue triage, the get_next_ticket pull queue, sprint rollover and every other automated or agent-driven write refuse it until it is unarchived. Humans can still open and edit it. Only archive when a human asked for it.'),
+      .describe('Archive (true) or unarchive (false) the map. An archived map is on hold: forge webhooks and catch-up sync, issue triage, the get_next_ticket pull queue, sprint rollover and every other automated or agent-driven write (including your own tool calls) get 409 MAP_ARCHIVED until it is unarchived. People can still open and edit it in the browser. Only archive or unarchive when a person asked for it.'),
     aiPolicy: z
       .enum(['any', 'local', 'none'])
       .optional()

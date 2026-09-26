@@ -135,7 +135,7 @@ export function formatMapTree(data: MapDetail): string {
   lines.push(`# ${data.map.name}`);
   if (data.map.archivedAt) {
     lines.push(
-      `[ARCHIVED since ${data.map.archivedAt.slice(0, 10)}] This map is on hold: every write is refused (409 MAP_ARCHIVED) until a human unarchives it via update_map(archived: false). Read only.`,
+      `[ARCHIVED since ${data.map.archivedAt.slice(0, 10)}] This map is on hold: every agent or automated write is refused (409 MAP_ARCHIVED) until a person unarchives it (update_map archived:false, only when asked). Treat as read-only.`,
     );
   }
   if (data.map.description) lines.push(`${data.map.description}`);

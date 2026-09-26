@@ -1,10 +1,11 @@
 /**
  * Archive switch for the open map — the bottom of the map's settings.
  *
- * Archived = on hold. The server refuses every unattended write on the
- * map (forge webhooks and catch-up sync, issue triage, the pull queue,
- * housekeeping tools, nightly snapshots) until it is unarchived. People
- * can still open and edit it; the map view shows a banner meanwhile.
+ * Archived = on hold. The server refuses every automated or agent write
+ * on the map (forge webhooks and catch-up sync, issue triage, the pull
+ * queue, MCP tools, housekeeping, nightly snapshots) until it is
+ * unarchived. People can still open and edit it by hand; the map view
+ * shows a banner meanwhile.
  *
  * Saved through the store's map-settings action, then the home list is
  * reloaded so the map moves between the active and archived groups.
@@ -25,7 +26,7 @@ export function MapArchivePanel() {
     if (
       !archived &&
       !window.confirm(
-        `Archive "${map.name}"?\n\nThe map goes on hold: no issue sync, triage, dispatch or other automated action runs on it until you unarchive it. You can still open and edit it.`,
+        `Archive "${map.name}"?\n\nThe map goes on hold: no issue sync, triage, dispatch, agent tool call or other automated action runs on it until you unarchive it. You can still open and edit it by hand.`,
       )
     ) {
       return;
@@ -43,8 +44,8 @@ export function MapArchivePanel() {
       </h3>
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
         {archived
-          ? `On hold since ${map.archivedAt!.slice(0, 10)}. Nothing automated touches it: no issue sync, triage, dispatch or housekeeping. You can still read and edit it.`
-          : 'Put the project on hold. Every automated action on it stops — issue sync, triage, dispatch, housekeeping — until you unarchive it. Nothing is deleted.'}
+          ? `On hold since ${map.archivedAt!.slice(0, 10)}. Nothing automated touches it: no issue sync, triage, dispatch, housekeeping or agent tool calls. You can still read and edit it by hand.`
+          : 'Put the project on hold. Every automated action on it stops — issue sync, triage, dispatch, housekeeping, agent tool calls — until you unarchive it. Nothing is deleted; you can still edit by hand.'}
       </div>
       <button
         onClick={toggle}

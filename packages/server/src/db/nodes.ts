@@ -6,7 +6,6 @@ import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
-import { assertMapWritable, assertNodeMapWritable } from './archived.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
 // Audit / pre-delete-snapshot paths in routes/nodes.ts deliberately bypass
@@ -21,7 +20,7 @@ export const notDeleted = isNull(nodes.deletedAt);
  * SQL fragment, not a subquery builder: this module is imported by
  * route tests that stub `db`, and must load without touching it.
  */
-export const onActiveMap = sql`${nodes.mapId} IN (SELECT id FROM maps WHERE archived_at IS NULL)`;
+export const onActiveMap = sql`${nodes.mapId} IN (SELECT ${maps.id} FROM ${maps} WHERE ${maps.archivedAt} IS NULL)`;
 
 /**
  * A handle that can issue queries — either the global `db` or a transaction
@@ -281,10 +280,6 @@ export async function createNode(
   const handle: DbHandle = txHandle ?? db;
   const now = new Date();
 
-  // Archived map = frozen. Backstop behind the request guard and the
-  // per-job target filters; throws MapArchivedError (409).
-  await assertMapWritable(input.mapId, handle);
-
   if (input.requirementId != null) {
     await assertRequirementIdAvailable(handle, input.mapId, input.requirementId);
   }
@@ -469,9 +464,6 @@ export async function updateNode(
   txHandle?: DbHandle,
 ): Promise<CoreNode | null> {
   const handle: DbHandle = txHandle ?? db;
-
-  // Archived map = frozen (see createNode).
-  await assertNodeMapWritable(nodeId, handle);
 
   // Validate dependencies if provided
   if (input.dependencies !== undefined) {
@@ -702,7 +694,7 @@ export async function setExternalLinkState(
   const [row] = await handle
     .select({ externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(and(eq(nodes.id, nodeId), notDeleted, onActiveMap));
+    .where(and(eq(nodes.id, nodeId), notDeleted));
   if (!row) return false;
 
   const links = (row.externalLinks as ExternalLink[]) ?? [];

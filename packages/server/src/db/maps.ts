@@ -168,10 +168,10 @@ export interface UpdateMapInput {
   archived?: boolean;
 }
 
-// The archive check and error live in ./archived.ts (nodes.ts needs them
-// too and this module already imports nodes.ts). Re-exported so callers
-// keep the `mapDb.isMapArchived(id)` spelling.
-export { isMapArchived, MapArchivedError } from './archived.js';
+// The archive check lives in ./archived.ts (kept out of this module's
+// import graph on purpose). Re-exported so callers keep the
+// `mapDb.isMapArchived(id)` spelling.
+export { isMapArchived } from './archived.js';
 
 /**
  * Update map settings. `userId` attributes the change_events rows written

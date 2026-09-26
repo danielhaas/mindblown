@@ -1,62 +1,36 @@
 /**
- * Archived maps are frozen — the shared check and the error.
+ * Archived maps: no automated action.
  *
  * Lives in its own module because both db/maps.ts and db/nodes.ts need
  * it and maps.ts already imports nodes.ts.
  *
- * Three layers use it, so "archived" means "nothing writes here":
+ * Two layers make "archived" mean "nothing happens here by itself":
  *   1. middleware/archiveGuard.ts refuses every mutating request on an
- *      archived map with 409 (humans, MCP agents, fleet pushes).
- *   2. Each unattended job (forge catch-up, drift audit, stale-claim
- *      sweep, trash GC, snapshots) filters archived maps out of its
- *      target query, and the cross-map node lookups the webhook
- *      branches use only see nodes on active maps (nodes.onActiveMap).
- *   3. createNode / updateNode / setExternalLinkState throw
- *      MapArchivedError as the backstop for anything the first two miss.
+ *      archived map with 409 unless it comes from a person's browser
+ *      session (MCP agents, pull queue, collectors, orchestrators).
+ *   2. Each unattended job filters archived maps out of its target
+ *      query (forge catch-up, drift audit, stale-claim sweep, trash GC,
+ *      snapshots, manual forecast refresh, reopen re-triage), and the
+ *      cross-map node lookups the webhook branches use only see nodes
+ *      on active maps (nodes.onActiveMap).
+ *
+ * Deliberately NOT frozen for people: the owner can still open the map,
+ * edit by hand, and unarchive it. Triage-decision metadata (an issue's
+ * open/closed mirror) keeps syncing too — it is an audit trail of the
+ * forge, not an action on the plan.
  */
 import { eq } from 'drizzle-orm';
 import { db } from './connection.js';
-import { maps, nodes } from './schema.js';
-
-/** Thrown by DB write paths that reach an archived map. Fastify maps
- *  `statusCode` to the response status when a route lets it escape. */
-export class MapArchivedError extends Error {
-  readonly statusCode = 409;
-  readonly code = 'MAP_ARCHIVED';
-  constructor(mapId: string) {
-    super(`Map ${mapId} is archived — unarchive it before making changes`);
-    this.name = 'MapArchivedError';
-  }
-}
-
-type Handle = Pick<typeof db, 'select'>;
+import { maps } from './schema.js';
 
 /**
  * True when the map is archived. A missing map is NOT archived — the
  * caller's own not-found path stays in charge of that (404, FK error).
  */
-export async function isMapArchived(mapId: string, handle: Handle = db): Promise<boolean> {
-  const [row] = await handle
+export async function isMapArchived(mapId: string): Promise<boolean> {
+  const [row] = await db
     .select({ archivedAt: maps.archivedAt })
     .from(maps)
     .where(eq(maps.id, mapId));
   return row?.archivedAt != null;
-}
-
-/** Throws MapArchivedError when the map is archived. */
-export async function assertMapWritable(mapId: string, handle: Handle = db): Promise<void> {
-  if (await isMapArchived(mapId, handle)) throw new MapArchivedError(mapId);
-}
-
-/**
- * Same, keyed by node: one joined read. An unknown node passes — the
- * caller's own not-found handling follows.
- */
-export async function assertNodeMapWritable(nodeId: string, handle: Handle = db): Promise<void> {
-  const [row] = await handle
-    .select({ mapId: nodes.mapId, archivedAt: maps.archivedAt })
-    .from(nodes)
-    .innerJoin(maps, eq(nodes.mapId, maps.id))
-    .where(eq(nodes.id, nodeId));
-  if (row && row.archivedAt != null) throw new MapArchivedError(row.mapId as string);
 }

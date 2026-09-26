@@ -1,26 +1,47 @@
 /**
- * Archived maps are frozen.
+ * Archived maps: no automated action.
  *
- * One preHandler, registered right after auth, refuses every mutating
- * request that targets an archived map with 409 MAP_ARCHIVED — human,
- * agent (MCP tools all go through these routes), fleet push or
- * collector alike. Two exceptions, both on the map row itself: the
- * unarchive write (PUT /api/maps/:id with archived:false) and deleting
- * the map. Reads are untouched.
+ * One preHandler, registered right after auth. A request that would
+ * write to an archived map is refused with 409 MAP_ARCHIVED unless it
+ * comes from a person in the browser (`req.authSource === 'jwt'`).
+ * Everything else — MCP agents on API keys (every MCP tool call goes
+ * through these routes), the pull queue, the asks collector, fleet
+ * orchestrators, unauthenticated pushes — is turned away. Reads are
+ * untouched.
  *
- * The map is resolved from the URL where it is there (/api/maps/:id/…),
- * from the body where the route takes a mapId (POST /api/versions,
- * POST /api/cycles, /api/ai/*), and by lookup for version- and
- * cycle-keyed routes. The forge webhook is not handled here: its
- * branches find nodes by external id, and those lookups exclude
- * archived maps (see db/nodes.ts) with the node-write backstop behind.
+ * Why humans pass: "archived" here means "on hold, nothing happens by
+ * itself". The owner can still open the map, fix a title, leave a note,
+ * or unarchive it. What must stop is the machinery: issue ingest and
+ * triage, dispatch and claims, sprint rollover, housekeeping — see
+ * db/archived.ts for the job-side filters that back this hook.
+ *
+ * Exemptions for non-human callers, all on purpose:
+ *   - PUT /api/maps/:id whose body is only `{archived}` (an agent may
+ *     unarchive, and re-sending archived:true must stay idempotent).
+ *   - DELETE /api/maps/:id.
+ *   - Fleet telemetry (fleet-status, fleet-ticks): inbound reporting
+ *     about the fleet, not an action on the plan; refusing it would
+ *     only make every satellite log a 409 per tick.
+ *   - POST …/simulate: a what-if read that happens to be a POST.
+ *
+ * The map is resolved from the URL (/api/maps/:id/…), from the body
+ * where the route takes a mapId (POST /api/versions, POST /api/cycles,
+ * /api/ai/*), and by lookup for version-, cycle- and comment-keyed
+ * routes. The forge webhook is not handled here: its branches find
+ * nodes by external id, and those lookups exclude archived maps
+ * (nodes.onActiveMap).
  */
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
+import * as commentDb from '../db/comments.js';
+import * as nodeDb from '../db/nodes.js';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+/** Map-scoped sub-paths that are not actions on the plan. */
+const EXEMPT_SUBPATH = /^\/(fleet-status(\/|$)|fleet-ticks(\/|$)|simulate$)/;
 
 function bodyMapId(req: FastifyRequest): string | null {
   const b = req.body as { mapId?: unknown } | null | undefined;
@@ -29,7 +50,7 @@ function bodyMapId(req: FastifyRequest): string | null {
 
 /**
  * Which map this request would write to, or null when it is not a
- * map write we gate (map create, auth, api keys, media, …).
+ * map write we gate (map create, auth, api keys, media, exemptions).
  * Exported for the unit test.
  */
 export async function resolveTargetMapId(req: FastifyRequest): Promise<string | null> {
@@ -42,10 +63,16 @@ export async function resolveTargetMapId(req: FastifyRequest): Promise<string | 
     if (!rest) {
       if (req.method === 'DELETE') return null;
       if (req.method === 'PUT') {
-        const b = req.body as { archived?: unknown } | null | undefined;
-        if (b && b.archived === false) return null;
+        const b = req.body as Record<string, unknown> | null | undefined;
+        if (b && typeof b === 'object') {
+          const keys = Object.keys(b);
+          if (b.archived === false) return null;
+          if (keys.length === 1 && keys[0] === 'archived') return null;
+        }
       }
+      return id;
     }
+    if (EXEMPT_SUBPATH.test(rest)) return null;
     return id;
   }
 
@@ -65,6 +92,14 @@ export async function resolveTargetMapId(req: FastifyRequest): Promise<string | 
     return c?.mapId ?? null;
   }
 
+  const commentMatch = /^\/api\/comments\/([^/]+)$/.exec(path);
+  if (commentMatch) {
+    const c = await commentDb.getComment(commentMatch[1]);
+    if (!c) return null;
+    const node = await nodeDb.getNode(c.nodeId as string);
+    return node?.mapId ?? null;
+  }
+
   if (path.startsWith('/api/ai/')) return bodyMapId(req);
 
   return null;
@@ -74,7 +109,7 @@ export function archivedReply(reply: FastifyReply, mapId: string): FastifyReply 
   return reply.status(409).send({
     error: {
       code: 'MAP_ARCHIVED',
-      message: `Map ${mapId} is archived — nothing changes on it until it is unarchived (PUT /api/maps/${mapId} with {"archived": false})`,
+      message: `Map ${mapId} is archived — on hold, no automated or agent action until a person unarchives it (PUT /api/maps/${mapId} with {"archived": false})`,
     },
   });
 }
@@ -83,6 +118,7 @@ export async function registerArchiveGuard(app: FastifyInstance): Promise<void> 
   app.addHook('preHandler', async (req, reply) => {
     if (!MUTATING.has(req.method)) return;
     if (!req.url.startsWith('/api/')) return;
+    if (req.authSource === 'jwt') return; // a person in the browser
     const mapId = await resolveTargetMapId(req);
     if (!mapId) return;
     if (await mapDb.isMapArchived(mapId)) return archivedReply(reply, mapId);
