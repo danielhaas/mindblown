@@ -42,6 +42,7 @@ export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
 export type { MapDetail, MapSummary, NodeWithComputed, AttachmentSummary } from './types.js';
 export { filterMapData, formatMapTree, type MapFilters } from './formatters.js';
+export { formatBytes } from './tools/attachments.js';
 export { specToOpenAiTool, type OpenAiTool } from './openai.js';
 export { specToAnthropicTool, type AnthropicTool } from './anthropic.js';
 

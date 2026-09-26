@@ -201,6 +201,24 @@ describe('read_attachment', () => {
     expect(out).not.toContain('remain');
   });
 
+  it('says end of file for an empty page instead of a range that does not exist', async () => {
+    const { backend } = readBackend({
+      readable: true,
+      attachmentId: 'att-4',
+      filename: 'notes.md',
+      contentType: 'text/markdown',
+      sizeBytes: 50,
+      totalChars: 50,
+      offset: 50,
+      text: '',
+      truncated: false,
+      pages: null,
+    });
+    const out = await readAttachmentTool.handler(backend, { mapId: 'm', nodeId: 'n1', attachmentId: 'att-4', offset: 50 });
+    expect(out).toContain('— end of file (50 chars in total)');
+    expect(out).not.toContain('chars 50–');
+  });
+
   it('passes the reason and the URL on when the file has no text', async () => {
     const { backend } = readBackend({
       readable: false,

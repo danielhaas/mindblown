@@ -15,14 +15,18 @@
  * never opens a network connection.
  *
  * The result is paged by character offset, because an attachment can be
- * 100 MB and a tool result cannot. Extraction runs on every page request;
- * that is deliberate — a cache is a second thing to get wrong, and paging
- * through one big file is the rare case, not the common one.
+ * 100 MB and a tool result cannot. A PDF's extracted text is cached in
+ * memory by file identity, so paging through a long PDF extracts it once;
+ * text files are cheap enough to re-read. Extraction itself runs on the
+ * event loop (pdf.js has no real worker under Node), which is the known
+ * limit here: one very large PDF stalls the process for the duration of
+ * its first extraction.
  */
 
-import { readFile, stat } from 'node:fs/promises';
+import { open, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Attachment } from '@mindblown/core';
+import { formatBytes } from '@mindblown/tool-kit';
 import { MEDIA_ROUTE_PREFIX, downloadName, isMediaId, mediaDir } from './media.js';
 
 /** Files above this are not read at all — the whole file has to fit in memory to extract. */
@@ -36,6 +40,9 @@ export const MAX_PAGE_CHARS = 200_000;
 /** How many leading bytes the text sniff looks at. */
 const SNIFF_BYTES = 64 * 1024;
 
+/** Extracted PDF text kept in memory, in characters across all entries. */
+const PDF_CACHE_MAX_CHARS = 16_000_000;
+
 /** Extensions read as plain text without sniffing. Lower-case, no dot. */
 const TEXT_EXTENSIONS = new Set([
   'txt', 'md', 'markdown', 'rst', 'adoc', 'org', 'tex',
@@ -44,6 +51,21 @@ const TEXT_EXTENSIONS = new Set([
   'sh', 'bash', 'zsh', 'ps1', 'bat',
   'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'py', 'rb', 'php', 'java', 'kt', 'go', 'rs', 'c', 'h', 'cpp', 'hpp', 'cs', 'swift', 'sql', 'css', 'scss', 'less',
   'diff', 'patch',
+]);
+
+/**
+ * Extensions refused as binary without opening the file. Everything the
+ * inline table serves as image/video, plus the formats people attach that
+ * are containers rather than text (archives, office documents, fonts,
+ * audio). Anything not listed here or above is sniffed.
+ */
+const BINARY_EXTENSIONS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'tiff', 'tif', 'ico', 'heic',
+  'mp4', 'webm', 'mov', 'avi', 'mkv', 'mp3', 'wav', 'ogg', 'flac', 'm4a',
+  'zip', 'gz', 'tgz', 'bz2', 'xz', '7z', 'rar', 'tar', 'jar',
+  'docx', 'xlsx', 'pptx', 'doc', 'xls', 'ppt', 'odt', 'ods', 'odp', 'pages', 'numbers', 'key',
+  'woff', 'woff2', 'ttf', 'otf', 'eot',
+  'exe', 'dll', 'so', 'dylib', 'wasm', 'class', 'pyc', 'sqlite', 'db', 'dmg', 'iso', 'img',
 ]);
 
 export type NotReadableReason =
@@ -140,11 +162,18 @@ function extensionOf(name: string): string {
   return m ? m[1].toLowerCase() : '';
 }
 
-function isTextMime(mime: string | null | undefined): boolean {
-  const m = (mime ?? '').split(';')[0].trim().toLowerCase();
-  if (!m) return false;
-  if (m.startsWith('text/')) return true;
-  return /^application\/(json|xml|yaml|x-yaml|toml|javascript|typescript|x-sh|sql|x-ndjson)$/.test(m) || m.endsWith('+json') || m.endsWith('+xml');
+function isTextMime(mime: string): boolean {
+  if (!mime) return false;
+  if (mime.startsWith('text/')) return true;
+  return /^application\/(json|xml|yaml|x-yaml|toml|javascript|typescript|x-sh|sql|x-ndjson)$/.test(mime) || mime.endsWith('+json') || mime.endsWith('+xml');
+}
+
+/** Types that never hold text. `application/octet-stream` is *not* here: it is the default for anything unknown, which is what the sniff is for. */
+function isBinaryMime(mime: string): boolean {
+  return (
+    /^(image|video|audio|font)\//.test(mime) ||
+    /^application\/(zip|gzip|x-tar|x-7z-compressed|x-rar-compressed|vnd\.openxmlformats|vnd\.ms-|msword|vnd\.oasis)/.test(mime)
+  );
 }
 
 /**
@@ -165,18 +194,63 @@ export function looksLikeText(bytes: Buffer): boolean {
   }
 }
 
+/** The first 64 KB of a file, without reading the rest. */
+async function readHead(file: string, size: number): Promise<Buffer> {
+  const fh = await open(file, 'r');
+  try {
+    const buf = Buffer.alloc(Math.min(size, SNIFF_BYTES));
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+    return buf.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+}
+
 function decodeText(bytes: Buffer): string {
   let text = bytes.toString('utf8');
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
   return text.replace(/\r\n?/g, '\n');
 }
 
-async function extractPdf(bytes: Buffer): Promise<{ text: string; pages: number }> {
+// ── PDF ───────────────────────────────────────────────────────────
+
+interface PdfText {
+  text: string;
+  pages: number;
+}
+
+/** Extracted text by file identity (path + size + mtime), insertion-ordered for LRU eviction. */
+const pdfCache = new Map<string, PdfText>();
+let pdfCacheChars = 0;
+
+function cacheKey(loc: StoredMediaLocation, size: number, mtimeMs: number): string {
+  return `${loc.id}/${loc.storedName}:${size}:${mtimeMs}`;
+}
+
+function rememberPdf(key: string, value: PdfText): void {
+  if (value.text.length > PDF_CACHE_MAX_CHARS) return;
+  pdfCache.delete(key);
+  pdfCache.set(key, value);
+  pdfCacheChars += value.text.length;
+  for (const [k, v] of pdfCache) {
+    if (pdfCacheChars <= PDF_CACHE_MAX_CHARS) break;
+    pdfCache.delete(k);
+    pdfCacheChars -= v.text.length;
+  }
+}
+
+/** Test seam — the cache is module state. */
+export function clearPdfTextCache(): void {
+  pdfCache.clear();
+  pdfCacheChars = 0;
+}
+
+async function extractPdf(bytes: Buffer): Promise<PdfText> {
   // Loaded on first use: unpdf pulls a full pdf.js in, and most servers
-  // never read a PDF.
-  const { extractText, getDocumentProxy } = await import('unpdf');
-  const doc = await getDocumentProxy(new Uint8Array(bytes));
-  const result = await extractText(doc, { mergePages: true });
+  // never read a PDF. Handing `extractText` the bytes rather than a
+  // document we opened ourselves lets it destroy the document after use.
+  const { extractText } = await import('unpdf');
+  const result = await extractText(new Uint8Array(bytes), { mergePages: true });
   const text = result.text
     .replace(/\r\n?/g, '\n')
     .replace(/[ \t]+\n/g, '\n')
@@ -185,15 +259,31 @@ async function extractPdf(bytes: Buffer): Promise<{ text: string; pages: number 
   return { text, pages: result.totalPages };
 }
 
-/** Cut one page out of the text. Clamps the offset; the limit is defaulted and capped. */
+// ── Paging ────────────────────────────────────────────────────────
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
+/**
+ * Cut one page out of the text. Clamps the offset; the limit is defaulted
+ * and capped. A page never splits a surrogate pair: an end that would
+ * land between the halves of an emoji moves back one unit, and an offset
+ * that lands on the second half moves forward one.
+ */
 export function pageOf(
   text: string,
   opts: ReadOptions,
 ): Pick<ReadableText, 'totalChars' | 'offset' | 'text' | 'truncated'> {
   const totalChars = text.length;
-  const offset = Math.min(Math.max(0, Math.floor(opts.offset ?? 0)), totalChars);
+  let offset = Math.min(Math.max(0, Math.floor(opts.offset ?? 0)), totalChars);
+  if (offset > 0 && offset < totalChars && isLowSurrogate(text.charCodeAt(offset))) offset += 1;
   const limit = Math.min(Math.max(1, Math.floor(opts.limit ?? DEFAULT_PAGE_CHARS)), MAX_PAGE_CHARS);
-  const end = Math.min(offset + limit, totalChars);
+  let end = Math.min(offset + limit, totalChars);
+  if (end < totalChars && end > offset && isHighSurrogate(text.charCodeAt(end - 1))) end -= 1;
   return { totalChars, offset, text: text.slice(offset, end), truncated: end < totalChars };
 }
 
@@ -205,7 +295,7 @@ function notReadable(reason: NotReadableReason, message: string): NotReadable {
  * Read one attachment as text, one page of it. Never throws for an
  * attachment that simply cannot be read — that is a `readable: false`
  * answer with a reason. Throws only for what is a bug or an outage
- * (a media directory that cannot be read at all).
+ * (a media directory that cannot be read, a PDF engine that fails to load).
  */
 export async function readAttachmentText(
   attachment: Pick<Attachment, 'kind' | 'url' | 'title' | 'mimeType'>,
@@ -221,8 +311,11 @@ export async function readAttachmentText(
   }
 
   let size: number;
+  let mtimeMs: number;
   try {
-    size = (await stat(loc.file)).size;
+    const st = await stat(loc.file);
+    size = st.size;
+    mtimeMs = st.mtimeMs;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
       return notReadable('missing', 'The stored file is gone from the media directory.');
@@ -239,32 +332,39 @@ export async function readAttachmentText(
   const filename = downloadName(loc.storedName);
   const ext = extensionOf(filename);
   const contentType = (attachment.mimeType ?? '').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
-  const bytes = await readFile(loc.file);
+  const binary = () =>
+    notReadable(
+      'binary',
+      `"${filename}" (${contentType}) has no text to extract. Text files, source code, CSV/JSON and PDFs are readable; images, video, archives and office documents are not — open the URL instead.`,
+    );
 
   if (ext === 'pdf' || contentType === 'application/pdf') {
-    try {
-      const { text, pages } = await extractPdf(bytes);
-      return { readable: true, filename, contentType, sizeBytes: size, pages, ...pageOf(text, opts) };
-    } catch (err) {
-      return notReadable(
-        'unreadable',
-        `The PDF could not be read (${(err as Error).message}). It may be encrypted or damaged.`,
-      );
+    const key = cacheKey(loc, size, mtimeMs);
+    let pdf = pdfCache.get(key);
+    if (!pdf) {
+      const bytes = await readFile(loc.file);
+      try {
+        pdf = await extractPdf(bytes);
+      } catch (err) {
+        return notReadable(
+          'unreadable',
+          `The PDF could not be read (${(err as Error).message}). It may be encrypted or damaged.`,
+        );
+      }
+      rememberPdf(key, pdf);
     }
+    return { readable: true, filename, contentType, sizeBytes: size, pages: pdf.pages, ...pageOf(pdf.text, opts) };
   }
 
-  if (TEXT_EXTENSIONS.has(ext) || isTextMime(contentType) || looksLikeText(bytes)) {
-    return { readable: true, filename, contentType, sizeBytes: size, pages: null, ...pageOf(decodeText(bytes), opts) };
+  // Decide by name and type before touching the bytes: a 30 MB video is
+  // refused without being read. Only an unknown type is sniffed, and the
+  // sniff reads 64 KB, not the file.
+  const knownText = TEXT_EXTENSIONS.has(ext) || isTextMime(contentType);
+  if (!knownText) {
+    if (BINARY_EXTENSIONS.has(ext) || isBinaryMime(contentType)) return binary();
+    if (!looksLikeText(await readHead(loc.file, size))) return binary();
   }
 
-  return notReadable(
-    'binary',
-    `"${filename}" (${contentType}) has no text to extract. Text files, source code, CSV/JSON and PDFs are readable; images, video, archives and office documents are not — open the URL instead.`,
-  );
-}
-
-export function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  const bytes = await readFile(loc.file);
+  return { readable: true, filename, contentType, sizeBytes: size, pages: null, ...pageOf(decodeText(bytes), opts) };
 }

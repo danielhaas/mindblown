@@ -16,6 +16,7 @@ import {
   DEFAULT_PAGE_CHARS,
   EXTRACT_MAX_BYTES,
   MAX_PAGE_CHARS,
+  clearPdfTextCache,
   looksLikeText,
   pageOf,
   readAttachmentText,
@@ -117,6 +118,21 @@ describe('readAttachmentText — refusals', () => {
     expect((r as { message: string }).message).toContain('PDF');
   });
 
+  it('a binary extension is refused by name — the bytes are not consulted', async () => {
+    // Text content under a .png name: the name decides, so the file is
+    // never read. (What matters operationally: a 30 MB video is refused
+    // without being loaded.)
+    const url = await store(ID, 'shot.png', 'this is text, but the name says image');
+    const r = await readAttachmentText(fileAttachment(url), {}, root);
+    expect(r).toMatchObject({ readable: false, reason: 'binary' });
+  });
+
+  it('a binary mime type is refused by type when the name says nothing', async () => {
+    const url = await store(ID, 'export.bin', 'PK…');
+    const r = await readAttachmentText(fileAttachment(url, 'application/zip'), {}, root);
+    expect(r).toMatchObject({ readable: false, reason: 'binary' });
+  });
+
   it('an unknown binary type is binary even without a mime type', async () => {
     const url = await store(ID, 'archive.zip.bin', Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0x08, 0]));
     const r = await readAttachmentText(fileAttachment(url), {}, root);
@@ -176,6 +192,8 @@ describe('readAttachmentText — text', () => {
 });
 
 describe('readAttachmentText — PDF', () => {
+  beforeEach(() => clearPdfTextCache());
+
   it('extracts the text and reports the page count', async () => {
     const url = await store(ID, 'spec.pdf', minimalPdf('Hello attachment world'));
     const r = await readAttachmentText(fileAttachment(url, 'application/pdf'), {}, root);
@@ -188,9 +206,34 @@ describe('readAttachmentText — PDF', () => {
       truncated: false,
     });
   });
+
+  it('pages a PDF from the cached extraction, and a changed file is re-extracted', async () => {
+    const url = await store(ID, 'spec.pdf', minimalPdf('Hello attachment world'));
+    const att = fileAttachment(url, 'application/pdf');
+    const first = await readAttachmentText(att, { limit: 5 }, root);
+    expect(first).toMatchObject({ readable: true, text: 'Hello', truncated: true });
+    const second = await readAttachmentText(att, { offset: 6, limit: 10 }, root);
+    expect(second).toMatchObject({ readable: true, text: 'attachment', offset: 6 });
+
+    // Same path, different bytes and size: the cache key changes with them.
+    await store(ID, 'spec.pdf', minimalPdf('Something else entirely'));
+    const third = await readAttachmentText(att, {}, root);
+    expect(third).toMatchObject({ readable: true, text: 'Something else entirely' });
+  });
 });
 
 describe('pageOf', () => {
+  it('never splits a surrogate pair across pages', () => {
+    const text = 'ab😀cd'; // 😀 is two UTF-16 units at index 2–3
+    const first = pageOf(text, { limit: 3 });
+    expect(first.text).toBe('ab');
+    expect(first.truncated).toBe(true);
+    const next = pageOf(text, { offset: first.offset + first.text.length, limit: 3 });
+    expect(next.text).toBe('😀c');
+    // An offset handed in that lands on the low half moves forward past it.
+    expect(pageOf(text, { offset: 3, limit: 10 }).text).toBe('cd');
+  });
+
   it('defaults and caps the page size', () => {
     const text = 'y'.repeat(MAX_PAGE_CHARS + 10);
     expect(pageOf(text, {}).text).toHaveLength(DEFAULT_PAGE_CHARS);

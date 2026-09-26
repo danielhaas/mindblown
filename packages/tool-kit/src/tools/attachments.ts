@@ -108,7 +108,7 @@ export const attachFileTool = defineTool({
     if (size <= 0) return 'Error: contentBase64 decodes to nothing.';
     if (size > INLINE_FILE_MAX_BYTES) {
       return (
-        `Error: the file decodes to ${(size / (1024 * 1024)).toFixed(1)} MB; inline uploads are capped at ` +
+        `Error: the file decodes to ${formatBytes(size)}; inline uploads are capped at ` +
         `${INLINE_FILE_MAX_BYTES / (1024 * 1024)} MB. ${MULTIPART_HINT}`
       );
     }
@@ -121,7 +121,7 @@ export const attachFileTool = defineTool({
     // by recency rather than by name.
     const added = [...(node.attachments ?? [])].sort((a, b) => b.addedAt.localeCompare(a.addedAt))[0];
     return (
-      `Uploaded "${args.filename}" (${size} bytes) and attached it to node ${args.nodeId} ("${node.text}").` +
+      `Uploaded "${args.filename}" (${formatBytes(size)}) and attached it to node ${args.nodeId} ("${node.text}").` +
       (added ? `\nAttachment id: ${added.id}\nURL: ${added.url}` : '') +
       countLine(node)
     );
@@ -148,7 +148,8 @@ export const READ_DEFAULT_CHARS = 20_000;
 /** Largest page the tool asks for — mirrors the server's `MAX_PAGE_CHARS`. */
 export const READ_MAX_CHARS = 200_000;
 
-function formatSize(n: number): string {
+/** One byte formatter for every attachment message, tool-kit and server alike. */
+export function formatBytes(n: number): string {
   if (n < 1024) return `${n} bytes`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -180,10 +181,18 @@ export const readAttachmentTool = defineTool({
       return `Cannot read attachment ${args.attachmentId}: ${res.message}\nURL: ${res.url}`;
     }
     const end = res.offset + res.text.length;
-    const meta = [res.contentType, formatSize(res.sizeBytes), res.pages != null ? `${res.pages} page${res.pages === 1 ? '' : 's'}` : null]
+    const meta = [res.contentType, formatBytes(res.sizeBytes), res.pages != null ? `${res.pages} page${res.pages === 1 ? '' : 's'}` : null]
       .filter(Boolean)
       .join(', ');
-    const range = res.totalChars === 0 ? 'empty' : `chars ${res.offset}–${Math.max(end - 1, res.offset)} of ${res.totalChars}`;
+    // An empty page is either an empty file or an offset at the end; say
+    // so outright rather than printing a range that does not exist, which
+    // a model would read as one more character to fetch.
+    const range =
+      res.totalChars === 0
+        ? 'empty file'
+        : res.text.length === 0
+          ? `end of file (${res.totalChars} chars in total)`
+          : `chars ${res.offset}–${end - 1} of ${res.totalChars}`;
     const header = `# ${res.filename} (${meta}) — ${range}`;
     const tail = res.truncated
       ? `\n\n[${res.totalChars - end} characters remain — call read_attachment again with offset ${end}]`

@@ -18,6 +18,8 @@ import path from 'node:path';
 
 const MAP_ID = 'mmmm-mmmm';
 const NODE_ID = 'nnnn-nnnn';
+/** A node that exists but belongs to another map. */
+const FOREIGN_NODE_ID = 'ffff-ffff';
 const MEDIA_ID = 'b'.repeat(40);
 const BASE = 'https://mind.example';
 
@@ -42,8 +44,11 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../db/nodes.js')>();
   return {
     ...actual,
-    getNode: async (nodeId: string) =>
-      nodeId === NODE_ID ? { id: NODE_ID, mapId: MAP_ID, attachments: [TEXT_ATT, LINK_ATT] } : null,
+    getNode: async (nodeId: string) => {
+      if (nodeId === NODE_ID) return { id: NODE_ID, mapId: MAP_ID, attachments: [TEXT_ATT, LINK_ATT] };
+      if (nodeId === FOREIGN_NODE_ID) return { id: FOREIGN_NODE_ID, mapId: 'other-map', attachments: [TEXT_ATT] };
+      return null;
+    },
     addAttachment: vi.fn(),
     removeAttachment: vi.fn(),
     updateNode: vi.fn(),
@@ -51,6 +56,15 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
   };
 });
 vi.mock('../../db/maps.js', () => ({ updateMap: vi.fn() }));
+// The route checks the map, not just the node: only `member` can view MAP_ID.
+vi.mock('../../db/permissions.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../db/permissions.js')>();
+  return {
+    ...actual,
+    getPermission: async (mapId: string, userId: string) =>
+      mapId === MAP_ID && userId === 'member' ? 'view' : null,
+  };
+});
 vi.mock('../../db/events.js', () => ({
   recordEvent: vi.fn(async () => {}),
   recordFieldChanges: vi.fn(async () => {}),
@@ -78,7 +92,7 @@ beforeEach(async () => {
 
   app = Fastify();
   app.addHook('preHandler', async (req) => {
-    (req as { userId?: string }).userId = 'user-1';
+    (req as { userId?: string }).userId = (req.headers['x-test-user'] as string | undefined) ?? 'member';
   });
   await app.register(nodeRoutes);
   await app.ready();
@@ -93,10 +107,11 @@ afterEach(async () => {
   }
 });
 
-const get = (nodeId: string, attachmentId: string, query = '') =>
+const get = (nodeId: string, attachmentId: string, query = '', opts: { mapId?: string; user?: string } = {}) =>
   app.inject({
     method: 'GET',
-    url: `/api/maps/${MAP_ID}/nodes/${nodeId}/attachments/${attachmentId}/text${query}`,
+    url: `/api/maps/${opts.mapId ?? MAP_ID}/nodes/${nodeId}/attachments/${attachmentId}/text${query}`,
+    headers: opts.user ? { 'x-test-user': opts.user } : {},
   });
 
 describe('GET .../attachments/:attachmentId/text', () => {
@@ -144,5 +159,18 @@ describe('GET .../attachments/:attachmentId/text', () => {
   it('404s for an unknown attachment and for an unknown node', async () => {
     expect((await get(NODE_ID, 'att-nope')).statusCode).toBe(404);
     expect((await get('gone-gone', 'att-text')).statusCode).toBe(404);
+  });
+
+  it('403s a user who cannot view the map, before looking at the node', async () => {
+    const res = await get(NODE_ID, 'att-text', '', { user: 'stranger' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('FORBIDDEN');
+  });
+
+  it('404s a node from another map asked for under a map the caller can view', async () => {
+    // `member` may view MAP_ID. A node id from another map, guessed or
+    // remembered, must not answer that map's file through MAP_ID's URL.
+    const res = await get(FOREIGN_NODE_ID, 'att-text', '', { user: 'member' });
+    expect(res.statusCode).toBe(404);
   });
 });
