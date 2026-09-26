@@ -79,6 +79,16 @@ describe('req.actor', () => {
     const r = await whoami();
     expect(r).toEqual({ userId: null, authSource: null, actor: null });
   });
+
+  it('an OAuth state token (same secret, typ oauth-state) is not a credential at all (#397)', async () => {
+    const app = Fastify();
+    await registerAuthMiddleware(app);
+    app.get('/api/whoami', async (req) => ({ userId: req.userId ?? null }));
+    await app.ready();
+    const state = jwt.sign({ userId: 'u1', nonce: 'abc', typ: 'oauth-state' }, SECRET, { expiresIn: '15m' });
+    const res = await app.inject({ method: 'GET', url: '/api/whoami', headers: { authorization: `Bearer ${state}` } });
+    expect(res.statusCode).toBe(401);
+  });
 });
 
 // The check the archive feature stands on: real auth middleware + real
