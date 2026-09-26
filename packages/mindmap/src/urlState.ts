@@ -140,8 +140,12 @@ export function parseUrlState(search: string): UrlState {
   const params = new URLSearchParams(search);
 
   const rawView = readId(params, PARAM.view);
-  const view =
-    rawView !== null && VIEW_IDS.has(rawView) ? (rawView as ActiveView) : rawView !== null ? (LEGACY_VIEW[rawView] ?? null) : null;
+  let view: ActiveView | null = null;
+  if (rawView !== null) {
+    if (VIEW_IDS.has(rawView)) view = rawView as ActiveView;
+    // hasOwn: a plain lookup would answer `?view=toString` with a function.
+    else if (Object.hasOwn(LEGACY_VIEW, rawView)) view = LEGACY_VIEW[rawView];
+  }
 
   const rawDepth = readId(params, PARAM.depth);
   let depth: number | null = null;

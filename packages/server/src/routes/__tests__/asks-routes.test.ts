@@ -1,6 +1,6 @@
 /**
  * Asks inbox routes — the contract the orchestrator pushes against and the
- * Fragen tab / MCP tools read and answer through. DB + service stubbed;
+ * Questions section (Fleet tab) / MCP tools read and answer through. DB + service stubbed;
  * what matters here: auth (edit for push/answer, view for read), the
  * document shape check, the map_id mismatch refusal, the asks:updated
  * broadcast, and the answer fan-out (node:updated + GitHub sync).

@@ -433,7 +433,7 @@ function AskCard({
         {a.question}
       </div>
       <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        {unb.length > 0 && <span>unblocks:</span>}
+        {unb.length > 0 && <span>holds up:</span>}
         {unb}
         <button
           onClick={() => setMore((v) => !v)}

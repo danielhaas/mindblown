@@ -83,6 +83,8 @@ describe('parseUrlState', () => {
 
   it('maps the retired asks view onto fleet, where Questions live now', () => {
     expect(parseUrlState('?view=asks').view).toBe('fleet');
+    // Prototype keys are not legacy ids.
+    expect(parseUrlState('?view=toString').view).toBe(null);
   });
 
   it('treats blank values as absent', () => {

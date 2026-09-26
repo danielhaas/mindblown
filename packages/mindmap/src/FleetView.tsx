@@ -26,22 +26,21 @@ export function FleetView() {
   const viewRole = useMindmapStore((s) => s.viewRole);
 
   if (!currentMap) return <Shell><Muted>Loading…</Muted></Shell>;
-  if (!currentMap.statusWorkflow) {
-    return (
-      <Shell>
-        <Muted>This map has no status workflow — there is no pull queue to dispatch or observe.</Muted>
-      </Shell>
-    );
-  }
 
   return (
     <Shell>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
-        {/* Only PM and All steer. Anyone else who lands here (developer
-            tab, or a stakeholder following a shared ?view=fleet link)
-            observes — the lens is a filter, so this is UX, not security. */}
-        <LeidangCards readOnly={viewRole !== 'pm' && viewRole !== 'all'} />
-      </div>
+      {/* The pull queue needs a status workflow; Questions do not (the push
+          route never checks it), so only the cards sit behind the gate. */}
+      {currentMap.statusWorkflow ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 16 }}>
+          {/* Only PM and All steer. Anyone else who lands here (developer
+              tab, or a stakeholder following a shared ?view=fleet link)
+              observes — the lens is a filter, so this is UX, not security. */}
+          <LeidangCards readOnly={viewRole !== 'pm' && viewRole !== 'all'} />
+        </div>
+      ) : (
+        <Muted>This map has no status workflow — there is no pull queue to dispatch or observe.</Muted>
+      )}
       {/* What the fleet is waiting on a person for. Full width: every card
           is read and decided, one after the other. */}
       <div style={{ marginTop: 16 }}>
