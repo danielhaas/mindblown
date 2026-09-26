@@ -25,6 +25,10 @@
  *     only make every satellite log a 409 per tick.
  *   - POST …/simulate: a what-if read that happens to be a POST.
  *
+ * This hook runs before any route's permission check, so a 409 says
+ * "that map is archived", not "you may see it" — never read
+ * MAP_ARCHIVED as proof of access.
+ *
  * The map is resolved from the URL (/api/maps/:id/…), from the body
  * where the route takes a mapId (POST /api/versions, POST /api/cycles,
  * /api/ai/*), and by lookup for version-, cycle- and comment-keyed

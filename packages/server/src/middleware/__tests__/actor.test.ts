@@ -58,6 +58,18 @@ describe('req.actor', () => {
     expect(r.actor).toBe('agent');
   });
 
+  it('a legacy long-lived JWT without `kind` is an agent by its lifetime', async () => {
+    const legacy = jwt.sign({ userId: 'u1', email: 'cli@example.com' }, SECRET, { expiresIn: '365d' });
+    const r = await whoami(`Bearer ${legacy}`);
+    expect(r.actor).toBe('agent');
+  });
+
+  it('a session JWT at the default 7-day lifetime is still a person', async () => {
+    const session = jwt.sign({ userId: 'u1', email: 'dan@example.com' }, SECRET, { expiresIn: '7d' });
+    const r = await whoami(`Bearer ${session}`);
+    expect(r.actor).toBe('person');
+  });
+
   it('an API key is an agent', async () => {
     const r = await whoami('Bearer mb_good');
     expect(r).toEqual({ userId: 'u-key', authSource: 'api-key', actor: 'agent' });
