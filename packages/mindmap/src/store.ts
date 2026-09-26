@@ -52,7 +52,6 @@ export type ActiveView =
   | 'digest'
   | 'cockpit'
   | 'fleet'
-  | 'asks'
   | 'files';
 
 export interface VisibleNode {
@@ -153,7 +152,7 @@ export interface MindmapState {
   wsConnected: boolean;
   /** Bumped on every `fleet:updated` socket message — the Fleet card refetches on change. */
   fleetRev: number;
-  /** Bumped on every `asks:updated` socket message — the Fragen tab refetches on change. */
+  /** Bumped on every `asks:updated` socket message — the Questions section on the Fleet tab refetches on change. */
   asksRev: number;
 
   // Presence / follow mode

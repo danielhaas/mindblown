@@ -75,11 +75,14 @@ describe('parseUrlState', () => {
       'digest',
       'cockpit',
       'fleet',
-      'asks',
       'files',
     ]) {
       expect(parseUrlState(`?view=${view}`).view).toBe(view === 'mindmap' ? 'mindmap' : view);
     }
+  });
+
+  it('maps the retired asks view onto fleet, where Questions live now', () => {
+    expect(parseUrlState('?view=asks').view).toBe('fleet');
   });
 
   it('treats blank values as absent', () => {

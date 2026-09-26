@@ -75,9 +75,14 @@ const VIEW_IDS: ReadonlySet<string> = new Set<ActiveView>([
   'digest',
   'cockpit',
   'fleet',
-  'asks',
   'files',
 ]);
+
+/** Retired view ids that shared links may still carry → where that content lives now. */
+const LEGACY_VIEW: Record<string, ActiveView> = {
+  // Questions moved from its own tab onto the Fleet page (2026-09-26).
+  asks: 'fleet',
+};
 
 // ── Shape ──────────────────────────────────────────────────────
 
@@ -135,7 +140,8 @@ export function parseUrlState(search: string): UrlState {
   const params = new URLSearchParams(search);
 
   const rawView = readId(params, PARAM.view);
-  const view = rawView !== null && VIEW_IDS.has(rawView) ? (rawView as ActiveView) : null;
+  const view =
+    rawView !== null && VIEW_IDS.has(rawView) ? (rawView as ActiveView) : rawView !== null ? (LEGACY_VIEW[rawView] ?? null) : null;
 
   const rawDepth = readId(params, PARAM.depth);
   let depth: number | null = null;

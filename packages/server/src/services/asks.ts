@@ -183,7 +183,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
     writes.push({
       kind: 'worker-note',
       target: plan.worker.worker,
-      detail: 'ausstehend — der nächste Orchestrator-Tick liefert die Notiz in die Ops-Session',
+      detail: 'pending — the next orchestrator tick delivers the note to the ops session',
       done: false,
     });
   }

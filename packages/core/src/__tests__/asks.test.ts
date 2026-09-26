@@ -139,7 +139,7 @@ describe('planAskWrites — apply\'s decision table', () => {
   it('a worker question is flagged, not written, and later/delegate write nothing', () => {
     const p = planAskWrites(ask({ unblocks: { ...ask().unblocks, worker: 'sat3:worker-2' } }), answered, null, DATE);
     expect(p.worker).toEqual({ worker: 'sat3:worker-2' });
-    expect(planAskWrites(ask(), { action: 'later' }, null, DATE)).toMatchObject({ github: null, node: null, worker: null, skip: expect.stringContaining('vertagt') });
+    expect(planAskWrites(ask(), { action: 'later' }, null, DATE)).toMatchObject({ github: null, node: null, worker: null, skip: expect.stringContaining('deferred') });
     expect(planAskWrites(ask(), { action: 'delegate', delegateTo: 'Rita' }, null, DATE).skip).toContain('Rita');
   });
 });

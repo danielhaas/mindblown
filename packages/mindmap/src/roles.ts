@@ -48,7 +48,6 @@ export const ALL_VIEWS: ActiveView[] = [
   'digest',
   'cockpit',
   'fleet',
-  'asks',
   'mindmap',
   'kanban',
   'gantt',
@@ -85,10 +84,11 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
   pm: {
     label: 'PM',
     hint: 'What slipped, who is blocked, what do I decide today?',
-    // Fragen = the PM's decision inbox ("what do I decide today?" — literally).
+    // Fleet carries Questions = the PM's decision inbox ("what do I decide
+    // today?" — literally).
     // Files: the shared shelf — specs, exports, screenshots — for whoever
     // works the plan. Not for the stakeholder lens, which stays two tabs.
-    tabs: ['cockpit', 'fleet', 'asks', 'releases', 'list', 'kanban', 'mindmap', 'files'],
+    tabs: ['cockpit', 'fleet', 'releases', 'list', 'kanban', 'mindmap', 'files'],
     panels: ['blocked', 'triage', 'sprint', 'planHealth', 'property', 'mapChat', 'aiChat'],
   },
   developer: {
@@ -98,9 +98,10 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // queue alive?") — the steering knobs render read-only in this lens.
     // List stays tabs[0] = the landing page; on-screen ORDER comes from
     // App.tsx VIEW_TABS, not from this array.
-    // Fragen too (Dan, 2026-09-03): the developer lens answers as well —
-    // the questions are the fleet's, whoever is looking decides.
-    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'asks', 'files'],
+    // Fleet's Questions section too (Dan, 2026-09-03): the developer lens
+    // answers as well — the questions are the fleet's, whoever is looking
+    // decides.
+    tabs: ['list', 'kanban', 'mindmap', 'fleet', 'files'],
     panels: ['blocked', 'property', 'mapChat'],
   },
   all: {

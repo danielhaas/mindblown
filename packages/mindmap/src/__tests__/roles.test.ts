@@ -58,10 +58,10 @@ describe('ROLE_CONFIG invariants', () => {
     expect(defaultViewForRole('all')).toBe('mindmap');
   });
 
-  it('Fragen tab: PM and developer see it, stakeholder does not', () => {
-    expect(isTabVisible('pm', 'asks')).toBe(true);
-    expect(isTabVisible('developer', 'asks')).toBe(true);
-    expect(isTabVisible('stakeholder', 'asks')).toBe(false);
+  it('Fleet tab (carries Questions): PM and developer see it, stakeholder does not', () => {
+    expect(isTabVisible('pm', 'fleet')).toBe(true);
+    expect(isTabVisible('developer', 'fleet')).toBe(true);
+    expect(isTabVisible('stakeholder', 'fleet')).toBe(false);
   });
 
   it('Files tab: PM and developer see it, stakeholder does not', () => {

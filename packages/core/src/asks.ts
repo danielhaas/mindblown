@@ -257,15 +257,15 @@ export interface AskWritePlan {
  *                 unless done, claimed, or --no-requeue
  *   worker      → note for the fleet, delivered claudia-side
  * `later` and `delegate` are ledger-only.
- * Pure so the panel can show "was diese Antwort schreibt" before the click.
+ * Pure so the panel can show "this answer writes" before the click.
  */
 export function planAskWrites(ask: Ask, input: AskAnswerInput, node: AskNodeState | null, date: string): AskWritePlan {
   const none: AskWritePlan = { github: null, node: null, worker: null, skip: null };
   if (input.action !== 'answered') {
-    return { ...none, skip: input.action === 'delegate' ? `delegiert an ${input.delegateTo ?? '?'}` : 'vertagt — nichts geschrieben' };
+    return { ...none, skip: input.action === 'delegate' ? `delegated to ${input.delegateTo ?? '?'}` : 'deferred — nothing written' };
   }
   if (ask.moot) {
-    return { ...none, skip: `PR ${ask.unblocks.pr_state ?? '?'} — Frage ist hinfällig, nur der Dialog ist wegzuklicken` };
+    return { ...none, skip: `PR ${ask.unblocks.pr_state ?? '?'} — the question is moot, only the dialog needs dismissing` };
   }
   const by = input.by?.trim() || 'Dan';
   const decision = (input.decision ?? '').trim();
@@ -282,13 +282,13 @@ export function planAskWrites(ask: Ask, input: AskAnswerInput, node: AskNodeStat
     const st = node?.status ?? ask.unblocks.node_status;
     const claimed = node ? node.claimedBySession : ask.unblocks.claimed_by;
     if (node?.isDone || st === 'done' || st === 'cancelled') {
-      plan.node = { nodeId: nid, requeue: false, why: `Knoten ist ${st} — fertige Arbeit wird nie wieder geöffnet` };
+      plan.node = { nodeId: nid, requeue: false, why: `node is ${st} — finished work is never reopened` };
     } else if (input.noRequeue) {
-      plan.node = { nodeId: nid, requeue: false, why: 'kein Requeue: Antwort notiert, Status bleibt' };
+      plan.node = { nodeId: nid, requeue: false, why: 'no requeue: answer recorded, status stays' };
     } else if (claimed) {
-      plan.node = { nodeId: nid, requeue: false, why: `geclaimt von ${claimed}: Status bleibt (Claim-Owner macht weiter)` };
+      plan.node = { nodeId: nid, requeue: false, why: `claimed by ${claimed}: status stays (the claim owner carries on)` };
     } else {
-      plan.node = { nodeId: nid, requeue: true, why: 'Status → todo (beim nächsten Tick pullbar)' };
+      plan.node = { nodeId: nid, requeue: true, why: 'status → todo (pullable on the next tick)' };
     }
   }
   if (ask.unblocks.worker) plan.worker = { worker: ask.unblocks.worker };
