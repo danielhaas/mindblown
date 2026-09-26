@@ -1539,7 +1539,8 @@ export interface IntakeAcceptDraft {
 }
 
 export interface IntakeAcceptResponse {
-  node: { id: string; text: string };
+  /** The created node as stored (not computed) — mobile patches it into its local tree. */
+  node: Node;
   issue: { number: number; html_url: string } | null;
   issueError?: string;
   dependencyErrors?: string[];

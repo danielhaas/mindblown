@@ -10,6 +10,8 @@ import { MobileRequirementsView } from './MobileRequirementsView.js';
 import { MobileFleetView } from './MobileFleetView.js';
 import { MobileNodeDetailSheet } from './MobileNodeDetailSheet.js';
 import { MobileAddNodeSheet } from './MobileAddNodeSheet.js';
+import { MobileTicketIntakeSheet } from './MobileTicketIntakeSheet.js';
+import { loadAiCapabilities } from '../aiCapabilities.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
 
 type ViewKey = 'list' | 'kanban' | 'gantt' | 'mindmap' | 'requirements' | 'fleet';
@@ -70,6 +72,19 @@ export function MobileViewer({ map }: Props) {
   const [view, setView] = useState<ViewKey>(readDefaultView);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  // Ticket intake (#387): a mode of the add sheet, shown only when the
+  // map's AI policy leaves a chat-capable backend (same gate as desktop).
+  const [intaking, setIntaking] = useState(false);
+  const [aiChat, setAiChat] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    loadAiCapabilities(map.id).then((c) => {
+      if (alive) setAiChat(c.chat);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [map.id]);
   // Names for the Requirements release chips. Small payload, and versions
   // don't change under an editing session — fetched once per map, not with
   // the debounced node reload.
@@ -310,6 +325,24 @@ export function MobileViewer({ map }: Props) {
           nodes={nodes}
           map={detail.map}
           onClose={() => setAdding(false)}
+          onCreated={insertNode}
+          onIntake={
+            aiChat
+              ? () => {
+                  setAdding(false);
+                  setIntaking(true);
+                }
+              : undefined
+          }
+        />
+      )}
+
+      {intaking && detail && (
+        <MobileTicketIntakeSheet
+          map={detail.map}
+          nodes={nodes}
+          versions={versions}
+          onClose={() => setIntaking(false)}
           onCreated={insertNode}
         />
       )}
