@@ -55,8 +55,20 @@ export function signLongLivedToken(payload: JwtPayload): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
 }
 
+/**
+ * Marker claim on every JWT that is signed with our secret but is NOT a
+ * bearer credential (the OAuth `state` tokens of the GitHub and Gitea
+ * flows). verifyToken refuses any token carrying it, so a state token
+ * seen in a proxy log can never authenticate as its user for its
+ * 15-minute life (#397). Bearer tokens never carry `typ`.
+ */
+export const OAUTH_STATE_TYP = 'oauth-state';
+
 export function verifyToken(token: string): JwtPayload {
-  return jwt.verify(token, JWT_SECRET) as JwtPayload;
+  const payload = jwt.verify(token, JWT_SECRET) as JwtPayload & { typ?: unknown };
+  if (payload.typ !== undefined) throw new Error('not a bearer token');
+  if (typeof payload.userId !== 'string') throw new Error('malformed token');
+  return payload;
 }
 
 // ── Admin check ───────────────────────────────────────────────────

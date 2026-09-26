@@ -31,7 +31,7 @@ import {
 import { db } from '../db/connection.js';
 import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
-import { requireAdmin } from '../auth.js';
+import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
 import { FORGE_PROVIDERS, type ForgeIntegrationConfig } from '../lib/forge.js';
 import {
   findGiteaIdentity,
@@ -47,15 +47,18 @@ interface StatePayload {
   userId: string;
   nonce: string;
   kind: 'gitea';
+  /** Marks this as an OAuth state token, never a bearer (#397). */
+  typ: typeof OAUTH_STATE_TYP;
 }
 
 function signState(userId: string): string {
   const nonce = randomBytes(16).toString('hex');
-  return jwt.sign({ userId, nonce, kind: 'gitea' } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
+  return jwt.sign({ userId, nonce, kind: 'gitea', typ: OAUTH_STATE_TYP } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
 }
 
 function verifyState(token: string): StatePayload {
   const payload = jwt.verify(token, JWT_SECRET) as StatePayload;
+  if (payload.typ !== OAUTH_STATE_TYP) throw new Error('not an OAuth state token');
   if (payload.kind !== 'gitea') throw new Error('state is not a gitea flow');
   return payload;
 }
