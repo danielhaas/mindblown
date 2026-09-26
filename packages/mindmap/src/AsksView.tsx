@@ -1,5 +1,5 @@
 /**
- * Fragen tab — `/leidang-asks` in the browser.
+ * Questions — `/leidang-asks` in the browser, a section of the Fleet tab.
  *
  * The list is what the orchestrator last pushed from claude-fleet's
  * collector (one record per ticket, deduplicated over tick / rollups /
@@ -7,8 +7,11 @@
  * blocked nodes: the collector is the truth, this is the inbox. Answering
  * writes exactly what `leidang-asks-apply` writes (server side): the
  * «Entscheid (Dan, Datum): …» comment on the ticket, the decision at the
- * top of the node, blocked → todo. «Später» and «an Rita/Susi/Dana» only
- * record. No answer is written without a click.
+ * top of the node, blocked → todo. "Later" and "delegate to Rita/Susi/Dana"
+ * only record. No answer is written without a click.
+ *
+ * The comment line on the ticket stays German on purpose: it is the fleet's
+ * contract — the collector recognises «Entscheid (…)» as a taken decision.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, proseMirrorToPlainText, sortAsks } from '@mindblown/core';
@@ -16,22 +19,22 @@ import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
-import { Shell, Muted } from './DigestView.js';
+import { Card, Muted } from './DigestView.js';
 
 const POLL_MS = 60_000;
 
 const HINT_LABEL: Record<string, string> = {
-  decision: 'Entscheid',
-  'ops-task': 'Ops-Aufgabe',
-  'waiting-external': 'wartet extern',
-  'already-decided': 'schon entschieden',
-  'parked-plan': 'geparkter Plan',
+  decision: 'decision',
+  'ops-task': 'ops task',
+  'waiting-external': 'waiting on external',
+  'already-decided': 'already decided',
+  'parked-plan': 'parked plan',
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  answered: 'beantwortet',
-  later: 'später',
-  delegated: 'delegiert',
+  answered: 'answered',
+  later: 'deferred',
+  delegated: 'delegated',
 };
 
 function ref(a: Ask): string {
@@ -56,7 +59,11 @@ function fmtTime(iso: string | null): string {
 
 type Filter = { answerer: string | null; hint: string | null };
 
-export function AsksView() {
+/**
+ * The Questions card on the Fleet tab. Renders inside the Fleet page's
+ * Shell — it brings its own Card, nothing else.
+ */
+export function AsksSection() {
   const currentMapId = useMindmapStore((s) => s.currentMapId);
   const asksRev = useMindmapStore((s) => s.asksRev);
   const viewRole = useMindmapStore((s) => s.viewRole);
@@ -140,18 +147,19 @@ export function AsksView() {
 
   const onResult = (id: string, r: AnswerResult) => setResults((m) => ({ ...m, [id]: r }));
 
-  if (!currentMapId) return <Shell><Muted>Loading…</Muted></Shell>;
-  if (error) return <Shell><Muted>Fragen nicht ladbar: {error}</Muted></Shell>;
-  if (!data) return <Shell><Muted>Loading…</Muted></Shell>;
+  const cardTitle = `Questions — what the fleet needs decided${data?.pushedAt ? ` (${groups.questions.length})` : ''}`;
+
+  if (!currentMapId) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
+  if (error) return <Card title={cardTitle}><Muted>Questions unavailable: {error}</Muted></Card>;
+  if (!data) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
 
   if (!data.pushedAt) {
     return (
-      <Shell>
-        <h2 style={{ margin: '0 0 8px', fontSize: 18 }}>Fragen</h2>
+      <Card title={cardTitle}>
         <Muted>
-          Noch keine Fragen gepusht. Der Orchestrator schickt die Liste jeden Tick (PUT /maps/:id/asks) — ist die Fleet aus, oder fehlt der Push?
+          No questions pushed yet. The orchestrator sends the list every tick (PUT /maps/:id/asks) — is the fleet off, or is the push missing?
         </Muted>
-      </Shell>
+      </Card>
     );
   }
 
@@ -159,21 +167,16 @@ export function AsksView() {
   const hints = Object.keys(groups.byHint);
 
   return (
-    <Shell>
-      <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <h2 style={{ margin: 0, fontSize: 18 }}>
-          Fragen <span style={{ color: '#64748b', fontWeight: 400 }}>({groups.questions.length})</span>
-        </h2>
-        <Muted>
-          Stand {fmtTime(data.pushedAt)}
-          {data.meta?.tick ? ` · Tick ${data.meta.tick}` : ''}
-          {readOnly ? ' · nur lesen (Rolle)' : ''}
-        </Muted>
-      </div>
+    <Card title={cardTitle}>
+      <Muted>
+        As of {fmtTime(data.pushedAt)}
+        {data.meta?.tick ? ` · tick ${data.meta.tick}` : ''}
+        {readOnly ? ' · read-only (role)' : ''}
+      </Muted>
 
       {/* counters double as filters */}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, margin: '12px 0 4px' }}>
-        <Chip active={filter.answerer === null} onClick={() => setFilter((f) => ({ ...f, answerer: null }))}>alle</Chip>
+        <Chip active={filter.answerer === null} onClick={() => setFilter((f) => ({ ...f, answerer: null }))}>all</Chip>
         {answerers.map((a) => (
           <Chip key={a} active={filter.answerer === a} onClick={() => setFilter((f) => ({ ...f, answerer: f.answerer === a ? null : a }))}>
             {a} {groups.byAnswerer[a]}
@@ -194,7 +197,7 @@ export function AsksView() {
           <GoneCard key={`gone-${id}`} ask={g.ask} at={g.at} onDismiss={() => setGone((m) => { const n = { ...m }; delete n[id]; return n; })} />
         ))}
 
-      {groups.visible.length === 0 && <Muted>Keine offene Frage{filter.answerer || filter.hint ? ' in diesem Filter' : ''}. 🎉</Muted>}
+      {groups.visible.length === 0 && <Muted>No open question{filter.answerer || filter.hint ? ' in this filter' : ''}. 🎉</Muted>}
 
       {groups.visible.map((r) => (
         <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
@@ -202,7 +205,7 @@ export function AsksView() {
 
       {groups.versionOnly.length > 0 && (
         <Fold
-          label={`Nur Version fehlt — NEEDS-VERSION (${groups.versionOnly.length}, Antwort = Milestone)`}
+          label={`Only the version is missing — NEEDS-VERSION (${groups.versionOnly.length}, the answer is a milestone)`}
           open={showVersionOnly}
           onToggle={() => setShowVersionOnly((v) => !v)}
         >
@@ -214,7 +217,7 @@ export function AsksView() {
 
       {groups.noQuestion.length > 0 && (
         <Fold
-          label={`Keine Frage — geparkte Planposten / Text ist schon der Entscheid (${groups.noQuestion.length})`}
+          label={`No question — parked plan items, or the text already is the decision (${groups.noQuestion.length})`}
           open={showNoQuestion}
           onToggle={() => setShowNoQuestion((v) => !v)}
         >
@@ -228,13 +231,13 @@ export function AsksView() {
       )}
 
       {groups.done.length > 0 && (
-        <Fold label={`Beantwortet / vertagt / delegiert (${groups.done.length})`} open={showDone} onToggle={() => setShowDone((v) => !v)}>
+        <Fold label={`Answered / deferred / delegated (${groups.done.length})`} open={showDone} onToggle={() => setShowDone((v) => !v)}>
           {groups.done.map((r) => (
             <DoneRow key={r.ask.id} row={r} />
           ))}
         </Fold>
       )}
-    </Shell>
+    </Card>
   );
 }
 
@@ -278,9 +281,9 @@ function DoneRow({ row }: { row: AskRow }) {
     <div style={{ fontSize: 13, padding: '6px 0', borderBottom: '1px solid #f1f5f9', color: '#475569' }}>
       <b>{ref(a)}</b> {title(a)} · {STATUS_LABEL[row.status] ?? row.status}
       {row.answeredBy ? ` (${row.answeredBy}, ${fmtTime(row.answeredAt)})` : ''}
-      {row.answer?.decision ? <div style={{ color: '#0f172a' }}>Entscheid: {row.answer.decision}</div> : null}
+      {row.answer?.decision ? <div style={{ color: '#0f172a' }}>Decision: {row.answer.decision}</div> : null}
       {row.answer?.delegateTo ? <div>→ {row.answer.delegateTo}</div> : null}
-      {row.workerPending ? <div style={{ color: '#b45309' }}>Worker-Notiz ausstehend (nächster Tick)</div> : null}
+      {row.workerPending ? <div style={{ color: '#b45309' }}>Worker note pending (next tick)</div> : null}
       {failed.length > 0 && (
         <div style={{ color: '#b91c1c' }}>
           {failed.map((w) => `${w.kind} ${w.target}: ${w.error}`).join(' · ')}
@@ -325,7 +328,7 @@ function AskCard({
   const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
   const [busy, setBusy] = useState(false);
   const setResult = (r: AnswerResult) => onResult(a.id, r);
-  // «Mehr»: everything the collector folded into this record plus the node
+  // "More": everything the collector folded into this record plus the node
   // itself (blockedReason, description) — fetched on first open only.
   const [more, setMore] = useState(false);
   const [node, setNode] = useState<Node | null | 'loading' | 'error'>(null);
@@ -338,14 +341,15 @@ function AskCard({
       .catch(() => setNode('error'));
   }, [more, node, a.unblocks.node_id, mapId]);
 
-  const options = a.options.length > 0 ? a.options : ['Ja', 'Nein'];
+  const options = a.options.length > 0 ? a.options : ['Yes', 'No'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
 
+  const today = new Date().toISOString().slice(0, 10);
   const preview: AskWritePlan = planAskWrites(
     a,
     { action: 'answered', decision: decision || '…', by, milestone: milestone || undefined, noRequeue },
     null,
-    new Date().toISOString().slice(0, 10),
+    today,
   );
 
   async function submit(input: AskAnswerInput) {
@@ -363,7 +367,7 @@ function AskCard({
         ok: false,
         lines: [
           notFound
-            ? 'Diese Frage ist seit dem letzten Push nicht mehr offen — anderswo beantwortet (Terminal-Runde), Ticket zu, oder Knoten von Hand entparkt. Nichts geschrieben.'
+            ? 'This question is no longer open since the last push — answered elsewhere (terminal round), ticket closed, or node unparked by hand. Nothing written.'
             : e instanceof Error
               ? e.message
               : 'failed',
@@ -387,13 +391,13 @@ function AskCard({
         }}
         style={{ background: 'none', border: 'none', padding: 0, color: '#2563eb', cursor: 'pointer', fontSize: 12 }}
       >
-        Knoten {a.unblocks.node_title ? `„${a.unblocks.node_title.slice(0, 40)}“` : nid.slice(0, 8)}
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : nid.slice(0, 8)}
         {a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}
       </button>,
     );
   }
-  if (a.unblocks.claimed_by) unb.push(<span key="claim">geclaimt von {a.unblocks.claimed_by}</span>);
-  if (a.unblocks.worker) unb.push(<span key="worker">Worker {a.unblocks.worker}</span>);
+  if (a.unblocks.claimed_by) unb.push(<span key="claim">claimed by {a.unblocks.claimed_by}</span>);
+  if (a.unblocks.worker) unb.push(<span key="worker">worker {a.unblocks.worker}</span>);
   if (a.unblocks.pr) unb.push(<span key="pr">PR {a.unblocks.pr}{a.unblocks.pr_state ? ` ${a.unblocks.pr_state}` : ''}</span>);
 
   return (
@@ -420,29 +424,29 @@ function AskCard({
           {a.idle_hours != null ? ` · idle ${a.idle_hours}h` : ''}
           {` · ${HINT_LABEL[a.hint] ?? a.hint}`}
         </span>
-        {a.moot && <Tag color="#64748b">hinfällig — PR {a.unblocks.pr_state}</Tag>}
-        {a.stale && <Tag color="#64748b">Ticket geschlossen</Tag>}
+        {a.moot && <Tag color="#64748b">moot — PR {a.unblocks.pr_state}</Tag>}
+        {a.stale && <Tag color="#64748b">ticket closed</Tag>}
         {a.needs_version && <Tag color="#b45309">NEEDS-VERSION</Tag>}
       </div>
       <div style={{ marginTop: 6, fontSize: 14, whiteSpace: 'pre-wrap' }}>
-        <span style={{ color: '#64748b', fontSize: 12 }}>Frage ({a.question_author ?? '?'}): </span>
+        <span style={{ color: '#64748b', fontSize: 12 }}>Question ({a.question_author ?? '?'}): </span>
         {a.question}
       </div>
       <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
-        {unb.length > 0 && <span>hängt dran:</span>}
+        {unb.length > 0 && <span>holds up:</span>}
         {unb}
         <button
           onClick={() => setMore((v) => !v)}
           style={{ background: 'none', border: '1px solid #cbd5e1', borderRadius: 4, padding: '1px 8px', color: '#334155', cursor: 'pointer', fontSize: 12 }}
         >
-          {more ? 'Weniger' : 'Mehr…'}
+          {more ? 'Less' : 'More…'}
         </button>
       </div>
       {more && <AskDetails ask={a} row={row} node={node} />}
 
       {result ? (
         <div style={{ marginTop: 10, fontSize: 12, color: result.ok ? '#047857' : '#b91c1c', whiteSpace: 'pre-wrap' }}>
-          {result.lines.length ? result.lines.join('\n') : 'notiert'}
+          {result.lines.length ? result.lines.join('\n') : 'recorded'}
         </div>
       ) : readOnly ? null : (
         <div style={{ marginTop: 10 }}>
@@ -456,7 +460,7 @@ function AskCard({
           <textarea
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
-            placeholder="Entscheid (Freitext oder Option oben)…"
+            placeholder="Decision (free text, or pick an option above)…"
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
           />
@@ -474,27 +478,27 @@ function AskCard({
             )}
             {a.unblocks.node_id && (
               <label>
-                <input type="checkbox" checked={noRequeue} onChange={(e) => setNoRequeue(e.target.checked)} /> kein Requeue (Status bleibt)
+                <input type="checkbox" checked={noRequeue} onChange={(e) => setNoRequeue(e.target.checked)} /> no requeue (status stays)
               </label>
             )}
           </div>
           <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
-            <b>Diese Antwort schreibt:</b>
+            <b>This answer writes:</b>
             <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
               {preview.skip && <li>{preview.skip}</li>}
               {preview.github && (
                 <li>
-                  Kommentar auf #{preview.github.ticket}: «Entscheid ({by}, heute): {decision || '…'}»
-                  {preview.github.milestone ? ` · Milestone ${preview.github.milestone}, NEEDS-VERSION weg` : ''}
+                  Comment on #{preview.github.ticket}: «Entscheid ({by}, {today}): {decision || '…'}»
+                  {preview.github.milestone ? ` · milestone ${preview.github.milestone}, NEEDS-VERSION label removed` : ''}
                 </li>
               )}
               {preview.node && (
                 <li>
-                  Knoten {preview.node.nodeId.slice(0, 8)}: Entscheid in die Beschreibung, blockedReason weg, Tag blocked weg; {preview.node.why}
+                  Node {preview.node.nodeId.slice(0, 8)}: decision into the description, blockedReason cleared, blocked tag removed; {preview.node.why}
                 </li>
               )}
-              {preview.worker && <li>Notiz an Worker {preview.worker.worker} — liefert der nächste Tick</li>}
-              {!preview.skip && !preview.github && !preview.node && !preview.worker && <li>nur die Ledger-Zeile (kein Ticket, kein Knoten, kein Worker)</li>}
+              {preview.worker && <li>Note to worker {preview.worker.worker} — delivered by the next tick</li>}
+              {!preview.skip && !preview.github && !preview.node && !preview.worker && <li>only the ledger row (no ticket, no node, no worker)</li>}
             </ul>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -503,10 +507,10 @@ function AskCard({
               style={btn('primary', !canAnswer)}
               onClick={() => submit({ action: 'answered', decision: decision.trim(), by, milestone: milestone.trim() || undefined, noRequeue })}
             >
-              Antworten
+              Answer
             </button>
             <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'later', by })}>
-              Später
+              Later
             </button>
             <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
               <select value={delegateTo} onChange={(e) => setDelegateTo(e.target.value as 'Rita' | 'Susi' | 'Dana')} style={{ fontSize: 12 }}>
@@ -515,7 +519,7 @@ function AskCard({
                 <option>Dana</option>
               </select>
               <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'delegate', by, delegateTo })}>
-                Delegieren
+                Delegate
               </button>
             </span>
           </div>
@@ -535,9 +539,9 @@ function GoneCard({ ask: a, at, onDismiss }: { ask: Ask; at: string; onDismiss: 
           <b>{ref(a)}</b>
         )}
         <span style={{ fontWeight: 600 }}>{title(a)}</span>
-        <span>· seit dem Push um {fmtTime(at)} nicht mehr offen — anderswo beantwortet (Terminal-Runde), Ticket zu, oder Knoten von Hand entparkt. Hier ist nichts mehr zu tun.</span>
+        <span>· no longer open since the push at {fmtTime(at)} — answered elsewhere (terminal round), ticket closed, or node unparked by hand. Nothing left to do here.</span>
         <button onClick={onDismiss} style={{ marginLeft: 'auto', fontSize: 12, padding: '1px 8px', border: '1px solid #cbd5e1', borderRadius: 4, background: '#fff', color: '#334155', cursor: 'pointer' }}>
-          Ausblenden
+          Dismiss
         </button>
       </div>
     </section>
@@ -545,12 +549,13 @@ function GoneCard({ ask: a, at, onDismiss }: { ask: Ask; at: string; onDismiss: 
 }
 
 const SOURCE_LABEL: Record<string, string> = {
-  'tick:decision': 'Orchestrator (Tick)',
-  'tick:map': 'Knoten (blockedReason)',
-  'mindblown:live': 'Knoten (blockedReason)',
-  'rollup:prompt': 'Worker-Dialog (PROMPT-BLOCKED)',
-  'pending-notes': 'Heartbeat-Backlog',
-  'github:human': 'GitHub «Warum nicht jetzt gefixt»',
+  'tick:decision': 'Orchestrator (tick)',
+  'tick:map': 'Node (blockedReason)',
+  'mindblown:live': 'Node (blockedReason)',
+  'rollup:prompt': 'Worker dialog (PROMPT-BLOCKED)',
+  'pending-notes': 'Heartbeat backlog',
+  // The section heading the collector scans for on the ticket — a literal.
+  'github:human': 'GitHub («Warum nicht jetzt gefixt» section)',
   'github:needs-version': 'GitHub NEEDS-VERSION',
 };
 
@@ -560,9 +565,9 @@ function AskDetails({ ask: a, row, node }: { ask: Ask; row: AskRow; node: Node |
   if (a.requirement) dl.push(['Requirement', a.requirement]);
   if (a.labels && a.labels.length > 0) dl.push(['Labels', a.labels.join(', ')]);
   if (a.milestone) dl.push(['Milestone', a.milestone]);
-  if (a.answerers && a.answerers.length > 1) dl.push(['Beteiligte', a.answerers.join(', ')]);
-  dl.push(['Quellen', a.sources.map((s) => SOURCE_LABEL[s] ?? s).join(' · ')]);
-  dl.push(['Gesehen', `seit ${fmtTime(row.firstSeenAt)}, zuletzt gepusht ${fmtTime(row.pushedAt)}`]);
+  if (a.answerers && a.answerers.length > 1) dl.push(['Involved', a.answerers.join(', ')]);
+  dl.push(['Sources', a.sources.map((s) => SOURCE_LABEL[s] ?? s).join(' · ')]);
+  dl.push(['Seen', `since ${fmtTime(row.firstSeenAt)}, last pushed ${fmtTime(row.pushedAt)}`]);
   if (a.unblocks.pr) dl.push(['PR', `${a.unblocks.pr}${a.unblocks.pr_state ? ` (${a.unblocks.pr_state})` : ''}`]);
   const qs = (a.questions ?? []).filter((q) => q.text.trim() !== a.question.trim());
   return (
@@ -577,7 +582,7 @@ function AskDetails({ ask: a, row, node }: { ask: Ask; row: AskRow; node: Node |
       </dl>
       {qs.length > 0 && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ color: '#64748b' }}>Dieselbe Frage, andere Wortlaute:</div>
+          <div style={{ color: '#64748b' }}>Same question, other wordings:</div>
           {qs.map((q, i) => (
             <div key={i} style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>
               <span style={{ color: '#64748b' }}>{SOURCE_LABEL[q.source] ?? q.source}{q.author ? ` (${q.author})` : ''}: </span>
@@ -588,16 +593,16 @@ function AskDetails({ ask: a, row, node }: { ask: Ask; row: AskRow; node: Node |
       )}
       {a.unblocks.node_id && (
         <div style={{ marginTop: 8 }}>
-          <div style={{ color: '#64748b' }}>Knoten</div>
-          {node === 'loading' && <Muted>lädt…</Muted>}
-          {node === 'error' && <Muted>Knoten nicht ladbar (gelöscht oder keine Berechtigung)</Muted>}
+          <div style={{ color: '#64748b' }}>Node</div>
+          {node === 'loading' && <Muted>loading…</Muted>}
+          {node === 'error' && <Muted>Node unavailable (deleted, or no permission)</Muted>}
           {node && node !== 'loading' && node !== 'error' && (
             <div style={{ marginTop: 2 }}>
-              <div><b>{node.text}</b> · Status {node.status ?? '—'}{node.claimedBySession ? ` · geclaimt von ${node.claimedBySession}` : ''}{node.tags.length ? ` · Tags ${node.tags.join(', ')}` : ''}</div>
+              <div><b>{node.text}</b> · status {node.status ?? '—'}{node.claimedBySession ? ` · claimed by ${node.claimedBySession}` : ''}{node.tags.length ? ` · tags ${node.tags.join(', ')}` : ''}</div>
               {node.blockedReason && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}><span style={{ color: '#64748b' }}>blockedReason: </span>{node.blockedReason}</div>}
               {proseMirrorToPlainText(node.description) && (
                 <div style={{ marginTop: 4, whiteSpace: 'pre-wrap', maxHeight: 240, overflow: 'auto' }}>
-                  <span style={{ color: '#64748b' }}>Beschreibung: </span>
+                  <span style={{ color: '#64748b' }}>Description: </span>
                   {proseMirrorToPlainText(node.description)}
                 </div>
               )}
