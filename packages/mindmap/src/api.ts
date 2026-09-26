@@ -1541,7 +1541,12 @@ export interface IntakeAcceptDraft {
 export interface IntakeAcceptResponse {
   /** The created node as stored (not computed) — mobile patches it into its local tree. */
   node: Node;
-  issue: { number: number; html_url: string } | null;
+  issue: {
+    number: number;
+    html_url: string;
+    /** Who the issue shows as author: the acting person, or the repo binding (App / connect token). */
+    author?: { as: 'user' | 'binding'; login: string | null; fallbackReason?: string };
+  } | null;
   issueError?: string;
   dependencyErrors?: string[];
 }

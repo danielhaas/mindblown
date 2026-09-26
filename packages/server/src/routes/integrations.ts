@@ -647,8 +647,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // Shared with the ticket-intake accept step (#387): forge call,
       // mirror-hash stamp, link write and broadcast live in the service.
       try {
-        const { node: updated, issue } = await createForgeIssueForNode(req.params.mapId, node);
-        return reply.status(201).send({ node: updated, issue });
+        const { node: updated, issue, author } = await createForgeIssueForNode(req.params.mapId, node, {
+          actorUserId: (req as { userId?: string }).userId ?? null,
+        });
+        return reply.status(201).send({ node: updated, issue, author });
       } catch (err) {
         if (err instanceof NoForgeIntegrationError) {
           return reply.status(400).send({ error: { code: 'NO_INTEGRATION', message: err.message } });

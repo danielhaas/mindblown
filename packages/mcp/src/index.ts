@@ -3280,7 +3280,15 @@ server.tool(
     try {
       const r = await api.aiIntakeAccept(mapId, draft, { intakeId, createIssue });
       const lines = [`Created node "${r.node.text}" (id: ${r.node.id}) under ${draft.parentId}.`];
-      if (r.issue) lines.push(`Filed issue #${r.issue.number}: ${r.issue.html_url}`);
+      if (r.issue) {
+        const a = r.issue.author;
+        const by = !a
+          ? ''
+          : a.as === 'user'
+            ? ` as ${a.login}`
+            : ` as the repo binding${a.fallbackReason ? ` (${a.fallbackReason})` : ''}`;
+        lines.push(`Filed issue #${r.issue.number}${by}: ${r.issue.html_url}`);
+      }
       if (r.issueError) lines.push(`Issue: ${r.issueError}`);
       if (r.dependencyErrors?.length) lines.push(`Dependency errors: ${r.dependencyErrors.join('; ')}`);
       return toolResult(lines.join('\n'));

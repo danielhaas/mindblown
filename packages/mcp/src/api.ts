@@ -1122,7 +1122,11 @@ export interface IntakeAcceptDraft {
 
 export interface IntakeAcceptResponse {
   node: { id: string; text: string };
-  issue: { number: number; html_url: string } | null;
+  issue: {
+    number: number;
+    html_url: string;
+    author?: { as: 'user' | 'binding'; login: string | null; fallbackReason?: string };
+  } | null;
   issueError?: string;
   dependencyErrors?: string[];
 }

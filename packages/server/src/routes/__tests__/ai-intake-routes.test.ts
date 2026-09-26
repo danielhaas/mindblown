@@ -170,6 +170,7 @@ describe('POST /api/ai/intake/accept', () => {
     createIssueMock.mockResolvedValueOnce({
       node: stubNode({ externalLinks: [{ provider: 'github' }] }),
       issue: { number: 42, html_url: 'https://x/42', title: 't' },
+      author: { as: 'user', login: 'dan' },
     });
     const ok = await app.inject({
       method: 'POST',
@@ -177,7 +178,9 @@ describe('POST /api/ai/intake/accept', () => {
       payload: { mapId: MAP_ID, createIssue: true, draft: { title: 't', description: 'd', parentId: 'p1' } },
     });
     expect(ok.statusCode).toBe(201);
-    expect(ok.json().issue).toEqual({ number: 42, html_url: 'https://x/42' });
+    expect(ok.json().issue).toEqual({ number: 42, html_url: 'https://x/42', author: { as: 'user', login: 'dan' } });
+    // The acting user travels to the service so the issue can carry their name.
+    expect(createIssueMock.mock.calls[0][2]).toEqual({ actorUserId: 'user-1' });
 
     createIssueMock.mockRejectedValueOnce(new NoForgeIntegrationError());
     const noForge = await app.inject({
