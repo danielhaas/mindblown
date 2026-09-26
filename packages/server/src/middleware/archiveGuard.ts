@@ -3,11 +3,12 @@
  *
  * One preHandler, registered right after auth. A request that would
  * write to an archived map is refused with 409 MAP_ARCHIVED unless it
- * comes from a person in the browser (`req.authSource === 'jwt'`).
- * Everything else — MCP agents on API keys (every MCP tool call goes
- * through these routes), the pull queue, the asks collector, fleet
- * orchestrators, unauthenticated pushes — is turned away. Reads are
- * untouched.
+ * comes from a person in the browser (`req.actor === 'person'`, i.e. an
+ * interactive session JWT — see middleware/auth.ts). Everything else —
+ * MCP tool calls (they ride the /mcp loopback JWT, marked
+ * `kind: 'loopback'`), API keys, headless tokens, the pull queue, the
+ * asks collector, fleet orchestrators, unauthenticated pushes — is
+ * turned away. Reads are untouched.
  *
  * Why humans pass: "archived" here means "on hold, nothing happens by
  * itself". The owner can still open the map, fix a title, leave a note,
@@ -64,10 +65,10 @@ export async function resolveTargetMapId(req: FastifyRequest): Promise<string | 
       if (req.method === 'DELETE') return null;
       if (req.method === 'PUT') {
         const b = req.body as Record<string, unknown> | null | undefined;
-        if (b && typeof b === 'object') {
-          const keys = Object.keys(b);
+        if (b && typeof b === 'object' && typeof b.archived === 'boolean') {
           if (b.archived === false) return null;
-          if (keys.length === 1 && keys[0] === 'archived') return null;
+          const keys = Object.keys(b);
+          if (keys.length === 1) return null; // {archived:true} re-sent: idempotent
         }
       }
       return id;
@@ -118,7 +119,7 @@ export async function registerArchiveGuard(app: FastifyInstance): Promise<void> 
   app.addHook('preHandler', async (req, reply) => {
     if (!MUTATING.has(req.method)) return;
     if (!req.url.startsWith('/api/')) return;
-    if (req.authSource === 'jwt') return; // a person in the browser
+    if (req.actor === 'person') return; // an interactive session, not a robot on a JWT
     const mapId = await resolveTargetMapId(req);
     if (!mapId) return;
     if (await mapDb.isMapArchived(mapId)) return archivedReply(reply, mapId);

@@ -18,6 +18,12 @@
  * edit by hand, and unarchive it. Triage-decision metadata (an issue's
  * open/closed mirror) keeps syncing too — it is an audit trail of the
  * forge, not an action on the plan.
+ *
+ * There is no third layer in the node write functions on purpose: they
+ * cannot tell a person from a robot, so a backstop there would 500 a
+ * person's edit. The accepted residual is the race between a job's
+ * target query and its writes when the map is archived in between —
+ * one tick, then quiet. Don't re-add the backstop for that.
  */
 import { eq } from 'drizzle-orm';
 import { db } from './connection.js';

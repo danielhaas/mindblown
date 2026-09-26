@@ -215,7 +215,9 @@ export async function updateMap(
   if (input.triageEnabled !== undefined) updates.triageEnabled = input.triageEnabled;
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
-  if (input.archived !== undefined) {
+  // Boolean only: a raw REST caller sending `archived: null` must not
+  // unarchive by accident (the tool-kit schema already rejects it).
+  if (typeof input.archived === 'boolean') {
     if (!input.archived) updates.archivedAt = null;
     else if (before.archivedAt == null) updates.archivedAt = new Date();
   }

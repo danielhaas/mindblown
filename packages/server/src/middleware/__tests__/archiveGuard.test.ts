@@ -36,9 +36,13 @@ import { registerArchiveGuard } from '../archiveGuard.js';
 
 async function buildApp() {
   const app = Fastify();
+  // Stand-in for middleware/auth.ts: 'jwt' here means an interactive
+  // session (actor person); 'api-key' any robot (actor agent). The
+  // loopback-JWT → agent mapping itself is pinned in actor.test.ts.
   app.addHook('onRequest', async (req) => {
     const via = req.headers['x-test-auth'];
-    if (via === 'jwt' || via === 'api-key') req.authSource = via;
+    if (via === 'jwt') req.actor = 'person';
+    if (via === 'api-key') req.actor = 'agent';
   });
   await registerArchiveGuard(app);
   const ok = async () => ({ ok: true });

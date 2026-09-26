@@ -32,6 +32,14 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 export interface JwtPayload {
   userId: string;
   email: string;
+  /**
+   * What holds the token. Absent = an interactive session from the
+   * login flow (a person in the browser). `loopback` = the short-lived
+   * JWT the /mcp route mints for its in-process tool calls; `headless`
+   * = a long-lived token for scripts. The archive guard uses this to
+   * tell a person from a robot (middleware/auth.ts → req.actor).
+   */
+  kind?: 'loopback' | 'headless';
 }
 
 export function signToken(payload: JwtPayload): string {
@@ -339,7 +347,7 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'USER_NOT_FOUND', message: 'User not found' },
       });
     }
-    const token = signLongLivedToken({ userId: user.id, email: user.email });
+    const token = signLongLivedToken({ userId: user.id, email: user.email, kind: 'headless' });
     return reply.send({ token });
   });
 

@@ -136,7 +136,10 @@ export async function mcpRoutes(app: FastifyInstance): Promise<void> {
     // honest about where the request originated without burning a DB
     // query per /mcp call. If we ever need the real email for an audit
     // surface, swap this to `await fetchUserEmail(validated.userId)`.
-    const loopbackJwt = signToken({ userId: validated.userId, email: 'api-key-loopback' });
+    // `kind: 'loopback'` marks the holder as a robot: the archive guard
+    // refuses agent writes on an archived map, and an MCP tool call must
+    // count as an agent even though it rides a JWT.
+    const loopbackJwt = signToken({ userId: validated.userId, email: 'api-key-loopback', kind: 'loopback' });
     const baseUrl = loopbackBaseUrl(req);
 
     // Wire `app.inject` as the in-process injector — that skips localhost

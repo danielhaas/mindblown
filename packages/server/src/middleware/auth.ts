@@ -10,6 +10,11 @@ declare module 'fastify' {
      * minting more API keys) consult this so a leaked key can't bootstrap
      * fresh keys. */
     authSource?: 'jwt' | 'api-key';
+    /** Who is behind the request: a person in the browser (an interactive
+     * session JWT) or a robot (API key, the /mcp loopback JWT, a headless
+     * long-lived token). Unauthenticated = undefined, treated as a robot
+     * by the archive guard. */
+    actor?: 'person' | 'agent';
   }
 }
 
@@ -40,6 +45,7 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
     }
     req.userId = result.userId;
     req.authSource = 'api-key';
+    req.actor = 'agent';
     return;
   }
 
@@ -47,6 +53,7 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
     const payload = verifyToken(token);
     req.userId = payload.userId;
     req.authSource = 'jwt';
+    req.actor = payload.kind ? 'agent' : 'person';
   } catch {
     return reply.status(401).send({
       error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' },
