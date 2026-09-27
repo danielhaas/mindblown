@@ -11,6 +11,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 const updateNodeMock = vi.fn();
 const getNodeMock = vi.fn();
 const getStatusWorkflowMock = vi.fn();
@@ -23,6 +26,7 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
     ...actual,
     updateNode: (...args: unknown[]) => updateNodeMock(...args),
     getNode: (...args: unknown[]) => getNodeMock(...args),
+    getNodeMapId: async () => null, // the map guard (#403) passes an unknown node to the handler
   };
 });
 vi.mock('../../db/maps.js', () => ({

@@ -12,6 +12,8 @@
  */
 
 import type { FastifyInstance, FastifyReply } from 'fastify';
+import { guardMapRoutes } from '../lib/mapAccess.js';
+import * as nodeDb from '../db/nodes.js';
 import {
   readyNodes,
   claimNode,
@@ -45,6 +47,10 @@ function handleOrchestrationError(err: unknown, reply: FastifyReply): FastifyRep
 }
 
 export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
+  // view for ready/conflict-scan, edit for claim/release; agents are
+  // members of the maps they work (#403).
+  guardMapRoutes(app, { nodeMapId: nodeDb.getNodeMapId });
+
   // ── GET /api/maps/:id/nodes/ready — ready_nodes ─────────────
   app.get<{
     Params: { id: string };

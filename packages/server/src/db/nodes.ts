@@ -380,6 +380,20 @@ export async function getNode(nodeId: string): Promise<CoreNode | null> {
 }
 
 /**
+ * Which map a node belongs to, deleted or not — the one fact the route
+ * guard (#403) needs to refuse a node id under the wrong map's URL. A
+ * single-column lookup rather than `getNode`, so the guard's extra query
+ * per request stays cheap and never masks the handler's own lookup.
+ */
+export async function getNodeMapId(nodeId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ mapId: nodes.mapId })
+    .from(nodes)
+    .where(eq(nodes.id, nodeId));
+  return row?.mapId ?? null;
+}
+
+/**
  * The release a node belongs to by the rule used everywhere else
  * (`effectiveVersionId` in core): its own `versionId`, else the nearest
  * tagged ancestor. Walks live rows one parent at a time — a handful of

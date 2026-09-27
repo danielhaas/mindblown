@@ -11,6 +11,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
+
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -45,6 +48,7 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
       addAttachmentMock(a[0] as string, a[1] as Record<string, unknown>, a[2] as string | null),
     removeAttachment: vi.fn(),
     getNode: async () => null,
+    getNodeMapId: async () => null, // the map guard (#403) passes an unknown node to the handler
     updateNode: vi.fn(),
     createNode: vi.fn(),
   };

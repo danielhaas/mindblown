@@ -49,6 +49,8 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
       if (nodeId === FOREIGN_NODE_ID) return { id: FOREIGN_NODE_ID, mapId: 'other-map', attachments: [TEXT_ATT] };
       return null;
     },
+    getNodeMapId: async (nodeId: string) =>
+      nodeId === NODE_ID ? MAP_ID : nodeId === FOREIGN_NODE_ID ? 'other-map' : null,
     addAttachment: vi.fn(),
     removeAttachment: vi.fn(),
     updateNode: vi.fn(),

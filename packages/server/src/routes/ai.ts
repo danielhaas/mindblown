@@ -21,6 +21,7 @@ import {
 } from '../ai/intake.js';
 import { createForgeIssueForNode, NoForgeIntegrationError, type IssueAuthor } from '../services/forgeIssue.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
+import { guardMapIdInPayload } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
@@ -122,6 +123,20 @@ function sanitizeBreakdownTree(value: unknown, depth = 0, maxDepth = 2): Breakdo
 // ── Routes ───────────────────────────────────────────────────────
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
+  // Every request that names a map (body.mapId or ?mapId=) must be able
+  // to view it; the routes that write nodes need edit. Chat is `view` at
+  // the door because its tools go through the chat backend, which checks
+  // each call at the level that call needs (#403).
+  guardMapIdInPayload(app, {
+    editPaths: new Set([
+      '/api/ai/breakdown/accept',
+      '/api/ai/braindump/accept',
+      '/api/ai/intake/accept',
+      '/api/ai/refine_structure/apply',
+      '/api/ai/embeddings/backfill',
+    ]),
+  });
+
   // ── Config — always served, even in no-LLM mode ─────────────────
   //
   // The frontend and MCP layer read `capabilities` from here to decide

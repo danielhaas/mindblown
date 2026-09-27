@@ -6,6 +6,7 @@ import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
+import { requireMapAccess } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
@@ -207,15 +208,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string }; Querystring: { omit?: string } }>('/api/maps/:id', async (req, reply) => {
     const userId = req.userId;
 
-    // Check permissions if authenticated
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'view')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-        });
-      }
-    }
+    // 401 without a user, 403 without view (#403 — this used to skip the
+    // check for an anonymous request, which made every map readable).
+    if (!(await requireMapAccess(req, reply, req.params.id, 'view'))) return reply;
 
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -299,14 +294,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     '/api/maps/:id/requirements-export',
     async (req, reply) => {
       const userId = req.userId;
-      if (userId) {
-        const perm = await permDb.getPermission(req.params.id, userId);
-        if (!permDb.hasPermission(perm, 'view')) {
-          return reply.status(403).send({
-            error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-          });
-        }
-      }
+      if (!(await requireMapAccess(req, reply, req.params.id, 'view'))) return reply;
 
       const data = await mapDb.getMap(req.params.id);
       if (!data) {

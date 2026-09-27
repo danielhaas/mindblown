@@ -4,6 +4,7 @@ import * as acceptanceDb from '../db/acceptances.js';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
+import { requireMapAccess } from '../lib/mapAccess.js';
 import { broadcast } from '../ws.js';
 
 /**
@@ -14,15 +15,7 @@ import { broadcast } from '../ws.js';
 export async function acceptanceRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:id/acceptances — active acceptances ─────────
   app.get<{ Params: { id: string } }>('/api/maps/:id/acceptances', async (req, reply) => {
-    const userId = req.userId;
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'view')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-        });
-      }
-    }
+    if (!(await requireMapAccess(req, reply, req.params.id, 'view'))) return reply;
     return reply.send({ acceptances: await acceptanceDb.listActiveAcceptances(req.params.id) });
   });
 

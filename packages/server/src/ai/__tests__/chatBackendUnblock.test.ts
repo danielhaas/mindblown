@@ -9,6 +9,9 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 const unblockMock = vi.fn();
 const broadcastMock = vi.fn();
 
