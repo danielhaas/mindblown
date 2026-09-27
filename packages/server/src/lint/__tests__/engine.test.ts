@@ -455,10 +455,10 @@ describe('computePlanLint — sync pack', () => {
       makeNode({ id: 'c', parentId: 'root', status: 'done', externalLinks: [link(5, 'closed')] }), // not checked
       makeNode({ id: 'd', parentId: 'root', status: 'todo', externalLinks: [link(8, 'open')] }),
     ];
-    const forgePrs = new Map<string, number[]>([
-      ['a', []],
-      ['b', [12]],
-      ['d', []],
+    const forgePrs = new Map([
+      ['a', { externalId: 'dan/jiso#7', prs: [] as number[] }],
+      ['b', { externalId: 'dan/jiso#6', prs: [12] }],
+      ['d', { externalId: 'dan/jiso#8', prs: [] as number[] }],
     ]);
     const r = rule(syncLint(nodes, { forgePrs, forgePrsCap: 20 }), 'done-without-pr');
     expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
@@ -471,7 +471,7 @@ describe('computePlanLint — sync pack', () => {
     expect(skipped.findings).toHaveLength(0);
   });
 
-  it('stale-blocked-reason fires on done nodes and on pullable nodes, not on parked ones', () => {
+  it('stale-blocked-reason fires on done nodes and on pullable nodes (tag alone does not park), not on status-blocked ones', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e'] }),
       makeNode({ id: 'a', parentId: 'root', status: 'done', blockedReason: 'swept claim' }),
@@ -481,7 +481,7 @@ describe('computePlanLint — sync pack', () => {
       makeNode({ id: 'e', parentId: 'root', status: 'todo', blockedReason: '   ' }),
     ];
     const r = rule(syncLint(nodes), 'stale-blocked-reason');
-    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b']);
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b', 'd']);
     expect(r.findings.find((f) => f.nodeId === 'b')!.detail).toBe(`status todo: "${'x'.repeat(77)}…"`);
   });
 
@@ -498,6 +498,24 @@ describe('computePlanLint — sync pack', () => {
 
     const noHistory = rule(syncLint(nodes, { history: { ...history, ok: false } }), 'claim-churn');
     expect(noHistory.skipped).toBe('change history unavailable');
+  });
+
+  it('done is matched by status id, by case-insensitive name, and by the literal "done" when the map has no workflow', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'Done', percentComplete: 100 }),
+      makeNode({ id: 'b', parentId: 'root', status: 'st-done', percentComplete: 100 }),
+    ];
+    const named = lint(nodes, {
+      map: { effortUnit: 'days', statusWorkflow: [{ id: 'st-done', name: 'Done', category: 'done' }] },
+    });
+    expect(rule(named, 'status-progress-mismatch').findings).toHaveLength(0);
+
+    const bare = lint(
+      [makeNode({ id: 'root', childrenIds: ['c'] }), makeNode({ id: 'c', parentId: 'root', status: 'done', percentComplete: 100 })],
+      { map: { effortUnit: 'days', statusWorkflow: [] } },
+    );
+    expect(rule(bare, 'status-progress-mismatch').findings).toHaveLength(0);
   });
 
   it('sync rules respect subtree scoping', () => {

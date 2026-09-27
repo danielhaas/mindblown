@@ -94,6 +94,11 @@ export interface LintHistory {
   claimPickups?: Map<string, number>;
 }
 
+export interface ForgePrCheck {
+  externalId: string;
+  prs: number[];
+}
+
 export interface LintDismissal {
   nodeId: string | null; // null = mute the whole rule on this map
   ruleId: string;
@@ -112,7 +117,7 @@ export interface AcceptanceInfo {
 
 export interface LintOptions {
   map: {
-    statusWorkflow?: Array<{ id: string; category: string }> | null;
+    statusWorkflow?: Array<{ id: string; name?: string; category: string }> | null;
     effortUnit?: string | null;
   };
   nodes: Node[];
@@ -124,12 +129,12 @@ export interface LintOptions {
   /** Rolled-up progress per node (core computeTree); enables requirement rules on parent nodes. */
   computedProgress?: Map<string, number>;
   /**
-   * Forge cross-check for done-without-pr: nodeId → numbers of the pull
-   * requests that reference the node's linked issue. Only nodes present
-   * in the map were checked. Omit to skip the rule (no forge, or the
-   * forge was unreachable).
+   * Forge cross-check for done-without-pr: nodeId → the link that was
+   * checked and the numbers of the pull requests referencing it. Only
+   * nodes present in the map were checked. Omit to skip the rule (no
+   * forge, or the forge was unreachable).
    */
-  forgePrs?: Map<string, number[]>;
+  forgePrs?: Map<string, ForgePrCheck>;
   /** Set when the caller checked only the N most recent candidates. */
   forgePrsCap?: number;
   nodeId?: string;
@@ -157,8 +162,28 @@ const BLOCKED_MARKER = 'blocked'; // status id or tag the fleet parks nodes with
 
 const isLeaf = (n: Node) => (n.childrenIds?.length ?? 0) === 0;
 
+/**
+ * Which statuses count as done for the sync pack. Mirrors core's
+ * buildIsDonePredicate (id or case-insensitive name of a done-category
+ * status) and, for maps that carry no workflow at all — the DB default is
+ * [] — falls back to the literal status "done" so the pack still has a
+ * done notion instead of flagging every finished node.
+ */
+export function buildDonePredicate(
+  workflow: Array<{ id: string; name?: string; category: string }> | null | undefined,
+): (status: string | null) => boolean {
+  const doneDefs = (workflow ?? []).filter((s) => s.category === 'done');
+  const doneKeys = new Set<string>();
+  for (const s of doneDefs) {
+    doneKeys.add(s.id);
+    if (s.name) doneKeys.add(s.name.toLowerCase());
+  }
+  if (doneDefs.length === 0) doneKeys.add('done');
+  return (status) => status != null && (doneKeys.has(status) || doneKeys.has(status.toLowerCase()));
+}
+
 /** Subtree + inherited version/cycle scoping (same semantics as the MI suite). */
-function scopeLeaves(
+export function scopeLeaves(
   nodes: Node[],
   opts: { nodeId?: string; versionId?: string; cycleId?: string },
 ): { leaves: Node[]; scopedNodes: Node[]; scopeLabel: string } | { error: string } {
@@ -485,10 +510,8 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   // parent vs children, node vs linked issue, node vs code, blocker vs
   // status, claim trail vs delivery. They never decide which side is
   // right — the finding names both sides so a person can.
-  const doneIds = new Set(
-    (map.statusWorkflow ?? []).filter((s) => s.category === 'done').map((s) => s.id),
-  );
-  const isDone = (n: Node) => n.status != null && doneIds.has(n.status);
+  const isDoneStatus = buildDonePredicate(map.statusWorkflow);
+  const isDone = (n: Node) => isDoneStatus(n.status);
   const forgeLinkOf = (n: Node) =>
     (n.externalLinks ?? []).find((l) => isForgeLink(l) && l.state != null) ?? null;
   const shortStatus = (n: Node) => n.status ?? 'no status';
@@ -552,14 +575,16 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     fix: 'Confirm the work landed; if it is non-code work, dismiss the finding.',
     findings: forgePrs
       ? scopedNodes
-          .filter((n) => isDone(n) && forgePrs.has(n.id) && forgePrs.get(n.id)!.length === 0)
-          .map((n) => finding(n, `${forgeLinkOf(n)?.externalId ?? 'linked issue'}: no pull request references it`))
+          .filter((n) => isDone(n) && forgePrs.has(n.id) && forgePrs.get(n.id)!.prs.length === 0)
+          .map((n) => finding(n, `${forgePrs.get(n.id)!.externalId}: no pull request references it`))
       : [],
     skipped: forgePrs ? undefined : 'no forge connected or the forge was unreachable',
   });
 
-  // 16. stale-blocked-reason
-  const isParked = (n: Node) => n.status === BLOCKED_MARKER || (n.tags ?? []).includes(BLOCKED_MARKER);
+  // 16. stale-blocked-reason — only the status parks a node; the queue
+  // (core pullableNodes) never reads the tag, so a tag without the status
+  // is exactly the stale case.
+  const isParked = (n: Node) => n.status === BLOCKED_MARKER;
   rules.push({
     ruleId: 'stale-blocked-reason',
     severity: 'info',
