@@ -10,7 +10,8 @@
  * nodes from the map, change-event digests, dismissals, unitsPerDay.
  */
 import type { FastifyInstance } from 'fastify';
-import { computeTree } from '@mindblown/core';
+import { computeTree, isForgeLink, type ExternalLink, type Node } from '@mindblown/core';
+import { getForgeContextForMap } from '../lib/githubContext.js';
 import { requireMapAccess } from '../lib/mapAccess.js';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
@@ -20,6 +21,7 @@ import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
 import {
   computePlanLint,
+  CLAIM_CHURN_HOURS,
   LINT_RULE_IDS,
   REPLAN_LOOKBACK_DAYS,
   STALE_PLAN_DAYS,
@@ -33,12 +35,16 @@ async function loadHistory(mapId: string, now: Date): Promise<LintHistory> {
   try {
     const replanSince = new Date(now.getTime() - REPLAN_LOOKBACK_DAYS * MS_PER_DAY);
     const staleSince = new Date(now.getTime() - STALE_PLAN_DAYS * MS_PER_DAY);
-    const [progress, due, start, est, recent] = await Promise.all([
+    const churnSince = new Date(now.getTime() - CLAIM_CHURN_HOURS * 3_600_000);
+    const [progress, due, start, est, recent, claims] = await Promise.all([
       listEvents({ mapId, fieldName: 'percentComplete', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'dueDate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'startDate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'effortEstimate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, since: staleSince, limit: 1 }),
+      // A spinning worker writes one pickup every tick — 720/day at a
+      // 2-minute cadence — so the window needs room for a few of them.
+      listEvents({ mapId, eventType: 'node.claimed', since: churnSince, limit: 5000 }),
     ]);
     // Events arrive newest-first; first hit per node is its latest change.
     const lastProgressChange = new Map<string, string>();
@@ -52,9 +58,67 @@ async function loadHistory(mapId: string, now: Date): Promise<LintHistory> {
       list.push(e.createdAt);
       replanEvents.set(e.nodeId, list);
     }
-    return { ok: true, lastProgressChange, replanEvents, anyRecentEvent: recent.length > 0 };
+    const claimPickups = new Map<string, number>();
+    for (const e of claims) {
+      if (e.nodeId) claimPickups.set(e.nodeId, (claimPickups.get(e.nodeId) ?? 0) + 1);
+    }
+    return { ok: true, lastProgressChange, replanEvents, anyRecentEvent: recent.length > 0, claimPickups };
   } catch {
     return { ok: false, lastProgressChange: new Map(), replanEvents: new Map(), anyRecentEvent: false };
+  }
+}
+
+/** Most recently updated done+linked nodes checked per run — keeps a panel open to a bounded forge budget. */
+export const FORGE_PR_CHECK_CAP = 20;
+const FORGE_PR_CHECK_TIMEOUT_MS = 8_000;
+
+/**
+ * done-without-pr input: for the most recent done nodes that carry a forge
+ * link, ask the forge which pull requests reference the issue. Returns
+ * undefined (rule skipped) when the map has no forge or the lookups fail
+ * or time out — a slow forge must not hold the whole lint run hostage.
+ */
+async function loadForgePrs(
+  mapId: string,
+  nodes: Node[],
+  doneIds: Set<string>,
+): Promise<{ forgePrs: Map<string, number[]>; capped: boolean } | undefined> {
+  const candidates = nodes
+    .filter((n) => n.status != null && doneIds.has(n.status))
+    .map((n) => ({ n, link: (n.externalLinks ?? []).find(isForgeLink) }))
+    .filter((x): x is { n: Node; link: ExternalLink } => x.link != null)
+    .sort((a, b) => (b.n.updatedAt > a.n.updatedAt ? 1 : b.n.updatedAt < a.n.updatedAt ? -1 : 0));
+  if (candidates.length === 0) return { forgePrs: new Map(), capped: false };
+
+  let ctx: Awaited<ReturnType<typeof getForgeContextForMap>>;
+  try {
+    ctx = await getForgeContextForMap(mapId);
+  } catch {
+    return undefined;
+  }
+  if (!ctx) return undefined;
+
+  const checked = candidates.slice(0, FORGE_PR_CHECK_CAP);
+  const lookups = Promise.all(
+    checked.map(async ({ n, link }) => {
+      // externalId is "owner/repo#N"; only issues on the bound repo are ours to ask about.
+      const m = /^(.+)\/(.+)#(\d+)$/.exec(link.externalId);
+      if (!m || m[1] !== ctx!.owner || m[2] !== ctx!.repo) return null;
+      const prs = await ctx!.forge.listCrossReferencingPullRequests(m[1], m[2], Number(m[3]));
+      return [n.id, prs] as const;
+    }),
+  );
+  const timeout = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), FORGE_PR_CHECK_TIMEOUT_MS).unref?.(),
+  );
+  try {
+    const result = await Promise.race([lookups, timeout]);
+    if (result === 'timeout') return undefined;
+    const forgePrs = new Map<string, number[]>();
+    for (const r of result) if (r) forgePrs.set(r[0], [...r[1]]);
+    return { forgePrs, capped: candidates.length > checked.length };
+  } catch {
+    return undefined;
   }
 }
 
@@ -98,12 +162,17 @@ export async function lintRoutes(app: FastifyInstance) {
     const unitsPerDay = data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
 
     const now = new Date();
-    const [history, dismissalRows, acceptances] = await Promise.all([
+    const doneStatusIds = new Set(
+      (data.map.statusWorkflow ?? []).filter((s) => s.category === 'done').map((s) => s.id),
+    );
+    const [history, dismissalRows, acceptances, forge] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
       // Best-effort: a failed acceptance load skips stale-acceptance
       // (reported as such) instead of failing the whole lint run.
       listActiveAcceptances(req.params.id).catch(() => undefined),
+      // Same contract for the forge: unreachable → done-without-pr skipped.
+      loadForgePrs(req.params.id, data.nodes, doneStatusIds).catch(() => undefined),
     ]);
 
     // Rolled-up progress so requirement rules work on parent nodes too.
@@ -141,6 +210,8 @@ export async function lintRoutes(app: FastifyInstance) {
       dismissals: dismissalRows.map((d) => ({ nodeId: d.nodeId, ruleId: d.ruleId })),
       acceptances,
       computedProgress,
+      forgePrs: forge?.forgePrs,
+      forgePrsCap: forge?.capped ? FORGE_PR_CHECK_CAP : undefined,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,

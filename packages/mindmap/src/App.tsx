@@ -2124,7 +2124,7 @@ export function App() {
                 setTriagePanelOpen(false);
               }
             }}
-            title="Check the plan's hygiene: estimates, chunk size, stale progress, overdue re-planning"
+            title="Check the plan's hygiene (estimates, chunk size, stale progress, overdue re-planning) and whether the map agrees with its issues and code"
             style={{
               padding: '3px 10px',
               borderRadius: 4,

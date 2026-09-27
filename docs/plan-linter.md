@@ -50,6 +50,21 @@ Ordered basics-first: "when is it done / how much is left" hygiene before advanc
 
 Scoping also accepts `cycleId` (sprint) with the same ancestor-inheritance semantics — lint a sprint's contents before committing to it.
 
+### Sync pack (added 2026-09-27, evaluated on the scoped nodes, parents included)
+
+The map, its linked issues and its repository are three views of one plan, and they drift: a coding agent marks a node done on PR open, a person closes the issue by hand, a worker bounces a ticket through the queue for a night. The first audit of a small private map found a dozen such drifts that none of the existing checks caught. These rules compare two sources and name both sides; they never decide which one is right.
+
+| # | Rule id | Fires when | Severity | Why-line (teaching sentence) | Fix action |
+|---|---|---|---|---|---|
+| 12 | `status-progress-mismatch` | Leaf whose status is in the `done` category with `percentComplete` < 100, or at 100 % with a non-done status | warn | "Views group by status, forecasts read % complete — when the two disagree, the map is done in one view and open in another." | Set both; an automated done-step must write both |
+| 13 | `done-parent-open-child` | Non-leaf with a done status whose rolled-up progress < 100 | warn | "A parent computes its progress from its children — marking it done while a child is open hides that child from every rollup." | Finish or move the children, or reopen the parent |
+| 14 | `issue-state-mismatch` | Forge link `state` is `open` on a done node, or `closed` on a node that is not done (links without a stored state are ignored) | warn | "The issue tracker and the map are two views of one ticket — when they disagree, one of them is lying to whoever reads it." | Close the issue, or reopen the node |
+| 15 | `done-without-pr` | Done node whose linked issue has no pull request referencing it on the forge. The route checks the **20** most recently updated done+linked nodes per run (title says so when capped) and skips the rule when no forge is bound or the lookups exceed 8 s | info | "A ticket marked done with nothing in the repository referencing it is either non-code work or a claim nobody verified — worth a look either way." | Confirm the work landed; dismiss for non-code work |
+| 16 | `stale-blocked-reason` | `blockedReason` set while the node is done, or is neither status `blocked` nor tagged `blocked` | info | "A blocker reason without a blocked status is invisible to dispatch — the node stays pullable while the text says it should not be." | Clear the reason, or park the node as blocked |
+| 17 | `claim-churn` | ≥ **5** `node.claimed` events on one node in the last **24 h** | warn | "A ticket that keeps bouncing back to the queue is a broken worker, not slow work — every bounce buries the change history a little deeper." | Check the worker; park the node until fixed |
+
+Deliberately not a rule: the `#N ` prefix on imported node titles. The import writes it on purpose; that the outbound title sync copies it back onto the forge issue is a sync bug to fix at the source, not a finding to dismiss on every ticket.
+
 Thresholds above are **opinionated defaults, not configuration**. v1 exposes only `stalledDays`-style overrides where `risk_scan` already does; no settings sprawl.
 
 ## Output shape

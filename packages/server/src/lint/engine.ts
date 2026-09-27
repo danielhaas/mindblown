@@ -1,12 +1,14 @@
 /**
- * Plan-lint engine — the 8 plan-quality checks behind the plan_lint MCP
- * tool and the mindmap plan-health panel (docs/plan-linter.md).
+ * Plan-lint engine — the plan-quality checks behind the plan_lint MCP
+ * tool and the mindmap plan-health panel (docs/plan-linter.md): eight
+ * hygiene rules, a requirements pack, and a sync pack that cross-checks
+ * the map against its linked issues and repository.
  *
  * Pure function: callers supply nodes, change-history digests, and
  * dismissals; no DB or clock access in here (`now` is a parameter).
  * Thresholds are opinionated defaults, deliberately not configurable.
  */
-import type { Node } from '@mindblown/core';
+import { isForgeLink, type Node } from '@mindblown/core';
 
 export const LINT_RULE_IDS = [
   'unestimated-leaf',
@@ -21,6 +23,13 @@ export const LINT_RULE_IDS = [
   'uncovered-requirement',
   'stale-acceptance',
   'unscheduled-must',
+  // Sync pack — the map disagreeing with itself, its issues, or its code.
+  'status-progress-mismatch',
+  'done-parent-open-child',
+  'issue-state-mismatch',
+  'done-without-pr',
+  'stale-blocked-reason',
+  'claim-churn',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 export type LintSeverity = 'warn' | 'info';
@@ -78,6 +87,11 @@ export interface LintHistory {
   replanEvents: Map<string, string[]>;
   /** Whether ANY change event exists in the stale-plan window. */
   anyRecentEvent: boolean;
+  /**
+   * nodeId → number of `node.claimed` events in the last CLAIM_CHURN_HOURS.
+   * Absent on digests built before the sync pack; treated as empty.
+   */
+  claimPickups?: Map<string, number>;
 }
 
 export interface LintDismissal {
@@ -109,6 +123,15 @@ export interface LintOptions {
   acceptances?: AcceptanceInfo[];
   /** Rolled-up progress per node (core computeTree); enables requirement rules on parent nodes. */
   computedProgress?: Map<string, number>;
+  /**
+   * Forge cross-check for done-without-pr: nodeId → numbers of the pull
+   * requests that reference the node's linked issue. Only nodes present
+   * in the map were checked. Omit to skip the rule (no forge, or the
+   * forge was unreachable).
+   */
+  forgePrs?: Map<string, number[]>;
+  /** Set when the caller checked only the N most recent candidates. */
+  forgePrsCap?: number;
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -128,6 +151,9 @@ const CALIBRATION_HIGH = 1.25;
 const MIN_DATED_LEAVES_FOR_DEPS = 10;
 export const REPLAN_LOOKBACK_DAYS = 90;
 export const DEFAULT_STALLED_DAYS = 7;
+export const CLAIM_CHURN_HOURS = 24;
+const CLAIM_CHURN_MIN_PICKUPS = 5;
+const BLOCKED_MARKER = 'blocked'; // status id or tag the fleet parks nodes with
 
 const isLeaf = (n: Node) => (n.childrenIds?.length ?? 0) === 0;
 
@@ -135,27 +161,27 @@ const isLeaf = (n: Node) => (n.childrenIds?.length ?? 0) === 0;
 function scopeLeaves(
   nodes: Node[],
   opts: { nodeId?: string; versionId?: string; cycleId?: string },
-): { leaves: Node[]; scopeLabel: string } | { error: string } {
+): { leaves: Node[]; scopedNodes: Node[]; scopeLabel: string } | { error: string } {
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
-  let leaves: Node[];
+  let scopedNodes: Node[];
   let scopeLabel = 'whole map';
 
   if (opts.nodeId) {
     const root = nodeById.get(opts.nodeId);
     if (!root) return { error: `Node ${opts.nodeId} not found` };
     scopeLabel = `subtree of "${root.text}" (${opts.nodeId})`;
-    leaves = [];
+    scopedNodes = [];
     const stack = [root];
     while (stack.length) {
       const n = stack.pop()!;
-      if (isLeaf(n)) leaves.push(n);
-      else for (const cid of n.childrenIds) {
+      scopedNodes.push(n);
+      for (const cid of n.childrenIds) {
         const c = nodeById.get(cid);
         if (c) stack.push(c);
       }
     }
   } else {
-    leaves = nodes.filter(isLeaf);
+    scopedNodes = nodes;
   }
 
   // A leaf is in scope when it OR any ancestor carries the tag.
@@ -170,14 +196,14 @@ function scopeLeaves(
 
   if (opts.versionId) {
     scopeLabel = `version ${opts.versionId}` + (opts.nodeId ? ` within ${scopeLabel}` : '');
-    leaves = leaves.filter((l) => inheritsTag(l, 'versionId', opts.versionId!));
+    scopedNodes = scopedNodes.filter((n) => inheritsTag(n, 'versionId', opts.versionId!));
   }
   if (opts.cycleId) {
     scopeLabel = `sprint ${opts.cycleId} within ${scopeLabel}`;
-    leaves = leaves.filter((l) => inheritsTag(l, 'cycleId', opts.cycleId!));
+    scopedNodes = scopedNodes.filter((n) => inheritsTag(n, 'cycleId', opts.cycleId!));
   }
 
-  return { leaves, scopeLabel };
+  return { leaves: scopedNodes.filter(isLeaf), scopedNodes, scopeLabel };
 }
 
 export function computePlanLint(opts: LintOptions): LintReport | { error: string } {
@@ -191,7 +217,7 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     cycleId: opts.cycleId,
   });
   if ('error' in scoped) return { error: scoped.error };
-  const { leaves, scopeLabel } = scoped;
+  const { leaves, scopedNodes, scopeLabel } = scoped;
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const progressOf = (n: Node): number =>
     opts.computedProgress?.get(n.id) ?? n.percentComplete ?? 0;
@@ -452,6 +478,117 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     findings: mustRequirements
       .filter((r) => progressOf(r) < 99.5 && !hasVersionTag(r))
       .map((r) => finding(r, `${r.requirementId}: no target version`)),
+  });
+
+  // ── Sync pack — evaluated on the scoped nodes (parents included) ──
+  // Each rule compares two sources that should agree: status vs progress,
+  // parent vs children, node vs linked issue, node vs code, blocker vs
+  // status, claim trail vs delivery. They never decide which side is
+  // right — the finding names both sides so a person can.
+  const doneIds = new Set(
+    (map.statusWorkflow ?? []).filter((s) => s.category === 'done').map((s) => s.id),
+  );
+  const isDone = (n: Node) => n.status != null && doneIds.has(n.status);
+  const forgeLinkOf = (n: Node) =>
+    (n.externalLinks ?? []).find((l) => isForgeLink(l) && l.state != null) ?? null;
+  const shortStatus = (n: Node) => n.status ?? 'no status';
+
+  // 12. status-progress-mismatch
+  rules.push({
+    ruleId: 'status-progress-mismatch',
+    severity: 'warn',
+    title: 'Status and % complete disagree',
+    why: 'Views group by status, forecasts read % complete — when the two disagree, the map is done in one view and open in another.',
+    fix: 'Set progress to 100 when closing a task, or reopen its status. An automated done-step must write both.',
+    findings: leaves
+      .filter((l) => {
+        const pct = l.percentComplete ?? 0;
+        if (isDone(l) && pct < 100) return true;
+        return pct >= 100 && l.status != null && !isDone(l);
+      })
+      .map((l) => finding(l, `status ${shortStatus(l)}, ${l.percentComplete ?? 0}% complete`)),
+  });
+
+  // 13. done-parent-open-child
+  rules.push({
+    ruleId: 'done-parent-open-child',
+    severity: 'warn',
+    title: 'Done parents with unfinished children',
+    why: 'A parent computes its progress from its children — marking it done while a child is open hides that child from every rollup.',
+    fix: 'Finish or move the open children, or reopen the parent.',
+    findings: scopedNodes
+      .filter((n) => !isLeaf(n) && isDone(n) && progressOf(n) < 99.5)
+      .map((n) => finding(n, `status ${shortStatus(n)}, children at ${progressOf(n).toFixed(0)}%`)),
+  });
+
+  // 14. issue-state-mismatch
+  rules.push({
+    ruleId: 'issue-state-mismatch',
+    severity: 'warn',
+    title: 'Node and linked issue disagree on open/closed',
+    why: 'The issue tracker and the map are two views of one ticket — when they disagree, one of them is lying to whoever reads it.',
+    fix: 'Decide which side is right: close the issue, or reopen the node (status and progress).',
+    findings: scopedNodes
+      .map((n) => ({ n, link: forgeLinkOf(n) }))
+      .filter((x): x is { n: Node; link: NonNullable<ReturnType<typeof forgeLinkOf>> } => x.link != null)
+      .filter(({ n, link }) => (isDone(n) && link.state === 'open') || (!isDone(n) && link.state === 'closed'))
+      .map(({ n, link }) =>
+        finding(
+          n,
+          isDone(n)
+            ? `node done, ${link.externalId} still open`
+            : `${link.externalId} closed, node ${shortStatus(n)}`,
+        ),
+      ),
+  });
+
+  // 15. done-without-pr (forge-backed; the caller decides which nodes it checked)
+  const forgePrs = opts.forgePrs;
+  rules.push({
+    ruleId: 'done-without-pr',
+    severity: 'info',
+    title: `Done tickets with no pull request behind them${opts.forgePrsCap ? ` (${opts.forgePrsCap} most recent checked)` : ''}`,
+    why: 'A ticket marked done with nothing in the repository referencing it is either non-code work or a claim nobody verified — worth a look either way.',
+    fix: 'Confirm the work landed; if it is non-code work, dismiss the finding.',
+    findings: forgePrs
+      ? scopedNodes
+          .filter((n) => isDone(n) && forgePrs.has(n.id) && forgePrs.get(n.id)!.length === 0)
+          .map((n) => finding(n, `${forgeLinkOf(n)?.externalId ?? 'linked issue'}: no pull request references it`))
+      : [],
+    skipped: forgePrs ? undefined : 'no forge connected or the forge was unreachable',
+  });
+
+  // 16. stale-blocked-reason
+  const isParked = (n: Node) => n.status === BLOCKED_MARKER || (n.tags ?? []).includes(BLOCKED_MARKER);
+  rules.push({
+    ruleId: 'stale-blocked-reason',
+    severity: 'info',
+    title: 'Blocker text on nodes that are not blocked',
+    why: 'A blocker reason without a blocked status is invisible to dispatch — the node stays pullable while the text says it should not be.',
+    fix: 'Clear the reason if it no longer applies, or set the status to blocked so the queue skips it.',
+    findings: scopedNodes
+      .filter((n) => (n.blockedReason ?? '').trim() !== '' && (isDone(n) || !isParked(n)))
+      .map((n) => {
+        const reason = n.blockedReason!.trim();
+        return finding(n, `status ${shortStatus(n)}: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`);
+      }),
+  });
+
+  // 17. claim-churn
+  const pickups = history.claimPickups ?? new Map<string, number>();
+  rules.push({
+    ruleId: 'claim-churn',
+    severity: 'warn',
+    title: `Tickets picked up ${CLAIM_CHURN_MIN_PICKUPS}+ times in ${CLAIM_CHURN_HOURS} h`,
+    why: 'A ticket that keeps bouncing back to the queue is a broken worker, not slow work — every bounce buries the change history a little deeper.',
+    fix: 'Check the worker (a stuck prompt or a dirty worktree hands the ticket back on every tick); park the node as blocked until it is fixed.',
+    findings: history.ok
+      ? scopedNodes
+          .filter((n) => (pickups.get(n.id) ?? 0) >= CLAIM_CHURN_MIN_PICKUPS)
+          .sort((a, b) => (pickups.get(b.id) ?? 0) - (pickups.get(a.id) ?? 0))
+          .map((n) => finding(n, `${pickups.get(n.id)} pickups in the last ${CLAIM_CHURN_HOURS} h`))
+      : [],
+    skipped: history.ok ? undefined : 'change history unavailable',
   });
 
   // ── Apply dismissals ──

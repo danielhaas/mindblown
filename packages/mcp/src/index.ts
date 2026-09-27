@@ -1388,18 +1388,24 @@ const LINT_RULES = [
   'uncovered-requirement',
   'stale-acceptance',
   'unscheduled-must',
+  'status-progress-mismatch',
+  'done-parent-open-child',
+  'issue-state-mismatch',
+  'done-without-pr',
+  'stale-blocked-reason',
+  'claim-churn',
 ] as const;
 
 server.tool(
   'plan_lint',
-  'Check plan QUALITY (hygiene), not execution risk — the coaching counterpart to risk_scan. Runs 11 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies, plus a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint). UNSCOPED calls default to the map\'s ACTIVE release lane (the work being dispatched right now) — pass scope:"all" to lint the whole map; map-level checks (calibration-drift, stale-plan, dates-without-dependencies, the requirements pack) always evaluate the whole map. See docs/plan-linter.md for the rule rationale.',
+  'Check plan QUALITY (hygiene) and SYNC, not execution risk — the coaching counterpart to risk_scan. Runs 17 deterministic checks ordered basics-first: unestimated leaves, oversized leaves, stale progress, overdue-but-never-replanned, calibration drift, missing done-criteria, stale plan, dates without dependencies; a requirements pack (must-requirements with no estimated work, acceptances gone stale since sign-off, must-requirements with no target version); and a sync pack that cross-checks the map against itself, its linked issues and its repository (status vs % complete, done parents with open children, node vs issue open/closed state, done tickets with no pull request on the forge, blocker text on nodes that are not blocked, tickets bouncing through the claim queue). Every finding explains why it matters (one teaching sentence) and names the fix. Scope with nodeId (subtree), versionId, or cycleId (sprint). UNSCOPED calls default to the map\'s ACTIVE release lane (the work being dispatched right now) — pass scope:"all" to lint the whole map; map-level checks (calibration-drift, stale-plan, dates-without-dependencies, the requirements pack) always evaluate the whole map. Use this as the clean-up starting point when issues, code and map have drifted apart. See docs/plan-linter.md for the rule rationale.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
     versionId: z.string().optional().describe('Scope to leaves tagged with this version (directly or via an ancestor)'),
     cycleId: z.string().optional().describe('Scope to leaves assigned to this sprint/cycle (directly or via an ancestor) — lint a sprint before committing to it'),
     stalledDays: z.number().int().min(1).default(7).describe('Days without a progress update before in-progress work counts as stale (default 7)'),
-    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all eleven'),
+    rule: z.enum(LINT_RULES).optional().describe('Run only this one rule instead of all seventeen'),
     limit: z.number().int().min(1).max(1000).default(20).describe('Max findings listed per rule (default 20)'),
     scope: z.enum(['all']).optional().describe('Pass "all" to lint the whole map instead of the active-lane default (only relevant when no other scope is given)'),
   },
