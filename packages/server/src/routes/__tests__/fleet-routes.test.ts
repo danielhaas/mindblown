@@ -21,6 +21,8 @@ vi.mock('../../db/fleet.js', () => ({
   listTicks: (...args: unknown[]) => listTicksMock(...(args as [])),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: (...args: unknown[]) => broadcastMock(...args) }));
+// The map guard (#403) asks permissions on the fleet read; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
 
 import { fleetRoutes } from '../fleet.js';
 
@@ -28,6 +30,11 @@ const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  // Only the read is guarded; the telemetry pushes stay token-less. Give
+  // the read a user so it reaches the handler.
+  app.addHook('preHandler', async (req) => {
+    if (req.method === 'GET') req.userId = 'user-1';
+  });
   await app.register(fleetRoutes);
   return app;
 }

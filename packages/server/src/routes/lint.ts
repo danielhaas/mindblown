@@ -11,10 +11,10 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { computeTree } from '@mindblown/core';
+import { requireMapAccess } from '../lib/mapAccess.js';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
 import { pickActiveLane } from '../lib/activeLane.js';
-import * as permDb from '../db/permissions.js';
 import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
@@ -72,14 +72,7 @@ export async function lintRoutes(app: FastifyInstance) {
     };
   }>('/api/maps/:id/lint', async (req, reply) => {
     const userId = req.userId;
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'view')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-        });
-      }
-    }
+    if (!(await requireMapAccess(req, reply, req.params.id, 'view'))) return reply;
 
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -186,14 +179,7 @@ export async function lintRoutes(app: FastifyInstance) {
     Body: { ruleId?: unknown; nodeId?: unknown };
   }>('/api/maps/:id/lint/dismissals', async (req, reply) => {
     const userId = req.userId;
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'edit')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'Edit permission required' },
-        });
-      }
-    }
+    if (!(await requireMapAccess(req, reply, req.params.id, 'edit'))) return reply;
 
     const ruleId = req.body?.ruleId;
     const nodeId = req.body?.nodeId ?? null;
@@ -224,14 +210,7 @@ export async function lintRoutes(app: FastifyInstance) {
     Querystring: { ruleId?: string; nodeId?: string };
   }>('/api/maps/:id/lint/dismissals', async (req, reply) => {
     const userId = req.userId;
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'edit')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'Edit permission required' },
-        });
-      }
-    }
+    if (!(await requireMapAccess(req, reply, req.params.id, 'edit'))) return reply;
 
     const { ruleId, nodeId } = req.query;
     if (!ruleId) {

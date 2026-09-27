@@ -24,7 +24,7 @@ import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
-import * as permDb from '../db/permissions.js';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 
 /**
  * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
@@ -194,6 +194,11 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
 }
 
 export async function nodeRoutes(app: FastifyInstance): Promise<void> {
+  // Every route here names the map in the path. 401 without a user, 403
+  // without view (reads) / edit (writes), 404 for a node that hangs on a
+  // different map than the URL claims (#403).
+  guardMapRoutes(app, { nodeMapId: nodeDb.getNodeMapId });
+
   // ── POST /api/maps/:id/nodes — Create a node ─────────────────
   app.post<{ Params: { id: string } }>('/api/maps/:id/nodes', async (req, reply) => {
     const body = req.body as {
@@ -690,11 +695,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   //
   // One page of a stored file's contents as text — the read path the
   // `read_attachment` tool and the in-app chat sit on. Unlike the file's
-  // own capability URL, and unlike the sibling node routes, this checks
-  // the map: the node must belong to `:id` and the caller must be able to
-  // view that map. The sibling routes hand out metadata a member already
-  // sees; this one hands out file contents, which is where the 160-bit id
-  // stops being enough of a boundary.
+  // own capability URL this needs view on the map, and the node must hang
+  // on it — both enforced by the plugin's map guard, like every route
+  // here. File contents are where the 160-bit id stops being enough of a
+  // boundary.
   //
   // A file that cannot be read as text (a link, an image, a file stored
   // elsewhere) is a 200 with `readable: false` and a reason, not an error:
@@ -706,17 +710,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   }>(
     '/api/maps/:id/nodes/:nodeId/attachments/:attachmentId/text',
     async (req, reply) => {
-      if (req.userId) {
-        const perm = await permDb.getPermission(req.params.id, req.userId);
-        if (!permDb.hasPermission(perm, 'view')) {
-          return reply.status(403).send({
-            error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-          });
-        }
-      }
       const node = await nodeDb.getNode(req.params.nodeId);
       const attachment = node?.attachments?.find((a) => a.id === req.params.attachmentId);
-      if (!node || node.mapId !== req.params.id || !attachment) {
+      if (!node || !attachment) {
         return reply.status(404).send({
           error: { code: 'NOT_FOUND', message: 'Node or attachment not found' },
         });

@@ -25,20 +25,25 @@ export async function setPermission(mapId: string, userId: string, permission: P
   return { mapId, userId, permission };
 }
 
+/**
+ * The user's level on the map: the creator is always admin, everyone
+ * else has what `map_permissions` says, or nothing. One query — this
+ * runs on every guarded request since #403, so the creator check and the
+ * permission row come back together rather than in two round-trips.
+ */
 export async function getPermission(mapId: string, userId: string): Promise<PermissionLevel | null> {
-  // Check if user is the map creator (always admin)
-  const [map] = await db.select({ createdBy: maps.createdBy }).from(maps).where(eq(maps.id, mapId)).limit(1);
-  if (map && map.createdBy === userId) {
-    return 'admin';
-  }
-
   const [row] = await db
-    .select({ permission: mapPermissions.permission })
-    .from(mapPermissions)
-    .where(and(eq(mapPermissions.mapId, mapId), eq(mapPermissions.userId, userId)))
+    .select({ createdBy: maps.createdBy, permission: mapPermissions.permission })
+    .from(maps)
+    .leftJoin(
+      mapPermissions,
+      and(eq(mapPermissions.mapId, maps.id), eq(mapPermissions.userId, userId)),
+    )
+    .where(eq(maps.id, mapId))
     .limit(1);
-
-  return (row?.permission as PermissionLevel) ?? null;
+  if (!row) return null;
+  if (row.createdBy === userId) return 'admin';
+  return (row.permission as PermissionLevel | null) ?? null;
 }
 
 export async function listPermissions(mapId: string) {

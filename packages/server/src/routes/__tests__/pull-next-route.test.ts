@@ -9,6 +9,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 const mocks = vi.hoisted(() => ({
   getNextTicket: vi.fn(),
 }));
@@ -27,6 +30,10 @@ vi.mock('../../services/orchestration.js', () => {
   };
 });
 
+// The map guard (#403): this user may do anything, and no node is known.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async () => null }));
+
 import { orchestrationRoutes } from '../orchestration.js';
 import { OrchestrationNotFoundError } from '../../services/orchestration.js';
 
@@ -35,6 +42,9 @@ let app: FastifyInstance;
 beforeEach(async () => {
   mocks.getNextTicket.mockReset();
   app = Fastify();
+  app.addHook('preHandler', async (req) => {
+    req.userId = 'user-1';
+  });
   await app.register(orchestrationRoutes);
   await app.ready();
 });

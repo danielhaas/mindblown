@@ -1,3 +1,5 @@
+import { guardMapRoutes } from '../lib/mapAccess.js';
+
 /**
  * Triage CRUD routes (#92, #93, #95).
  *
@@ -183,6 +185,10 @@ function broadcastTriageUpdated(
 // ── Routes ────────────────────────────────────────────────────────
 
 export async function triageRoutes(app: FastifyInstance): Promise<void> {
+  // 401 anonymous, 403 below view (reads) / edit (writes) on the map (#403);
+  // the session-JWT-only rule below stays the handlers' own.
+  guardMapRoutes(app);
+
   // Every handler below builds issue web URLs from the map's forge
   // endpoint (github.com or a self-hosted Gitea). Resolve it once per
   // request so the sync `buildIssueUrlFromExternalId` can read it from the

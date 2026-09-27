@@ -7,6 +7,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 const loadMock = vi.fn();
 vi.mock('../../services/fleetJournal.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../services/fleetJournal.js')>();
@@ -20,6 +23,9 @@ const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
+  app.addHook('preHandler', async (req) => {
+    req.userId = 'user-1';
+  });
   await app.register(fleetJournalRoutes);
   return app;
 }

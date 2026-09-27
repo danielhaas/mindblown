@@ -1,8 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import * as commentDb from '../db/comments.js';
+import * as nodeDb from '../db/nodes.js';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import { broadcast } from '../ws.js';
 
 export async function commentRoutes(app: FastifyInstance): Promise<void> {
+  // The map-scoped routes: view to read, edit to write, 404 for a node on
+  // another map (#403). The /api/comments/:id routes stay login-only.
+  guardMapRoutes(app, { nodeMapId: (id) => nodeDb.getNodeMapId(id) });
   // ── POST /api/maps/:mapId/nodes/:nodeId/comments — Add comment ──
   app.post<{ Params: { mapId: string; nodeId: string } }>(
     '/api/maps/:mapId/nodes/:nodeId/comments',

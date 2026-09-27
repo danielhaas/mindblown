@@ -21,6 +21,7 @@ import {
 } from '../ai/intake.js';
 import { createForgeIssueForNode, NoForgeIntegrationError, type IssueAuthor } from '../services/forgeIssue.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
+import { guardMapIdInPayload } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
@@ -122,6 +123,13 @@ function sanitizeBreakdownTree(value: unknown, depth = 0, maxDepth = 2): Breakdo
 // ── Routes ───────────────────────────────────────────────────────
 
 export async function aiRoutes(app: FastifyInstance): Promise<void> {
+  // Every request that names a map (body.mapId or ?mapId=) must be able
+  // to view it; the routes that write nodes say so with
+  // `config: { mapAccess: 'edit' }` on the route itself. Chat is `view` at
+  // the door because its tools go through the chat backend, which checks
+  // each call at the level that call needs (#403).
+  guardMapIdInPayload(app);
+
   // ── Config — always served, even in no-LLM mode ─────────────────
   //
   // The frontend and MCP layer read `capabilities` from here to decide
@@ -363,7 +371,7 @@ Node to break down: "${targetNode.text}"`;
   // Request:  { mapId, parentId, tasks: Array<{ text, estimate }> }
   // Response: { created: CoreNode[] }
 
-  app.post('/api/ai/breakdown/accept', async (req, reply) => {
+  app.post('/api/ai/breakdown/accept', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     const body = req.body as {
       mapId: string;
       parentId: string;
@@ -775,7 +783,7 @@ Rules:
   // source text has changed (or was never embedded). Idempotent —
   // safe to run repeatedly.
 
-  app.post('/api/ai/embeddings/backfill', async (req, reply) => {
+  app.post('/api/ai/embeddings/backfill', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     if (!requireEmbeddings(reply)) return;
     const body = req.body as { mapId: string };
     if (!body.mapId) {
@@ -1069,7 +1077,7 @@ Parent node: "${parentNode.text}"`;
   // is only in the payload when the user kept it (medium/high confidence
   // by default; low stays a suggestion).
 
-  app.post('/api/ai/intake/accept', async (req, reply) => {
+  app.post('/api/ai/intake/accept', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     const body = req.body as {
       mapId: string;
       intakeId?: string | null;
@@ -1169,7 +1177,7 @@ Parent node: "${parentNode.text}"`;
   // Request:  { mapId, parentId, tree: BraindumpNode[] }
   // Response: { createdCount: number }
 
-  app.post('/api/ai/braindump/accept', async (req, reply) => {
+  app.post('/api/ai/braindump/accept', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     const body = req.body as {
       mapId: string;
       parentId: string;
@@ -1408,7 +1416,7 @@ Review the children and propose groupings.`;
   // whose members reference unknown nodes (defensive against stale UI
   // state). No rollback — failures abort partway and return what landed.
 
-  app.post('/api/ai/refine_structure/apply', async (req, reply) => {
+  app.post('/api/ai/refine_structure/apply', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     const body = req.body as {
       mapId: string;
       parentId: string;

@@ -6,6 +6,7 @@ import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
@@ -130,6 +131,12 @@ function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
 }
 
 export async function mapRoutes(app: FastifyInstance): Promise<void> {
+  // Every /api/maps/:id route: 401 anonymous, 403 below view (reads) or
+  // edit (writes); the handlers that need admin keep their own check.
+  // simulate is a what-if read on a POST, the calendar feed carries its
+  // own HMAC token (#403).
+  guardMapRoutes(app);
+
   // ── POST /api/maps — Create a map ─────────────────────────────
   app.post('/api/maps', async (req, reply) => {
     const body = req.body as {
@@ -206,16 +213,6 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:id — Get map with all nodes + computed fields
   app.get<{ Params: { id: string }; Querystring: { omit?: string } }>('/api/maps/:id', async (req, reply) => {
     const userId = req.userId;
-
-    // Check permissions if authenticated
-    if (userId) {
-      const perm = await permDb.getPermission(req.params.id, userId);
-      if (!permDb.hasPermission(perm, 'view')) {
-        return reply.status(403).send({
-          error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-        });
-      }
-    }
 
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -299,14 +296,6 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     '/api/maps/:id/requirements-export',
     async (req, reply) => {
       const userId = req.userId;
-      if (userId) {
-        const perm = await permDb.getPermission(req.params.id, userId);
-        if (!permDb.hasPermission(perm, 'view')) {
-          return reply.status(403).send({
-            error: { code: 'FORBIDDEN', message: 'You do not have access to this map' },
-          });
-        }
-      }
 
       const data = await mapDb.getMap(req.params.id);
       if (!data) {
@@ -459,7 +448,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/maps/:id/simulate — Scope-simulation what-if ────
   // Apply a list of patches to an in-memory copy of the map's nodes and
   // return before/after totals + planned finish dates. No persistence.
-  app.post<{ Params: { id: string } }>('/api/maps/:id/simulate', async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/api/maps/:id/simulate', { config: { mapAccess: 'view' } }, async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
       return reply.status(404).send({
@@ -1266,7 +1255,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   app.get<{
     Params: { id: string };
     Querystring: { token?: string; view?: string };
-  }>('/api/maps/:id/calendar.ics', async (req, reply) => {
+  }>('/api/maps/:id/calendar.ics', { config: { mapAccess: 'public' } }, async (req, reply) => {
     if (!verifyCalendarToken(req.params.id, req.query.token, JWT_SECRET)) {
       return reply.status(403).send({
         error: { code: 'INVALID_TOKEN', message: 'Invalid calendar token' },

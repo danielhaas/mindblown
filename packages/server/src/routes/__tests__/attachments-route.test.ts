@@ -16,6 +16,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 const MAP_ID = 'mmmm-mmmm';
 /** Whatever the DB layer refuses — the route only has to turn it into 400. */
 const REJECT_SENTINEL = 'urn:rejected-by-the-db-layer';
@@ -67,6 +70,7 @@ vi.mock('../../db/nodes.js', async (importOriginal) => {
       addAttachmentMock(a[0] as string, a[1] as never, a[2] as string | null),
     removeAttachment: (...a: unknown[]) => removeAttachmentMock(a[0] as string, a[1] as string),
     getNode: async () => null,
+    getNodeMapId: async () => null, // the map guard (#403) passes an unknown node to the handler
     updateNode: vi.fn(),
     createNode: vi.fn(),
   };

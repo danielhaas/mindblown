@@ -24,7 +24,7 @@ import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
-import * as permDb from '../db/permissions.js';
+import { checkMapAccess } from '../lib/mapAccess.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -104,7 +104,7 @@ function toNodeWithComputed(
  * on the relevant mapId so connected frontends update in real time.
  */
 export function createChatBackend(userId: string): ToolBackend {
-  return {
+  const backend: ToolBackend = {
     async listMaps(): Promise<MapSummary[]> {
       const all = await mapDb.listMapsForUser(userId);
       return Promise.all(
@@ -390,10 +390,6 @@ export function createChatBackend(userId: string): ToolBackend {
       return toNodeWithComputed(updated, undefined);
     },
     readAttachment: async (mapId, nodeId, attachmentId, opts = {}) => {
-      // File contents, so the map is checked here even though the other
-      // chat-backend reads are not — same rule as the REST route.
-      const perm = await permDb.getPermission(mapId, userId);
-      if (!permDb.hasPermission(perm, 'view')) throw new Error('You do not have access to this map');
       const node = await nodeDb.getNode(nodeId);
       const attachment = node?.attachments?.find((a) => a.id === attachmentId);
       if (!node || node.mapId !== mapId || !attachment) throw new Error('Node or attachment not found');
@@ -403,4 +399,61 @@ export function createChatBackend(userId: string): ToolBackend {
         : { ...res, attachmentId, url: attachment.url };
     },
   };
+  return guardChatBackend(backend, userId);
+}
+
+/** Backend methods that only read the map; every other map-scoped method writes. */
+export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
+  'getMap',
+  'listDeleted',
+  'listTriageDecisions',
+  'listNotInMindBlown',
+  'readyNodes',
+  'conflictScan',
+  'getFleetStatus',
+  'getFleetJournal',
+  'listAsks',
+  'readAttachment',
+]);
+
+/** Backend methods that need admin on the map — what REST asks for the same action. */
+export const CHAT_BACKEND_ADMIN_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
+  'deleteMap',
+]);
+
+/** Backend methods that take no mapId — they scope themselves to the user. */
+export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
+  'listMaps',
+  'createMap',
+]);
+
+/**
+ * Wrap a chat backend so every map-scoped method checks the user's
+ * permission on the map it is asked about before doing anything (#403).
+ *
+ * The model picks the `mapId` argument, so the map the chat was opened on
+ * is no guarantee of the map a tool call names. Every method except
+ * `listMaps` / `createMap` takes the mapId first; reads need view, writes
+ * edit, deleting the map admin — the same levels the REST routes ask for.
+ * A refusal is a thrown Error, which the tool loop hands back to the
+ * model as the tool's result.
+ */
+export function guardChatBackend(backend: ToolBackend, userId: string): ToolBackend {
+  const guarded: Record<string, unknown> = {};
+  for (const [name, member] of Object.entries(backend) as Array<[keyof ToolBackend, unknown]>) {
+    if (typeof member !== 'function' || CHAT_BACKEND_UNSCOPED_METHODS.has(name)) {
+      guarded[name] = member;
+      continue;
+    }
+    const level = CHAT_BACKEND_ADMIN_METHODS.has(name) ? 'admin' : CHAT_BACKEND_READ_METHODS.has(name) ? 'view' : 'edit';
+    const fn = member as (...args: unknown[]) => unknown;
+    guarded[name] = async (...args: unknown[]) => {
+      const mapId = args[0];
+      if (typeof mapId !== 'string' || !mapId) throw new Error(`${name}: mapId is required`);
+      const denied = await checkMapAccess(userId, mapId, level);
+      if (denied) throw new Error(denied.message);
+      return fn.apply(backend, args);
+    };
+  }
+  return guarded as unknown as ToolBackend;
 }

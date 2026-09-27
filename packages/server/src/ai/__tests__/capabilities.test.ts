@@ -16,6 +16,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
 
+// The map guard (#403) asks permissions first; this user may do anything.
+vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+
 // Heavy transitive imports of routes/ai.ts that the tests never reach.
 vi.mock('../../ai/tools.js', () => ({
   getChatToolSpecs: vi.fn(() => []),
@@ -85,6 +88,10 @@ async function load(backends: Backends) {
 async function buildApp(backends: Backends) {
   const { routes } = await load(backends);
   const app = Fastify();
+  // `?mapId=` reads are behind the map guard (#403), which needs a user.
+  app.addHook('preHandler', async (req) => {
+    req.userId = 'user-1';
+  });
   await app.register(routes.aiRoutes);
   await app.ready();
   return app;
