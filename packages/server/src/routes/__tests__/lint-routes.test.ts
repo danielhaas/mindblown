@@ -108,7 +108,20 @@ vi.mock('../../db/versions.js', () => ({
   listVersions: vi.fn(async () => versionRows),
 }));
 
-import { lintRoutes } from '../lint.js';
+// done-without-pr asks the forge which PRs reference each done+linked
+// node. Default: no forge bound (rule skipped); the sync-pack tests
+// install a fake forge per case.
+let forgeContext: {
+  owner: string;
+  repo: string;
+  token: string;
+  forge: { listCrossReferencingPullRequests: (o: string, r: string, n: number) => Promise<number[]> };
+} | null = null;
+vi.mock('../../lib/githubContext.js', () => ({
+  getForgeContextForMap: vi.fn(async () => forgeContext),
+}));
+
+import { lintRoutes, resetForgePrCache } from '../lint.js';
 
 async function buildApp(userId: string | null = 'user-1'): Promise<FastifyInstance> {
   const app = Fastify();
@@ -123,6 +136,10 @@ beforeEach(() => {
   permissionLevel = 'edit';
   dismissals.length = 0;
   versionRows.length = 0;
+  forgeContext = null;
+  mapData.nodes.splice(2);
+  mapData.map.statusWorkflow = [{ id: 'wip', category: 'in_progress' }];
+  resetForgePrCache();
 });
 
 describe('GET /api/maps/:id/lint', () => {
@@ -321,5 +338,192 @@ describe('dismissal endpoints', () => {
     const unest = res.json().rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
     expect(unest.findings[0].dismissed).toBe(false);
     expect(unest.activeCount).toBe(1);
+  });
+});
+
+describe('GET /api/maps/:id/lint — sync pack wiring', () => {
+  const DONE_WORKFLOW = [
+    { id: 'wip', category: 'in_progress' },
+    { id: 'done', category: 'done' },
+  ];
+  const doneLinked = (id: string, issue: number, updatedAt: string, externalId = `dan/jiso#${issue}`) => ({
+    id,
+    parentId: 'root',
+    childrenIds: [],
+    text: `#${issue} ticket`,
+    effortEstimate: 1,
+    actualEffort: null,
+    percentComplete: 100,
+    status: 'done',
+    priority: null,
+    dueDate: null,
+    startDate: null,
+    description: null,
+    requirementId: null,
+    versionId: null,
+    dependencies: [],
+    blockedReason: null,
+    tags: [],
+    updatedAt,
+    externalLinks: [
+      {
+        provider: 'gitea',
+        externalId,
+        url: `https://git.example/${externalId.replace('#', '/issues/')}`,
+        syncEnabled: true,
+        lastSyncedAt: null,
+        state: 'closed',
+      },
+    ],
+  });
+  const ruleOf = (body: { rules: Array<{ ruleId: string }> }, id: string) =>
+    body.rules.find((x) => x.ruleId === id) as unknown as {
+      skipped?: string;
+      title: string;
+      findings: Array<{ nodeId: string; detail: string }>;
+    };
+
+  it('skips done-without-pr when the map has no forge', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    mapData.nodes.push(doneLinked('n7', 7, '2026-09-25T07:04:00Z') as never);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    expect(ruleOf(res.json(), 'done-without-pr').skipped).toMatch(/forge/);
+  });
+
+  it('asks the forge only for done+linked nodes on the bound repo and flags the ones with no PR', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    mapData.nodes.push(
+      doneLinked('n7', 7, '2026-09-25T07:04:00Z') as never,
+      doneLinked('n2', 2, '2026-09-24T10:33:00Z') as never,
+      doneLinked('other', 3, '2026-09-24T10:00:00Z', 'someone/else#3') as never,
+    );
+    const asked: number[] = [];
+    forgeContext = {
+      owner: 'dan',
+      repo: 'jiso',
+      token: 't',
+      forge: {
+        listCrossReferencingPullRequests: async (_o, _r, n) => {
+          asked.push(n);
+          return n === 2 ? [5] : [];
+        },
+      },
+    };
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    expect(asked.sort()).toEqual([2, 7]);
+    const r = ruleOf(res.json(), 'done-without-pr');
+    expect(r.skipped).toBeUndefined();
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['n7']);
+    expect(r.title).not.toContain('most recent checked');
+  });
+
+  it('one failing lookup drops only that node; the others still answer', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    mapData.nodes.push(
+      doneLinked('n7', 7, '2026-09-25T07:04:00Z') as never,
+      doneLinked('n1', 1, '2026-09-25T02:36:00Z') as never,
+    );
+    forgeContext = {
+      owner: 'dan',
+      repo: 'jiso',
+      token: 't',
+      forge: {
+        listCrossReferencingPullRequests: async (_o, _r, n) => {
+          if (n === 1) throw new Error('timeline scan truncated');
+          return [];
+        },
+      },
+    };
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const r = ruleOf(res.json(), 'done-without-pr');
+    expect(r.skipped).toBeUndefined();
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['n7']);
+  });
+
+  it('a node linked straight to a pull request counts that PR without asking the forge', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    const pr = doneLinked('npr', 42, '2026-09-25T07:04:00Z');
+    (pr.externalLinks[0] as { isPullRequest?: boolean }).isPullRequest = true;
+    mapData.nodes.push(pr as never);
+    const asked: number[] = [];
+    forgeContext = {
+      owner: 'Dan',
+      repo: 'JISO',
+      token: 't',
+      forge: { listCrossReferencingPullRequests: async (_o, _r, n) => (asked.push(n), []) },
+    };
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    expect(asked).toEqual([]);
+    expect(ruleOf(res.json(), 'done-without-pr').findings).toEqual([]);
+  });
+
+  it('matches the bound repo case-insensitively and caches answers across runs', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    mapData.nodes.push(doneLinked('n7', 7, '2026-09-25T07:04:00Z') as never);
+    let calls = 0;
+    forgeContext = {
+      owner: 'Dan',
+      repo: 'JISO',
+      token: 't',
+      forge: { listCrossReferencingPullRequests: async () => (calls++, []) },
+    };
+    const app = await buildApp();
+    const first = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    const second = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+    await app.close();
+    expect(calls).toBe(1);
+    expect(ruleOf(first.json(), 'done-without-pr').findings.map((f) => f.nodeId)).toEqual(['n7']);
+    expect(ruleOf(second.json(), 'done-without-pr').findings.map((f) => f.nodeId)).toEqual(['n7']);
+  });
+
+  it('does not touch the forge when a different single rule is requested, and honours the scope', async () => {
+    mapData.map.statusWorkflow = DONE_WORKFLOW;
+    mapData.nodes.push(doneLinked('n7', 7, '2026-09-25T07:04:00Z') as never);
+    const asked: number[] = [];
+    forgeContext = {
+      owner: 'dan',
+      repo: 'jiso',
+      token: 't',
+      forge: { listCrossReferencingPullRequests: async (_o, _r, n) => (asked.push(n), []) },
+    };
+    const app = await buildApp();
+    await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all&rule=stale-plan' });
+    expect(asked).toEqual([]);
+    // Subtree scope on leaf-1 excludes n7 entirely → no lookup, no finding.
+    const scopedRes = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?nodeId=leaf-1' });
+    await app.close();
+    expect(asked).toEqual([]);
+    expect(ruleOf(scopedRes.json(), 'done-without-pr').findings).toEqual([]);
+  });
+
+  it('claim-churn counts node.claimed events from the history digest', async () => {
+    const { listEvents } = await import('../../db/events.js');
+    const mocked = listEvents as unknown as {
+      mockImplementation: (fn: (o: { eventType?: string }) => Promise<unknown[]>) => void;
+    };
+    mocked.mockImplementation(async (o) =>
+      o.eventType === 'node.claimed'
+        ? Array.from({ length: 6 }, (_, i) => ({ nodeId: 'leaf-1', createdAt: `2026-09-26T0${i}:00:00Z` }))
+        : [],
+    );
+    try {
+      const app = await buildApp();
+      const res = await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?scope=all' });
+      await app.close();
+      expect(ruleOf(res.json(), 'claim-churn').findings.map((f) => [f.nodeId, f.detail])).toEqual([
+        ['leaf-1', '6 pickups in the last 24 h'],
+      ]);
+    } finally {
+      mocked.mockImplementation(async () => []);
+    }
   });
 });

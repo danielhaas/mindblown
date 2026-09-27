@@ -376,3 +376,156 @@ describe('computePlanLint — scoping and dismissals', () => {
     expect(rule(report, 'oversized-leaf').findings[0].dismissed).toBe(false);
   });
 });
+
+describe('computePlanLint — sync pack', () => {
+  // The jiso audit of 2026-09-26 in miniature: a workflow with a done
+  // category, forge links carrying their last-synced state, a blocker
+  // reason left behind, and one ticket bouncing through the queue.
+  const WORKFLOW = [
+    { id: 'todo', category: 'todo' },
+    { id: 'wip', category: 'in_progress' },
+    { id: 'done', category: 'done' },
+    { id: 'blocked', category: 'todo' },
+  ];
+  const link = (n: number, state: 'open' | 'closed') => ({
+    provider: 'gitea',
+    externalId: `dan/jiso#${n}`,
+    url: `https://git.example/dan/jiso/issues/${n}`,
+    syncEnabled: true,
+    lastSyncedAt: null,
+    state,
+  });
+  const syncLint = (nodes: Node[], opts: Partial<Parameters<typeof computePlanLint>[0]> = {}) =>
+    lint(nodes, { map: { effortUnit: 'days', statusWorkflow: WORKFLOW }, ...opts });
+
+  it('status-progress-mismatch fires both ways on leaves only', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'p'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 100 }),
+      makeNode({ id: 'c', parentId: 'root', status: 'done', percentComplete: 100 }),
+      // A parent's percentComplete is derived, never an input — not a leaf finding.
+      makeNode({ id: 'p', parentId: 'root', childrenIds: ['q'], status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'q', parentId: 'p', status: 'done', percentComplete: 100 }),
+    ];
+    const r = rule(syncLint(nodes), 'status-progress-mismatch');
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b']);
+    expect(r.findings.find((f) => f.nodeId === 'a')!.detail).toBe('status done, 0% complete');
+  });
+
+  it('done-parent-open-child reads rolled-up progress, not the parent field', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['p', 'ok'] }),
+      makeNode({ id: 'p', parentId: 'root', childrenIds: ['c'], status: 'done', percentComplete: 100 }),
+      makeNode({ id: 'c', parentId: 'p', effortEstimate: 5, percentComplete: 0 }),
+      makeNode({ id: 'ok', parentId: 'root', childrenIds: ['d'], status: 'done' }),
+      makeNode({ id: 'd', parentId: 'ok', effortEstimate: 1, percentComplete: 100 }),
+    ];
+    const computedProgress = new Map([['p', 0], ['ok', 100]]);
+    const r = rule(syncLint(nodes, { computedProgress }), 'done-parent-open-child');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['p']);
+    expect(r.findings[0].detail).toBe('status done, children at 0%');
+  });
+
+  it('issue-state-mismatch compares the stored link state with the done category, ignoring stateless links', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', externalLinks: [link(2, 'open')] }),
+      makeNode({ id: 'b', parentId: 'root', status: 'todo', externalLinks: [link(1, 'closed')] }),
+      makeNode({ id: 'c', parentId: 'root', status: 'done', externalLinks: [link(3, 'closed')] }),
+      makeNode({ id: 'd', parentId: 'root', status: null, externalLinks: [link(9, 'open')] }),
+      makeNode({
+        id: 'e',
+        parentId: 'root',
+        status: 'done',
+        externalLinks: [{ ...link(4, 'open'), state: undefined } as unknown as Node['externalLinks'][number]],
+      }),
+    ];
+    const r = rule(syncLint(nodes), 'issue-state-mismatch');
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b']);
+    expect(r.findings.find((f) => f.nodeId === 'a')!.detail).toBe('node done, dan/jiso#2 still open');
+    expect(r.findings.find((f) => f.nodeId === 'b')!.detail).toBe('dan/jiso#1 closed, node todo');
+  });
+
+  it('done-without-pr fires only for checked done nodes with zero PRs, and is skipped without forge data', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', externalLinks: [link(7, 'open')] }),
+      makeNode({ id: 'b', parentId: 'root', status: 'done', externalLinks: [link(6, 'closed')] }),
+      makeNode({ id: 'c', parentId: 'root', status: 'done', externalLinks: [link(5, 'closed')] }), // not checked
+      makeNode({ id: 'd', parentId: 'root', status: 'todo', externalLinks: [link(8, 'open')] }),
+    ];
+    const forgePrs = new Map([
+      ['a', { externalId: 'dan/jiso#7', prs: [] as number[] }],
+      ['b', { externalId: 'dan/jiso#6', prs: [12] }],
+      ['d', { externalId: 'dan/jiso#8', prs: [] as number[] }],
+    ]);
+    const r = rule(syncLint(nodes, { forgePrs, forgePrsCap: 20 }), 'done-without-pr');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
+    expect(r.findings[0].detail).toBe('dan/jiso#7: no pull request references it');
+    expect(r.title).toContain('20 most recent checked');
+    expect(r.skipped).toBeUndefined();
+
+    const skipped = rule(syncLint(nodes), 'done-without-pr');
+    expect(skipped.skipped).toMatch(/forge/);
+    expect(skipped.findings).toHaveLength(0);
+  });
+
+  it('stale-blocked-reason fires on done nodes and on pullable nodes (tag alone does not park), not on status-blocked ones', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', blockedReason: 'swept claim' }),
+      makeNode({ id: 'b', parentId: 'root', status: 'todo', blockedReason: 'x'.repeat(100) }),
+      makeNode({ id: 'c', parentId: 'root', status: 'blocked', blockedReason: 'waiting on Dan' }),
+      makeNode({ id: 'd', parentId: 'root', status: 'todo', tags: ['blocked'], blockedReason: 'parked' }),
+      makeNode({ id: 'e', parentId: 'root', status: 'todo', blockedReason: '   ' }),
+    ];
+    const r = rule(syncLint(nodes), 'stale-blocked-reason');
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b', 'd']);
+    expect(r.findings.find((f) => f.nodeId === 'b')!.detail).toBe(`status todo: "${'x'.repeat(77)}…"`);
+  });
+
+  it('claim-churn needs 5 pickups in the window and is skipped without history', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'todo' }),
+      makeNode({ id: 'b', parentId: 'root', status: 'todo' }),
+    ];
+    const history: LintHistory = { ...emptyHistory(), claimPickups: new Map([['a', 616], ['b', 4]]) };
+    const r = rule(syncLint(nodes, { history }), 'claim-churn');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
+    expect(r.findings[0].detail).toBe('616 pickups in the last 24 h');
+
+    const noHistory = rule(syncLint(nodes, { history: { ...history, ok: false } }), 'claim-churn');
+    expect(noHistory.skipped).toBe('change history unavailable');
+  });
+
+  it('done is matched by status id, by case-insensitive name, and by the literal "done" when the map has no workflow', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'Done', percentComplete: 100 }),
+      makeNode({ id: 'b', parentId: 'root', status: 'st-done', percentComplete: 100 }),
+    ];
+    const named = lint(nodes, {
+      map: { effortUnit: 'days', statusWorkflow: [{ id: 'st-done', name: 'Done', category: 'done' }] },
+    });
+    expect(rule(named, 'status-progress-mismatch').findings).toHaveLength(0);
+
+    const bare = lint(
+      [makeNode({ id: 'root', childrenIds: ['c'] }), makeNode({ id: 'c', parentId: 'root', status: 'done', percentComplete: 100 })],
+      { map: { effortUnit: 'days', statusWorkflow: [] } },
+    );
+    expect(rule(bare, 'status-progress-mismatch').findings).toHaveLength(0);
+  });
+
+  it('sync rules respect subtree scoping', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['in', 'out'] }),
+      makeNode({ id: 'in', parentId: 'root', childrenIds: ['in-leaf'] }),
+      makeNode({ id: 'in-leaf', parentId: 'in', status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'out', parentId: 'root', status: 'done', percentComplete: 0 }),
+    ];
+    const r = rule(syncLint(nodes, { nodeId: 'in' }), 'status-progress-mismatch');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['in-leaf']);
+  });
+});

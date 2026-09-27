@@ -10,7 +10,8 @@
  * nodes from the map, change-event digests, dismissals, unitsPerDay.
  */
 import type { FastifyInstance } from 'fastify';
-import { computeTree } from '@mindblown/core';
+import { computeTree, isForgeLink, type ExternalLink, type Node } from '@mindblown/core';
+import { getForgeContextForMap } from '../lib/githubContext.js';
 import { requireMapAccess } from '../lib/mapAccess.js';
 import * as mapDb from '../db/maps.js';
 import * as versionDb from '../db/versions.js';
@@ -19,10 +20,14 @@ import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
 import {
+  buildDonePredicate,
   computePlanLint,
+  CLAIM_CHURN_HOURS,
   LINT_RULE_IDS,
   REPLAN_LOOKBACK_DAYS,
+  scopeLeaves,
   STALE_PLAN_DAYS,
+  type ForgePrCheck,
   type LintHistory,
   type LintRuleId,
 } from '../lint/engine.js';
@@ -33,12 +38,16 @@ async function loadHistory(mapId: string, now: Date): Promise<LintHistory> {
   try {
     const replanSince = new Date(now.getTime() - REPLAN_LOOKBACK_DAYS * MS_PER_DAY);
     const staleSince = new Date(now.getTime() - STALE_PLAN_DAYS * MS_PER_DAY);
-    const [progress, due, start, est, recent] = await Promise.all([
+    const churnSince = new Date(now.getTime() - CLAIM_CHURN_HOURS * 3_600_000);
+    const [progress, due, start, est, recent, claims] = await Promise.all([
       listEvents({ mapId, fieldName: 'percentComplete', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'dueDate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'startDate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, fieldName: 'effortEstimate', since: replanSince, limit: 1000 }),
       listEvents({ mapId, since: staleSince, limit: 1 }),
+      // A spinning worker writes one pickup every tick — 720/day at a
+      // 2-minute cadence — so the window needs room for a few of them.
+      listEvents({ mapId, eventType: 'node.claimed', since: churnSince, limit: 5000 }),
     ]);
     // Events arrive newest-first; first hit per node is its latest change.
     const lastProgressChange = new Map<string, string>();
@@ -52,10 +61,112 @@ async function loadHistory(mapId: string, now: Date): Promise<LintHistory> {
       list.push(e.createdAt);
       replanEvents.set(e.nodeId, list);
     }
-    return { ok: true, lastProgressChange, replanEvents, anyRecentEvent: recent.length > 0 };
+    const claimPickups = new Map<string, number>();
+    for (const e of claims) {
+      if (e.nodeId) claimPickups.set(e.nodeId, (claimPickups.get(e.nodeId) ?? 0) + 1);
+    }
+    return { ok: true, lastProgressChange, replanEvents, anyRecentEvent: recent.length > 0, claimPickups };
   } catch {
     return { ok: false, lastProgressChange: new Map(), replanEvents: new Map(), anyRecentEvent: false };
   }
+}
+
+/** Most recently updated done+linked nodes checked per run — keeps a panel open to a bounded forge budget. */
+export const FORGE_PR_CHECK_CAP = 20;
+const FORGE_PR_CHECK_TIMEOUT_MS = 8_000;
+// The panel re-runs the lint after every dismiss, and agents call plan_lint
+// in loops; a node's PR set cannot change without its updatedAt moving, so
+// a short cache keyed on that turns those re-runs into zero forge calls.
+const FORGE_PR_CACHE_TTL_MS = 15 * 60_000;
+const FORGE_PR_CACHE_MAX = 2000;
+const forgePrCache = new Map<string, { value: ForgePrCheck; at: number }>();
+
+function cacheKey(mapId: string, n: Node, externalId: string): string {
+  return `${mapId}:${n.id}:${externalId}:${n.updatedAt}`;
+}
+
+function cachePut(key: string, value: ForgePrCheck, now: number): void {
+  if (forgePrCache.size >= FORGE_PR_CACHE_MAX) {
+    for (const [k, v] of forgePrCache) if (now - v.at > FORGE_PR_CACHE_TTL_MS) forgePrCache.delete(k);
+    if (forgePrCache.size >= FORGE_PR_CACHE_MAX) forgePrCache.delete(forgePrCache.keys().next().value!);
+  }
+  forgePrCache.set(key, { value, at: now });
+}
+
+/** Test seam: forget every cached forge answer. */
+export function resetForgePrCache(): void {
+  forgePrCache.clear();
+}
+
+/**
+ * done-without-pr input: for the most recently updated done nodes IN SCOPE
+ * that carry a forge link, ask the forge which pull requests reference the
+ * issue. A node linked straight to a pull request counts that PR without a
+ * lookup. Returns undefined (rule skipped) when the map has no forge or the
+ * batch times out; a single failed lookup only drops that node — a slow or
+ * partially broken forge must not hold the whole lint run hostage.
+ */
+async function loadForgePrs(
+  mapId: string,
+  scopedNodes: Node[],
+  isDoneStatus: (status: string | null) => boolean,
+  now: Date,
+): Promise<{ forgePrs: Map<string, ForgePrCheck>; capped: boolean } | undefined> {
+  const candidates = scopedNodes
+    .filter((n) => isDoneStatus(n.status))
+    .map((n) => ({ n, link: (n.externalLinks ?? []).find(isForgeLink) }))
+    .filter((x): x is { n: Node; link: ExternalLink } => x.link != null)
+    .sort((a, b) => (b.n.updatedAt > a.n.updatedAt ? 1 : b.n.updatedAt < a.n.updatedAt ? -1 : 0));
+  if (candidates.length === 0) return { forgePrs: new Map(), capped: false };
+
+  let ctx: Awaited<ReturnType<typeof getForgeContextForMap>>;
+  try {
+    ctx = await getForgeContextForMap(mapId);
+  } catch {
+    return undefined;
+  }
+  if (!ctx) return undefined;
+  const boundOwner = ctx.owner.toLowerCase();
+  const boundRepo = ctx.repo.toLowerCase();
+  const forge = ctx.forge;
+
+  const checked = candidates.slice(0, FORGE_PR_CHECK_CAP);
+  const forgePrs = new Map<string, ForgePrCheck>();
+  const pending: Array<{ n: Node; externalId: string; owner: string; repo: string; number: number }> = [];
+  for (const { n, link } of checked) {
+    // externalId is "owner/repo#N"; only items on the bound repo are ours to ask about.
+    // GitHub full names are case-insensitive; the binding may be user-typed.
+    const m = /^([^/#]+)\/([^/#]+)#(\d+)$/.exec(link.externalId);
+    if (!m || m[1].toLowerCase() !== boundOwner || m[2].toLowerCase() !== boundRepo) continue;
+    const number = Number(m[3]);
+    if (link.isPullRequest) {
+      forgePrs.set(n.id, { externalId: link.externalId, prs: [number] });
+      continue;
+    }
+    const hit = forgePrCache.get(cacheKey(mapId, n, link.externalId));
+    if (hit && now.getTime() - hit.at <= FORGE_PR_CACHE_TTL_MS) {
+      forgePrs.set(n.id, hit.value);
+      continue;
+    }
+    pending.push({ n, externalId: link.externalId, owner: m[1], repo: m[2], number });
+  }
+
+  const lookups = Promise.allSettled(
+    pending.map(async (p) => {
+      const prs = await forge.listCrossReferencingPullRequests(p.owner, p.repo, p.number);
+      const value: ForgePrCheck = { externalId: p.externalId, prs: [...prs] };
+      // Fill the cache even when this run has already timed out: the next run benefits.
+      cachePut(cacheKey(mapId, p.n, p.externalId), value, Date.now());
+      return [p.n.id, value] as const;
+    }),
+  );
+  const timeout = new Promise<'timeout'>((resolve) =>
+    setTimeout(() => resolve('timeout'), FORGE_PR_CHECK_TIMEOUT_MS).unref?.(),
+  );
+  const result = await Promise.race([lookups, timeout]);
+  if (result === 'timeout') return undefined;
+  for (const r of result) if (r.status === 'fulfilled') forgePrs.set(r.value[0], r.value[1]);
+  return { forgePrs, capped: candidates.length > checked.length };
 }
 
 export async function lintRoutes(app: FastifyInstance) {
@@ -98,18 +209,6 @@ export async function lintRoutes(app: FastifyInstance) {
     const unitsPerDay = data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
 
     const now = new Date();
-    const [history, dismissalRows, acceptances] = await Promise.all([
-      loadHistory(req.params.id, now),
-      lintDb.listDismissals(req.params.id),
-      // Best-effort: a failed acceptance load skips stale-acceptance
-      // (reported as such) instead of failing the whole lint run.
-      listActiveAcceptances(req.params.id).catch(() => undefined),
-    ]);
-
-    // Rolled-up progress so requirement rules work on parent nodes too.
-    const computed = computeTree(data.nodes, data.map.healthThreshold);
-    const computedProgress = new Map<string, number>();
-    for (const [id, cv] of computed) computedProgress.set(id, cv.computedProgress);
 
     // ── Active-lane default scope ─────────────────────────────
     // Unscoped lint over a mature map is background noise (900+
@@ -133,6 +232,41 @@ export async function lintRoutes(app: FastifyInstance) {
       }
     }
 
+    // The forge check spends real API budget, so it only sees the nodes
+    // the report will show (same scope resolution as the engine) and only
+    // runs when its rule is part of the answer.
+    const scoped = scopeLeaves(data.nodes, {
+      nodeId: req.query.nodeId,
+      versionId: effectiveVersionId,
+      cycleId: req.query.cycleId,
+    });
+    if ('error' in scoped) {
+      return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: scoped.error } });
+    }
+    const wantsForge = rule == null || rule === 'done-without-pr';
+
+    const [history, dismissalRows, acceptances, forge] = await Promise.all([
+      loadHistory(req.params.id, now),
+      lintDb.listDismissals(req.params.id),
+      // Best-effort: a failed acceptance load skips stale-acceptance
+      // (reported as such) instead of failing the whole lint run.
+      listActiveAcceptances(req.params.id).catch(() => undefined),
+      // Same contract for the forge: unreachable → done-without-pr skipped.
+      wantsForge
+        ? loadForgePrs(
+            req.params.id,
+            scoped.scopedNodes,
+            buildDonePredicate(data.map.statusWorkflow),
+            now,
+          ).catch(() => undefined)
+        : Promise.resolve(undefined),
+    ]);
+
+    // Rolled-up progress so requirement rules work on parent nodes too.
+    const computed = computeTree(data.nodes, data.map.healthThreshold);
+    const computedProgress = new Map<string, number>();
+    for (const [id, cv] of computed) computedProgress.set(id, cv.computedProgress);
+
     const report = computePlanLint({
       map: data.map,
       nodes: data.nodes,
@@ -141,6 +275,8 @@ export async function lintRoutes(app: FastifyInstance) {
       dismissals: dismissalRows.map((d) => ({ nodeId: d.nodeId, ruleId: d.ruleId })),
       acceptances,
       computedProgress,
+      forgePrs: forge?.forgePrs,
+      forgePrsCap: forge?.capped ? FORGE_PR_CHECK_CAP : undefined,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,
