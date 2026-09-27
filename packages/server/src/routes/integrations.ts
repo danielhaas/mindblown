@@ -4,6 +4,7 @@ import { db } from '../db/connection.js';
 import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { notDeleted } from '../db/nodes.js';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as events from '../db/events.js';
 import {
   getGitHubIssue,
@@ -383,6 +384,11 @@ export async function syncTriageRowsForReopen(
 // ── Routes ────────────────────────────────────────────────────────
 
 export async function integrationRoutes(app: FastifyInstance): Promise<void> {
+  // The /api/maps/:mapId/… routes need view (reads) / edit (writes) on the
+  // map, and 404 a node from another map (#403). The webhook and the
+  // /api/integrations/… routes are not map routes and pass the guard.
+  guardMapRoutes(app, { nodeMapId: (id) => nodeDb.getNodeMapId(id) });
+
   // Keep the raw JSON string of every request in this plugin's scope so the
   // webhook handler can verify the HMAC over the bytes the forge actually
   // sent (Gitea pretty-prints; a re-serialised body never matches). Scoped

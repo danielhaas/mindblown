@@ -695,9 +695,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
   //
   // One page of a stored file's contents as text — the read path the
   // `read_attachment` tool and the in-app chat sit on. Unlike the file's
-  // own capability URL this sits behind the map guard above: the caller
-  // must be able to view the map and the node must belong to it. File
-  // contents are where the 160-bit id stops being enough of a boundary.
+  // own capability URL this needs view on the map, and the node must hang
+  // on it — both enforced by the plugin's map guard, like every route
+  // here. File contents are where the 160-bit id stops being enough of a
+  // boundary.
   //
   // A file that cannot be read as text (a link, an image, a file stored
   // elsewhere) is a 200 with `readable: false` and a reason, not an error:
@@ -711,7 +712,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     async (req, reply) => {
       const node = await nodeDb.getNode(req.params.nodeId);
       const attachment = node?.attachments?.find((a) => a.id === req.params.attachmentId);
-      if (!node || node.mapId !== req.params.id || !attachment) {
+      if (!node || !attachment) {
         return reply.status(404).send({
           error: { code: 'NOT_FOUND', message: 'Node or attachment not found' },
         });

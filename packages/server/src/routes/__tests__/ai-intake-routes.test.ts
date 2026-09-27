@@ -12,8 +12,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
-// The map guard (#403) asks permissions first; this user may do anything.
-vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+// The map guard (#403): the default user may do anything, `viewer` may only look.
+vi.mock('../../db/permissions.js', () => {
+  const levels: Record<string, number> = { view: 1, edit: 2, admin: 3 };
+  return {
+    getPermission: async (_mapId: string, userId: string) => (userId === 'viewer' ? 'view' : 'admin'),
+    hasPermission: (actual: string | null, required: string) => !!actual && levels[actual] >= levels[required],
+  };
+});
 
 const createNodeMock = vi.fn();
 const addDependencyMock = vi.fn();
@@ -82,7 +88,7 @@ const MAP_ID = 'map-1';
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   app.addHook('preHandler', async (req) => {
-    (req as { userId?: string }).userId = 'user-1';
+    (req as { userId?: string }).userId = (req.headers['x-test-user'] as string | undefined) ?? 'user-1';
   });
   await app.register(aiRoutes);
   await app.ready();
@@ -113,6 +119,35 @@ beforeEach(() => {
   addDependencyMock.mockImplementation(async (nodeId: string, target: string) =>
     stubNode({ id: nodeId, dependencies: [{ targetNodeId: target, type: 'FS', lag: 0 }] }),
   );
+});
+
+describe('the map guard on the intake routes (#403)', () => {
+  it('a viewer may run intake but not accept — and an encoded path is the same route', async () => {
+    const app = await buildApp();
+    const viewer = { 'x-test-user': 'viewer' };
+    const accept = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake/accept',
+      headers: viewer,
+      payload: { mapId: MAP_ID, draft: { title: 'x', parentId: 'p1' } },
+    });
+    expect(accept.statusCode).toBe(403);
+    const encoded = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake/%61ccept',
+      headers: viewer,
+      payload: { mapId: MAP_ID, draft: { title: 'x', parentId: 'p1' } },
+    });
+    expect(encoded.statusCode).toBe(403);
+    // The guard is what refused: a member without any level is 403 on the read route too.
+    const stranger = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake',
+      payload: { mapId: MAP_ID, message: 'hello' },
+    });
+    expect(stranger.statusCode).not.toBe(403);
+    await app.close();
+  });
 });
 
 describe('POST /api/ai/intake/accept', () => {

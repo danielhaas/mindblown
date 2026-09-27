@@ -25,9 +25,10 @@
  *     only make every satellite log a 409 per tick.
  *   - POST …/simulate: a what-if read that happens to be a POST.
  *
- * This hook runs before any route's permission check, so a 409 says
- * "that map is archived", not "you may see it" — never read
- * MAP_ARCHIVED as proof of access.
+ * This hook runs before the routes' own guards, so before it answers 409
+ * it asks the same access question they would (#403): a caller who may
+ * not view the map gets the 401/403 they would get anyway, and never
+ * learns from a MAP_ARCHIVED that the map exists.
  *
  * The map is resolved from the URL (/api/maps/:id/…), from the body
  * where the route takes a mapId (POST /api/versions, POST /api/cycles,
@@ -42,6 +43,7 @@ import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import * as commentDb from '../db/comments.js';
 import * as nodeDb from '../db/nodes.js';
+import { checkMapAccess } from '../lib/mapAccess.js';
 
 const MUTATING = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -126,6 +128,11 @@ export async function registerArchiveGuard(app: FastifyInstance): Promise<void> 
     if (req.actor === 'person') return; // an interactive session, not a robot on a JWT
     const mapId = await resolveTargetMapId(req);
     if (!mapId) return;
-    if (await mapDb.isMapArchived(mapId)) return archivedReply(reply, mapId);
+    if (!(await mapDb.isMapArchived(mapId))) return;
+    const denied = await checkMapAccess(req.userId, mapId, 'view');
+    if (denied) {
+      return reply.status(denied.status).send({ error: { code: denied.code, message: denied.message } });
+    }
+    return archivedReply(reply, mapId);
   });
 }

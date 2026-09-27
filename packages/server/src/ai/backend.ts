@@ -416,6 +416,11 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'readAttachment',
 ]);
 
+/** Backend methods that need admin on the map — what REST asks for the same action. */
+export const CHAT_BACKEND_ADMIN_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
+  'deleteMap',
+]);
+
 /** Backend methods that take no mapId — they scope themselves to the user. */
 export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'listMaps',
@@ -429,7 +434,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
  * The model picks the `mapId` argument, so the map the chat was opened on
  * is no guarantee of the map a tool call names. Every method except
  * `listMaps` / `createMap` takes the mapId first; reads need view, writes
- * edit. A refusal is a thrown Error, which the tool loop hands back to the
+ * edit, deleting the map admin — the same levels the REST routes ask for.
+ * A refusal is a thrown Error, which the tool loop hands back to the
  * model as the tool's result.
  */
 export function guardChatBackend(backend: ToolBackend, userId: string): ToolBackend {
@@ -439,7 +445,7 @@ export function guardChatBackend(backend: ToolBackend, userId: string): ToolBack
       guarded[name] = member;
       continue;
     }
-    const level = CHAT_BACKEND_READ_METHODS.has(name) ? 'view' : 'edit';
+    const level = CHAT_BACKEND_ADMIN_METHODS.has(name) ? 'admin' : CHAT_BACKEND_READ_METHODS.has(name) ? 'view' : 'edit';
     const fn = member as (...args: unknown[]) => unknown;
     guarded[name] = async (...args: unknown[]) => {
       const mapId = args[0];

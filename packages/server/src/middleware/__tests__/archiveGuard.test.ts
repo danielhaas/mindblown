@@ -31,6 +31,12 @@ vi.mock('../../db/comments.js', () => ({
 vi.mock('../../db/nodes.js', () => ({
   getNode: async (id: string) => (id === 'n-frozen' ? { id, mapId: 'frozen' } : null),
 }));
+// The guard asks the map guard's question before it answers 409 (#403):
+// every credential in this file is a member of every map.
+vi.mock('../../db/permissions.js', () => ({
+  getPermission: async () => 'admin',
+  hasPermission: () => true,
+}));
 
 import { registerArchiveGuard } from '../archiveGuard.js';
 
@@ -43,6 +49,7 @@ async function buildApp() {
     const via = req.headers['x-test-auth'];
     if (via === 'jwt') req.actor = 'person';
     if (via === 'api-key') req.actor = 'agent';
+    if (via === 'jwt' || via === 'api-key') req.userId = 'u-test';
   });
   await registerArchiveGuard(app);
   const ok = async () => ({ ok: true });
@@ -116,9 +123,9 @@ describe('archive guard', () => {
     await expectAll(app, AGENT_WRITES, 409, 'api-key');
   });
 
-  it('refuses unauthenticated pushes on an archived map the same way', async () => {
+  it('refuses unauthenticated pushes on an archived map as 401 — never a 409 that says the map exists (#403)', async () => {
     const app = await buildApp();
-    await expectAll(app, [['PUT', '/api/maps/frozen/asks', { asks: [] }]], 409, 'none');
+    await expectAll(app, [['PUT', '/api/maps/frozen/asks', { asks: [] }]], 401, 'none');
   });
 
   it('lets a person in the browser (jwt) write to an archived map', async () => {

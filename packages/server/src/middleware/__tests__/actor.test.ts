@@ -14,7 +14,13 @@ import jwt from 'jsonwebtoken';
 
 vi.mock('../../db/connection.js', () => ({ db: {} }));
 vi.mock('../../db/schema.js', () => ({ users: {}, pendingInvites: {} }));
-vi.mock('../../db/permissions.js', () => ({ resolvePendingInvites: vi.fn() }));
+// getPermission/hasPermission: the archive guard asks the map guard's
+// question before it answers 409 (#403); every credential here is a member.
+vi.mock('../../db/permissions.js', () => ({
+  resolvePendingInvites: vi.fn(),
+  getPermission: async () => 'admin',
+  hasPermission: () => true,
+}));
 vi.mock('../../lib/apiKeys.js', () => ({
   API_KEY_PREFIX: 'mb_',
   validateApiKey: async (token: string) => (token === 'mb_good' ? { userId: 'u-key' } : null),
@@ -121,7 +127,8 @@ describe('archive guard behind the real auth middleware', () => {
     expect(await post('Bearer mb_good')).toBe(409);
   });
 
-  it('no credential is refused', async () => {
-    expect(await post()).toBe(409);
+  it('no credential is refused — as 401, before the map is even looked at (#403)', async () => {
+    // An anonymous caller must not learn from a 409 that the map exists.
+    expect(await post()).toBe(401);
   });
 });

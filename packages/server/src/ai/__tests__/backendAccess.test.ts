@@ -58,7 +58,7 @@ vi.mock('../../db/permissions.js', () => {
   };
 });
 
-import { createChatBackend, CHAT_BACKEND_READ_METHODS, CHAT_BACKEND_UNSCOPED_METHODS } from '../backend.js';
+import { createChatBackend, CHAT_BACKEND_ADMIN_METHODS, CHAT_BACKEND_READ_METHODS, CHAT_BACKEND_UNSCOPED_METHODS } from '../backend.js';
 import type { ToolBackend } from '@mindblown/tool-kit';
 
 type AnyFn = (...args: unknown[]) => Promise<unknown>;
@@ -93,7 +93,7 @@ describe('chat backend — map guard', () => {
   it('refuses a map the user cannot see, before touching the database', async () => {
     for (const name of scopedMethods(backend)) {
       const msg = await outcome(asRecord[name], 'map-none', 'x', 'y', 'z');
-      expect(msg, name).toMatch(/access to this map|edit permission/);
+      expect(msg, name).toMatch(/access to this map|edit permission|admin permission/);
       expect(msg, name).not.toBe(DB_TOUCHED);
     }
   });
@@ -109,18 +109,28 @@ describe('chat backend — map guard', () => {
       const msg = await outcome(asRecord[name], 'map-view', 'x', 'y', 'z');
       if (CHAT_BACKEND_READ_METHODS.has(name as keyof ToolBackend)) {
         // Past the guard: the stubbed DB is what stops it now.
-        expect(msg, name).not.toMatch(/access to this map|edit permission/);
+        expect(msg, name).not.toMatch(/access to this map|edit permission|admin permission/);
+      } else if (CHAT_BACKEND_ADMIN_METHODS.has(name as keyof ToolBackend)) {
+        expect(msg, name).toMatch(/admin permission/);
       } else {
         expect(msg, name).toMatch(/edit permission/);
       }
     }
   });
 
-  it('an editor gets past the guard on every method', async () => {
+  it('an editor gets past the guard on every method except the admin ones', async () => {
     for (const name of scopedMethods(backend)) {
       const msg = await outcome(asRecord[name], 'map-edit', 'x', 'y', 'z');
-      expect(msg, name).not.toMatch(/access to this map|edit permission/);
+      if (CHAT_BACKEND_ADMIN_METHODS.has(name as keyof ToolBackend)) {
+        expect(msg, name).toMatch(/admin permission/);
+      } else {
+        expect(msg, name).not.toMatch(/access to this map|edit permission|admin permission/);
+      }
     }
+  });
+
+  it('deleting the map needs admin, as REST does', () => {
+    expect(CHAT_BACKEND_ADMIN_METHODS.has('deleteMap')).toBe(true);
   });
 
   it('leaves the unscoped methods alone', async () => {

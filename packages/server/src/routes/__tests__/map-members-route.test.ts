@@ -15,6 +15,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+// Persistent per test (not `Once`): since #403 the plugin's map guard asks
+// getPermission before the handler asks it again.
 const getPermissionMock = vi.fn();
 const listPermissionsMock = vi.fn();
 
@@ -53,7 +55,7 @@ beforeEach(() => {
 
 describe('GET /api/maps/:mapId/members', () => {
   it('returns the assignable people, flattened for the picker', async () => {
-    getPermissionMock.mockResolvedValueOnce('edit');
+    getPermissionMock.mockResolvedValue('edit');
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/members` });
     await app.close();
@@ -66,7 +68,7 @@ describe('GET /api/maps/:mapId/members', () => {
   });
 
   it('is readable with view access — not admin-gated like /permissions', async () => {
-    getPermissionMock.mockResolvedValueOnce('view');
+    getPermissionMock.mockResolvedValue('view');
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/members` });
     await app.close();
@@ -76,7 +78,7 @@ describe('GET /api/maps/:mapId/members', () => {
   });
 
   it('403s for a caller with no permission on the map', async () => {
-    getPermissionMock.mockResolvedValueOnce(null);
+    getPermissionMock.mockResolvedValue(null);
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/members` });
     await app.close();

@@ -14,6 +14,7 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { parseRollup, parseTick, parseTickWindow } from '@mindblown/core';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as fleetDb from '../db/fleet.js';
 import { broadcast } from '../ws.js';
 
@@ -23,7 +24,12 @@ const HOST_RE = /^[A-Za-z0-9._-]{1,64}$/;
 const PUSH_BODY_LIMIT = 256 * 1024;
 
 export async function fleetRoutes(app: FastifyInstance): Promise<void> {
-  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
+  // The fleet read needs view (#403). The two telemetry pushes stay
+  // token-less as documented above — inbound reporting, not an action on
+  // the plan — so they opt out of the guard explicitly.
+  guardMapRoutes(app);
+
+  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT, config: { mapAccess: 'public' } }, async (req, reply) => {
     if (!HOST_RE.test(req.params.host)) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'host must match [A-Za-z0-9._-]{1,64}' },
@@ -59,7 +65,7 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ host: row.host, generatedAt: row.generatedAt, receivedAt: row.receivedAt, workers: rollup.workers.length });
   });
 
-  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT, config: { mapAccess: 'public' } }, async (req, reply) => {
     const payload = parseTick(req.body);
     if (!payload) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Body must be a decision object' } });

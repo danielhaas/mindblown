@@ -3,9 +3,12 @@ import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import * as permDb from '../db/permissions.js';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import { sendMapInvitationEmail } from '../lib/email.js';
 
 export async function permissionRoutes(app: FastifyInstance): Promise<void> {
+  // 401 anonymous, 403 non-member, before the handlers' own admin checks (#403).
+  guardMapRoutes(app);
   // ── POST /api/maps/:mapId/share — Share a map with a user ───────
   app.post<{ Params: { mapId: string } }>(
     '/api/maps/:mapId/share',

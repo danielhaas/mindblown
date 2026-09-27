@@ -10,9 +10,11 @@
  * the loader is `services/fleetJournal.ts`.
  */
 import type { FastifyInstance } from 'fastify';
+import { guardMapRoutes } from '../lib/mapAccess.js';
 import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
 
 export async function fleetJournalRoutes(app: FastifyInstance): Promise<void> {
+  guardMapRoutes(app); // view on the map (#403)
   app.get<{ Params: { id: string }; Querystring: { from?: string; to?: string } }>('/api/maps/:id/fleet-journal', async (req, reply) => {
     const w = parseJournalWindow(req.query);
     if ('error' in w) {
