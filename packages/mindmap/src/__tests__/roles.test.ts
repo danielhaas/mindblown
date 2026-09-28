@@ -70,6 +70,12 @@ describe('ROLE_CONFIG invariants', () => {
     expect(isTabVisible('stakeholder', 'files')).toBe(false);
   });
 
+  it('Plan health panel (carries the sync pack): PM and developer see it, stakeholder does not', () => {
+    expect(isPanelVisible('pm', 'planHealth')).toBe(true);
+    expect(isPanelVisible('developer', 'planHealth')).toBe(true);
+    expect(isPanelVisible('stakeholder', 'planHealth')).toBe(false);
+  });
+
   it('Fleet tab: PM and developer see it (dev read-only in the view), stakeholder does not', () => {
     expect(isTabVisible('pm', 'fleet')).toBe(true);
     expect(isTabVisible('developer', 'fleet')).toBe(true);
