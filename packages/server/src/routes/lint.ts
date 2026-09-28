@@ -5,6 +5,7 @@
  *   GET    /api/maps/:id/lint              — run the linter, structured report
  *   POST   /api/maps/:id/lint/dismissals   — dismiss a finding / mute a rule
  *   DELETE /api/maps/:id/lint/dismissals   — undo a dismissal (querystring)
+ *   POST   /api/maps/:id/lint/fix          — apply one fix a finding offers
  *
  * The engine itself is pure (../lint/engine.ts); this file supplies data:
  * nodes from the map, change-event digests, dismissals, unitsPerDay.
@@ -19,15 +20,18 @@ import { pickActiveLane } from '../lib/activeLane.js';
 import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
+import { applyLintFix, LintFixError } from '../lint/fix.js';
 import {
   buildDonePredicate,
   computePlanLint,
   CLAIM_CHURN_HOURS,
+  LINT_FIX_ACTIONS,
   LINT_RULE_IDS,
   REPLAN_LOOKBACK_DAYS,
   scopeLeaves,
   STALE_PLAN_DAYS,
   type ForgePrCheck,
+  type LintActionId,
   type LintHistory,
   type LintRuleId,
 } from '../lint/engine.js';
@@ -337,6 +341,59 @@ export async function lintRoutes(app: FastifyInstance) {
       userId ?? null,
     );
     return reply.status(created ? 201 : 200).send(row);
+  });
+
+  // ── POST /api/maps/:id/lint/fix ────────────────────────────────
+  // Body: { ruleId, nodeId, action, note? } — the action must be one the
+  // rule offers (engine LINT_FIX_ACTIONS), so a stale panel cannot apply
+  // a fix the current finding would not show.
+  app.post<{
+    Params: { id: string };
+    Body: { ruleId?: unknown; nodeId?: unknown; action?: unknown; note?: unknown };
+  }>('/api/maps/:id/lint/fix', async (req, reply) => {
+    if (!(await requireMapAccess(req, reply, req.params.id, 'edit'))) return reply;
+
+    const { ruleId, nodeId, action, note } = req.body ?? {};
+    if (typeof ruleId !== 'string' || !LINT_RULE_IDS.includes(ruleId as LintRuleId)) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `ruleId must be one of: ${LINT_RULE_IDS.join(', ')}` },
+      });
+    }
+    if (typeof nodeId !== 'string' || nodeId === '') {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'nodeId is required' },
+      });
+    }
+    const allowed = LINT_FIX_ACTIONS[ruleId as LintRuleId] ?? [];
+    if (typeof action !== 'string' || !allowed.includes(action as LintActionId)) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message:
+            allowed.length > 0
+              ? `action for ${ruleId} must be one of: ${allowed.join(', ')}`
+              : `${ruleId} offers no automatic fix`,
+        },
+      });
+    }
+    if (note != null && typeof note !== 'string') {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'note must be a string' },
+      });
+    }
+
+    try {
+      const outcome = await applyLintFix(req.params.id, nodeId, action as LintActionId, req.userId ?? null, {
+        note: note as string | undefined,
+      });
+      return reply.send(outcome);
+    } catch (err) {
+      if (err instanceof LintFixError) {
+        const status = err.code === 'NODE_NOT_FOUND' ? 404 : err.code === 'BAD_ACTION' ? 400 : 409;
+        return reply.status(status).send({ error: { code: err.code, message: err.message } });
+      }
+      throw err;
+    }
   });
 
   // ── DELETE /api/maps/:id/lint/dismissals?ruleId=…&nodeId=… ─────

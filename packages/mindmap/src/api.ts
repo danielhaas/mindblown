@@ -2314,12 +2314,37 @@ export function listNotInMindBlown(
 
 // ── Plan lint (plan-health panel, docs/plan-linter.md) ────────────
 
+export interface LintAction {
+  id: string;
+  label: string;
+}
+
 export interface LintFinding {
   nodeId: string | null;
   nodeText: string | null;
   priority: string | null;
   detail: string;
   dismissed: boolean;
+  /** One-click fixes the finding offers, most conservative first. */
+  actions?: LintAction[];
+}
+
+export interface LintFixOutcome {
+  action: string;
+  changedFields: string[];
+  issue?: { externalId: string; state: 'open' | 'closed' };
+}
+
+export function applyLintFix(
+  mapId: string,
+  ruleId: string,
+  nodeId: string,
+  action: string,
+): Promise<LintFixOutcome> {
+  return request<LintFixOutcome>(`/api/maps/${mapId}/lint/fix`, {
+    method: 'POST',
+    body: JSON.stringify({ ruleId, nodeId, action }),
+  });
 }
 
 export interface LintRuleReport {

@@ -34,12 +34,45 @@ export const LINT_RULE_IDS = [
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 export type LintSeverity = 'warn' | 'info';
 
+/**
+ * One-click fixes. The linter still never mutates on its own: a finding
+ * OFFERS these, a person (or an agent) picks one, and the route applies it
+ * through the same write path as an ordinary node edit. Each id maps to a
+ * concrete write in lint/fix.ts; the label is what the panel shows.
+ */
+export const LINT_ACTIONS = {
+  'mark-done': 'Mark done (status + 100 %)',
+  reopen: 'Reopen the node (todo, 0 %)',
+  'close-issue': 'Close the issue',
+  'reopen-issue': 'Reopen the issue',
+  'clear-blocker': 'Clear the blocker text',
+  park: 'Park it (status blocked)',
+} as const;
+export type LintActionId = keyof typeof LINT_ACTIONS;
+export interface LintAction {
+  id: LintActionId;
+  label: string;
+}
+const act = (...ids: LintActionId[]): LintAction[] => ids.map((id) => ({ id, label: LINT_ACTIONS[id] }));
+
+/** Which fixes a rule may offer — the route refuses anything else. */
+export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
+  'status-progress-mismatch': ['mark-done', 'reopen'],
+  'done-parent-open-child': ['reopen'],
+  'issue-state-mismatch': ['close-issue', 'reopen', 'mark-done', 'reopen-issue'],
+  'done-without-pr': ['reopen'],
+  'stale-blocked-reason': ['clear-blocker', 'park'],
+  'claim-churn': ['park'],
+};
+
 export interface LintFinding {
   nodeId: string | null; // null for map-level findings
   nodeText: string | null;
   priority: string | null;
   detail: string;
   dismissed: boolean;
+  /** Fixes on offer, most conservative first. Absent when only a human decision helps. */
+  actions?: LintAction[];
 }
 
 export interface LintRuleReport {
@@ -258,12 +291,13 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     (n.status != null && inProgressStatusIds.has(n.status)) ||
     ((n.percentComplete ?? 0) > 0 && (n.percentComplete ?? 0) < 100);
 
-  const finding = (n: Node, detail: string): LintFinding => ({
+  const finding = (n: Node, detail: string, actions?: LintAction[]): LintFinding => ({
     nodeId: n.id,
     nodeText: n.text,
     priority: n.priority ?? null,
     detail,
     dismissed: false,
+    ...(actions && actions.length > 0 ? { actions } : {}),
   });
   const mapFinding = (detail: string): LintFinding => ({
     nodeId: null,
@@ -529,7 +563,13 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
         if (isDone(l) && pct < 100) return true;
         return pct >= 100 && l.status != null && !isDone(l);
       })
-      .map((l) => finding(l, `status ${shortStatus(l)}, ${l.percentComplete ?? 0}% complete`)),
+      .map((l) =>
+        finding(
+          l,
+          `status ${shortStatus(l)}, ${l.percentComplete ?? 0}% complete`,
+          isDone(l) ? act('mark-done', 'reopen') : act('mark-done'),
+        ),
+      ),
   });
 
   // 13. done-parent-open-child
@@ -541,7 +581,9 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     fix: 'Finish or move the open children, or reopen the parent.',
     findings: scopedNodes
       .filter((n) => !isLeaf(n) && isDone(n) && progressOf(n) < 99.5)
-      .map((n) => finding(n, `status ${shortStatus(n)}, children at ${progressOf(n).toFixed(0)}%`)),
+      .map((n) =>
+        finding(n, `status ${shortStatus(n)}, children at ${progressOf(n).toFixed(0)}%`, act('reopen')),
+      ),
   });
 
   // 14. issue-state-mismatch
@@ -561,6 +603,7 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
           isDone(n)
             ? `node done, ${link.externalId} still open`
             : `${link.externalId} closed, node ${shortStatus(n)}`,
+          isDone(n) ? act('close-issue', 'reopen') : act('mark-done', 'reopen-issue'),
         ),
       ),
   });
@@ -576,7 +619,9 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     findings: forgePrs
       ? scopedNodes
           .filter((n) => isDone(n) && forgePrs.has(n.id) && forgePrs.get(n.id)!.prs.length === 0)
-          .map((n) => finding(n, `${forgePrs.get(n.id)!.externalId}: no pull request references it`))
+          .map((n) =>
+            finding(n, `${forgePrs.get(n.id)!.externalId}: no pull request references it`, act('reopen')),
+          )
       : [],
     skipped: forgePrs ? undefined : 'no forge connected or the forge was unreachable',
   });
@@ -595,7 +640,11 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       .filter((n) => (n.blockedReason ?? '').trim() !== '' && (isDone(n) || !isParked(n)))
       .map((n) => {
         const reason = n.blockedReason!.trim();
-        return finding(n, `status ${shortStatus(n)}: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`);
+        return finding(
+          n,
+          `status ${shortStatus(n)}: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`,
+          isDone(n) ? act('clear-blocker') : act('clear-blocker', 'park'),
+        );
       }),
   });
 
@@ -611,7 +660,7 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       ? scopedNodes
           .filter((n) => (pickups.get(n.id) ?? 0) >= CLAIM_CHURN_MIN_PICKUPS)
           .sort((a, b) => (pickups.get(b.id) ?? 0) - (pickups.get(a.id) ?? 0))
-          .map((n) => finding(n, `${pickups.get(n.id)} pickups in the last ${CLAIM_CHURN_HOURS} h`))
+          .map((n) => finding(n, `${pickups.get(n.id)} pickups in the last ${CLAIM_CHURN_HOURS} h`, act('park')))
       : [],
     skipped: history.ok ? undefined : 'change history unavailable',
   });

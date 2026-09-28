@@ -4,7 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Node } from '@mindblown/core';
-import { computePlanLint, type LintHistory, type LintReport } from '../engine.js';
+import { computePlanLint, LINT_FIX_ACTIONS, type LintHistory, type LintReport } from '../engine.js';
 
 let seq = 0;
 function makeNode(overrides: Partial<Node> & { id: string }): Node {
@@ -516,6 +516,39 @@ describe('computePlanLint — sync pack', () => {
       { map: { effortUnit: 'days', statusWorkflow: [] } },
     );
     expect(rule(bare, 'status-progress-mismatch').findings).toHaveLength(0);
+  });
+
+  it('sync findings carry fix actions the route may apply; hygiene findings carry none', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e', 'p'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 100 }),
+      makeNode({ id: 'c', parentId: 'root', status: 'done', externalLinks: [link(2, 'open')] }),
+      makeNode({ id: 'd', parentId: 'root', status: 'todo', externalLinks: [link(1, 'closed')] }),
+      makeNode({ id: 'e', parentId: 'root', status: 'todo', blockedReason: 'stale', effortEstimate: null }),
+      makeNode({ id: 'p', parentId: 'root', childrenIds: ['q'], status: 'done' }),
+      makeNode({ id: 'q', parentId: 'p', percentComplete: 0, effortEstimate: 1 }),
+    ];
+    const report = syncLint(nodes, {
+      computedProgress: new Map([['p', 0]]),
+      history: { ...emptyHistory(), claimPickups: new Map([['e', 9]]) },
+    });
+    const ids = (ruleId: string, nodeId: string) =>
+      rule(report, ruleId).findings.find((f) => f.nodeId === nodeId)!.actions!.map((a) => a.id);
+    expect(ids('status-progress-mismatch', 'a')).toEqual(['mark-done', 'reopen']);
+    expect(ids('status-progress-mismatch', 'b')).toEqual(['mark-done']);
+    expect(ids('done-parent-open-child', 'p')).toEqual(['reopen']);
+    expect(ids('issue-state-mismatch', 'c')).toEqual(['close-issue', 'reopen']);
+    expect(ids('issue-state-mismatch', 'd')).toEqual(['mark-done', 'reopen-issue']);
+    expect(ids('stale-blocked-reason', 'e')).toEqual(['clear-blocker', 'park']);
+    expect(ids('claim-churn', 'e')).toEqual(['park']);
+    expect(rule(report, 'unestimated-leaf').findings.find((f) => f.nodeId === 'e')!.actions).toBeUndefined();
+    // Every offered action is one the route will accept for that rule.
+    for (const r of report.rules) {
+      for (const f of r.findings) {
+        for (const a of f.actions ?? []) expect(LINT_FIX_ACTIONS[r.ruleId]).toContain(a.id);
+      }
+    }
   });
 
   it('sync rules respect subtree scoping', () => {

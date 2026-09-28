@@ -10,7 +10,7 @@ A set of **deterministic, explainable checks on plan quality**, run against a ma
 
 The linter is the productized form of "the tool guides you into good PM": it targets the four failure modes of untrained project management — no decomposition, missing/uncalibrated estimates, vague done-criteria, publish-and-forget plans — using signals the engine already computes.
 
-**Coach, not autopilot.** The linter never mutates the plan. It surfaces findings; the user (or their AI agent) fixes them.
+**Coach, not autopilot.** The linter never mutates the plan on its own. It surfaces findings; the user (or their AI agent) fixes them. Since 2026-09-28 a finding may *offer* one-click fixes (see "Fixes" below) — applied only on an explicit click or `plan_fix` call, through the same write path as a hand edit.
 
 ## Relationship to existing MI tools
 
@@ -62,6 +62,20 @@ The map, its linked issues and its repository are three views of one plan, and t
 | 15 | `done-without-pr` | Done node whose linked issue has no pull request referencing it on the forge. The route checks the **20** most recently updated done+linked nodes *in scope* per run (title says so when capped), counts a direct PR link as its own PR, caches answers per node revision for 15 min, only runs when the rule is part of the answer, and skips the rule when no forge is bound or the batch exceeds 8 s (a single failed lookup drops only that node) | info | "A ticket marked done with nothing in the repository referencing it is either non-code work or a claim nobody verified — worth a look either way." | Confirm the work landed; dismiss for non-code work |
 | 16 | `stale-blocked-reason` | `blockedReason` set while the node is done or its status is not `blocked` (only the status parks a node; the `blocked` tag alone leaves it pullable) | info | "A blocker reason without a blocked status is invisible to dispatch — the node stays pullable while the text says it should not be." | Clear the reason, or park the node as blocked |
 | 17 | `claim-churn` | ≥ **5** `node.claimed` events on one node in the last **24 h** | warn | "A ticket that keeps bouncing back to the queue is a broken worker, not slow work — every bounce buries the change history a little deeper." | Check the worker; park the node until fixed |
+
+### Fixes (added 2026-09-28)
+
+A finding carries `actions: [{ id, label }]` when a deterministic write resolves it. The panel shows them as buttons under the finding (and a **Fix all** button on the rule when every active finding leads with the same action); `plan_lint` prints them as `[fix: a | b]` and `plan_fix(mapId, ruleId, nodeId, action)` applies one. `POST /api/maps/:id/lint/fix` refuses an action the rule does not offer (`LINT_FIX_ACTIONS` in the engine), so a stale panel cannot apply a fix the current finding would not show. Hygiene rules (estimates, dates, descriptions) offer none — those need a human number.
+
+| Action | Write (lint/fix.ts) | Offered by |
+|---|---|---|
+| `mark-done` | status → the workflow's done status, `percentComplete` 100; the issue closes via outbound sync (subject to its PR-landed gate) | status-progress-mismatch, issue-state-mismatch (issue closed) |
+| `reopen` | status → first todo status, `percentComplete` 0, `completedAt` null; the issue reopens via sync | status-progress-mismatch (done at < 100), done-parent-open-child, issue-state-mismatch (issue open), done-without-pr |
+| `close-issue` / `reopen-issue` | forge `updateIssue` state (completed / reopened) + the stored link `state`, node untouched | issue-state-mismatch |
+| `clear-blocker` | `unblockNode`: blockedReason null, `blocked` tag removed, status back to todo if it was blocked | stale-blocked-reason |
+| `park` | status `blocked`, `blocked` tag, claim released, blockedReason kept or "Parked from Plan health: …" | stale-blocked-reason (pullable), claim-churn |
+
+Every node-side fix records change events, broadcasts, and runs the outbound sync — it looks exactly like the same edit made by hand, attributed to the user who clicked.
 
 Deliberately not a rule: the `#N ` prefix on imported node titles. The import writes it on purpose; that the outbound title sync copies it back onto the forge issue is a sync bug to fix at the source, not a finding to dismiss on every ticket.
 

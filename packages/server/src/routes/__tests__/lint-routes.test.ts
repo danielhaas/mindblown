@@ -121,7 +121,27 @@ vi.mock('../../lib/githubContext.js', () => ({
   getForgeContextForMap: vi.fn(async () => forgeContext),
 }));
 
+const applyLintFix = vi.fn(async (_mapId: string, nodeId: string, action: string) => ({
+  action,
+  node: { id: nodeId, text: 'fixed' },
+  changedFields: ['status'],
+}));
+// Fully mocked (no importActual): the real fix.ts pulls in routes/nodes.ts
+// and with it the whole forge stack, which this route test does not stub.
+vi.mock('../../lint/fix.js', () => ({
+  applyLintFix: (...a: unknown[]) => applyLintFix(...(a as [string, string, string])),
+  LintFixError: class LintFixError extends Error {
+    constructor(
+      public readonly code: string,
+      message: string,
+    ) {
+      super(message);
+    }
+  },
+}));
+
 import { lintRoutes, resetForgePrCache } from '../lint.js';
+import { LintFixError } from '../../lint/fix.js';
 
 async function buildApp(userId: string | null = 'user-1'): Promise<FastifyInstance> {
   const app = Fastify();
@@ -140,6 +160,7 @@ beforeEach(() => {
   mapData.nodes.splice(2);
   mapData.map.statusWorkflow = [{ id: 'wip', category: 'in_progress' }];
   resetForgePrCache();
+  applyLintFix.mockClear();
 });
 
 describe('GET /api/maps/:id/lint', () => {
@@ -338,6 +359,66 @@ describe('dismissal endpoints', () => {
     const unest = res.json().rules.find((r: { ruleId: string }) => r.ruleId === 'unestimated-leaf');
     expect(unest.findings[0].dismissed).toBe(false);
     expect(unest.activeCount).toBe(1);
+  });
+});
+
+describe('POST /api/maps/:id/lint/fix', () => {
+  it('applies an action the rule offers and returns the outcome', async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'claim-churn', nodeId: 'leaf-1', action: 'park', note: '715 pickups' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ action: 'park', changedFields: ['status'] });
+    expect(applyLintFix).toHaveBeenCalledWith('map-1', 'leaf-1', 'park', 'user-1', { note: '715 pickups' });
+  });
+
+  it('400 for an action the rule does not offer, a rule with no fixes, or a missing node', async () => {
+    const app = await buildApp();
+    const bad = (payload: Record<string, string>) =>
+      app.inject({ method: 'POST', url: '/api/maps/map-1/lint/fix', payload });
+    expect((await bad({ ruleId: 'claim-churn', nodeId: 'leaf-1', action: 'mark-done' })).statusCode).toBe(400);
+    expect((await bad({ ruleId: 'unestimated-leaf', nodeId: 'leaf-1', action: 'mark-done' })).statusCode).toBe(400);
+    expect((await bad({ ruleId: 'claim-churn', action: 'park' })).statusCode).toBe(400);
+    await app.close();
+    expect(applyLintFix).not.toHaveBeenCalled();
+  });
+
+  it('403 without edit permission; service errors map to 404 / 409', async () => {
+    permissionLevel = 'view';
+    let app = await buildApp();
+    const denied = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'claim-churn', nodeId: 'leaf-1', action: 'park' },
+    });
+    await app.close();
+    expect(denied.statusCode).toBe(403);
+
+    permissionLevel = 'edit';
+    app = await buildApp();
+    applyLintFix.mockImplementationOnce(async () => {
+      throw new LintFixError('NODE_NOT_FOUND', 'gone');
+    });
+    const gone = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'claim-churn', nodeId: 'leaf-1', action: 'park' },
+    });
+    applyLintFix.mockImplementationOnce(async () => {
+      throw new LintFixError('NO_FORGE', 'no repo');
+    });
+    const noForge = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'issue-state-mismatch', nodeId: 'leaf-1', action: 'close-issue' },
+    });
+    await app.close();
+    expect(gone.statusCode).toBe(404);
+    expect(noForge.statusCode).toBe(409);
   });
 });
 

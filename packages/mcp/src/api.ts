@@ -830,6 +830,25 @@ export interface LintFinding {
   priority: string | null;
   detail: string;
   dismissed: boolean;
+  /** One-click fixes the finding offers (apply with applyLintFix). */
+  actions?: Array<{ id: string; label: string }>;
+}
+
+export interface LintFixOutcome {
+  action: string;
+  node: { id: string; text: string; status: string | null; percentComplete: number | null };
+  changedFields: string[];
+  issue?: { externalId: string; state: 'open' | 'closed' };
+}
+
+export function applyLintFix(
+  mapId: string,
+  body: { ruleId: string; nodeId: string; action: string; note?: string },
+): Promise<LintFixOutcome> {
+  return request<LintFixOutcome>(`/api/maps/${mapId}/lint/fix`, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 export interface LintRuleReport {

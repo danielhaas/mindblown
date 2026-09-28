@@ -54,6 +54,40 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
     (window as unknown as { __mindmapPanToNode?: (id: string) => void }).__mindmapPanToNode?.(nodeId);
   };
 
+  // Fixes: one finding at a time, or every finding of a rule that offers
+  // the same first action. Each call is a normal node edit on the server;
+  // the panel just re-runs the checks afterwards so the row disappears.
+  const [fixing, setFixing] = useState<string | null>(null); // `${ruleId}:${nodeId}` or `${ruleId}:*`
+  const [fixError, setFixError] = useState<string | null>(null);
+  const applyFix = async (ruleId: string, nodeId: string, action: string) => {
+    setFixing(`${ruleId}:${nodeId}`);
+    setFixError(null);
+    try {
+      await api.applyLintFix(mapId, ruleId, nodeId, action);
+      await load();
+    } catch (err) {
+      setFixError(err instanceof Error ? err.message : 'The fix could not be applied');
+    } finally {
+      setFixing(null);
+    }
+  };
+  const applyFixAll = async (ruleId: string, findings: api.LintFinding[], action: string) => {
+    setFixing(`${ruleId}:*`);
+    setFixError(null);
+    const failed: string[] = [];
+    for (const f of findings) {
+      if (!f.nodeId) continue;
+      try {
+        await api.applyLintFix(mapId, ruleId, f.nodeId, action);
+      } catch {
+        failed.push(f.nodeText ?? f.nodeId);
+      }
+    }
+    if (failed.length > 0) setFixError(`Could not fix: ${failed.join(', ')}`);
+    await load();
+    setFixing(null);
+  };
+
   const dismiss = async (ruleId: string, nodeId: string | null) => {
     await api.dismissLintFinding(mapId, ruleId, nodeId);
     await load();
@@ -175,10 +209,21 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
             ✓ The plan is in good shape — every check passed.
           </div>
         )}
+        {fixError && (
+          <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 8 }}>{fixError}</div>
+        )}
 
         {activeRules.map((r) => {
           const sev = SEVERITY_STYLE[r.severity];
           const visible = r.findings.filter((f) => (showDismissed ? true : !f.dismissed));
+          // "Fix all" only when every active finding leads with the same action.
+          const activeWithNode = r.findings.filter((f) => !f.dismissed && f.nodeId);
+          const firstAction = activeWithNode[0]?.actions?.[0];
+          const fixAll =
+            firstAction && activeWithNode.length > 1 && activeWithNode.every((f) => f.actions?.[0]?.id === firstAction.id)
+              ? firstAction
+              : null;
+          const busyRule = fixing === `${r.ruleId}:*`;
           return (
             <div key={r.ruleId} style={{ marginBottom: 16 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
@@ -221,7 +266,30 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
               <div style={{ fontSize: 11, color: '#64748b', fontStyle: 'italic', marginBottom: 2 }}>
                 {r.why}
               </div>
-              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>Fix: {r.fix}</div>
+              <div style={{ fontSize: 11, color: '#64748b', marginBottom: 6 }}>
+                Fix: {r.fix}
+                {fixAll && (
+                  <button
+                    onClick={() => void applyFixAll(r.ruleId, activeWithNode, fixAll.id)}
+                    disabled={fixing != null}
+                    title={`Apply "${fixAll.label}" to all ${activeWithNode.length} findings`}
+                    style={{
+                      marginLeft: 8,
+                      padding: '1px 8px',
+                      borderRadius: 3,
+                      border: '1px solid #c7d2fe',
+                      background: busyRule ? '#eef2ff' : '#fff',
+                      color: '#4f46e5',
+                      fontSize: 11,
+                      fontWeight: 600,
+                      fontFamily: 'inherit',
+                      cursor: fixing != null ? 'default' : 'pointer',
+                    }}
+                  >
+                    {busyRule ? 'Fixing…' : `Fix all ${activeWithNode.length}: ${fixAll.label}`}
+                  </button>
+                )}
+              </div>
               {visible.map((f, i) => (
                 <div
                   key={`${f.nodeId ?? 'map'}-${i}`}
@@ -231,6 +299,7 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
                     gap: 6,
                     padding: '3px 0',
                     opacity: f.dismissed ? 0.45 : 1,
+                    flexWrap: 'wrap',
                   }}
                 >
                   {f.nodeId ? (
@@ -292,6 +361,33 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
                     >
                       ✕
                     </button>
+                  )}
+                  {f.nodeId && !f.dismissed && f.actions && f.actions.length > 0 && (
+                    <div style={{ flexBasis: '100%', display: 'flex', gap: 6, paddingLeft: 12, marginTop: 2 }}>
+                      {f.actions.map((a) => {
+                        const busy = fixing === `${r.ruleId}:${f.nodeId}`;
+                        return (
+                          <button
+                            key={a.id}
+                            onClick={() => void applyFix(r.ruleId, f.nodeId!, a.id)}
+                            disabled={fixing != null}
+                            title={`Apply: ${a.label}`}
+                            style={{
+                              padding: '1px 8px',
+                              borderRadius: 3,
+                              border: '1px solid #e2e8f0',
+                              background: busy ? '#eef2ff' : '#f8fafc',
+                              color: '#334155',
+                              fontSize: 11,
+                              fontFamily: 'inherit',
+                              cursor: fixing != null ? 'default' : 'pointer',
+                            }}
+                          >
+                            {busy ? '…' : a.label}
+                          </button>
+                        );
+                      })}
+                    </div>
                   )}
                 </div>
               ))}
