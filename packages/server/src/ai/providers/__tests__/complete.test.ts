@@ -83,6 +83,31 @@ describe('ollamaProvider.complete', () => {
     openai.create.mockResolvedValue({ choices: [] });
     expect(await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }] })).toBe('');
   });
+
+  it('no reasoning_effort by default — Ollama 400s it on a non-thinking model', async () => {
+    const { ollamaProvider } = await import('../ollama.js');
+    openai.create.mockResolvedValue({ choices: [{ message: { content: '{}' } }] });
+    await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], maxTokens: 500 });
+    const req = openai.create.mock.calls[0][0];
+    expect(req.reasoning_effort).toBeUndefined();
+    expect(req.max_tokens).toBe(500);
+  });
+
+  it('AI_REASONING_EFFORT: sends it and adds thinking headroom to max_tokens', async () => {
+    vi.resetModules();
+    vi.stubEnv('AI_REASONING_EFFORT', 'low');
+    try {
+      const { ollamaProvider } = await import('../ollama.js');
+      openai.create.mockResolvedValue({ choices: [{ message: { content: '{}' } }] });
+      await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], maxTokens: 500 });
+      const req = openai.create.mock.calls[0][0];
+      expect(req.reasoning_effort).toBe('low');
+      expect(req.max_tokens).toBe(500 + 4096);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
 });
 
 describe('anthropicProvider.complete', () => {
