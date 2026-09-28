@@ -129,6 +129,8 @@ export interface ForgeContractSpec {
     issue: unknown;
     pullRequest: unknown;
     pullRequestFiles: unknown;
+    /** The raw body of an issue search that finds exactly `issue`. */
+    searchIssues: unknown;
   };
   /** What `issueWebUrl('o', 'r', 42)` must return for this client. */
   expectedIssueWebUrl: string;
@@ -241,6 +243,18 @@ export function describeForgeContract(spec: ForgeContractSpec): void {
       expect(sent.title).toBe('Contract issue');
       expect(sent.body).toBe('Body text');
       expect(issue).toMatchObject(EXPECTED_ISSUE_MATCH);
+    });
+
+    it('searchIssues(): sends the query as a GET and returns normalised issues', async () => {
+      const t = fakeTransport();
+      const forge = spec.create(t.fetchImpl);
+      t.respond({ status: 200, body: spec.wire.searchIssues });
+      const found = await forge.searchIssues('o', 'r', 'unread badge', { limit: 5 });
+      const get = t.calls.find((c) => c.method === 'GET' && /issues/.test(pathOf(c.url)));
+      expect(get).toBeDefined();
+      expect(decodeURIComponent(pathOf(get!.url))).toContain('unread badge');
+      expect(found).toHaveLength(1);
+      expect(found[0]).toMatchObject(EXPECTED_ISSUE_MATCH);
     });
 
     it('addIssueLabels() returns the raw status instead of throwing on 422', async () => {

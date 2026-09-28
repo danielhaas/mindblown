@@ -373,6 +373,14 @@ export class GiteaForge implements ForgeClient {
     return rows.map((m) => ({ ref: m.id, title: m.title, state: m.state }));
   }
 
+  async searchIssues(owner: string, repo: string, query: string, opts?: { limit?: number }): Promise<ForgeIssue[]> {
+    const limit = Math.max(1, Math.min(opts?.limit ?? 10, 50));
+    const rows = await this.requestJson<GiteaIssueRaw[]>(
+      `/repos/${owner}/${repo}/issues?q=${encodeURIComponent(query.trim())}&type=issues&state=all&limit=${limit}`,
+    );
+    return rows.map((raw) => normalizeGiteaIssue(raw));
+  }
+
   // ── Issue history (timeline) ────────────────────────────────────
 
   private timeline(owner: string, repo: string, issueNumber: number): Promise<GiteaTimelineEntry[]> {

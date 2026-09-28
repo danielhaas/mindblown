@@ -64,7 +64,12 @@ const contractFiles = [
 describeForgeContract({
   name: 'GiteaForge',
   create: (fetchImpl) => new GiteaForge({ token: 'gt_contract', apiBaseUrl: 'https://forge.example', fetchImpl }),
-  wire: { issue: contractIssue, pullRequest: contractPr, pullRequestFiles: contractFiles },
+  wire: {
+    issue: contractIssue,
+    pullRequest: contractPr,
+    pullRequestFiles: contractFiles,
+    searchIssues: [contractIssue],
+  },
   expectedIssueWebUrl: 'https://forge.example/o/r/issues/42',
   // Gitea maps label names to ids through the repo's label list first.
   prime: (t, op) => {

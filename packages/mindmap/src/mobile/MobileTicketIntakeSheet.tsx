@@ -8,12 +8,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { MindMap, Node, Version } from '@mindblown/core';
 import * as api from '../api.js';
-import type { IntakeDraft, IntakeQuestion, NodeWithComputed } from '../api.js';
+import type { IntakeDraft, IntakeQuestion, IntakeExisting, NodeWithComputed } from '../api.js';
 import {
   editsFromDraft,
   toAcceptPayload,
   answersToMessage,
   parseTags,
+  verdictHeadline,
+  existingStateLine,
   type DraftEdits,
 } from '../intakeDraft.js';
 
@@ -107,7 +109,12 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
     setError(null);
     try {
       const payload = toAcceptPayload(draft, { ...edits, tags: parseTags(tagsRaw) });
-      const r = await api.aiIntakeAccept(map.id, payload, { intakeId, createIssue: createIssue === true });
+      const first = draft.verdict !== 'new' ? draft.existing[0] : undefined;
+      const r = await api.aiIntakeAccept(map.id, payload, {
+        intakeId,
+        createIssue: createIssue === true,
+        existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
+      });
       onCreated(r.node);
       setAcceptedCount((n) => n + 1);
       const parts = [`Created «${r.node.text}»`];
@@ -128,6 +135,41 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
       setAccepting(false);
     }
   }, [draft, edits, accepting, tagsRaw, map.id, intakeId, createIssue, onCreated]);
+
+  const [existingBusy, setExistingBusy] = useState<string | null>(null);
+  const existingAction = useCallback(
+    async (action: 'none' | 'comment' | 'reopen', x: IntakeExisting) => {
+      if (!draft || !edits) return;
+      const key = x.nodeId ?? `#${x.issueNumber}`;
+      setExistingBusy(key);
+      setError(null);
+      try {
+        const r = await api.aiIntakeExistingAction(
+          map.id,
+          action,
+          { nodeId: x.nodeId, issueNumber: x.issueNumber },
+          edits.description,
+          { intakeId },
+        );
+        const line =
+          r.action === 'none'
+            ? `Nothing created — «${x.text}» already covers it.`
+            : `${action === 'reopen' ? 'Reopened' : 'Commented on'} «${x.text}»${r.existing.commentUrl ? ' (issue comment)' : ''}${
+                r.existing.warnings.length ? ` — ${r.existing.warnings.join('; ')}` : ''
+              }`;
+        setLog((l) => [...l, { role: 'system', text: line }]);
+        setDraft(null);
+        setEdits(null);
+        setQuestions([]);
+        setAnswers({});
+      } catch (err: any) {
+        setError(err?.message || 'The action failed');
+      } finally {
+        setExistingBusy(null);
+      }
+    },
+    [draft, edits, map.id, intakeId],
+  );
 
   const hasQuestions = questions.length > 0;
   const started = log.length > 0;
@@ -167,12 +209,46 @@ export function MobileTicketIntakeSheet({ map, nodes, versions, onClose, onCreat
 
           {draft && edits && (
             <div style={card}>
-              {draft.duplicates.length > 0 && (
+              {draft.verdict !== 'new' && draft.existing.length > 0 && (
                 <div style={warn}>
-                  <strong>Possibly already covered:</strong>
-                  {draft.duplicates.map((d) => (
-                    <div key={d.nodeId}>«{d.text}» — {d.reason}</div>
-                  ))}
+                  <strong>{verdictHeadline(draft.verdict)}</strong>
+                  {draft.existing.map((x) => {
+                    const key = x.nodeId ?? `#${x.issueNumber}`;
+                    const busy = existingBusy === key;
+                    return (
+                      <div key={key} style={{ marginTop: 6 }}>
+                        <div>
+                          «{x.text}» <span style={{ color: '#b45309' }}>— {existingStateLine(x)}</span>
+                        </div>
+                        <div style={{ color: '#7c2d12' }}>{x.reason}</div>
+                        <div className="mb-edit-pill-row" style={{ marginTop: 6 }}>
+                          {(
+                            [
+                              ['none', 'Nothing to do'],
+                              ['comment', 'Comment'],
+                              ...(x.fixedByPr ? [] : [['reopen', 'Reopen']]),
+                            ] as Array<['none' | 'comment' | 'reopen', string]>
+                          ).map(([action, label]) => (
+                            <button
+                              key={action}
+                              type="button"
+                              className="mb-status-pill mb-status-pill-tappable"
+                              aria-pressed={
+                                (action === 'none' && x.recommendation === 'nothing') || action === x.recommendation
+                              }
+                              disabled={busy || accepting || loading}
+                              onClick={() => void existingAction(action, x)}
+                            >
+                              {label}
+                            </button>
+                          ))}
+                        </div>
+                        {x.recommendation === 'create' && (
+                          <div style={{ fontSize: 12, color: '#9a3412', marginTop: 4 }}>Recommended: create anyway (Accept)</div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <div className="mb-detail-label">Title</div>

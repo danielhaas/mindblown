@@ -180,6 +180,15 @@ export class GitHubForge implements ForgeClient {
     return rows.map((m) => ({ ref: m.number, title: m.title, state: m.state }));
   }
 
+  async searchIssues(owner: string, repo: string, query: string, opts?: { limit?: number }): Promise<ForgeIssue[]> {
+    const q = `repo:${owner}/${repo} is:issue ${query.trim()}`;
+    const limit = Math.max(1, Math.min(opts?.limit ?? 10, 50));
+    const res = await this.requestJson<{ items?: object[] }>(
+      `/search/issues?q=${encodeURIComponent(q)}&per_page=${limit}&sort=updated&order=desc`,
+    );
+    return (res.items ?? []).map((raw) => this.normalizeIssue(raw));
+  }
+
   // ── Issue history ───────────────────────────────────────────────
 
   async listCrossReferencingPullRequests(owner: string, repo: string, issueNumber: number): Promise<number[]> {

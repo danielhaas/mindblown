@@ -3220,9 +3220,26 @@ function formatIntakeTurn(r: api.IntakeTurnResponse): string {
       lines.push('Dependencies (finish-to-start):');
       for (const x of d.dependencies) lines.push(`  - "${x.text}" [${x.nodeId}] — ${x.reason}`);
     }
-    if (d.duplicates.length > 0) {
-      lines.push('Possible duplicates — check before accepting:');
-      for (const x of d.duplicates) lines.push(`  - "${x.text}" [${x.nodeId}] — ${x.reason}`);
+    if (d.verdict !== 'new') {
+      const headline =
+        d.verdict === 'covered'
+          ? 'ALREADY COVERED by an existing ticket'
+          : d.verdict === 'regression'
+            ? 'REGRESSION of a ticket that was done'
+            : 'EXTENDS an existing ticket';
+      lines.push(`Verdict: ${d.verdict} — ${headline}:`);
+      for (const x of d.existing) {
+        const where = x.nodeId ? `[${x.nodeId}]` : `#${x.issueNumber} (not in this map)`;
+        const state = [x.status, x.closedAt ? `done ${x.closedAt.slice(0, 10)}` : '', x.fixedByPr ? 'fixed by merged PR' : '']
+          .filter(Boolean)
+          .join(', ');
+        lines.push(`  - "${x.text}" ${where}${state ? ` — ${state}` : ''}`);
+        lines.push(`    ${x.reason}`);
+        lines.push(`    recommended: ${x.recommendation}${x.url ? ` — ${x.url}` : ''}`);
+      }
+      lines.push(
+        'Act with ticket_intake_accept(action: "nothing" | "comment" | "reopen", existing: {nodeId | issueNumber}, note) — or action "create" to file the draft anyway (it gets a "relates to" line).',
+      );
     }
     lines.push('', 'Description:', d.description);
   }
@@ -3265,10 +3282,16 @@ server.tool(
 
 server.tool(
   'ticket_intake_accept',
-  'Create the node from a ticket_intake draft (as reviewed — pass the fields you want written). Adds finish-to-start dependencies and, with createIssue, files the issue on the connected repo. Pass the intakeId so later tickets in the session can depend on this one.',
+  'Act on a ticket_intake draft. action "create" (default) creates the node as reviewed — pass the fields you want written; adds finish-to-start dependencies and, with createIssue, files the issue on the connected repo. When the draft came back with a non-new verdict, act on the existing ticket instead: "comment" adds the note to it (node comment + issue comment), "reopen" puts it back to todo and reopens its issue, "nothing" records that it is already covered. Pass the intakeId so the session remembers the outcome.',
   {
     mapId: z.string().describe('The map ID'),
     intakeId: z.string().optional().describe('Session id from ticket_intake'),
+    action: z.enum(['create', 'comment', 'reopen', 'nothing']).optional().describe('Default create'),
+    existing: z
+      .object({ nodeId: z.string().nullable().optional(), issueNumber: z.number().int().nullable().optional() })
+      .optional()
+      .describe('The existing ticket for comment/reopen/nothing; with create it adds a "relates to" line'),
+    note: z.string().optional().describe('Text for comment/reopen; defaults to the draft description'),
     createIssue: z.boolean().optional().describe('Also create the GitHub/Gitea issue (default false)'),
     draft: z.object({
       title: z.string().min(1),
@@ -3282,9 +3305,29 @@ server.tool(
       dependencies: z.array(z.object({ nodeId: z.string() })).optional(),
     }),
   },
-  async ({ mapId, intakeId, createIssue, draft }) => {
+  async ({ mapId, intakeId, createIssue, draft, action, existing, note }) => {
     try {
-      const r = await api.aiIntakeAccept(mapId, draft, { intakeId, createIssue });
+      if (action && action !== 'create') {
+        if (!existing || (!existing.nodeId && existing.issueNumber == null)) {
+          return toolResult(`Error: action "${action}" needs existing.nodeId or existing.issueNumber.`);
+        }
+        const r = await api.aiIntakeExistingAction(
+          mapId,
+          action === 'nothing' ? 'none' : action,
+          existing,
+          note ?? draft.description,
+          { intakeId },
+        );
+        if (r.action === 'none') return toolResult('Recorded: already covered, nothing created.');
+        const e = r.existing!;
+        const lines = [
+          `${action === 'reopen' ? 'Reopened' : 'Commented on'} ${e.nodeId ? `node ${e.nodeId}` : ''}${e.issueNumber != null ? ` issue #${e.issueNumber}` : ''}.`,
+        ];
+        if (e.commentUrl) lines.push(`Comment${e.author?.as === 'user' ? ` as ${e.author.login}` : ''}: ${e.commentUrl}`);
+        if (e.warnings.length) lines.push(`Warnings: ${e.warnings.join('; ')}`);
+        return toolResult(lines.join('\n'));
+      }
+      const r = await api.aiIntakeAccept(mapId, draft, { intakeId, createIssue, existing });
       const lines = [`Created node "${r.node.text}" (id: ${r.node.id}) under ${draft.parentId}.`];
       if (r.issue) {
         const a = r.issue.author;

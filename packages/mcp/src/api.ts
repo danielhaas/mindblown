@@ -1081,7 +1081,18 @@ export interface IntakeDraft {
   phaseName: string | null;
   tags: string[];
   dependencies: IntakeRef[];
-  duplicates: IntakeRef[];
+  verdict: 'new' | 'covered' | 'extends' | 'regression';
+  existing: Array<{
+    nodeId: string | null;
+    issueNumber: number | null;
+    url: string | null;
+    text: string;
+    status: string | null;
+    closedAt: string | null;
+    fixedByPr: boolean;
+    reason: string;
+    recommendation: 'nothing' | 'comment' | 'reopen' | 'create';
+  }>;
   estimate: {
     estimate: number;
     confidence: 'low' | 'medium' | 'high';
@@ -1150,16 +1161,46 @@ export function aiIntake(
 export function aiIntakeAccept(
   mapId: string,
   draft: IntakeAcceptDraft,
-  opts: { intakeId?: string | null; createIssue?: boolean } = {},
+  opts: {
+    intakeId?: string | null;
+    createIssue?: boolean;
+    existing?: { nodeId?: string | null; issueNumber?: number | null } | null;
+  } = {},
 ): Promise<IntakeAcceptResponse> {
   return request<IntakeAcceptResponse>('/api/ai/intake/accept', {
     method: 'POST',
     body: JSON.stringify({
       mapId,
+      action: 'create',
       draft,
+      existing: opts.existing ?? null,
       intakeId: opts.intakeId ?? null,
       createIssue: opts.createIssue === true,
     }),
+  });
+}
+
+export interface IntakeExistingActionResponse {
+  action: 'comment' | 'reopen' | 'none';
+  existing?: {
+    nodeId: string | null;
+    issueNumber: number | null;
+    commentUrl: string | null;
+    author: { as: 'user' | 'binding'; login: string | null; fallbackReason?: string } | null;
+    warnings: string[];
+  };
+}
+
+export function aiIntakeExistingAction(
+  mapId: string,
+  action: 'comment' | 'reopen' | 'none',
+  existing: { nodeId?: string | null; issueNumber?: number | null },
+  note: string,
+  opts: { intakeId?: string | null } = {},
+): Promise<IntakeExistingActionResponse> {
+  return request<IntakeExistingActionResponse>('/api/ai/intake/accept', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, action, existing, note, intakeId: opts.intakeId ?? null }),
   });
 }
 

@@ -1503,8 +1503,40 @@ export interface IntakeDraft {
   phaseName: string | null;
   tags: string[];
   dependencies: IntakeRef[];
-  duplicates: IntakeRef[];
+  /** new | covered | extends | regression — see IntakeExisting for the tickets behind it. */
+  verdict: IntakeVerdict;
+  existing: IntakeExisting[];
   estimate: IntakeEstimate | null;
+}
+
+export type IntakeVerdict = 'new' | 'covered' | 'extends' | 'regression';
+export type IntakeRecommendation = 'nothing' | 'comment' | 'reopen' | 'create';
+
+/** An existing ticket the intake found: a map node, or an issue only on the repo. */
+export interface IntakeExisting {
+  nodeId: string | null;
+  issueNumber: number | null;
+  url: string | null;
+  text: string;
+  status: string | null;
+  closedAt: string | null;
+  /** Done and shipped by a merged PR — reopening is usually wrong. */
+  fixedByPr: boolean;
+  reason: string;
+  recommendation: IntakeRecommendation;
+}
+
+export type IntakeAction = 'create' | 'comment' | 'reopen' | 'none';
+
+export interface IntakeExistingActionResponse {
+  action: 'comment' | 'reopen';
+  existing: {
+    nodeId: string | null;
+    issueNumber: number | null;
+    commentUrl: string | null;
+    author: { as: 'user' | 'binding'; login: string | null; fallbackReason?: string } | null;
+    warnings: string[];
+  };
 }
 
 export interface IntakeQuestion {
@@ -1570,15 +1602,42 @@ export function aiIntake(
 export function aiIntakeAccept(
   mapId: string,
   draft: IntakeAcceptDraft,
-  opts: { intakeId?: string | null; createIssue?: boolean } = {},
+  opts: {
+    intakeId?: string | null;
+    createIssue?: boolean;
+    /** "Create anyway" next to this existing ticket: a "relates to" line is appended. */
+    existing?: { nodeId: string | null; issueNumber: number | null } | null;
+  } = {},
 ): Promise<IntakeAcceptResponse> {
   return request<IntakeAcceptResponse>('/api/ai/intake/accept', {
     method: 'POST',
     body: JSON.stringify({
       mapId,
+      action: 'create',
       draft,
+      existing: opts.existing ?? null,
       intakeId: opts.intakeId ?? null,
       createIssue: opts.createIssue === true,
+    }),
+  });
+}
+
+/** Act on an existing ticket instead of creating one: comment, reopen, or record "nothing to do". */
+export function aiIntakeExistingAction(
+  mapId: string,
+  action: 'comment' | 'reopen' | 'none',
+  existing: { nodeId: string | null; issueNumber: number | null },
+  note: string,
+  opts: { intakeId?: string | null } = {},
+): Promise<IntakeExistingActionResponse | { action: 'none' }> {
+  return request('/api/ai/intake/accept', {
+    method: 'POST',
+    body: JSON.stringify({
+      mapId,
+      action,
+      existing,
+      note,
+      intakeId: opts.intakeId ?? null,
     }),
   });
 }

@@ -17,8 +17,17 @@ import {
   getIntakeSession,
   runIntakeTurn,
   recordAccepted,
+  recordDecision,
   type IntakeContext,
 } from '../ai/intake.js';
+import { forgeLinkOf } from '../ai/intakeExisting.js';
+import {
+  commentOnExisting,
+  reopenExisting,
+  ExistingNotFoundError,
+  type ExistingActionResult,
+} from '../services/intakeActions.js';
+import * as events from '../db/events.js';
 import { createForgeIssueForNode, NoForgeIntegrationError, type IssueAuthor } from '../services/forgeIssue.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
 import { guardMapIdInPayload } from '../lib/mapAccess.js';
@@ -39,6 +48,13 @@ import { broadcast } from '../ws.js';
 import { computeTree, type Node as CoreNode } from '@mindblown/core';
 
 // ── Helpers ──────────────────────────────────────────────────────
+
+/** "#42" for a node linked to a forge issue, else null. */
+function issueRefOf(node: CoreNode): string | null {
+  const link = forgeLinkOf(node);
+  const m = link ? /#(\d+)$/.exec(link.externalId) : null;
+  return m ? `#${m[1]}` : null;
+}
 
 /** Walk up from a node to the root, collecting ancestor text labels. */
 function ancestorPath(nodeId: string, nodeMap: Map<string, CoreNode>): string[] {
@@ -1065,23 +1081,33 @@ Parent node: "${parentNode.text}"`;
     }
   });
 
-  // ── POST /api/ai/intake/accept — create the reviewed draft ─────
+  // ── POST /api/ai/intake/accept — act on the reviewed draft ─────
   //
-  // Request:  { mapId, draft: { title, description, parentId, priority?,
+  // Request:  { mapId, action?: 'create' | 'comment' | 'reopen' | 'none',
+  //             draft: { title, description, parentId, priority?,
   //             versionId?, phaseId?, tags?, effortEstimate?,
-  //             dependencies?: [{ nodeId }] }, intakeId?, createIssue? }
-  // Response: 201 { node, issue: { number, html_url } | null, issueError? }
+  //             dependencies?: [{ nodeId }] }, existing?: { nodeId?,
+  //             issueNumber? }, note?, intakeId?, createIssue? }
+  // Response: create → 201 { action, node, issue, issueError?, dependencyErrors? }
+  //           comment / reopen → 200 { action, existing: { nodeId, issueNumber,
+  //             commentUrl, author, warnings } }
+  //           none → 200 { action: 'none' }
   //
   // The client sends the draft as edited on the card, so the server
   // writes what the user saw — not what the model proposed. The estimate
   // is only in the payload when the user kept it (medium/high confidence
-  // by default; low stays a suggestion).
+  // by default; low stays a suggestion). `comment` / `reopen` take the
+  // card's description as the note unless `note` is given; `create` with
+  // `existing` appends a "relates to" line.
 
   app.post('/api/ai/intake/accept', { config: { mapAccess: 'edit' } }, async (req, reply) => {
     const body = req.body as {
       mapId: string;
       intakeId?: string | null;
       createIssue?: boolean;
+      action?: 'create' | 'comment' | 'reopen' | 'none';
+      existing?: { nodeId?: string | null; issueNumber?: number | null } | null;
+      note?: string | null;
       draft: {
         title: string;
         description: string;
@@ -1094,6 +1120,52 @@ Parent node: "${parentNode.text}"`;
         dependencies?: Array<{ nodeId: string }>;
       };
     };
+    const action = body.action ?? 'create';
+    const userId = (req as any).userId ?? 'system';
+    const intakeSession = body.intakeId ? getIntakeSession(body.intakeId, body.mapId) : null;
+
+    if (action === 'none') {
+      if (intakeSession) recordDecision(intakeSession, 'The user decided an existing ticket already covers this — nothing was created.');
+      return reply.status(200).send({ action: 'none' });
+    }
+
+    if (action === 'comment' || action === 'reopen') {
+      if (!body.mapId || !body.existing || (!body.existing.nodeId && body.existing.issueNumber == null)) {
+        return reply.status(400).send({
+          error: { code: 'VALIDATION_ERROR', message: `${action} needs existing.nodeId or existing.issueNumber` },
+        });
+      }
+      const note = (body.note ?? body.draft?.description ?? '').trim();
+      if (!note) {
+        return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'note (or draft.description) is required' } });
+      }
+      try {
+        let result: ExistingActionResult;
+        if (action === 'comment') {
+          result = await commentOnExisting(body.mapId, userId, body.existing, note);
+        } else {
+          const mapDetail = await mapDb.getMap(body.mapId);
+          if (!mapDetail) {
+            return reply.status(404).send({ error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` } });
+          }
+          result = await reopenExisting(body.mapId, userId, mapDetail.map, body.existing, note);
+        }
+        if (intakeSession) {
+          recordDecision(
+            intakeSession,
+            `The user chose "${action}" on the existing ticket ${result.nodeId ? `[${result.nodeId}]` : `#${result.issueNumber}`} instead of creating a new one.`,
+          );
+        }
+        const { node: _node, ...existing } = result;
+        return reply.status(200).send({ action, existing });
+      } catch (err: any) {
+        if (err instanceof ExistingNotFoundError) {
+          return reply.status(400).send({ error: { code: err.code, message: err.message } });
+        }
+        return reply.status(502).send({ error: { code: 'ACTION_FAILED', message: err.message } });
+      }
+    }
+
     const d = body.draft;
     if (!body.mapId || !d || !d.title?.trim() || !d.parentId) {
       return reply.status(400).send({
@@ -1107,11 +1179,20 @@ Parent node: "${parentNode.text}"`;
       });
     }
 
-    const userId = (req as any).userId ?? 'system';
     const effortEstimate =
       typeof d.effortEstimate === 'number' && Number.isFinite(d.effortEstimate) && d.effortEstimate >= 0
         ? d.effortEstimate
         : undefined;
+
+    // "Create anyway" next to an existing ticket: say so in the description.
+    let description = d.description?.trim() ?? '';
+    if (body.existing && (body.existing.nodeId || body.existing.issueNumber != null)) {
+      const related = body.existing.nodeId ? await nodeDb.getNode(body.existing.nodeId) : null;
+      const label = related
+        ? `«${related.text}»${issueRefOf(related) ? ` (${issueRefOf(related)})` : ''}`
+        : `#${body.existing.issueNumber}`;
+      description = `${description}\n\n_Related: ${label}_`.trim();
+    }
 
     let node: CoreNode;
     try {
@@ -1120,7 +1201,7 @@ Parent node: "${parentNode.text}"`;
         parentId: d.parentId,
         text: d.title.trim(),
         createdBy: userId,
-        description: d.description?.trim() ? d.description.trim() : undefined,
+        description: description || undefined,
         priority: d.priority ?? undefined,
         versionId: d.versionId ?? undefined,
         phaseId: d.phaseId ?? undefined,
@@ -1132,6 +1213,23 @@ Parent node: "${parentNode.text}"`;
     }
     broadcast(body.mapId, { type: 'node:created', node });
     scheduleEmbedNode(node.id);
+    // Same change-history row the REST create writes (the lint sync pack
+    // flags nodes without one).
+    events
+      .recordEvent({
+        mapId: body.mapId,
+        nodeId: node.id,
+        userId,
+        eventType: 'node.created',
+        newValue: {
+          parentId: node.parentId,
+          text: node.text,
+          effortEstimate: node.effortEstimate ?? null,
+          priority: node.priority ?? null,
+          source: 'ticket_intake',
+        },
+      })
+      .catch(() => {});
 
     // Finish-to-start on each dependency the user kept. A bad id is the
     // user's edit, not a reason to lose the node — report and continue.
@@ -1161,10 +1259,10 @@ Parent node: "${parentNode.text}"`;
       }
     }
 
-    const session = body.intakeId ? getIntakeSession(body.intakeId, body.mapId) : null;
-    if (session) recordAccepted(session, node.id, node.text);
+    if (intakeSession) recordAccepted(intakeSession, node.id, node.text);
 
     return reply.status(201).send({
+      action: 'create',
       node,
       issue,
       ...(issueError ? { issueError } : {}),

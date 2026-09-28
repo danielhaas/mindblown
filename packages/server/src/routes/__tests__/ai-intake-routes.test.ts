@@ -69,6 +69,21 @@ vi.mock('../../services/forgeIssue.js', async (importOriginal) => {
 });
 vi.mock('../../lib/githubContext.js', () => ({
   getMapForgeKind: vi.fn(async () => 'github'),
+  getGitHubContextForMap: vi.fn(async () => null),
+}));
+const commentExistingMock = vi.fn();
+const reopenExistingMock = vi.fn();
+vi.mock('../../services/intakeActions.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../services/intakeActions.js')>();
+  return {
+    ...actual,
+    commentOnExisting: (...a: unknown[]) => commentExistingMock(...a),
+    reopenExisting: (...a: unknown[]) => reopenExistingMock(...a),
+  };
+});
+vi.mock('../../db/events.js', () => ({
+  recordEvent: vi.fn(async () => {}),
+  recordFieldChanges: vi.fn(async () => {}),
 }));
 // The route file's catch-all answers AI_NOT_CONFIGURED whenever the server
 // has no backend configured (true in the test env) — declare one.
@@ -242,6 +257,73 @@ describe('POST /api/ai/intake/accept', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('PARENT_NOT_FOUND');
     expect(createNodeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/ai/intake/accept — existing-ticket actions', () => {
+  it('comment: forwards target and note, answers 200 without creating anything', async () => {
+    const app = await buildApp();
+    commentExistingMock.mockResolvedValueOnce({
+      nodeId: 'n-old', issueNumber: 42, commentUrl: 'https://x/42#c', author: { as: 'user', login: 'dan' }, node: { id: 'n-old' }, warnings: [],
+    });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake/accept',
+      payload: { mapId: MAP_ID, action: 'comment', existing: { nodeId: 'n-old' }, draft: { title: 't', description: 'the new info', parentId: 'p1' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(commentExistingMock).toHaveBeenCalledWith(MAP_ID, 'user-1', { nodeId: 'n-old' }, 'the new info');
+    expect(createNodeMock).not.toHaveBeenCalled();
+    expect(res.json()).toEqual({
+      action: 'comment',
+      existing: { nodeId: 'n-old', issueNumber: 42, commentUrl: 'https://x/42#c', author: { as: 'user', login: 'dan' }, warnings: [] },
+    });
+  });
+
+  it('reopen: loads the map for its workflow and forwards an explicit note', async () => {
+    const app = await buildApp();
+    getMapMock.mockResolvedValueOnce({ map: { id: MAP_ID, name: 'M', statusWorkflow: [] }, nodes: [] });
+    reopenExistingMock.mockResolvedValueOnce({ nodeId: null, issueNumber: 77, commentUrl: null, author: null, node: null, warnings: ['w'] });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake/accept',
+      payload: { mapId: MAP_ID, action: 'reopen', existing: { issueNumber: 77 }, note: 'it is back', draft: { title: 't', description: 'd', parentId: 'p1' } },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(reopenExistingMock.mock.calls[0][3]).toEqual({ issueNumber: 77 });
+    expect(reopenExistingMock.mock.calls[0][4]).toBe('it is back');
+    expect(res.json().existing.warnings).toEqual(['w']);
+  });
+
+  it('none: records nothing and creates nothing', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/api/ai/intake/accept', payload: { mapId: MAP_ID, action: 'none' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ action: 'none' });
+    expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('comment without a target is a 400', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: '/api/ai/intake/accept', payload: { mapId: MAP_ID, action: 'comment', draft: { title: 't', description: 'd', parentId: 'p1' } } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('create next to an existing ticket appends a "Related" line', async () => {
+    const app = await buildApp();
+    getNodeMock.mockImplementation(async (id: string) =>
+      id === 'n-old'
+        ? { id: 'n-old', mapId: MAP_ID, text: 'Old ticket', externalLinks: [{ provider: 'github', externalId: 'o/r#42', url: 'u', syncEnabled: true, lastSyncedAt: null }] }
+        : { id: 'p1', mapId: MAP_ID, text: 'Parent' },
+    );
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/ai/intake/accept',
+      payload: { mapId: MAP_ID, action: 'create', existing: { nodeId: 'n-old' }, draft: { title: 't', description: '## Why\nx', parentId: 'p1' } },
+    });
+    expect(res.statusCode).toBe(201);
+    const input = createNodeMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(input.description).toBe('## Why\nx\n\n_Related: «Old ticket» (#42)_');
   });
 });
 

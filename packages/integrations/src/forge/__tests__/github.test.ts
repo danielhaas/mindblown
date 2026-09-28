@@ -57,7 +57,12 @@ const ghPrFiles = [
 describeForgeContract({
   name: 'GitHubForge',
   create: (fetchImpl) => new GitHubForge({ token: 't_contract', fetchImpl }),
-  wire: { issue: ghIssue, pullRequest: ghPr, pullRequestFiles: ghPrFiles },
+  wire: {
+    issue: ghIssue,
+    pullRequest: ghPr,
+    pullRequestFiles: ghPrFiles,
+    searchIssues: { total_count: 1, incomplete_results: false, items: [ghIssue] },
+  },
   expectedIssueWebUrl: 'https://github.com/o/r/issues/42',
 });
 

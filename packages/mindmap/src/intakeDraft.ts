@@ -65,6 +65,30 @@ export function answersToMessage(
   return lines.join('\n');
 }
 
+/** One line the card puts above the existing tickets. */
+export function verdictHeadline(verdict: IntakeDraft['verdict']): string {
+  switch (verdict) {
+    case 'covered':
+      return 'Already covered by an existing ticket';
+    case 'regression':
+      return 'This was done before and is back';
+    case 'extends':
+      return 'This extends an existing ticket';
+    default:
+      return '';
+  }
+}
+
+/** Human line for one existing ticket's state. */
+export function existingStateLine(x: IntakeDraft['existing'][number]): string {
+  const bits: string[] = [];
+  if (x.status) bits.push(x.status);
+  if (x.closedAt) bits.push(`done ${x.closedAt.slice(0, 10)}`);
+  if (x.fixedByPr) bits.push('fixed by a merged PR');
+  if (x.issueNumber != null) bits.push(`#${x.issueNumber}${x.nodeId ? '' : ' (not in this map)'}`);
+  return bits.join(' · ');
+}
+
 /** Comma-separated tag input → list, trimmed, deduped, empties dropped. */
 export function parseTags(raw: string): string[] {
   const out: string[] = [];

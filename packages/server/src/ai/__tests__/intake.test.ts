@@ -85,6 +85,7 @@ const call = (id: string, name: string, args: Record<string, unknown>): Provider
 function io(overrides: Partial<IntakeIo> = {}): Partial<IntakeIo> {
   return {
     semanticSearch: async () => [{ nodeId: 'l1', text: 'Close issue on merge', score: 0.71 }],
+    searchForgeIssues: async () => [],
     executeTool: async (name) => `result of ${name}`,
     estimateEffort: async () => ({
       estimate: 2,
@@ -108,7 +109,8 @@ const goodDraft = {
   phaseId: 'ph1',
   tags: ['sync'],
   dependencies: [{ nodeId: 'l1', reason: 'builds on it' }],
-  duplicates: [],
+  verdict: 'new',
+  existing: [],
 };
 
 beforeEach(() => resetIntakeSessions());
@@ -155,7 +157,7 @@ describe('runIntakeTurn', () => {
     // The duplicate pre-check reached the model inside the user message.
     const first = session.messages[0];
     expect(first.role).toBe('user');
-    expect((first as { content: string }).content).toContain('[l1] score 0.71');
+    expect((first as { content: string }).content).toContain('"Close issue on merge" [l1] — no status; similarity 0.71');
 
     // The search result came from executeTool and was replayed as a tool message.
     const toolMsgs = session.messages.filter((m) => m.role === 'tool');
@@ -175,6 +177,30 @@ describe('runIntakeTurn', () => {
     expect(provider.calls[1].tools.map((t) => t.name).sort()).toEqual(
       ['ask_user', 'propose_ticket', 'search_nodes', 'semantic_search'].sort(),
     );
+  });
+
+  it('lists forge-only issues in the note and remembers them for the draft', async () => {
+    const provider = scriptedProvider([
+      [call('c', 'propose_ticket', { ...goodDraft, verdict: 'extends', existing: [{ issueNumber: 77, reason: 'same', recommendation: 'comment' }] })],
+    ]);
+    const session = createIntakeSession('m1', 'u1');
+    const r = await runIntakeTurn({
+      provider,
+      session,
+      ctx: ctx(),
+      message: 'webhook closes issue',
+      io: io({
+        searchForgeIssues: async (_m, q) => {
+          expect(q).toContain('webhook');
+          return [{ number: 77, title: 'Webhook never fires', state: 'open', closedAt: null, url: 'https://x/77', externalId: 'o/r#77' }];
+        },
+      }),
+    });
+    const note = (session.messages[0] as { content: string }).content;
+    expect(note).toContain('issue #77 "Webhook never fires" — open, NOT in this map');
+    expect(session.forgeHits.get(77)?.title).toBe('Webhook never fires');
+    expect(r.draft?.verdict).toBe('extends');
+    expect(r.draft?.existing[0]).toMatchObject({ nodeId: null, issueNumber: 77, text: 'Webhook never fires', recommendation: 'comment' });
   });
 
   it('a prose-only reply ends the turn with no draft and no questions', async () => {
@@ -264,7 +290,7 @@ describe('runIntakeTurn in JSON mode', () => {
     expect(r1.questions).toEqual([{ id: 'v', question: 'Which version?', options: ['V1'], why: null }]);
     expect(provider.prompts[0]).toContain('Return ONLY one JSON object');
     expect(provider.prompts[0]).not.toContain('propose_ticket');
-    expect(provider.parts[0][0]).toContain('[l1] score 0.71'); // duplicate note reaches the model
+    expect(provider.parts[0][0]).toContain('[l1] — no status; similarity 0.71'); // existing-work note reaches the model
 
     const r2 = await runIntakeTurn({ provider, session, ctx: ctx(), message: 'V1, and make it P1', io: io() });
     expect(r2.draft?.priority).toBe('P1');
@@ -332,6 +358,45 @@ describe('sanitizeDraft', () => {
       { nodeId: 'l1', text: 'Close issue on merge', reason: 'a' },
       { nodeId: 'acc1', text: 'Earlier ticket', reason: 'b' },
     ]);
+  });
+
+  it('resolves existing tickets against the map and the session forge hits, drops invented ones', () => {
+    const doneNode = {
+      ...node('d1', 'Old fix', 'a1'),
+      status: 'done',
+      completedAt: '2026-08-01T00:00:00Z',
+      externalLinks: [{ provider: 'github', externalId: 'o/r#42', url: 'https://x/42', syncEnabled: true, lastSyncedAt: null, state: 'closed', mergeCommitSha: 'abc' }],
+    } as unknown as CoreNode;
+    const forgeHits = new Map([[77, { number: 77, title: 'GH only', state: 'closed' as const, closedAt: '2026-07-01T00:00:00Z', url: 'https://x/77', externalId: 'o/r#77' }]]);
+    const d = sanitizeDraft(
+      {
+        ...goodDraft,
+        verdict: 'regression',
+        existing: [
+          { nodeId: 'd1', reason: 'same bug', recommendation: 'reopen' },
+          { issueNumber: 77, reason: 'also this', recommendation: 'comment' },
+          { nodeId: 'nope', reason: 'invented', recommendation: 'nothing' },
+          { issueNumber: 999, reason: 'invented', recommendation: 'nothing' },
+        ],
+      },
+      ctx({ nodes: [...nodes, doneNode], forgeHits }),
+    );
+    expect(d?.verdict).toBe('regression');
+    expect(d?.existing).toEqual([
+      // A shipped fix is never "reopen" — the draft relates to it instead.
+      { nodeId: 'd1', issueNumber: 42, url: 'https://x/42', text: 'Old fix', status: 'done', closedAt: '2026-08-01T00:00:00Z', fixedByPr: true, reason: 'same bug', recommendation: 'create' },
+      { nodeId: null, issueNumber: 77, url: 'https://x/77', text: 'GH only', status: 'closed', closedAt: '2026-07-01T00:00:00Z', fixedByPr: false, reason: 'also this', recommendation: 'comment' },
+    ]);
+  });
+
+  it('normalises the verdict to the evidence', () => {
+    expect(sanitizeDraft({ ...goodDraft, verdict: 'covered', existing: [] }, ctx())?.verdict).toBe('new');
+    expect(sanitizeDraft({ ...goodDraft, verdict: 'new', existing: [{ nodeId: 'l1', reason: 'r', recommendation: 'comment' }] }, ctx())?.verdict).toBe('extends');
+    expect(sanitizeDraft({ ...goodDraft, verdict: 'bogus', existing: [{ nodeId: 'l1', reason: 'r' }] }, ctx())?.existing[0].recommendation).toBe('comment');
+    // The pre-#409 field name still resolves.
+    expect(
+      sanitizeDraft({ ...goodDraft, existing: undefined, duplicates: [{ nodeId: 'l1', reason: 'old shape' }] }, ctx())?.existing,
+    ).toHaveLength(1);
   });
 
   it('returns null without a title or description', () => {
