@@ -101,8 +101,11 @@ export const ROLE_CONFIG: Record<ViewRole, RoleConfig> = {
     // Fleet's Questions section too (Dan, 2026-09-03): the developer lens
     // answers as well — the questions are the fleet's, whoever is looking
     // decides.
+    // Plan health (Dan, 2026-09-28): since the sync pack, "is my done
+    // ticket really done — issue closed, PR behind it?" is a developer
+    // question, so the panel is theirs too.
     tabs: ['list', 'kanban', 'mindmap', 'fleet', 'files'],
-    panels: ['blocked', 'property', 'mapChat'],
+    panels: ['blocked', 'planHealth', 'property', 'mapChat'],
   },
   all: {
     label: 'All',
