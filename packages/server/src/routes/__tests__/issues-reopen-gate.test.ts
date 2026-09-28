@@ -211,6 +211,67 @@ async function postReopen() {
   return res;
 }
 
+async function postIssueEvent(payload: Record<string, unknown>) {
+  const app = await buildApp();
+  const res = await app.inject({
+    method: 'POST',
+    url: '/api/webhooks/github',
+    headers: { 'x-github-event': 'issues', 'x-hub-signature-256': 'sha256=anything' },
+    payload,
+  });
+  await app.close();
+  return res;
+}
+
+describe('issues.closed / issues.reopened echoes of MindBlown\'s own sync', () => {
+  // Node set done in MindBlown → outbound sync closed the issue → GitHub
+  // echoes `issues.closed`. The node is already done: nothing to restore
+  // later, so the snapshot must NOT become done/100.
+  it('closed on an already-done node only tracks the mirror state', async () => {
+    const node = doneNode({ previousPercentComplete: 40, previousStatus: 'in_progress' }, null);
+    node.externalLinks[0].state = 'open';
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const res = await postIssueEvent({ ...reopenedPayload(), action: 'closed', issue: { ...(reopenedPayload().issue as object), state: 'closed' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().skipped).toBe('already_done');
+    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    expect(mocks.setExternalLinkStateMock).toHaveBeenCalledWith('n-1', 'owner/repo#42', 'closed');
+  });
+
+  // Node put back to todo in MindBlown (person, or intake "reopen") →
+  // sync reopened the issue → GitHub echoes `issues.reopened`. Before the
+  // guard this restored the done/100 snapshot and undid the reopen.
+  it('reopened on a node that is already open leaves status and progress alone', async () => {
+    const node = { ...doneNode({ previousPercentComplete: 100, previousStatus: 'done' }, null), status: 'todo', percentComplete: 0 };
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const res = await postReopen();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().skipped).toBe('already_open');
+    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    expect(mocks.setExternalLinkStateMock).toHaveBeenCalledWith('n-1', 'owner/repo#42', 'open');
+  });
+
+  it('closed on an open node still captures the snapshot and marks done', async () => {
+    const node = { ...doneNode({}, null), status: 'in_progress', percentComplete: 40 };
+    node.externalLinks[0].state = 'open';
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const res = await postIssueEvent({ ...reopenedPayload(), action: 'closed', issue: { ...(reopenedPayload().issue as object), state: 'closed' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().skipped).toBeUndefined();
+    const fields = mocks.updateNodeMock.mock.calls[0][1] as { percentComplete: number; status: string; externalLinks: Array<Record<string, unknown>> };
+    expect(fields.percentComplete).toBe(100);
+    expect(fields.status).toBe('done');
+    expect(fields.externalLinks[0]).toMatchObject({ previousPercentComplete: 40, previousStatus: 'in_progress', state: 'closed' });
+  });
+});
+
 describe('issues.reopened × in-flight PR (prBlocksNodeReopen parity with catchup)', () => {
   it('does NOT reset a done node while its PR is in flight and no snapshot exists', async () => {
     const node = doneNode({}, 'open');
