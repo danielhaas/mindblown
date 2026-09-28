@@ -20,6 +20,23 @@ import type {
 
 const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
 
+/**
+ * AI_REASONING_EFFORT (low/medium/high) — set only for a thinking model
+ * (qwen3 on LM Studio). Its reasoning tokens count against max_tokens, so a
+ * 2048 budget ended in `finish_reason: length` with empty content. Unset by
+ * default: Ollama 400s the parameter on a non-thinking model.
+ */
+const AI_REASONING_EFFORT = process.env.AI_REASONING_EFFORT ?? '';
+const REASONING_HEADROOM = 4096;
+
+function tokenParams(maxTokens: number) {
+  if (!AI_REASONING_EFFORT) return { max_tokens: maxTokens };
+  return {
+    max_tokens: maxTokens + REASONING_HEADROOM,
+    reasoning_effort: AI_REASONING_EFFORT as OpenAI.ReasoningEffort,
+  };
+}
+
 /** qwen2.5 occasionally outputs Thai/Chinese despite English instructions. Strip those lines. */
 function stripNonEnglish(content: string): string {
   return content
@@ -82,7 +99,7 @@ export const ollamaProvider: ChatProvider = {
           messages: toOpenAiMessages(opts.systemPrompt, opts.messages),
           tools,
           temperature: 0.3,
-          max_tokens: opts.maxTokens ?? 2048,
+          ...tokenParams(opts.maxTokens ?? 2048),
         },
         opts.signal ? { signal: opts.signal } : undefined,
       ),
@@ -132,7 +149,7 @@ export const ollamaProvider: ChatProvider = {
             { role: 'user', content: opts.parts.map((p) => p.text).join('\n\n') },
           ],
           temperature: opts.temperature ?? (json ? 0 : 0.4),
-          max_tokens: opts.maxTokens ?? 1024,
+          ...tokenParams(opts.maxTokens ?? 1024),
           // OpenAI-compatible JSON mode (see JSON_OBJECT_FORMAT). Callers
           // still validate — small models occasionally trail.
           ...(json ? { response_format: JSON_OBJECT_FORMAT } : {}),
