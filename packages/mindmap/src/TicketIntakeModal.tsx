@@ -8,12 +8,14 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import type { IntakeDraft, IntakeQuestion } from './api.js';
+import type { IntakeDraft, IntakeQuestion, IntakeExisting } from './api.js';
 import {
   editsFromDraft,
   toAcceptPayload,
   answersToMessage,
   parseTags,
+  verdictHeadline,
+  existingStateLine,
   type DraftEdits,
 } from './intakeDraft.js';
 
@@ -115,9 +117,11 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
     setError(null);
     try {
       const payload = toAcceptPayload(draft, { ...edits, tags: parseTags(tagsRaw) });
+      const first = draft.verdict !== 'new' ? draft.existing[0] : undefined;
       const r = await api.aiIntakeAccept(mapId, payload, {
         intakeId,
         createIssue: createIssue === true,
+        existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
       });
       await loadMap(mapId);
       setAcceptedCount((n) => n + 1);
@@ -144,6 +148,45 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
       setAccepting(false);
     }
   }, [draft, edits, accepting, tagsRaw, mapId, intakeId, createIssue, loadMap]);
+
+  const [existingBusy, setExistingBusy] = useState<string | null>(null);
+  const existingAction = useCallback(
+    async (action: 'none' | 'comment' | 'reopen', x: IntakeExisting) => {
+      if (!draft || !edits) return;
+      const key = x.nodeId ?? `#${x.issueNumber}`;
+      setExistingBusy(key);
+      setError(null);
+      try {
+        const r = await api.aiIntakeExistingAction(
+          mapId,
+          action,
+          { nodeId: x.nodeId, issueNumber: x.issueNumber },
+          edits.description,
+          { intakeId },
+        );
+        let line: string;
+        if (r.action === 'none') {
+          line = `Nothing created — «${x.text}» already covers it.`;
+        } else {
+          const e = r.existing;
+          line = `${action === 'reopen' ? 'Reopened' : 'Commented on'} «${x.text}»${
+            e.commentUrl ? ` (issue comment${e.author?.as === 'user' ? ` as ${e.author.login}` : ''})` : ''
+          }${e.warnings.length ? ` — ${e.warnings.join('; ')}` : ''}`;
+          await loadMap(mapId);
+        }
+        setLog((l) => [...l, { role: 'system', text: line }]);
+        setDraft(null);
+        setEdits(null);
+        setQuestions([]);
+        setAnswers({});
+      } catch (err: any) {
+        setError(err?.message || 'The action failed');
+      } finally {
+        setExistingBusy(null);
+      }
+    },
+    [draft, edits, mapId, intakeId, loadMap],
+  );
 
   const hasQuestions = questions.length > 0;
   const started = log.length > 0;
@@ -184,14 +227,52 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
           {draft && edits && (
             <div style={cardStyle}>
               <div style={cardTitleStyle}>Draft</div>
-              {draft.duplicates.length > 0 && (
+              {draft.verdict !== 'new' && draft.existing.length > 0 && (
                 <div style={warnStyle}>
-                  <strong>Possibly already covered:</strong>
-                  {draft.duplicates.map((d) => (
-                    <div key={d.nodeId}>
-                      «{d.text}» — {d.reason}
-                    </div>
-                  ))}
+                  <strong>{verdictHeadline(draft.verdict)}</strong>
+                  {draft.existing.map((x) => {
+                    const key = x.nodeId ?? `#${x.issueNumber}`;
+                    const busy = existingBusy === key;
+                    const btn = (
+                      action: 'none' | 'comment' | 'reopen',
+                      label: string,
+                      recommended: boolean,
+                    ) => (
+                      <button
+                        type="button"
+                        onClick={() => void existingAction(action, x)}
+                        disabled={busy || accepting || loading}
+                        style={recommended ? existingBtnPrimary : existingBtnStyle}
+                        title={recommended ? 'Recommended' : undefined}
+                      >
+                        {label}
+                        {recommended ? ' ★' : ''}
+                      </button>
+                    );
+                    return (
+                      <div key={key} style={{ marginTop: 6 }}>
+                        <div>
+                          {x.url ? (
+                            <a href={x.url} target="_blank" rel="noreferrer" style={{ color: '#9a3412' }}>
+                              «{x.text}»
+                            </a>
+                          ) : (
+                            <span>«{x.text}»</span>
+                          )}
+                          <span style={{ color: '#b45309' }}> — {existingStateLine(x)}</span>
+                        </div>
+                        <div style={{ color: '#7c2d12' }}>{x.reason}</div>
+                        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+                          {btn('none', 'Nothing to do', x.recommendation === 'nothing')}
+                          {btn('comment', 'Comment with this text', x.recommendation === 'comment')}
+                          {!x.fixedByPr && btn('reopen', 'Reopen', x.recommendation === 'reopen')}
+                          <span style={{ fontSize: 11, color: '#9a3412', alignSelf: 'center' }}>
+                            {x.recommendation === 'create' ? 'Recommended: create anyway (Accept below)' : ''}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               )}
               <label style={labelStyle}>Title</label>
@@ -562,6 +643,23 @@ const warnStyle: React.CSSProperties = {
   borderRadius: 6,
   padding: '6px 8px',
   margin: '6px 0',
+};
+
+const existingBtnStyle: React.CSSProperties = {
+  padding: '3px 10px',
+  borderRadius: 999,
+  border: '1px solid #fdba74',
+  background: '#fff',
+  fontSize: 12,
+  color: '#9a3412',
+  cursor: 'pointer',
+};
+
+const existingBtnPrimary: React.CSSProperties = {
+  ...existingBtnStyle,
+  background: '#ea580c',
+  borderColor: '#ea580c',
+  color: '#fff',
 };
 
 const checkRowStyle: React.CSSProperties = {

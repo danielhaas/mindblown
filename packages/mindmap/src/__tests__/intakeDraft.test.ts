@@ -6,7 +6,14 @@
 
 import { describe, it, expect } from 'vitest';
 import type { IntakeDraft } from '../api.js';
-import { editsFromDraft, toAcceptPayload, answersToMessage, parseTags } from '../intakeDraft.js';
+import {
+  editsFromDraft,
+  toAcceptPayload,
+  answersToMessage,
+  parseTags,
+  verdictHeadline,
+  existingStateLine,
+} from '../intakeDraft.js';
 
 function draft(overrides: Partial<IntakeDraft> = {}): IntakeDraft {
   return {
@@ -25,7 +32,8 @@ function draft(overrides: Partial<IntakeDraft> = {}): IntakeDraft {
       { nodeId: 'd1', text: 'one', reason: 'r1' },
       { nodeId: 'd2', text: 'two', reason: 'r2' },
     ],
-    duplicates: [],
+    verdict: 'new',
+    existing: [],
     estimate: { estimate: 2.5, confidence: 'medium', samplesUsed: 3, effortUnit: 'days' },
     ...overrides,
   };
@@ -81,6 +89,30 @@ describe('answersToMessage', () => {
       { a: 'yes', b: '  ' },
     );
     expect(msg).toBe('1. A?\n   → yes');
+  });
+});
+
+describe('verdict + existing lines', () => {
+  it('headline per verdict, empty for new', () => {
+    expect(verdictHeadline('new')).toBe('');
+    expect(verdictHeadline('covered')).toContain('Already covered');
+    expect(verdictHeadline('regression')).toContain('back');
+    expect(verdictHeadline('extends')).toContain('extends');
+  });
+
+  it('state line names status, done date, shipped fix and issue', () => {
+    expect(
+      existingStateLine({
+        nodeId: 'n1', issueNumber: 42, url: null, text: 't', status: 'done', closedAt: '2026-09-01T10:00:00Z',
+        fixedByPr: true, reason: '', recommendation: 'create',
+      }),
+    ).toBe('done · done 2026-09-01 · fixed by a merged PR · #42');
+    expect(
+      existingStateLine({
+        nodeId: null, issueNumber: 7, url: null, text: 't', status: 'open', closedAt: null,
+        fixedByPr: false, reason: '', recommendation: 'comment',
+      }),
+    ).toBe('open · #7 (not in this map)');
   });
 });
 

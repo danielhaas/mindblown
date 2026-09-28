@@ -39,6 +39,19 @@ import {
   AiBadResponseError,
   type EstimateResult,
 } from './estimate.js';
+import {
+  searchForgeIssues as defaultSearchForgeIssues,
+  keywordQuery,
+  preSearchLines,
+  nodeMatchFacts,
+  type ForgeIssueHit,
+  type IntakeExisting,
+  type IntakeVerdict,
+  type IntakeRecommendation,
+  type SearchForgeIssues,
+} from './intakeExisting.js';
+
+export type { IntakeExisting, IntakeVerdict, IntakeRecommendation } from './intakeExisting.js';
 
 // ── Sessions ──────────────────────────────────────────────────────
 
@@ -49,6 +62,8 @@ export interface IntakeSession {
   messages: NormalizedMessage[];
   /** Tickets accepted in this session, oldest first — prompt context for dependencies. */
   accepted: Array<{ nodeId: string; title: string }>;
+  /** Forge-only issues the pre-search surfaced, by number — so a draft can refer to them. */
+  forgeHits: Map<number, ForgeIssueHit>;
   touchedAt: number;
 }
 
@@ -69,6 +84,7 @@ export function createIntakeSession(mapId: string, userId: string): IntakeSessio
     userId,
     messages: [],
     accepted: [],
+    forgeHits: new Map(),
     touchedAt: Date.now(),
   };
   sessions.set(s.id, s);
@@ -111,7 +127,14 @@ export interface IntakeDraft {
   phaseName: string | null;
   tags: string[];
   dependencies: IntakeRef[];
-  duplicates: IntakeRef[];
+  /**
+   * Does this already exist? `new` = nothing found; `covered` = an
+   * existing ticket already covers it; `extends` = existing ticket, new
+   * information; `regression` = it was done and is back.
+   */
+  verdict: IntakeVerdict;
+  /** The existing tickets behind the verdict, each with a recommended action. */
+  existing: IntakeExisting[];
   /** Server-computed; null when the estimator failed or is unavailable. */
   estimate: EstimateResult | null;
 }
@@ -135,6 +158,8 @@ export interface IntakeTurnResult {
 // ── Model-facing tools ────────────────────────────────────────────
 
 const PRIORITY = z.enum(['P0', 'P1', 'P2', 'P3']);
+const VERDICT = z.enum(['new', 'covered', 'extends', 'regression']);
+const RECOMMENDATION = z.enum(['nothing', 'comment', 'reopen', 'create']);
 
 const proposeTicketTool = defineTool({
   name: 'propose_ticket',
@@ -156,10 +181,22 @@ const proposeTicketTool = defineTool({
       .array(z.object({ nodeId: z.string(), reason: z.string() }))
       .optional()
       .describe('Nodes this ticket cannot start before (finish-to-start). Existing tree ids or tickets accepted in this session.'),
-    duplicates: z
-      .array(z.object({ nodeId: z.string(), reason: z.string() }))
+    verdict: VERDICT.optional().describe(
+      'new = nothing existing matches; covered = an existing ticket already covers the request; extends = an existing ticket, but the user brings new information; regression = it was done and the problem is back.',
+    ),
+    existing: z
+      .array(
+        z.object({
+          nodeId: z.string().optional().describe('Map node id from the tree or the server note'),
+          issueNumber: z.number().int().optional().describe('Issue number for a forge-only hit from the server note'),
+          reason: z.string(),
+          recommendation: RECOMMENDATION.describe(
+            'nothing = already covered, no action; comment = add the new information to the existing ticket; reopen = it was closed without shipped code and is back; create = new ticket anyway (always when the existing one was fixed by a merged PR).',
+          ),
+        }),
+      )
       .optional()
-      .describe('Existing nodes that may already cover this request. The user decides.'),
+      .describe('The existing tickets behind a non-new verdict. Empty for verdict new.'),
   },
   handler: async () => 'Recorded.',
 });
@@ -206,6 +243,8 @@ export interface IntakeContext {
   versions: Version[];
   parentHintId: string | null;
   accepted: IntakeSession['accepted'];
+  /** Forge-only hits the session has seen, so `existing[].issueNumber` resolves. */
+  forgeHits?: Map<number, ForgeIssueHit>;
 }
 
 const TREE_CAP = 400;
@@ -222,8 +261,15 @@ export function intakeModeFor(provider: Pick<ChatProvider, 'name'>): IntakeMode 
   return provider.name === 'anthropic' ? 'tools' : 'json';
 }
 
+const EXISTING_RULE = `Existing work first. A server note under the user's message lists existing tickets that look related: map nodes with status, done date, linked issue and whether a merged PR fixed them, and issues on the repo that are NOT in this map. Decide the verdict:
+   - new: nothing related, or only loosely related.
+   - covered: an existing ticket already asks for exactly this → recommendation "nothing".
+   - extends: an existing open or unfinished ticket, and the user brings new information → "comment".
+   - regression: it was done and the problem is back. If it was fixed by a merged PR, that fix shipped and this is a NEW bug → "create" (the new ticket relates to the old one). If it was closed by hand or without shipped code → "reopen".
+   Say the verdict in one sentence and ALWAYS still propose the draft, so the user can create it anyway.`;
+
 const TURN_RULES_TOOLS = `How a turn works:
-1. Duplicates first. A server note under the user's message lists existing nodes that are semantically close; use semantic_search or search_nodes when you need more. If an existing node already covers the request, say so in one sentence and list it under duplicates — still propose the draft so the user decides.
+1. ${EXISTING_RULE} Use semantic_search or search_nodes when the note is not enough.
 2. Placement. Pick parentId from the tree below: a functional area, never a release. Prefer the parent hint unless the work clearly belongs elsewhere. Say why in parentReason.
 3. Version and phase. Suggest what the siblings under that parent use; leave null and ask when it is genuinely ambiguous.
 4. Dependencies. Only ids from the tree or from tickets accepted earlier in this session, each with a reason. Most tickets have none.
@@ -231,7 +277,7 @@ const TURN_RULES_TOOLS = `How a turn works:
 6. Keep prose to one or two sentences; the draft carries the content.`;
 
 const TURN_RULES_JSON = `How a turn works:
-1. Duplicates first. A server note under the user's message lists existing nodes that are semantically close. If one already covers the request, say so in "text" and list it under "duplicates" — still produce the draft so the user decides.
+1. ${EXISTING_RULE}
 2. Placement. Pick "parentId" from the tree below: a functional area, never a release. Prefer the parent hint unless the work clearly belongs elsewhere. Say why in "parentReason".
 3. Version and phase. Suggest what the siblings under that parent use; use null when unsure.
 4. Dependencies. Only ids from the tree or from tickets accepted earlier in this session, each with a reason. Most tickets have none.
@@ -251,7 +297,8 @@ Return ONLY one JSON object, no markdown fences, no prose outside it:
     "phaseId": "<id from the phases list>" | null,
     "tags": ["<tag>"],
     "dependencies": [{"nodeId": "<id>", "reason": "<why>"}],
-    "duplicates": [{"nodeId": "<id>", "reason": "<why>"}]
+    "verdict": "new" | "covered" | "extends" | "regression",
+    "existing": [{"nodeId": "<id>" | null, "issueNumber": <number> | null, "reason": "<why>", "recommendation": "nothing" | "comment" | "reopen" | "create"}]
   } | null,
   "questions": [{"id": "<key>", "question": "<text>", "options": ["<a>", "<b>"], "why": "<what it decides>"}]
 }`;
@@ -388,8 +435,73 @@ export function sanitizeDraft(
     phaseName: phase?.name ?? null,
     tags,
     dependencies: refs(args.dependencies, byId, acceptedById),
-    duplicates: refs(args.duplicates, byId, new Map()),
+    ...existingRefs(args, byId, ctx.forgeHits ?? new Map()),
   };
+}
+
+/**
+ * Resolve the model's `existing` list against the map and the session's
+ * forge hits; invented ids are dropped. A verdict without survivors
+ * becomes `new`; survivors without a verdict become `extends`. Accepts
+ * the pre-#409 `duplicates` name too.
+ */
+function existingRefs(
+  args: Record<string, unknown>,
+  byId: Map<string, CoreNode>,
+  forgeHits: Map<number, ForgeIssueHit>,
+): { verdict: IntakeVerdict; existing: IntakeExisting[] } {
+  const raw = Array.isArray(args.existing) ? args.existing : Array.isArray(args.duplicates) ? args.duplicates : [];
+  const out: IntakeExisting[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const reason = str(r.reason);
+    const recRaw = str(r.recommendation);
+    const recommendation = RECOMMENDATION.safeParse(recRaw).success ? (recRaw as IntakeRecommendation) : 'comment';
+    const nodeId = str(r.nodeId);
+    const node = nodeId ? byId.get(nodeId) : undefined;
+    if (node) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      const f = nodeMatchFacts(node);
+      out.push({
+        nodeId: node.id,
+        issueNumber: f.issueNumber,
+        url: f.issueUrl,
+        text: node.text,
+        status: f.status,
+        closedAt: f.closedAt,
+        fixedByPr: f.fixedByPr,
+        reason,
+        // A shipped fix is not reopened — the draft relates to it instead.
+        recommendation: f.fixedByPr && recommendation === 'reopen' ? 'create' : recommendation,
+      });
+      continue;
+    }
+    const num = typeof r.issueNumber === 'number' ? r.issueNumber : Number(str(r.issueNumber));
+    const hit = Number.isInteger(num) ? forgeHits.get(num) : undefined;
+    if (!hit) continue; // invented reference
+    const key = `#${hit.number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      nodeId: null,
+      issueNumber: hit.number,
+      url: hit.url,
+      text: hit.title,
+      status: hit.state,
+      closedAt: hit.closedAt,
+      fixedByPr: false,
+      reason,
+      recommendation,
+    });
+  }
+  const verdictRaw = str(args.verdict);
+  let verdict: IntakeVerdict = VERDICT.safeParse(verdictRaw).success ? (verdictRaw as IntakeVerdict) : 'new';
+  if (out.length === 0) verdict = 'new';
+  else if (verdict === 'new') verdict = 'extends';
+  return { verdict, existing: out };
 }
 
 export function sanitizeQuestions(args: Record<string, unknown>): IntakeQuestion[] {
@@ -421,12 +533,14 @@ export interface IntakeIo {
   executeTool: typeof defaultExecuteTool;
   semanticSearch: typeof defaultSemanticSearch;
   estimateEffort: typeof defaultEstimateEffort;
+  searchForgeIssues: SearchForgeIssues;
 }
 
 const defaultIo: IntakeIo = {
   executeTool: defaultExecuteTool,
   semanticSearch: defaultSemanticSearch,
   estimateEffort: defaultEstimateEffort,
+  searchForgeIssues: defaultSearchForgeIssues,
 };
 
 export const INTAKE_MAX_STEPS = 8;
@@ -477,21 +591,25 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
   const { provider, session, ctx } = opts;
   const byId = new Map(ctx.nodes.map((n) => [n.id, n]));
 
-  // Deterministic duplicate pre-check: the model may search further, but
-  // the closest existing nodes are always in front of it.
+  // Deterministic "does it exist?" pre-check: the model may search further,
+  // but the closest map nodes (with status / done date / linked issue) and
+  // the repo's own matching issues are always in front of it.
   let userContent = opts.message.trim();
-  try {
-    const hits = (await io.semanticSearch(ctx.map.id, userContent, 5)).filter(
-      (h) => h.score >= DUPLICATE_MIN_SCORE,
-    );
-    if (hits.length > 0) {
-      userContent +=
-        `\n\n[Server note — existing nodes semantically close to this request; check for duplicates before drafting:\n` +
-        hits.map((h, i) => `${i + 1}. "${h.text}" [${h.nodeId}] score ${h.score.toFixed(2)}`).join('\n') +
-        `]`;
-    }
-  } catch {
-    // No embeddings, no note — the model can still search by hand.
+  const [nodeHits, forgeHits] = await Promise.all([
+    io
+      .semanticSearch(ctx.map.id, userContent, 5)
+      .then((hits) => hits.filter((h) => h.score >= DUPLICATE_MIN_SCORE))
+      .catch(() => []), // no embeddings, no node hits — the model can still search by hand
+    io.searchForgeIssues(ctx.map.id, keywordQuery(userContent)).catch(() => []),
+  ]);
+  for (const f of forgeHits) session.forgeHits.set(f.number, f);
+  ctx.forgeHits = session.forgeHits;
+  const noteLines = preSearchLines({ nodeHits, forgeHits, nodes: ctx.nodes });
+  if (noteLines.length > 0) {
+    userContent +=
+      `\n\n[Server note — existing work that looks related; decide the verdict before drafting:\n` +
+      noteLines.join('\n') +
+      `]`;
   }
   session.messages.push({ role: 'user', content: userContent });
 
@@ -612,6 +730,12 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
     questions: questionArgs ? sanitizeQuestions(questionArgs) : [],
     stepLimit,
   };
+}
+
+/** Remember a non-create outcome so the next turn does not re-propose the same ticket. */
+export function recordDecision(session: IntakeSession, note: string): void {
+  session.messages.push({ role: 'user', content: `[Server note — ${note} Next ticket follows.]` });
+  session.touchedAt = Date.now();
 }
 
 /** Remember an accepted ticket so later drafts in the session can depend on it. */

@@ -258,6 +258,13 @@ export interface ForgeClient {
   removeIssueLabel(owner: string, repo: string, issueNumber: number, label: string, opts?: RequestOptions): Promise<ForgeRawResponse>;
   listMilestones(owner: string, repo: string): Promise<MilestoneRef[]>;
   /**
+   * Keyword search over the repo's issues (never pull requests), any state,
+   * newest first. Used by ticket intake to find an existing issue that was
+   * never imported into the map. Best effort: a forge without search
+   * returns [].
+   */
+  searchIssues(owner: string, repo: string, query: string, opts?: { limit?: number }): Promise<ForgeIssue[]>;
+  /**
    * Numbers of the pull requests in the SAME repo that reference this
    * issue, oldest first (a mention is enough — callers re-check the PR
    * body for a closing keyword). Throws `GitHubScanTruncatedError` if the
