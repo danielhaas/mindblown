@@ -103,6 +103,16 @@ export interface ChatOptions {
  * Run a chat completion against the configured model.
  * Returns the assistant's message content as a string.
  */
+/**
+ * JSON mode as a schema-less `json_schema`. The older `{ type: 'json_object' }`
+ * is rejected by LM Studio (400: must be 'json_schema' or 'text'); Ollama,
+ * vLLM and llama.cpp accept this form too.
+ */
+export const JSON_OBJECT_FORMAT = {
+  type: 'json_schema',
+  json_schema: { name: 'reply', schema: { type: 'object' } },
+} as const;
+
 export async function chatCompletion(opts: ChatOptions): Promise<string> {
   const client = getClient();
 
@@ -115,7 +125,7 @@ export async function chatCompletion(opts: ChatOptions): Promise<string> {
 
   // Request JSON mode when a schema hint is provided
   if (opts.jsonSchema) {
-    params.response_format = { type: 'json_object' };
+    params.response_format = JSON_OBJECT_FORMAT;
   }
 
   return withAiSlot(async () => {
