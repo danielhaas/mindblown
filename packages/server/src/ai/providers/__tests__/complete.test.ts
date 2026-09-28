@@ -12,7 +12,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const openai = vi.hoisted(() => ({
   create: vi.fn(),
 }));
-vi.mock('../../client.js', () => ({
+vi.mock('../../client.js', async (importOriginal) => ({
+  JSON_OBJECT_FORMAT: (await importOriginal<typeof import('../../client.js')>()).JSON_OBJECT_FORMAT,
   getClient: () => ({ chat: { completions: { create: openai.create } } }),
   withAiSlot: <T,>(fn: () => Promise<T>) => fn(),
   aiEnabled: true,
@@ -52,7 +53,10 @@ describe('ollamaProvider.complete', () => {
     expect(req.model).toBe('qwen-test');
     expect(req.temperature).toBe(0);
     expect(req.max_tokens).toBe(321);
-    expect(req.response_format).toEqual({ type: 'json_object' });
+    expect(req.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: { name: 'reply', schema: { type: 'object' } },
+    });
     expect(req.messages).toEqual([
       { role: 'system', content: 'SYS' },
       { role: 'user', content: 'CONTEXT\n\nISSUE' },

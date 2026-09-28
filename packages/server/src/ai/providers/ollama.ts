@@ -9,7 +9,7 @@
 import type OpenAI from 'openai';
 import type { ToolSpec } from '@mindblown/tool-kit';
 import { specToOpenAiTool } from '@mindblown/tool-kit';
-import { getClient, withAiSlot } from '../client.js';
+import { getClient, JSON_OBJECT_FORMAT, withAiSlot } from '../client.js';
 import type {
   ChatProvider,
   CompletionOptions,
@@ -133,9 +133,9 @@ export const ollamaProvider: ChatProvider = {
           ],
           temperature: opts.temperature ?? (json ? 0 : 0.4),
           max_tokens: opts.maxTokens ?? 1024,
-          // OpenAI-compatible JSON mode; Ollama, vLLM and llama.cpp honour
-          // it. Callers still validate — small models occasionally trail.
-          ...(json ? { response_format: { type: 'json_object' as const } } : {}),
+          // OpenAI-compatible JSON mode (see JSON_OBJECT_FORMAT). Callers
+          // still validate — small models occasionally trail.
+          ...(json ? { response_format: JSON_OBJECT_FORMAT } : {}),
         },
         opts.signal ? { signal: opts.signal } : undefined,
       ),
