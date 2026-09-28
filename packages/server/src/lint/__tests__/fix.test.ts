@@ -1,6 +1,6 @@
 /**
  * applyLintFix — each action's write, and that every node-side fix fans
- * out like a hand edit (change events, broadcast, outbound sync).
+ * out like a hand edit (field changes, claim trail, broadcast, outbound sync).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Node } from '@mindblown/core';
@@ -34,11 +34,18 @@ vi.mock('../../db/maps.js', () => ({
     { id: 'todo', name: 'Todo', category: 'todo' },
     { id: 'wip', name: 'In progress', category: 'in_progress' },
     { id: 'shipped', name: 'Shipped', category: 'done' },
+    { id: 'released', name: 'Released', category: 'done' },
   ]),
 }));
 
 const recordFieldChanges = vi.fn(async () => {});
-vi.mock('../../db/events.js', () => ({ recordFieldChanges: (...a: unknown[]) => recordFieldChanges(...(a as [])) }));
+const recordClaimTransition = vi.fn(async () => {});
+const recordEvent = vi.fn(async () => {});
+vi.mock('../../db/events.js', () => ({
+  recordFieldChanges: (...a: unknown[]) => recordFieldChanges(...(a as [])),
+  recordClaimTransition: (...a: unknown[]) => recordClaimTransition(...(a as [])),
+  recordEvent: (...a: unknown[]) => recordEvent(...(a as [])),
+}));
 
 const broadcast = vi.fn();
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcast(...(a as [])) }));
@@ -61,7 +68,7 @@ vi.mock('../../services/unblock.js', () => ({
   UnblockNotFoundError: class extends Error {},
 }));
 
-import { applyLintFix, LintFixError } from '../fix.js';
+import { applyLintFix, issueLinkOf, LintFixError } from '../fix.js';
 
 function seed(overrides: Partial<Node> & { id: string }): Node {
   const n = {
@@ -75,11 +82,14 @@ function seed(overrides: Partial<Node> & { id: string }): Node {
     tags: [],
     externalLinks: [],
     claimedBySession: null,
+    claimedAt: null,
     ...overrides,
   } as unknown as Node;
   nodes.set(n.id, n);
   return n;
 }
+
+const link = { provider: 'gitea', externalId: 'dan/jiso#7', url: 'u', syncEnabled: true, lastSyncedAt: null, state: 'open' as const };
 
 beforeEach(() => {
   nodes.clear();
@@ -88,15 +98,29 @@ beforeEach(() => {
 });
 
 describe('applyLintFix — node-side actions', () => {
-  it('mark-done writes the workflow done status and 100 %, then fans out', async () => {
-    seed({ id: 'a', status: 'shipped', percentComplete: 0 });
+  it('mark-done on a todo leaf writes the done status and 100 %, then fans out incl. the claim trail', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 100, claimedBySession: 'w1' });
     const r = await applyLintFix('m1', 'a', 'mark-done', 'u1');
     expect(updateNode).toHaveBeenCalledWith('a', { status: 'shipped', percentComplete: 100 });
-    expect(r.node.percentComplete).toBe(100);
     expect(r.changedFields).toEqual(['status', 'percentComplete']);
     expect(recordFieldChanges).toHaveBeenCalledTimes(1);
+    expect(recordClaimTransition).toHaveBeenCalledWith('m1', 'a', 'u1', expect.anything(), r.node, { reason: 'done', note: null });
     expect(broadcast).toHaveBeenCalledWith('m1', expect.objectContaining({ type: 'node:updated', nodeId: 'a' }));
     expect(syncNodeToGitHub).toHaveBeenCalledWith(r.node, ['status', 'percentComplete']);
+  });
+
+  it('mark-done keeps a status that is already in the done category and only fixes the number', async () => {
+    seed({ id: 'a', status: 'released', percentComplete: 0 });
+    await applyLintFix('m1', 'a', 'mark-done', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { percentComplete: 100 });
+  });
+
+  it('mark-done and reopen never write a progress number onto a parent', async () => {
+    seed({ id: 'p', status: 'todo', childrenIds: ['c'] });
+    await applyLintFix('m1', 'p', 'mark-done', 'u1');
+    expect(updateNode).toHaveBeenLastCalledWith('p', { status: 'shipped' });
+    await applyLintFix('m1', 'p', 'reopen', 'u1');
+    expect(updateNode).toHaveBeenLastCalledWith('p', { status: 'todo', completedAt: null });
   });
 
   it('reopen writes the first todo status, 0 % and clears completedAt', async () => {
@@ -105,7 +129,7 @@ describe('applyLintFix — node-side actions', () => {
     expect(updateNode).toHaveBeenCalledWith('a', { status: 'todo', percentComplete: 0, completedAt: null });
   });
 
-  it('park mirrors blocked.sh: status blocked, reason, tag, claim released; keeps an existing reason', async () => {
+  it('park mirrors blocked.sh: status blocked, reason, tag, claim released and recorded; keeps an existing reason', async () => {
     seed({ id: 'a', status: 'todo', claimedBySession: 'w1' });
     const r = await applyLintFix('m1', 'a', 'park', 'u1', { note: '715 pickups in 24 h' });
     expect(updateNode).toHaveBeenCalledWith('a', {
@@ -115,6 +139,10 @@ describe('applyLintFix — node-side actions', () => {
       claimedBySession: null,
     });
     expect(r.node.tags).toEqual(['blocked']);
+    expect(recordClaimTransition).toHaveBeenCalledWith('m1', 'a', 'u1', expect.anything(), r.node, {
+      reason: 'blocked',
+      note: 'Parked from Plan health: 715 pickups in 24 h',
+    });
 
     seed({ id: 'b', status: 'todo', blockedReason: 'waiting on Dan' });
     await applyLintFix('m1', 'b', 'park', 'u1');
@@ -137,31 +165,53 @@ describe('applyLintFix — node-side actions', () => {
 });
 
 describe('applyLintFix — issue-side actions', () => {
-  const link = { provider: 'gitea', externalId: 'dan/jiso#7', url: 'u', syncEnabled: true, lastSyncedAt: null, state: 'open' as const };
-
-  it('close-issue patches the forge, stamps the link state, and does not touch node status', async () => {
-    seed({ id: 'a', status: 'shipped', externalLinks: [link] });
+  it('close-issue patches the forge, stamps the link state, records an issueState event, node status untouched', async () => {
+    seed({ id: 'a', status: 'shipped', percentComplete: 100, externalLinks: [link] });
     forgeCtx = { owner: 'dan', repo: 'jiso', forge: { updateIssue } };
     const r = await applyLintFix('m1', 'a', 'close-issue', 'u1');
     expect(updateIssue).toHaveBeenCalledWith('dan', 'jiso', 7, { state: 'closed', state_reason: 'completed' });
     expect(setExternalLinkState).toHaveBeenCalledWith('a', 'dan/jiso#7', 'closed');
+    expect(recordEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ nodeId: 'a', userId: 'u1', fieldName: 'issueState', oldValue: 'open', newValue: 'dan/jiso#7 closed' }),
+    );
     expect(r.issue).toEqual({ externalId: 'dan/jiso#7', state: 'closed' });
     expect(r.node.externalLinks[0].state).toBe('closed');
+    expect(r.changedFields).toEqual([]);
     expect(updateNode).not.toHaveBeenCalled();
     expect(syncNodeToGitHub).not.toHaveBeenCalled();
   });
 
-  it('reopen-issue sends state open / reopened', async () => {
+  it('close-issue on a leaf below 100 % brings it to 100 first (the webhook echo gate reads that)', async () => {
+    seed({ id: 'a', status: 'shipped', percentComplete: 80, externalLinks: [link] });
+    forgeCtx = { owner: 'dan', repo: 'jiso', forge: { updateIssue } };
+    const r = await applyLintFix('m1', 'a', 'close-issue', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { percentComplete: 100 });
+    expect(r.changedFields).toEqual(['percentComplete']);
+    expect(recordFieldChanges).toHaveBeenCalledTimes(1);
+    expect(updateIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it('acts on the issue link the finding named, never on a PR link', async () => {
+    const prLink = { ...link, externalId: 'dan/jiso#41', isPullRequest: true, state: undefined };
+    seed({ id: 'a', status: 'shipped', percentComplete: 100, externalLinks: [prLink, link] as Node['externalLinks'] });
+    forgeCtx = { owner: 'dan', repo: 'jiso', forge: { updateIssue } };
+    expect(issueLinkOf(nodes.get('a')!)?.externalId).toBe('dan/jiso#7');
+    await applyLintFix('m1', 'a', 'close-issue', 'u1');
+    expect(updateIssue).toHaveBeenCalledWith('dan', 'jiso', 7, expect.anything());
+  });
+
+  it('reopen-issue sends state open / reopened and leaves the node alone', async () => {
     seed({ id: 'a', status: 'todo', externalLinks: [{ ...link, state: 'closed' }] });
     forgeCtx = { owner: 'dan', repo: 'jiso', forge: { updateIssue } };
     await applyLintFix('m1', 'a', 'reopen-issue', 'u1');
     expect(updateIssue).toHaveBeenCalledWith('dan', 'jiso', 7, { state: 'open', state_reason: 'reopened' });
+    expect(updateNode).not.toHaveBeenCalled();
   });
 
   it('fails cleanly without a link or without a forge', async () => {
     seed({ id: 'nolink', status: 'shipped' });
     await expect(applyLintFix('m1', 'nolink', 'close-issue', 'u1')).rejects.toMatchObject({ code: 'NO_FORGE_LINK' });
-    seed({ id: 'a', status: 'shipped', externalLinks: [link] });
+    seed({ id: 'a', status: 'shipped', percentComplete: 100, externalLinks: [link] });
     await expect(applyLintFix('m1', 'a', 'close-issue', 'u1')).rejects.toMatchObject({ code: 'NO_FORGE' });
     expect(updateIssue).not.toHaveBeenCalled();
   });

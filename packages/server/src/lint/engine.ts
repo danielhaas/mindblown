@@ -8,30 +8,19 @@
  * dismissals; no DB or clock access in here (`now` is a parameter).
  * Thresholds are opinionated defaults, deliberately not configurable.
  */
-import { isForgeLink, type Node } from '@mindblown/core';
+import {
+  isForgeLink,
+  LINT_ACTIONS,
+  LINT_FIX_ACTIONS,
+  LINT_RULE_IDS,
+  type LintActionId,
+  type LintRuleId,
+  type Node,
+} from '@mindblown/core';
 
-export const LINT_RULE_IDS = [
-  'unestimated-leaf',
-  'oversized-leaf',
-  'stale-progress',
-  'overdue-unreplanned',
-  'calibration-drift',
-  'no-done-criteria',
-  'stale-plan',
-  'dates-without-dependencies',
-  // Requirements pack — evaluated map-wide (the register is map-global).
-  'uncovered-requirement',
-  'stale-acceptance',
-  'unscheduled-must',
-  // Sync pack — the map disagreeing with itself, its issues, or its code.
-  'status-progress-mismatch',
-  'done-parent-open-child',
-  'issue-state-mismatch',
-  'done-without-pr',
-  'stale-blocked-reason',
-  'claim-churn',
-] as const;
-export type LintRuleId = (typeof LINT_RULE_IDS)[number];
+// The vocabulary lives in core so the MCP tool and the panel share it.
+export { LINT_RULE_IDS, LINT_ACTIONS, LINT_FIX_ACTIONS };
+export type { LintRuleId, LintActionId };
 export type LintSeverity = 'warn' | 'info';
 
 /**
@@ -40,30 +29,14 @@ export type LintSeverity = 'warn' | 'info';
  * through the same write path as an ordinary node edit. Each id maps to a
  * concrete write in lint/fix.ts; the label is what the panel shows.
  */
-export const LINT_ACTIONS = {
-  'mark-done': 'Mark done (status + 100 %)',
-  reopen: 'Reopen the node (todo, 0 %)',
-  'close-issue': 'Close the issue',
-  'reopen-issue': 'Reopen the issue',
-  'clear-blocker': 'Clear the blocker text',
-  park: 'Park it (status blocked)',
-} as const;
-export type LintActionId = keyof typeof LINT_ACTIONS;
 export interface LintAction {
   id: LintActionId;
   label: string;
+  /** Safe to apply to every finding of the rule in one click. */
+  bulk: boolean;
 }
-const act = (...ids: LintActionId[]): LintAction[] => ids.map((id) => ({ id, label: LINT_ACTIONS[id] }));
-
-/** Which fixes a rule may offer — the route refuses anything else. */
-export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
-  'status-progress-mismatch': ['mark-done', 'reopen'],
-  'done-parent-open-child': ['reopen'],
-  'issue-state-mismatch': ['close-issue', 'reopen', 'mark-done', 'reopen-issue'],
-  'done-without-pr': ['reopen'],
-  'stale-blocked-reason': ['clear-blocker', 'park'],
-  'claim-churn': ['park'],
-};
+const act = (...ids: LintActionId[]): LintAction[] =>
+  ids.map((id) => ({ id, label: LINT_ACTIONS[id].label, bulk: LINT_ACTIONS[id].bulk }));
 
 export interface LintFinding {
   nodeId: string | null; // null for map-level findings
@@ -546,8 +519,11 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   // right — the finding names both sides so a person can.
   const isDoneStatus = buildDonePredicate(map.statusWorkflow);
   const isDone = (n: Node) => isDoneStatus(n.status);
+  // The issue a node stands for: its first forge link that is an issue (not
+  // a PR) and carries a synced state. lint/fix.ts picks the same link, so a
+  // fix acts on the issue the finding named.
   const forgeLinkOf = (n: Node) =>
-    (n.externalLinks ?? []).find((l) => isForgeLink(l) && l.state != null) ?? null;
+    (n.externalLinks ?? []).find((l) => isForgeLink(l) && !l.isPullRequest && l.state != null) ?? null;
   const shortStatus = (n: Node) => n.status ?? 'no status';
 
   // 12. status-progress-mismatch
@@ -567,7 +543,8 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
         finding(
           l,
           `status ${shortStatus(l)}, ${l.percentComplete ?? 0}% complete`,
-          isDone(l) ? act('mark-done', 'reopen') : act('mark-done'),
+          // Reopen first: it undoes a claim, mark-done fabricates a number.
+          isDone(l) ? act('reopen', 'mark-done') : act('mark-done'),
         ),
       ),
   });
@@ -603,7 +580,11 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
           isDone(n)
             ? `node done, ${link.externalId} still open`
             : `${link.externalId} closed, node ${shortStatus(n)}`,
-          isDone(n) ? act('close-issue', 'reopen') : act('mark-done', 'reopen-issue'),
+          // A parent's progress is a rollup, so only the issue side is
+          // fixable there; a leaf may also be moved to match the issue.
+          isDone(n)
+            ? isLeaf(n) ? act('close-issue', 'reopen') : act('close-issue')
+            : isLeaf(n) ? act('mark-done', 'reopen-issue') : act('reopen-issue'),
         ),
       ),
   });

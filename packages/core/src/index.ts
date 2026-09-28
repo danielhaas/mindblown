@@ -90,6 +90,10 @@ export {
   buildTodoIds,
 } from './statusWorkflow.js';
 
+// Plan-lint vocabulary shared by engine, MCP tool and panel (docs/plan-linter.md)
+export { LINT_RULE_IDS, LINT_ACTIONS, LINT_ACTION_IDS, LINT_FIX_ACTIONS } from './lint.js';
+export type { LintRuleId, LintActionId } from './lint.js';
+
 // Release ordering
 export { compareVersions, effectiveVersionId, findVersionOrderInversions } from './versions.js';
 // Per-map AI policy (#375)

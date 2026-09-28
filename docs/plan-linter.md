@@ -65,17 +65,20 @@ The map, its linked issues and its repository are three views of one plan, and t
 
 ### Fixes (added 2026-09-28)
 
-A finding carries `actions: [{ id, label }]` when a deterministic write resolves it. The panel shows them as buttons under the finding (and a **Fix all** button on the rule when every active finding leads with the same action); `plan_lint` prints them as `[fix: a | b]` and `plan_fix(mapId, ruleId, nodeId, action)` applies one. `POST /api/maps/:id/lint/fix` refuses an action the rule does not offer (`LINT_FIX_ACTIONS` in the engine), so a stale panel cannot apply a fix the current finding would not show. Hygiene rules (estimates, dates, descriptions) offer none — those need a human number.
+A finding carries `actions: [{ id, label, bulk }]` when a deterministic write resolves it, most conservative first. The vocabulary (rule ids, action ids, which rule may offer which action) lives in `packages/core/src/lint.ts` so the engine, the MCP tool and the panel cannot drift. The panel shows the actions as buttons under the finding; `plan_lint` prints them as `[fix: a | b]` and `plan_fix(mapId, ruleId, nodeId, action)` applies one. A **Fix all** button appears on a rule only when every active finding offers exactly one action and it is `bulk`-safe (`clear-blocker`, `park` — the two writes that cannot fabricate progress or flip a done state). Hygiene rules (estimates, dates, descriptions) offer none — those need a human number.
+
+`POST /api/maps/:id/lint/fix` refuses an action the rule does not offer (`LINT_FIX_ACTIONS`) and, for the four rules that depend on the map alone, recomputes the finding for that node first and answers `409 STALE_FINDING` when it no longer offers the action — a panel left open while a colleague edited cannot apply yesterday's fix.
 
 | Action | Write (lint/fix.ts) | Offered by |
 |---|---|---|
-| `mark-done` | status → the workflow's done status, `percentComplete` 100; the issue closes via outbound sync (subject to its PR-landed gate) | status-progress-mismatch, issue-state-mismatch (issue closed) |
-| `reopen` | status → first todo status, `percentComplete` 0, `completedAt` null; the issue reopens via sync | status-progress-mismatch (done at < 100), done-parent-open-child, issue-state-mismatch (issue open), done-without-pr |
-| `close-issue` / `reopen-issue` | forge `updateIssue` state (completed / reopened) + the stored link `state`, node untouched | issue-state-mismatch |
+| `mark-done` | status → the workflow's done status **unless it already is one** (then only the number moves); `percentComplete` 100 on leaves only (parents roll up); the issue closes via outbound sync (subject to its PR-landed gate) | status-progress-mismatch, issue-state-mismatch (issue closed, leaf) |
+| `reopen` | status → first todo status, `completedAt` null, `percentComplete` 0 on leaves; the issue reopens via sync | status-progress-mismatch (done at < 100), done-parent-open-child, issue-state-mismatch (issue open, leaf), done-without-pr |
+| `close-issue` | forge `updateIssue` closed/completed + the stored link `state`; a leaf below 100 % is brought to 100 first, because closing asserts the work is done and the forge's `closed` webhook echo is gated on exactly that | issue-state-mismatch (node done) |
+| `reopen-issue` | forge `updateIssue` open/reopened + the stored link `state`, node untouched | issue-state-mismatch (issue closed) |
 | `clear-blocker` | `unblockNode`: blockedReason null, `blocked` tag removed, status back to todo if it was blocked | stale-blocked-reason |
 | `park` | status `blocked`, `blocked` tag, claim released, blockedReason kept or "Parked from Plan health: …" | stale-blocked-reason (pullable), claim-churn |
 
-Every node-side fix records change events, broadcasts, and runs the outbound sync — it looks exactly like the same edit made by hand, attributed to the user who clicked.
+The link a fix acts on is the one the finding named: the node's first forge link that is an issue (not a PR) with a synced state. Every node-side fix records field changes and the claim trail, broadcasts, and runs the outbound sync — it looks exactly like the same edit made by hand, attributed to the user who clicked; issue-side fixes leave an `issueState` change event. Known limit: the webhook / catch-up "already done here" gate still reads the literal status `done` or 100 % (`looksDoneInMB`), not the workflow's done category — a follow-up.
 
 Deliberately not a rule: the `#N ` prefix on imported node titles. The import writes it on purpose; that the outbound title sync copies it back onto the forge issue is a sync bug to fix at the source, not a finding to dismiss on every ticket.
 

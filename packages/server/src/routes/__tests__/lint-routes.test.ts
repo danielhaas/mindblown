@@ -387,6 +387,31 @@ describe('POST /api/maps/:id/lint/fix', () => {
     expect(applyLintFix).not.toHaveBeenCalled();
   });
 
+  it('re-verifies map-only rules first: 409 when the finding no longer applies, 200 when it does', async () => {
+    mapData.map.statusWorkflow = [{ id: 'wip', category: 'in_progress' }, { id: 'done', category: 'done' }];
+    const app = await buildApp();
+    // leaf-1 is status null / 0 % → no status-progress-mismatch finding → stale.
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'status-progress-mismatch', nodeId: 'leaf-1', action: 'mark-done' },
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error.code).toBe('STALE_FINDING');
+    expect(applyLintFix).not.toHaveBeenCalled();
+
+    (mapData.nodes[1] as { status: string | null }).status = 'done'; // done at 0 % → finding offers reopen + mark-done
+    const live = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/lint/fix',
+      payload: { ruleId: 'status-progress-mismatch', nodeId: 'leaf-1', action: 'mark-done' },
+    });
+    (mapData.nodes[1] as { status: string | null }).status = null;
+    await app.close();
+    expect(live.statusCode).toBe(200);
+    expect(applyLintFix).toHaveBeenCalledTimes(1);
+  });
+
   it('403 without edit permission; service errors map to 404 / 409', async () => {
     permissionLevel = 'view';
     let app = await buildApp();

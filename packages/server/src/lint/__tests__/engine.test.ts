@@ -528,27 +528,48 @@ describe('computePlanLint — sync pack', () => {
       makeNode({ id: 'e', parentId: 'root', status: 'todo', blockedReason: 'stale', effortEstimate: null }),
       makeNode({ id: 'p', parentId: 'root', childrenIds: ['q'], status: 'done' }),
       makeNode({ id: 'q', parentId: 'p', percentComplete: 0, effortEstimate: 1 }),
+      // Parents linked to an issue: only the issue side is fixable.
+      makeNode({ id: 'pp', parentId: 'root', childrenIds: ['pq'], status: 'done', externalLinks: [link(3, 'open')] }),
+      makeNode({ id: 'pq', parentId: 'pp', percentComplete: 100, effortEstimate: 1 }),
+      makeNode({ id: 'po', parentId: 'root', childrenIds: ['pr'], status: 'todo', externalLinks: [link(4, 'closed')] }),
+      makeNode({ id: 'pr', parentId: 'po', percentComplete: 0, effortEstimate: 1 }),
     ];
     const report = syncLint(nodes, {
-      computedProgress: new Map([['p', 0]]),
+      computedProgress: new Map([['p', 0], ['pp', 100], ['po', 0]]),
       history: { ...emptyHistory(), claimPickups: new Map([['e', 9]]) },
     });
     const ids = (ruleId: string, nodeId: string) =>
       rule(report, ruleId).findings.find((f) => f.nodeId === nodeId)!.actions!.map((a) => a.id);
-    expect(ids('status-progress-mismatch', 'a')).toEqual(['mark-done', 'reopen']);
+    expect(ids('status-progress-mismatch', 'a')).toEqual(['reopen', 'mark-done']);
     expect(ids('status-progress-mismatch', 'b')).toEqual(['mark-done']);
     expect(ids('done-parent-open-child', 'p')).toEqual(['reopen']);
     expect(ids('issue-state-mismatch', 'c')).toEqual(['close-issue', 'reopen']);
     expect(ids('issue-state-mismatch', 'd')).toEqual(['mark-done', 'reopen-issue']);
+    expect(ids('issue-state-mismatch', 'pp')).toEqual(['close-issue']);
+    expect(ids('issue-state-mismatch', 'po')).toEqual(['reopen-issue']);
     expect(ids('stale-blocked-reason', 'e')).toEqual(['clear-blocker', 'park']);
     expect(ids('claim-churn', 'e')).toEqual(['park']);
     expect(rule(report, 'unestimated-leaf').findings.find((f) => f.nodeId === 'e')!.actions).toBeUndefined();
-    // Every offered action is one the route will accept for that rule.
+    // Every offered action is one the route will accept for that rule, and
+    // only the two writes that cannot fabricate progress are bulk-safe.
     for (const r of report.rules) {
       for (const f of r.findings) {
-        for (const a of f.actions ?? []) expect(LINT_FIX_ACTIONS[r.ruleId]).toContain(a.id);
+        for (const a of f.actions ?? []) {
+          expect(LINT_FIX_ACTIONS[r.ruleId]).toContain(a.id);
+          expect(a.bulk).toBe(a.id === 'clear-blocker' || a.id === 'park');
+        }
       }
     }
+  });
+
+  it('issue-state-mismatch names the issue link, never a PR link', () => {
+    const prLink = { ...link(41, 'open'), isPullRequest: true, state: undefined } as unknown as Node['externalLinks'][number];
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['a'] }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', externalLinks: [prLink, link(7, 'open')] }),
+    ];
+    const r = rule(syncLint(nodes), 'issue-state-mismatch');
+    expect(r.findings[0].detail).toBe('node done, dan/jiso#7 still open');
   });
 
   it('sync rules respect subtree scoping', () => {

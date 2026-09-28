@@ -216,11 +216,15 @@ export function PlanHealthPanel({ mapId, onClose }: { mapId: string; onClose: ()
         {activeRules.map((r) => {
           const sev = SEVERITY_STYLE[r.severity];
           const visible = r.findings.filter((f) => (showDismissed ? true : !f.dismissed));
-          // "Fix all" only when every active finding leads with the same action.
+          // "Fix all" only when every active finding offers exactly one
+          // action, the same one, and the engine marked it bulk-safe.
           const activeWithNode = r.findings.filter((f) => !f.dismissed && f.nodeId);
           const firstAction = activeWithNode[0]?.actions?.[0];
           const fixAll =
-            firstAction && activeWithNode.length > 1 && activeWithNode.every((f) => f.actions?.[0]?.id === firstAction.id)
+            firstAction &&
+            firstAction.bulk &&
+            activeWithNode.length > 1 &&
+            activeWithNode.every((f) => f.actions?.length === 1 && f.actions[0].id === firstAction.id)
               ? firstAction
               : null;
           const busyRule = fixing === `${r.ruleId}:*`;

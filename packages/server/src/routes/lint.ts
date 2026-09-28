@@ -75,6 +75,14 @@ async function loadHistory(mapId: string, now: Date): Promise<LintHistory> {
   }
 }
 
+/** Rules whose findings depend on the map alone, so a fix can re-verify them first. */
+const RECHECKED_RULES = new Set<LintRuleId>([
+  'status-progress-mismatch',
+  'done-parent-open-child',
+  'issue-state-mismatch',
+  'stale-blocked-reason',
+]);
+
 /** Most recently updated done+linked nodes checked per run — keeps a panel open to a bounded forge budget. */
 export const FORGE_PR_CHECK_CAP = 20;
 const FORGE_PR_CHECK_TIMEOUT_MS = 8_000;
@@ -380,6 +388,42 @@ export async function lintRoutes(app: FastifyInstance) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'note must be a string' },
       });
+    }
+
+    // A stale panel must not apply a fix the CURRENT finding would not
+    // offer. The rules that need only the map are recomputed for this
+    // node right now; the two that need history / the forge are not
+    // (their actions — park, reopen — are safe against a vanished finding).
+    if (RECHECKED_RULES.has(ruleId as LintRuleId)) {
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+      const computed = computeTree(data.nodes, data.map.healthThreshold);
+      const computedProgress = new Map<string, number>();
+      for (const [id, cv] of computed) computedProgress.set(id, cv.computedProgress);
+      const current = computePlanLint({
+        map: data.map,
+        nodes: data.nodes,
+        unitsPerDay: 1,
+        history: { ok: false, lastProgressChange: new Map(), replanEvents: new Map(), anyRecentEvent: false },
+        dismissals: [],
+        computedProgress,
+      });
+      const found =
+        'error' in current
+          ? undefined
+          : current.rules.find((r) => r.ruleId === ruleId)?.findings.find((f) => f.nodeId === nodeId);
+      if (!found || !found.actions?.some((a) => a.id === action)) {
+        return reply.status(409).send({
+          error: {
+            code: 'STALE_FINDING',
+            message: 'That finding no longer applies to the node as it is now — re-run the checks.',
+          },
+        });
+      }
     }
 
     try {

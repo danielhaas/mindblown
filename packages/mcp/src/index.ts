@@ -25,7 +25,7 @@ import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { formatAttachmentList } from './attachments.js';
@@ -1376,25 +1376,8 @@ server.tool(
   },
 );
 
-const LINT_RULES = [
-  'unestimated-leaf',
-  'oversized-leaf',
-  'stale-progress',
-  'overdue-unreplanned',
-  'calibration-drift',
-  'no-done-criteria',
-  'stale-plan',
-  'dates-without-dependencies',
-  'uncovered-requirement',
-  'stale-acceptance',
-  'unscheduled-must',
-  'status-progress-mismatch',
-  'done-parent-open-child',
-  'issue-state-mismatch',
-  'done-without-pr',
-  'stale-blocked-reason',
-  'claim-churn',
-] as const;
+// Shared with the engine via core, so an id plan_lint prints is one plan_fix accepts.
+const LINT_RULES = LINT_RULE_IDS;
 
 server.tool(
   'plan_lint',
@@ -1481,8 +1464,6 @@ server.tool(
   },
 );
 
-const LINT_FIX_ACTIONS = ['mark-done', 'reopen', 'close-issue', 'reopen-issue', 'clear-blocker', 'park'] as const;
-
 server.tool(
   'plan_fix',
   'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
@@ -1490,7 +1471,7 @@ server.tool(
     mapId: z.string().describe('The map ID'),
     ruleId: z.enum(LINT_RULES).describe('The rule the finding belongs to (validates that the action fits)'),
     nodeId: z.string().describe('The node the finding points at'),
-    action: z.enum(LINT_FIX_ACTIONS).describe("One of the ids listed in the finding's [fix: …]"),
+    action: z.enum(LINT_ACTION_IDS).describe("One of the ids listed in the finding's [fix: …]"),
     note: z.string().optional().describe('For park: appended to the blocker reason when the node has none yet'),
   },
   async ({ mapId, ruleId, nodeId, action, note }) => {

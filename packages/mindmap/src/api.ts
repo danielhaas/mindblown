@@ -2317,6 +2317,8 @@ export function listNotInMindBlown(
 export interface LintAction {
   id: string;
   label: string;
+  /** Safe to apply to every finding of the rule in one click. */
+  bulk: boolean;
 }
 
 export interface LintFinding {
