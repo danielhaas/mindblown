@@ -1755,8 +1755,28 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.send({ received: true, action: actionLabel, matched: false });
       }
 
+      // Same "is the node already there?" test the catch-up reconciler
+      // uses (computeStateUpdates: looksDoneInMB). Without it, MindBlown's
+      // own outbound sync echoes back through here: node set done → sync
+      // closes the issue → `issues.closed` arrives → the snapshot captured
+      // done/100 → node set back to todo → sync reopens → `issues.reopened`
+      // arrives → "restores" done/100 and silently undoes the reopen.
+      const looksDoneInMB = node.status === 'done' || node.percentComplete === 100;
+
       let updates: nodeDb.UpdateNodeInput;
       if (payloadAction === 'closed') {
+        if (looksDoneInMB) {
+          // Echo of our own close (or a redundant one): track the mirror
+          // state, keep whatever snapshot the real close captured.
+          await nodeDb.setExternalLinkState(nodeId, externalId, 'closed');
+          return reply.send({
+            received: true,
+            action: actionLabel,
+            matched: true,
+            nodeId,
+            skipped: 'already_done',
+          });
+        }
         // Capture current progress/status into the link so we can revert later.
         links[linkIdx] = {
           ...links[linkIdx],
@@ -1799,6 +1819,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // `issues-reopen-gate.test.ts` → "resets with the fallback when no
         // PR is linked (legacy behavior)" (around :252). Read that test
         // before touching this branch.
+        if (!looksDoneInMB) {
+          // Echo of our own reopen (or a redundant one): the node already
+          // reflects "open" — a person or the intake put it back to work.
+          // Restoring the snapshot here would undo exactly that.
+          await nodeDb.setExternalLinkState(nodeId, externalId, 'open');
+          return reply.send({
+            received: true,
+            action: actionLabel,
+            matched: true,
+            nodeId,
+            skipped: 'already_open',
+          });
+        }
         const savedPct = links[linkIdx].previousPercentComplete;
         const savedStatus = links[linkIdx].previousStatus;
         if (prBlocksNodeReopen(node.linkedPr, hasCloseSnapshot(links[linkIdx]), node.completedAt)) {
