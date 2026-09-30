@@ -29,11 +29,24 @@ const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
 const AI_REASONING_EFFORT = process.env.AI_REASONING_EFFORT ?? '';
 const REASONING_HEADROOM = 4096;
 
+/**
+ * AI_THINKING=off — switch a thinking model's reasoning phase off at the
+ * chat template (`chat_template_kwargs.enable_thinking=false`, honoured by
+ * vLLM and llama.cpp for Qwen3; LM Studio ignores it). Measured on the
+ * 2×5080 vLLM with qwen3.6-27b: a JSON draft took 10 s and 1,200 reasoning
+ * tokens with thinking, 0.6 s without, same answer. `reasoning_effort`
+ * does not change that on vLLM. Opt-in: Ollama's /v1 may reject the
+ * unknown field on older versions.
+ */
+const AI_THINKING_OFF = (process.env.AI_THINKING ?? '').trim().toLowerCase() === 'off';
+
 function tokenParams(maxTokens: number) {
-  if (!AI_REASONING_EFFORT) return { max_tokens: maxTokens };
+  const thinking = AI_THINKING_OFF ? { chat_template_kwargs: { enable_thinking: false } } : {};
+  if (!AI_REASONING_EFFORT) return { max_tokens: maxTokens, ...thinking };
   return {
     max_tokens: maxTokens + REASONING_HEADROOM,
     reasoning_effort: AI_REASONING_EFFORT as OpenAI.ReasoningEffort,
+    ...thinking,
   };
 }
 

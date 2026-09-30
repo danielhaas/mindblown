@@ -152,6 +152,8 @@ MindBlown runs without any LLM. AI features are switched on by configuring a bac
 | `AI_API_KEY` | Bearer token for `AI_BASE_URL`. Ollama ignores one; vLLM started with `--api-key`, LiteLLM and hosted OpenAI-compatible endpoints answer 401 without it. |
 | `AI_EMBED_API_KEY` | Bearer token for `AI_EMBED_BASE_URL`. Defaults to `AI_API_KEY` when the embeddings share the chat host, otherwise to none. |
 | `AI_MAX_CONCURRENCY` | Parallel requests to the local backend. Default 1 (Ollama serves one request per model); raise it on vLLM. |
+| `AI_THINKING` | `off` switches a thinking model's reasoning phase off via `chat_template_kwargs.enable_thinking=false` (vLLM, llama.cpp with Qwen3). Turns a 10 s JSON draft into under a second on qwen3.6-27b. Leave unset on Ollama. |
+| `AI_REASONING_EFFORT` | `low` / `medium` / `high` for a thinking model whose reasoning you keep (LM Studio): sent as `reasoning_effort` and adds 4096 tokens of output headroom. Leave unset on Ollama, which rejects the parameter. |
 | `ANTHROPIC_API_KEY` | Claude API key. Enables the Claude backend (public internet). |
 | `ANTHROPIC_MODEL` | Claude model for chat. |
 | `TRIAGE_PROVIDER` | Backend for GitHub issue triage: `auto` (default, follows the admin-selected chat provider), `anthropic` or `ollama`. Falls back to whatever is configured. |

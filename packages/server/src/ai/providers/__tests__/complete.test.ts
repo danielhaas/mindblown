@@ -108,6 +108,35 @@ describe('ollamaProvider.complete', () => {
       vi.resetModules();
     }
   });
+
+  it('AI_THINKING=off: asks the chat template to skip the reasoning phase, on complete() and runTurn()', async () => {
+    vi.resetModules();
+    vi.stubEnv('AI_THINKING', 'off');
+    try {
+      const { ollamaProvider } = await import('../ollama.js');
+      openai.create.mockResolvedValue({ choices: [{ message: { content: '{}' }, finish_reason: 'stop' }] });
+      await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], maxTokens: 500 });
+      expect(openai.create.mock.calls[0][0]).toMatchObject({
+        max_tokens: 500,
+        chat_template_kwargs: { enable_thinking: false },
+      });
+      for await (const _ev of ollamaProvider.runTurn({ systemPrompt: 's', messages: [{ role: 'user', content: 'x' }], tools: [] })) {
+        // drain
+      }
+      expect(openai.create.mock.calls[1][0]).toMatchObject({ chat_template_kwargs: { enable_thinking: false } });
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
+  it('without AI_THINKING the request carries no chat_template_kwargs (Ollama may reject it)', async () => {
+    vi.resetModules();
+    const { ollamaProvider } = await import('../ollama.js');
+    openai.create.mockResolvedValue({ choices: [{ message: { content: '{}' } }] });
+    await ollamaProvider.complete({ systemPrompt: 's', parts: [{ text: 'x' }], maxTokens: 500 });
+    expect('chat_template_kwargs' in openai.create.mock.calls[0][0]).toBe(false);
+  });
 });
 
 describe('anthropicProvider.complete', () => {
