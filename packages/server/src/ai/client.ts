@@ -10,6 +10,12 @@
  *                       that still wants semantic search from a local
  *                       embedding model (Claude has no embeddings API).
  *   AI_EMBED_MODEL    — embedding model, default "nomic-embed-text"
+ *   AI_API_KEY        — bearer token for the chat backend. Ollama ignores
+ *                       one; vLLM (--api-key), LiteLLM and hosted
+ *                       OpenAI-compatible endpoints refuse without it.
+ *   AI_EMBED_API_KEY  — same for the embeddings endpoint; defaults to
+ *                       AI_API_KEY when the embeddings share the host,
+ *                       otherwise to none.
  */
 
 import OpenAI from 'openai';
@@ -20,6 +26,13 @@ const AI_BASE_URL = process.env.AI_BASE_URL ?? '';
 const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
 const AI_EMBED_BASE_URL = process.env.AI_EMBED_BASE_URL ?? AI_BASE_URL;
 const AI_EMBED_MODEL = process.env.AI_EMBED_MODEL ?? 'nomic-embed-text';
+// The SDK insists on a key; Ollama ignores whatever it gets, so the old
+// placeholder stays the fallback and nothing changes for an install
+// without a key.
+const AI_API_KEY = (process.env.AI_API_KEY ?? '').trim() || 'ollama';
+const AI_EMBED_API_KEY =
+  (process.env.AI_EMBED_API_KEY ?? '').trim() ||
+  (AI_EMBED_BASE_URL === AI_BASE_URL ? AI_API_KEY : 'ollama');
 
 /** True when AI_BASE_URL is configured — the local chat/completion backend. */
 export const aiEnabled = AI_BASE_URL.length > 0;
@@ -80,7 +93,7 @@ export function getClient(): OpenAI {
     }
     _client = new OpenAI({
       baseURL: AI_BASE_URL,
-      apiKey: 'ollama',          // Ollama ignores this but the SDK requires it
+      apiKey: AI_API_KEY,
     });
   }
   return _client;
@@ -173,7 +186,7 @@ function getEmbedClient(): OpenAI {
     if (!embedEnabled) {
       throw new Error('Embeddings are disabled — set AI_EMBED_BASE_URL or AI_BASE_URL');
     }
-    _embedClient = new OpenAI({ baseURL: AI_EMBED_BASE_URL, apiKey: 'ollama' });
+    _embedClient = new OpenAI({ baseURL: AI_EMBED_BASE_URL, apiKey: AI_EMBED_API_KEY });
   }
   return _embedClient;
 }
@@ -203,5 +216,7 @@ export function aiConfig() {
     model: AI_MODEL,
     embedBaseUrl: AI_EMBED_BASE_URL || '(not set)',
     embedModel: AI_EMBED_MODEL,
+    /** A real bearer token is set (never the token itself). */
+    apiKeyConfigured: AI_API_KEY !== 'ollama',
   };
 }
