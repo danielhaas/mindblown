@@ -4,6 +4,7 @@
  * in JS. Runs fire-and-forget after node mutations so write latency stays flat.
  */
 
+import { embeddingsUsable, markEmbeddingsFailed } from './health.js';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
@@ -61,11 +62,18 @@ function extractProseMirrorText(value: unknown): string {
 
 /** Compute a single embedding; returns null if AI is disabled. */
 export async function embedText(text: string): Promise<number[] | null> {
-  if (!embedEnabled) return null;
+  // Down (per the health probe or the last call): don't hammer it on every
+  // node edit — the probe brings it back within a minute (#429).
+  if (!embeddingsUsable()) return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
-  const [vec] = await embed([trimmed]);
-  return vec ?? null;
+  try {
+    const [vec] = await embed([trimmed]);
+    return vec ?? null;
+  } catch (err) {
+    markEmbeddingsFailed(err);
+    throw err;
+  }
 }
 
 /**

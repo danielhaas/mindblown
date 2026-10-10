@@ -34,6 +34,7 @@ import { guardMapIdInPayload } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
+import { aiHealth, type BackendHealth } from '../ai/health.js';
 import {
   AiPolicyError,
   capabilitiesForMap,
@@ -160,11 +161,17 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
     // the server-wide answer for the admin panel.
     const capabilities = q.mapId ? await capabilitiesForMap(q.mapId) : aiCapabilities();
     const policy = q.mapId ? await getMapAiPolicy(q.mapId) : undefined;
+    // Reachability of the local backends (#429). The error text (it names
+    // hosts) only for a signed-in caller — this route answers anonymously.
+    const health = aiHealth();
+    const signedIn = Boolean((req as { userId?: string }).userId);
+    const view = (h: BackendHealth) => (signedIn ? h : { ...h, lastError: null });
     return {
       ...aiConfig(),
       ...status,
       enabled: aiCapabilities().enabled,
       capabilities,
+      health: { chat: view(health.chat), embeddings: view(health.embeddings) },
       ...(policy ? { policy } : {}),
     };
   });

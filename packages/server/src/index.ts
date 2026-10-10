@@ -1,3 +1,4 @@
+import { aiHealth, startAiHealthProbe, type BackendHealth } from './ai/health.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
@@ -78,6 +79,18 @@ async function main(): Promise<void> {
   // ── Health check (before auth middleware) ───────────────────────
   app.get('/api/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
+  });
+
+  // ── AI backend health (#429) — for the monitor, before auth ────
+  // 503 once a configured local backend has been unreachable for 2 min.
+  // Booleans and times only: the error texts name internal hosts.
+  app.get('/api/health/ai', async (_req, reply) => {
+    const h = aiHealth();
+    const brief = (b: BackendHealth) => ({ configured: b.configured, reachable: b.reachable, checkedAt: b.checkedAt, downSince: b.downSince });
+    const downTooLong = [h.chat, h.embeddings].some(
+      (b) => b.configured && b.reachable === false && b.downSince != null && Date.now() - Date.parse(b.downSince) > 120_000,
+    );
+    return reply.status(downTooLong ? 503 : 200).send({ status: downTooLong ? 'down' : 'ok', chat: brief(h.chat), embeddings: brief(h.embeddings) });
   });
 
   // ── Auth routes (register/login are public) ────────────────────
@@ -200,6 +213,9 @@ async function main(): Promise<void> {
   };
   runCatchup();
   setInterval(runCatchup, CATCHUP_INTERVAL_MS);
+
+  // Probe the local AI backends every minute (#429).
+  startAiHealthProbe();
 
   // ── Systemd watchdog heartbeat (decoupled from catchup tick) ───
   //

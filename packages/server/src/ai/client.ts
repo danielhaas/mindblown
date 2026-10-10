@@ -24,6 +24,8 @@ import OpenAI from 'openai';
 
 const AI_BASE_URL = process.env.AI_BASE_URL ?? '';
 const AI_MODEL = process.env.AI_MODEL ?? 'qwen2.5:14b';
+/** The local chat model id — the health probe checks the server lists it (#429). */
+export const AI_MODEL_NAME = AI_MODEL;
 const AI_EMBED_BASE_URL = process.env.AI_EMBED_BASE_URL ?? AI_BASE_URL;
 const AI_EMBED_MODEL = process.env.AI_EMBED_MODEL ?? 'nomic-embed-text';
 // The SDK insists on a key; Ollama ignores whatever it gets, so the old
@@ -204,6 +206,12 @@ export async function embed(texts: string[]): Promise<number[][]> {
       .sort((a, b) => a.index - b.index)
       .map((d) => d.embedding);
   });
+}
+
+/** One tiny embedding with a hard timeout, outside the request slots — the health probe (#429). */
+export async function probeEmbedding(timeoutMs: number): Promise<void> {
+  const res = await getEmbedClient().embeddings.create({ model: AI_EMBED_MODEL, input: ['health'] }, { timeout: timeoutMs });
+  if (!res.data?.[0]?.embedding?.length) throw new Error('empty embedding');
 }
 
 // ── Helpers ────────────────────────────────────────────────────
