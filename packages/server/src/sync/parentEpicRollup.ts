@@ -38,8 +38,8 @@
  * read per-workspace overrides from `integrations.config` or `maps`.
  */
 
-import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { and, eq } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import { fetchChangedIssues } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';

@@ -19,8 +19,8 @@
  *     issue-driven and handled by the issue ingest path.
  */
 
-import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { and, eq, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';

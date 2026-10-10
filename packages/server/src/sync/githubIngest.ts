@@ -39,8 +39,8 @@
  *     persists the new id.
  */
 
-import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';

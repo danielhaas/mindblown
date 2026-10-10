@@ -14,8 +14,8 @@
  * inferred by comparing GitHub state against the node's MindBlown state.
  */
 
-import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import {
   fetchChangedIssues,

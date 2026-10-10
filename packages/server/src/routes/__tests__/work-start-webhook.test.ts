@@ -40,6 +40,9 @@ const mocks = vi.hoisted(() => ({
   verifySignatureMock: vi.fn(async () => true),
 }));
 
+// The SQL pre-filter (#310) is a raw jsonb predicate this file's drizzle
+// stub can't evaluate; the JS check after it decides, so pass everything.
+vi.mock('../../db/externalLinkFilter.js', () => ({ linksAnyExternalId: () => ({ __pred: true, check: () => true }) }));
 vi.mock('@mindblown/integrations', async () => {
   const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
     '@mindblown/integrations',

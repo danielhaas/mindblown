@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { linksAnyExternalId } from './externalLinkFilter.js';
-import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql, type SQL } from 'drizzle-orm';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
