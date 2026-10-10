@@ -205,6 +205,9 @@ export interface MapDetail {
     wipLimit: number | null;
     /** Project phase definitions; `position` = canonical phase order. */
     phases?: PhaseDef[];
+    /** #110 — public-holiday calendar; null/absent = every day counts. */
+    holidayJurisdiction?: string | null;
+    holidayOverrides?: { add: string[]; remove: string[] };
   };
   nodes: NodeWithComputed[];
 }
@@ -232,6 +235,12 @@ export interface ScheduleResult {
   workerCount?: number;
   /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
   focusFactor?: number;
+  /**
+   * #110 — null: day offsets are calendar days. Otherwise offsets are working
+   * days (Mon–Fri minus `holidays`); turn them into dates with
+   * makeDayMapper(projectStartDate, new Set(holidays)).
+   */
+  workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
   versionId?: string | null;
   crossVersionDependencies?: Array<{
     fromNodeId: string;
@@ -493,6 +502,8 @@ export function updateMap(
     autoImportNewIssues?: boolean;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
+    holidayJurisdiction?: string | null;
+    holidayOverrides?: { add: string[]; remove: string[] };
     phases?: PhaseDef[];
     archived?: boolean;
   },

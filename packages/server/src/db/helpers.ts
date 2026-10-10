@@ -122,6 +122,12 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     triageEnabled: (get('triageEnabled', 'triage_enabled') as boolean) ?? false,
     triageLabelWriteback: (get('triageLabelWriteback', 'triage_label_writeback') as boolean) ?? false,
     aiEstimateDrafts: (get('aiEstimateDrafts', 'ai_estimate_drafts') as boolean) ?? true,
+    holidayJurisdiction: (get('holidayJurisdiction', 'holiday_jurisdiction') as string | null) ?? null,
+    holidayOverrides: (() => {
+      const v = get('holidayOverrides', 'holiday_overrides') as { add?: unknown; remove?: unknown } | null;
+      const list = (x: unknown) => (Array.isArray(x) ? x.filter((d): d is string => typeof d === 'string') : []);
+      return { add: list(v?.add), remove: list(v?.remove) };
+    })(),
     aiPolicy: (() => {
       const v = get('aiPolicy', 'ai_policy');
       return isAiPolicy(v) ? v : 'any';

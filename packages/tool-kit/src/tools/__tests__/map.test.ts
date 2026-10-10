@@ -287,3 +287,29 @@ describe('list_maps tool — archived maps', () => {
     expect(lines[lines.length - 1]).toContain('[ARCHIVED since 2026-09-26]');
   });
 });
+
+// Public-holiday calendar (#110) — must reach the backend through the MCP
+// surface, not only via REST.
+describe('update_map tool — holiday calendar (#110)', () => {
+  it('accepts a country or country-region code and YYYY-MM-DD overrides', () => {
+    const schema = z.object(updateMapTool.schema);
+    expect(schema.parse({ mapId: 'm1', holidayJurisdiction: 'CH-ZH' }).holidayJurisdiction).toBe('CH-ZH');
+    expect(schema.parse({ mapId: 'm1', holidayJurisdiction: null }).holidayJurisdiction).toBeNull();
+    expect(() => schema.parse({ mapId: 'm1', holidayJurisdiction: 'Switzerland' })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', holidayOverrides: { add: ['31.12.2026'], remove: [] } })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', holidayOverrides: { add: [] } })).toThrow();
+  });
+
+  it('forwards both fields to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, {
+      mapId: 'm1',
+      holidayJurisdiction: 'LI',
+      holidayOverrides: { add: ['2026-12-31'], remove: [] },
+    } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({
+      holidayJurisdiction: 'LI',
+      holidayOverrides: { add: ['2026-12-31'], remove: [] },
+    });
+  });
+});

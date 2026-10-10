@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers, summarisePace } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers, summarisePace, makeDayMapper } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -985,11 +985,21 @@ server.tool(
       const today = new Date();
       today.setUTCHours(0, 0, 0, 0);
       const anchor = today > projectStart ? today : projectStart;
+      // Finish dates are the day the work ends — its last (working) day —
+      // so finishing on the target date is on time, not a day late (#110).
       const addCalendarDays = (base: Date, days: number): Date => {
         const d = new Date(base.getTime());
-        d.setUTCDate(d.getUTCDate() + Math.ceil(days));
+        d.setUTCDate(d.getUTCDate() + Math.ceil(days) - 1);
         return d;
       };
+      // Model days (planned, fudge-scaled) land on the map's calendar (#110):
+      // working days once a holiday calendar is set. Measured rates stay on
+      // the calendar — they were measured per calendar day.
+      const holidaySet = sched.workingCalendar ? new Set(sched.workingCalendar.holidays) : null;
+      const startMapper = makeDayMapper(projectStart, holidaySet);
+      const anchorMapper = makeDayMapper(anchor, holidaySet);
+      const addModelDays = (base: Date, days: number): Date =>
+        (base === anchor ? anchorMapper : startMapper).lastDay(days);
       const iso = (d: Date) => d.toISOString().slice(0, 10);
       const daysBetween = (a: Date, b: Date) =>
         Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
@@ -1015,8 +1025,8 @@ server.tool(
         });
         plannedFinishCalendarDays = cap.plannedCalendarDays;
         velocityFinishCalendarDays = cap.velocityCalendarDays;
-        plannedFinishDate = addCalendarDays(anchor, plannedFinishCalendarDays);
-        velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+        plannedFinishDate = addModelDays(anchor, plannedFinishCalendarDays);
+        velocityFinishDate = addModelDays(anchor, velocityFinishCalendarDays);
         hasSchedulableEffort = remainingEffort > 0;
       } else {
         // Whole map: the critical-path scheduler IS the right answer.
@@ -1025,11 +1035,11 @@ server.tool(
           .filter((s) => scopedIds.has(s.nodeId))
           .reduce((m, s) => Math.max(m, s.computedEnd), 0);
         plannedFinishCalendarDays = maxComputedEnd / sched.unitsPerDay;
-        plannedFinishDate = addCalendarDays(projectStart, plannedFinishCalendarDays);
-        const elapsedFromStart = Math.max(0, daysBetween(anchor, projectStart));
+        plannedFinishDate = addModelDays(projectStart, plannedFinishCalendarDays);
+        const elapsedFromStart = Math.max(0, startMapper.toOffset(anchor));
         const remainingSchedulerDays = Math.max(0, plannedFinishCalendarDays - elapsedFromStart);
         velocityFinishCalendarDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
-        velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
+        velocityFinishDate = addModelDays(anchor, velocityFinishCalendarDays);
         hasSchedulableEffort = maxComputedEnd > 0;
       }
 

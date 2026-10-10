@@ -12,6 +12,12 @@
  * This closes the estimation loop empirically: after one or two shipped
  * releases the question "which model do we trust?" stops being an
  * opinion. Pure function over rows so it is trivially testable.
+ *
+ * Convention change (#110): finish dates are the day the work ends (its
+ * last working day). Snapshots written before that change stored the day
+ * after — so they grade one day "too late" (bias +1, |error| ±1) against
+ * the ship date. Not corrected here: the cut-over is a deploy date, not a
+ * property of the row, and the effect fades as new snapshots accumulate.
  */
 
 export interface ScorecardSnapshotRow {

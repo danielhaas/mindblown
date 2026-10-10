@@ -5,6 +5,7 @@
 
 import type { MapDetail, NodeWithComputed, ScheduleResult, ReleaseTrendRow, ChangeEvent } from './api.js';
 import * as api from './api.js';
+import { makeDayMapper, describeHolidayCalendar } from '@mindblown/core';
 
 // ── Status icons ────────────────────────────────────────────────
 
@@ -156,6 +157,9 @@ export function formatMapTree(data: MapDetail): string {
     lines.push(`${data.map.description}`);
   }
   lines.push(`Effort unit: ${data.map.effortUnit ?? 'hours'}`);
+  // Holiday calendar (#110) — only when set; otherwise every day counts.
+  const calendarLine = describeHolidayCalendar(data.map);
+  if (calendarLine) lines.push(calendarLine);
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(
@@ -233,6 +237,20 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
   lines.push(`# Schedule: ${mapData.map.name}\n`);
   const workers = scheduleData.workerCount ?? 1;
   lines.push(`**Critical chain length:** ${scheduleData.criticalPath.totalDuration} ${mapData.map.effortUnit ?? 'hours'} (with ${workers} worker${workers === 1 ? '' : 's'})\n`);
+  // How day offsets land on the calendar (#110).
+  const wc = scheduleData.workingCalendar ?? null;
+  const hasStart = typeof scheduleData.projectStartDate === 'string' && !Number.isNaN(Date.parse(scheduleData.projectStartDate));
+  const mapper = hasStart ? makeDayMapper(scheduleData.projectStartDate, wc ? new Set(wc.holidays) : null) : null;
+  const unitsPerDay = scheduleData.unitsPerDay || 1;
+  const dates = (start: number, end: number): string =>
+    mapper
+      ? `${mapper.toDate(start / unitsPerDay, 'floor').toISOString().slice(0, 10)} → ${(end > start ? mapper.lastDay(end / unitsPerDay) : mapper.toDate(start / unitsPerDay, 'floor')).toISOString().slice(0, 10)}, `
+      : '';
+  if (hasStart) lines.push(
+    wc
+      ? `**Calendar:** working days from ${scheduleData.projectStartDate} — Mon–Fri${wc.jurisdiction ? `, ${wc.jurisdiction} public holidays` : ''}${wc.holidays.length > 0 ? ' and the map\'s own days off' : ''} skipped\n`
+      : `**Calendar:** every day counts from ${scheduleData.projectStartDate} (no holiday calendar set)\n`,
+  );
 
   // Critical path — capacity-aware (#112): the chain that decides the
   // projected end under the map's worker count, dependencies AND waiting
@@ -264,7 +282,7 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
     const isCritical = onPath.has(s.nodeId);
     const slack = scheduleData.criticalPath.float[s.nodeId];
     const marker = isCritical ? ' **CRITICAL**' : slack !== undefined ? ` slack: ${slack}` : '';
-    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${s.duration} duration)${marker}`);
+    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${dates(s.computedStart, s.computedEnd)}${s.duration} duration)${marker}`);
   }
 
   return lines.join('\n');

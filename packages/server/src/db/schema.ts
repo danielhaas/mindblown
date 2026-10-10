@@ -117,6 +117,10 @@ export const maps = pgTable('maps', {
   aiPolicy: text('ai_policy').notNull().default('any'),
   // Draft estimates for committed work (#318).
   aiEstimateDrafts: boolean('ai_estimate_drafts').notNull().default(true),
+  // Public holidays (#110): date-holidays code ('LI', 'CH-ZH') + the map's own
+  // days off. Either one set = the schedule runs on a working calendar.
+  holidayJurisdiction: text('holiday_jurisdiction'),
+  holidayOverrides: jsonb('holiday_overrides').notNull().default({ add: [], remove: [] }),
   // Per-map opt-in for Phase 3 GitHub label write-back (#96). When true,
   // finalized triage decisions write `triage:placed` / `triage:skipped`
   // labels back to the source GitHub issue. Default false so existing

@@ -1171,5 +1171,15 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS ai_estimate_drafts BOOLEAN NOT NULL DEFAULT TRUE
   `);
 
+  // ── Public holidays (#110) ──────────────────────────────────────
+  // NULL jurisdiction + empty overrides = no working calendar, so every
+  // existing map schedules exactly as before.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS holiday_jurisdiction TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS holiday_overrides JSONB NOT NULL DEFAULT '{"add":[],"remove":[]}'::jsonb
+  `);
+
   console.log('[db] Migrations complete.');
 }

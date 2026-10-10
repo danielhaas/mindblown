@@ -235,6 +235,12 @@ Limits worth knowing:
 - One forge per workspace. A repository named `owner/repo` on both GitHub and Gitea in the same installation would share issue identities (`owner/repo#N`) — keep the names distinct.
 - Gitea has no close reason and its timeline does not attribute a merge-close to a commit. The abandoned-PR reopen and the closed-issue audit therefore only act on closes made by MindBlown's own login: set `MINDBLOWN_BOT_LOGIN` to the user whose token you connected, otherwise every close looks like a human decision and is left alone (the safe direction).
 
+## Public holidays (optional)
+
+A map can schedule on a working calendar: pick a country or country-region in the Gantt's **Holidays** control (or `update_map holidayJurisdiction: "CH-ZH"`). Holidays are resolved on the server from the bundled [date-holidays](https://github.com/commenthol/date-holidays) package — nothing is fetched at runtime, so it works air-gapped. Only official public holidays count; add half-days and bank days as the map's own days off.
+
+Holiday data © date-holidays contributors, licensed [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/) (code: ISC).
+
 ## Reverse Proxy (nginx)
 
 For production, put MindBlown behind a reverse proxy with SSL.
