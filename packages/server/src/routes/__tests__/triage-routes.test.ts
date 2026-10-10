@@ -404,7 +404,7 @@ vi.mock('../../db/nodes.js', () => ({
   updateNode: mocks.updateNodeMock,
   moveNode: mocks.moveNodeMock,
   // #314: nodes already carrying an issue. Default none; a test sets it.
-  findMapNodesLinkingIssue: (...a: unknown[]) => mocks.linkedNodesMock(...a),
+  findMapNodesLinkingIssue: () => mocks.linkedNodesMock(),
   // Soft-delete filter — shaped as the Pred this file's drizzle-orm mock
   // expects. Always matches: test dbState rows don't carry deletedAt.
   notDeleted: { __pred: true, check: () => true },
