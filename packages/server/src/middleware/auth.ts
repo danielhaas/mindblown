@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { isTokenRevoked, verifyToken, type JwtPayload } from '../auth.js';
 import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
-import { isMediaPlaybackPath } from '../lib/media.js';
+import { isMediaPlaybackPath, isPublicMediaPath } from '../lib/media.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -106,11 +106,18 @@ export async function registerAuthMiddleware(app: FastifyInstance): Promise<void
     // /api/media` still goes through auth and only a logged-in user can
     // put bytes on the disk; and the exact minted-URL shape, so a route
     // added under this prefix later isn't public by accident.
-    if (
-      (req.method === 'GET' || req.method === 'HEAD') &&
-      isMediaPlaybackPath(url)
-    ) {
-      return;
+    //
+    // Since #292 (decision D) only video and images: every other stored
+    // file needs a credential. A browser that opens such a link with none
+    // (a link in a Word export, a mail, an issue) is sent into the app,
+    // which downloads it with the person's own session — the link keeps
+    // working for anyone allowed to see it, and only for them.
+    if ((req.method === 'GET' || req.method === 'HEAD') && isMediaPlaybackPath(url)) {
+      if (isPublicMediaPath(url)) return;
+      if (!req.headers.authorization && /text\/html/.test(String(req.headers.accept ?? ''))) {
+        return reply.redirect(`/?download=${encodeURIComponent(url.split(/[?#]/)[0])}`, 302);
+      }
+      return authPreHandler(req, reply);
     }
 
     // /mcp does its own auth + returns JSON-RPC-shaped errors. We skip the

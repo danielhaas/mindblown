@@ -333,3 +333,6 @@ export type { TriagePipelineState, TriagePipelineInput } from './triagePipeline.
 // Blockers grouped by root cause / unblocker (#322)
 export { classifyBlocker, groupBlockers } from './blockers.js';
 export type { BlockerKind, BlockerGroup, BlockedItem } from './blockers.js';
+
+// Which uploaded files stay public capability URLs (#292, decision D)
+export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

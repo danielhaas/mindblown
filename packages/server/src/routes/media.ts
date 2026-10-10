@@ -8,6 +8,10 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'drizzle-orm';
+import { db } from '../db/connection.js';
+import { nodes } from '../db/schema.js';
+import { checkMapAccess } from '../lib/mapAccess.js';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { createWriteStream, mkdirSync } from 'node:fs';
@@ -16,6 +20,9 @@ import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
 import {
   MEDIA_ROUTE_PREFIX,
+  isMediaPlaybackPath,
+  isPublicMediaPath,
+  mediaIdFromPath,
   downloadName,
   isDownloadOnly,
   maxUploadBytes,
@@ -72,9 +79,41 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
     },
   });
 
-  // Playback. Unauthenticated by design — `middleware/auth.ts` skips
-  // GET/HEAD under this prefix, and the 160-bit id in the path is what
-  // stands in for a credential.
+  // Documents (#292, decision D): a file that is not video or an image is
+  // served only to a caller who can see a map whose live node carries it.
+  // The auth middleware already demanded a credential; this checks the
+  // map. A file no live node carries any more is gone for everyone —
+  // removing the attachment now revokes the link.
+  app.addHook('preHandler', async (req, reply) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return;
+    if (!isMediaPlaybackPath(req.url) || isPublicMediaPath(req.url)) return;
+    const id = mediaIdFromPath(req.url);
+    const notFound = () => reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'File not found' } });
+    if (!req.userId) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Sign in to download this file' } });
+    }
+    if (!id) return notFound();
+    const owners = await db
+      .select({ mapId: nodes.mapId })
+      .from(nodes)
+      // Wherever a node can carry a file link: attachments, the
+      // verification links, or the description text.
+      .where(
+        sql`${nodes.deletedAt} IS NULL AND (
+          ${nodes.attachments}::text LIKE ${`%${id}%`}
+          OR coalesce(${nodes.verificationUrl}, '') LIKE ${`%${id}%`}
+          OR coalesce(${nodes.description}::text, '') LIKE ${`%${id}%`}
+        )`,
+      );
+    for (const { mapId } of owners) {
+      if (!(await checkMapAccess(req.userId, mapId as string, 'view'))) return; // allowed
+    }
+    return notFound();
+  });
+
+  // Playback. Video and images are unauthenticated by design —
+  // `middleware/auth.ts` skips GET/HEAD for them, and the 160-bit id in the
+  // path is what stands in for a credential. Everything else: see above.
   await app.register(fastifyStatic, {
     root,
     prefix: `${MEDIA_ROUTE_PREFIX}/`,
