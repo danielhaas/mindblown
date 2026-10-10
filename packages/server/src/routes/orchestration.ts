@@ -33,7 +33,11 @@ function handleOrchestrationError(err: unknown, reply: FastifyReply): FastifyRep
   if (err instanceof OrchestrationNotFoundError) {
     return reply.status(404).send({
       error: {
-        code: err.message.startsWith('Map ') ? 'MAP_NOT_FOUND' : 'NODE_NOT_FOUND',
+        code: err.message.startsWith('Map ')
+          ? 'MAP_NOT_FOUND'
+          : err.message.startsWith('Sprint ')
+            ? 'SPRINT_NOT_FOUND'
+            : 'NODE_NOT_FOUND',
         message: err.message,
       },
     });
@@ -54,7 +58,7 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:id/nodes/ready — ready_nodes ─────────────
   app.get<{
     Params: { id: string };
-    Querystring: { limit?: string; scope?: string };
+    Querystring: { limit?: string; scope?: string; sprint?: string };
   }>('/api/maps/:id/nodes/ready', async (req, reply) => {
     const mapId = req.params.id;
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
@@ -63,7 +67,7 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
 
     try {
-      const result = await readyNodes(mapId, { limit, scopeFilter });
+      const result = await readyNodes(mapId, { limit, scopeFilter, sprint: req.query.sprint });
       return reply.send(result);
     } catch (err) {
       return handleOrchestrationError(err, reply);

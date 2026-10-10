@@ -1438,6 +1438,8 @@ export interface ReadyNodeApi {
   claimedBySession: string | null;
   claimedAt: string | null;
   parentId: string | null;
+  breadcrumb?: string[];
+  dependents?: number;
 }
 
 export interface ReadyNodesResultApi {
@@ -1445,6 +1447,7 @@ export interface ReadyNodesResultApi {
   ready: ReadyNodeApi[];
   total: number;
   returned: number;
+  sprintScope?: { mode: 'active' | 'all' | 'cycle'; cycles: Array<{ id: string; name: string }>; note?: string };
 }
 
 export interface ClaimNodeResultApi {
@@ -1483,10 +1486,11 @@ export interface ConflictScanResultApi {
 
 export function readyNodes(
   mapId: string,
-  opts: { limit?: number; scopeFilter?: string[] } = {},
+  opts: { limit?: number; scopeFilter?: string[]; sprint?: string } = {},
 ): Promise<ReadyNodesResultApi> {
   const params = new URLSearchParams();
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  if (opts.sprint !== undefined) params.set('sprint', opts.sprint);
   if (opts.scopeFilter && opts.scopeFilter.length > 0) {
     params.set('scope', opts.scopeFilter.join(','));
   }

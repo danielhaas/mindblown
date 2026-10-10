@@ -19,15 +19,22 @@ import type { FleetStatusResult } from '../backend.js';
 export const readyNodesTool = defineTool({
   name: 'ready_nodes',
   description: [
-    'Return nodes that are ready to be claimed and dispatched.',
+    'Return the developer queue: LEAF nodes that are ready to be picked up.',
     '',
     'A node is ready when:',
+    '  - It is a leaf (a node with children is a container — its children are the work)',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
     '',
-    'Results are ordered by priorityRank ASC NULLS LAST → priority (P0–P3) → createdAt ASC.',
-    'This is the canonical dispatch queue: call this before dispatching coding agents.',
+    'Scoped to the map\'s ACTIVE sprint by default (the node or an ancestor carries it);',
+    'pass sprint: "all" for the whole map, or a sprint id. A map with no active sprint',
+    'falls back to the whole map and says so.',
+    '',
+    'Ordered priority (P0–P3, unset last) → priorityRank within a priority → oldest first.',
+    'Each row shows where the leaf sits (parent path) and how many nodes wait on it.',
+    'This is a read-only view; get_next_ticket is the atomic pull (it applies the map\'s',
+    'dispatch gate and policy, so its order can differ).',
   ].join('\n'),
   schema: {
     mapId: z.string().describe('The map ID'),
@@ -44,24 +51,39 @@ export const readyNodesTool = defineTool({
       .describe(
         'Optional scope tags to filter by. When provided, only nodes that declare at least one matching scope tag are returned. Example: ["apps/workflows", "migration:workflows"]',
       ),
+    sprint: z
+      .string()
+      .optional()
+      .describe('"active" (default) = the map\'s active sprint(s); "all" = no sprint filter; or a sprint id (list_cycles).'),
   },
-  handler: async (backend, { mapId, limit, scopeFilter }) => {
-    const result = await backend.readyNodes(mapId, { limit, scopeFilter });
+  handler: async (backend, { mapId, limit, scopeFilter, sprint }) => {
+    const result = await backend.readyNodes(mapId, { limit, scopeFilter, sprint });
+    const scope = result.sprintScope;
+    const scopeText =
+      scope == null || scope.mode === 'all' || scope.cycles.length === 0
+        ? 'whole map'
+        : `sprint ${scope.cycles.map((c) => `"${c.name}"`).join(', ')}`;
 
     if (result.ready.length === 0) {
-      return scopeFilter && scopeFilter.length > 0
-        ? `No ready nodes found in map ${mapId} matching scopes [${scopeFilter.join(', ')}].`
-        : `No ready nodes in map ${mapId}. All nodes are either done, in progress, claimed, or blocked by dependencies.`;
+      const base = scopeFilter && scopeFilter.length > 0
+        ? `No ready leaves in map ${mapId} (${scopeText}) matching scopes [${scopeFilter.join(', ')}].`
+        : `No ready leaves in map ${mapId} (${scopeText}). Everything is done, in progress, claimed, or waiting on dependencies.`;
+      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null]
+        .filter(Boolean)
+        .join('\n');
     }
 
     const lines: string[] = [
-      `Ready nodes in map ${mapId} (${result.returned} of ${result.total} total):`,
-      '',
+      `Ready leaves in map ${mapId} — ${scopeText} (${result.returned} of ${result.total}):`,
     ];
+    if (scope?.note) lines.push(scope.note);
+    lines.push('');
     for (const n of result.ready) {
       const priority = n.priority ? ` [${n.priority}]` : '';
       const scopes = n.scopes.length > 0 ? ` scopes=[${n.scopes.join(', ')}]` : '';
-      lines.push(`  - ${n.id} "${n.text}"${priority}${scopes}`);
+      const where = n.breadcrumb && n.breadcrumb.length > 0 ? ` — in ${n.breadcrumb.join(' › ')}` : '';
+      const waiting = n.dependents ? ` · ${n.dependents} waiting on it` : '';
+      lines.push(`  - ${n.id} "${n.text}"${priority}${where}${waiting}${scopes}`);
     }
     return lines.join('\n');
   },

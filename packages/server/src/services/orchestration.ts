@@ -14,7 +14,7 @@
 
 import { eq, and, isNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { nodes, maps } from '../db/schema.js';
+import { nodes, maps, cycles } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
@@ -22,7 +22,6 @@ import * as events from '../db/events.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
-  resolvedSiblingOrder,
   isReady,
   scopeOverlap,
   buildIsDonePredicate,
@@ -78,9 +77,37 @@ export { buildIsDonePredicate, buildInProgressIds, buildTodoIds };
 
 // ── readyNodes ──────────────────────────────────────────────────
 
+/**
+ * The developer's queue order (#323): priority first (P0 → P3, unset last),
+ * then the manual priorityRank WITHIN a priority, then age. Rank is a
+ * sibling-ordering knob (Gantt drag); ranking it above priority across the
+ * whole map listed ranked P2 follow-ups above unranked P0 work.
+ */
+function devQueueOrder(list: CoreNode[]): CoreNode[] {
+  return [...list].sort((a, b) => {
+    const pa = a.priority !== null ? (PRIORITY_ORDER[a.priority] ?? 4) : 4;
+    const pb = b.priority !== null ? (PRIORITY_ORDER[b.priority] ?? 4) : 4;
+    if (pa !== pb) return pa - pb;
+    const ra = a.priorityRank;
+    const rb = b.priorityRank;
+    if (ra !== rb) {
+      if (ra === null) return 1;
+      if (rb === null) return -1;
+      return ra - rb;
+    }
+    return a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id);
+  });
+}
+
 export async function readyNodes(
   mapId: string,
-  opts: { limit?: number; scopeFilter?: string[] } = {},
+  /**
+   * `sprint` (#323): 'active' (default) = only leaves in the map's active
+   * sprint(s) — the node or an ancestor carries the sprint, as in plan_lint;
+   * a map without an active sprint falls back to the whole map and says so.
+   * 'all' = no sprint filter. Any other value = that sprint's id.
+   */
+  opts: { limit?: number; scopeFilter?: string[]; sprint?: string } = {},
 ): Promise<ReadyNodesResult> {
   const limit = Math.min(100, Math.max(1, opts.limit ?? 10));
   const scopeFilter = opts.scopeFilter ?? null;
@@ -103,8 +130,11 @@ export async function readyNodes(
   );
   const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
 
+  // Leaves only (#323): a node with live children is a container — its work
+  // is its children, so listing it as pickable handed out whole epics.
+  const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
   const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null,
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id),
   );
   const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
 
@@ -112,12 +142,57 @@ export async function readyNodes(
     ? ready.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
     : ready;
 
-  // Global priorityRank ASC NULLS LAST → priority (P0–P3) → createdAt ASC,
-  // exactly what the ready_nodes tool description promises. (Used to group
-  // by parent and only order within sibling groups, which made the overall
-  // list order depend on Map-iteration order of the parents — doc/impl
-  // drift fixed alongside the Leidang pull queue.)
-  const sorted = resolvedSiblingOrder(filtered);
+  // ── Sprint scope (#323) ──
+  const sprintArg = opts.sprint ?? 'active';
+  let sprintScope: NonNullable<ReadyNodesResult['sprintScope']>;
+  let sprintIds: Set<string> | null = null;
+  if (sprintArg === 'all') {
+    sprintScope = { mode: 'all', cycles: [] };
+  } else {
+    const mapCycles = await db
+      .select({ id: cycles.id, name: cycles.name, status: cycles.status })
+      .from(cycles)
+      .where(eq(cycles.mapId, mapId));
+    if (sprintArg === 'active') {
+      const active = mapCycles.filter((c) => c.status === 'active');
+      sprintScope = { mode: 'active', cycles: active.map(({ id, name }) => ({ id, name })) };
+      if (active.length > 0) sprintIds = new Set(active.map((c) => c.id));
+      else sprintScope.note = 'No active sprint on this map — showing the whole map.';
+    } else {
+      const c = mapCycles.find((x) => x.id === sprintArg);
+      if (!c) throw new OrchestrationNotFoundError(`Sprint ${sprintArg} not found on map ${mapId}`);
+      sprintScope = { mode: 'cycle', cycles: [{ id: c.id, name: c.name }] };
+      sprintIds = new Set([c.id]);
+    }
+  }
+  const inSprint = (n: CoreNode): boolean => {
+    if (sprintIds === null) return true;
+    const seen = new Set<string>();
+    let cur: CoreNode | undefined = n;
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      if (cur.cycleId != null && sprintIds.has(cur.cycleId)) return true;
+      cur = cur.parentId ? nodeMap.get(cur.parentId) : undefined;
+    }
+    return false;
+  };
+
+  const sorted = devQueueOrder(filtered.filter(inSprint));
+
+  // Context for picking (#323): where the leaf sits, and what waits on it.
+  const dependentsOf = new Map<string, number>();
+  for (const n of allNodes) {
+    for (const d of n.dependencies) dependentsOf.set(d.targetNodeId, (dependentsOf.get(d.targetNodeId) ?? 0) + 1);
+  }
+  const breadcrumbOf = (n: CoreNode): string[] => {
+    const path: string[] = [];
+    let cur = n.parentId ? nodeMap.get(n.parentId) : undefined;
+    while (cur && cur.parentId !== null && path.length < 3) {
+      path.unshift(cur.text);
+      cur = nodeMap.get(cur.parentId);
+    }
+    return path;
+  };
 
   const page = sorted.slice(0, limit);
   return {
@@ -132,9 +207,12 @@ export async function readyNodes(
       claimedBySession: n.claimedBySession,
       claimedAt: n.claimedAt,
       parentId: n.parentId,
+      breadcrumb: breadcrumbOf(n),
+      dependents: dependentsOf.get(n.id) ?? 0,
     })),
     total: sorted.length,
     returned: page.length,
+    sprintScope,
   };
 }
 
