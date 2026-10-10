@@ -999,8 +999,8 @@ export async function findLinksMissingState(
  * Done nodes whose issue was closed while their PR is still open
  * (#295/#309): the node reads done, `linked_pr.state` is `open`, but the
  * synced forge link to `repoFullName` is already `closed` with no merge
- * commit behind it — and this PR has not been healed yet
- * (`closeCheckedForPr`). The shape a close leaves when it beat the PR to the
+ * commit or close snapshot behind it (`isPrematureCloseLink`), not yet
+ * judged for this PR (`closeCheckedForPr`). The shape a close leaves when it beat the PR to the
  * mirror: done before `gh pr create`, or the PR not yet visible to the
  * outbound landing probe. Oldest mirror first, at most `limit`.
  */
