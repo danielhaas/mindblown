@@ -22,6 +22,7 @@ import {
   createForgeClient,
   normalizeGiteaIssue,
   normalizeGiteaWebhookAction,
+  normalizeGiteaReviewDelivery,
   GitHubApiError,
 } from '@mindblown/integrations';
 import { reconcileRepo } from '../sync/githubCatchup.js';
@@ -1438,7 +1439,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/webhooks/github ─────────────────────────────────
   // Webhook endpoint for GitHub events.
   app.post('/api/webhooks/github', async (req, reply) => {
-    const { event, signature, kind: forgeKind } = readWebhookHeaders(req.headers);
+    const { event: headerEvent, signature, kind: forgeKind, eventType } = readWebhookHeaders(req.headers);
+    // Reassigned below for a Gitea review delivery (#422).
+    let event = headerEvent;
 
     if (!event) {
       return reply.status(400).send({ error: 'Missing X-GitHub-Event header' });
@@ -1511,6 +1514,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
       if (payload.issue && typeof payload.issue === 'object') {
         payload.issue = normalizeGiteaIssue(payload.issue as object);
+      }
+      // A review arrives as `pull_request_approved|rejected|comment` with
+      // `review: { type, content }` (#422); the review handler below reads
+      // GitHub's `pull_request_review.submitted`.
+      const review = normalizeGiteaReviewDelivery(eventType, payload);
+      if (review) {
+        event = review.event;
+        payload.action = review.action;
+        payload.review = review.review;
       }
     }
 

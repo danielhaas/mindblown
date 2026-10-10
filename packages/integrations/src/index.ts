@@ -26,6 +26,7 @@ export {
   giteaEndpoint,
   normalizeGiteaIssue,
   normalizeGiteaWebhookAction,
+  normalizeGiteaReviewDelivery,
   giteaAuthorizeUrl,
   exchangeGiteaAuthorizationCode,
   refreshGiteaAccessToken,

@@ -24,7 +24,12 @@
  *   - there is no `/issues/{n}/events` — the timeline carries `close`,
  *     `reopen` and `pull_ref` (with `ref_action: closes|none`) entries;
  *   - a webhook carries both `X-Gitea-*` and GitHub-compatible headers;
- *     label changes arrive as `issues.label_updated`, not `labeled`.
+ *     label changes arrive as `issues.label_updated`, not `labeled`;
+ *   - a PR review arrives as its own event per verdict — event
+ *     `pull_request_approved|rejected|comment`, type
+ *     `pull_request_review_approved|rejected|comment`, action `reviewed`,
+ *     `review: { type, content }`, reviewer in `sender` (measured
+ *     2026-10-10, see `normalizeGiteaReviewDelivery`).
  */
 
 import {
@@ -158,6 +163,46 @@ export function normalizeGiteaWebhookAction(event: string, action: string | unde
     if (action === 'label_cleared') return 'unlabeled';
   }
   return action;
+}
+
+/** Gitea's review event type → GitHub's `review.state`. */
+const GITEA_REVIEW_STATES: Record<string, string> = {
+  pull_request_review_approved: 'approved',
+  pull_request_review_rejected: 'changes_requested',
+  pull_request_review_comment: 'commented',
+};
+
+/**
+ * A Gitea review delivery in GitHub's shape: event `pull_request_review`,
+ * action `submitted`, `review: { user, state, body, submitted_at }` — what
+ * the review handler reads. Keyed on `X-Gitea-Event-Type`, because the
+ * event name of a review comment is the generic `pull_request_comment`;
+ * only the type (and action `reviewed`) says "review". Null for anything
+ * that is not a review.
+ */
+export function normalizeGiteaReviewDelivery(
+  eventType: string | undefined,
+  payload: { action?: unknown; review?: unknown; sender?: unknown },
+): {
+  event: 'pull_request_review';
+  action: 'submitted';
+  review: { user: { login: string }; state: string; body: string | null; submitted_at: string | null };
+} | null {
+  const state = eventType ? GITEA_REVIEW_STATES[eventType] : undefined;
+  if (!state || payload.action !== 'reviewed') return null;
+  const review = (payload.review ?? {}) as { content?: string | null };
+  const sender = (payload.sender ?? {}) as { login?: string };
+  return {
+    event: 'pull_request_review',
+    action: 'submitted',
+    review: {
+      user: { login: sender.login ?? 'unknown' },
+      state,
+      body: review.content ?? null,
+      // Gitea sends no submission time; the handler stamps "now".
+      submitted_at: null,
+    },
+  };
 }
 
 export class GiteaForge implements ForgeClient {

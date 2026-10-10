@@ -15,6 +15,14 @@ export interface WebhookHeaders {
   delivery: string | undefined;
   /** Which forge sent it, by its own header: `gitea` when `X-Gitea-Event` is present, else `github`. */
   kind: 'github' | 'gitea';
+  /**
+   * Gitea's precise event type (`X-Gitea-Event-Type`), e.g.
+   * `pull_request_review_approved` where the event name is only
+   * `pull_request_approved`; a review comment's event name is the generic
+   * `pull_request_comment`, so only the type says "review". Undefined for
+   * GitHub.
+   */
+  eventType: string | undefined;
 }
 
 type HeaderBag = Record<string, string | string[] | undefined>;
@@ -40,6 +48,7 @@ export function readWebhookHeaders(headers: HeaderBag): WebhookHeaders {
       (giteaSig ? (giteaSig.startsWith('sha256=') ? giteaSig : `sha256=${giteaSig}`) : undefined),
     delivery: header(headers, 'x-github-delivery') ?? header(headers, 'x-gitea-delivery'),
     kind: giteaEvent ? 'gitea' : 'github',
+    eventType: header(headers, 'x-gitea-event-type'),
   };
 }
 
