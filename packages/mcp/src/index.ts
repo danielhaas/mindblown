@@ -3285,7 +3285,7 @@ toolWithAlias(
 
 server.tool(
   'get_schedule',
-  'Get computed schedule and critical path for a map. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
+  'Get computed schedule and critical path for a map. The critical path is capacity-aware: the chain that decides the projected end under the map\'s workerCount — a task is on it when it waited for a dependency OR for a free worker. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
   {
     mapId: z.string().describe('The map ID'),
     versionId: z

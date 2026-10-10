@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -713,12 +713,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId);
-    const cp = criticalPath(scopedNodes);
+    const tracks = new Map<NodeId, number>();
+    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId, tracks);
+    // The critical path is the chain that decides the projected end UNDER
+    // the worker count (#112); the dependency-only CPM stays available for
+    // callers that want the plan's logical chain regardless of capacity.
+    const cp = capacityCriticalPath(scopedNodes, scheduled, tracks);
 
     return reply.send({
       schedule: scheduled,
       criticalPath: cp,
+      dependencyCriticalPath: criticalPath(scopedNodes),
       projectStartDate: projectStartDate.toISOString().slice(0, 10),
       effortUnit: data.map.effortUnit,
       unitsPerDay,

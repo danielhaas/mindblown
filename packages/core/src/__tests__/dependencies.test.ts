@@ -4,6 +4,7 @@ import {
   topologicalSort,
   schedule,
   criticalPath,
+  capacityCriticalPath,
 } from '../dependencies.js';
 import type { Node, NodeMap } from '../types.js';
 
@@ -696,3 +697,61 @@ describe('priority-inheritance schedule', () => {
   });
 });
 
+// ── Capacity-aware critical path (#112) ─────────────────────────
+
+describe('capacityCriticalPath (#112)', () => {
+  // root with leaves; createdAt order decides queue order among equals.
+  function plan(leaves: Array<Partial<Node> & { id: string }>, workers: number) {
+    const kids = leaves.map((l, i) =>
+      makeNode({ parentId: 'root', createdAt: `2026-01-0${i + 1}T00:00:00Z`, ...l }),
+    );
+    const nodes = [makeNode({ id: 'root', childrenIds: kids.map((k) => k.id) }), ...kids];
+    const tracks = new Map<string, number>();
+    const scheduled = schedule(nodes, 0, undefined, undefined, workers, 0, undefined, tracks);
+    return capacityCriticalPath(nodes, scheduled, tracks);
+  }
+
+  it('dependency-driven: B waits for A, the idle second worker does not matter', () => {
+    const cp = plan(
+      [
+        { id: 'A', effortEstimate: 3 },
+        { id: 'B', effortEstimate: 2, dependencies: [{ targetNodeId: 'A', type: 'FS', lag: 0 }] },
+        { id: 'C', effortEstimate: 1 },
+      ],
+      2,
+    );
+    expect(cp.path).toEqual(['A', 'B']);
+    expect(cp.totalDuration).toBe(5);
+    expect(cp.float.C).toBe(1); // C runs on worker 0 after A (days 3–4); the end is day 5
+  });
+
+  it('capacity-driven: two independent tasks and one worker are both on the path', () => {
+    const one = plan([{ id: 'A', effortEstimate: 3 }, { id: 'B', effortEstimate: 2 }], 1);
+    expect(one.path).toEqual(['A', 'B']);
+    expect(one.totalDuration).toBe(5);
+    // the dependency-only CPM sees no chain between them
+    expect(criticalPath([makeNode({ id: 'A', effortEstimate: 3 }), makeNode({ id: 'B', effortEstimate: 2 })]).path).toEqual(['A']);
+    // with two workers they run side by side: only the longer one decides the end
+    expect(plan([{ id: 'A', effortEstimate: 3 }, { id: 'B', effortEstimate: 2 }], 2).path).toEqual(['A']);
+  });
+
+  it('mixed: a dependency step and a free-worker step in one chain', () => {
+    // 1 worker: A(2) → B(1, after A); C(4) waits for the worker after B.
+    const cp = plan(
+      [
+        { id: 'A', effortEstimate: 2 },
+        { id: 'B', effortEstimate: 1, dependencies: [{ targetNodeId: 'A', type: 'FS', lag: 0 }] },
+        { id: 'C', effortEstimate: 4 },
+      ],
+      1,
+    );
+    expect(cp.path).toEqual(['A', 'B', 'C']);
+    expect(cp.totalDuration).toBe(7);
+  });
+
+  it('done work is history: never on the path, no slack entry', () => {
+    const cp = plan([{ id: 'D', effortEstimate: 5, percentComplete: 100 }, { id: 'A', effortEstimate: 2 }], 1);
+    expect(cp.path).toEqual(['A']);
+    expect(cp.float.D).toBeUndefined();
+  });
+});

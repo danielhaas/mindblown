@@ -231,12 +231,15 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
   const lines: string[] = [];
 
   lines.push(`# Schedule: ${mapData.map.name}\n`);
-  lines.push(`**Total project duration:** ${scheduleData.criticalPath.totalDuration} ${mapData.map.effortUnit ?? 'hours'}\n`);
+  const workers = scheduleData.workerCount ?? 1;
+  lines.push(`**Critical chain length:** ${scheduleData.criticalPath.totalDuration} ${mapData.map.effortUnit ?? 'hours'} (with ${workers} worker${workers === 1 ? '' : 's'})\n`);
 
-  // Critical path
-  lines.push('## Critical Path');
+  // Critical path — capacity-aware (#112): the chain that decides the
+  // projected end under the map's worker count, dependencies AND waiting
+  // for a free worker.
+  lines.push(`## Critical Path (capacity-aware, ${workers} worker${workers === 1 ? '' : 's'})`);
   if (scheduleData.criticalPath.path.length === 0) {
-    lines.push('No critical path computed (no dependencies or tasks).');
+    lines.push('No critical path computed (no open tasks).');
   } else {
     for (const nodeId of scheduleData.criticalPath.path) {
       const node = lookup.get(nodeId);
@@ -252,12 +255,16 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
   // Scheduled nodes
   lines.push('## Scheduled Nodes');
   const sorted = [...scheduleData.schedule].sort((a, b) => a.computedStart - b.computedStart);
+  const onPath = new Set(scheduleData.criticalPath.path);
   for (const s of sorted) {
     const node = lookup.get(s.nodeId);
     const name = node?.text ?? s.nodeId;
-    const floatVal = scheduleData.criticalPath.float[s.nodeId] ?? 0;
-    const isCritical = floatVal === 0;
-    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${s.duration} duration)${isCritical ? ' **CRITICAL**' : ` float: ${floatVal}`}`);
+    // On the path = critical; otherwise the slack against the projected end
+    // (done work carries none and gets no marker).
+    const isCritical = onPath.has(s.nodeId);
+    const slack = scheduleData.criticalPath.float[s.nodeId];
+    const marker = isCritical ? ' **CRITICAL**' : slack !== undefined ? ` slack: ${slack}` : '';
+    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${s.duration} duration)${marker}`);
   }
 
   return lines.join('\n');

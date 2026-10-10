@@ -317,6 +317,10 @@ export function schedule(
   workerCount: number = 1,
   todayDay: number = projectStartDay,
   completedAtByNodeId?: Map<NodeId, number>,
+  /** Filled with the worker track each open leaf landed on (#112) — what
+   *  `capacityCriticalPath` needs to tell "waited for a free worker" apart
+   *  from "waited for a dependency". Left untouched when omitted. */
+  trackOut?: Map<NodeId, number>,
 ): ScheduledNode[] {
   // Step 1: Expand any parent-level user deps to leaves (handles the rare
   // case where someone wrote "Section A depends on Section B" at the parent
@@ -487,6 +491,7 @@ export function schedule(
     });
 
     trackCursors[bestTrack] = end;
+    trackOut?.set(node.id, bestTrack);
   }
 
   // Step 7: Roll up parents bottom-up (deepest first) so each parent
@@ -579,6 +584,87 @@ export function schedule(
         duration: 0,
       },
   );
+}
+
+/**
+ * Capacity-aware critical path (#112): the chain of open leaves that decides
+ * the projected end under the map's worker count — what the Gantt and
+ * get_schedule call "the critical path".
+ *
+ * The dependency-only CPM (`criticalPath` below) ignores capacity: with one
+ * worker and two independent tasks it reports either alone as critical,
+ * although the second can only start when the first frees the worker. This
+ * walks the resource-constrained schedule instead: start at the open leaf
+ * that ends last, then repeatedly step to whatever pinned its start —
+ *
+ *   1. a dependency whose constraint equals the start (dependency-driven), else
+ *   2. the previous task on the same worker track ending exactly at the start
+ *      (capacity-driven),
+ *
+ * until neither applies (the task starts at the project start, today, or a
+ * pinned start date). Done leaves are history and never on the path.
+ *
+ * `float` carries 0 for path nodes and, for every other open leaf, how much
+ * earlier it ends than the projected end — slack against the finish date,
+ * not CPM float.
+ */
+export function capacityCriticalPath(
+  nodes: Node[],
+  scheduled: ScheduledNode[],
+  tracks: Map<NodeId, number>,
+): CriticalPathResult {
+  const EPS = 1e-9;
+  const same = (a: number, b: number) => Math.abs(a - b) < EPS;
+  const expanded = expandParentDependencies(nodes);
+  const nodeById = new Map(expanded.map((n) => [n.id, n]));
+  const byId = new Map(scheduled.map((s) => [s.nodeId, s]));
+  // Open leaves = the ones that took a worker track.
+  const open = scheduled.filter((s) => tracks.has(s.nodeId));
+  if (open.length === 0) return { path: [], totalDuration: 0, float: {} };
+
+  let last = open[0];
+  for (const s of open) if (s.computedEnd > last.computedEnd + EPS) last = s;
+  const projectedEnd = last.computedEnd;
+
+  const path: NodeId[] = [last.nodeId];
+  const seen = new Set(path);
+  let cur = last;
+  for (;;) {
+    const node = nodeById.get(cur.nodeId);
+    let next: ScheduledNode | undefined;
+    for (const dep of node?.dependencies ?? []) {
+      const target = byId.get(dep.targetNodeId);
+      if (!target || !tracks.has(dep.targetNodeId)) continue;
+      const constraint =
+        dep.type === 'FS'
+          ? target.computedEnd + dep.lag
+          : dep.type === 'SS'
+            ? target.computedStart + dep.lag
+            : dep.type === 'FF'
+              ? target.computedEnd + dep.lag - cur.duration
+              : target.computedStart + dep.lag - cur.duration;
+      if (same(constraint, cur.computedStart)) {
+        next = target;
+        break;
+      }
+    }
+    if (!next) {
+      const track = tracks.get(cur.nodeId);
+      next = open.find(
+        (s) => s.nodeId !== cur.nodeId && tracks.get(s.nodeId) === track && same(s.computedEnd, cur.computedStart) && s.duration > EPS,
+      );
+    }
+    if (!next || seen.has(next.nodeId)) break;
+    path.push(next.nodeId);
+    seen.add(next.nodeId);
+    cur = next;
+  }
+  path.reverse();
+
+  const float: Record<NodeId, number> = {};
+  for (const s of open) float[s.nodeId] = seen.has(s.nodeId) ? 0 : Math.max(0, projectedEnd - s.computedEnd);
+  const first = byId.get(path[0])!;
+  return { path, totalDuration: projectedEnd - first.computedStart, float };
 }
 
 /**
