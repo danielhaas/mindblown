@@ -78,6 +78,33 @@ function rule(report: LintReport, id: string) {
   return r;
 }
 
+describe('computePlanLint — duplicate-issue-link (#341)', () => {
+  const link = (externalId: string | null, url: string) => ({ source: 'github', externalId, url }) as never;
+  it('flags the copy, not the original; keys on the URL when a link has no issue id; spares a parent and its own sub-ticket', () => {
+    const report = lint([
+      makeNode({ id: 'root', childrenIds: ['orig', 'copy', 'epic', 'old', 'newer'] }),
+      makeNode({ id: 'orig', parentId: 'root', createdAt: '2026-07-01T00:00:00Z', externalLinks: [link('o/r#7', 'https://x/7')] }),
+      makeNode({ id: 'copy', parentId: 'root', createdAt: '2026-07-23T00:00:00Z', externalLinks: [link('o/r#7', 'https://x/7')] }),
+      makeNode({ id: 'epic', parentId: 'root', childrenIds: ['sub'], externalLinks: [link('o/r#9', 'https://x/9')] }),
+      makeNode({ id: 'sub', parentId: 'epic', createdAt: '2026-08-01T00:00:00Z', externalLinks: [link('o/r#9', 'https://x/9')] }),
+      makeNode({ id: 'old', parentId: 'root', createdAt: '2026-05-01T00:00:00Z', externalLinks: [link(null, 'https://x/issues/3/')] }),
+      makeNode({ id: 'newer', parentId: 'root', createdAt: '2026-05-02T00:00:00Z', externalLinks: [link(null, 'https://x/issues/3')] }),
+    ]);
+    const r = rule(report, 'duplicate-issue-link');
+    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['copy', 'newer']);
+    expect(r.findings.find((f) => f.nodeId === 'copy')?.detail).toContain('o/r#7');
+  });
+
+  it('is quiet when every issue has one node', () => {
+    const report = lint([
+      makeNode({ id: 'root', childrenIds: ['a', 'b'] }),
+      makeNode({ id: 'a', parentId: 'root', externalLinks: [link('o/r#1', 'https://x/1')] }),
+      makeNode({ id: 'b', parentId: 'root', externalLinks: [link(null, 'https://x/2')] }),
+    ]);
+    expect(rule(report, 'duplicate-issue-link').findings).toEqual([]);
+  });
+});
+
 describe('computePlanLint — rules', () => {
   it('unestimated-leaf fires on incomplete leaves without estimate, not on complete ones', () => {
     const report = lint([

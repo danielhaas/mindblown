@@ -695,6 +695,47 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     skipped: history.ok ? undefined : 'change history unavailable',
   });
 
+  // 18. duplicate-issue-link (#341) — two live nodes tracking the same
+  // issue double-count its work and show it twice in every list. Keyed on
+  // the issue id, or the URL for links imported without one. A node and its
+  // own ancestor sharing a link (an issue split into sub-tickets) is
+  // deliberate and not flagged; the oldest node of a group is the original.
+  const isAncestor = (a: Node, b: Node): boolean => {
+    for (let p = b.parentId ? nodeById.get(b.parentId) : undefined; p; p = p.parentId ? nodeById.get(p.parentId) : undefined) {
+      if (p.id === a.id) return true;
+    }
+    return false;
+  };
+  const byIssue = new Map<string, Node[]>();
+  for (const n of nodes) {
+    const keys = new Set(
+      (n.externalLinks ?? [])
+        .map((l) => (l.externalId || (l.url ?? '').replace(/\/+$/, '')).trim())
+        .filter((k) => k.length > 0),
+    );
+    for (const k of keys) byIssue.set(k, [...(byIssue.get(k) ?? []), n]);
+  }
+  const inScope = new Set(scopedNodes.map((n) => n.id));
+  const duplicateFindings: LintFinding[] = [];
+  for (const [issue, group] of byIssue) {
+    if (group.length < 2) continue;
+    const ordered = [...group].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const original = ordered[0];
+    for (const copy of ordered.slice(1)) {
+      if (!inScope.has(copy.id)) continue;
+      if (isAncestor(original, copy) || isAncestor(copy, original)) continue;
+      duplicateFindings.push(finding(copy, `same issue as "${original.text}" (${issue})`));
+    }
+  }
+  rules.push({
+    ruleId: 'duplicate-issue-link',
+    severity: 'warn',
+    title: 'Two nodes track the same issue',
+    why: 'A copy counts the issue\'s work twice, shows it twice in every list and splits its progress between two places.',
+    fix: 'Delete the copy (it lands in the trash), or unlink the issue from it if it is really separate work.',
+    findings: duplicateFindings,
+  });
+
   // ── Apply dismissals ──
   const mutedRules = new Set(dismissals.filter((d) => d.nodeId == null).map((d) => d.ruleId));
   const nodeDismissals = new Set(
