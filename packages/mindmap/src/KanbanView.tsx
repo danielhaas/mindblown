@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
-import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
+import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, isBlockedCard, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -39,6 +39,8 @@ interface KanbanCard {
   breadcrumb: string;
   healthSignal: HealthSignal;
   computedProgress: number;
+  /** From the computed tree — the same source as the Blocked panel. */
+  blockedBy: BlockedBy | null;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -71,15 +73,15 @@ function Card({
   card,
   effortUnit,
   selected,
-  blocked,
+  block,
   onClick,
   onDragStart,
 }: {
   card: KanbanCard;
   effortUnit: string;
   selected: boolean;
-  /** Explicitly blocked (isBlockedCard) — rendered greyed out with the reason. */
-  blocked: boolean;
+  /** Blocked or waiting on a predecessor (cardBlockState) — greyed out, detail on hover. */
+  block: CardBlock;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
@@ -95,15 +97,15 @@ function Card({
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
-      title={blocked ? `Blocked${node.blockedReason ? `: ${node.blockedReason}` : ''}` : undefined}
+      title={block?.detail}
       style={{
-        background: blocked ? '#e2e8f0' : '#ffffff',
-        opacity: blocked ? 0.7 : 1,
+        background: block ? '#e2e8f0' : '#ffffff',
+        opacity: block ? 0.7 : 1,
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${blocked ? '#94a3b8' : borderColor}`,
+        borderLeft: `3px solid ${block ? '#94a3b8' : borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -161,7 +163,7 @@ function Card({
         >
           {node.text}
         </span>
-        {blocked && (
+        {block && (
           <span
             style={{
               fontSize: 9,
@@ -176,7 +178,7 @@ function Card({
               letterSpacing: '0.04em',
             }}
           >
-            Blocked
+            {block.kind === 'blocked' ? 'Blocked' : 'Waiting'}
           </span>
         )}
         {githubLink && (
@@ -357,7 +359,7 @@ function Column({
       card={card}
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
-      blocked={isBlockedCard(card.node, isDone)}
+      block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id)}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
     />
@@ -586,6 +588,7 @@ export function KanbanView() {
         breadcrumb: getNodeBreadcrumb(node.id as NodeId),
         healthSignal: cv?.healthSignal ?? 'on_track',
         computedProgress: cv?.computedProgress ?? 0,
+        blockedBy: cv?.blockedBy ?? null,
       };
 
       if (!node.status) {

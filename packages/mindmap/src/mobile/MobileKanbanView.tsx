@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
-import { groupDone, isBlockedCard, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, type DoneGroupKey } from '../kanban.js';
+import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
 
@@ -40,6 +41,9 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
   const isOpen = (col: string, key: DoneGroupKey): boolean => openGroups[col]?.[key] ?? key !== 'earlier';
   const toggle = (col: string, key: DoneGroupKey) =>
     setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [key]: !isOpen(col, key) } }));
+  // Same rule as the Blocked panel: computeIsBlocked over the whole map.
+  const nodeMap: NodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])) as NodeMap, [nodes]);
+
   const breadcrumbs = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const out = new Map<string, string>();
@@ -127,13 +131,18 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 )}
                 {(!g.key || isOpen(col.key, g.key)) && g.items.map((n) => {
               const pct = Math.round(n.computedProgress ?? 0);
-              const blocked = isBlockedCard(n, col.status?.category === 'done');
+              const block = cardBlockState(
+                n,
+                computeIsBlocked(n, nodeMap).blockedBy,
+                col.status?.category === 'done',
+                (id) => nodeMap.get(id)?.text ?? id,
+              );
               return (
                 <button
                   key={n.id}
                   className="mb-kanban-card"
                   onClick={() => onSelect(n.id)}
-                  style={blocked ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
+                  style={block ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <span
@@ -160,7 +169,11 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}
-                    {blocked && <span style={{ color: '#475569', fontWeight: 600 }}>· blocked{n.blockedReason ? `: ${n.blockedReason.length > 60 ? `${n.blockedReason.slice(0, 57)}…` : n.blockedReason}` : ''}</span>}
+                    {block && (
+                      <span style={{ color: '#475569', fontWeight: 600 }}>
+                        · {block.detail.length > 64 ? `${block.detail.slice(0, 61)}…` : block.detail}
+                      </span>
+                    )}
                   </div>
                 </button>
               );
