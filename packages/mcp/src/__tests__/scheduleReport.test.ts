@@ -29,4 +29,24 @@ describe('formatScheduleReport (#191)', () => {
     expect(out).toContain('- Build [n-b]: day 0 - 2 (2 duration) slack: 2');
     expect(out).toContain('## Critical Path (capacity-aware, 2 workers)');
   });
+
+  it('prints dates on the map\'s calendar — working days once holidays are set (#110)', () => {
+    const map = { map: { name: 'Plan', effortUnit: 'days' }, nodes: [node('n-a', 'Design')] } as unknown as MapDetail;
+    const base = {
+      criticalPath: { path: ['n-a'], totalDuration: 3, float: { 'n-a': 0 } },
+      schedule: [{ nodeId: 'n-a', computedStart: 0, computedEnd: 3, duration: 3 }],
+      projectStartDate: '2026-12-23',
+      unitsPerDay: 1,
+    };
+    const every = formatScheduleReport(map, { ...base, workingCalendar: null } as unknown as ScheduleResult);
+    expect(every).toContain('every day counts from 2026-12-23');
+    // The end shown is the last day worked (23, 24, 25), not the next start.
+    expect(every).toContain('day 0 - 3 (2026-12-23 → 2026-12-25, 3 duration)');
+    const li = formatScheduleReport(map, {
+      ...base,
+      workingCalendar: { jurisdiction: 'LI', holidays: ['2026-12-25', '2026-12-26'] },
+    } as unknown as ScheduleResult);
+    expect(li).toContain('Mon–Fri, LI public holidays');
+    expect(li).toContain('day 0 - 3 (2026-12-23 → 2026-12-28, 3 duration)');
+  });
 });

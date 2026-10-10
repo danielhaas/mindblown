@@ -5,6 +5,7 @@
  */
 import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion } from '@mindblown/core';
 import type { Baseline, ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
+import { mapDayMapper } from './holidays.js';
 
 export interface MapScheduleOptions {
   versionId?: string;
@@ -75,14 +76,16 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
 
   // Build per-node constraints from manual start/due dates. Any node with
   // a user-set date gets pinned; everything else flows from effort + deps.
+  // Dates ↔ day offsets go through the map's calendar (#110): every day by
+  // default, Mon–Fri minus holidays once a holiday calendar is set.
   const MS_PER_DAY = 86_400_000;
-  const toDayOffset = (isoDate: string): number => {
-    const d = new Date(isoDate);
-    d.setUTCHours(0, 0, 0, 0);
-    const calendarDays = Math.round((d.getTime() - projectStartDate.getTime()) / MS_PER_DAY);
-    // Convert calendar-day offset back to the scheduler's effort-unit space.
-    return calendarDays * unitsPerDay;
-  };
+  const { mapper, holidays } = mapDayMapper(data.map, projectStartDate);
+  const toDayOffset = (isoDate: string): number => mapper.toOffset(isoDate) * unitsPerDay;
+  // The END of a due day as a day offset: the boundary after the last
+  // working day on or before it — a due date on a weekend or holiday means
+  // "by the end of the working day before". On every-day maps: offset + 1.
+  const dueEndDay = (isoDate: string): number =>
+    mapper.toOffset(new Date(new Date(isoDate.slice(0, 10)).getTime() + MS_PER_DAY));
 
   const constraints = new Map<NodeId, ScheduleConstraint>();
   for (const n of scopedNodes) {
@@ -90,7 +93,7 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     if (n.startDate) pin.minStart = toDayOffset(n.startDate);
     // The deadline is the END of the due day: work whose last day is the
     // due date is on time (#113 review).
-    if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate) + unitsPerDay;
+    if (n.dueDate) pin.maxEnd = dueEndDay(n.dueDate) * unitsPerDay;
     if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
       constraints.set(n.id, pin);
     }
@@ -140,11 +143,9 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     start: Math.round(s.computedStart / unitsPerDay),
     end: Math.round(Math.max(s.computedEnd / unitsPerDay, s.computedStart / unitsPerDay + (s.duration === 0 ? 0 : 1))),
   });
-  const dayToDate = (days: number): string => {
-    const d = new Date(projectStartDate.getTime());
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
-  };
+  // Whole-day offset → date on the map's calendar (a boundary: a bar's start,
+  // or its exclusive end).
+  const dayToDate = (days: number): string => mapper.toDate(days).toISOString().slice(0, 10);
 
   // Missed deadlines (#113): the drawn bar runs past the end of the due
   // day. projectedEnd = the last working day; lateDays counted in whole
@@ -156,14 +157,20 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     .map((s) => {
       const node = scopedById.get(s.nodeId)!;
       const dueDate = (node.dueDate as string).slice(0, 10);
-      const dueEndDays = Math.round(toDayOffset(dueDate) / unitsPerDay) + 1;
       const endDays = barDays(s).end;
+      // The day the work ends — its last (working) day.
+      const projectedEnd = mapper.lastDay(endDays).toISOString().slice(0, 10);
       return {
         nodeId: s.nodeId,
         text: node.text,
         dueDate,
-        projectedEnd: dayToDate(endDays - 1),
-        lateDays: endDays - dueEndDays,
+        projectedEnd,
+        // Calendar days past the due date, like every other slip — on a
+        // working calendar too ("finishes Mon, due Fri" is 3 days late).
+        lateDays:
+          endDays > dueEndDay(dueDate)
+            ? Math.round((Date.parse(projectedEnd) - Date.parse(dueDate)) / MS_PER_DAY)
+            : 0,
       };
     })
     .filter((v) => v.lateDays > 0)
@@ -181,6 +188,12 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     versionId: versionId ?? null,
     crossVersionDependencies: versionId ? crossVersionDependencies : [],
     dueViolations,
+    // Null = offsets are calendar days. Otherwise offsets are working days
+    // (Mon–Fri minus these dates) — build the same mapper with
+    // makeDayMapper(projectStartDate, new Set(holidays)) (#110).
+    workingCalendar: holidays
+      ? { jurisdiction: data.map.holidayJurisdiction ?? null, holidays: [...holidays].sort() }
+      : null,
     /** A bar as the Gantt draws it, as dates (end exclusive). */
     barDates: (s: { computedStart: number; computedEnd: number; duration: number }) => {
       const d = barDays(s);

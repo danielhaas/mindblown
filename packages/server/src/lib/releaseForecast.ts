@@ -1,4 +1,5 @@
 import type { ForecastConfidence, ForecastEvidence, Node as CoreNode, MindMap, Version } from '@mindblown/core';
+import { mapDayMapper } from './holidays.js';
 import {
   assessCalibration,
   assessForecastEvidence,
@@ -9,6 +10,7 @@ import {
   clampFocusFactor,
   compareVersions,
   effectiveVersionId,
+  makeDayMapper,
 } from '@mindblown/core';
 
 /**
@@ -128,10 +130,26 @@ export function computeReleaseForecast(
   // ── Constants ──
   const MS_PER_DAY = 86_400_000;
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const addCalendarDays = (base: Date, days: number): Date => {
-    const d = new Date(base.getTime());
-    d.setUTCDate(d.getUTCDate() + Math.ceil(days));
-    return d;
+  // A step of `days` from a cursor: `next` is where the following release
+  // starts (exclusive end), `finish` the day this one's work ends — the date
+  // reported, and the one slip is measured from (#110).
+  type Step = { next: Date; finish: Date };
+  const calendarStep = (base: Date, days: number): Step => {
+    const next = new Date(base.getTime());
+    next.setUTCDate(next.getUTCDate() + Math.ceil(days));
+    const finish = new Date(next.getTime());
+    // Nothing left to do finishes where it starts, not the day before.
+    if (Math.ceil(days) > 0) finish.setUTCDate(finish.getUTCDate() - 1);
+    return { next, finish };
+  };
+  // Model days (estimates ÷ capacity) land on the map's calendar: working
+  // days once a holiday calendar is set, so a release has one planned finish
+  // in this table, the schedule and /forecast.
+  const holidays = mapDayMapper(map, now).holidays;
+  const modelStep = (base: Date, days: number): Step => {
+    if (!holidays) return calendarStep(base, days);
+    const m = makeDayMapper(base, holidays);
+    return { next: m.toDate(days, 'ceil'), finish: days > 0 ? m.lastDay(days) : m.toDate(0, 'ceil') };
   };
   const daysBetween = (a: Date, b: Date) =>
     Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
@@ -248,24 +266,28 @@ export function computeReleaseForecast(
       effectiveStartDate = iso(velocityCursor);
 
       const plannedCalDays = remainingEffort / dailyCapacity;
-      const plannedFinish = addCalendarDays(plannedCursor, plannedCalDays);
-      plannedFinishDate = iso(plannedFinish);
-      plannedCursor = plannedFinish;
+      const plannedStep = modelStep(plannedCursor, plannedCalDays);
+      plannedFinishDate = iso(plannedStep.finish);
+      plannedCursor = plannedStep.next;
 
       const velCalDays =
         netEffortPerDay != null && netEffortPerDay > 0
           ? remainingEffort / netEffortPerDay
           : (remainingEffort * effectiveFudge) / (dailyCapacity * focusFactor);
-      const velFinish = addCalendarDays(velocityCursor, velCalDays);
-      velocityAdjustedFinishDate = iso(velFinish);
-      velocityCursor = velFinish;
+      // Measured net rate = calendar days; the fudge/focus fallback = model days.
+      const velStep =
+        netEffortPerDay != null && netEffortPerDay > 0
+          ? calendarStep(velocityCursor, velCalDays)
+          : modelStep(velocityCursor, velCalDays);
+      velocityAdjustedFinishDate = iso(velStep.finish);
+      velocityCursor = velStep.next;
       velocityHorizonDays = velCalDays;
 
       if (rowTicketsPerDay != null && rowTicketsPerDay > 0 && remainingTickets > 0) {
         ticketHorizonDays = remainingTickets / rowTicketsPerDay;
-        const ticketFinish = addCalendarDays(ticketCursor, ticketHorizonDays);
-        ticketModelFinishDate = iso(ticketFinish);
-        ticketCursor = ticketFinish;
+        const ticketStep = calendarStep(ticketCursor, ticketHorizonDays);
+        ticketModelFinishDate = iso(ticketStep.finish);
+        ticketCursor = ticketStep.next;
       }
     }
 

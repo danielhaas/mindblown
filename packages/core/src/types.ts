@@ -621,6 +621,8 @@ export interface MindMap {
    * calendar terms. Applied to the *velocity-adjusted* forecast line only
    * (planned finish stays the idealised scheduler baseline), orthogonal to
    * the estimation fudge factor. Default 1.0 = no capacity leakage.
+   * On a holiday calendar (#110) it scales working days — weekends and
+   * holidays are already out, so do not lower it for them.
    */
   focusFactor: number;
 
@@ -742,6 +744,21 @@ export interface MindMap {
    * Server source: `maps.ai_estimate_drafts`.
    */
   aiEstimateDrafts?: boolean;
+  /**
+   * Public holidays (#110): a `date-holidays` code — country (`LI`, `AT`) or
+   * country-region (`CH-ZH`, `DE-BY`). Null = none. Setting it (or any
+   * override) puts the map on a working calendar: the schedule skips
+   * weekends and these holidays when it turns effort days into dates.
+   * Server source: `maps.holiday_jurisdiction`.
+   */
+  holidayJurisdiction?: string | null;
+  /** Company days off added to, and jurisdiction holidays removed from, the calendar ('YYYY-MM-DD'). */
+  holidayOverrides?: HolidayOverrides;
+}
+
+export interface HolidayOverrides {
+  add: string[];
+  remove: string[];
 }
 
 /** Per-map AI policy — see `MindMap.aiPolicy`. */

@@ -5,6 +5,7 @@
  * mutation so connected map viewers update in real time.
  */
 
+import { normalizeHolidaySettings } from '../lib/holidays.js';
 import type { ToolBackend, MapDetail, MapSummary, NodeWithComputed } from '@mindblown/tool-kit';
 import { computeTree, parseTickWindow } from '@mindblown/core';
 import type { Node as CoreNode, MindMap } from '@mindblown/core';
@@ -163,6 +164,8 @@ export function createChatBackend(userId: string): ToolBackend {
       // Attributed + broadcast like the REST route: a dispatch-knob write
       // from the in-app chat must show the chatting user in the audit and
       // reach an open cockpit without a reload.
+      const holidayError = normalizeHolidaySettings(fields);
+      if (holidayError) throw new Error(holidayError);
       const updated = await mapDb.updateMap(mapId, fields, userId);
       if (!updated) throw new Error(`Map ${mapId} not found`);
       broadcast(mapId, { type: 'map:updated', map: updated });

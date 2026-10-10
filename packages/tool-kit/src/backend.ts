@@ -359,6 +359,8 @@ export interface ToolBackend {
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
+      holidayJurisdiction?: string | null;
+      holidayOverrides?: { add: string[]; remove: string[] };
       phases?: PhaseDef[];
       archived?: boolean;
     },

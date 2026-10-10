@@ -109,6 +109,9 @@ export interface MapDetail {
     wipLimit: number | null;
     /** Project phase definitions; `position` = canonical phase order. */
     phases?: PhaseDef[];
+    /** #110 — public-holiday calendar; null/absent = every day counts. */
+    holidayJurisdiction?: string | null;
+    holidayOverrides?: { add: string[]; remove: string[] };
   };
   nodes: NodeWithComputed[];
 }

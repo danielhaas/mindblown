@@ -25,6 +25,7 @@ export type {
   AiPolicy,
   Baseline,
   MindMap,
+  HolidayOverrides,
   User,
   Workspace,
   WorkspaceMember,
@@ -81,6 +82,8 @@ export {
   businessDaysBetween,
   hoursToBusinessDays,
 } from './calendar.js';
+export { makeDayMapper, applyHolidayOverrides, hasWorkingCalendar, isIsoDate, describeHolidayCalendar } from './workCalendar.js';
+export type { DayMapper, OffsetRounding } from './workCalendar.js';
 
 // Status-workflow helpers (#119)
 export {

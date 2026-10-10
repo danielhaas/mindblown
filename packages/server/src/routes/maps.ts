@@ -25,6 +25,7 @@ import {
   type CalendarIcsView,
 } from '../lib/calendarIcs.js';
 import { db } from '../db/connection.js';
+import { normalizeHolidaySettings, mapDayMapper } from '../lib/holidays.js';
 import { workspaces, users, releaseSnapshots } from '../db/schema.js';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'mindblown-dev-secret-change-in-production';
@@ -92,13 +93,9 @@ function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
       : new Date(new Date().toISOString().slice(0, 10));
     projectStartDate.setUTCHours(0, 0, 0, 0);
     const unitsPerDay = map.effortUnit === 'hours' ? (map.hoursPerDay ?? 8) : 1;
-    const MS_PER_DAY = 86_400_000;
-    const toDayOffset = (isoDate: string): number => {
-      const d = new Date(isoDate);
-      d.setUTCHours(0, 0, 0, 0);
-      const calendarDays = Math.round((d.getTime() - projectStartDate.getTime()) / MS_PER_DAY);
-      return calendarDays * unitsPerDay;
-    };
+    // Days → dates through the map's calendar (#110): every day, or working days.
+    const { mapper } = mapDayMapper(map, projectStartDate);
+    const toDayOffset = (isoDate: string): number => mapper.toOffset(isoDate) * unitsPerDay;
     const constraints = new Map<NodeId, ScheduleConstraint>();
     for (const n of nodes) {
       const pin: ScheduleConstraint = {};
@@ -112,9 +109,8 @@ function projectMap(nodes: CoreNode[], map: MindMap): MapProjection {
     const scheduled = schedule(nodes, 0, constraints, undefined, workers);
     const maxEnd = scheduled.reduce((m, s) => Math.max(m, s.computedEnd), 0);
     plannedFinishOffsetDays = maxEnd / unitsPerDay;
-    const finish = new Date(projectStartDate.getTime());
-    finish.setUTCDate(finish.getUTCDate() + Math.ceil(plannedFinishOffsetDays));
-    plannedFinishDate = finish.toISOString().slice(0, 10);
+    // The day the work ends (last working day), not the boundary after it.
+    plannedFinishDate = mapper.lastDay(plannedFinishOffsetDays).toISOString().slice(0, 10);
   } catch {
     /* scheduler errors out on circular deps etc — leave null */
   }
@@ -386,6 +382,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = req.body as mapDb.UpdateMapInput;
+    const holidayError = normalizeHolidaySettings(body);
+    if (holidayError) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: holidayError } });
+    }
     const updated = await mapDb.updateMap(req.params.id, body, userId);
     if (!updated) {
       return reply.status(404).send({
@@ -719,13 +719,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     projectStart.setUTCHours(0, 0, 0, 0);
     const unitsPerDay =
       data.map.effortUnit === 'hours' ? (data.map.hoursPerDay ?? 8) : 1;
-    const MS_PER_DAY = 86_400_000;
-    const toDayOffset = (isoDate: string): number => {
-      const d = new Date(isoDate);
-      d.setUTCHours(0, 0, 0, 0);
-      const calendarDays = Math.round((d.getTime() - projectStart.getTime()) / MS_PER_DAY);
-      return calendarDays * unitsPerDay;
-    };
+    // Planned (model) days → dates through the map's calendar (#110).
+    const { mapper } = mapDayMapper(data.map, projectStart);
+    const toDayOffset = (isoDate: string): number => mapper.toOffset(isoDate) * unitsPerDay;
     const constraints = new Map<NodeId, ScheduleConstraint>();
     for (const n of data.nodes) {
       const pin: ScheduleConstraint = {};
@@ -741,14 +737,23 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let maxScopedEnd = 0;
     const scoped = Boolean(versionId || nodeId);
     const workers = Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
-    const addCalendarDays = (base: Date, days: number): Date => {
-      const d = new Date(base.getTime());
-      d.setUTCDate(d.getUTCDate() + Math.ceil(days));
-      return d;
-    };
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
     const anchor = today > projectStart ? today : projectStart;
+    // Model days counted from the anchor: calendar days, or working days on
+    // a working calendar — the same calendar the schedule uses.
+    const fromAnchor = mapDayMapper(data.map, anchor).mapper;
+    // Finish dates are the day the work ends: `days` of work starting on
+    // `base` finishes on its last (working) day, so work due today and
+    // finished today is on time, not a day late.
+    const addModelDays = (base: Date, days: number): Date =>
+      (base === anchor ? fromAnchor : mapper).lastDay(days);
+    // Measured rates are per calendar day — they stay on the calendar.
+    const addCalendarDays = (base: Date, days: number): Date => {
+      const d = new Date(base.getTime());
+      d.setUTCDate(d.getUTCDate() + Math.ceil(days) - 1);
+      return d;
+    };
 
     try {
       if (scoped) {
@@ -763,10 +768,10 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
             fudge: effectiveFudge,
             focusFactor,
           });
-          plannedFinishDate = addCalendarDays(anchor, cap.plannedCalendarDays)
+          plannedFinishDate = addModelDays(anchor, cap.plannedCalendarDays)
             .toISOString()
             .slice(0, 10);
-          velocityAdjustedFinishDate = addCalendarDays(anchor, cap.velocityCalendarDays)
+          velocityAdjustedFinishDate = addModelDays(anchor, cap.velocityCalendarDays)
             .toISOString()
             .slice(0, 10);
           maxScopedEnd = remainingEffort; // non-zero → "has schedulable effort"
@@ -781,18 +786,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
         if (maxScopedEnd > 0) {
           const plannedCalDays = maxScopedEnd / unitsPerDay;
-          plannedFinishDate = addCalendarDays(projectStart, plannedCalDays)
+          plannedFinishDate = addModelDays(projectStart, plannedCalDays)
             .toISOString()
             .slice(0, 10);
 
           if (remainingEffort > 0) {
-            const elapsedFromStart = Math.max(
-              0,
-              Math.round((anchor.getTime() - projectStart.getTime()) / MS_PER_DAY),
-            );
+            const elapsedFromStart = Math.max(0, mapper.toOffset(anchor));
             const remainingSchedulerDays = Math.max(0, plannedCalDays - elapsedFromStart);
+            // focusFactor stretches model days; on a working calendar those are
+            // working days, so holidays and weekends are not discounted twice.
             const velDays = (remainingSchedulerDays * effectiveFudge) / focusFactor;
-            velocityAdjustedFinishDate = addCalendarDays(anchor, velDays)
+            velocityAdjustedFinishDate = addModelDays(anchor, velDays)
               .toISOString()
               .slice(0, 10);
           }
@@ -862,7 +866,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       targetSource = 'max leaf dueDate';
     }
 
-    // ── Slip ──
+    // ── Slip ── (calendar days: "three days late" means on the wall calendar)
+    const MS_PER_DAY = 86_400_000;
     const daysBetween = (a: string, b: string): number => {
       const da = new Date(a);
       const db2 = new Date(b);

@@ -161,6 +161,10 @@ export interface UpdateMapInput {
   aiPolicy?: AiPolicy;
   /** Draft estimates for committed work (#318). */
   aiEstimateDrafts?: boolean;
+  /** #110 — date-holidays code; null clears. Validated by the route / tool. */
+  holidayJurisdiction?: string | null;
+  /** #110 — full replacement of the map's own days off. */
+  holidayOverrides?: { add: string[]; remove: string[] };
   /**
    * Archive switch. `true` stamps `archivedAt` now (idempotent — an
    * already-archived map keeps its original stamp), `false` clears it.
@@ -219,6 +223,8 @@ export async function updateMap(
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
   if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
+  if (input.holidayJurisdiction !== undefined) updates.holidayJurisdiction = input.holidayJurisdiction;
+  if (input.holidayOverrides !== undefined) updates.holidayOverrides = input.holidayOverrides;
   // Boolean only: a raw REST caller sending `archived: null` must not
   // unarchive by accident (the tool-kit schema already rejects it).
   if (typeof input.archived === 'boolean') {

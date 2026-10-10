@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { MindMap, Node as CoreNode, Version } from '@mindblown/core';
 import { computeReleaseForecast } from '../releaseForecast.js';
+import { mapDayMapper } from '../holidays.js';
 
 // ── Minimal fixtures ──
 // A map anchored at a fixed start with one active version holding a single
@@ -47,9 +48,9 @@ describe('computeReleaseForecast — focusFactor', () => {
     const result = computeReleaseForecast(makeMap(1), [root, leaf], [version], NOW);
     expect(result.focusFactor).toBe(1);
     const row = result.releases[0];
-    // 10 remaining days, capacity 1/day → 2026-01-11 for both.
-    expect(row.plannedFinishDate).toBe('2026-01-11');
-    expect(row.velocityAdjustedFinishDate).toBe('2026-01-11');
+    // 10 remaining days, capacity 1/day → last day 2026-01-10 for both (01-01 … 01-10).
+    expect(row.plannedFinishDate).toBe('2026-01-10');
+    expect(row.velocityAdjustedFinishDate).toBe('2026-01-10');
   });
 
   it('doubles the remaining velocity horizon at focusFactor 0.5', () => {
@@ -57,16 +58,16 @@ describe('computeReleaseForecast — focusFactor', () => {
     expect(result.focusFactor).toBe(0.5);
     const row = result.releases[0];
     // Planned stays the idealised baseline...
-    expect(row.plannedFinishDate).toBe('2026-01-11');
+    expect(row.plannedFinishDate).toBe('2026-01-10');
     // ...but only half of each day reaches planned work → 20 cal days.
-    expect(row.velocityAdjustedFinishDate).toBe('2026-01-21');
+    expect(row.velocityAdjustedFinishDate).toBe('2026-01-20');
   });
 
   it('clamps an out-of-range focusFactor into the sane band', () => {
     const result = computeReleaseForecast(makeMap(5), [root, leaf], [version], NOW);
     // 5 → clamped to 1.0, so velocity == planned.
     expect(result.focusFactor).toBe(1);
-    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-11');
+    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-10');
   });
 });
 
@@ -78,7 +79,7 @@ describe('computeReleaseForecast — measured rates', () => {
     const result = computeReleaseForecast(makeMap(0.5), [root, leaf], [version], NOW, {
       netEffortPerDay: 1.25,
     });
-    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-09');
+    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-08');
     expect(result.netEffortPerDay).toBe(1.25);
   });
 
@@ -101,8 +102,8 @@ describe('computeReleaseForecast — measured rates', () => {
     );
     const row = result.releases[0];
     expect(row.remainingTickets).toBe(2);
-    // 2 tickets ÷ 0.5/day = 4 cal days → 2026-01-05.
-    expect(row.ticketModelFinishDate).toBe('2026-01-05');
+    // 2 tickets ÷ 0.5/day = 4 cal days → last day 2026-01-04.
+    expect(row.ticketModelFinishDate).toBe('2026-01-04');
   });
 
   it('ticket model chains across sequential releases like the other cursors', () => {
@@ -129,16 +130,16 @@ describe('computeReleaseForecast — measured rates', () => {
       NOW,
       { netTicketsPerDay: 1 },
     );
-    // V1: 1 ticket ÷ 1/day → 01-02; V2 starts where V1's ticket cursor ended.
-    expect(result.releases[0].ticketModelFinishDate).toBe('2026-01-02');
-    expect(result.releases[1].ticketModelFinishDate).toBe('2026-01-03');
+    // V1: 1 ticket ÷ 1/day → done on 01-01; V2 starts the next day.
+    expect(result.releases[0].ticketModelFinishDate).toBe('2026-01-01');
+    expect(result.releases[1].ticketModelFinishDate).toBe('2026-01-02');
   });
 
   it('no rates → ticket date null, velocity falls back to knobs', () => {
     const result = computeReleaseForecast(makeMap(0.5), [root, leaf], [version], NOW);
     expect(result.releases[0].ticketModelFinishDate).toBeNull();
     expect(result.releases[0].remainingTickets).toBe(1);
-    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-21');
+    expect(result.releases[0].velocityAdjustedFinishDate).toBe('2026-01-20');
     expect(result.netTicketsPerDay).toBeNull();
   });
 });
@@ -226,20 +227,22 @@ describe('computeReleaseForecast — effectiveStartDate rides the velocity curso
     const [v1Row, v2Row] = result.releases;
 
     expect(v1Row.effectiveStartDate).toBe('2026-01-01'); // the anchor
-    expect(v1Row.plannedFinishDate).toBe('2026-01-11');
-    expect(v1Row.velocityAdjustedFinishDate).toBe('2026-01-21');
+    expect(v1Row.plannedFinishDate).toBe('2026-01-10');
+    expect(v1Row.velocityAdjustedFinishDate).toBe('2026-01-20');
 
-    expect(v2Row.effectiveStartDate).toBe(v1Row.velocityAdjustedFinishDate);
+    // V2 starts the day after V1's last day (finish dates are the day work ends, #110).
+    expect(v2Row.effectiveStartDate).toBe('2026-01-21');
+    expect(v1Row.velocityAdjustedFinishDate).toBe('2026-01-20');
     expect(v2Row.effectiveStartDate).not.toBe(v1Row.plannedFinishDate);
     // 2 days ÷ (1 × 0.5) = 4 cal days on from 01-21.
-    expect(v2Row.velocityAdjustedFinishDate).toBe('2026-01-25');
+    expect(v2Row.velocityAdjustedFinishDate).toBe('2026-01-24');
   });
 
   it('keeps the planned cursor independent of the shared start', () => {
     const result = computeReleaseForecast(makeMap(0.5), [root2, leaf, leafB], [version, v2], NOW);
     // V2's planned line still chains off V1's *planned* finish (01-11 + 2d),
     // so the two models stay independent second opinions.
-    expect(result.releases[1].plannedFinishDate).toBe('2026-01-13');
+    expect(result.releases[1].plannedFinishDate).toBe('2026-01-12');
   });
 });
 
@@ -250,7 +253,7 @@ describe('computeReleaseForecast — evidence (#343)', () => {
   it('a release with no completions of its own: dates stay, no slip, no verdict', () => {
     const row = computeReleaseForecast(makeMap(1), [root, leaf], [targeted], NOW, rates).releases[0];
     expect(row.evidence.state).toBe('not_measurable');
-    expect(row.velocityAdjustedFinishDate).toBe('2026-01-11');
+    expect(row.velocityAdjustedFinishDate).toBe('2026-01-10');
     expect(row.slipVelocityDays).toBeNull();
     expect(row.slipPlannedDays).toBeNull();
     expect(row.slipTicketDays).toBeNull();
@@ -262,7 +265,7 @@ describe('computeReleaseForecast — evidence (#343)', () => {
     const overdue = { ...version, targetDate: '2025-12-01' } as unknown as Version;
     const row = computeReleaseForecast(makeMap(1), [root, leaf], [overdue], NOW, rates).releases[0];
     expect(row.evidence.state).toBe('stalled');
-    expect(row.slipVelocityDays).toBe(41);
+    expect(row.slipVelocityDays).toBe(40);
     expect(row.confidence.level).not.toBe('unmeasured');
   });
 
@@ -280,6 +283,22 @@ describe('computeReleaseForecast — evidence (#343)', () => {
     const root2 = { ...root, childrenIds: ['leaf-1', ...done.map((d) => d.id)] } as unknown as CoreNode;
     const row = computeReleaseForecast(makeMap(1), [root2, leaf, ...done], [targeted], NOW, rates).releases[0];
     expect(row.evidence).toMatchObject({ state: 'measured', ownCompletions: 10 });
-    expect(row.slipVelocityDays).toBe(6);
+    expect(row.slipVelocityDays).toBe(5);
+  });
+});
+
+describe('computeReleaseForecast — working calendar (#110)', () => {
+  it('a version on an LI map gets the same working-day planned finish as the schedule', () => {
+    const liMap = { ...makeMap(1), holidayJurisdiction: 'LI', holidayOverrides: { add: [], remove: [] } } as unknown as MindMap;
+    const row = computeReleaseForecast(liMap, [root, leaf], [version], NOW).releases[0];
+    const { mapper, holidays } = mapDayMapper(liMap, NOW, NOW);
+    const expected = mapper.lastDay(10).toISOString().slice(0, 10);
+    expect(row.plannedFinishDate).toBe(expected);
+    // 10 working days from New Year skip weekends and LI holidays: well past
+    // the calendar-day answer (01-10), and on a working day.
+    expect(expected > '2026-01-14').toBe(true);
+    const d = new Date(`${expected}T00:00:00Z`);
+    expect([0, 6]).not.toContain(d.getUTCDay());
+    expect(holidays!.has(expected)).toBe(false);
   });
 });

@@ -24,6 +24,9 @@ const BROADCAST_MAP_SETTINGS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Holiday calendar (#110): the Gantt's label and dates follow it.
+  'holidayJurisdiction',
+  'holidayOverrides',
   // Archive flips in another tab must land here: the banner and the
   // agent-refusal state follow the server, never an optimistic edit.
   'archivedAt',

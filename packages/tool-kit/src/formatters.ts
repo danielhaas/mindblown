@@ -5,6 +5,7 @@
  */
 
 import type { MapDetail, NodeWithComputed } from './types.js';
+import { describeHolidayCalendar } from '@mindblown/core';
 
 function healthIcon(signal: string): string {
   switch (signal) {
@@ -152,6 +153,9 @@ export function formatMapTree(data: MapDetail): string {
   }
   if (data.map.description) lines.push(`${data.map.description}`);
   lines.push(`Effort unit: ${data.map.effortUnit ?? 'hours'}`);
+  // Holiday calendar (#110) — only when set; otherwise every day counts.
+  const calendarLine = describeHolidayCalendar(data.map);
+  if (calendarLine) lines.push(calendarLine);
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(

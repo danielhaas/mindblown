@@ -1180,6 +1180,11 @@ export interface ScheduleResponse {
   focusFactor: number;
   /** Nodes whose projected end lands after their due date, worst first (#113). */
   dueViolations?: DueViolation[];
+  /**
+   * #110 — null: offsets are calendar days. Otherwise offsets are working
+   * days (Mon–Fri minus `holidays`); map them with makeDayMapper.
+   */
+  workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
 }
 
 export interface DueViolation {

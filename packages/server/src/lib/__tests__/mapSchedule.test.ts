@@ -103,3 +103,38 @@ describe('capBaselines (#113 review)', () => {
     expect(capBaselines([b(1)]).dropped).toEqual([]);
   });
 });
+
+describe('computeMapSchedule — working calendar (#110)', () => {
+  // LI: 25 + 26 Dec are public holidays, 27 is a Sunday.
+  const liMap = { ...map, projectStartDate: '2026-12-23', holidayJurisdiction: 'LI', holidayOverrides: { add: [], remove: [] } } as unknown as MindMap;
+
+  it('a 3-day task from 23 Dec ends (exclusive) 29 Dec / last work day 28 Dec — the deadline compares on that calendar', () => {
+    const late = computeMapSchedule({ map: liMap, nodes: [leaf('a', { effortEstimate: 3, dueDate: '2026-12-24' })] });
+    // Works 23, 24, 28: due Thursday 24, last day Monday 28 — 4 calendar days late.
+    expect(late.dueViolations).toEqual([{ nodeId: 'a', text: 'a', dueDate: '2026-12-24', projectedEnd: '2026-12-28', lateDays: 4 }]);
+    expect(late.workingCalendar?.holidays).toEqual(expect.arrayContaining(['2026-12-25', '2026-12-26']));
+
+    const onTime = computeMapSchedule({ map: liMap, nodes: [leaf('a', { effortEstimate: 3, dueDate: '2026-12-28' })] });
+    expect(onTime.dueViolations).toEqual([]);
+  });
+
+  it('a due date on a holiday or weekend means the end of the working day before it', () => {
+    // Due Sunday 27: the last working day before is Thursday 24 — work ending Monday 28 is late.
+    const r = computeMapSchedule({ map: liMap, nodes: [leaf('a', { effortEstimate: 3, dueDate: '2026-12-27' })] });
+    expect(r.dueViolations.map((v) => [v.projectedEnd, v.lateDays])).toEqual([['2026-12-28', 1]]);
+    // Two days of work (23, 24) due on the holiday 25th: on time.
+    expect(computeMapSchedule({ map: liMap, nodes: [leaf('a', { effortEstimate: 2, dueDate: '2026-12-25' })] }).dueViolations).toEqual([]);
+  });
+
+  it('a baseline freezes the bars on the working calendar (end exclusive)', () => {
+    const b = buildBaseline({ map: liMap, nodes: [leaf('a', { effortEstimate: 3 })] }, 'LI');
+    expect(b.nodes.a).toMatchObject({ plannedStart: '2026-12-23', plannedEnd: '2026-12-29' });
+  });
+
+  it('a map without a holiday calendar keeps counting every day', () => {
+    const r = computeMapSchedule({ map: { ...liMap, holidayJurisdiction: null } as unknown as MindMap, nodes: [leaf('a', { effortEstimate: 3, dueDate: '2026-12-25' })] });
+    expect(r.workingCalendar).toBeNull();
+    expect(r.dueViolations).toEqual([]); // 23, 24, 25
+  });
+});
+

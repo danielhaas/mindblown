@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type React from 'react';
 import type { Node, NodeId, CriticalPathResult, ScheduledNode, ScheduleConstraint } from '@mindblown/core';
 import {
   schedule as computeSchedule,
   criticalPath as computeCriticalPath,
   addBusinessDays,
   businessDaysBetween,
+  makeDayMapper,
 } from '@mindblown/core';
+import { GanttHolidays } from './GanttHolidays.js';
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import { collectDoneNodeIds, collectRequirementKeepIds } from './viewScope.js';
@@ -22,6 +25,8 @@ interface ScheduleResponse {
   workerCount: number;
   /** Nodes whose projected end lands after their due date (#113). */
   dueViolations?: DueViolation[];
+  /** #110 — null: calendar days; else working days minus these holidays. */
+  workingCalendar?: { jurisdiction: string | null; holidays: string[] } | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -75,10 +80,10 @@ function addDays(d: Date, n: number): Date {
   return r;
 }
 
-// Working-day helpers live in @mindblown/core (addBusinessDays,
-// businessDaysBetween) so the scheduler and the Gantt renderer share one
-// implementation. Public holidays will be threaded through their optional
-// `holidays?: Set<string>` parameter when #110 lands.
+// Working-day helpers live in @mindblown/core. A map with a holiday
+// calendar (#110) schedules in working days; the schedule response carries
+// the holidays and `makeDayMapper` turns offsets into dates the same way the
+// server did.
 
 function formatDate(d: Date, scale: TimeScale): string {
   const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -416,7 +421,24 @@ export function GanttView() {
     anchorLocal.setHours(0, 0, 0, 0);
     const unitsPerDay = scheduleData.unitsPerDay || 1;
 
-    // Server schedule is in straight calendar days from the project anchor.
+    // Working calendar (#110): offsets are working days — walk Mon–Fri minus
+    // the server's holidays, with the same mapper the server scheduled with.
+    const wc = scheduleData.workingCalendar;
+    if (wc) {
+      const mapper = makeDayMapper(scheduleData.projectStartDate, new Set(wc.holidays));
+      const local = (d: Date) => new Date(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate());
+      for (const s of scheduleData.schedule) {
+        const startDays = s.computedStart / unitsPerDay;
+        const endDays = s.computedEnd / unitsPerDay;
+        // The server's one rounding rule (mapSchedule barDays): whole days,
+        // a non-empty bar at least one (working) day wide.
+        const visibleEndDays = Math.max(endDays, startDays + (s.duration === 0 ? 0 : 1));
+        map.set(s.nodeId, { start: local(mapper.toDate(startDays, 'round')), end: local(mapper.toDate(visibleEndDays, 'round')) });
+      }
+      return map;
+    }
+
+    // Otherwise every day counts: straight calendar days from the anchor.
     for (const s of scheduleData.schedule) {
       const startDays = s.computedStart / unitsPerDay;
       const endDays = s.computedEnd / unitsPerDay;
@@ -1198,6 +1220,21 @@ export function GanttView() {
           </span>
         )}
 
+        {/* Holidays (#110): jurisdiction + own days off → working calendar */}
+        {currentMapId && (
+          <GanttHolidays
+            mapId={currentMapId}
+            jurisdiction={currentMap?.holidayJurisdiction ?? null}
+            overrides={currentMap?.holidayOverrides}
+            onSaved={async () => {
+              const refreshed = (await fetchSchedule(currentMapId)) as ScheduleResponse;
+              setServerScheduleData(refreshed);
+              setSavedFlash('Holidays saved');
+              window.setTimeout(() => setSavedFlash(null), 2000);
+            }}
+          />
+        )}
+
         {/* Requirements-only toggle */}
         <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
         <button
@@ -1803,6 +1840,37 @@ export function GanttView() {
                   }}
                 />
               ))}
+
+              {/* Non-working days (#110): weekends + holidays, only on a
+                  working calendar and only where a day is wide enough to see */}
+              {scheduleData?.workingCalendar && pxPerDay >= 6 && (() => {
+                const holidays = new Set(scheduleData.workingCalendar.holidays);
+                const days = Math.ceil(totalTimelineWidth / pxPerDay);
+                const boxes: React.ReactElement[] = [];
+                const d = new Date(rangeStart);
+                for (let i = 0; i < days; i++, d.setDate(d.getDate() + 1)) {
+                  const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                  const weekend = d.getDay() === 0 || d.getDay() === 6;
+                  const holiday = holidays.has(key);
+                  if (!weekend && !holiday) continue;
+                  boxes.push(
+                    <div
+                      key={`off-${key}`}
+                      title={holiday ? `${key}: holiday` : undefined}
+                      style={{
+                        position: 'absolute',
+                        left: i * pxPerDay,
+                        top: 0,
+                        width: pxPerDay,
+                        height: totalHeight,
+                        background: holiday ? 'rgba(251, 191, 36, 0.14)' : 'rgba(148, 163, 184, 0.10)',
+                        pointerEvents: 'none',
+                      }}
+                    />,
+                  );
+                }
+                return boxes;
+              })()}
 
               {/* Today line */}
               {todayX > 0 && todayX < totalTimelineWidth && (
