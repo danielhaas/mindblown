@@ -46,7 +46,8 @@ export { extractAutoLinkIssueNumber };
  *   - no GitHub repo is connected,
  *   - the issue lookup returns a non-2xx (404 = the planning-prefix case
  *     where `#NNNN` isn't actually an issue number — common false positive),
- *   - the node already has a GitHub link (caller's explicit link wins).
+ *   - the node already has a GitHub link (caller's explicit link wins),
+ *   - another node on the map already carries the issue (#314).
  *
  * Fire-and-forget side of the create/update routes: errors are logged but
  * never propagate; the node creation/update itself has already succeeded.
@@ -72,6 +73,12 @@ async function autoLinkNodeFromTitle(
 
   const ghCtx = await getGitHubContextForMap(mapId);
   if (!ghCtx) return null;
+
+  // One issue, one node (#314): when another node on the map already
+  // carries this issue, a "#NNNN …" title is a follow-up or a note about
+  // it, not the issue itself — leave the link where it is.
+  const externalIdForTitle = `${ghCtx.owner}/${ghCtx.repo}#${issueNumber}`;
+  if ((await nodeDb.findMapNodesLinkingIssue(mapId, externalIdForTitle)).some((n) => n.id !== nodeId)) return null;
 
   // Verify issue exists. 404 is a legit "this is a planning prefix, not an
   // issue" signal — skip silently. Any other error is logged but also

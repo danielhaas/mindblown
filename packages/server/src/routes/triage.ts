@@ -1146,6 +1146,11 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         if (existingRow) {
           return { kind: 'conflict' };
         }
+        // Linked by hand (link_issue, title auto-link, import) leaves no
+        // decision row — the issue is still not an orphan (#314).
+        if ((await nodeDb.findMapNodesLinkingIssue(req.params.mapId, externalId)).length > 0) {
+          return { kind: 'conflict' };
+        }
         const node = await nodeDb.createNode(
           {
             mapId: req.params.mapId,
@@ -2492,7 +2497,15 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         try {
           let nodeId: string | null = null;
           let status: string;
-          if (row.placedNodeId) {
+          // Same rule as the single /override (#314): a node may carry the
+          // issue although placedNodeId is null (reclassify clears the
+          // pointer, parked nodes keep the link) — move that one instead
+          // of creating a second node for the issue.
+          const existingNodeId =
+            (row.placedNodeId as string | null) ??
+            (await nodeDb.findMapNodesLinkingIssue(req.params.mapId, row.externalId as string))[0]?.id ??
+            null;
+          if (existingNodeId) {
             // Reparent the already-placed node. Phase 3 follow-up
             // (#102 item 5) distinguishes three sub-states for the
             // bulk-override response:
@@ -2510,7 +2523,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             // move because the node is gone" from "we didn't need to
             // move" lets the operator decide whether to chase the
             // orphan (delete the dangling row or re-place a new node).
-            const placedNodeId = row.placedNodeId as string;
+            const placedNodeId = existingNodeId;
             const [placedNode] = await db
               .select({ id: nodes.id, parentId: nodes.parentId })
               .from(nodes)
@@ -2546,6 +2559,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
                 reviewed: true,
                 reviewedAt: new Date(),
                 reviewedBy: userId,
+                // A node found by its link becomes the row's placed node.
+                ...(subStatus !== 'orphaned' ? { placedNodeId } : {}),
               })
               .where(eq(triageDecisions.id, row.id));
             await recordTriageHistory({

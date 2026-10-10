@@ -370,6 +370,7 @@ vi.mock('drizzle-orm', async () => {
 // hoisted namespace and re-expose the spies via local `const`s for
 // ergonomic per-test assertions.
 const mocks = vi.hoisted(() => ({
+  linkedNodesMock: vi.fn(async (): Promise<Array<{ id: string; text: string }>> => []),
   createNodeMock: vi.fn(async (input: Record<string, unknown>) => ({
     id: 'created-node',
     mapId: input.mapId,
@@ -402,6 +403,8 @@ vi.mock('../../db/nodes.js', () => ({
   createNode: mocks.createNodeMock,
   updateNode: mocks.updateNodeMock,
   moveNode: mocks.moveNodeMock,
+  // #314: nodes already carrying an issue. Default none; a test sets it.
+  findMapNodesLinkingIssue: (...a: unknown[]) => mocks.linkedNodesMock(...a),
   // Soft-delete filter — shaped as the Pred this file's drizzle-orm mock
   // expects. Always matches: test dbState rows don't carry deletedAt.
   notDeleted: { __pred: true, check: () => true },
@@ -1772,6 +1775,23 @@ describe('POST .../bulk-override', () => {
     expect(results.every((r) => r.status === 'placed')).toBe(true);
     expect(results.every((r) => r.nodeId === 'created-node')).toBe(true);
     expect(createNodeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('a node that already carries the issue is moved, not duplicated (#314)', async () => {
+    seedRow({ id: 'p1', decision: 'place', placedNodeId: null, externalId: 'o/r#1', issueTitle: 'A' });
+    nodes.set('epic-B', { id: 'epic-B', mapId: 'map-1', parentId: 'root-1' });
+    nodes.set('parked', { id: 'parked', mapId: 'map-1', parentId: 'inbox' });
+    mocks.linkedNodesMock.mockResolvedValueOnce([{ id: 'parked', text: '#1 A' }]);
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-override',
+      payload: { decisionIds: ['p1'], parentNodeId: 'epic-B' },
+    });
+    await app.close();
+    expect(createNodeMock).not.toHaveBeenCalled();
+    expect(res.json().results[0]).toMatchObject({ nodeId: 'parked' });
   });
 
   it('400 when parentNodeId is not in this map', async () => {

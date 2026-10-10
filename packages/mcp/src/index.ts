@@ -3069,15 +3069,16 @@ toolWithAlias(
 
 toolWithAlias(
   'link_issue',
-  'Link an existing MindBlown node to an issue on the map\'s issue tracker (GitHub or Gitea). After linking, the node will auto-sync with the issue via webhooks.',
+  'Link an existing MindBlown node to an issue on the map\'s issue tracker (GitHub or Gitea). After linking, the node will auto-sync with the issue via webhooks. One issue, one node: linking an issue another node on the map already carries is refused (ISSUE_ALREADY_LINKED, naming that node) — check whether that node IS the task; pass allowDuplicate only when the second link is deliberate (a parent and its sub-issue, a follow-up).',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to link'),
     owner: z.string().describe('Repo owner (e.g. "danielhaas")'),
     repo: z.string().describe('Repo name (e.g. "mindblown")'),
     issueNumber: z.number().describe('Issue number'),
+    allowDuplicate: z.boolean().optional().describe('Link even though another node on the map already carries this issue (deliberate double link only)'),
   },
-  async ({ mapId, nodeId, owner, repo, issueNumber }) => {
+  async ({ mapId, nodeId, owner, repo, issueNumber, allowDuplicate }) => {
     try {
       // Check for duplicate: does this node already have this issue linked?
       const mapData = await api.getMap(mapId);
@@ -3093,7 +3094,7 @@ toolWithAlias(
         return toolError(`Node ${nodeId} is already linked to ${externalId}. No duplicate created.`);
       }
 
-      const result = await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
+      const result = await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber, allowDuplicate);
       const provider = result?.node?.externalLinks?.find((l: { externalId: string }) => l.externalId === externalId)?.provider;
       return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with ${forgeName(provider)}.`);
     } catch (err) {
@@ -3228,7 +3229,7 @@ toolWithAlias(
 
 toolWithAlias(
   'bulk_link_issues',
-  'Link multiple nodes to issues on the map\'s issue tracker (GitHub or Gitea) in a single call. Supports a default owner/repo to avoid repetition.',
+  'Link multiple nodes to issues on the map\'s issue tracker (GitHub or Gitea) in a single call. Supports a default owner/repo to avoid repetition. An issue another node on the map already carries is refused per link (ISSUE_ALREADY_LINKED) unless that link sets allowDuplicate.',
   {
     mapId: z.string().describe('The map ID'),
     owner: z.string().optional().describe('Default repo owner (used when link omits owner)'),
@@ -3238,6 +3239,7 @@ toolWithAlias(
       owner: z.string().optional().describe('Repo owner (overrides default)'),
       repo: z.string().optional().describe('Repo name (overrides default)'),
       issueNumber: z.number().describe('Issue number'),
+      allowDuplicate: z.boolean().optional().describe('Deliberate double link (see link_issue)'),
     })).describe('Array of node-to-issue links'),
   },
   async ({ mapId, owner: defaultOwner, repo: defaultRepo, links }) => {
@@ -3250,7 +3252,7 @@ toolWithAlias(
         continue;
       }
       try {
-        await api.linkGitHubIssue(mapId, link.nodeId, owner, repo, link.issueNumber);
+        await api.linkGitHubIssue(mapId, link.nodeId, owner, repo, link.issueNumber, link.allowDuplicate);
         results.push(`${link.nodeId} → ${owner}/${repo}#${link.issueNumber}: OK`);
       } catch (err) {
         results.push(`${link.nodeId} → #${link.issueNumber}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
