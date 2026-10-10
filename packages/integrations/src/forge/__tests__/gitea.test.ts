@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GiteaForge, giteaEndpoint, normalizeGiteaIssue, normalizeGiteaWebhookAction } from '../gitea.js';
+import { GiteaForge, giteaEndpoint, normalizeGiteaIssue, normalizeGiteaReviewDelivery, normalizeGiteaWebhookAction } from '../gitea.js';
 import { readWebhookHeaders, verifyWebhookSignature } from '../webhook.js';
 import { GitHubScanTruncatedError, walkIssueScan } from '../pagination.js';
 import { GitHubForge } from '../github.js';
@@ -25,6 +25,9 @@ import {
   giteaWebhookIssuesLabelUpdated,
   giteaWebhookIssuesOpened,
   giteaWebhookPullRequestClosed,
+  giteaWebhookReviewApproved,
+  giteaWebhookReviewComment,
+  giteaWebhookReviewRejected,
 } from './fixtures/gitea.js';
 
 const INSTANCE = 'https://git.example';
@@ -384,6 +387,7 @@ describe('Gitea webhooks', () => {
       signature: giteaWebhookIssuesOpened.headers['x-hub-signature-256'],
       delivery: 'af9a1bb4-b8b2-4ed4-a2c9-551c4bff231d',
       kind: 'gitea',
+      eventType: 'issues',
     });
     // Without the GitHub-compatible headers the Gitea ones are enough.
     const { 'x-github-event': _e, 'x-hub-signature-256': _s, 'x-github-delivery': _d, ...giteaOnly } = giteaWebhookIssuesOpened.headers;
@@ -404,6 +408,31 @@ describe('Gitea webhooks', () => {
     expect(normalizeGiteaWebhookAction('issues', 'label_cleared')).toBe('unlabeled');
     expect(normalizeGiteaWebhookAction('issues', giteaWebhookIssuesEdited.body.action)).toBe('edited');
     expect(normalizeGiteaWebhookAction('pull_request', giteaWebhookPullRequestClosed.body.action)).toBe('closed');
+  });
+
+  it('review deliveries (#422): the precise type comes from X-Gitea-Event-Type, not the event name', () => {
+    const h = readWebhookHeaders(giteaWebhookReviewComment.headers);
+    expect(h.event).toBe('pull_request_comment'); // shared with a plain PR comment
+    expect(h.eventType).toBe('pull_request_review_comment');
+    expect(readWebhookHeaders({ 'x-github-event': 'pull_request_review' }).eventType).toBeUndefined();
+  });
+
+  it('review deliveries (#422) read as GitHub\'s pull_request_review.submitted, one per verdict', () => {
+    const norm = (d: { headers: Record<string, string>; body: object }) =>
+      normalizeGiteaReviewDelivery(readWebhookHeaders(d.headers).eventType, d.body);
+    expect(norm(giteaWebhookReviewApproved)).toEqual({
+      event: 'pull_request_review',
+      action: 'submitted',
+      review: { user: { login: 'mb-oauth-test' }, state: 'approved', body: 'capture: approve', submitted_at: null },
+    });
+    expect(norm(giteaWebhookReviewRejected)?.review).toMatchObject({ state: 'changes_requested', body: 'capture: request changes' });
+    expect(norm(giteaWebhookReviewComment)?.review).toMatchObject({ state: 'commented', user: { login: 'dan' } });
+  });
+
+  it('not a review: a plain PR comment, another action, or no type header → untouched', () => {
+    expect(normalizeGiteaReviewDelivery('pull_request_comment', { action: 'created' })).toBeNull();
+    expect(normalizeGiteaReviewDelivery('pull_request_review_approved', { action: 'opened' })).toBeNull();
+    expect(normalizeGiteaReviewDelivery(undefined, giteaWebhookReviewApproved.body)).toBeNull();
   });
 
   it('payload shapes the ingest relies on are present', () => {
