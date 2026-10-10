@@ -17,6 +17,10 @@
  *   - `PATCH /issues/{n}` ignores `labels` and `state_reason` (no such
  *     concept) and answers 201; milestones are addressed by `id`;
  *   - `assignees` is `null` when empty; `milestone` has `id` but no `number`;
+ *   - an empty LIST answers `200 null`, not `[]` (measured on an issue
+ *     timeline, 2026-10-10) — every list read goes through `requestList`,
+ *     the shared walker or `addIssueLabels`' own parse, which all read it
+ *     as empty;
  *   - there is no `/issues/{n}/events` — the timeline carries `close`,
  *     `reopen` and `pull_ref` (with `ref_action: closes|none`) entries;
  *   - a webhook carries both `X-Gitea-*` and GitHub-compatible headers;
@@ -206,6 +210,11 @@ export class GiteaForge implements ForgeClient {
     return (await res.json()) as T;
   }
 
+  /** A one-page list read; Gitea's `null` for an empty list reads as `[]`. */
+  private async requestList<T>(pathOrUrl: string, init: { method?: string; body?: unknown } = {}): Promise<T[]> {
+    return (await this.requestJson<T[] | null>(pathOrUrl, init)) ?? [];
+  }
+
   private async raw(pathOrUrl: string, init: ForgeRequestInit): Promise<ForgeRawResponse> {
     const res = await this.request(pathOrUrl, init);
     return { status: res.status, bodyText: await res.text() };
@@ -297,7 +306,7 @@ export class GiteaForge implements ForgeClient {
       // PUT replaces the set, like GitHub's PATCH `labels`. Names are
       // accepted; unknown ones are created first so none are dropped.
       await this.ensureLabelIds(owner, repo, patch.labels);
-      const labels = await this.requestJson<Array<{ name: string }>>(
+      const labels = await this.requestList<{ name: string }>(
         `/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
         { method: 'PUT', body: { labels: patch.labels } },
       );
@@ -337,7 +346,8 @@ export class GiteaForge implements ForgeClient {
     // GitHub's 422 so the writeback's "create the label first" warning fires.
     let applied: Array<{ name: string }> = [];
     try {
-      applied = JSON.parse(res.bodyText) as Array<{ name: string }>;
+      // `null` = nothing applied (Gitea's empty list).
+      applied = (JSON.parse(res.bodyText) ?? []) as Array<{ name: string }>;
     } catch {
       return res;
     }
@@ -369,13 +379,13 @@ export class GiteaForge implements ForgeClient {
   // ── Milestones ──────────────────────────────────────────────────
 
   async listMilestones(owner: string, repo: string): Promise<MilestoneRef[]> {
-    const rows = await this.requestJson<GiteaMilestone[]>(`/repos/${owner}/${repo}/milestones?state=all&limit=100`);
+    const rows = await this.requestList<GiteaMilestone>(`/repos/${owner}/${repo}/milestones?state=all&limit=100`);
     return rows.map((m) => ({ ref: m.id, title: m.title, state: m.state }));
   }
 
   async searchIssues(owner: string, repo: string, query: string, opts?: { limit?: number }): Promise<ForgeIssue[]> {
     const limit = Math.max(1, Math.min(opts?.limit ?? 10, 50));
-    const rows = await this.requestJson<GiteaIssueRaw[]>(
+    const rows = await this.requestList<GiteaIssueRaw>(
       `/repos/${owner}/${repo}/issues?q=${encodeURIComponent(query.trim())}&type=issues&state=all&limit=${limit}`,
     );
     return rows.map((raw) => normalizeGiteaIssue(raw));
@@ -441,7 +451,7 @@ export class GiteaForge implements ForgeClient {
   }
 
   async listPullRequestFiles(owner: string, repo: string, prNumber: number): Promise<string[]> {
-    const rows = await this.requestJson<Array<{ filename: string }>>(
+    const rows = await this.requestList<{ filename: string }>(
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`,
     );
     return rows.map((f) => f.filename);

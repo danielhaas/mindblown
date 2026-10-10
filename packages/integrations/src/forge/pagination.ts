@@ -267,7 +267,10 @@ export async function paginateGitHub<T>(
   let pages = 0;
 
   while (url) {
-    const page: GitHubPage<T[]> = await githubFetchPage<T[]>(url, forge);
+    const page: GitHubPage<T[] | null> = await githubFetchPage<T[] | null>(url, forge);
+    // Gitea answers an empty list with `null` (e.g. the timeline of an
+    // issue nothing has happened on yet) — an empty page, not a shape change.
+    if (page.data === null && forge.endpoint.kind === 'gitea') page.data = [];
     // A non-array body (a shape change, or an error GitHub answered 200
     // to) must not read as "the list ended here".
     if (!Array.isArray(page.data)) {
