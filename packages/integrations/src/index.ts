@@ -82,6 +82,7 @@ export {
   processWebhook,
   extractClosingIssueRefs,
   importGitHubIssues,
+  _clearIssueListCacheForTests,
   fetchChangedIssues,
   extractVersionFromMilestone,
   getGitHubIssue,

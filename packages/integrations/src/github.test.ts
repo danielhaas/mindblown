@@ -12,6 +12,7 @@ import {
   GitHubCrossOriginPaginationError,
   fetchChangedIssues,
   importGitHubIssues,
+  _clearIssueListCacheForTests,
   parseLinkNext,
   type IssueLandingProbe,
 } from './github.js';
@@ -1212,5 +1213,69 @@ describe('GitHubPaginationLimitError', () => {
 
     expect(err).toBeInstanceOf(GitHubApiError);
     expect(err).not.toBeInstanceOf(GitHubPaginationLimitError);
+  });
+});
+
+describe('importGitHubIssues — cached full list (#312)', () => {
+  beforeEach(() => _clearIssueListCacheForTests());
+
+  it('maxAgeMs reuses a fresh list; without it every call fetches', async () => {
+    const fetchMock = bigRepo({ pages: [issuePage([1, 2])] });
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    const second = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    expect(second.map((i) => i.issue.number)).toEqual([1, 2]);
+    expect(fetchMock.mock.calls).toHaveLength(1);
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true });
+    expect(fetchMock.mock.calls).toHaveLength(2);
+  });
+
+  it('the cache is per state, and an old list is refetched', async () => {
+    const fetchMock = bigRepo({ pages: [issuePage([1])] });
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: false, maxAgeMs: 60_000 });
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    await new Promise((r) => setTimeout(r, 5));
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 1 });
+    expect(fetchMock.mock.calls).toHaveLength(3);
+  });
+
+  it('concurrent callers share one in-flight fetch; a failure is not kept', async () => {
+    const fetchMock = bigRepo({ pages: [issuePage([1])] });
+    await Promise.all([
+      importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true }),
+      importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 }),
+    ]);
+    expect(fetchMock.mock.calls).toHaveLength(1);
+
+    _clearIssueListCacheForTests();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 502 })));
+    await expect(importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 })).rejects.toThrow();
+    const again = bigRepo({ pages: [issuePage([7])] });
+    const list = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    expect(list.map((i) => i.issue.number)).toEqual([7]);
+    expect(again.mock.calls).toHaveLength(1);
+  });
+
+  it('callers get their own array', async () => {
+    bigRepo({ pages: [issuePage([1, 2])] });
+    const a = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    a.pop();
+    const b = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    expect(b).toHaveLength(2);
+  });
+});
+
+describe('forge request timeout (#312)', () => {
+  it('a call without its own signal gets a timeout signal; a caller signal is kept', async () => {
+    const seen: Array<AbortSignal | undefined> = [];
+    const forge = new GitHubForge({ token: 'tok', fetchImpl: (async (_u: string, init?: { signal?: AbortSignal }) => {
+      seen.push(init?.signal);
+      return new Response('{}', { status: 200 });
+    }) as never });
+    await forge.request('/x');
+    const own = new AbortController().signal;
+    await forge.request('/x', { signal: own });
+    expect(seen[0]).toBeInstanceOf(AbortSignal);
+    expect(seen[1]).toBe(own);
   });
 });

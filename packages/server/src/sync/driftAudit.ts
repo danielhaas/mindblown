@@ -216,8 +216,10 @@ async function resolveTargets(): Promise<ResolvedTargets> {
 async function auditOneMap(t: AuditTarget): Promise<DriftReport | null> {
   // Open issues only — closed-without-node is a separate question
   // (see module header).
+  // Maps bound to the same repo share one fetch per sweep (#312).
   const importedIssues = await importGitHubIssues(t.owner, t.repo, t.forge, {
     includeAll: false,
+    maxAgeMs: 10 * 60_000,
   });
 
   // Build externalId lookup from EVERY non-deleted node (not just this

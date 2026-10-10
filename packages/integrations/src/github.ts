@@ -903,11 +903,63 @@ export async function importGitHubIssues(
   repoOwner: string,
   repoName: string,
   forge: ForgeClient,
-  options?: { includeAll?: boolean },
+  options?: {
+    includeAll?: boolean;
+    /**
+     * Accept a list fetched at most this long ago (#312). A full list is
+     * one API call per 100 issues — ~90 sequential calls on a large repo —
+     * and the read-only views that need it (sync overview, the triage
+     * orphan bucket) fetched it on every load, from the same hourly budget
+     * as the webhooks' work. Callers that ACT on the list (import,
+     * backfill) leave it unset and always fetch fresh. Concurrent callers
+     * share one in-flight fetch either way; failures are not kept.
+     */
+    maxAgeMs?: number;
+  },
+): Promise<ImportedIssue[]> {
+  const state = options?.includeAll ? 'all' : 'open';
+  const key = `${forge.endpoint.apiBaseUrl}|${forge.token}|${repoOwner}/${repoName}|${state}`;
+  const now = Date.now();
+  const hit = issueListCache.get(key);
+  if (hit && (hit.settledAt === null || (options?.maxAgeMs != null && now - hit.settledAt <= options.maxAgeMs))) {
+    return [...(await hit.list)];
+  }
+  const entry: IssueListEntry = {
+    settledAt: null,
+    list: fetchImportedIssues(repoOwner, repoName, forge, state),
+  };
+  issueListCache.set(key, entry);
+  try {
+    const list = await entry.list;
+    entry.settledAt = Date.now();
+    return [...list];
+  } catch (err) {
+    if (issueListCache.get(key) === entry) issueListCache.delete(key);
+    throw err;
+  }
+}
+
+interface IssueListEntry {
+  /** null while the fetch is in flight. */
+  settledAt: number | null;
+  list: Promise<ImportedIssue[]>;
+}
+/** Last full list per (forge, credential, repo, state) — #312. Bounded by the repos MindBlown is bound to. */
+const issueListCache = new Map<string, IssueListEntry>();
+
+/** Test hook. */
+export function _clearIssueListCacheForTests(): void {
+  issueListCache.clear();
+}
+
+async function fetchImportedIssues(
+  repoOwner: string,
+  repoName: string,
+  forge: ForgeClient,
+  state: 'open' | 'all',
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
   const perPage = 100;
-  const state = options?.includeAll ? 'all' : 'open';
 
   // Paginate by following `Link: rel="next"` — see paginateGitHub. The
   // hand-rolled `page++` this used to run hits GitHub's 422 depth limit
