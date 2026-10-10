@@ -243,7 +243,7 @@ describe('POST /api/ai/intake/accept', () => {
     });
     expect(noForge.statusCode).toBe(201);
     expect(noForge.json().issue).toBeNull();
-    expect(noForge.json().issueError).toContain('not configured');
+    expect(noForge.json().issueError).toContain('No issue tracker');
   });
 
   it('rejects a parent from another map', async () => {

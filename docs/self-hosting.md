@@ -220,7 +220,7 @@ The sign-in state is bound to the browser with a cookie on `/api/auth/gitea`, so
 
 1. In Gitea, create an access token for a user who can read and write the repository (*Settings → Applications*, scopes `repository: read and write`, `issue: read and write`).
 2. In MindBlown open the map's GitHub panel, choose **Forge: Gitea / Forgejo**, enter the instance URL (`https://git.example.com` — the API is reached under `/api/v1` automatically), the token, owner and repository name, and press **Test connection**. The check reads the repository and reports whether the token can write to it.
-3. Press **Connect**. The MCP tool `connect_github_repo` does the same with `kind: "gitea"` and `apiBaseUrl`.
+3. Press **Connect**. The MCP tool `connect_forge_repo` does the same with `kind: "gitea"` and `apiBaseUrl`.
 4. In the repository's *Settings → Webhooks* add a Gitea webhook: target `https://<your-mindblown>/api/webhooks/github`, content type JSON, a secret, events *Issues*, *Issue comment*, *Pull request*. Store the same secret with the connection (`webhookSecret` on the connect call) so deliveries verify.
 5. If MindBlown lives on a private address, allow it in Gitea's `app.ini`: `[webhook] ALLOWED_HOST_LIST = private` (or the host name).
 

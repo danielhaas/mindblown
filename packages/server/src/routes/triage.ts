@@ -78,6 +78,7 @@ import { sdNotifyWatchdog } from '../sync/sdNotify.js';
 import { importGitHubIssues, issueWebUrl } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
+import { NO_FORGE_MESSAGE } from '../services/forgeIssue.js';
 
 /**
  * Inbox-fallback (#316): does this decision row's placedNodeId point
@@ -527,7 +528,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       if (needOrphans) {
         const ghCtx = await getGitHubContextForMap(req.params.mapId);
         if (!ghCtx) {
-          orphansError = 'GitHub is not configured for this map — orphan bucket skipped';
+          orphansError = 'No issue tracker (GitHub or Gitea) is connected to this map — orphan bucket skipped';
         } else {
           try {
             const imported = await importGitHubIssues(
@@ -572,8 +573,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           } catch (err) {
             orphansError =
               err instanceof Error
-                ? `GitHub fetch failed: ${err.message}`
-                : 'GitHub fetch failed';
+                ? `Issue fetch failed: ${err.message}`
+                : 'Issue fetch failed';
           }
         }
       }
@@ -735,8 +736,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
             return reply.status(400).send({
               error: {
                 code: 'NO_INTEGRATION',
-                message:
-                  'GitHub not configured for this map — link a repo in settings first',
+                message: NO_FORGE_MESSAGE,
               },
             });
           }
@@ -1003,7 +1003,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
       const isClosed = issueState === 'closed';
       const externalId = body.externalId;
       const issueTitle = body.issueTitle;
-      const reason = body.reason ?? 'Operator imported orphan from GitHub';
+      const reason = body.reason ?? 'Operator imported orphan issue';
       const parentNodeId = body.parentNodeId;
       type TxResult =
         | { kind: 'conflict' }

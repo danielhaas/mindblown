@@ -34,7 +34,7 @@ export const createNodeTool = defineTool({
       .enum(['off', 'children'])
       .optional()
       .describe(
-        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs on the forge (GitHub or Gitea). Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
     priorityRank: z
       .number()
@@ -59,7 +59,7 @@ export const createNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('Business phrasing of the requirement for the register/doc export. Falls back to the node text when null. Not synced to GitHub.'),
+      .describe('Business phrasing of the requirement for the register/doc export. Falls back to the node text when null. Not synced to the issue tracker.'),
     phaseId: z
       .string()
       .nullable()
@@ -71,7 +71,7 @@ export const createNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to GitHub.'),
+      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to the issue tracker.'),
     verificationUrl: z
       .string()
       .nullable()
@@ -152,7 +152,7 @@ export const updateNodeTool = defineTool({
       .enum(['off', 'children'])
       .optional()
       .describe(
-        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs in GitHub. Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+        "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs on the forge (GitHub or Gitea). Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
     priorityRank: z
       .number()
@@ -177,7 +177,7 @@ export const updateNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('Business phrasing for the register/doc export (falls back to node text). Safe to edit freely — never pushed to GitHub. null clears it.'),
+      .describe('Business phrasing for the register/doc export (falls back to node text). Safe to edit freely — never pushed to the issue tracker. null clears it.'),
     phaseId: z
       .string()
       .nullable()
@@ -189,7 +189,7 @@ export const updateNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to GitHub. null clears it.'),
+      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to the issue tracker. null clears it.'),
     verificationUrl: z
       .string()
       .nullable()
@@ -227,7 +227,7 @@ export const updateNodeTool = defineTool({
 export const deleteNodeTool = defineTool({
   name: 'delete_node',
   description:
-    'Soft-delete a node and all its descendants. The subtree moves to the Trash and stops appearing in get_map / search_nodes / triage. Use restore_node to undo within the retention window; the GC job hard-deletes Trash older than 30 days and only then closes linked GitHub issues as not_planned.',
+    'Soft-delete a node and all its descendants. The subtree moves to the Trash and stops appearing in get_map / search_nodes / triage. Use restore_node to undo within the retention window; the GC job hard-deletes Trash older than 30 days and only then closes linked issues (GitHub or Gitea) as not_planned.',
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to delete'),

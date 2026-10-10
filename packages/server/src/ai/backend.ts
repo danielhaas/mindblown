@@ -345,7 +345,7 @@ export function createChatBackend(userId: string): ToolBackend {
     // calls it), where `requireAdmin` is real.
     auditClosedIssues: async (mapId, opts) => {
       const ctx = await getGitHubContextForMap(mapId);
-      if (!ctx) throw new Error(`Map ${mapId} has no GitHub integration configured`);
+      if (!ctx) throw new Error(`Map ${mapId} has no issue tracker (GitHub or Gitea) connected`);
       return auditClosedIssues({
         owner: ctx.owner,
         repo: ctx.repo,

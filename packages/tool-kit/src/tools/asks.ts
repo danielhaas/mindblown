@@ -83,7 +83,7 @@ export const listAsksTool = defineTool({
     'The fleet\'s open human questions (/leidang-asks), as the orchestrator',
     'pushed them from claude-fleet leidang-asks-collect: one record per ticket,',
     'deduplicated across the tick, the satellite rollups, pending-notes and',
-    'GitHub; grouped by who has to answer (Dan/Rita/Susi/Dana/Thomas/Kunde),',
+    'the issue tracker; grouped by who has to answer (Dan/Rita/Susi/Dana/Thomas/Kunde),',
     'ordered answerer → priority → idle age. `hint` says what kind of thing it',
     'is: decision (someone must choose), ops-task (a session with the right key',
     'can just do it), waiting-external, already-decided / parked-plan (folded',
@@ -107,7 +107,7 @@ export const answerAskTool = defineTool({
   name: 'answer_ask',
   description: [
     'Record a human\'s answer to one ask and write it where the fleet picks it',
-    'up — exactly what claude-fleet leidang-asks-apply does: GitHub comment',
+    'up — exactly what claude-fleet leidang-asks-apply does: issue comment',
     '«Entscheid (by, date): …» on the ticket (+ milestone and NEEDS-VERSION off',
     'when that was the question and a milestone is given); decision at the top',
     'of the node description, blockedReason cleared, `blocked` tag removed,',

@@ -99,9 +99,9 @@ Never reorganize the tree by version. Never `create_node` named "V1".
    `completion_forecast`, which reads the planned-vs-actual fudge factor
    from `get_estimation_accuracy`.
 
-10. **GitHub integration is authoritative.** If a task exists as a GitHub
-    issue, use `import_github_issues` or `link_github_issue`. Do NOT
-    `create_node` -- the unlinked copy will not sync. GitHub milestones
+10. **The issue tracker is authoritative.** If a task exists as an issue
+    (GitHub or Gitea), use `import_issues` or `link_issue`. Do NOT
+    `create_node` -- the unlinked copy will not sync. Milestones
     auto-convert to MindBlown versions + milestones on import.
 
 ## 4. Typical tool sequences
@@ -125,8 +125,8 @@ Never reorganize the tree by version. Never `create_node` named "V1".
 | "Write a standup" | `ai_standup` |
 | "Send me an alert digest" | `alert_digest` -- returns markdown, nothing to send if no alerts |
 | "Burn-up trend" | `burnup` (flow through a time window from change_events) |
-| "Import from GitHub" | `connect_github_repo` -> `import_github_issues` |
-| "Promote this node to a GitHub issue" | `create_github_issue_from_node` |
+| "Import from GitHub / Gitea" | `connect_forge_repo` -> `import_issues` |
+| "Promote this node to an issue" | `create_issue_from_node` |
 
 ## 5. AI tools (new in v0.7.0) -- when to reach for them
 
@@ -179,7 +179,7 @@ Never reorganize the tree by version. Never `create_node` named "V1".
 - Adding an estimate to a leaf then adding a child to it -- the estimate
   is now dead input, replaced by the rollup.
 - Creating a fresh node for a task that already exists as a linked
-  GitHub issue. Use `link_github_issue` or `import_github_issues`.
+  issue. Use `link_issue` or `import_issues`.
 - Forgetting `update_node` omitted fields are not changed. To wipe an
   assignee, pass `assigneeIds: []`; do not omit the field.
 - Assuming `change_history` / `burnup` covers all time. They only include

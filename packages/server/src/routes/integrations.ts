@@ -46,10 +46,10 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink, forgeLabel } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
-import { createForgeIssueForNode, NoForgeIntegrationError } from '../services/forgeIssue.js';
+import { createForgeIssueForNode, NoForgeIntegrationError, NO_FORGE_MESSAGE } from '../services/forgeIssue.js';
 import { broadcast } from '../ws.js';
 import { maps } from '../db/schema.js';
 import {
@@ -601,7 +601,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const ghCtx = await getGitHubContextForMap(req.params.mapId);
       if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+          error: { code: 'NO_INTEGRATION', message: NO_FORGE_MESSAGE },
         });
       }
 
@@ -676,7 +676,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const ghCtx = await getGitHubContextForMap(req.params.mapId);
       if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+          error: { code: 'NO_INTEGRATION', message: NO_FORGE_MESSAGE },
         });
       }
 
@@ -720,7 +720,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: {
             code: 'GITHUB_API_ERROR',
-            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+            message: err instanceof Error ? err.message : `Failed to fetch ${forgeLabel(forge.endpoint.kind)} issues`,
           },
         });
       }
@@ -779,6 +779,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
 
       return reply.send({
         repo: `${owner}/${repo}`,
+        forgeKind: forge.endpoint.kind,
         includeClosed,
         counts: {
           synced: synced.length,
@@ -800,7 +801,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const ghCtx = await getGitHubContextForMap(req.params.mapId);
       if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+          error: { code: 'NO_INTEGRATION', message: NO_FORGE_MESSAGE },
         });
       }
 
@@ -841,7 +842,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: {
             code: 'GITHUB_API_ERROR',
-            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+            message: err instanceof Error ? err.message : `Failed to fetch ${forgeLabel(forge.endpoint.kind)} issues`,
           },
         });
       }
@@ -1114,6 +1115,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         linkedNodes,
         skippedNodes,
         versions: Object.fromEntries(versionToId),
+        forgeKind: forge.endpoint.kind,
       });
     },
   );
@@ -1213,7 +1215,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: {
             code: 'NO_GITHUB_INTEGRATION',
-            message: `Map ${req.params.mapId} has no GitHub integration configured`,
+            message: `Map ${req.params.mapId} has no issue tracker (GitHub or Gitea) connected`,
           },
         });
       }
@@ -1267,7 +1269,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const ghCtx = await getGitHubContextForMap(req.params.mapId);
       if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+          error: { code: 'NO_INTEGRATION', message: NO_FORGE_MESSAGE },
         });
       }
 
@@ -1302,7 +1304,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const ghCtx = await getGitHubContextForMap(req.params.mapId);
       if (!ghCtx) {
         return reply.status(400).send({
-          error: { code: 'NO_INTEGRATION', message: 'GitHub not configured for this map. Link a repo in settings first.' },
+          error: { code: 'NO_INTEGRATION', message: NO_FORGE_MESSAGE },
         });
       }
       const dryRun = req.query.dryRun === 'true';
@@ -1329,7 +1331,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({
           error: {
             code: 'GITHUB_API_ERROR',
-            message: err instanceof Error ? err.message : 'Failed to fetch GitHub issues',
+            message: err instanceof Error ? err.message : `Failed to fetch ${forgeLabel(ghCtx.forge.endpoint.kind)} issues`,
           },
         });
       }
@@ -1389,7 +1391,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(500).send({
           error: {
             code: 'INBOX_ENSURE_FAILED',
-            message: err instanceof Error ? err.message : 'Failed to ensure GitHub Inbox',
+            message: err instanceof Error ? err.message : `Failed to ensure ${forgeLabel(ghCtx.forge.endpoint.kind)} Inbox`,
           },
         });
       }

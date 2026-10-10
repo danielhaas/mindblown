@@ -19,13 +19,13 @@
  * api context via `runWithApiContext`.
  */
 
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
 import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
-import { isForgeLink, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
+import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { formatAttachmentList } from './attachments.js';
@@ -34,6 +34,22 @@ import { httpBackend } from './backend.js';
 import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings } from './formatters.js';
 
 export { runWithApiContext } from './api.js';
+
+/**
+ * Forge-neutral tool name → the github_* name it had before Gitea support
+ * (#368). The old name stays registered as a deprecated alias — same
+ * schema, same handler — so agent prompts that still call it keep working.
+ */
+export const DEPRECATED_TOOL_ALIASES: Readonly<Record<string, string>> = {
+  connect_forge_repo: 'connect_github_repo',
+  import_issues: 'import_github_issues',
+  link_issue: 'link_github_issue',
+  unlink_issue: 'unlink_github_issue',
+  forge_sync_overview: 'github_sync_overview',
+  create_issue_from_node: 'create_github_issue_from_node',
+  bulk_link_issues: 'bulk_link_github_issue',
+};
+
 export type { Injector, InjectOptions, InjectResponse } from './api.js';
 
 /**
@@ -127,7 +143,7 @@ Example: A node "Data Retention Policy" lives under Compliance in the tree (func
 
 **Finding problems:** Use the identify_risks or project_status prompts, or read the health resource to see at-risk/behind nodes.
 
-**GitHub integration:** import_github_issues to pull issues from a connected GitHub repo (creates a FUNCTIONAL mindmap grouped by feature area, not by version; GitHub milestones become MindBlown versions — the version prefix is extracted from the milestone title; re-runs are safe — existing links are skipped, text matches are linked in place). link_github_issue attaches an existing node to a specific GitHub issue. create_github_issue_from_node does the reverse: promotes an existing MindBlown node to a new GitHub issue and links it back. NEVER use create_node when the task already exists as a GitHub issue — use import/link instead so it syncs.
+**Issue tracker integration (GitHub or Gitea):** import_issues to pull issues from the connected repo (creates a FUNCTIONAL mindmap grouped by feature area, not by version; milestones become MindBlown versions — the version prefix is extracted from the milestone title; re-runs are safe — existing links are skipped, text matches are linked in place). link_issue attaches an existing node to a specific issue. create_issue_from_node does the reverse: promotes an existing MindBlown node to a new issue and links it back. NEVER use create_node when the task already exists as an issue — use import/link instead so it syncs. The older github_* tool names still work as deprecated aliases.
 
 ## Important: Mindmap = functional structure, Versions = release planning
 
@@ -148,10 +164,29 @@ A node can have both set independently. Never reorganize the tree by version —
 - Progress and effort only make sense on leaf nodes (nodes with no children). Parents compute automatically.
 - The get_map tool returns the full tree with all computed fields — it's the most informative single call.
 - Node IDs are UUIDs. You'll get them from list_maps, get_map, or create responses.
-- For GitHub issues, always use import_github_issues or link_github_issue instead of create_node.
+- For tracker issues (GitHub or Gitea), always use import_issues or link_issue instead of create_node.
 - When organizing a project, group nodes by functional area (what it does), not by version (when it ships).`,
   },
 );
+
+// ── Forge-neutral tool names ────────────────────────────────────
+
+/** `server.tool` plus the deprecated alias from DEPRECATED_TOOL_ALIASES, if the tool has one. */
+function toolWithAlias<Args extends z.ZodRawShape>(
+  name: string,
+  description: string,
+  schema: Args,
+  cb: ToolCallback<Args>,
+): void {
+  server.tool(name, description, schema, cb);
+  const alias = DEPRECATED_TOOL_ALIASES[name];
+  if (alias) server.tool(alias, `Deprecated alias of ${name} — use ${name}. ${description}`, schema, cb);
+}
+
+/** The forge as tool output names it: "GitHub" / "Gitea", "forge" while unknown. */
+function forgeName(kind: string | null | undefined): string {
+  return kind ? forgeLabel(kind) : 'forge';
+}
 
 // ── Helper: wrap tool handlers with error handling ──────────────
 
@@ -650,7 +685,7 @@ server.tool(
 
 server.tool(
   'requirements_overview',
-  'Business-facing requirements register: every node carrying a requirementId, grouped by parent (chapter). Per requirement: MoSCoW priority, derived lifecycle stage, progress %, remaining effort, linked GitHub issues and the sign-off verdicts. IMPORTANT — "built" is NOT "done": 100% progress only means the code merged. The stage folds the progress rollup together with the per-gate verdicts: open → in_progress → built → it_verified → accepted, and rejected (any active ✗) outranks all of them. Only accept_requirement/reject_requirement can move a requirement past "built"; nothing about the stage is stored.',
+  'Business-facing requirements register: every node carrying a requirementId, grouped by parent (chapter). Per requirement: MoSCoW priority, derived lifecycle stage, progress %, remaining effort, linked issues and the sign-off verdicts. IMPORTANT — "built" is NOT "done": 100% progress only means the code merged. The stage folds the progress rollup together with the per-gate verdicts: open → in_progress → built → it_verified → accepted, and rejected (any active ✗) outranks all of them. Only accept_requirement/reject_requirement can move a requirement past "built"; nothing about the stage is stored.',
   {
     mapId: z.string().describe('The map ID'),
     status: z
@@ -2802,10 +2837,10 @@ server.tool(
   },
 );
 
-// ── GitHub integration tools ───────────────────────────────────
+// ── Forge integration tools (GitHub or Gitea) ─────────────────
 
-server.tool(
-  'connect_github_repo',
+toolWithAlias(
+  'connect_forge_repo',
   'Connect a GitHub or Gitea/Forgejo repository to a workspace. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
   {
     workspaceId: z.string().describe('The workspace ID'),
@@ -2820,22 +2855,22 @@ server.tool(
   async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl }) => {
     try {
       const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret, { kind, apiBaseUrl, webBaseUrl });
-      return toolResult(`Connected ${result.provider} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
+      return toolResult(`Connected ${forgeName(result.provider)} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
     } catch (err) {
       return toolError(err);
     }
   },
 );
 
-server.tool(
-  'import_github_issues',
-  'Import issues from the connected GitHub repo into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). GitHub milestones are automatically converted to MindBlown versions (the version prefix is extracted from the milestone title). Do NOT use create_node for GitHub issues — those won\'t be linked. If no repo is connected yet, use connect_github_repo first.',
+toolWithAlias(
+  'import_issues',
+  'Import issues from the map\'s connected issue tracker (GitHub or Gitea) into a map. Creates a FUNCTIONAL mindmap structure (grouped by feature area, NOT by version). Milestones are automatically converted to MindBlown versions (the version prefix is extracted from the milestone title). Do NOT use create_node for tracker issues — those won\'t be linked. If no repo is connected yet, use connect_forge_repo first.',
   {
     mapId: z.string().describe('The map ID to import into'),
     parentNodeId: z.string().optional().describe('Parent node ID to import under (defaults to root node)'),
     includeAll: z.boolean().optional().describe('Import all issues including closed ones (default: open only). Use true for full roadmap import.'),
-    owner: z.string().optional().describe('GitHub repo owner — if provided with repo, will auto-connect the repo to the workspace before importing'),
-    repo: z.string().optional().describe('GitHub repo name — if provided with owner, will auto-connect the repo to the workspace before importing'),
+    owner: z.string().optional().describe('GitHub repo owner — if provided with repo, will auto-connect the github.com repo (needs GITHUB_TOKEN) to the workspace before importing'),
+    repo: z.string().optional().describe('GitHub repo name — if provided with owner, will auto-connect the github.com repo (needs GITHUB_TOKEN) to the workspace before importing'),
   },
   async ({ mapId, parentNodeId, includeAll, owner, repo }) => {
     try {
@@ -2848,7 +2883,7 @@ server.tool(
         }
         const token = process.env.GITHUB_TOKEN ?? '';
         if (!token) {
-          return toolError('owner/repo provided but GITHUB_TOKEN environment variable is not set. Either set GITHUB_TOKEN or use connect_github_repo to configure the integration first.');
+          return toolError('owner/repo provided but GITHUB_TOKEN environment variable is not set. Either set GITHUB_TOKEN or use connect_forge_repo to configure the integration first.');
         }
         await api.connectGitHubRepo(mapForConnect.workspaceId, owner, repo, token);
       }
@@ -2859,7 +2894,7 @@ server.tool(
 
       const result = await api.importGitHubIssues(mapId, createdBy, parentNodeId, includeAll);
       const lines = [
-        `GitHub import into "${map?.name ?? mapId}": ${result.imported} created, ${result.linked} linked to existing nodes by title match, ${result.skipped} skipped (already linked).`,
+        `${forgeName(result.forgeKind)} import into "${map?.name ?? mapId}": ${result.imported} created, ${result.linked} linked to existing nodes by title match, ${result.skipped} skipped (already linked).`,
       ];
       if (result.versions && Object.keys(result.versions).length > 0) {
         lines.push('\nVersions created:');
@@ -2884,15 +2919,15 @@ server.tool(
   },
 );
 
-server.tool(
-  'link_github_issue',
-  'Link an existing MindBlown node to a GitHub issue. After linking, the node will auto-sync with GitHub via webhooks.',
+toolWithAlias(
+  'link_issue',
+  'Link an existing MindBlown node to an issue on the map\'s issue tracker (GitHub or Gitea). After linking, the node will auto-sync with the issue via webhooks.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to link'),
-    owner: z.string().describe('GitHub repo owner (e.g. "danielhaas")'),
-    repo: z.string().describe('GitHub repo name (e.g. "mindblown")'),
-    issueNumber: z.number().describe('GitHub issue number'),
+    owner: z.string().describe('Repo owner (e.g. "danielhaas")'),
+    repo: z.string().describe('Repo name (e.g. "mindblown")'),
+    issueNumber: z.number().describe('Issue number'),
   },
   async ({ mapId, nodeId, owner, repo, issueNumber }) => {
     try {
@@ -2910,24 +2945,25 @@ server.tool(
         return toolError(`Node ${nodeId} is already linked to ${externalId}. No duplicate created.`);
       }
 
-      await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
-      return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with GitHub.`);
+      const result = await api.linkGitHubIssue(mapId, nodeId, owner, repo, issueNumber);
+      const provider = result?.node?.externalLinks?.find((l: { externalId: string }) => l.externalId === externalId)?.provider;
+      return toolResult(`Linked node ${nodeId} to ${owner}/${repo}#${issueNumber}. The node will now sync with ${forgeName(provider)}.`);
     } catch (err) {
       return toolError(err);
     }
   },
 );
 
-server.tool(
-  'unlink_github_issue',
-  "Remove a GitHub issue link from a node WITHOUT touching the issue on GitHub. This is the safe first step when resolving duplicate-node findings from conflict_scan: strip the duplicate's link first, THEN delete_node — deleting a still-linked node closes its GitHub issue as not_planned.",
+toolWithAlias(
+  'unlink_issue',
+  "Remove an issue link (GitHub or Gitea) from a node WITHOUT touching the issue on the forge. This is the safe first step when resolving duplicate-node findings from conflict_scan: strip the duplicate's link first, THEN delete_node — deleting a still-linked node closes its issue as not_planned.",
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID to unlink'),
     externalId: z
       .string()
       .optional()
-      .describe('Specific link to remove, e.g. "FulcrumCRM/crm#2649". Omit to remove ALL GitHub links of the node.'),
+      .describe('Specific link to remove, e.g. "FulcrumCRM/crm#2649". Omit to remove ALL issue links of the node.'),
   },
   async ({ mapId, nodeId, externalId }) => {
     try {
@@ -2943,14 +2979,14 @@ server.tool(
       if (removed.length === 0) {
         return toolError(
           externalId
-            ? `Node ${nodeId} has no GitHub link ${externalId}.`
-            : `Node ${nodeId} has no GitHub links.`,
+            ? `Node ${nodeId} has no issue link ${externalId}.`
+            : `Node ${nodeId} has no issue links.`,
         );
       }
       const remaining = links.filter((l) => !removed.includes(l));
       await api.updateNode(mapId, nodeId, { externalLinks: remaining });
       return toolResult(
-        `Unlinked ${removed.map((l) => l.externalId).join(', ')} from node ${nodeId}. The GitHub issue(s) were NOT touched; the node no longer syncs with them.`,
+        `Unlinked ${removed.map((l) => l.externalId).join(', ')} from node ${nodeId}. The ${forgeName(removed[0].provider)} issue(s) were NOT touched; the node no longer syncs with them.`,
       );
     } catch (err) {
       return toolError(err);
@@ -2958,23 +2994,24 @@ server.tool(
   },
 );
 
-server.tool(
-  'github_sync_overview',
-  'Three-way diff between a MindBlown map and its connected GitHub repo: which nodes are linked to issues (synced), which leaf nodes have no GitHub link yet (onlyInMindBlown), and which repo issues are not yet linked to any node in the map (onlyInGitHub). Use this to audit the sync state before bulk operations or to find gaps worth promoting/linking. Requires the map to have a GitHub repo connected.',
+toolWithAlias(
+  'forge_sync_overview',
+  'Three-way diff between a MindBlown map and its connected issue tracker repo (GitHub or Gitea): which nodes are linked to issues (synced), which leaf nodes have no issue link yet (onlyInMindBlown), and which repo issues are not yet linked to any node in the map (onlyInGitHub — the bucket keeps that name on Gitea maps too). Use this to audit the sync state before bulk operations or to find gaps worth promoting/linking. Requires the map to have a repo connected.',
   {
     mapId: z.string().describe('The map ID'),
-    includeClosed: z.boolean().optional().describe('Include closed GitHub issues in the overview. Default: open only.'),
+    includeClosed: z.boolean().optional().describe('Include closed issues in the overview. Default: open only.'),
     format: z.enum(['summary', 'full']).optional().describe('summary (default): return just the counts. full: return counts plus every item in each bucket.'),
   },
   async ({ mapId, includeClosed, format }) => {
     try {
       const overview = await api.getGitHubSyncOverview(mapId, includeClosed ?? false);
+      const forge = forgeName(overview.forgeKind);
       const lines: string[] = [];
       lines.push(
-        `GitHub sync status for ${overview.repo} (${overview.includeClosed ? 'open + closed' : 'open only'}):`,
+        `${forge} sync status for ${overview.repo} (${overview.includeClosed ? 'open + closed' : 'open only'}):`,
       );
       lines.push(
-        `  synced: ${overview.counts.synced}, only in MindBlown: ${overview.counts.onlyInMindBlown}, only in GitHub: ${overview.counts.onlyInGitHub}`,
+        `  synced: ${overview.counts.synced}, only in MindBlown: ${overview.counts.onlyInMindBlown}, only in ${forge}: ${overview.counts.onlyInGitHub}`,
       );
       if (format === 'full') {
         if (overview.synced.length > 0) {
@@ -2984,13 +3021,13 @@ server.tool(
           }
         }
         if (overview.onlyInMindBlown.length > 0) {
-          lines.push(`\nOnly in MindBlown — leaf nodes with no GitHub link (${overview.onlyInMindBlown.length}):`);
+          lines.push(`\nOnly in MindBlown — leaf nodes with no ${forge} link (${overview.onlyInMindBlown.length}):`);
           for (const n of overview.onlyInMindBlown) {
             lines.push(`  - ${n.nodeId} "${n.text}"`);
           }
         }
         if (overview.onlyInGitHub.length > 0) {
-          lines.push(`\nOnly in GitHub — issues not linked to any node (${overview.onlyInGitHub.length}):`);
+          lines.push(`\nOnly in ${forge} — issues not linked to any node (${overview.onlyInGitHub.length}):`);
           for (const i of overview.onlyInGitHub) {
             lines.push(`  - #${i.issueNumber} [${i.state}] ${i.title}`);
           }
@@ -3007,12 +3044,12 @@ server.tool(
   },
 );
 
-server.tool(
-  'create_github_issue_from_node',
-  'Promote an existing MindBlown node to a new GitHub issue. Creates a fresh GitHub issue using the node\'s text (title), description (body), tags and priority (labels), then attaches the resulting externalLink to the node so future edits sync bidirectionally. Use this when you brainstormed a node in the mindmap and want to publish it as a real GitHub issue. Requires the map to have a GitHub repo connected (via connect_github_repo or the settings UI). Refuses if the node is already linked to any GitHub issue — unlink first if you really want a second one.',
+toolWithAlias(
+  'create_issue_from_node',
+  'Promote an existing MindBlown node to a new issue on the map\'s issue tracker (GitHub or Gitea). Creates a fresh issue using the node\'s text (title), description (body), tags and priority (labels), then attaches the resulting externalLink to the node so future edits sync bidirectionally. Use this when you brainstormed a node in the mindmap and want to publish it as a real issue. Requires the map to have a repo connected (via connect_forge_repo or the settings UI). Refuses if the node is already linked to any issue — unlink first if you really want a second one.',
   {
     mapId: z.string().describe('The map ID the node belongs to'),
-    nodeId: z.string().describe('The node ID to promote to a GitHub issue'),
+    nodeId: z.string().describe('The node ID to promote to an issue'),
   },
   async ({ mapId, nodeId }) => {
     try {
@@ -3025,14 +3062,15 @@ server.tool(
       const existing = node.externalLinks?.find((l) => isForgeLink(l));
       if (existing) {
         return toolError(
-          `Node ${nodeId} is already linked to GitHub issue ${existing.externalId} (${existing.url}). Refusing to create a second issue for the same node. Unlink first if that's really what you want.`,
+          `Node ${nodeId} is already linked to ${forgeName(existing.provider)} issue ${existing.externalId} (${existing.url}). Refusing to create a second issue for the same node. Unlink first if that's really what you want.`,
         );
       }
 
       const result = await api.createGitHubIssueFromNode(mapId, nodeId);
       const link = result.node.externalLinks.find((l) => isForgeLink(l));
+      const forge = forgeName(link?.provider);
       return toolResult(
-        `Created GitHub issue #${result.issue.number} ("${result.issue.title}") and linked it to node ${nodeId}. URL: ${result.issue.html_url}${link ? ` — externalId: ${link.externalId}` : ''}. The node will now sync with GitHub on future edits.`,
+        `Created ${forge} issue #${result.issue.number} ("${result.issue.title}") and linked it to node ${nodeId}. URL: ${result.issue.html_url}${link ? ` — externalId: ${link.externalId}` : ''}. The node will now sync with ${forge} on future edits.`,
       );
     } catch (err) {
       return toolError(err);
@@ -3040,18 +3078,18 @@ server.tool(
   },
 );
 
-server.tool(
-  'bulk_link_github_issue',
-  'Link multiple nodes to GitHub issues in a single call. Supports a default owner/repo to avoid repetition.',
+toolWithAlias(
+  'bulk_link_issues',
+  'Link multiple nodes to issues on the map\'s issue tracker (GitHub or Gitea) in a single call. Supports a default owner/repo to avoid repetition.',
   {
     mapId: z.string().describe('The map ID'),
-    owner: z.string().optional().describe('Default GitHub repo owner (used when link omits owner)'),
-    repo: z.string().optional().describe('Default GitHub repo name (used when link omits repo)'),
+    owner: z.string().optional().describe('Default repo owner (used when link omits owner)'),
+    repo: z.string().optional().describe('Default repo name (used when link omits repo)'),
     links: z.array(z.object({
       nodeId: z.string().describe('The node ID to link'),
-      owner: z.string().optional().describe('GitHub repo owner (overrides default)'),
-      repo: z.string().optional().describe('GitHub repo name (overrides default)'),
-      issueNumber: z.number().describe('GitHub issue number'),
+      owner: z.string().optional().describe('Repo owner (overrides default)'),
+      repo: z.string().optional().describe('Repo name (overrides default)'),
+      issueNumber: z.number().describe('Issue number'),
     })).describe('Array of node-to-issue links'),
   },
   async ({ mapId, owner: defaultOwner, repo: defaultRepo, links }) => {

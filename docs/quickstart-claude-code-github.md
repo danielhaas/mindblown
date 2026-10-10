@@ -114,7 +114,7 @@ Restart your Claude Code session, `cd` into your repo, and try a few prompts:
 
 > "Mark issue #142 as 50% done and update its MindBlown node."
 
-Claude has ~57 tools available — maps, nodes, sprints, versions, GitHub sync, AI breakdowns, schedule forecasting. The most useful day-to-day are `get_map`, `create_node`, `set_progress`, `set_status`, `import_github_issues`, `create_github_issue_from_node`, `risk_scan`, and `ai_standup`.
+Claude has ~57 tools available — maps, nodes, sprints, versions, GitHub sync, AI breakdowns, schedule forecasting. The most useful day-to-day are `get_map`, `create_node`, `set_progress`, `set_status`, `import_issues`, `create_issue_from_node`, `risk_scan`, and `ai_standup`.
 
 ---
 

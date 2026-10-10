@@ -1652,7 +1652,7 @@ export function App() {
         setTimeout(() => setGhBanner(null), 5000);
       } else if (gh === 'error') {
         const reason = params.get('reason') ?? 'unknown';
-        setGhBanner(`GitHub connection failed: ${reason}`);
+        setGhBanner(`${params.get('forge') === 'gitea' ? 'Gitea' : 'GitHub'} connection failed: ${reason}`);
         setTimeout(() => setGhBanner(null), 8000);
       }
     }

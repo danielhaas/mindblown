@@ -151,7 +151,7 @@ describe('answerAsk — answered', () => {
     expect(commentMock).not.toHaveBeenCalled();
     expect(out.ok).toBe(false);
     const patch = setAnswerMock.mock.calls[0][2] as { writes: { error?: string }[] };
-    expect(patch.writes[0].error).toContain('no GitHub integration');
+    expect(patch.writes[0].error).toContain('no issue tracker connected');
   });
 });
 
