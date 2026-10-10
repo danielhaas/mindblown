@@ -720,8 +720,9 @@ export function SprintPanel({ onClose }: { onClose: () => void }) {
 
   // Sprints whose state disagrees with their dates or that overlap — the
   // same findings Plan Health's sprint-state rule lists.
-  // Map-wide WIP vs the map's limit — the limit is a map setting, counted
-  // the way get_wip_status and the Cockpit count it.
+  // Map-wide WIP vs the map's limit — the limit is a map setting. Counted
+  // like the Cockpit's sprint health: a leaf at 100 % still marked in
+  // progress is finished work waiting for a status click, not WIP.
   const nodes = useMindmapStore((s) => s.nodes);
   const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow) as StatusDef[] | undefined;
   const wipLimit = useMindmapStore((s) => s.currentMap?.wipLimit ?? null);
