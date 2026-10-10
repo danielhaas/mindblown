@@ -97,6 +97,7 @@ export {
   getRepoDefaultBranch,
   findClosingPrsForIssue,
   probeIssueLanded,
+  parseExternalId,
   getIssueCloseEvent,
 } from './github.js';
 

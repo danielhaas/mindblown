@@ -13,15 +13,28 @@
  *   The retention window collapses the "did the user really mean it?"
  *   question — by the time GC runs, the user has had ~30 days to undo,
  *   so the GH closure is on solid ground.
+ *
+ * The close is gated like every other outbound close (#311): an issue that
+ * is already closed keeps its own close (re-closing it as not_planned would
+ * rewrite "completed" for delivered work); a PR still in flight on it — by
+ * the node's mirror or the forge's own timeline — leaves it open; work that
+ * already landed closes it as completed, not as not_planned; a link to a
+ * repo other than the map's, or a check that fails, leaves it untouched.
  */
 
 import { and, inArray, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import { onActiveMap } from '../db/nodes.js';
-import type { ExternalLink } from '@mindblown/core';
+import type { ExternalLink, LinkedPrState } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
-import { closeGitHubIssue } from '@mindblown/integrations';
+import {
+  closeGitHubIssue,
+  getGitHubIssue,
+  parseExternalId,
+  probeIssueLanded,
+  type ForgeClient,
+} from '@mindblown/integrations';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 
 export interface TrashGcSummary {
@@ -29,6 +42,8 @@ export interface TrashGcSummary {
   hardDeleted: number;
   githubClosed: number;
   githubFailed: number;
+  /** Links left alone by the close gate: already closed, PR in flight, foreign repo (#311). */
+  githubSkipped: number;
   errors: string[];
 }
 
@@ -46,6 +61,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
     hardDeleted: 0,
     githubClosed: 0,
     githubFailed: 0,
+    githubSkipped: 0,
     errors: [],
   };
 
@@ -58,6 +74,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
       id: nodes.id,
       mapId: nodes.mapId,
       externalLinks: nodes.externalLinks,
+      linkedPr: nodes.linkedPr,
     })
     .from(nodes)
     // An archived map's trash is left alone too: GC would close issues
@@ -69,14 +86,15 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
 
   // Group GH links by mapId so we resolve each map's token once. Skip rows
   // with no GH-syncEnabled link.
-  const linksByMap = new Map<string, ExternalLink[]>();
+  const linksByMap = new Map<string, Array<{ link: ExternalLink; prInFlight: boolean }>>();
   for (const row of rows) {
     const links = ((row.externalLinks as ExternalLink[]) ?? []).filter(
       (l) => isForgeLink(l) && l.syncEnabled,
     );
     if (links.length === 0) continue;
+    const prInFlight = (row.linkedPr as LinkedPrState | null)?.state === 'open';
     const existing = linksByMap.get(row.mapId as string) ?? [];
-    existing.push(...links);
+    existing.push(...links.map((link) => ({ link, prInFlight })));
     linksByMap.set(row.mapId as string, existing);
   }
 
@@ -92,9 +110,14 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
     }
     if (!ghCtx) continue;
 
-    for (const link of links) {
+    for (const { link, prInFlight } of links) {
       try {
-        await closeGitHubIssue(link, ghCtx.forge, 'not_planned');
+        const reason = await gcCloseReason(link, prInFlight, ghCtx);
+        if (!reason) {
+          summary.githubSkipped++;
+          continue;
+        }
+        await closeGitHubIssue(link, ghCtx.forge, reason);
         summary.githubClosed++;
       } catch (err) {
         summary.githubFailed++;
@@ -114,4 +137,25 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
   summary.hardDeleted = ids.length;
 
   return summary;
+}
+
+/**
+ * How the GC may close one link's issue, or null to leave it alone (#311).
+ * A failed forge call throws and is counted as a failure — the issue is
+ * left as it is, which is the safe side.
+ */
+async function gcCloseReason(
+  link: ExternalLink,
+  prInFlight: boolean,
+  ctx: { owner: string; repo: string; forge: ForgeClient },
+): Promise<'completed' | 'not_planned' | null> {
+  if (prInFlight) return null;
+  const parsed = parseExternalId(link.externalId);
+  // The map's client speaks for the map's repo only.
+  if (!parsed || parsed.owner !== ctx.owner || parsed.repo !== ctx.repo) return null;
+  const issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
+  if (issue.state === 'closed') return null;
+  const probe = await probeIssueLanded(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
+  if (probe.inFlight) return null;
+  return probe.landed ? 'completed' : 'not_planned';
 }

@@ -385,7 +385,7 @@ async function main(): Promise<void> {
       const result = await runTrashGc(TRASH_RETENTION_DAYS);
       if (result.inspected > 0) {
         console.log(
-          `[trash-gc] inspected=${result.inspected} hardDeleted=${result.hardDeleted} ghClosed=${result.githubClosed} ghFailed=${result.githubFailed}`,
+          `[trash-gc] inspected=${result.inspected} hardDeleted=${result.hardDeleted} ghClosed=${result.githubClosed} ghSkipped=${result.githubSkipped} ghFailed=${result.githubFailed}`,
         );
       }
       for (const err of result.errors.slice(0, 5)) {
