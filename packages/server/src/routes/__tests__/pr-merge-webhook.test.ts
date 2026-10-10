@@ -83,6 +83,9 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+// The SQL pre-filter (#310) is a raw jsonb predicate this file's drizzle
+// stub can't evaluate; the JS check after it decides, so pass everything.
+vi.mock('../../db/externalLinkFilter.js', () => ({ linksAnyExternalId: () => ({ __pred: true, check: () => true }) }));
 vi.mock('@mindblown/integrations', async () => {
   // Use REAL implementations of the pure functions (processWebhook,
   // extractClosingIssueRefs) so the tests assert against the

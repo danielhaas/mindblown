@@ -39,6 +39,7 @@
  *     persists the new id.
  */
 
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
@@ -167,7 +168,7 @@ async function findNodeInMapByExternalId(
   const rows = await tx
     .select({ id: nodes.id, parentId: nodes.parentId, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(and(eq(nodes.mapId, mapId), nodeDb.notDeleted));
+    .where(and(eq(nodes.mapId, mapId), nodeDb.notDeleted, linksAnyExternalId([externalId])));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {
@@ -192,7 +193,7 @@ export async function findNodesByExternalIds(
   const rows = await db
     .select({ externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(nodeDb.notDeleted);
+    .where(and(nodeDb.notDeleted, linksAnyExternalId(wanted)));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
@@ -529,7 +530,7 @@ async function findNodesByExternalIdAcrossMaps(
       externalLinks: nodes.externalLinks,
     })
     .from(nodes)
-    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap)); // archived maps: no label sync
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap, linksAnyExternalId([externalId]))); // archived maps: no label sync
   const out: Array<{ id: string; mapId: string; tags: string[] }> = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];

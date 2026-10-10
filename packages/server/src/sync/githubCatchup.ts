@@ -14,6 +14,7 @@
  * inferred by comparing GitHub state against the node's MindBlown state.
  */
 
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { eq, and, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import {
@@ -561,7 +562,7 @@ async function findNodesByExternalIds(
     .select({ id: nodes.id, mapId: nodes.mapId, externalLinks: nodes.externalLinks })
     .from(nodes)
     // Archived maps are frozen: their links are invisible to the reconciler.
-    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap));
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap, linksAnyExternalId(wanted)));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     for (const l of links) {
