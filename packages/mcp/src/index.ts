@@ -31,7 +31,7 @@ import { scopedLeaves } from './scope.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
-import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings, slippageLines } from './formatters.js';
+import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings, slippageLines, triagePipelineLine } from './formatters.js';
 
 export { runWithApiContext } from './api.js';
 
@@ -1588,7 +1588,7 @@ server.tool(
 
 server.tool(
   'alert_digest',
-  'Generate a markdown alert digest for push delivery (email/slack/webhook). Reports threshold-triggered alerts only: versions past target, P0 nodes that are behind, overdue leaves, and unassigned P0/P1 leaves. Returns nothing if no alerts. Pipe the output to your delivery channel of choice — MindBlown does not send the message itself.',
+  'Generate a markdown alert digest for push delivery (email/slack/webhook). Reports threshold-triggered alerts only: versions past target, P0 nodes that are behind, overdue leaves, unassigned P0/P1 leaves, and a broken triage pipeline (many pending decisions failing with one error). Returns nothing if no alerts. Pipe the output to your delivery channel of choice — MindBlown does not send the message itself.',
   {
     mapId: z.string().describe('The map ID'),
   },
@@ -1634,11 +1634,15 @@ server.tool(
         (n) => n.dueDate != null && n.dueDate < today && (n.percentComplete ?? 0) < 100,
       );
 
+      // Triage itself failing (#320) is an alert of its own.
+      const triageLine = triagePipelineLine(await api.getTriagePipeline(mapId).catch(() => null));
+
       const totalAlerts =
         slippedVersions.length +
         p0Behind.length +
         unassignedHigh.length +
-        overdue.length;
+        overdue.length +
+        (triageLine ? 1 : 0);
 
       if (totalAlerts === 0) {
         return toolResult(`No alerts for "${data.map.name}" — all clear.`);
@@ -1647,6 +1651,12 @@ server.tool(
       const lines: string[] = [];
       lines.push(`# 🚨 ${data.map.name} — ${totalAlerts} alert(s)`);
       lines.push('');
+
+      if (triageLine) {
+        lines.push('## Triage');
+        lines.push(`- ${triageLine}`);
+        lines.push('');
+      }
 
       if (slippedVersions.length > 0) {
         lines.push(`## Versions past target (${slippedVersions.length})`);
@@ -1864,6 +1874,12 @@ server.tool(
       lines.push(`# Status digest — ${data.map.name}`);
       lines.push(`*Window: last ${sinceDays} days*`);
       lines.push('');
+      // Triage itself failing (#320) leads — it explains a quiet Inbox.
+      const triageLine = triagePipelineLine(await api.getTriagePipeline(mapId).catch(() => null));
+      if (triageLine) {
+        lines.push(triageLine);
+        lines.push('');
+      }
 
       lines.push(`## Done in window (${justCompleted.length})`);
       if (justCompleted.length === 0) {

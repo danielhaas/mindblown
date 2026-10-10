@@ -1346,6 +1346,19 @@ export interface TriageActionResultApi {
   placedNodeId?: string | null;
 }
 
+/** Is triage itself broken (#320)? Aggregated over the map's pending decisions. */
+export interface TriagePipelineApi {
+  broken: boolean;
+  count: number;
+  cause: string | null;
+  since: string | null;
+  pending: number;
+}
+
+export function getTriagePipeline(mapId: string): Promise<TriagePipelineApi> {
+  return request<TriagePipelineApi>(`/api/maps/${mapId}/triage-pipeline`);
+}
+
 export function listTriageDecisions(
   mapId: string,
   filters: TriageListFiltersApi,

@@ -428,6 +428,18 @@ export function formatVersionWarnings(warnings: string[] | undefined): string {
   );
 }
 
+// ── Triage pipeline broken (#320) ──────────────────────────────────
+
+/**
+ * One line for the digests when triage itself is failing — the same state
+ * the Triage panel and the PM Cockpit show (core triagePipelineState) —
+ * instead of N identical "uncertain" rows nobody reads. Null when healthy.
+ */
+export function triagePipelineLine(p: { broken: boolean; count: number; cause: string | null; since: string | null } | null): string | null {
+  if (!p?.broken) return null;
+  return `🔴 **Triage pipeline broken since ${p.since?.slice(0, 10) ?? '?'}**: ${p.cause ?? 'unknown error'} — ${p.count} ticket(s) untriaged`;
+}
+
 // ── status_digest: slippage without due dates (#321) ───────────────
 
 interface SlippageNode {
