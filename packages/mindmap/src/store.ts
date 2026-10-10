@@ -1590,6 +1590,13 @@ function handleWsMessage(
     // Leidang orchestrator's cap/policy write). Only the fleet-facing
     // settings are merged: an optimistic rename in flight (updateMapName is
     // fire-and-forget) must not be reverted by an unrelated cap broadcast.
+    case 'cycle:updated': {
+      // A sprint changed outside this client — the hourly sprint job
+      // (#154/#192) activates and completes sprints by their dates.
+      void state.loadCycles();
+      break;
+    }
+
     case 'map:updated': {
       const serverMap = msg.map as MindMap;
       if (!state.currentMap || state.currentMap.id !== serverMap.id) return;

@@ -16,6 +16,7 @@ import { parsePositiveIntMs } from './sync/parseInterval.js';
 import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { runTrashGc } from './sync/trashGc.js';
+import { runSprintAutomation } from './sync/sprintAutomation.js';
 import { runTriageLifecycle } from './sync/triageLifecycle.js';
 import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
@@ -428,6 +429,25 @@ async function main(): Promise<void> {
   };
   trashGcTick();
   setInterval(trashGcTick, TRASH_GC_INTERVAL_MS);
+
+  // ── Sprint automation (#154, #192) ───────────────────────────────
+  // Hourly: sprints whose window opened become active, ended sprints are
+  // completed with their unfinished items rolled into the next one. Hourly
+  // so a sprint starts within the hour of its start day (UTC).
+  const SPRINT_AUTOMATION_INTERVAL_MS = 60 * 60 * 1000;
+  const sprintAutomationTick = async (): Promise<void> => {
+    try {
+      const r = await runSprintAutomation();
+      if (r.activated.length + r.completed.length > 0 || r.errors.length > 0) {
+        console.log(`[sprint-automation] activated=${r.activated.length} completed=${r.completed.length} rolledOver=${r.rolledOver}`);
+      }
+      for (const err of r.errors.slice(0, 5)) console.warn(`[sprint-automation] ${err}`);
+    } catch (err) {
+      console.error('[sprint-automation] tick caught unexpected error:', err);
+    }
+  };
+  sprintAutomationTick();
+  setInterval(sprintAutomationTick, SPRINT_AUTOMATION_INTERVAL_MS);
 
   // ── Triage decision lifecycle (#313) ─────────────────────────────
   // Daily, like the trash GC: rows that need no human decision (foreign

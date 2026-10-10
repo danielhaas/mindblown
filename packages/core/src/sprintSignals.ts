@@ -91,3 +91,64 @@ export function sprintSignals(input: {
     stalledDays,
   };
 }
+
+// ── Sprint automation (#154, #192) ─────────────────────────────────
+
+export type SprintTransition =
+  | { sprintId: string; action: 'activate' }
+  | { sprintId: string; action: 'complete'; rollToSprintId: string | null };
+
+/**
+ * What the hourly sprint job does today (Dan, 10.10.2026: automate it):
+ *
+ *   - **activate (#192)** — a `planned` sprint whose window has started
+ *     (start ≤ today ≤ end) becomes `active`, unless another sprint of the
+ *     same version is already active (overlapping siblings stay planned and
+ *     show up in Plan Health's sprint-state). Earliest start first, at most
+ *     one per version per run.
+ *   - **complete (#154)** — a `planned` or `active` sprint whose end date
+ *     has passed is completed; its unfinished items roll into the next open
+ *     sprint of the same version (earliest start after this one ends), when
+ *     there is one.
+ *
+ * Completions are planned first, so a sprint that ends today frees its
+ * version for the next one to activate in the same run. Dates compare as
+ * UTC calendar days.
+ */
+export function planSprintTransitions(sprints: SprintLike[], now: Date = new Date()): SprintTransition[] {
+  const today = now.toISOString().slice(0, 10);
+  const out: SprintTransition[] = [];
+  const completed = new Set<string>();
+
+  const ended = sprints
+    .filter((s) => (s.status === 'planned' || s.status === 'active') && day(s.endDate) < today)
+    .sort((a, b) => day(a.startDate).localeCompare(day(b.startDate)));
+  for (const s of ended) {
+    completed.add(s.id);
+    const next = sprints
+      .filter(
+        (o) =>
+          o.id !== s.id &&
+          o.versionId === s.versionId &&
+          (o.status === 'planned' || o.status === 'active') &&
+          day(o.endDate) >= today &&
+          day(o.startDate) >= day(s.endDate),
+      )
+      .sort((a, b) => day(a.startDate).localeCompare(day(b.startDate)))[0];
+    out.push({ sprintId: s.id, action: 'complete', rollToSprintId: next?.id ?? null });
+  }
+
+  const activeVersions = new Set(
+    sprints.filter((s) => s.status === 'active' && !completed.has(s.id)).map((s) => s.versionId ?? ''),
+  );
+  const startable = sprints
+    .filter((s) => s.status === 'planned' && !completed.has(s.id) && day(s.startDate) <= today && today <= day(s.endDate))
+    .sort((a, b) => day(a.startDate).localeCompare(day(b.startDate)));
+  for (const s of startable) {
+    const lane = s.versionId ?? '';
+    if (activeVersions.has(lane)) continue;
+    activeVersions.add(lane);
+    out.push({ sprintId: s.id, action: 'activate' });
+  }
+  return out;
+}
