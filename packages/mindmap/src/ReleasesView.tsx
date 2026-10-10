@@ -54,6 +54,8 @@ const CONFIDENCE_STYLE: Record<
  */
 function summariseConfidence(c: ReleaseForecastRow['confidence'], evidence?: ReleaseForecastRow['evidence']): string {
   if (evidence?.state === 'not_measurable') return `no own completions yet (0 of ${evidence.required})`;
+  if (evidence?.state === 'stalled') return evidence.ownCompletionsEver > 0 ? `stalled — nothing done in ${evidence.windowDays}d` : 'stalled — target passed, nothing done';
+  if (evidence?.state === 'provisional') return `provisional — ${evidence.ownCompletions} of ${evidence.required} own completions`;
   if (c.unestimatedOpenLeaves > 0) {
     return `${c.unestimatedOpenLeaves} open task${c.unestimatedOpenLeaves === 1 ? '' : 's'} unestimated`;
   }
@@ -633,7 +635,7 @@ export function ReleasesView() {
                       )}
                     </td>
                     {showDetail && (
-                      <td style={tdStyle}>
+                      <td style={tdStyle} title={row?.ticketRateBasis ?? undefined}>
                         <div>{formatDate(row?.ticketModelFinishDate ?? null)}</div>
                         {row && row.ticketModelFinishDate && (
                           <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>

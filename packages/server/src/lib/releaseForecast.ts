@@ -2,7 +2,8 @@ import type { ForecastConfidence, ForecastEvidence, Node as CoreNode, MindMap, V
 import {
   assessCalibration,
   assessForecastEvidence,
-  countOwnCompletions,
+  chooseTicketRate,
+  ownCompletionStats,
   assessForecastConfidence,
   calibrationSamplesFromNodes,
   clampFocusFactor,
@@ -58,6 +59,12 @@ export interface ReleaseForecastRow {
    * dates are the map's pace applied to the scope, not a finding about it.
    */
   evidence: ForecastEvidence;
+  /**
+   * The population the ticket model's pace was measured on (#342): the
+   * release's own completions once it has enough, the whole map otherwise.
+   */
+  ticketRateBasis: string | null;
+  ticketRateSource: 'scope' | 'map' | null;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;
@@ -105,6 +112,10 @@ export interface MeasuredRates {
   netTicketsPerDay?: number | null;
   /** Look-back window the rates were measured over, for display. */
   windowDays?: number;
+  /** Map-wide organic completion events in the window — names the reference class (#342). */
+  completionEvents?: number;
+  /** Rework fraction the net rates were reduced by. */
+  reworkFraction?: number;
 }
 
 export function computeReleaseForecast(
@@ -202,6 +213,20 @@ export function computeReleaseForecast(
       }
     }
 
+    const windowDays = rates?.windowDays ?? 56;
+    const ownStats = ownCompletionStats(scopedLeaves, windowDays, now);
+    const rateChoice = chooseTicketRate({
+      scoped: true,
+      ownCompletions: ownStats.inWindow,
+      firstOwnCompletion: ownStats.firstInWindow,
+      now,
+      windowDays,
+      mapRatePerDay: netTicketsPerDay,
+      mapCompletions: rates?.completionEvents ?? null,
+      reworkFraction: rates?.reworkFraction ?? 0,
+    });
+    const rowTicketsPerDay = rateChoice.ratePerDay;
+
     const isSequenced = v.status !== 'released' && v.status !== 'archived';
     let effectiveStartDate: string | null = null;
     let plannedFinishDate: string | null = null;
@@ -236,8 +261,8 @@ export function computeReleaseForecast(
       velocityCursor = velFinish;
       velocityHorizonDays = velCalDays;
 
-      if (netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0) {
-        ticketHorizonDays = remainingTickets / netTicketsPerDay;
+      if (rowTicketsPerDay != null && rowTicketsPerDay > 0 && remainingTickets > 0) {
+        ticketHorizonDays = remainingTickets / rowTicketsPerDay;
         const ticketFinish = addCalendarDays(ticketCursor, ticketHorizonDays);
         ticketModelFinishDate = iso(ticketFinish);
         ticketCursor = ticketFinish;
@@ -246,8 +271,11 @@ export function computeReleaseForecast(
 
     const evidence = assessForecastEvidence({
       scoped: true,
-      ownCompletions: countOwnCompletions(scopedLeaves, rates?.windowDays ?? 56, now),
-      windowDays: rates?.windowDays ?? 56,
+      stats: ownStats,
+      windowDays,
+      targetDate: v.targetDate,
+      openLeaves: remainingTickets,
+      now,
     });
     const notMeasurable = evidence.state === 'not_measurable' && remainingTickets > 0;
     const confidence: ForecastConfidence = notMeasurable
@@ -296,6 +324,8 @@ export function computeReleaseForecast(
       unestimatedOpenLeaves,
       confidence,
       evidence,
+      ticketRateBasis: rowTicketsPerDay != null ? rateChoice.basis : null,
+      ticketRateSource: rowTicketsPerDay != null ? rateChoice.source : null,
       slipPlannedDays,
       slipVelocityDays,
       slipTicketDays:

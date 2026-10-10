@@ -96,6 +96,19 @@ export function releaseVerdict(row: ReleaseForecastRow, today: Date = new Date()
   if (row.remainingTickets === 0) {
     return { level: 'on_track', headline: `${row.versionName}: all work is done.`, reasons };
   }
+  // Same evidence rule as the Releases table and completion_forecast (#343):
+  // a release that has not started (no completions of its own, target still
+  // ahead) gets no verdict — its projection is the map's pace, not a finding.
+  if (row.evidence?.state === 'not_measurable') {
+    return {
+      level: 'unknown',
+      headline: `${row.versionName}: not started yet — no verdict until it has completions of its own${row.targetDate ? ` (target ${row.targetDate})` : ''}.`,
+      reasons: [
+        `${row.remainingTickets} open tasks${forecast ? `; the projected ${forecast} is the map's pace applied to this release, not a finding about it` : ''}.`,
+      ],
+    };
+  }
+  if (row.evidence?.state === 'stalled') reasons.push(row.evidence.note);
   if (row.targetDate && row.targetDate < t) {
     reasons.push(`Target ${row.targetDate} is ${daysBetween(row.targetDate, t)} days gone and ${row.remainingTickets} tasks are still open.`);
   }

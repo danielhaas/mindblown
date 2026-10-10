@@ -257,7 +257,9 @@ export type {
 export {
   MIN_OWN_COMPLETIONS,
   MIN_OWN_RATE_COMPLETIONS,
-  countOwnCompletions,
+  MIN_OWN_SPAN_DAYS,
+  IMPORTED_DONE_WITHIN_MS,
+  ownCompletionStats,
   assessForecastEvidence,
   chooseTicketRate,
   forecastHeadline,
@@ -265,6 +267,7 @@ export {
 export type {
   ForecastEvidence,
   ForecastEvidenceState,
+  OwnCompletionStats,
   TicketRateChoice,
   ForecastHeadline,
   HeadlineConfidence,

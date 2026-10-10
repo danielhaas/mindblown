@@ -23,13 +23,27 @@
 export const MIN_OWN_COMPLETIONS = 10;
 /** Own completions before the ticket model uses the scope's own rate. */
 export const MIN_OWN_RATE_COMPLETIONS = 3;
+/** Shortest span an own pace is measured over — a burst on one day is not a rate. */
+export const MIN_OWN_SPAN_DAYS = 7;
 
-export type ForecastEvidenceState = 'not_measurable' | 'provisional' | 'measured';
+/**
+ * - not_measurable — never a completion of its own and the target (if any)
+ *   still ahead: a release that has not started. No verdict.
+ * - stalled — open work, no completion in the window, but EITHER it had
+ *   completions before OR its target has passed: that is a red flag, not
+ *   an absence of data, so verdicts stay on (low confidence).
+ * - provisional / measured — below / at MIN_OWN_COMPLETIONS in the window.
+ */
+export type ForecastEvidenceState = 'not_measurable' | 'stalled' | 'provisional' | 'measured';
 
 export interface ForecastEvidence {
   state: ForecastEvidenceState;
   /** Leaves in scope completed within the measuring window. */
   ownCompletions: number;
+  /** …ever (organic completions only, see ownCompletionStats). */
+  ownCompletionsEver: number;
+  /** ISO timestamp of the latest own completion, or null. */
+  lastCompletion: string | null;
   /** MIN_OWN_COMPLETIONS — rendered as "N of 10". */
   required: number;
   windowDays: number;
@@ -39,21 +53,52 @@ export interface ForecastEvidence {
 
 interface CompletableLeaf {
   completedAt?: string | null;
+  createdAt?: string | null;
   percentComplete?: number | null;
   status?: string | null;
 }
 
-/** Leaves that are done now and were completed within the last `windowDays`. */
-export function countOwnCompletions(leaves: CompletableLeaf[], windowDays: number, now: Date = new Date()): number {
+/**
+ * A node created and marked done within this long was imported done (the
+ * forge import creates the node, then sets 100%), not worked on — its
+ * completedAt is the import time, not history.
+ */
+export const IMPORTED_DONE_WITHIN_MS = 2 * 60_000;
+
+export interface OwnCompletionStats {
+  /** Organic completions within the window. */
+  inWindow: number;
+  /** Organic completions ever. */
+  ever: number;
+  /** Earliest organic completion inside the window (ISO), or null. */
+  firstInWindow: string | null;
+  /** Latest organic completion (ISO), or null. */
+  last: string | null;
+}
+
+/** The scope's own completion history — done leaves with a real completedAt. */
+export function ownCompletionStats(leaves: CompletableLeaf[], windowDays: number, now: Date = new Date()): OwnCompletionStats {
   const since = now.getTime() - windowDays * 86_400_000;
-  let n = 0;
+  const stats: OwnCompletionStats = { inWindow: 0, ever: 0, firstInWindow: null, last: null };
+  let first = Infinity;
+  let last = -Infinity;
   for (const l of leaves) {
     const done = (l.percentComplete ?? 0) >= 99.5 || l.status === 'done';
     if (!done || !l.completedAt) continue;
     const at = Date.parse(l.completedAt);
-    if (Number.isFinite(at) && at >= since && at <= now.getTime()) n++;
+    if (!Number.isFinite(at) || at > now.getTime()) continue;
+    const created = l.createdAt ? Date.parse(l.createdAt) : NaN;
+    if (Number.isFinite(created) && at - created < IMPORTED_DONE_WITHIN_MS) continue;
+    stats.ever++;
+    if (at > last) last = at;
+    if (at >= since) {
+      stats.inWindow++;
+      if (at < first) first = at;
+    }
   }
-  return n;
+  stats.firstInWindow = Number.isFinite(first) ? new Date(first).toISOString() : null;
+  stats.last = Number.isFinite(last) ? new Date(last).toISOString() : null;
+  return stats;
 }
 
 /**
@@ -63,19 +108,44 @@ export function countOwnCompletions(leaves: CompletableLeaf[], windowDays: numbe
  */
 export function assessForecastEvidence(input: {
   scoped: boolean;
-  ownCompletions: number;
+  stats: OwnCompletionStats;
   windowDays: number;
+  /** The scope's target (YYYY-MM-DD…), or null. */
+  targetDate?: string | null;
+  openLeaves: number;
+  now?: Date;
 }): ForecastEvidence {
-  const { scoped, ownCompletions, windowDays } = input;
-  const base = { ownCompletions, required: MIN_OWN_COMPLETIONS, windowDays };
+  const { scoped, stats, windowDays, targetDate = null, openLeaves, now = new Date() } = input;
+  const ownCompletions = stats.inWindow;
+  const base = {
+    ownCompletions,
+    ownCompletionsEver: stats.ever,
+    lastCompletion: stats.last,
+    required: MIN_OWN_COMPLETIONS,
+    windowDays,
+  };
   if (!scoped) {
     return { ...base, state: 'measured', note: 'Whole map — forecast runs on its own history.' };
   }
-  if (ownCompletions === 0) {
+  const today = now.toISOString().slice(0, 10);
+  const overdue = openLeaves > 0 && targetDate != null && targetDate.slice(0, 10) < today;
+  if (ownCompletions === 0 && openLeaves > 0) {
+    if (stats.ever === 0 && !overdue) {
+      return {
+        ...base,
+        state: 'not_measurable',
+        note: `Not yet measurable — no completions of its own yet (0 of ${MIN_OWN_COMPLETIONS}). Dates project this scope at the map's pace; they are not a verdict on it.`,
+      };
+    }
+    // Silence here would hide the red flag: overdue and unstarted, or work
+    // that stopped.
     return {
       ...base,
-      state: 'not_measurable',
-      note: `Not yet measurable — no completions of its own in the last ${windowDays}d (0 of ${MIN_OWN_COMPLETIONS}). Dates below project this scope at the map's pace; they are not a verdict on it.`,
+      state: 'stalled',
+      note:
+        stats.ever === 0
+          ? `Stalled — the target ${targetDate!.slice(0, 10)} has passed and none of its work is done yet.`
+          : `Stalled — no completions of its own in the last ${windowDays}d (last ${stats.last!.slice(0, 10)})${overdue ? `, target ${targetDate!.slice(0, 10)} passed` : ''}.`,
     };
   }
   if (ownCompletions < MIN_OWN_COMPLETIONS) {
@@ -110,19 +180,29 @@ export function chooseTicketRate(input: {
   scoped: boolean;
   ownCompletions: number;
   windowDays: number;
+  /**
+   * Earliest own completion in the window (ownCompletionStats.firstInWindow):
+   * the own pace is measured over the span the scope has actually been
+   * worked (floor 7 days), not the whole window — a release three weeks old
+   * would otherwise read at a third of its real pace.
+   */
+  firstOwnCompletion?: string | null;
+  now?: Date;
   /** Net map-wide tickets/day, null when unmeasured. */
   mapRatePerDay: number | null;
   /** Map-wide completion events in the window (for the label). */
   mapCompletions: number | null;
   reworkFraction: number;
 }): TicketRateChoice {
-  const { scoped, ownCompletions, windowDays, mapRatePerDay, mapCompletions, reworkFraction } = input;
+  const { scoped, ownCompletions, windowDays, mapRatePerDay, mapCompletions, reworkFraction, firstOwnCompletion = null, now = new Date() } = input;
   const rework = Math.min(1, Math.max(0, reworkFraction));
   if (scoped && ownCompletions >= MIN_OWN_RATE_COMPLETIONS) {
+    const sinceFirst = firstOwnCompletion != null ? (now.getTime() - Date.parse(firstOwnCompletion)) / 86_400_000 : windowDays;
+    const spanDays = Math.min(windowDays, Math.max(MIN_OWN_SPAN_DAYS, Math.ceil(sinceFirst)));
     return {
-      ratePerDay: (ownCompletions / windowDays) * (1 - rework),
+      ratePerDay: (ownCompletions / spanDays) * (1 - rework),
       source: 'scope',
-      basis: `this scope's own pace: ${ownCompletions} completions in ${windowDays}d`,
+      basis: `this scope's own pace: ${ownCompletions} completions in ${spanDays}d`,
     };
   }
   if (mapRatePerDay == null || mapRatePerDay <= 0) {
@@ -211,7 +291,7 @@ export function forecastHeadline(input: {
   }
 
   const confidence: HeadlineConfidence =
-    evidence.state === 'provisional' || crossCheck === 'caution' || mostlyUnestimated
+    evidence.state === 'provisional' || evidence.state === 'stalled' || crossCheck === 'caution' || mostlyUnestimated
       ? 'low'
       : crossCheck === 'unmeasured' || model === 'planned'
         ? 'medium'

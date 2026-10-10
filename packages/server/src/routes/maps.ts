@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, countOwnCompletions, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -915,17 +915,18 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let ticketModelFinishDate: string | null = null;
     let ratesWindowDays: number | null = null;
     // The scope's own history (#342/#343) — same rule as the MCP tool.
-    let ownCompletions = countOwnCompletions(leaves, 56);
+    let ownStats = ownCompletionStats(leaves, 56);
     let ticketRateBasis: string | null = null;
     let ticketRateSource: 'scope' | 'map' | null = null;
     try {
       const m = await measureMapVelocity(req.params.id, data, 56, req.log);
       ratesWindowDays = m.rates.windowDays ?? null;
       netEffortPerDay = m.rates.netEffortPerDay ?? null;
-      ownCompletions = countOwnCompletions(leaves, ratesWindowDays ?? 56);
+      ownStats = ownCompletionStats(leaves, ratesWindowDays ?? 56);
       const choice = chooseTicketRate({
         scoped,
-        ownCompletions,
+        ownCompletions: ownStats.inWindow,
+        firstOwnCompletion: ownStats.firstInWindow,
         windowDays: ratesWindowDays ?? 56,
         mapRatePerDay: m.rates.netTicketsPerDay ?? null,
         mapCompletions: m.velocity.completionEvents,
@@ -995,7 +996,13 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       unestimatedOpenLeaves: remainingTicketsUnestimated,
       openLeaves: remainingTickets,
     });
-    const evidence = assessForecastEvidence({ scoped, ownCompletions, windowDays: ratesWindowDays ?? 56 });
+    const evidence = assessForecastEvidence({
+      scoped,
+      stats: ownStats,
+      windowDays: ratesWindowDays ?? 56,
+      targetDate,
+      openLeaves: remainingTickets,
+    });
     const headline = forecastHeadline({
       evidence,
       plannedDate: plannedFinishDate,
@@ -1021,7 +1028,9 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       remainingEffort,
       remainingTickets,
       remainingTicketsUnestimated,
-      confidence,
+      confidence: verdictsAllowed
+        ? confidence
+        : { ...confidence, level: 'unmeasured' as const, divergenceDays: null, note: evidence.note },
       effortUnit: data.map.effortUnit,
       fudgeFactor,
       focusFactor,

@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, countOwnCompletions, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -1051,7 +1051,7 @@ server.tool(
       // (#342/#343): its completions in the measuring window decide both
       // the evidence state and whether the ticket model may use its own pace.
       let windowDays = 56;
-      let ownCompletions = countOwnCompletions(leaves, windowDays);
+      let ownStats = ownCompletionStats(leaves, windowDays);
       if (remainingEffort > 0 || remainingTickets > 0) {
         try {
           const vel = await api.getVelocity(mapId);
@@ -1067,10 +1067,11 @@ server.tool(
               ? (vel.completionEvents / vel.windowDays) * (1 - (rt?.reworkFraction ?? 0))
               : null);
           windowDays = vel.rates?.windowDays ?? vel.windowDays;
-          ownCompletions = countOwnCompletions(leaves, windowDays);
+          ownStats = ownCompletionStats(leaves, windowDays);
           const choice = chooseTicketRate({
             scoped,
-            ownCompletions,
+            ownCompletions: ownStats.inWindow,
+            firstOwnCompletion: ownStats.firstInWindow,
             windowDays,
             mapRatePerDay: mapTicketsRate,
             mapCompletions: vel.completionEvents,
@@ -1113,7 +1114,13 @@ server.tool(
         targetSource = 'max leaf dueDate';
       }
 
-      const evidence = assessForecastEvidence({ scoped, ownCompletions, windowDays });
+      const evidence = assessForecastEvidence({
+        scoped,
+        stats: ownStats,
+        windowDays,
+        targetDate,
+        openLeaves: remainingTickets,
+      });
       const notMeasurable = evidence.state === 'not_measurable';
 
       // Verdict on the PRIMARY (velocity) line. Same helper the Releases
