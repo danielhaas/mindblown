@@ -67,7 +67,7 @@ export {
   hasCycle,
   topologicalSort,
   schedule,
-  criticalPath,
+  criticalPath, capacityCriticalPath,
   // Orchestration substrate (#111)
   resolvedSiblingOrder,
   isReady,

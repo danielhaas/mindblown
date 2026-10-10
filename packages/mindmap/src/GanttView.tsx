@@ -1132,28 +1132,24 @@ export function GanttView() {
         {/* Workers: how many parallel tracks the schedule projects onto */}
         <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
         <span style={{ fontWeight: 600, color: '#64748b' }}>Workers:</span>
+        {/* A slider (#112): dragging re-flows the bars once the debounced
+            save lands; the range grows with the map's own setting. */}
         <input
-          type="number"
+          type="range"
           min={1}
-          max={100}
+          max={Math.max(10, Math.floor(scheduleData?.workerCount ?? 1))}
+          step={1}
           value={workersInput}
           disabled={savingWorkers}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
             if (!isNaN(v) && v >= 1) setWorkersInput(Math.min(100, v));
           }}
+          aria-label="Workers"
           title="Number of parallel work tracks. View knob — the underlying plan (priorities + estimates + deps) is unchanged. Higher = more parallelism shrinks the timeline."
-          style={{
-            width: 48,
-            fontSize: 11,
-            fontFamily: 'inherit',
-            border: '1px solid #e2e8f0',
-            borderRadius: 4,
-            padding: '2px 6px',
-            color: '#475569',
-            background: savingWorkers ? '#f1f5f9' : '#fff',
-          }}
+          style={{ width: 96, accentColor: '#4f46e5', cursor: savingWorkers ? 'wait' : 'pointer' }}
         />
+        <span style={{ minWidth: 14, fontWeight: 700, color: '#334155', fontVariantNumeric: 'tabular-nums' }}>{workersInput}</span>
         {savedFlash && (
           <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>
             ✓ {savedFlash}
@@ -1258,7 +1254,7 @@ export function GanttView() {
                 <rect width="10" height="10" rx="2" fill="#dc2626" opacity="0.2" />
                 <rect x="1" y="1" width="8" height="8" rx="1.5" fill="none" stroke="#dc2626" strokeWidth="1.5" />
               </svg>
-              Critical path ({criticalPath.path.length} tasks)
+              Critical path ({criticalPath.path.length} tasks, {scheduleData?.workerCount ?? 1} worker{(scheduleData?.workerCount ?? 1) === 1 ? '' : 's'})
             </span>
           </>
         )}

@@ -16,15 +16,17 @@ describe('formatScheduleReport (#191)', () => {
       nodes: [node('n-a', 'Design'), node('n-b', 'Build')],
     } as unknown as MapDetail;
     const schedule = {
-      criticalPath: { path: ['n-a', 'n-b'], totalDuration: 10, float: { 'n-a': 0, 'n-b': 2 } },
+      criticalPath: { path: ['n-a'], totalDuration: 4, float: { 'n-a': 0, 'n-b': 2 } },
+      workerCount: 2,
       schedule: [
         { nodeId: 'n-a', computedStart: 0, computedEnd: 4, duration: 4 },
-        { nodeId: 'n-b', computedStart: 4, computedEnd: 10, duration: 6 },
+        { nodeId: 'n-b', computedStart: 0, computedEnd: 2, duration: 2 },
       ],
     } as unknown as ScheduleResult;
     const out = formatScheduleReport(map, schedule);
     expect(out).toContain('-> Design [n-a] (50% complete)');
     expect(out).toContain('- Design [n-a]: day 0 - 4 (4 duration) **CRITICAL**');
-    expect(out).toContain('- Build [n-b]: day 4 - 10 (6 duration) float: 2');
+    expect(out).toContain('- Build [n-b]: day 0 - 2 (2 duration) slack: 2');
+    expect(out).toContain('## Critical Path (capacity-aware, 2 workers)');
   });
 });
