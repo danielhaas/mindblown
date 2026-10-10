@@ -1566,7 +1566,7 @@ export interface GetNextTicketResultApi {
     githubLinks: Array<{ externalId: string; url: string }>;
     claimedAt: string | null;
   };
-  skipped: Array<{ id: string; text: string; reason: 'needs-brief' }>;
+  skipped: Array<{ id: string; text: string; reason: 'needs-brief' | 'human-only'; tag?: string }>;
 }
 
 export function getNextTicket(

@@ -23,6 +23,7 @@ export const readyNodesTool = defineTool({
     '',
     'A node is ready when:',
     '  - It is a leaf (a node with children is a container — its children are the work)',
+    '  - It is not tagged for a person (kira-skip, needs-human, needs-daniel-input, needs-rita-review)',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
@@ -109,6 +110,9 @@ export const getNextTicketTool = defineTool({
     '     single-ticket pulls walk the pattern instead of restarting it.',
     '  4. Empty-brief guard: ready nodes with no description and no linked',
     '     issue are refused, auto-tagged "needs-brief", and listed in skipped[].',
+    '  5. Human-only guard: tickets tagged kira-skip, needs-human, needs-daniel-input',
+    '     or needs-rita-review are never granted (a person must act) and are listed',
+    '     in skipped[] with reason "human-only".',
     '',
     'On success you get the full self-contained brief: title, plain-text',
     'description, priority, scopes, tags, effective version, issue links.',
@@ -159,10 +163,17 @@ export const getNextTicketTool = defineTool({
             : 'no dispatchable ticket inside the dispatch gate';
       lines.push(`No ticket granted — ${why}.`);
     }
-    if (result.skipped.length > 0) {
+    const noBrief = result.skipped.filter((s) => s.reason !== 'human-only');
+    const humanOnly = result.skipped.filter((s) => s.reason === 'human-only');
+    if (noBrief.length > 0) {
       lines.push('');
-      lines.push(`Skipped ${result.skipped.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
-      for (const s of result.skipped) lines.push(`  - ${s.id} "${s.text}"`);
+      lines.push(`Skipped ${noBrief.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
+      for (const s of noBrief) lines.push(`  - ${s.id} "${s.text}"`);
+    }
+    if (humanOnly.length > 0) {
+      lines.push('');
+      lines.push(`Skipped ${humanOnly.length} ready node(s) tagged for a human — never granted to a worker:`);
+      for (const s of humanOnly) lines.push(`  - ${s.id} "${s.text}" [${s.tag}]`);
     }
     return lines.join('\n');
   },

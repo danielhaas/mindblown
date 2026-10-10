@@ -279,3 +279,16 @@ describe('planUnblock', () => {
     expect(u({ status: null, tags: [] }, noTodo)).toEqual({ tagsRemove: [] });
   });
 });
+
+describe('human-only tickets in the dispatch snapshot (#266)', () => {
+  it('counted apart, never grantable; only human-only left reads as empty', async () => {
+    const { dispatchQueueSnapshot, dispatchSkipTag } = await import('../dispatch.js');
+    const node = (id: string, tags: string[]) =>
+      ({ id, parentId: 'root', status: null, claimedBySession: null, dependencies: [], tags, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
+    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, dependencies: [], tags: [], description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
+    const snap = dispatchQueueSnapshot([root, node('a', ['needs-human']), node('b', ['kira-skip'])], { workflow: [], cap: 3, gate: [] });
+    expect(snap).toMatchObject({ inGate: 0, humanOnly: 2, needsBrief: 0, state: 'empty' });
+    expect(dispatchSkipTag({ tags: ['x', 'NEEDS-RITA-REVIEW'] })).toBe('NEEDS-RITA-REVIEW');
+    expect(dispatchSkipTag({ tags: ['needs-brief'] })).toBeNull();
+  });
+});

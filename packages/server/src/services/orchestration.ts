@@ -33,6 +33,7 @@ import {
   hasBrief,
   matchesDispatchGate,
   pullableNodes,
+  dispatchSkipTag,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
@@ -133,8 +134,10 @@ export async function readyNodes(
   // Leaves only (#323): a node with live children is a container — its work
   // is its children, so listing it as pickable handed out whole epics.
   const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
+  // Tickets tagged for a person (#266) are not dev work for anyone pulling
+  // from a queue — same rule as get_next_ticket.
   const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id),
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchSkipTag(n) === null,
   );
   const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
 
@@ -583,7 +586,10 @@ interface PullDecision {
   /** Ranked, gated, dispatchable candidates in claim-attempt order. */
   ranked: CoreNode[];
   /** Ready-but-empty-brief nodes to tag `needs-brief` and report. */
+  /** Refused for having no brief — get_next_ticket tags these needs-brief. */
   skipped: CoreNode[];
+  /** Refused because a human must act (#266) — reported, never tagged. */
+  humanOnly: Array<{ node: CoreNode; tag: string }>;
 }
 
 /**
@@ -612,13 +618,20 @@ export function selectPullCandidates(
 ): PullDecision {
   const active = allNodes.filter((n) => n.claimedBySession !== null).length;
   const cap = Math.max(0, Math.floor(opts.cap));
-  if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [] };
-  if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [] };
+  if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [], humanOnly: [] };
+  if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [], humanOnly: [] };
 
   // Same pullable set the cockpit's Dispatch card renders (core/dispatch.ts):
   // non-root, todo-or-null status, unclaimed, predecessors done.
   const { pullable: ready, nodeMap } = pullableNodes(allNodes, opts.workflow);
-  const gated = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  const gatedAll = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  // Tagged for a human (#266): never granted, reported so the queue starves
+  // loudly instead of silently — same reason needs-brief is reported.
+  const humanOnly = gatedAll.flatMap((n) => {
+    const tag = dispatchSkipTag(n);
+    return tag ? [{ node: n, tag }] : [];
+  });
+  const gated = gatedAll.filter((n) => dispatchSkipTag(n) === null);
   // Profile routing (#262): a configured policy FILTERS eligibility here;
   // ranking below is untouched. No policy = no filter = pre-#262 behavior.
   const profilePolicy = opts.profilePolicy ?? null;
@@ -645,6 +658,7 @@ export function selectPullCandidates(
     cap,
     ranked: rankedAll.filter(hasBrief),
     skipped: rankedAll.filter((n) => !hasBrief(n)),
+    humanOnly,
   };
 }
 
@@ -724,11 +738,10 @@ export async function getNextTicket(
       if (row) tagged.push(dbNodeToCore(row as unknown as Record<string, unknown>));
     }
 
-    const skipped = decision.skipped.map((n) => ({
-      id: n.id,
-      text: n.text,
-      reason: 'needs-brief' as const,
-    }));
+    const skipped = [
+      ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
+      ...decision.humanOnly.map(({ node: n, tag }) => ({ id: n.id, text: n.text, reason: 'human-only' as const, tag })),
+    ];
 
     if (decision.reason !== undefined) {
       return {
