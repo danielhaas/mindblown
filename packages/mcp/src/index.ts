@@ -2851,7 +2851,7 @@ toolWithAlias(
     kind: z.enum(['github', 'gitea']).optional().describe('Forge kind; default "github". "gitea" also covers Forgejo.'),
     apiBaseUrl: z.string().optional().describe('Self-hosted instance URL (e.g. "https://git.example.com"); required for gitea, optional GHES API URL for github'),
     webBaseUrl: z.string().optional().describe('Web URL for issue links when it differs from apiBaseUrl'),
-    mapId: z.string().optional().describe('The map that plans this repo — it gets bound to it. Without it the connection is stored but no map syncs with the repo.'),
+    mapId: z.string().optional().describe('The map that plans this repo — it gets bound to it (needs admin permission on that map). Without it the connection is stored but no map syncs with the repo.'),
   },
   async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl, mapId }) => {
     try {

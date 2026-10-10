@@ -1106,7 +1106,9 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
           AND m.github_repo_owner IS NULL
           AND m.archived_at IS NULL
           AND EXISTS (
-            SELECT 1 FROM nodes n, jsonb_array_elements(n.external_links) l
+            SELECT 1
+            FROM nodes n,
+                 jsonb_array_elements(CASE WHEN jsonb_typeof(n.external_links) = 'array' THEN n.external_links ELSE '[]'::jsonb END) l
             WHERE n.map_id = m.id AND n.deleted_at IS NULL
               AND split_part(l->>'externalId', '#', 1) = r.owner || '/' || r.repo
           );
