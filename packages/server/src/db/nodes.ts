@@ -975,6 +975,44 @@ export async function findLinksMissingState(
 }
 
 /**
+ * Done nodes whose issue close is held on a PR the mirror still calls
+ * open (#423): the node reads done, its synced forge link to `repoFullName`
+ * is `open`, and `linked_pr.state` is `open`. That is the normal shape
+ * while the PR is in review — and the stuck shape when the PR died and
+ * its `pull_request.closed` delivery never arrived. The caller tells the
+ * two apart by asking the forge. Oldest mirror first, at most `limit`.
+ */
+export async function findHeldCloseCandidates(
+  repoFullName: string,
+  limit: number,
+): Promise<Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null }>> {
+  const rows = await db
+    .select({
+      id: nodes.id,
+      percentComplete: nodes.percentComplete,
+      status: nodes.status,
+      externalLinks: nodes.externalLinks,
+      linkedPr: nodes.linkedPr,
+    })
+    .from(nodes)
+    .where(and(isNotNull(nodes.linkedPr), notDeleted, onActiveMap));
+
+  const out: Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null }> = [];
+  for (const row of rows) {
+    const looksDone = row.percentComplete === 100 || row.status === 'done';
+    const pr = row.linkedPr as LinkedPrState | null;
+    if (!looksDone || !pr || pr.state !== 'open') continue;
+    const link = ((row.externalLinks as ExternalLink[]) ?? []).find(
+      (l) => isForgeLink(l) && l.syncEnabled && l.state === 'open' && l.externalId.startsWith(`${repoFullName}#`),
+    );
+    if (!link) continue;
+    out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, mirrorSyncedAt: pr.lastSyncedAt ?? null });
+  }
+  out.sort((a, b) => (a.mirrorSyncedAt ?? '').localeCompare(b.mirrorSyncedAt ?? ''));
+  return out.slice(0, limit);
+}
+
+/**
  * Find the node linked to a GitHub externalId (`owner/repo#123`).
  *
  * Lifted out of `routes/integrations.ts` so the sync modules
