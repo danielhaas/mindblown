@@ -2855,7 +2855,17 @@ toolWithAlias(
   async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl }) => {
     try {
       const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret, { kind, apiBaseUrl, webBaseUrl });
-      return toolResult(`Connected ${forgeName(result.provider)} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`);
+      const lines = [`Connected ${forgeName(result.provider)} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`];
+      const hook = result.webhook;
+      if (hook?.status === 'failed') {
+        lines.push(
+          `Webhook NOT set up: ${hook.reason}${hook.hint ? ` — ${hook.hint}` : ''}`,
+          'Until it is, changes arrive only with the 5-minute poll and pull requests are not seen. Retry from the panel (Webhook → Set up webhook) or POST /api/integrations/forge/webhook { workspaceId }.',
+        );
+      } else if (hook) {
+        lines.push(`Webhook ${hook.status} (#${hook.hookId}) → ${hook.url}.`);
+      }
+      return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);
     }

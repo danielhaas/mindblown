@@ -498,6 +498,36 @@ export function testForgeConnection(
   });
 }
 
+/** The repo webhook of the workspace's forge binding (#386): what to configure, and whether the repo has it. */
+export interface ForgeWebhookState {
+  kind: string;
+  repo: string;
+  /** Null when the server has no PUBLIC_URL (then `readError` says so). */
+  url: string | null;
+  contentType: string;
+  events: string[];
+  secretStored: boolean;
+  hook: { id: number; active: boolean; events: string[] } | null;
+  missingEvents?: string[];
+  /** Why the hook state is unknown: no PUBLIC_URL, or the token may not list the repo's hooks. */
+  readError?: string;
+}
+
+export type ForgeWebhookSetupResult =
+  | { status: 'created' | 'updated'; hookId: number; url: string; events: string[] }
+  | { status: 'failed'; reason: string; hint?: string };
+
+export function getForgeWebhook(workspaceId: string): Promise<ForgeWebhookState> {
+  return request(`/api/integrations/forge/webhook?workspaceId=${encodeURIComponent(workspaceId)}`);
+}
+
+export function setUpForgeWebhook(workspaceId: string): Promise<ForgeWebhookSetupResult> {
+  return request(`/api/integrations/forge/webhook`, {
+    method: 'POST',
+    body: JSON.stringify({ workspaceId }),
+  });
+}
+
 export function linkGitHubIssue(
   mapId: string,
   nodeId: string,

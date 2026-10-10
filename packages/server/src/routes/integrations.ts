@@ -63,6 +63,7 @@ import {
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
+import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 
 // ── Helper: find integration config for a workspace (PAT) ─────────
 
@@ -469,33 +470,41 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: body.owner,
       repo: body.repo,
       token: body.token,
-      webhookSecret: body.webhookSecret,
+      // A re-connect without a secret keeps the stored one: the repo's
+      // webhook still signs with it, and dropping it 401s every delivery.
+      webhookSecret: body.webhookSecret || existing?.config.webhookSecret,
       ...(body.apiBaseUrl ? { apiBaseUrl: body.apiBaseUrl } : {}),
       ...(body.webBaseUrl ? { webBaseUrl: body.webBaseUrl } : {}),
     };
 
+    let id: string;
     if (existing) {
       // Update existing
       await db
         .update(integrations)
         .set({ provider: kind, config, enabled: true, updatedAt: new Date() })
         .where(eq(integrations.id, existing.id));
-
-      return reply.send({ id: existing.id, provider: kind, enabled: true });
+      id = existing.id;
+    } else {
+      // Create new
+      const [row] = await db
+        .insert(integrations)
+        .values({
+          workspaceId: body.workspaceId,
+          provider: kind,
+          config,
+          enabled: true,
+        })
+        .returning();
+      id = row.id;
     }
 
-    // Create new
-    const [row] = await db
-      .insert(integrations)
-      .values({
-        workspaceId: body.workspaceId,
-        provider: kind,
-        config,
-        enabled: true,
-      })
-      .returning();
+    // A Gitea repo gets its webhook right away (#386) — without it the
+    // 5-minute poll is the only way back. Best effort: the connection
+    // stands either way, the result tells the dialog what to show.
+    const webhook = kind === 'gitea' ? await setUpWebhookAfterBind({ id, provider: kind, config }) : undefined;
 
-    return reply.status(201).send({ id: row.id, provider: kind, enabled: true });
+    return reply.status(existing ? 200 : 201).send({ id, provider: kind, enabled: true, ...(webhook ? { webhook } : {}) });
   });
 
   // ── POST /api/integrations/forge/test ──────────────────────────
@@ -558,7 +567,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         fullName: repo.full_name,
         defaultBranch: repo.default_branch,
         canPush: repo.permissions?.push ?? null,
-        webhookUrl: `${(process.env.PUBLIC_URL ?? process.env.FRONTEND_URL ?? '').replace(/\/+$/, '')}/api/webhooks/github`,
+        webhookUrl: publicWebhookUrl(),
       });
     } catch (err) {
       if (err instanceof GitHubApiError) {

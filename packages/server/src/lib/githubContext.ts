@@ -45,7 +45,7 @@ export interface ForgeMapContext {
 /** @deprecated use `ForgeMapContext` */
 export type GitHubMapContext = ForgeMapContext;
 
-async function getForgeIntegration(
+export async function getForgeIntegration(
   workspaceId: string,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const rows = await db

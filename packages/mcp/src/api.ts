@@ -653,7 +653,15 @@ export function connectGitHubRepo(
   token: string,
   webhookSecret?: string,
   forge?: { kind?: 'github' | 'gitea'; apiBaseUrl?: string; webBaseUrl?: string },
-): Promise<{ id: string; provider: string; enabled: boolean }> {
+): Promise<{
+  id: string;
+  provider: string;
+  enabled: boolean;
+  /** Gitea only: the repo webhook set up after connecting (#386). */
+  webhook?:
+    | { status: 'created' | 'updated'; hookId: number; url: string; events: string[] }
+    | { status: 'failed'; reason: string; hint?: string };
+}> {
   return request('/api/integrations/github/connect', {
     method: 'POST',
     body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret, ...(forge ?? {}) }),
