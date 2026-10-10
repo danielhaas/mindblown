@@ -1586,6 +1586,13 @@ function handleWsMessage(
       break;
     }
 
+    case 'cycle:updated': {
+      // A sprint changed outside this client — the hourly sprint job
+      // (#154/#192) activates and completes sprints by their dates.
+      void state.loadCycles();
+      break;
+    }
+
     // Map settings changed by someone else (a PM in another tab, the
     // Leidang orchestrator's cap/policy write). Only the fleet-facing
     // settings are merged: an optimistic rename in flight (updateMapName is
