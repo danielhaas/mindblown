@@ -96,6 +96,10 @@ If you are tempted to file an "expose X in the MCP" follow-up issue: stop. That 
 - The new behavior is reachable through `packages/tool-kit` (the MCP surface), not only through direct HTTP calls
 - A user invoking the relevant tool gets the new field on the round trip
 
+### Route tests mount the real routes
+
+A route test registers the real plugin (`await app.register(xxxRoutes)`) and mocks what sits below it — the service module or `db/connection` — then drives it with `app.inject()`. Never rebuild the handlers inside the test file: that tests a copy, and a bug in the real route can't fail it (#117 — `orchestration-routes.test.ts` was "26 passing, 0 route lines covered"). Rules that live in a service are tested on the service; the route test pins what the route owns: parameter parsing, validation, which service call it makes, error → status mapping. `routes/__tests__/orchestration-routes.test.ts` and `claim-trail-routes.test.ts` are the reference harnesses.
+
 ### Valid follow-ups vs blocked surfaces
 
 | Valid follow-up | Blocked surface (must ship in this PR) |
