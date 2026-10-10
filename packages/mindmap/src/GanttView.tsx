@@ -1290,6 +1290,9 @@ export function GanttView() {
               useMindmapStore.setState({ currentMap: updated });
               const newest = updated.baselines[updated.baselines.length - 1];
               if (newest) setSelectedBaseline(newest.id);
+              if (updated.droppedBaselines && updated.droppedBaselines.length > 0) {
+                alert(`A map keeps its 10 newest baselines — dropped: ${updated.droppedBaselines.join(', ')}`);
+              }
             } catch (err) {
               alert(err instanceof Error ? err.message : String(err));
             } finally {
@@ -1938,7 +1941,9 @@ export function GanttView() {
                   const lateLine = late ? `\n⚠ ${late.lateDays} day${late.lateDays === 1 ? '' : 's'} past due ${late.dueDate}` : '';
                   const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)\n${Math.round(progress)}% · ${statusLabel}${pinLine}${lateLine}`;
                   // The part of the bar past the due date, drawn red (#113).
+                  // The deadline is the end of the due day.
                   const dueAt = late ? parseDate(late.dueDate) : null;
+                  if (dueAt) dueAt.setDate(dueAt.getDate() + 1);
                   const dueX = dueAt ? Math.max(x, Math.min(x + w, getBarX(dueAt))) : null;
                   return (
                     <g

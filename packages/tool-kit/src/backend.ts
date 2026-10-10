@@ -330,6 +330,8 @@ export interface FrozenBaseline {
   createdAt: string;
   /** Nodes whose projected bar the baseline holds. */
   nodeCount: number;
+  /** Oldest baselines dropped to stay at the per-map cap (10). */
+  dropped?: string[];
 }
 
 export interface ToolBackend {

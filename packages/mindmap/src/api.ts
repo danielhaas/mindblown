@@ -1190,9 +1190,10 @@ export interface DueViolation {
   lateDays: number;
 }
 
-/** Freeze the current projection as a named baseline (#113); returns the map. */
-export function createBaseline(mapId: string, name?: string): Promise<MindMap> {
-  return request<MindMap>(`/api/maps/${mapId}/baseline`, { method: 'POST', body: JSON.stringify(name ? { name } : {}) });
+/** Freeze the current projection as a named baseline (#113); returns the
+ *  map plus the names of the oldest baselines dropped to stay at 10. */
+export function createBaseline(mapId: string, name?: string): Promise<MindMap & { droppedBaselines?: string[] }> {
+  return request<MindMap & { droppedBaselines?: string[] }>(`/api/maps/${mapId}/baseline`, { method: 'POST', body: JSON.stringify(name ? { name } : {}) });
 }
 
 export function deleteBaseline(mapId: string, baselineId: string): Promise<MindMap> {

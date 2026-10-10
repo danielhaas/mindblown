@@ -98,16 +98,17 @@ beforeEach(() => {
 
 describe('POST /api/maps/:id/baseline (#113)', () => {
   it('names the baseline after today when no name is given', async () => {
-    createBaselineMock.mockResolvedValueOnce({ id: MAP_ID, baselines: [] });
+    createBaselineMock.mockResolvedValueOnce({ map: { id: MAP_ID, baselines: [] }, dropped: ['Oldest'] });
     const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/baseline`, payload: {} });
     await app.close();
     expect(res.statusCode).toBe(201);
+    expect(res.json().droppedBaselines).toEqual(['Oldest']);
     expect(createBaselineMock.mock.calls[0][1]).toBe(`Baseline ${new Date().toISOString().slice(0, 10)}`);
   });
 
   it('keeps a given name and refuses a view-only member', async () => {
-    createBaselineMock.mockResolvedValueOnce({ id: MAP_ID, baselines: [] });
+    createBaselineMock.mockResolvedValueOnce({ map: { id: MAP_ID, baselines: [] }, dropped: [] });
     let app = await buildApp();
     await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/baseline`, payload: { name: '  Q4 kickoff ' } });
     await app.close();
@@ -157,7 +158,7 @@ describe('GET /api/maps/:id/schedule — missed due dates (#113)', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.dueViolations).toEqual([
-      { nodeId: 'late', text: 'late', dueDate: '2026-10-03', projectedEnd: '2026-10-06', lateDays: 3 },
+      { nodeId: 'late', text: 'late', dueDate: '2026-10-03', projectedEnd: '2026-10-05', lateDays: 2 },
     ]);
     expect(body.offsetToDate).toBeUndefined();
     expect(body.barDates).toBeUndefined();

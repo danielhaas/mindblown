@@ -513,13 +513,13 @@ export function deleteMap(mapId: string): Promise<void> {
 export async function freezeBaseline(
   mapId: string,
   name?: string,
-): Promise<{ id: string; name: string; createdAt: string; nodeCount: number }> {
-  const map = await request<{ baselines: Array<{ id: string; name: string; createdAt: string; nodes: Record<string, unknown> }> }>(
+): Promise<{ id: string; name: string; createdAt: string; nodeCount: number; dropped?: string[] }> {
+  const map = await request<{ baselines: Array<{ id: string; name: string; createdAt: string; nodes: Record<string, unknown> }>; droppedBaselines?: string[] }>(
     `/api/maps/${mapId}/baseline`,
     { method: 'POST', body: JSON.stringify(name ? { name } : {}) },
   );
   const b = map.baselines[map.baselines.length - 1];
-  return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length };
+  return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length, dropped: map.droppedBaselines ?? [] };
 }
 
 export function getSchedule(mapId: string, versionId?: string): Promise<ScheduleResult> {

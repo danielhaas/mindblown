@@ -1,5 +1,5 @@
 import { and, eq, inArray, or } from 'drizzle-orm';
-import { buildBaseline } from '../lib/mapSchedule.js';
+import { buildBaseline, capBaselines } from '../lib/mapSchedule.js';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
@@ -248,16 +248,20 @@ export async function deleteMap(mapId: string): Promise<boolean> {
 
 // ── Baseline ───────────────────────────────────────────────────────
 
-export async function createBaseline(mapId: string, name: string): Promise<MindMap | null> {
+/**
+ * Freeze a baseline. Keeps the newest MAX_BASELINES; `dropped` names the
+ * oldest ones that made room, so callers can say so.
+ */
+export async function createBaseline(mapId: string, name: string): Promise<{ map: MindMap; dropped: string[] } | null> {
   const data = await getMap(mapId);
   if (!data) return null;
 
   const baseline = buildBaseline(data, name);
 
-  const existingBaselines = data.map.baselines ?? [];
-  const updatedBaselines = [...existingBaselines, baseline];
+  const { kept, dropped } = capBaselines([...(data.map.baselines ?? []), baseline]);
 
-  return updateMap(mapId, { baselines: updatedBaselines });
+  const map = await updateMap(mapId, { baselines: kept });
+  return map ? { map, dropped } : null;
 }
 
 /** Remove one baseline; null when the map or the baseline does not exist. */

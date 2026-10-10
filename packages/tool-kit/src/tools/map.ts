@@ -287,14 +287,15 @@ interface BaselineRow {
 export const freezeBaselineTool = defineTool({
   name: 'freeze_baseline',
   description:
-    "Freeze the map's schedule as projected right now (every node's bar as the Gantt draws it) as a named baseline. Later the Gantt shows drift against it as ghost bars. Use before a replan, at a release kickoff, or when a plan is committed. name is optional (default 'Baseline <date>').",
+    "Freeze the map's schedule as projected right now (every node's bar as the Gantt draws it) as a named baseline. Later the Gantt shows drift against it as ghost bars. Use before a replan, at a release kickoff, or when a plan is committed. name is optional (default 'Baseline <date>'). A map keeps its 10 newest baselines; freezing an 11th drops the oldest.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe("Baseline name, e.g. 'Q4 kickoff'. Default: 'Baseline <today>'."),
   },
   handler: async (backend, { mapId, name }) => {
     const b = await backend.freezeBaseline(mapId, name);
-    return `Froze baseline "${b.name}" (${b.id}) at ${b.createdAt.slice(0, 16).replace('T', ' ')} — ${b.nodeCount} projected bars.`;
+    const dropped = b.dropped && b.dropped.length > 0 ? ` Dropped the oldest to stay at 10: ${b.dropped.map((n) => `"${n}"`).join(', ')}.` : '';
+    return `Froze baseline "${b.name}" (${b.id}) at ${b.createdAt.slice(0, 16).replace('T', ' ')} — ${b.nodeCount} projected bars.${dropped}`;
   },
 });
 

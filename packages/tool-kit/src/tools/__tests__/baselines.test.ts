@@ -16,6 +16,12 @@ describe('freeze_baseline', () => {
     expect(out).toContain('42 projected bars');
   });
 
+  it('says which old baselines made room', async () => {
+    const freezeBaseline = vi.fn(async () => ({ id: 'b3', name: 'New', createdAt: '2026-10-10T08:00:00.000Z', nodeCount: 1, dropped: ['July'] }));
+    const out = await freezeBaselineTool.handler({ freezeBaseline } as unknown as ToolBackend, { mapId: 'm1' });
+    expect(out).toContain('Dropped the oldest to stay at 10: "July"');
+  });
+
   it('works without a name — the server picks one', async () => {
     const freezeBaseline = vi.fn(async () => ({ id: 'b2', name: 'Baseline 2026-10-10', createdAt: '2026-10-10T08:00:00.000Z', nodeCount: 1 }));
     await freezeBaselineTool.handler({ freezeBaseline } as unknown as ToolBackend, { mapId: 'm1' });

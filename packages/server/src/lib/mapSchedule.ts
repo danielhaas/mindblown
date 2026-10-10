@@ -88,7 +88,9 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
   for (const n of scopedNodes) {
     const pin: ScheduleConstraint = {};
     if (n.startDate) pin.minStart = toDayOffset(n.startDate);
-    if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
+    // The deadline is the END of the due day: work whose last day is the
+    // due date is on time (#113 review).
+    if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate) + unitsPerDay;
     if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
       constraints.set(n.id, pin);
     }
@@ -130,26 +132,41 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
   // callers that want the plan's logical chain regardless of capacity.
   const cp = capacityCriticalPath(scopedNodes, scheduled, tracks);
 
-  // Missed deadlines (#113): nodes whose projected end lands after their
-  // due date, as dates and calendar days, worst first.
-  const offsetToDate = (offset: number): string => {
+  // A bar as the Gantt draws it (GanttView scheduleDates): offsets rounded
+  // to whole days, a non-empty bar at least one day wide. The ONE rounding
+  // rule — the drawn bar, the red overrun, projectedEnd and lateDays all
+  // come from it, so they agree on hours maps and half-day estimates.
+  const barDays = (s: { computedStart: number; computedEnd: number; duration: number }) => ({
+    start: Math.round(s.computedStart / unitsPerDay),
+    end: Math.round(Math.max(s.computedEnd / unitsPerDay, s.computedStart / unitsPerDay + (s.duration === 0 ? 0 : 1))),
+  });
+  const dayToDate = (days: number): string => {
     const d = new Date(projectStartDate.getTime());
-    d.setUTCDate(d.getUTCDate() + Math.ceil(offset / unitsPerDay));
+    d.setUTCDate(d.getUTCDate() + days);
     return d.toISOString().slice(0, 10);
   };
+
+  // Missed deadlines (#113): the drawn bar runs past the end of the due
+  // day. projectedEnd = the last working day; lateDays counted in whole
+  // days the way the bar is drawn, worst first. A sub-day overrun the
+  // rounding absorbs is not a miss — the bar does not show one either.
   const scopedById = new Map(scopedNodes.map((n) => [n.id, n]));
   const dueViolations = scheduled
     .filter((s) => s.dueOverrun !== undefined && s.dueOverrun > 0)
     .map((s) => {
       const node = scopedById.get(s.nodeId)!;
+      const dueDate = (node.dueDate as string).slice(0, 10);
+      const dueEndDays = Math.round(toDayOffset(dueDate) / unitsPerDay) + 1;
+      const endDays = barDays(s).end;
       return {
         nodeId: s.nodeId,
         text: node.text,
-        dueDate: (node.dueDate as string).slice(0, 10),
-        projectedEnd: offsetToDate(s.computedEnd),
-        lateDays: Math.ceil((s.dueOverrun as number) / unitsPerDay),
+        dueDate,
+        projectedEnd: dayToDate(endDays - 1),
+        lateDays: endDays - dueEndDays,
       };
     })
+    .filter((v) => v.lateDays > 0)
     .sort((a, b) => b.lateDays - a.lateDays);
 
   return {
@@ -164,19 +181,10 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     versionId: versionId ?? null,
     crossVersionDependencies: versionId ? crossVersionDependencies : [],
     dueViolations,
-    /** Scheduler offset → calendar date (YYYY-MM-DD). */
-    offsetToDate,
-    /** A bar as the Gantt draws it (GanttView scheduleDates): offsets
-     *  rounded to whole days, a non-empty bar at least one day wide. */
+    /** A bar as the Gantt draws it, as dates (end exclusive). */
     barDates: (s: { computedStart: number; computedEnd: number; duration: number }) => {
-      const startDays = Math.round(s.computedStart / unitsPerDay);
-      const endDays = Math.round(Math.max(s.computedEnd / unitsPerDay, s.computedStart / unitsPerDay + (s.duration === 0 ? 0 : 1)));
-      const at = (days: number) => {
-        const d = new Date(projectStartDate.getTime());
-        d.setUTCDate(d.getUTCDate() + days);
-        return d.toISOString().slice(0, 10);
-      };
-      return { start: at(startDays), end: at(endDays) };
+      const d = barDays(s);
+      return { start: dayToDate(d.start), end: dayToDate(d.end) };
     },
   };
 }
@@ -203,4 +211,14 @@ export function buildBaseline(data: { map: MindMap; nodes: CoreNode[] }, name: s
     };
   }
   return { id: crypto.randomUUID(), name, createdAt: now.toISOString(), nodes };
+}
+
+/** Baselines kept per map: each carries every node, and the map payload
+ *  (GET map, map:updated) carries all of them (#113 review). */
+export const MAX_BASELINES = 10;
+
+/** Keep the newest MAX_BASELINES (list is oldest first); name the dropped ones. */
+export function capBaselines(all: Baseline[]): { kept: Baseline[]; dropped: string[] } {
+  const kept = all.slice(-MAX_BASELINES);
+  return { kept, dropped: all.slice(0, all.length - kept.length).map((b) => b.name) };
 }

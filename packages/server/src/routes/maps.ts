@@ -434,13 +434,16 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const body = (req.body ?? {}) as { name?: string };
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : `Baseline ${new Date().toISOString().slice(0, 10)}`;
 
-    const updated = await mapDb.createBaseline(req.params.id, name);
-    if (!updated) {
+    const created = await mapDb.createBaseline(req.params.id, name);
+    if (!created) {
       return reply.status(404).send({
         error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
       });
     }
-    return reply.status(201).send(updated);
+    broadcast(req.params.id, { type: 'map:updated', map: created.map });
+    // The map, plus the names of the oldest baselines dropped to stay at
+    // MAX_BASELINES.
+    return reply.status(201).send({ ...created.map, droppedBaselines: created.dropped });
   });
 
   // ── DELETE /api/maps/:id/baseline/:baselineId — Drop a baseline (#113) ──
@@ -457,6 +460,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'BASELINE_NOT_FOUND', message: `Baseline ${req.params.baselineId} not found` },
       });
     }
+    broadcast(req.params.id, { type: 'map:updated', map: updated });
     return reply.send(updated);
   });
 
@@ -618,7 +622,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { offsetToDate: _offsetToDate, barDates: _barDates, ...result } = computeMapSchedule(data, req.query);
+    const { barDates: _barDates, ...result } = computeMapSchedule(data, req.query);
     return reply.send(result);
   });
 

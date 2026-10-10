@@ -27,6 +27,8 @@ const BROADCAST_MAP_SETTINGS = [
   // Archive flips in another tab must land here: the banner and the
   // agent-refusal state follow the server, never an optimistic edit.
   'archivedAt',
+  // Freeze / delete baseline (#113) from another tab or an agent.
+  'baselines',
   'updatedAt',
 ] as const satisfies readonly (keyof MindMap)[];
 
