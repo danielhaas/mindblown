@@ -54,7 +54,7 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/maps/:id/nodes/ready — ready_nodes ─────────────
   app.get<{
     Params: { id: string };
-    Querystring: { limit?: string; scope?: string };
+    Querystring: { limit?: string; scope?: string; sprint?: string };
   }>('/api/maps/:id/nodes/ready', async (req, reply) => {
     const mapId = req.params.id;
     const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
@@ -63,7 +63,7 @@ export async function orchestrationRoutes(app: FastifyInstance): Promise<void> {
       : undefined;
 
     try {
-      const result = await readyNodes(mapId, { limit, scopeFilter });
+      const result = await readyNodes(mapId, { limit, scopeFilter, sprint: req.query.sprint });
       return reply.send(result);
     } catch (err) {
       return handleOrchestrationError(err, reply);

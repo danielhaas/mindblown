@@ -190,6 +190,19 @@ export interface ReadyNode {
   claimedBySession: string | null;
   claimedAt: string | null;
   parentId: string | null;
+  /** Ancestor titles below the root, top-down — where the leaf sits (#323). */
+  breadcrumb?: string[];
+  /** Nodes that list this one as a dependency predecessor — what waits on it. */
+  dependents?: number;
+}
+
+/** Which sprint(s) a ready_nodes call was scoped to (#323). */
+export interface ReadySprintScope {
+  /** 'active' = the map's active sprint(s); 'all' = no sprint filter; 'cycle' = one named sprint. */
+  mode: 'active' | 'all' | 'cycle';
+  cycles: Array<{ id: string; name: string }>;
+  /** Set when the requested scope could not apply (e.g. no active sprint → whole map). */
+  note?: string;
 }
 
 export interface ReadyNodesResult {
@@ -197,6 +210,7 @@ export interface ReadyNodesResult {
   ready: ReadyNode[];
   total: number;
   returned: number;
+  sprintScope?: ReadySprintScope;
 }
 
 export interface ClaimNodeResult {
@@ -400,7 +414,7 @@ export interface ToolBackend {
   // ── Orchestration substrate (#111) ──────────────────────────────
   readyNodes(
     mapId: string,
-    opts?: { limit?: number; scopeFilter?: string[] },
+    opts?: { limit?: number; scopeFilter?: string[]; sprint?: string },
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
