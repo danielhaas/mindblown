@@ -1132,24 +1132,36 @@ export function GanttView() {
         {/* Workers: how many parallel tracks the schedule projects onto */}
         <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
         <span style={{ fontWeight: 600, color: '#64748b' }}>Workers:</span>
-        {/* A slider (#112): dragging re-flows the bars once the debounced
-            save lands; the range grows with the map's own setting. */}
+        {/* A slider (#112) for the usual range, and a number field next to it
+            for anything up to the server's cap of 100. Never disabled while
+            saving: that would cancel a drag and drop keyboard focus — the
+            save effect waits for an in-flight save instead. */}
         <input
           type="range"
           min={1}
-          max={Math.max(10, Math.floor(scheduleData?.workerCount ?? 1))}
+          max={Math.max(20, workersInput)}
           step={1}
           value={workersInput}
-          disabled={savingWorkers}
           onChange={(e) => {
             const v = parseInt(e.target.value, 10);
             if (!isNaN(v) && v >= 1) setWorkersInput(Math.min(100, v));
           }}
           aria-label="Workers"
           title="Number of parallel work tracks. View knob — the underlying plan (priorities + estimates + deps) is unchanged. Higher = more parallelism shrinks the timeline."
-          style={{ width: 96, accentColor: '#4f46e5', cursor: savingWorkers ? 'wait' : 'pointer' }}
+          style={{ width: 96, accentColor: '#4f46e5', cursor: 'pointer' }}
         />
-        <span style={{ minWidth: 14, fontWeight: 700, color: '#334155', fontVariantNumeric: 'tabular-nums' }}>{workersInput}</span>
+        <input
+          type="number"
+          min={1}
+          max={100}
+          value={workersInput}
+          onChange={(e) => {
+            const v = parseInt(e.target.value, 10);
+            if (!isNaN(v) && v >= 1) setWorkersInput(Math.min(100, v));
+          }}
+          aria-label="Workers (number)"
+          style={{ width: 44, padding: '2px 4px', border: '1px solid #cbd5e1', borderRadius: 4, fontSize: 12, fontWeight: 700, color: '#334155' }}
+        />
         {savedFlash && (
           <span style={{ fontSize: 11, color: '#16a34a', fontWeight: 600 }}>
             ✓ {savedFlash}
