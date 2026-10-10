@@ -706,27 +706,34 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     }
     return false;
   };
+  // Every link counts under its issue id AND its URL, so a URL-only import
+  // and a later id-carrying link to the same issue meet in one group.
   const byIssue = new Map<string, Node[]>();
   for (const n of nodes) {
-    const keys = new Set(
-      (n.externalLinks ?? [])
-        .map((l) => (l.externalId || (l.url ?? '').replace(/\/+$/, '')).trim())
-        .filter((k) => k.length > 0),
-    );
+    const keys = new Set<string>();
+    for (const l of n.externalLinks ?? []) {
+      if (l.externalId) keys.add(l.externalId.trim());
+      const url = (l.url ?? '').trim().replace(/\/+$/, '');
+      if (url) keys.add(url);
+    }
     for (const k of keys) byIssue.set(k, [...(byIssue.get(k) ?? []), n]);
   }
   const inScope = new Set(scopedNodes.map((n) => n.id));
-  const duplicateFindings: LintFinding[] = [];
+  const flagged = new Map<string, LintFinding>();
   for (const [issue, group] of byIssue) {
-    if (group.length < 2) continue;
-    const ordered = [...group].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    // A node whose ancestor tracks the same issue is a sub-ticket of it, not
+    // a copy — whatever the creation order. The oldest of the rest is the
+    // original.
+    const tops = group.filter((n) => !group.some((o) => o.id !== n.id && isAncestor(o, n)));
+    if (tops.length < 2) continue;
+    const ordered = [...tops].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
     const original = ordered[0];
     for (const copy of ordered.slice(1)) {
-      if (!inScope.has(copy.id)) continue;
-      if (isAncestor(original, copy) || isAncestor(copy, original)) continue;
-      duplicateFindings.push(finding(copy, `same issue as "${original.text}" (${issue})`));
+      if (!inScope.has(copy.id) || flagged.has(copy.id)) continue;
+      flagged.set(copy.id, finding(copy, `same issue as "${original.text}" (${issue})`));
     }
   }
+  const duplicateFindings = [...flagged.values()];
   rules.push({
     ruleId: 'duplicate-issue-link',
     severity: 'warn',
