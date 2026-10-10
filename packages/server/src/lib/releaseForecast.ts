@@ -138,7 +138,8 @@ export function computeReleaseForecast(
     const next = new Date(base.getTime());
     next.setUTCDate(next.getUTCDate() + Math.ceil(days));
     const finish = new Date(next.getTime());
-    finish.setUTCDate(finish.getUTCDate() - 1);
+    // Nothing left to do finishes where it starts, not the day before.
+    if (Math.ceil(days) > 0) finish.setUTCDate(finish.getUTCDate() - 1);
     return { next, finish };
   };
   // Model days (estimates ÷ capacity) land on the map's calendar: working
@@ -148,7 +149,7 @@ export function computeReleaseForecast(
   const modelStep = (base: Date, days: number): Step => {
     if (!holidays) return calendarStep(base, days);
     const m = makeDayMapper(base, holidays);
-    return { next: m.toDate(days, 'ceil'), finish: m.lastDay(days) };
+    return { next: m.toDate(days, 'ceil'), finish: days > 0 ? m.lastDay(days) : m.toDate(0, 'ceil') };
   };
   const daysBetween = (a: Date, b: Date) =>
     Math.round((a.getTime() - b.getTime()) / MS_PER_DAY);
