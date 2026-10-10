@@ -135,7 +135,9 @@ export function releaseVerdict(row: ReleaseForecastRow, today: Date = new Date()
     reasons.unshift(`Forecast ${forecast} is ${slip} days after the target ${row.targetDate}.`);
     return { level: 'behind', headline: `${row.versionName}: behind — forecast ${forecast}, target ${row.targetDate}.`, reasons };
   }
-  const shaky = row.confidence.level !== 'agree' || row.unestimatedOpenLeaves > row.remainingTickets / 4;
+  // A stalled release (no completions in the window) is never "on track",
+  // however well its projections agree.
+  const shaky = row.evidence?.state === 'stalled' || row.confidence.level !== 'agree' || row.unestimatedOpenLeaves > row.remainingTickets / 4;
   if (shaky) {
     return { level: 'at_risk', headline: `${row.versionName}: on target ${row.targetDate} on paper, but the forecast is not trustworthy yet.`, reasons };
   }

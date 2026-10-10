@@ -107,6 +107,9 @@ describe('releaseVerdict', () => {
     expect(v.level).toBe('behind');
     expect(v.reasons).toContain('Stalled — target passed');
   });
+  it('a stalled release is at risk even when its projections agree and fit the target', () => {
+    expect(releaseVerdict(row({ evidence: ev('stalled') }), TODAY).level).toBe('at_risk');
+  });
   it('is on track when forecast <= target and the models agree', () => {
     expect(releaseVerdict(row({}), TODAY).level).toBe('on_track');
   });
