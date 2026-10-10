@@ -1256,6 +1256,36 @@ describe('importGitHubIssues — cached full list (#312)', () => {
     expect(again.mock.calls).toHaveLength(1);
   });
 
+  it('a list is served only to the credential that fetched it; a rotated token replaces the entry', async () => {
+    const fetchMock = bigRepo({ pages: [issuePage([1])] });
+    const rotated = new GitHubForge({ token: 'tok-2' });
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    await importGitHubIssues('FulcrumCRM', 'crm', rotated, { includeAll: true, maxAgeMs: 60_000 });
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    await importGitHubIssues('FulcrumCRM', 'crm', rotated, { includeAll: true, maxAgeMs: 60_000 });
+    expect(fetchMock.mock.calls).toHaveLength(2);
+    await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+    expect(fetchMock.mock.calls).toHaveLength(3); // the old token's entry was replaced, not kept
+  });
+
+  it('a fresh call replaces a settled entry; lists unused for 15 min are dropped', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const fetchMock = bigRepo({ pages: [issuePage([1])] });
+      await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+      await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true }); // fresh: refetch
+      expect(fetchMock.mock.calls).toHaveLength(2);
+      await importGitHubIssues('FulcrumCRM', 'other', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+      vi.setSystemTime(Date.now() + 16 * 60_000);
+      await importGitHubIssues('FulcrumCRM', 'third', FORGE, { includeAll: true, maxAgeMs: 60_000 });
+      // crm and other were swept; even a generous maxAge refetches crm now.
+      await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60 * 60_000 });
+      expect(fetchMock.mock.calls).toHaveLength(5);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('callers get their own array', async () => {
     bigRepo({ pages: [issuePage([1, 2])] });
     const a = await importGitHubIssues('FulcrumCRM', 'crm', FORGE, { includeAll: true, maxAgeMs: 60_000 });
@@ -1277,5 +1307,19 @@ describe('forge request timeout (#312)', () => {
     await forge.request('/x', { signal: own });
     expect(seen[0]).toBeInstanceOf(AbortSignal);
     expect(seen[1]).toBe(own);
+  });
+
+  it('a hung call is aborted rather than awaited forever', async () => {
+    const forge = new GitHubForge({ token: 'tok', fetchImpl: ((_u: string, init?: { signal?: AbortSignal }) =>
+      new Promise((_res, rej) => {
+        if (init?.signal?.aborted) rej(init.signal.reason);
+        init?.signal?.addEventListener('abort', () => rej(init.signal!.reason));
+      })) as never });
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => AbortSignal.abort(new DOMException('t', 'TimeoutError')));
+    try {
+      await expect(forge.request('/x')).rejects.toMatchObject({ name: 'TimeoutError' });
+    } finally {
+      timeout.mockRestore();
+    }
   });
 });

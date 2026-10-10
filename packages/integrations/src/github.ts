@@ -918,16 +918,29 @@ export async function importGitHubIssues(
   },
 ): Promise<ImportedIssue[]> {
   const state = options?.includeAll ? 'all' : 'open';
-  const key = `${forge.endpoint.apiBaseUrl}|${forge.token}|${repoOwner}/${repoName}|${state}`;
+  const repoKey = `${forge.endpoint.apiBaseUrl}|${repoOwner}/${repoName}|${state}`;
   const now = Date.now();
-  const hit = issueListCache.get(key);
-  if (hit && (hit.settledAt === null || (options?.maxAgeMs != null && now - hit.settledAt <= options.maxAgeMs))) {
+  const hit = issueListCache.get(repoKey);
+  // The credential is part of the identity: a list is only ever served to
+  // the token that fetched it.
+  if (
+    hit &&
+    hit.token === forge.token &&
+    (hit.settledAt === null || (options?.maxAgeMs != null && now - hit.settledAt <= options.maxAgeMs))
+  ) {
     return [...(await hit.list)];
   }
+  // One entry per repo + state (a rotated App token replaces, never adds),
+  // and lists nobody asked for in a while are let go — full lists are large.
+  for (const [k, e] of issueListCache) {
+    if (e.settledAt !== null && now - e.settledAt > ISSUE_LIST_KEEP_MS) issueListCache.delete(k);
+  }
   const entry: IssueListEntry = {
+    token: forge.token,
     settledAt: null,
     list: fetchImportedIssues(repoOwner, repoName, forge, state),
   };
+  const key = repoKey;
   issueListCache.set(key, entry);
   try {
     const list = await entry.list;
@@ -940,12 +953,19 @@ export async function importGitHubIssues(
 }
 
 interface IssueListEntry {
+  /** The credential that fetched it — the list is served to it alone. */
+  token: string;
   /** null while the fetch is in flight. */
   settledAt: number | null;
   list: Promise<ImportedIssue[]>;
 }
-/** Last full list per (forge, credential, repo, state) — #312. Bounded by the repos MindBlown is bound to. */
+/**
+ * Last full list per (forge, repo, state) — #312. Bounded by the repos
+ * MindBlown is bound to, and an entry is dropped once nobody has refreshed
+ * it for ISSUE_LIST_KEEP_MS (above every caller's maxAgeMs).
+ */
 const issueListCache = new Map<string, IssueListEntry>();
+const ISSUE_LIST_KEEP_MS = 15 * 60_000;
 
 /** Test hook. */
 export function _clearIssueListCacheForTests(): void {
