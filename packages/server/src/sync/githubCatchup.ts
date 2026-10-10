@@ -437,13 +437,17 @@ export function _resetHeldCloseChecksForTests(): void {
  *     the forge's "open" rolls the node back off done — unless the node
  *     was claimed done AFTER the PR died, in which case that claim wins
  *     and the outbound close runs instead.
+ *
+ * A NOT-done node with such a mirror (#308) holds nothing, but its phantom
+ * PR stays listed as open (`/api/prs/open`, the fleet's merge queue): for
+ * those a closed PR is only replayed into the mirror.
  */
 export async function resolveHeldCloses(
   target: RepoTarget,
   forge: ForgeClient,
   budget: number = HELD_CLOSE_BUDGET,
   now: number = Date.now(),
-): Promise<{ checked: number; closed: number; rolledBack: number }> {
+): Promise<{ checked: number; closed: number; rolledBack: number; mirrorsCleared: number }> {
   const repoFullName = `${target.owner}/${target.repo}`;
   for (const [id, at] of heldCloseCheckedAt) {
     if (now - at >= HELD_CLOSE_RECHECK_MS) heldCloseCheckedAt.delete(id);
@@ -454,6 +458,7 @@ export async function resolveHeldCloses(
   let checked = 0;
   let closed = 0;
   let rolledBack = 0;
+  let mirrorsCleared = 0;
 
   for (const c of candidates) {
     heldCloseCheckedAt.set(c.nodeId, now);
@@ -478,6 +483,16 @@ export async function resolveHeldCloses(
       // and work that already landed.
       const probe = await probeIssueLanded(target.owner, target.repo, issueNumber, forge);
       const defaultBranch = probe.defaultBranch ?? null;
+
+      if (!c.done) {
+        // #308: nothing is held on a not-done node — only the mirror has to
+        // learn the PR is gone, so it stops counting as an open PR. Merged
+        // work reaches the node through the issue its merge closes.
+        await replay(defaultBranch);
+        mirrorsCleared++;
+        console.log(`[catchup] stale PR mirror cleared: ${c.externalId} — PR #${pr.number} ${merged ? 'merged' : 'closed'}`);
+        continue;
+      }
 
       // The work landed on the default branch — through this PR, or (it
       // died) through a replacement whose delivery was missed as well.
@@ -548,7 +563,7 @@ export async function resolveHeldCloses(
       console.warn(`[catchup] held-close check failed for ${c.externalId}:`, err instanceof Error ? err.message : err);
     }
   }
-  return { checked, closed, rolledBack };
+  return { checked, closed, rolledBack, mirrorsCleared };
 }
 
 /**
@@ -871,7 +886,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   let heldClosesResolved = 0;
   try {
     const r = await resolveHeldCloses(target, forge);
-    heldClosesResolved = r.closed + r.rolledBack;
+    heldClosesResolved = r.closed + r.rolledBack + r.mirrorsCleared;
   } catch (err) {
     console.warn(
       '[catchup] held-close pass failed for',

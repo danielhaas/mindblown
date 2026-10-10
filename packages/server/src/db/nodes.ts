@@ -1043,17 +1043,21 @@ export async function findPrematureCloseCandidates(
 }
 
 /**
- * Done nodes whose issue close is held on a PR the mirror still calls
- * open (#423): the node reads done, its synced forge link to `repoFullName`
- * is `open`, and `linked_pr.state` is `open`. That is the normal shape
- * while the PR is in review — and the stuck shape when the PR died and
- * its `pull_request.closed` delivery never arrived. The caller tells the
- * two apart by asking the forge. Oldest mirror first, at most `limit`.
+ * Nodes whose PR mirror still calls the PR open (#423, #308), for the
+ * catch-up to ask the forge whether it really is.
+ *
+ * Done nodes, with their synced forge link to `repoFullName` still
+ * `open`: the normal shape while the PR is in review — and the stuck
+ * shape when the PR died and its `pull_request.closed` delivery never
+ * arrived (the issue close stays held forever). Not-done nodes with any
+ * synced link to the repo (#308): a lost delivery leaves a phantom open
+ * PR that `/api/prs/open` keeps reporting. The caller tells the cases
+ * apart by asking the forge. Oldest mirror first, at most `limit`.
  */
 export async function findHeldCloseCandidates(
   repoFullName: string,
   limit: number,
-): Promise<Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null }>> {
+): Promise<Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null; done: boolean }>> {
   const rows = await db
     .select({
       id: nodes.id,
@@ -1075,16 +1079,20 @@ export async function findHeldCloseCandidates(
       ),
     );
 
-  const out: Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null }> = [];
+  const out: Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null; done: boolean }> = [];
   for (const row of rows) {
     const looksDone = row.percentComplete === 100 || row.status === 'done';
     const pr = row.linkedPr as LinkedPrState | null;
-    if (!looksDone || !pr || pr.state !== 'open') continue;
+    if (!pr || pr.state !== 'open') continue;
     const link = ((row.externalLinks as ExternalLink[]) ?? []).find(
-      (l) => isForgeLink(l) && l.syncEnabled && l.state === 'open' && l.externalId.startsWith(`${repoFullName}#`),
+      (l) =>
+        isForgeLink(l) &&
+        l.syncEnabled &&
+        (!looksDone || l.state === 'open') &&
+        l.externalId.startsWith(`${repoFullName}#`),
     );
     if (!link) continue;
-    out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, mirrorSyncedAt: pr.lastSyncedAt ?? null });
+    out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, mirrorSyncedAt: pr.lastSyncedAt ?? null, done: looksDone });
   }
   out.sort((a, b) => (a.mirrorSyncedAt ?? '').localeCompare(b.mirrorSyncedAt ?? ''));
   return out.slice(0, limit);
