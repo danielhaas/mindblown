@@ -49,8 +49,9 @@ const mirror = (over: Partial<LinkedPrState>): LinkedPrState =>
     mergeable: null, changedFiles: [], reviews: [], checks: { state: null, failures: [] }, lastSyncedAt: '2026-09-01T00:00:00Z',
     ...over,
   }) as LinkedPrState;
-const row = (id: string, links: ExternalLink[], linkedPr: LinkedPrState | null = null) => ({
-  id, mapId: 'map1', externalLinks: links, linkedPr, completedAt: new Date('2026-08-01T00:00:00Z'),
+const DAY = 86_400_000;
+const row = (id: string, links: ExternalLink[], linkedPr: LinkedPrState | null = null, trashedDaysAgo = 31) => ({
+  id, mapId: 'map1', externalLinks: links, linkedPr, deletedAt: new Date(Date.now() - trashedDaysAgo * DAY),
 });
 
 beforeEach(() => {
@@ -71,24 +72,47 @@ describe('runTrashGc (#311)', () => {
     expect(s).toMatchObject({ githubClosed: 1, hardDeleted: 1 });
   });
 
-  it('a PR in flight on the mirror: issue untouched and the row STAYS in the Trash for the next run', async () => {
+  it('mirror frozen at "open" but the PR merged meanwhile and the issue is closed: left as is, row deleted', async () => {
     m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'open' }))];
+    m.getIssue.mockResolvedValue({ number: 5, state: 'closed' });
     const s = await runTrashGc(30);
     expect(m.close).not.toHaveBeenCalled();
-    expect(m.getIssue).not.toHaveBeenCalled();
+    expect(m.deletedIds).toEqual(['n1']);
+    expect(s).toMatchObject({ githubSkipped: 1, hardDeleted: 1 });
+  });
+
+  it('mirror frozen at "open", the PR still in flight on the forge: held, row STAYS in the Trash', async () => {
+    m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'open' }))];
+    m.probe.mockResolvedValue({ closingPrs: [], defaultBranch: 'main', landed: null, inFlight: true });
+    const s = await runTrashGc(30);
+    expect(m.close).not.toHaveBeenCalled();
     expect(m.deletedIds).toEqual([]);
     expect(s).toMatchObject({ githubHeld: 1, hardDeleted: 0 });
   });
 
-  it('merged to a release branch (not landed on default): held, like the live close gate', async () => {
-    m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'merged', landedOnDefault: false }))];
+  it('the PR died unmerged (mirror "closed"): nobody delivered it — not_planned, row deleted', async () => {
+    m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'closed' }))];
+    await runTrashGc(30);
+    expect(m.close).toHaveBeenCalledWith(expect.anything(), {}, 'not_planned');
+    expect(m.deletedIds).toEqual(['n1']);
+  });
+
+  it('merged to a release branch: held while the forward-port may still land', async () => {
+    m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'merged', landedOnDefault: false }), 40)];
     const s = await runTrashGc(30);
     expect(m.close).not.toHaveBeenCalled();
     expect(m.deletedIds).toEqual([]);
     expect(s.githubHeld).toBe(1);
   });
 
-  it('merge evidence on the link: closed as completed without asking for PRs', async () => {
+  it('a release-branch hold is capped: 60 days past retention the forge decides alone', async () => {
+    m.rows = [row('n1', [link('o/r#5')], mirror({ state: 'merged', landedOnDefault: false }), 30 + 61)];
+    await runTrashGc(30);
+    expect(m.close).toHaveBeenCalledWith(expect.anything(), {}, 'not_planned');
+    expect(m.deletedIds).toEqual(['n1']);
+  });
+
+  it('merge evidence on the link: closed as completed without walking PRs', async () => {
     m.rows = [row('n1', [link('o/r#5', { mergeCommitSha: 'abc' })])];
     await runTrashGc(30);
     expect(m.close).toHaveBeenCalledWith(expect.anything(), {}, 'completed');

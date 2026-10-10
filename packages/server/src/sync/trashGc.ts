@@ -14,10 +14,10 @@
  *   question — by the time GC runs, the user has had ~30 days to undo,
  *   so the GH closure is on solid ground.
  *
- * The close is gated like every other outbound close (#311) — see
- * `gcVerdict`. A row whose issue is still undecided stays in the Trash
- * until it is: hard-deleting it would leave an open issue with no node,
- * which the ingest re-imports as a new todo on the issue's next edit.
+ * The close is gated (#311) — see `gcVerdict`. A row whose issue is still
+ * undecided stays in the Trash until it is: hard-deleting it would leave
+ * an open issue with no node, which the ingest re-imports as a new todo
+ * on the issue's next edit.
  */
 
 import { and, inArray, isNotNull, sql } from 'drizzle-orm';
@@ -25,7 +25,7 @@ import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import { onActiveMap } from '../db/nodes.js';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
-import { isForgeLink, issueCloseAction } from '@mindblown/core';
+import { isForgeLink } from '@mindblown/core';
 import {
   closeGitHubIssue,
   getGitHubIssue,
@@ -79,7 +79,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
       mapId: nodes.mapId,
       externalLinks: nodes.externalLinks,
       linkedPr: nodes.linkedPr,
-      completedAt: nodes.completedAt,
+      deletedAt: nodes.deletedAt,
     })
     .from(nodes)
     // An archived map's trash is left alone too: GC would close issues
@@ -116,10 +116,10 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
     }
     if (!ctx) continue; // the map is not bound to a forge any more
 
-    const completedAt = row.completedAt ? new Date(row.completedAt as Date).toISOString() : null;
+    const trashedForMs = row.deletedAt ? Date.now() - new Date(row.deletedAt as Date).getTime() : 0;
     for (const link of links) {
       try {
-        const verdict = await gcVerdict(link, row.linkedPr as LinkedPrState | null, completedAt, ctx);
+        const verdict = await gcVerdict(link, row.linkedPr as LinkedPrState | null, trashedForMs, retentionDays * 86_400_000, ctx);
         if (verdict.kind === 'close') {
           await closeGitHubIssue(link, ctx.forge, verdict.reason);
           summary.githubClosed++;
@@ -151,36 +151,45 @@ type GcVerdict =
   | { kind: 'hold'; because: string }
   | { kind: 'leave'; because: string };
 
+/** How long past retention a release-branch merge may hold a row before the forge decides alone. */
+const RELEASE_HOLD_MAX_MS = 60 * 86_400_000;
+
 /**
- * What GC may do with one link's issue (#311) — the same decision the
- * live outbound close makes (`issueCloseAction`, core/linkedPr.ts), with
- * not_planned as the "nobody delivered it" outcome instead of a hold:
- *   - merge evidence on the link or a default-branch merge in the mirror →
- *     close as completed (work shipped, even without a Closes ref);
- *   - a PR the gate says has not landed (in flight, or merged to a release
- *     branch) → hold: keep the row, retry next run;
- *   - otherwise ask the forge: already closed → leave its close alone; a
- *     PR in flight the mirror missed → hold; landed → completed; nothing →
- *     not_planned.
- * A link to another repo than the map's is left alone: the map's client
- * speaks for the map's repo only.
+ * What GC may do with one link's issue (#311), from the forge's live
+ * state first. The node's PR mirror is frozen the moment it was trashed
+ * (PR sync skips deleted nodes), so it can only add *evidence of shipped
+ * work*, never keep a hold alive by itself:
+ *   - a link to another repo than the map's → leave (the map's client
+ *     speaks for the map's repo only);
+ *   - the issue is already closed → leave its close alone;
+ *   - merge evidence on the link, or a default-branch merge in the mirror
+ *     → close as completed (work shipped, even without a Closes ref);
+ *   - a release-branch merge in the mirror → hold (the forward-port has
+ *     not landed), but at most RELEASE_HOLD_MAX_MS past retention;
+ *   - otherwise the forge decides: a PR in flight → hold; landed →
+ *     completed; nothing → not_planned (nobody delivered it — a PR that
+ *     died unmerged included).
  */
 async function gcVerdict(
   link: ExternalLink,
   linkedPr: LinkedPrState | null,
-  completedAt: string | null,
+  trashedForMs: number,
+  retentionMs: number,
   ctx: { owner: string; repo: string; forge: ForgeClient },
 ): Promise<GcVerdict> {
   const parsed = parseExternalId(link.externalId);
   if (!parsed || parsed.owner !== ctx.owner || parsed.repo !== ctx.repo) {
     return { kind: 'leave', because: `not the map's repo (${ctx.owner}/${ctx.repo})` };
   }
-  const action = issueCloseAction(linkedPr, link, completedAt);
-  if (action.kind === 'hold') return { kind: 'hold', because: `PR not landed (${action.because})` };
-
   const issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
   if (issue.state === 'closed') return { kind: 'leave', because: 'already closed' };
-  if (action.kind === 'close') return { kind: 'close', reason: 'completed' };
+
+  if (link.mergeCommitSha || (linkedPr?.state === 'merged' && linkedPr.landedOnDefault !== false)) {
+    return { kind: 'close', reason: 'completed' };
+  }
+  if (linkedPr?.state === 'merged' && linkedPr.landedOnDefault === false && trashedForMs < retentionMs + RELEASE_HOLD_MAX_MS) {
+    return { kind: 'hold', because: 'merged to a release branch, forward-port not landed yet' };
+  }
 
   const probe = await probeIssueLanded(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
   if (probe.inFlight) return { kind: 'hold', because: 'a PR is in flight on the forge' };
