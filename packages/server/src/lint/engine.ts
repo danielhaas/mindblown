@@ -305,6 +305,17 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     findings: incomplete.filter((l) => l.effortEstimate == null).map((l) => finding(l, 'no estimate')),
   });
 
+  // 1b. ai-draft-estimate (#318) — the job drafts estimates for committed
+  // work so the forecast is not blind; a draft must still read as a draft.
+  rules.push({
+    ruleId: 'ai-draft-estimate',
+    severity: 'info',
+    title: 'Estimates the AI drafted that nobody has confirmed',
+    why: 'Drafts keep the forecast from counting this work as zero, but they are a model\'s guess from similar finished work, not the team\'s estimate.',
+    fix: 'Accept the draft in the property panel, or set your own number — either one makes it a person\'s estimate.',
+    findings: incomplete.filter((l) => l.effortEstimate != null && l.estimateSource === 'ai').map((l) => finding(l, `${l.effortEstimate} ${unit} (AI draft)`)),
+  });
+
   // 2. oversized-leaf
   const oversizedAbs = OVERSIZED_DAYS * unitsPerDay;
   const shareRuleActive = totalEffort > 0 && leaves.length >= OVERSIZED_SHARE_MIN_LEAVES;

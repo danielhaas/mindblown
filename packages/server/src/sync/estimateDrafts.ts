@@ -15,12 +15,13 @@
  * or send a map's content to a cloud provider nobody chose for it. With no
  * reachable local backend the whole run is skipped.
  */
-import { isNull } from 'drizzle-orm';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { proseMirrorToPlainText, resolveStatusDef, type Node as CoreNode } from '@mindblown/core';
 import { db } from '../db/connection.js';
-import { maps } from '../db/schema.js';
+import { maps, nodes } from '../db/schema.js';
+import { dbNodeToCore } from '../db/helpers.js';
+import { recordEvent } from '../db/events.js';
 import * as mapDb from '../db/maps.js';
-import * as nodeDb from '../db/nodes.js';
 import * as versionDb from '../db/versions.js';
 import { aiEnabled } from '../ai/client.js';
 import { localChatUsable } from '../ai/health.js';
@@ -106,14 +107,28 @@ export async function runEstimateDrafts(now: number = Date.now()): Promise<Estim
           description: description || undefined,
           path: ancestorPath(node, byId) || undefined,
         });
-        // Re-read: someone may have estimated it while the model thought.
-        const fresh = await nodeDb.getNode(node.id);
-        if (!fresh || fresh.effortEstimate != null) continue;
-        const updated = await nodeDb.updateNode(node.id, { effortEstimate: estimate.estimate, estimateSource: 'ai' });
-        if (updated) {
-          broadcast(mapId, { type: 'node:updated', nodeId: node.id, fields: ['effortEstimate', 'estimateSource'], node: updated });
-          result.drafted += 1;
-        }
+        // Written only if it is still unestimated, live and unfinished — a
+        // person may have estimated, deleted or finished it while the model
+        // thought, and their answer wins. One statement, no read-then-write gap.
+        const [row] = await db
+          .update(nodes)
+          .set({ effortEstimate: estimate.estimate, estimateSource: 'ai', updatedAt: new Date() })
+          .where(
+            and(
+              eq(nodes.id, node.id),
+              isNull(nodes.effortEstimate),
+              isNull(nodes.deletedAt),
+              or(isNull(nodes.percentComplete), lt(nodes.percentComplete, 100)),
+            ),
+          )
+          .returning();
+        if (!row) continue;
+        const updated = dbNodeToCore(row);
+        // In the history under no person (userId null = the system), so a
+        // later overwrite shows where the old number came from.
+        await recordEvent({ mapId, nodeId: node.id, userId: null, eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: null, newValue: estimate.estimate });
+        broadcast(mapId, { type: 'node:updated', nodeId: node.id, fields: ['effortEstimate', 'estimateSource'], node: updated });
+        result.drafted += 1;
       } catch (err) {
         failedAt.set(node.id, now);
         result.errors.push(`${node.id}: ${err instanceof Error ? err.message : String(err)}`);

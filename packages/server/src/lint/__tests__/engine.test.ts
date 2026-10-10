@@ -90,6 +90,17 @@ describe('computePlanLint — rules', () => {
     expect(report.warnCount).toBe(1);
   });
 
+  it('ai-draft-estimate keeps an unconfirmed AI draft visible as a draft (#318)', () => {
+    const report = lint([
+      makeNode({ id: 'root', childrenIds: ['d', 'p'] }),
+      makeNode({ id: 'd', parentId: 'root', effortEstimate: 2, estimateSource: 'ai' }),
+      makeNode({ id: 'p', parentId: 'root', effortEstimate: 2 }),
+    ]);
+    expect(rule(report, 'ai-draft-estimate').findings.map((f) => f.nodeId)).toEqual(['d']);
+    expect(rule(report, 'ai-draft-estimate').severity).toBe('info');
+    expect(rule(report, 'unestimated-leaf').findings).toEqual([]);
+  });
+
   it('oversized-leaf fires above the 5-day absolute threshold, unit-aware', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['a', 'b'] }),

@@ -18,12 +18,47 @@ const s = vi.hoisted(() => ({
   writes: [] as Array<{ id: string; input: Record<string, unknown> }>,
   estimateCalls: [] as string[],
   failFor: new Set<string>(),
+  /** Nodes a person estimated while the model was thinking — the conditional write finds no row. */
+  takenMeanwhile: new Set<string>(),
+  events: [] as Array<Record<string, unknown>>,
+}));
+
+// drizzle operators as plain data, so the stubbed UPDATE can read the node id.
+vi.mock('drizzle-orm', () => ({
+  and: (...a: unknown[]) => ({ and: a }),
+  or: (...a: unknown[]) => ({ or: a }),
+  eq: (_c: unknown, v: unknown) => ({ eq: v }),
+  isNull: (c: unknown) => ({ isNull: c }),
+  lt: (c: unknown, v: unknown) => ({ lt: [c, v] }),
 }));
 
 vi.mock('../../db/connection.js', () => ({
-  db: { select: () => ({ from: () => ({ where: async () => s.maps }) }) },
+  db: {
+    select: () => ({ from: () => ({ where: async () => s.maps }) }),
+    update: () => ({
+      set: (input: Record<string, unknown>) => ({
+        where: (cond: { and: Array<{ eq?: string }> }) => ({
+          returning: async () => {
+            const id = cond.and[0].eq as string;
+            if (s.takenMeanwhile.has(id)) return [];
+            s.writes.push({ id, input: { effortEstimate: input.effortEstimate, estimateSource: input.estimateSource } });
+            return [{ id, ...input }];
+          },
+        }),
+      }),
+    }),
+  },
 }));
-vi.mock('../../db/schema.js', () => ({ maps: { id: 'id', aiEstimateDrafts: 'd', archivedAt: 'a' } }));
+vi.mock('../../db/schema.js', () => ({
+  maps: { id: 'id', aiEstimateDrafts: 'd', archivedAt: 'a' },
+  nodes: { id: 'n.id', effortEstimate: 'n.est', deletedAt: 'n.del', percentComplete: 'n.pct' },
+}));
+vi.mock('../../db/helpers.js', () => ({ dbNodeToCore: (r: unknown) => r }));
+vi.mock('../../db/events.js', () => ({
+  recordEvent: async (e: Record<string, unknown>) => {
+    s.events.push(e);
+  },
+}));
 vi.mock('../../ai/client.js', () => ({
   get aiEnabled() {
     return s.aiEnabled;
@@ -43,13 +78,6 @@ vi.mock('../../db/maps.js', () => ({
   getMap: async (id: string) => ({ map: { id, statusWorkflow: WORKFLOW }, nodes: s.nodes[id] ?? [] }),
 }));
 vi.mock('../../db/versions.js', () => ({ listVersions: async (id: string) => s.versions[id] ?? [] }));
-vi.mock('../../db/nodes.js', () => ({
-  getNode: async (id: string) => Object.values(s.nodes).flat().find((n) => (n as CoreNode).id === id) ?? null,
-  updateNode: async (id: string, input: Record<string, unknown>) => {
-    s.writes.push({ id, input });
-    return { id, ...input };
-  },
-}));
 vi.mock('../../ws.js', () => ({ broadcast: () => {} }));
 
 const WORKFLOW: StatusDef[] = [
@@ -84,6 +112,8 @@ beforeEach(() => {
   s.writes.length = 0;
   s.estimateCalls.length = 0;
   s.failFor.clear();
+  s.takenMeanwhile.clear();
+  s.events.length = 0;
   _resetEstimateDraftFailures();
 });
 
@@ -136,6 +166,18 @@ describe('runEstimateDrafts (#318)', () => {
     s.aiEnabled = false;
     expect(await runEstimateDrafts()).toMatchObject({ drafted: 0, skipped: 'no-local-model' });
     expect(s.estimateCalls).toEqual([]);
+  });
+
+  it('a person who estimates while the model thinks wins; a draft lands in the history under no person', async () => {
+    s.nodes.m1 = [root, leaf('raced'), leaf('free')];
+    s.takenMeanwhile.add('raced');
+    const r = await runEstimateDrafts();
+    expect(s.estimateCalls).toEqual(['raced', 'free']); // both asked …
+    expect(s.writes.map((w) => w.id)).toEqual(['free']); // … only the untouched one written
+    expect(r.drafted).toBe(1);
+    expect(s.events).toEqual([
+      { mapId: 'm1', nodeId: 'free', userId: null, eventType: 'node.field_changed', fieldName: 'effortEstimate', oldValue: null, newValue: 2 },
+    ]);
   });
 
   it('a failed draft is reported and not retried on the next run', async () => {
