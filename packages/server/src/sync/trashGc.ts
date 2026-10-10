@@ -14,12 +14,10 @@
  *   question — by the time GC runs, the user has had ~30 days to undo,
  *   so the GH closure is on solid ground.
  *
- * The close is gated like every other outbound close (#311): an issue that
- * is already closed keeps its own close (re-closing it as not_planned would
- * rewrite "completed" for delivered work); a PR still in flight on it — by
- * the node's mirror or the forge's own timeline — leaves it open; work that
- * already landed closes it as completed, not as not_planned; a link to a
- * repo other than the map's, or a check that fails, leaves it untouched.
+ * The close is gated like every other outbound close (#311) — see
+ * `gcVerdict`. A row whose issue is still undecided stays in the Trash
+ * until it is: hard-deleting it would leave an open issue with no node,
+ * which the ingest re-imports as a new todo on the issue's next edit.
  */
 
 import { and, inArray, isNotNull, sql } from 'drizzle-orm';
@@ -27,7 +25,7 @@ import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import { onActiveMap } from '../db/nodes.js';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, issueCloseAction } from '@mindblown/core';
 import {
   closeGitHubIssue,
   getGitHubIssue,
@@ -42,18 +40,23 @@ export interface TrashGcSummary {
   hardDeleted: number;
   githubClosed: number;
   githubFailed: number;
-  /** Links left alone by the close gate: already closed, PR in flight, foreign repo (#311). */
+  /** Links whose issue was left as it is: already closed, or another repo than the map's (#311). */
   githubSkipped: number;
+  /** Links whose PR has not landed yet: their row stays in the Trash and is retried next run (#311). */
+  githubHeld: number;
   errors: string[];
 }
 
 /**
  * Run one GC pass.
  *
- * Picks up rows whose `deleted_at < now() - retentionDays`, closes their
- * linked GitHub issues (best-effort, fire-and-await), then DELETEs them.
- * Safe to run repeatedly — each tick only sees rows past the cutoff that
- * the previous tick didn't already remove.
+ * Picks up rows whose `deleted_at < now() - retentionDays`, settles their
+ * linked issues through the close gate, then DELETEs the settled rows.
+ * A row whose issue is still undecided — a PR in flight on it, a release
+ * merge waiting for its forward-port, or a forge call that failed — stays
+ * in the Trash and is retried next run: deleting it would leave an open
+ * issue with no node at all, which the next edit of the issue re-imports
+ * as a fresh todo node (#311). Safe to run repeatedly.
  */
 export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary> {
   const summary: TrashGcSummary = {
@@ -62,6 +65,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
     githubClosed: 0,
     githubFailed: 0,
     githubSkipped: 0,
+    githubHeld: 0,
     errors: [],
   };
 
@@ -75,6 +79,7 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
       mapId: nodes.mapId,
       externalLinks: nodes.externalLinks,
       linkedPr: nodes.linkedPr,
+      completedAt: nodes.completedAt,
     })
     .from(nodes)
     // An archived map's trash is left alone too: GC would close issues
@@ -84,78 +89,100 @@ export async function runTrashGc(retentionDays: number): Promise<TrashGcSummary>
   summary.inspected = rows.length;
   if (rows.length === 0) return summary;
 
-  // Group GH links by mapId so we resolve each map's token once. Skip rows
-  // with no GH-syncEnabled link.
-  const linksByMap = new Map<string, Array<{ link: ExternalLink; prInFlight: boolean }>>();
+  // Rows whose issue could not be settled this run.
+  const keep = new Set<string>();
+  const ctxByMap = new Map<string, Awaited<ReturnType<typeof getGitHubContextForMap>> | 'error'>();
+
   for (const row of rows) {
     const links = ((row.externalLinks as ExternalLink[]) ?? []).filter(
       (l) => isForgeLink(l) && l.syncEnabled,
     );
     if (links.length === 0) continue;
-    const prInFlight = (row.linkedPr as LinkedPrState | null)?.state === 'open';
-    const existing = linksByMap.get(row.mapId as string) ?? [];
-    existing.push(...links.map((link) => ({ link, prInFlight })));
-    linksByMap.set(row.mapId as string, existing);
-  }
 
-  for (const [mapId, links] of linksByMap) {
-    let ghCtx;
-    try {
-      ghCtx = await getGitHubContextForMap(mapId);
-    } catch (err) {
-      // Token mint failures, etc. Log but keep going — DB hard-delete
-      // still proceeds; orphan GH issues are recoverable manually.
-      summary.errors.push(`map ${mapId} ghCtx: ${err instanceof Error ? err.message : String(err)}`);
+    const mapId = row.mapId as string;
+    if (!ctxByMap.has(mapId)) {
+      try {
+        ctxByMap.set(mapId, await getGitHubContextForMap(mapId));
+      } catch (err) {
+        ctxByMap.set(mapId, 'error');
+        summary.errors.push(`map ${mapId} ghCtx: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const ctx = ctxByMap.get(mapId);
+    if (ctx === 'error') {
+      // No client this run (token mint failed…): retry next run.
+      keep.add(row.id);
       continue;
     }
-    if (!ghCtx) continue;
+    if (!ctx) continue; // the map is not bound to a forge any more
 
-    for (const { link, prInFlight } of links) {
+    const completedAt = row.completedAt ? new Date(row.completedAt as Date).toISOString() : null;
+    for (const link of links) {
       try {
-        const reason = await gcCloseReason(link, prInFlight, ghCtx);
-        if (!reason) {
+        const verdict = await gcVerdict(link, row.linkedPr as LinkedPrState | null, completedAt, ctx);
+        if (verdict.kind === 'close') {
+          await closeGitHubIssue(link, ctx.forge, verdict.reason);
+          summary.githubClosed++;
+        } else if (verdict.kind === 'hold') {
+          summary.githubHeld++;
+          keep.add(row.id);
+          console.log(`[trash-gc] ${link.externalId}: kept in Trash — ${verdict.because}`);
+        } else {
           summary.githubSkipped++;
-          continue;
+          console.log(`[trash-gc] ${link.externalId}: issue left as it is — ${verdict.because}`);
         }
-        await closeGitHubIssue(link, ghCtx.forge, reason);
-        summary.githubClosed++;
       } catch (err) {
         summary.githubFailed++;
-        summary.errors.push(
-          `${link.externalId}: ${err instanceof Error ? err.message : String(err)}`,
-        );
+        keep.add(row.id);
+        summary.errors.push(`${link.externalId}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
   }
 
-  // Hard-delete the rows. We delete after the GH closure pass so a
-  // closure failure doesn't strand a row in the Trash forever — the user
-  // has already had the full retention window; GH state can be reconciled
-  // out-of-band. Per-row failure surfaces in `errors`.
-  const ids = rows.map((r) => r.id);
-  await db.delete(nodes).where(inArray(nodes.id, ids));
+  const ids = rows.map((r) => r.id).filter((id) => !keep.has(id));
+  if (ids.length > 0) await db.delete(nodes).where(inArray(nodes.id, ids));
   summary.hardDeleted = ids.length;
 
   return summary;
 }
 
+type GcVerdict =
+  | { kind: 'close'; reason: 'completed' | 'not_planned' }
+  | { kind: 'hold'; because: string }
+  | { kind: 'leave'; because: string };
+
 /**
- * How the GC may close one link's issue, or null to leave it alone (#311).
- * A failed forge call throws and is counted as a failure — the issue is
- * left as it is, which is the safe side.
+ * What GC may do with one link's issue (#311) — the same decision the
+ * live outbound close makes (`issueCloseAction`, core/linkedPr.ts), with
+ * not_planned as the "nobody delivered it" outcome instead of a hold:
+ *   - merge evidence on the link or a default-branch merge in the mirror →
+ *     close as completed (work shipped, even without a Closes ref);
+ *   - a PR the gate says has not landed (in flight, or merged to a release
+ *     branch) → hold: keep the row, retry next run;
+ *   - otherwise ask the forge: already closed → leave its close alone; a
+ *     PR in flight the mirror missed → hold; landed → completed; nothing →
+ *     not_planned.
+ * A link to another repo than the map's is left alone: the map's client
+ * speaks for the map's repo only.
  */
-async function gcCloseReason(
+async function gcVerdict(
   link: ExternalLink,
-  prInFlight: boolean,
+  linkedPr: LinkedPrState | null,
+  completedAt: string | null,
   ctx: { owner: string; repo: string; forge: ForgeClient },
-): Promise<'completed' | 'not_planned' | null> {
-  if (prInFlight) return null;
+): Promise<GcVerdict> {
   const parsed = parseExternalId(link.externalId);
-  // The map's client speaks for the map's repo only.
-  if (!parsed || parsed.owner !== ctx.owner || parsed.repo !== ctx.repo) return null;
+  if (!parsed || parsed.owner !== ctx.owner || parsed.repo !== ctx.repo) {
+    return { kind: 'leave', because: `not the map's repo (${ctx.owner}/${ctx.repo})` };
+  }
+  const action = issueCloseAction(linkedPr, link, completedAt);
+  if (action.kind === 'hold') return { kind: 'hold', because: `PR not landed (${action.because})` };
+
   const issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
-  if (issue.state === 'closed') return null;
+  if (issue.state === 'closed') return { kind: 'leave', because: 'already closed' };
+  if (action.kind === 'close') return { kind: 'close', reason: 'completed' };
+
   const probe = await probeIssueLanded(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
-  if (probe.inFlight) return null;
-  return probe.landed ? 'completed' : 'not_planned';
+  if (probe.inFlight) return { kind: 'hold', because: 'a PR is in flight on the forge' };
+  return { kind: 'close', reason: probe.landed ? 'completed' : 'not_planned' };
 }
