@@ -672,6 +672,9 @@ export function GanttView() {
   } | null>(null);
   const updateNodeRef = useRef(updateNode);
   updateNodeRef.current = updateNode;
+  const bulkUpdateNodes = useMindmapStore((s) => s.bulkUpdateNodes);
+  const bulkUpdateNodesRef = useRef(bulkUpdateNodes);
+  bulkUpdateNodesRef.current = bulkUpdateNodes;
 
   const handleBarMouseDown = useCallback(
     (e: React.MouseEvent, nodeId: string) => {
@@ -866,10 +869,9 @@ export function GanttView() {
         (afterRankFinal !== null && Math.abs(newRank - afterRankFinal) < EPSILON);
 
       if (collapsed) {
-        // Renumber all siblings with fresh sequential ranks
-        next.forEach((cid, idx) => {
-          updateNodeRef.current(cid, { priorityRank: (idx + 1) * RANK_STEP });
-        });
+        // Renumber all siblings with fresh sequential ranks — one batch,
+        // one request (#115), not one PUT per sibling.
+        bulkUpdateNodesRef.current(next.map((cid, idx) => ({ id: cid, updates: { priorityRank: (idx + 1) * RANK_STEP } })));
       } else {
         updateNodeRef.current(drag.sourceId, { priorityRank: newRank });
       }

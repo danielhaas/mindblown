@@ -233,6 +233,12 @@ export interface MindmapState {
   addNode: (parentId: string, text?: string, asSibling?: boolean, position?: { x: number; y: number }, fields?: Partial<Node>) => string;
   updateNode: (id: string, updates: Partial<Node>) => void;
   /**
+   * Several node updates as ONE optimistic batch and ONE request (#115).
+   * Items fail independently: a revision conflict takes the server's
+   * version, any other failure reverts that node.
+   */
+  bulkUpdateNodes: (items: Array<{ id: string; updates: Partial<Node> }>) => void;
+  /**
    * Release a parked ticket back into the pull queue (server-side rule:
    * blockedReason null, `blocked` tag off, status → todo unless done).
    * Not optimistic — the server decides the status; the returned node is
@@ -1198,6 +1204,55 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       set({ error: e?.message ?? 'Failed to release the ticket' });
       return false;
     }
+  },
+
+  bulkUpdateNodes: (items) => {
+    const state = get();
+    const live = items.filter((i) => state.nodes[i.id]);
+    if (live.length === 0) return;
+    const prev = new Map(live.map((i) => [i.id, state.nodes[i.id]]));
+    const now = new Date().toISOString();
+    const nodes = { ...state.nodes };
+    for (const i of live) nodes[i.id] = { ...nodes[i.id], ...i.updates, updatedAt: now };
+    set({ nodes, computed: recomputeValues(nodes) });
+
+    const mapId = state.currentMapId;
+    const remote = live.filter((i) => !i.id.startsWith('temp-'));
+    if (!mapId || remote.length === 0) return;
+    const revert = (ids: Iterable<string>, error: string) => {
+      const current = { ...get().nodes };
+      for (const id of ids) {
+        const p = prev.get(id);
+        if (p && current[id]) current[id] = p;
+      }
+      set({ nodes: current, computed: recomputeValues(current), error });
+    };
+    api
+      .bulkUpdateNodes(
+        mapId,
+        remote.map((i) => ({ id: i.id, fields: i.updates, expectedRevision: prev.get(i.id)!.revision })),
+      )
+      .then(({ results }) => {
+        const failed = results.filter((r) => !r.ok);
+        if (failed.length === 0) return;
+        const current = { ...get().nodes };
+        const reverted: string[] = [];
+        for (const r of failed) {
+          if (r.ok) continue;
+          if (r.error.code === 'REVISION_CONFLICT' && r.error.current) current[r.id] = r.error.current;
+          else reverted.push(r.id);
+        }
+        for (const id of reverted) {
+          const p = prev.get(id);
+          if (p && current[id]) current[id] = p;
+        }
+        set({
+          nodes: current,
+          computed: recomputeValues(current),
+          error: `${failed.length} of ${results.length} updates failed${failed.some((r) => !r.ok && r.error.code === 'REVISION_CONFLICT') ? ' — some nodes were changed by someone else and now show their version' : ''}.`,
+        });
+      })
+      .catch(() => revert(prev.keys(), 'Failed to update nodes'));
   },
 
   updateNode: (id, updates) => {

@@ -423,6 +423,29 @@ Broadcasts `node:updated` via WebSocket.
 |--------|------|-------------|
 | 404 | `NODE_NOT_FOUND` | Node does not exist |
 
+### Update Several Nodes
+
+```
+PATCH /api/maps/:id/nodes/bulk
+```
+
+Up to 500 node updates in one request (e.g. a drag-renumber of siblings). Each item runs exactly the single-node `PUT` path — optimistic lock, broadcast, change history, outbound issue sync — and items succeed or fail independently.
+
+**Request body:**
+
+```json
+{
+  "updates": [
+    { "id": "node-1", "fields": { "priorityRank": 65536 }, "expectedRevision": 3 },
+    { "id": "node-2", "fields": { "priorityRank": 131072 } }
+  ]
+}
+```
+
+**Response (200):** one result per item, in order — `{ "results": [{ "id", "ok": true, "node" } | { "id", "ok": false, "status", "error": { "code", "message", "current"? } }], "updated": N, "failed": M }`. A revision conflict (`409`) carries the server's `current` node; a node of another map is `404 NODE_NOT_FOUND`.
+
+**Errors:** `400 VALIDATION_ERROR` when `updates` is missing, empty or longer than 500.
+
 ### Delete a Node
 
 ```
