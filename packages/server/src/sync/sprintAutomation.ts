@@ -21,11 +21,13 @@ export interface SprintAutomationResult {
   activated: string[];
   completed: string[];
   rolledOver: number;
+  /** Sprints completed with unfinished items but no later sprint to take them. */
+  stranded: string[];
   errors: string[];
 }
 
 export async function runSprintAutomation(now: Date = new Date()): Promise<SprintAutomationResult> {
-  const result: SprintAutomationResult = { activated: [], completed: [], rolledOver: 0, errors: [] };
+  const result: SprintAutomationResult = { activated: [], completed: [], rolledOver: 0, stranded: [], errors: [] };
   const liveMaps = await db.select({ id: maps.id }).from(maps).where(isNull(maps.archivedAt));
 
   for (const { id: mapId } of liveMaps) {
@@ -36,12 +38,22 @@ export async function runSprintAutomation(now: Date = new Date()): Promise<Sprin
       try {
         if (t.action === 'complete') {
           if (t.rollToSprintId) {
+            const target = sprints.find((s) => s.id === t.rollToSprintId);
             const rolled = await cycleDb.autoRollover(t.sprintId, t.rollToSprintId);
             result.rolledOver += rolled.movedCount;
             for (const id of rolled.movedNodeIds) {
-              const node = await nodeDb.getNode(id);
-              if (node) broadcast(mapId, { type: 'node:updated', nodeId: id, fields: ['cycleId'], node });
+              // Into a sprint that is already running: status-less items get
+              // the same todo an activation gives them.
+              let node = await nodeDb.getNode(id);
+              const fields = ['cycleId'];
+              if (node && target?.status === 'active' && node.status === null) {
+                node = (await nodeDb.updateNode(id, { status: 'todo' })) ?? node;
+                fields.push('status');
+              }
+              if (node) broadcast(mapId, { type: 'node:updated', nodeId: id, fields, node });
             }
+          } else if ((await cycleDb.getCycleNodes(t.sprintId)).some((n) => (n.percentComplete ?? 0) < 100)) {
+            result.stranded.push(t.sprintId); // no later sprint in this version to take them
           }
           await cycleDb.updateCycle(t.sprintId, { status: 'completed' });
           result.completed.push(t.sprintId);

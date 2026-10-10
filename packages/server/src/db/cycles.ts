@@ -3,7 +3,8 @@ import { db } from './connection.js';
 import { cycles, nodes, versions, maps } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
-import type { Cycle, Node as CoreNode } from '@mindblown/core';
+import type { Cycle, Node as CoreNode, StatusDef } from '@mindblown/core';
+import { resolveStatusDef } from '@mindblown/core';
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -220,10 +221,16 @@ export async function autoRollover(
     .from(nodes)
     .where(and(eq(nodes.cycleId, fromCycleId), notDeleted));
 
-  // Filter incomplete nodes (percentComplete < 100 or null)
+  // Unfinished = not done by the shared either/or rule: a done-category
+  // status OR 100 %. Progress alone moved items someone had set to done
+  // without touching the percentage — and the sprint job (#154) now rolls
+  // over unattended, every hour.
+  const [mapRow] = await db.select({ statusWorkflow: maps.statusWorkflow }).from(maps).where(eq(maps.id, fromCycle.mapId));
+  const workflow = (mapRow?.statusWorkflow as StatusDef[] | null) ?? [];
   const incomplete = sourceNodes.filter((n) => {
     const pct = n.percentComplete;
-    return pct === null || pct < 100;
+    const doneByStatus = resolveStatusDef(workflow, n.status as string | null)?.category === 'done';
+    return !doneByStatus && (pct === null || pct < 100);
   });
 
   const movedNodeIds = incomplete.map((n) => n.id);

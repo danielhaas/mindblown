@@ -441,6 +441,7 @@ async function main(): Promise<void> {
       if (r.activated.length + r.completed.length > 0 || r.errors.length > 0) {
         console.log(`[sprint-automation] activated=${r.activated.length} completed=${r.completed.length} rolledOver=${r.rolledOver}`);
       }
+      if (r.stranded.length > 0) console.warn(`[sprint-automation] ${r.stranded.length} completed sprint(s) kept unfinished items — no later sprint in the version: ${r.stranded.join(', ')}`);
       for (const err of r.errors.slice(0, 5)) console.warn(`[sprint-automation] ${err}`);
     } catch (err) {
       console.error('[sprint-automation] tick caught unexpected error:', err);
