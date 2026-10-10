@@ -113,7 +113,7 @@ describe('link issue — one issue, one node (#314)', () => {
     const res = await link('n1');
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toMatchObject({ code: 'ISSUE_ALREADY_LINKED', nodes: [{ id: 'other', text: 'Routed crossings lifted to VLANs' }] });
-    expect(res.json().error.message).toContain('dan/r#39 is already linked to other "Routed crossings lifted to VLANs"');
+    expect(res.json().error.message).toBe('dan/r#39 is already linked to other "Routed crossings lifted to VLANs" on this map — an issue belongs to one node.');
     expect(mocks.updateNode).not.toHaveBeenCalled();
   });
 

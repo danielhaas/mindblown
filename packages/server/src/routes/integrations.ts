@@ -644,7 +644,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           return reply.status(409).send({
             error: {
               code: 'ISSUE_ALREADY_LINKED',
-              message: `${externalId} is already linked to ${list} on this map. Link it to one node only — or pass allowDuplicate: true when the second link is deliberate.`,
+              // Neutral wording: the UI shows this as is. API callers that
+              // mean it (a parent and its sub-issue) send allowDuplicate.
+              message: `${externalId} is already linked to ${list} on this map — an issue belongs to one node.`,
               nodes: others.map((n) => ({ id: n.id, text: n.text })),
             },
           });
