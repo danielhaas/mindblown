@@ -176,11 +176,6 @@ export function isMediaId(value: string): boolean {
 
 /** Which stored files stay capability URLs (#292, decision D): see core `PUBLIC_MEDIA_EXTENSIONS`. */
 
-/** The 40-hex media id in a playback path, or null. */
-export function mediaIdFromPath(url: string): string | null {
-  return /^\/api\/media\/([0-9a-f]{40})\//.exec(url)?.[1] ?? null;
-}
-
 /** A playback path whose file is video or an image — served without a credential. */
 export function isPublicMediaPath(url: string): boolean {
   if (!isMediaPlaybackPath(url)) return false;

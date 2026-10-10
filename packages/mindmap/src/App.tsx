@@ -1533,7 +1533,7 @@ export function App() {
     if (!user) return;
     const params = new URLSearchParams(window.location.search);
     const path = params.get('download');
-    if (!path || !/^\/api\/media\//.test(path)) return;
+    if (!path || !/^\/api\/media\/[0-9a-f]{40}\/[^/?#]+$/.test(path)) return;
     params.delete('download');
     const rest = params.toString();
     window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`);

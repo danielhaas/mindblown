@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
-import { nodes, maps, changeEvents } from './schema.js';
+import { nodes, maps, changeEvents, mediaOwners } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
@@ -901,6 +901,13 @@ export async function addAttachment(
         ? `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`
         : `Node ${nodeId} not found`,
     );
+  }
+
+  // An uploaded document belongs to the map it is first attached on
+  // (#292): pasting its link onto another map later grants nothing there.
+  const mediaId = /\/api\/media\/([0-9a-f]{40})\//.exec(attachment.url)?.[1];
+  if (mediaId) {
+    await handle.insert(mediaOwners).values({ mediaId, mapId: updated.mapId }).onConflictDoNothing();
   }
 
   return dbNodeToCore(updated);

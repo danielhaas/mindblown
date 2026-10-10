@@ -22,13 +22,24 @@ import net from 'node:net';
 import type { AddressInfo } from 'node:net';
 import path from 'node:path';
 
-// Documents (#292): the route asks which live nodes carry the file and
-// whether the caller can see their map. `owners` is what that query finds;
-// `visible` the maps the caller may view.
-let owners: Array<{ mapId: string }> = [];
+// Documents (#292): the route looks up the map the file belongs to
+// (media_owners), whether the caller can view it, and whether a live node
+// there still carries the file. `ownerMap` / `carried` / `visible` drive
+// those three answers.
+let ownerMap: string | null = null;
+let carried = true;
 let visible = new Set<string>();
 vi.mock('../../db/connection.js', () => ({
-  db: { select: () => ({ from: () => ({ where: async () => owners }) }) },
+  db: {
+    select: () => ({
+      from: (table: object) => ({
+        where: () => {
+          const rows = 'mediaId' in table ? (ownerMap ? [{ mapId: ownerMap }] : []) : carried ? [{ id: 'n1' }] : [];
+          return Object.assign(Promise.resolve(rows), { limit: async () => rows });
+        },
+      }),
+    }),
+  },
 }));
 vi.mock('../../lib/mapAccess.js', () => ({
   checkMapAccess: async (_user: string, mapId: string) =>
@@ -93,7 +104,8 @@ beforeEach(async () => {
   authedUser = 'user-1';
   // Default: every document hangs on a map the caller can see — the
   // access tests below narrow it.
-  owners = [{ mapId: 'map-1' }];
+  ownerMap = 'map-1';
+  carried = true;
   visible = new Set(['map-1']);
   await build();
 });
@@ -308,7 +320,9 @@ describe('GET /api/media/*', () => {
   it('does not list the media directory', async () => {
     await upload('demo.mp4', 'x');
     const res = await app.inject({ method: 'GET', url: '/api/media/' });
-    expect(res.statusCode).toBe(403);
+    // 404 from the document check (#292), which refuses anything that is
+    // not `<id>/<name>` before @fastify/static's own 403 would.
+    expect([403, 404]).toContain(res.statusCode);
   });
 
   it('refuses to traverse out of the media root', async () => {
@@ -324,7 +338,10 @@ describe('GET /api/media/*', () => {
       url: `/api/media/${up.id}/..%2f..%2f..%2fetc%2fpasswd`,
     });
 
-    expect(res.statusCode).toBe(403);
+    // Refused twice over now: the document check (#292) 404s any path that
+    // is not `<id>/<name>`, ahead of @fastify/static's own 403.
+    expect([403, 404]).toContain(res.statusCode);
+    expect(res.body).not.toContain('root:');
   });
 
   it('never serves an uploaded HTML file as HTML on our own origin', async () => {
@@ -372,30 +389,52 @@ describe('GET /api/media/*', () => {
     expect(res.headers['content-disposition']).toBe('attachment');
   });
 
-  it('serves a document only to a signed-in caller who can see a map carrying it (#292)', async () => {
+  it('serves a document only to a caller who can view the map it belongs to, while a node there carries it (#292)', async () => {
     const up = await upload('spec.pdf', '%PDF-1.4', 'application/pdf');
     const url = `/api/media/${up.id}/${up.filename}`;
 
     expect((await app.inject({ method: 'GET', url })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'HEAD', url })).statusCode).toBe(200);
 
-    visible = new Set(['map-2']);
+    visible = new Set(['map-2']); // the caller's own map — a pasted link there grants nothing
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'HEAD', url })).statusCode).toBe(404);
+
+    visible = new Set(['map-1']);
+    carried = false; // removed from its map — the link is dead
     expect((await app.inject({ method: 'GET', url })).statusCode).toBe(404);
 
-    owners = [{ mapId: 'map-1' }, { mapId: 'map-2' }]; // attached on a second map the caller sees
-    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(200);
-
-    owners = []; // attachment removed everywhere — the link is dead
+    carried = true;
+    ownerMap = null; // never attached anywhere
     expect((await app.inject({ method: 'GET', url })).statusCode).toBe(404);
 
+    ownerMap = 'map-1';
     authedUser = undefined;
     expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401);
+  });
+
+  it('refuses every other spelling of a document path rather than skipping the check (#292 review)', async () => {
+    const up = await upload('spec.pdf', '%PDF-1.4', 'application/pdf');
+    visible = new Set(); // no access: anything but a refusal means the check was skipped
+    const variants = [
+      `/api/media/${up.id}//${up.filename}`,
+      `/api/media//${up.id}/${up.filename}`,
+      `/api/media/${up.id}%2F${up.filename}`,
+      `/api/media/%${up.id.charCodeAt(0).toString(16)}${up.id.slice(1)}/${up.filename}`,
+      `/api/media/${up.id}/${up.filename}?x=.png`,
+    ];
+    for (const url of variants) {
+      const res = await app.inject({ method: 'GET', url });
+      expect([400, 401, 403, 404], url).toContain(res.statusCode);
+      expect(res.body, url).not.toContain('%PDF');
+    }
   });
 
   it('keeps video and images public capability URLs (#292, decision D)', async () => {
     const clip = await upload('demo.mp4', 'x');
     const shot = await upload('shot.png', 'x', 'image/png');
     authedUser = undefined;
-    owners = [];
+    ownerMap = null;
     expect((await app.inject({ method: 'GET', url: `/api/media/${clip.id}/${clip.filename}` })).statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: `/api/media/${shot.id}/${shot.filename}` })).statusCode).toBe(200);
   });
