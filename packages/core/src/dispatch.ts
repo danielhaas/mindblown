@@ -131,31 +131,70 @@ export function planUnblock(
   return { status: target, tagsRemove };
 }
 
-export type GateEntry =
+/** Separates the alternatives of one OR-entry: `type:bug|version:<id>`. */
+export const GATE_OR = '|';
+
+export type GateTerm =
   | { kind: 'version'; raw: string; versionId: string }
-  | { kind: 'bugs'; raw: string }
+  | { kind: 'bugs'; raw: string };
+
+export type GateEntry =
+  | GateTerm
+  /** Any one of `options` (#265) — e.g. "bugs, or the release". */
+  | { kind: 'any'; raw: string; options: GateTerm[] }
   | { kind: 'unknown'; raw: string };
 
-/** Classify each gate entry so a UI can render/validate it. */
+/**
+ * Classify each gate entry so a UI can render/validate it.
+ *
+ * Entries AND together; inside one entry, `|` ORs its terms (#265). That is
+ * how "bugs first, the release as fallback" is said: gate
+ * `["type:bug|version:X"]` + policy `bugs` first — bugs from anywhere get
+ * first refusal, the release takes the remaining capacity, and nothing else
+ * leaks in. An OR-entry with any term the server cannot read is unknown as
+ * a whole (fail-closed, like any other unknown entry).
+ */
 export function parseGateEntry(raw: string): GateEntry {
+  if (raw.includes(GATE_OR)) {
+    const options = raw.split(GATE_OR).map(parseGateTerm);
+    if (options.length < 2 || options.some((o) => o === null)) return { kind: 'unknown', raw };
+    return { kind: 'any', raw, options: options as GateTerm[] };
+  }
+  return parseGateTerm(raw) ?? { kind: 'unknown', raw };
+}
+
+function parseGateTerm(raw: string): GateTerm | null {
   if (raw === GATE_BUGS_ONLY) return { kind: 'bugs', raw };
   if (raw.startsWith(GATE_VERSION_PREFIX) && raw.length > GATE_VERSION_PREFIX.length) {
     return { kind: 'version', raw, versionId: raw.slice(GATE_VERSION_PREFIX.length) };
   }
-  return { kind: 'unknown', raw };
+  return null;
+}
+
+/** Every version id a gate names, inside OR-entries too. */
+export function gateVersionIds(gate: string[]): string[] {
+  return gate.flatMap((g) => {
+    const p = parseGateEntry(g);
+    if (p.kind === 'version') return [p.versionId];
+    if (p.kind === 'any') return p.options.flatMap((o) => (o.kind === 'version' ? [o.versionId] : []));
+    return [];
+  });
 }
 
 /**
- * AND-filter over the map's dispatchGate. Empty gate = no fence.
- * `version:` matches the node's EFFECTIVE version (own or inherited from
- * the nearest versioned ancestor), not only `node.versionId`.
+ * AND-filter over the map's dispatchGate; an entry with `|` matches when any
+ * of its terms does (#265). Empty gate = no fence. `version:` matches the
+ * node's EFFECTIVE version (own or inherited from the nearest versioned
+ * ancestor), not only `node.versionId`.
  */
 export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap): boolean {
+  const term = (t: GateTerm): boolean =>
+    t.kind === 'bugs' ? isBugNode(node) : effectiveVersionId(node.id, nodeMap) === t.versionId;
   return gate.every((entry) => {
     const parsed = parseGateEntry(entry);
-    if (parsed.kind === 'bugs') return isBugNode(node);
-    if (parsed.kind === 'version') return effectiveVersionId(node.id, nodeMap) === parsed.versionId;
-    return false;
+    if (parsed.kind === 'any') return parsed.options.some(term);
+    if (parsed.kind === 'unknown') return false;
+    return term(parsed);
   });
 }
 
@@ -252,9 +291,11 @@ export function dispatchQueueSnapshot(
   // Human-only tickets (#266) are inside the gate but never granted.
   const gated = gatedAll.filter((n) => dispatchSkipTag(n) === null);
   const inGate = gated.filter(hasBrief);
-  const gateHasVersion = opts.gate.some((g) => parseGateEntry(g).kind === 'version');
+  const gateHasVersion = gateVersionIds(opts.gate).length > 0;
+  // Unversioned tickets the gate keeps out — with `type:bug|version:X` an
+  // unversioned bug is inside, so count against the gate itself.
   const unversionedOutsideGate = gateHasVersion
-    ? pullable.filter((n) => effectiveVersionId(n.id, nodeMap) === null).length
+    ? pullable.filter((n) => effectiveVersionId(n.id, nodeMap) === null && !matchesDispatchGate(n, opts.gate, nodeMap)).length
     : 0;
   const unknownGateEntries = opts.gate.filter((g) => parseGateEntry(g).kind === 'unknown');
 

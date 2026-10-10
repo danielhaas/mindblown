@@ -11,6 +11,7 @@
 import type { Node, Version, DispatchState } from '@mindblown/core';
 import {
   parseGateEntry,
+  GATE_OR,
   parseMixBugs,
   compareVersions,
   GATE_BUGS_ONLY,
@@ -51,7 +52,7 @@ export const STALE_CLAIM_HOURS = 4;
 
 export interface GateChip {
   raw: string;
-  kind: 'version' | 'bugs' | 'unknown';
+  kind: 'version' | 'bugs' | 'any' | 'unknown';
   label: string;
   /** Second line: version status + target date. */
   detail: string | null;
@@ -69,6 +70,24 @@ export function gateChips(gate: string[], versions: Version[]): GateChip[] {
   const byId = new Map(versions.map((v) => [v.id, v]));
   return gate.map((raw) => {
     const p = parseGateEntry(raw);
+    if (p.kind === 'any') {
+      // "Bugs or V1.5": each term labelled like a chip of its own.
+      const parts = p.options.map((o) => gateChips([o.raw], versions)[0]);
+      // A gone version empties only its own side: the other alternatives
+      // still flow, so this is not the "queue is empty" warning.
+      const gone = parts.filter((c) => c.kind === 'unknown').map((c) => c.label);
+      const warning =
+        gone.length > 0
+          ? `${gone.join(', ')} no longer exists on this map — only the other side of this "or" still flows.`
+          : (parts.find((c) => c.warning)?.warning ?? null);
+      return {
+        raw,
+        kind: 'any',
+        label: parts.map((c) => (c.kind === 'bugs' ? 'Bugs' : c.label)).join(' or '),
+        detail: parts.map((c) => c.detail).filter(Boolean).join(' · ') || null,
+        warning,
+      };
+    }
     if (p.kind === 'bugs') return { raw, kind: 'bugs', label: 'Bugs only', detail: null, warning: null };
     if (p.kind === 'version') {
       const v = byId.get(p.versionId);
@@ -245,7 +264,7 @@ export function policyKeyLabel(key: string): string {
  * "the next one" is not well-defined; Release push with a picked version
  * covers it.
  */
-export type PresetId = 'release_push' | 'bug_sweep';
+export type PresetId = 'release_push' | 'bugs_first' | 'bug_sweep';
 
 export interface Preset {
   id: PresetId;
@@ -262,6 +281,12 @@ export const PRESETS: Preset[] = [
     hint: 'Fence to one version; bugs first, then small tickets, to drain it fast.',
   },
   {
+    id: 'bugs_first',
+    label: 'Bugs first, then release',
+    needsVersion: true,
+    hint: 'Bugs from any version get first refusal; when none are left, the fleet works the release. Nothing else gets in.',
+  },
+  {
     id: 'bug_sweep',
     label: 'Bug sweep',
     needsVersion: false,
@@ -273,6 +298,10 @@ export function applyPreset(id: PresetId, versionId: string | null): { gate: str
   if (id === 'release_push') {
     if (!versionId) return null;
     return { gate: [versionGateEntry(versionId)], policy: ['bugs', 'size', 'priority', 'age'] };
+  }
+  if (id === 'bugs_first') {
+    if (!versionId) return null;
+    return { gate: [`${GATE_BUGS_ONLY}${GATE_OR}${versionGateEntry(versionId)}`], policy: ['bugs', 'priority', 'age'] };
   }
   return { gate: [GATE_BUGS_ONLY], policy: ['priority', 'age'] };
 }

@@ -90,6 +90,10 @@ describe('update_map tool — dispatch knobs', () => {
     expect(() => schema.parse({ mapId: 'm1', maxActiveClaims: 2.5 })).toThrow();
     expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['sprint:s1'] })).toThrow();
     expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['version:'] })).toThrow();
+    // #265: "|" joins alternatives inside one entry
+    expect(schema.parse({ mapId: 'm1', dispatchGate: ['type:bug|version:v-mvp'] }).dispatchGate).toEqual(['type:bug|version:v-mvp']);
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['type:bug|sprint:s1'] })).toThrow();
+    expect(() => schema.parse({ mapId: 'm1', dispatchGate: ['type:bug|'] })).toThrow();
     expect(() => schema.parse({ mapId: 'm1', dispatchPolicy: ['chaos'] })).toThrow();
   });
 });

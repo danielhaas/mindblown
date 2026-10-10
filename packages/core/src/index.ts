@@ -124,6 +124,8 @@ export {
   isBugNode,
   hasBrief,
   parseGateEntry,
+  gateVersionIds,
+  GATE_OR,
   matchesDispatchGate,
   pullableNodes,
   dispatchQueueSnapshot,
@@ -132,7 +134,7 @@ export {
   BLOCKED_TAG,
   planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, DispatchState, DispatchQueueSnapshot, UnblockPlan } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, UnblockPlan } from './dispatch.js';
 
 // Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
 export {

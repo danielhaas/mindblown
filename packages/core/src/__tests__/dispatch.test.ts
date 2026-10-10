@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '../types.js';
 import {
   parseGateEntry,
+  gateVersionIds,
   parseMixBugs,
   matchesDispatchGate,
   pullableNodes,
@@ -65,6 +66,20 @@ describe('parseGateEntry', () => {
     expect(parseGateEntry('version:v1')).toEqual({ kind: 'version', raw: 'version:v1', versionId: 'v1' });
     expect(parseGateEntry('version:').kind).toBe('unknown');
     expect(parseGateEntry('priority:P0').kind).toBe('unknown');
+  });
+
+  it('reads "|" as any-of its terms; one unreadable term makes the whole entry unknown (#265)', () => {
+    expect(parseGateEntry('type:bug|version:v1')).toEqual({
+      kind: 'any',
+      raw: 'type:bug|version:v1',
+      options: [
+        { kind: 'bugs', raw: 'type:bug' },
+        { kind: 'version', raw: 'version:v1', versionId: 'v1' },
+      ],
+    });
+    expect(parseGateEntry('type:bug|priority:P0').kind).toBe('unknown');
+    expect(parseGateEntry('type:bug|').kind).toBe('unknown');
+    expect(gateVersionIds(['type:bug|version:v1', 'version:v2', 'type:bug'])).toEqual(['v1', 'v2']);
   });
 });
 
@@ -137,6 +152,14 @@ describe('matchesDispatchGate', () => {
     expect(matchesDispatchGate(mirrored, ['type:bug'], map)).toBe(true);
   });
 
+  it('"bugs or the release" admits both sets and nothing else (#265)', () => {
+    const gate = ['type:bug|version:v1'];
+    expect(matchesDispatchGate(bug, gate, map)).toBe(true); // a bug outside the release
+    expect(matchesDispatchGate(leaf, gate, map)).toBe(true); // release work, not a bug
+    expect(matchesDispatchGate(loose, gate, map)).toBe(false); // neither — the fence holds
+    expect(matchesDispatchGate(loose, ['type:bug|priority:P0'], map)).toBe(false); // fail-closed
+  });
+
   it('empty gate is open; an unknown entry matches nothing (fail-closed)', () => {
     expect(matchesDispatchGate(loose, [], map)).toBe(true);
     expect(matchesDispatchGate(loose, ['priority:P0'], map)).toBe(false);
@@ -169,6 +192,14 @@ describe('dispatchQueueSnapshot', () => {
     const s = dispatchQueueSnapshot([...all, c1, c2], { workflow: WORKFLOW, cap: 2, gate: [] });
     expect(s.activeClaims).toBe(2);
     expect(s.state).toBe('full');
+  });
+
+  it('an "or" gate counts both sides in the gate, and only the rest as outside (#265)', () => {
+    const or = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['type:bug|version:v1'] });
+    expect(or.inGateIds.sort()).toEqual(['bug', 'leaf']);
+    expect(or.unversionedOutsideGate).toBe(1); // loose — the unversioned bug is inside
+    const plain = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['version:v1'] });
+    expect(plain.unversionedOutsideGate).toBe(2);
   });
 
   it('empty when the gate leaves nothing, and names an unknown entry as the cause', () => {

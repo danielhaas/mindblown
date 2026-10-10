@@ -137,6 +137,16 @@ describe('applyPreset', () => {
     expect(applyPreset('release_push', null)).toBeNull();
     expect(applyPreset('release_push', 'mvp')).toEqual({ gate: ['version:mvp'], policy: ['bugs', 'size', 'priority', 'age'] });
   });
+  it('bugs first needs a version and gates on bugs OR the release, bugs sorted first (#265)', () => {
+    expect(applyPreset('bugs_first', null)).toBeNull();
+    expect(applyPreset('bugs_first', 'mvp')).toEqual({ gate: ['type:bug|version:mvp'], policy: ['bugs', 'priority', 'age'] });
+    const [chip] = gateChips(['type:bug|version:mvp'], [V_MVP]);
+    expect(chip.kind).toBe('any');
+    expect(chip.label).toBe(`Bugs or ${V_MVP.name}`);
+    const half = gateChips(['type:bug|version:gone'], [V_MVP])[0];
+    expect(half.kind).toBe('any'); // bugs still flow
+    expect(half.warning).toMatch(/only the other side/);
+  });
   it('bug sweep fences to bugs from any version', () => {
     expect(applyPreset('bug_sweep', null)).toEqual({ gate: ['type:bug'], policy: ['priority', 'age'] });
   });
