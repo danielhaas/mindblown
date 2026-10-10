@@ -1160,6 +1160,10 @@ export function GitHubSettingsDialog({
           </div>
         )}
 
+        {currentMap?.forgeKind === 'gitea' && (
+          <ForgeWebhookSection workspaceId={workspaceId} forge={forge} refreshKey={`${connected}:${giteaBound ?? ''}`} />
+        )}
+
         {/* Gitea sign-in + repo picker (#369): parity with the App install flow. */}
         {giteaStatus?.configured && !hasAppRepo && (
           <div style={{ marginBottom: 20, padding: '12px', border: '1px solid #e2e8f0', borderRadius: 8 }}>
@@ -1330,8 +1334,8 @@ export function GitHubSettingsDialog({
                     }}
                   />
                   <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
-                    The instance root; the API is reached under <code>/api/v1</code>. Point a repository webhook
-                    (JSON, events: issues, issue comment, pull request) at this server's <code>/api/webhooks/github</code>.
+                    The instance root; the API is reached under <code>/api/v1</code>. Connecting also sets up the
+                    repository webhook — see <strong>Webhook</strong> in this dialog.
                   </div>
                 </div>
               )}
@@ -1412,7 +1416,7 @@ export function GitHubSettingsDialog({
                 value={webhookSecret}
                 onChange={(e) => setWebhookSecret(e.target.value)}
                 onKeyDown={(e) => e.stopPropagation()}
-                placeholder="leave empty if deliveries are not signed"
+                placeholder={forgeKind === 'gitea' ? 'leave empty — MindBlown generates one for the webhook' : 'leave empty if there is no webhook'}
                 style={{
                   width: '100%',
                   padding: '7px 10px',
@@ -1533,6 +1537,145 @@ export function GitHubSettingsDialog({
           onConfirm={persistTriageDisable}
         />
       )}
+    </div>
+  );
+}
+
+// ── Repo webhook (#386) ──────────────────────────────────────────
+// Without the webhook the 5-minute poll is the only way back from the
+// forge, and pull requests (merged, closed, reviews) are never seen. The
+// section says whether the repo has it, sets it up with the stored
+// connection, and spells out the manual steps for when it can't.
+
+function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: string; forge: string; refreshKey: string }) {
+  const [state, setState] = useState<api.ForgeWebhookState | null>(null);
+  const [forbidden, setForbidden] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<api.ForgeWebhookSetupResult | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setState(await api.getForgeWebhook(workspaceId));
+      setForbidden(false);
+    } catch (e) {
+      // 404 = nothing connected yet; 403 = not a workspace admin — the
+      // manual steps below still apply.
+      setState(null);
+      setForbidden(e instanceof api.ApiError && e.status === 403);
+    }
+  }, [workspaceId]);
+  useEffect(() => {
+    load();
+  }, [load, refreshKey]);
+
+  const handleSetUp = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      setResult(await api.setUpForgeWebhook(workspaceId));
+      await load();
+    } catch (e: any) {
+      setResult({ status: 'failed', reason: e.message ?? 'Webhook setup failed' });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (!state && !forbidden) return null;
+
+  const url = state?.url ?? `${window.location.origin}/api/webhooks/github`;
+  const hook = state?.hook ?? null;
+  const healthy = !!hook && hook.active && (state?.missingEvents?.length ?? 0) === 0 && !!state?.secretStored;
+  const status = !state
+    ? null
+    : healthy
+      ? `Active on ${state.repo} — changes arrive immediately.`
+      : state.readError
+        ? `Could not read the repository's webhooks (${state.readError}).`
+        : !hook
+          ? `No webhook on ${state.repo} yet — MindBlown only polls every 5 minutes and never sees pull requests.`
+          : !hook.active
+            ? `The webhook on ${state.repo} is switched off.`
+            : !state.secretStored
+              ? 'MindBlown has no secret for this webhook, so it rejects every delivery.'
+              : `The webhook misses events: ${state.missingEvents?.join(', ')}.`;
+  const code = { fontSize: 11, background: '#f1f5f9', padding: '1px 4px', borderRadius: 3, wordBreak: 'break-all' as const };
+
+  return (
+    <div style={{ marginBottom: 20, padding: '12px', border: '1px solid #e2e8f0', borderRadius: 8 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', marginBottom: 6 }}>Webhook</div>
+      {status && (
+        <div
+          style={{
+            marginBottom: 10,
+            padding: '8px 12px',
+            borderRadius: 6,
+            background: healthy ? '#dcfce7' : '#fef3c7',
+            color: healthy ? '#166534' : '#92400e',
+            fontSize: 12,
+          }}
+        >
+          {status}
+        </div>
+      )}
+      {state && (
+        <button
+          onClick={handleSetUp}
+          disabled={busy}
+          style={{
+            background: healthy ? '#f1f5f9' : '#4f46e5',
+            color: healthy ? '#475569' : '#fff',
+            border: healthy ? '1px solid #e2e8f0' : 'none',
+            borderRadius: 6,
+            padding: '8px 16px',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: busy ? 'default' : 'pointer',
+            fontFamily: 'inherit',
+            marginBottom: 10,
+          }}
+        >
+          {busy ? 'Setting up...' : hook ? 'Repair webhook' : 'Set up webhook'}
+        </button>
+      )}
+      {result && (
+        <div style={{ marginBottom: 10, fontSize: 12, color: result.status === 'failed' ? '#b91c1c' : '#166534' }}>
+          {result.status === 'failed'
+            ? `${result.reason}${result.hint ? ` — ${result.hint}` : ''}`
+            : `Webhook ${result.status} (#${result.hookId}).`}
+        </div>
+      )}
+      <details style={{ fontSize: 12, color: '#475569' }}>
+        <summary style={{ cursor: 'pointer', color: '#64748b' }}>Set it up by hand in {forge}</summary>
+        <ol style={{ margin: '8px 0 0', paddingLeft: 18, lineHeight: 1.7 }}>
+          <li>
+            In {forge}, open the repository → <strong>Settings</strong> → <strong>Webhooks</strong> →{' '}
+            <strong>Add webhook</strong> → <strong>{forge}</strong>.
+          </li>
+          <li>
+            Target URL: <code style={code}>{url}</code>
+          </li>
+          <li>
+            HTTP method <code style={code}>POST</code>, content type <code style={code}>application/json</code>.
+          </li>
+          <li>
+            Secret: the one MindBlown holds for this connection. "Set up webhook" generates it; to use your own, enter
+            it as <strong>Webhook secret</strong> when connecting. Deliveries without a matching secret are rejected.
+          </li>
+          <li>
+            Trigger on <strong>custom events</strong>:{' '}
+            {(state?.events ?? ['issues', 'issue_label', 'issue_assign', 'issue_milestone', 'pull_request', 'pull_request_review']).join(', ')}
+            .
+          </li>
+          <li>
+            Keep it <strong>active</strong>, save, then <strong>Test delivery</strong> — it should answer 200.
+          </li>
+        </ol>
+        <div style={{ marginTop: 6, color: '#94a3b8' }}>
+          If {forge} refuses the URL, the server's address is not in Gitea's <code style={code}>[webhook] ALLOWED_HOST_LIST</code>{' '}
+          (private and Tailnet addresses are blocked by default).
+        </div>
+      </details>
     </div>
   );
 }

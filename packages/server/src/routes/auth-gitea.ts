@@ -33,6 +33,7 @@ import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } 
 import { encrypt } from '../crypto.js';
 import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
 import { FORGE_PROVIDERS, type ForgeIntegrationConfig } from '../lib/forge.js';
+import { ensureForgeWebhook, publicWebhookUrl } from '../lib/forgeWebhook.js';
 import {
   findGiteaIdentity,
   giteaAccessTokenFor,
@@ -77,7 +78,7 @@ const NONCE_COOKIE = 'mb_gitea_oauth';
  * their own repository. Also gates the status binding lookup, so the
  * bound repo of a foreign workspace is not readable by id.
  */
-async function canManageWorkspaceForge(
+export async function canManageWorkspaceForge(
   req: { userId?: string; authSource?: 'jwt' | 'api-key' },
   workspaceId: string,
 ): Promise<boolean> {
@@ -285,18 +286,26 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       .from(integrations)
       .where(and(eq(integrations.workspaceId, body.workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)))
       .limit(1);
+    let id: string;
     if (existing) {
       await db
         .update(integrations)
         .set({ provider: 'gitea', config, enabled: true, updatedAt: new Date() })
         .where(eq(integrations.id, existing.id));
-      return reply.send({ id: existing.id, provider: 'gitea', enabled: true, repo: `${body.owner}/${body.repo}` });
+      id = existing.id;
+    } else {
+      const [row] = await db
+        .insert(integrations)
+        .values({ workspaceId: body.workspaceId, provider: 'gitea', config, enabled: true })
+        .returning();
+      id = row.id;
     }
-    const [row] = await db
-      .insert(integrations)
-      .values({ workspaceId: body.workspaceId, provider: 'gitea', config, enabled: true })
-      .returning();
-    return reply.status(201).send({ id: row.id, provider: 'gitea', enabled: true, repo: `${body.owner}/${body.repo}` });
+    // The repo's webhook, same as the PAT connect (#386).
+    const url = publicWebhookUrl(req.headers);
+    const webhook = url ? await ensureForgeWebhook({ id, provider: 'gitea', config }, url) : undefined;
+    return reply
+      .status(existing ? 200 : 201)
+      .send({ id, provider: 'gitea', enabled: true, repo: `${body.owner}/${body.repo}`, ...(webhook ? { webhook } : {}) });
   });
 
   // ── POST /api/auth/gitea/disconnect ──────────────────────────────
