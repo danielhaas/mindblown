@@ -36,6 +36,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import {
+  fetchTriagePipeline,
+  type TriagePipelineResponse,
   ApiError,
   bulkConfirmTriageDecisions,
   bulkOverrideTriageDecisions,
@@ -117,6 +119,22 @@ export function TriagePanel({
   // `bulkPickerOpen` instead).
   const [bulkPickerOpen, setBulkPickerOpen] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
+  // #320: N pending rows failing with one error = the pipeline is broken —
+  // say so once above the list instead of letting the rows tell it.
+  const [pipeline, setPipeline] = useState<TriagePipelineResponse | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchTriagePipeline(mapId)
+      .then((p) => {
+        if (!cancelled) setPipeline(p);
+      })
+      .catch(() => {
+        if (!cancelled) setPipeline(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mapId, refreshTick]);
   // Selection state — checked decision ids in the current view. Reset
   // on view-switch and after every bulk action.
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -765,6 +783,33 @@ export function TriagePanel({
           >
             x
           </button>
+        </div>
+      )}
+
+      {/* Pipeline banner (#320) */}
+      {(pipeline?.broken || pipeline?.stale) && (
+        <div
+          data-testid={pipeline.broken ? 'triage-pipeline-broken' : 'triage-pipeline-stale'}
+          style={{
+            padding: '10px 16px',
+            background: pipeline.broken ? '#fef2f2' : '#fffbeb',
+            borderBottom: `1px solid ${pipeline.broken ? '#fecaca' : '#fde68a'}`,
+            color: pipeline.broken ? '#991b1b' : '#92400e',
+            fontSize: 12,
+            lineHeight: 1.45,
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>
+            {pipeline.broken
+              ? `Triage pipeline broken since ${pipeline.since?.slice(0, 10) ?? '?'}`
+              : `Triage recovered — ${pipeline.count} ticket${pipeline.count === 1 ? '' : 's'} from the outage still carry its error`}
+          </div>
+          <div>{pipeline.cause}</div>
+          <div style={{ marginTop: 2 }}>
+            {pipeline.broken
+              ? `${pipeline.count} pending ticket${pipeline.count === 1 ? '' : 's'} carry this error. Fix the cause, then Re-classify them.`
+              : 'Re-classify them to triage them properly.'}
+          </div>
         </div>
       )}
 

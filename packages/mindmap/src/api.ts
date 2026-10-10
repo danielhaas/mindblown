@@ -1975,6 +1975,20 @@ export interface ListTriageDecisionsResponse {
   decisions: TriageDecision[];
 }
 
+/** Is triage itself broken (#320)? One state over the map's pending decisions. */
+export interface TriagePipelineResponse {
+  broken: boolean;
+  stale?: boolean;
+  count: number;
+  cause: string | null;
+  since: string | null;
+  pending: number;
+}
+
+export function fetchTriagePipeline(mapId: string): Promise<TriagePipelineResponse> {
+  return request<TriagePipelineResponse>(`/api/maps/${mapId}/triage-pipeline`);
+}
+
 export function listTriageDecisions(
   mapId: string,
   filters: ListTriageDecisionsFilters = {},
