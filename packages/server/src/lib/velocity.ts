@@ -89,6 +89,16 @@ export interface VelocityResult {
 
   /** False when there are too few organic completions to trust the number. */
   sampleSufficient: boolean;
+
+  /**
+   * Pace (Cockpit, digest): estimated work finished per calendar day ÷
+   * nominal capacity — UNCAPPED. 18 means the plan's "days" are done 18×
+   * faster than planned. measuredFocusFactor caps the same ratio at 1 for
+   * the forecast knob, which hid exactly this.
+   */
+  paceRatio: number;
+  /** Organic (bulk-excluded) completed estimate per UTC day, oldest first, every day of the window. */
+  daily: Array<{ day: string; completed: number; completions: number }>;
 }
 
 export function computeVelocity(input: VelocityInput): VelocityResult {
@@ -126,6 +136,7 @@ export function computeVelocity(input: VelocityInput): VelocityResult {
   let bulkEventsExcluded = 0;
   let estCompletedExcludedAsBulk = 0;
   const activeDaySet = new Set<string>();
+  const perDay = new Map<string, { completed: number; completions: number }>();
 
   for (const [, group] of byTimestamp) {
     const isBulk = group.length > BULK_TIMESTAMP_THRESHOLD;
@@ -137,7 +148,12 @@ export function computeVelocity(input: VelocityInput): VelocityResult {
       } else if (done > 0) {
         estCompleted += done;
         completionEvents++;
-        activeDaySet.add(e.createdAt.slice(0, 10));
+        const day = e.createdAt.slice(0, 10);
+        activeDaySet.add(day);
+        const d = perDay.get(day) ?? { completed: 0, completions: 0 };
+        d.completed += done;
+        d.completions++;
+        perDay.set(day, d);
       }
     }
     if (isBulk) {
@@ -150,6 +166,17 @@ export function computeVelocity(input: VelocityInput): VelocityResult {
   const nominalCapacity = Math.max(1e-9, workerCount * unitsPerDay);
   const deliveryRate = estCompleted / safeWindow;
   const deliveryRateRaw = estCompletedRaw / safeWindow;
+
+  // Every day of the window, oldest first, zeros included — idle days are
+  // part of the pace. The window ends today (UTC), or on the newest event.
+  const newest = progressEvents.reduce((m, e) => (e.createdAt > m ? e.createdAt : m), '');
+  const endMs = Math.max(Date.now(), newest ? Date.parse(newest) : 0);
+  const daily: VelocityResult['daily'] = [];
+  for (let i = safeWindow - 1; i >= 0; i--) {
+    const day = new Date(endMs - i * 86_400_000).toISOString().slice(0, 10);
+    const d = perDay.get(day);
+    daily.push({ day, completed: d?.completed ?? 0, completions: d?.completions ?? 0 });
+  }
 
   return {
     windowDays,
@@ -169,5 +196,7 @@ export function computeVelocity(input: VelocityInput): VelocityResult {
     bulkEventsExcluded,
     estCompletedExcludedAsBulk,
     sampleSufficient: completionEvents >= MIN_SAMPLE_EVENTS && estCompleted > 0,
+    paceRatio: deliveryRate / nominalCapacity,
+    daily,
   };
 }

@@ -112,3 +112,31 @@ describe('computeVelocity', () => {
     expect(result.measuredFocusFactor).toBeCloseTo(0.25, 6); // 0.5 / 2
   });
 });
+
+describe('computeVelocity — pace (Cockpit)', () => {
+  it('paceRatio is uncapped and daily lists every day of the window, batch writes left out', () => {
+    const today = new Date().toISOString().slice(0, 10);
+    const at = `${today}T08:00:00.000Z`;
+    const bulkAt = `${today}T09:00:00.000Z`;
+    const many = new Map(estimates);
+    for (let i = 0; i < 7; i++) many.set(`bulk${i}`, 2);
+    const result = computeVelocity({
+      windowDays: 3,
+      unitsPerDay: 1,
+      workerCount: 1,
+      currentFocusFactor: 1,
+      estimateByNodeId: many,
+      progressEvents: [
+        progress('a', 0, 100, at),
+        progress('b', 0, 100, `${today}T10:00:00.000Z`),
+        // a batch write: > BULK_TIMESTAMP_THRESHOLD events sharing one timestamp
+        ...Array.from({ length: BULK_TIMESTAMP_THRESHOLD + 2 }, (_, i) => progress(`bulk${i}`, 0, 100, bulkAt)),
+      ],
+    });
+    expect(result.measuredFocusFactor).toBeLessThanOrEqual(1); // the knob stays capped
+    expect(result.paceRatio).toBeCloseTo(4 / 3, 6); // 4 days of estimates in a 3-day window, capacity 1 — uncapped
+    expect(result.daily).toHaveLength(3);
+    expect(result.daily[2]).toEqual({ day: today, completed: 4, completions: 2 });
+    expect(result.daily[0].completed).toBe(0);
+  });
+});

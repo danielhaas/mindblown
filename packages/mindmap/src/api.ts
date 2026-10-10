@@ -2489,3 +2489,17 @@ export function undismissLintFinding(
   if (nodeId) params.set('nodeId', nodeId);
   return request(`/api/maps/${mapId}/lint/dismissals?${params}`, { method: 'DELETE' });
 }
+
+/** Pace for the Cockpit (#pace): the server's velocity measurement, daily series included. */
+export interface VelocityPaceResponse {
+  windowDays: number;
+  nominalCapacity: number;
+  effortUnit: string;
+  paceRatio: number;
+  daily: Array<{ day: string; completed: number; completions: number }>;
+  bulkEventsExcluded: number;
+}
+
+export function fetchVelocity(mapId: string, windowDays = 14): Promise<VelocityPaceResponse> {
+  return request<VelocityPaceResponse>(`/api/maps/${mapId}/velocity?windowDays=${windowDays}`);
+}

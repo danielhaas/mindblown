@@ -243,10 +243,11 @@ export {
   netDeliveryRate,
   OFFLINE_MERGE_HOURS,
   assessForecastConfidence,
+  summarisePace,
   CONFIDENCE_DIVERGENCE_FLOOR_DAYS,
   CONFIDENCE_DIVERGENCE_RATIO,
 } from './velocity.js';
-export type { ScopedCapacityInput, PrRecord, RepoThroughput } from './velocity.js';
+export type { ScopedCapacityInput, PrRecord, RepoThroughput, PaceDay, PaceSummary } from './velocity.js';
 export type {
   ForecastConfidence,
   ForecastConfidenceInput,

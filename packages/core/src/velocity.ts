@@ -311,3 +311,55 @@ export function assessForecastConfidence(input: ForecastConfidenceInput): Foreca
     note: `Both models agree within ${Math.abs(divergenceDays)}d and every open leaf is estimated.`,
   };
 }
+
+// ── Pace (Cockpit, status_digest) ──────────────────────────────────
+
+export interface PaceDay {
+  day: string;
+  completed: number;
+  completions: number;
+}
+
+export interface PaceSummary {
+  today: number;
+  last7: number;
+  window: number;
+  windowDays: number;
+  /** Estimated days finished per calendar day over the window. */
+  perDay: number;
+  /** perDay ÷ nominal capacity — how many planned days one calendar day delivers. Uncapped. */
+  ratio: number;
+  /** One sentence for a PM; safe to render verbatim. */
+  note: string;
+}
+
+/**
+ * "We planned days for the work of today, but we did it all today" — the
+ * plan's estimated days finished per calendar day, against what the plan
+ * assumes one calendar day delivers (nominal capacity = workers × units/day).
+ */
+export function summarisePace(daily: PaceDay[], nominalCapacity: number, unit = 'days'): PaceSummary {
+  const sum = (ds: PaceDay[]) => ds.reduce((s, d) => s + d.completed, 0);
+  const windowDays = Math.max(1, daily.length);
+  const window = sum(daily);
+  const perDay = window / windowDays;
+  const ratio = nominalCapacity > 0 ? perDay / nominalCapacity : 0;
+  const fmt = (n: number) => (n >= 10 ? n.toFixed(0) : n.toFixed(1));
+  const note =
+    window <= 0
+      ? `No estimated work finished in the last ${windowDays} days.`
+      : ratio >= 1.5
+        ? `Work runs ${fmt(ratio)}× faster than planned — ${fmt(perDay)} ${unit} of estimates finished per calendar day against ${fmt(nominalCapacity)} planned.`
+        : ratio <= 0.67
+          ? `Work runs at ${Math.round(ratio * 100)}% of the planned pace — ${fmt(perDay)} ${unit} of estimates per calendar day against ${fmt(nominalCapacity)} planned.`
+          : `Work runs at about the planned pace — ${fmt(perDay)} ${unit} of estimates per calendar day.`;
+  return {
+    today: daily.length > 0 ? daily[daily.length - 1].completed : 0,
+    last7: sum(daily.slice(-7)),
+    window,
+    windowDays,
+    perDay,
+    ratio,
+    note,
+  };
+}
