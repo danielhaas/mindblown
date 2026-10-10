@@ -425,7 +425,8 @@ export function _resetHeldCloseChecksForTests(): void {
  *   - merged elsewhere (a release branch): the mirror records it; both
  *     gates keep holding, as live.
  *   - closed unmerged: like `handleAbandonedPr`, nothing is undone while
- *     a replacement PR is in flight or has landed the work. Otherwise the
+ *     a replacement PR is in flight; one that already landed the work
+ *     closes the issue on its merge commit, as above. Otherwise the
  *     mirror records the death and the inbound `computeStateUpdates` with
  *     the forge's "open" rolls the node back off done — unless the node
  *     was claimed done AFTER the PR died, in which case that claim wins
@@ -472,30 +473,37 @@ export async function resolveHeldCloses(
       const probe = await probeIssueLanded(target.owner, target.repo, issueNumber, forge);
       const defaultBranch = probe.defaultBranch ?? null;
 
-      if (merged && defaultBranch != null && pr.base.ref === defaultBranch) {
+      // The work landed on the default branch — through this PR, or (it
+      // died) through a replacement whose delivery was missed as well.
+      const mergedHere = merged && defaultBranch != null && pr.base.ref === defaultBranch;
+      const landedElsewhere = !merged && probe.landed != null;
+      if (mergedHere || landedElsewhere) {
         const node = await nodeDb.getNode(c.nodeId);
         const link = node?.externalLinks.find((l) => isForgeLink(l) && l.externalId === c.externalId);
         if (!node || !link) continue;
         // The merge evidence first: the close decision then needs no probe,
         // and survives a failed attempt below.
-        const stamped: ExternalLink = {
-          ...link,
-          ...(pr.merge_commit_sha ? { mergeCommitSha: pr.merge_commit_sha, mergedPrNumber: pr.number } : {}),
-        };
-        const links = node.externalLinks.map((l) => (l === link ? stamped : l));
-        if (stamped !== link) await nodeDb.updateNode(c.nodeId, { externalLinks: links });
+        const sha = mergedHere ? (pr.merge_commit_sha ?? probe.landed?.mergeCommitSha ?? null) : probe.landed!.mergeCommitSha;
+        const prNumber = mergedHere ? pr.number : probe.landed!.number;
+        let links = node.externalLinks;
+        let stamped = link;
+        if (sha && link.mergeCommitSha !== sha) {
+          stamped = { ...link, mergeCommitSha: sha, mergedPrNumber: prNumber };
+          links = node.externalLinks.map((l) => (l === link ? stamped : l));
+          await nodeDb.updateNode(c.nodeId, { externalLinks: links });
+        }
         const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge);
         if (result.stateAction !== 'closed_completed') continue; // retried next round, mirror still armed
         await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
         await replay(defaultBranch);
         closed++;
-        console.log(`[catchup] held close resolved: ${c.externalId} closed — PR #${pr.number} merged`);
+        console.log(`[catchup] held close resolved: ${c.externalId} closed — PR #${prNumber} landed`);
         continue;
       }
 
-      if (!merged && (probe.inFlight || probe.landed)) {
-        // A replacement PR is working on it, or already shipped it: the
-        // live paths take it from there (handleAbandonedPr's rule).
+      if (!merged && probe.inFlight) {
+        // A replacement PR is working on it: the live paths take it from
+        // there (handleAbandonedPr's rule).
         continue;
       }
 

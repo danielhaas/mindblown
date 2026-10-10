@@ -1191,6 +1191,31 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
     expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
   });
 
+  it('closed unmerged, but a replacement PR already landed the work: the issue closes on its merge commit', async () => {
+    forgePr = pr({});
+    probe.mockResolvedValue({
+      closingPrs: [], defaultBranch: 'main', inFlight: false,
+      landed: { number: 12, state: 'closed', merged: true, mergedAt: T_DEATH, mergeCommitSha: 'def456', baseRef: 'main', url: 'u' },
+    } as never);
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 1, rolledBack: 0 });
+    expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'def456', mergedPrNumber: 12 });
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+  });
+
+  it('merged without a sha on the PR: the landing probe\'s sha is the evidence', async () => {
+    forgePr = pr({ merged: true, merged_at: T_DEATH, merge_commit_sha: null });
+    probe.mockResolvedValue({
+      closingPrs: [], defaultBranch: 'main', inFlight: false,
+      landed: { number: 9, state: 'closed', merged: true, mergedAt: T_DEATH, mergeCommitSha: 'abc999', baseRef: 'main', url: 'u' },
+    } as never);
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    await resolveHeldCloses(makeTarget('o', 'r'), forge);
+    expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'abc999' });
+  });
+
   it('merged to a release branch: the mirror records it, nothing rolled back, nothing closed', async () => {
     forgePr = pr({ merged: true, merged_at: T_DEATH, base: { ref: 'release/v1' } });
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
