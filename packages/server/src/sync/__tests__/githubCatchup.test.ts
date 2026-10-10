@@ -73,6 +73,8 @@ vi.mock('../../db/nodes.js', () => ({
   // Default: no unresolved links, so the direct-resolve pass is a no-op
   // for every pre-existing case in this file.
   findLinksMissingState: vi.fn(async () => []),
+  // Default: nothing held, so the held-close pass (#423) is a no-op too.
+  findHeldCloseCandidates: vi.fn(async () => []),
   notDeleted: { __pred: true },
   onActiveMap: { __pred: true },
 }));
@@ -99,9 +101,15 @@ vi.mock('@mindblown/integrations', () => {
     fetchChangedIssues: vi.fn(async () => []),
     getGitHubIssue: vi.fn(async () => ({ number: 0, state: 'open' })),
     mintInstallationToken: vi.fn(async () => 'tok'),
+    updateGitHubIssue: vi.fn(async () => ({ stateAction: 'held', holdReason: 'pr_not_landed' })),
+    probeIssueLanded: vi.fn(async () => ({ closingPrs: [], defaultBranch: 'main', landed: null, inFlight: false })),
+    extractClosingIssueRefs: (text: string) =>
+      [...text.matchAll(/\b(?:closes|fixes|resolves)\s+#(\d+)/gi)].map((m) => Number(m[1])),
     GitHubApiError: MockGitHubApiError,
   };
 });
+
+vi.mock('../prSync.js', () => ({ handlePrClosed: vi.fn(async () => 1) }));
 
 vi.mock('../parentEpicRollup.js', () => ({
   parseParentReferences: () => [],
@@ -137,13 +145,16 @@ import {
   isHealthyTick,
   reconcileRepo,
   resolveUnlistedLinks,
+  resolveHeldCloses,
+  _resetHeldCloseChecksForTests,
   computeStateUpdates,
   computeCursorAdvance,
   _resetAuthFailureCountersForTests,
   _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
-import { fetchChangedIssues, getGitHubIssue, GitHubApiError, type ForgeClient } from '@mindblown/integrations';
+import { fetchChangedIssues, getGitHubIssue, GitHubApiError, updateGitHubIssue, probeIssueLanded, type ForgeClient } from '@mindblown/integrations';
+import { handlePrClosed } from '../prSync.js';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
 import * as nodeDb from '../../db/nodes.js';
 
@@ -160,6 +171,7 @@ function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
     noTransition: 0,
     mirrorRepaired: 0,
     directResolved: 0,
+    heldClosesResolved: 0,
     stateSyncErrored: 0,
     ingested: 0,
     ingestErrored: 0,
@@ -1081,3 +1093,146 @@ describe('computeCursorAdvance — truncated-fetch cursor safety', () => {
   });
 });
 
+describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', () => {
+  const T_DEATH = '2026-10-05T00:00:00Z';
+  const mirror = (state: LinkedPrState['state'], lastSyncedAt: string): LinkedPrState => ({
+    number: 9, repo: 'o/r', url: 'u', head: 'h', base: 'main', author: null, draft: false,
+    state, mergeable: null, changedFiles: [], reviews: [], checks: { state: null, failures: [] },
+    lastSyncedAt,
+  });
+  const link: ExternalLink = { provider: 'gitea', externalId: 'o/r#5', url: 'u', syncEnabled: true, lastSyncedAt: null, state: 'open' } as ExternalLink;
+  const doneNode = (pr: LinkedPrState | null, completedAt = '2026-10-01T00:00:00Z') => ({
+    id: 'n1', mapId: 'm1', status: 'done', percentComplete: 100, completedAt,
+    externalLinks: [link], linkedPr: pr,
+  });
+  type Pr = { number: number; title: string; body: string; state: string; merged: boolean; merged_at: string | null; closed_at: string | null; merge_commit_sha: string | null; base: { ref: string } };
+  let forgePr: Pr;
+  const pr = (over: Partial<Pr>): Pr => ({
+    number: 9, title: 't', body: 'Closes #5', state: 'closed', merged: false, merged_at: null,
+    closed_at: T_DEATH, merge_commit_sha: null, base: { ref: 'main' }, ...over,
+  });
+  const forge = { ...fakeForge, getPullRequest: vi.fn(async () => forgePr) } as unknown as ForgeClient;
+  const probe = vi.mocked(probeIssueLanded);
+
+  beforeEach(() => {
+    _resetHeldCloseChecksForTests();
+    vi.mocked(nodeDb.findHeldCloseCandidates).mockReset();
+    vi.mocked(nodeDb.findHeldCloseCandidates).mockResolvedValue([
+      { nodeId: 'n1', externalId: 'o/r#5', prNumber: 9, mirrorSyncedAt: '2026-10-01T00:00:00Z' },
+    ]);
+    vi.mocked(nodeDb.getNode).mockReset();
+    vi.mocked(nodeDb.updateNode).mockReset();
+    vi.mocked(nodeDb.updateNode).mockImplementation(async (id: string, u: object) => ({ id, mapId: 'm1', ...u }) as never);
+    vi.mocked(nodeDb.setExternalLinkState).mockReset();
+    vi.mocked(handlePrClosed).mockClear();
+    vi.mocked(updateGitHubIssue).mockReset();
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'held', holdReason: 'pr_not_landed' } as never);
+    probe.mockReset();
+    probe.mockResolvedValue({ closingPrs: [], defaultBranch: 'main', landed: null, inFlight: false } as never);
+    (forge.getPullRequest as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  it('a PR still in review: nothing replayed, asked again only after 30 min', async () => {
+    forgePr = pr({ state: 'open', closed_at: null });
+    const t0 = Date.parse('2026-10-10T00:00:00Z');
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge, 10, t0)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
+    await resolveHeldCloses(makeTarget('o', 'r'), forge, 10, t0 + 5 * 60_000);
+    expect(forge.getPullRequest).toHaveBeenCalledTimes(1);
+    await resolveHeldCloses(makeTarget('o', 'r'), forge, 10, t0 + 31 * 60_000);
+    expect(forge.getPullRequest).toHaveBeenCalledTimes(2);
+    expect(handlePrClosed).not.toHaveBeenCalled();
+  });
+
+  it('closed unmerged: replayed with the PR\'s own close time, node back off done, issue untouched', async () => {
+    forgePr = pr({});
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('closed', T_DEATH)) as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 1 });
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+    expect(nodeDb.updateNode).toHaveBeenCalledWith('n1', expect.objectContaining({ status: 'in_progress' }));
+    expect(updateGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it('closed unmerged, but the node was claimed done AFTER the PR died: that claim wins, the issue closes', async () => {
+    forgePr = pr({});
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('closed', T_DEATH), '2026-10-07T00:00:00Z') as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 1, rolledBack: 0 });
+    expect(nodeDb.updateNode).not.toHaveBeenCalled();
+    expect(nodeDb.setExternalLinkState).toHaveBeenCalledWith('n1', 'o/r#5', 'closed');
+  });
+
+  it('closed unmerged while a replacement PR is in flight: nothing undone, nothing replayed', async () => {
+    forgePr = pr({});
+    probe.mockResolvedValue({ closingPrs: [], defaultBranch: 'main', landed: null, inFlight: true } as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
+    expect(handlePrClosed).not.toHaveBeenCalled();
+    expect(nodeDb.updateNode).not.toHaveBeenCalled();
+  });
+
+  it('merged to the default branch: merge commit stamped, issue closed, THEN the mirror cleared', async () => {
+    forgePr = pr({ merged: true, merged_at: T_DEATH, merge_commit_sha: 'abc123' });
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 1, rolledBack: 0 });
+    expect(nodeDb.updateNode).toHaveBeenCalledWith('n1', {
+      externalLinks: [expect.objectContaining({ mergeCommitSha: 'abc123', mergedPrNumber: 9 })],
+    });
+    expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'abc123' });
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH);
+    expect(vi.mocked(updateGitHubIssue).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(handlePrClosed).mock.invocationCallOrder[0]);
+  });
+
+  it('merged, but the close fails: the mirror stays armed so the node is retried — never stranded', async () => {
+    forgePr = pr({ merged: true, merged_at: T_DEATH, merge_commit_sha: 'abc123' });
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockRejectedValue(new Error('502'));
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
+    expect(handlePrClosed).not.toHaveBeenCalled();
+    expect(nodeDb.setExternalLinkState).not.toHaveBeenCalled();
+  });
+
+  it('closed unmerged, but a replacement PR already landed the work: the issue closes on its merge commit', async () => {
+    forgePr = pr({});
+    probe.mockResolvedValue({
+      closingPrs: [], defaultBranch: 'main', inFlight: false,
+      landed: { number: 12, state: 'closed', merged: true, mergedAt: T_DEATH, mergeCommitSha: 'def456', baseRef: 'main', url: 'u' },
+    } as never);
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 1, rolledBack: 0 });
+    expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'def456', mergedPrNumber: 12 });
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+  });
+
+  it('merged without a sha on the PR: the landing probe\'s sha is the evidence', async () => {
+    forgePr = pr({ merged: true, merged_at: T_DEATH, merge_commit_sha: null });
+    probe.mockResolvedValue({
+      closingPrs: [], defaultBranch: 'main', inFlight: false,
+      landed: { number: 9, state: 'closed', merged: true, mergedAt: T_DEATH, mergeCommitSha: 'abc999', baseRef: 'main', url: 'u' },
+    } as never);
+    vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('open', '2026-10-01T00:00:00Z')) as never);
+    vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
+    await resolveHeldCloses(makeTarget('o', 'r'), forge);
+    expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'abc999' });
+  });
+
+  it('merged to a release branch: the mirror records it, nothing rolled back, nothing closed', async () => {
+    forgePr = pr({ merged: true, merged_at: T_DEATH, base: { ref: 'release/v1' } });
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH);
+    expect(nodeDb.updateNode).not.toHaveBeenCalled();
+    expect(updateGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it('a PR that no longer references the issue: left alone', async () => {
+    forgePr = pr({ body: 'unrelated' });
+    await resolveHeldCloses(makeTarget('o', 'r'), forge);
+    expect(probe).not.toHaveBeenCalled();
+    expect(handlePrClosed).not.toHaveBeenCalled();
+  });
+
+  it('a forge error on one node is logged and the pass goes on', async () => {
+    (forge.getPullRequest as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('boom'));
+    expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0 });
+  });
+});

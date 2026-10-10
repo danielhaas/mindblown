@@ -20,6 +20,9 @@ import {
   fetchChangedIssues,
   getGitHubIssue,
   GitHubApiError,
+  updateGitHubIssue,
+  probeIssueLanded,
+  extractClosingIssueRefs,
 } from '@mindblown/integrations';
 import {
   forgeFromInstallation,
@@ -41,6 +44,7 @@ import {
 } from './parentEpicRollup.js';
 import { ingestNewIssuesForRepo } from './githubIngest.js';
 import { markWorkStarted } from './workStartSync.js';
+import { handlePrClosed, type GhPrPayload } from './prSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
 
@@ -132,6 +136,8 @@ export interface ReconcileResult {
    * sync cursor, which the list structurally never returns.
    */
   directResolved: number;
+  /** Done nodes held open on a PR whose close was never delivered, resolved this tick (#423). */
+  heldClosesResolved: number;
   /**
    * Count of node-update errors hit during the state-sync loop. Surfaced
    * alongside `ingestErrored` so partial failures are observable.
@@ -383,6 +389,162 @@ export async function resolveUnlistedLinks(
   return { resolved, unresolvable };
 }
 
+// ── Held-close backstop (#423) ────────────────────────────────────
+
+/** Nodes asked about per repo per tick — one PR fetch each. */
+const HELD_CLOSE_BUDGET = 10;
+/** An in-review PR is asked about again after this long, not every tick. */
+const HELD_CLOSE_RECHECK_MS = 30 * 60_000;
+const heldCloseCheckedAt = new Map<string, number>();
+
+/** Test hook: forget when each node was last asked about. */
+export function _resetHeldCloseChecksForTests(): void {
+  heldCloseCheckedAt.clear();
+}
+
+/**
+ * Replay a `pull_request.closed` the webhook never delivered.
+ *
+ * A done node whose PR is in flight keeps its issue open on purpose (the
+ * close gate in `updateGitHubIssue`). The delivery that ends that hold is
+ * `pull_request.closed`; when it is missed — no webhook yet, the forge or
+ * MindBlown down, a dropped delivery — the mirror says `open` forever, the
+ * issue stays open, the node stays done, and no later sync revisits it:
+ * the issue never changes, so the changed-issue loop never sees it.
+ *
+ * For a bounded slice of such nodes this asks the forge for the PR. Still
+ * open, or no longer referencing the issue → nothing (asked again after
+ * HELD_CLOSE_RECHECK_MS). Closed → what the live webhook would have done,
+ * through the same handlers and gates, stamped with the PR's own close
+ * time (the livelock rule in core/linkedPr.ts compares against it):
+ *   - merged to the default branch: the merge commit is stamped on the
+ *     link FIRST and the issue closed as completed on that evidence; only
+ *     after the close succeeded is the mirror cleared. A failed close
+ *     leaves the mirror armed, so the node stays a candidate and is
+ *     retried — never stranded done-with-open-issue and no mirror.
+ *   - merged elsewhere (a release branch): the mirror records it; both
+ *     gates keep holding, as live.
+ *   - closed unmerged: like `handleAbandonedPr`, nothing is undone while
+ *     a replacement PR is in flight; one that already landed the work
+ *     closes the issue on its merge commit, as above. Otherwise the
+ *     mirror records the death and the inbound `computeStateUpdates` with
+ *     the forge's "open" rolls the node back off done — unless the node
+ *     was claimed done AFTER the PR died, in which case that claim wins
+ *     and the outbound close runs instead.
+ */
+export async function resolveHeldCloses(
+  target: RepoTarget,
+  forge: ForgeClient,
+  budget: number = HELD_CLOSE_BUDGET,
+  now: number = Date.now(),
+): Promise<{ checked: number; closed: number; rolledBack: number }> {
+  const repoFullName = `${target.owner}/${target.repo}`;
+  for (const [id, at] of heldCloseCheckedAt) {
+    if (now - at >= HELD_CLOSE_RECHECK_MS) heldCloseCheckedAt.delete(id);
+  }
+  const candidates = (await nodeDb.findHeldCloseCandidates(repoFullName, budget * 5))
+    .filter((c) => !heldCloseCheckedAt.has(c.nodeId))
+    .slice(0, budget);
+  let checked = 0;
+  let closed = 0;
+  let rolledBack = 0;
+
+  for (const c of candidates) {
+    heldCloseCheckedAt.set(c.nodeId, now);
+    checked++;
+    try {
+      const pr = await forge.getPullRequest(target.owner, target.repo, c.prNumber);
+      if (pr.state !== 'closed') continue;
+      const issueNumber = Number(c.externalId.slice(repoFullName.length + 1));
+      if (!extractClosingIssueRefs(`${pr.title ?? ''}\n${pr.body ?? ''}`).includes(issueNumber)) continue;
+
+      const merged = pr.merged ?? pr.merged_at != null;
+      const closedAt = pr.closed_at ?? pr.merged_at ?? null;
+      const replay = (defaultBranch: string | null) =>
+        handlePrClosed(
+          repoFullName,
+          { number: pr.number, title: pr.title, body: pr.body, state: 'closed', merged, base: { ref: pr.base.ref } } as GhPrPayload,
+          defaultBranch,
+          closedAt,
+        );
+
+      // One probe answers the default branch, a replacement PR in flight
+      // and work that already landed.
+      const probe = await probeIssueLanded(target.owner, target.repo, issueNumber, forge);
+      const defaultBranch = probe.defaultBranch ?? null;
+
+      // The work landed on the default branch — through this PR, or (it
+      // died) through a replacement whose delivery was missed as well.
+      const mergedHere = merged && defaultBranch != null && pr.base.ref === defaultBranch;
+      const landedElsewhere = !merged && probe.landed != null;
+      if (mergedHere || landedElsewhere) {
+        const node = await nodeDb.getNode(c.nodeId);
+        const link = node?.externalLinks.find((l) => isForgeLink(l) && l.externalId === c.externalId);
+        if (!node || !link) continue;
+        // The merge evidence first: the close decision then needs no probe,
+        // and survives a failed attempt below.
+        const sha = mergedHere ? (pr.merge_commit_sha ?? probe.landed?.mergeCommitSha ?? null) : probe.landed!.mergeCommitSha;
+        const prNumber = mergedHere ? pr.number : probe.landed!.number;
+        let links = node.externalLinks;
+        let stamped = link;
+        if (sha && link.mergeCommitSha !== sha) {
+          stamped = { ...link, mergeCommitSha: sha, mergedPrNumber: prNumber };
+          links = node.externalLinks.map((l) => (l === link ? stamped : l));
+          await nodeDb.updateNode(c.nodeId, { externalLinks: links });
+        }
+        const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge);
+        if (result.stateAction !== 'closed_completed') continue; // retried next round, mirror still armed
+        await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
+        await replay(defaultBranch);
+        closed++;
+        console.log(`[catchup] held close resolved: ${c.externalId} closed — PR #${prNumber} landed`);
+        continue;
+      }
+
+      if (!merged && probe.inFlight) {
+        // A replacement PR is working on it: the live paths take it from
+        // there (handleAbandonedPr's rule).
+        continue;
+      }
+
+      await replay(defaultBranch);
+      if (merged) continue; // merged off the default branch: both gates hold
+
+      const node = await nodeDb.getNode(c.nodeId);
+      if (!node) continue;
+      const updates = computeStateUpdates(node, { state: 'open' }, c.externalId);
+      if (updates) {
+        const updated = await nodeDb.updateNode(c.nodeId, updates);
+        if (updated) {
+          rolledBack++;
+          console.log(`[catchup] held close resolved: ${c.externalId} stays open, node back off done — PR #${pr.number} closed unmerged`);
+          broadcast(updated.mapId, {
+            type: 'node:updated',
+            nodeId: c.nodeId,
+            fields: Object.keys(updates),
+            node: updated,
+            source: 'github_catchup',
+          });
+        }
+        continue;
+      }
+      // Rollback refused: the node was claimed done after the PR died. That
+      // claim wins (livelock rule) — let the outbound decision close it.
+      const link = node.externalLinks.find((l) => isForgeLink(l) && l.externalId === c.externalId);
+      if (!link) continue;
+      const result = await updateGitHubIssue(node, link, forge);
+      if (result.stateAction === 'closed_completed') {
+        await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
+        closed++;
+        console.log(`[catchup] held close resolved: ${c.externalId} closed — done claimed after PR #${pr.number} died`);
+      }
+    } catch (err) {
+      console.warn(`[catchup] held-close check failed for ${c.externalId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return { checked, closed, rolledBack };
+}
+
 // ── Per-repo reconcile ────────────────────────────────────────────
 
 async function findNodesByExternalIds(
@@ -468,7 +630,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -510,7 +672,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -601,6 +763,23 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     console.warn(
       '[catchup] direct-resolve pass failed for',
+      repoLabel,
+      ':',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // ── Held-close backstop (#423) ───────────────────────────────────
+  // A done node held open on a PR whose close was never delivered. Same
+  // contract as the direct-resolve pass: bounded, best-effort, never
+  // fails the tick or holds the cursor.
+  let heldClosesResolved = 0;
+  try {
+    const r = await resolveHeldCloses(target, forge);
+    heldClosesResolved = r.closed + r.rolledBack;
+  } catch (err) {
+    console.warn(
+      '[catchup] held-close pass failed for',
       repoLabel,
       ':',
       err instanceof Error ? err.message : err,
@@ -762,6 +941,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     noTransition,
     mirrorRepaired,
     directResolved,
+    heldClosesResolved,
     stateSyncErrored,
     ingested: ingestCreated,
     ingestErrored,
@@ -866,7 +1046,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),
