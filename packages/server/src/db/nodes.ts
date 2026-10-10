@@ -1105,6 +1105,24 @@ export async function findHeldCloseCandidates(
  * (`prAbandon`, `closedIssueAudit`) resolve nodes the same way the
  * webhook handler does instead of each growing its own scan.
  */
+/**
+ * Live nodes on `mapId` that carry a forge link to `externalId` (#314 —
+ * one issue, one node). Used by the manual link route and the title
+ * auto-link before they add a second node to an issue.
+ */
+export async function findMapNodesLinkingIssue(
+  mapId: string,
+  externalId: string,
+): Promise<Array<{ id: string; text: string }>> {
+  const rows = await db
+    .select({ id: nodes.id, text: nodes.text, externalLinks: nodes.externalLinks })
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapId), notDeleted, linksAnyExternalId([externalId])));
+  return rows
+    .filter((r) => ((r.externalLinks as ExternalLink[]) ?? []).some((l) => isForgeLink(l) && l.externalId === externalId))
+    .map((r) => ({ id: r.id as string, text: r.text as string }));
+}
+
 export async function findNodeIdByExternalId(
   externalId: string,
 ): Promise<string | null> {

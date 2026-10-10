@@ -614,7 +614,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { mapId: string; nodeId: string } }>(
     '/api/maps/:mapId/nodes/:nodeId/github/link',
     async (req, reply) => {
-      const body = req.body as { owner: string; repo: string; issueNumber: number };
+      const body = req.body as { owner: string; repo: string; issueNumber: number; allowDuplicate?: boolean };
 
       if (!body.owner || !body.repo || !body.issueNumber) {
         return reply.status(400).send({
@@ -627,6 +627,28 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(404).send({
           error: { code: 'NODE_NOT_FOUND', message: `Node ${req.params.nodeId} not found` },
         });
+      }
+
+      // One issue, one node (#314). A second node on the same issue splits
+      // every sync: status flips reach one of them, rollups count the work
+      // twice, the closed-issue audit sees contradictions. Refused unless
+      // the caller says it is deliberate (a parent and its sub-issue
+      // sharing a link, a follow-up on the same ticket).
+      const externalId = `${body.owner}/${body.repo}#${body.issueNumber}`;
+      if (!body.allowDuplicate) {
+        const others = (await nodeDb.findMapNodesLinkingIssue(req.params.mapId, externalId)).filter(
+          (n) => n.id !== req.params.nodeId,
+        );
+        if (others.length > 0) {
+          const list = others.map((n) => `${n.id} "${n.text}"`).join(', ');
+          return reply.status(409).send({
+            error: {
+              code: 'ISSUE_ALREADY_LINKED',
+              message: `${externalId} is already linked to ${list} on this map. Link it to one node only — or pass allowDuplicate: true when the second link is deliberate.`,
+              nodes: others.map((n) => ({ id: n.id, text: n.text })),
+            },
+          });
+        }
       }
 
       // Get GitHub token for this map
@@ -647,7 +669,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const externalLink: ExternalLink = stampMirrorHash(
         {
           provider: ghCtx.forge.endpoint.kind,
-          externalId: `${body.owner}/${body.repo}#${body.issueNumber}`,
+          externalId,
           url: issue.html_url,
           syncEnabled: true,
           lastSyncedAt: new Date().toISOString(),

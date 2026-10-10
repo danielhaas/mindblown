@@ -698,10 +698,11 @@ export function linkGitHubIssue(
   owner: string,
   repo: string,
   issueNumber: number,
+  allowDuplicate?: boolean,
 ): Promise<any> {
   return request(`/api/maps/${mapId}/nodes/${nodeId}/github/link`, {
     method: 'POST',
-    body: JSON.stringify({ owner, repo, issueNumber }),
+    body: JSON.stringify({ owner, repo, issueNumber, ...(allowDuplicate ? { allowDuplicate: true } : {}) }),
   });
 }
 
