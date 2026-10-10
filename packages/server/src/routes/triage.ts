@@ -283,10 +283,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         .where(and(pending, isError))
         .orderBy(desc(triageDecisions.decidedAt))
         .limit(2000),
+      // Recovery is judged on ALL the map's decisions: a successful one an
+      // operator already confirmed (or a skip saved as reviewed) still
+      // proves the pipeline works again.
       db
         .select({ reason: triageDecisions.reason, decidedAt: triageDecisions.decidedAt, decision: triageDecisions.decision })
         .from(triageDecisions)
-        .where(and(pending, sql`NOT (${isError})`))
+        .where(and(eq(triageDecisions.mapId, req.params.mapId), sql`NOT (${isError})`))
         .orderBy(desc(triageDecisions.decidedAt))
         .limit(1),
       db

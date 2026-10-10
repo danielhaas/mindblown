@@ -50,6 +50,7 @@ export function CockpitView() {
   const [triage, setTriage] = useState<TriageDecision[]>([]);
   // Server-side total — the list is capped, the real backlog was 1946 (Round 2).
   const [triageTotal, setTriageTotal] = useState<number | null>(null);
+  const [pipelineState, setPipelineState] = useState<api.TriagePipelineResponse | null>(null);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Asks loop: ids currently being released back into the queue. One at a
@@ -83,6 +84,14 @@ export function CockpitView() {
     setTriage([]);
     setTriageTotal(null);
     setTriageError(null);
+    setPipelineState(null);
+    // The pipeline state comes from the server (#320): it sees every pending
+    // row and the reviewed successes that prove a recovery, and it answers
+    // API-key callers too — the row list below does not.
+    api
+      .fetchTriagePipeline(currentMapId)
+      .then((p) => !cancelled && setPipelineState(p))
+      .catch(() => {});
     Promise.all([
       api.fetchReleaseForecast(currentMapId),
       api.fetchChangeHistory(currentMapId, { sinceDays: WINDOW_DAYS, limit: EVENT_CAP }),
@@ -127,7 +136,8 @@ export function CockpitView() {
     () => sprintHealth(pickCurrentCycle(cycles), nodes, categoryOf, currentMap?.wipLimit ?? null),
     [cycles, nodes, categoryOf, currentMap?.wipLimit],
   );
-  const pipeline = useMemo(() => triagePipelineState(triage), [triage]);
+  const localPipeline = useMemo(() => triagePipelineState(triage), [triage]);
+  const pipeline = pipelineState ?? localPipeline;
   const escalate = useMemo(() => collapseDuplicates(escalations(nodes, computed, categoryOf, 10)).slice(0, 5), [nodes, computed, categoryOf]);
 
   if (error) return <Shell><p style={{ color: '#b91c1c' }}>{error}</p></Shell>;
@@ -161,7 +171,24 @@ export function CockpitView() {
           <code>{pipeline.cause}</code>
         </div>
       )}
-      {!pipeline.broken && (triageTotal ?? 0) > 0 && (
+      {pipeline.stale && (
+        <div
+          style={{
+            background: '#fffbeb',
+            border: '1px solid #fde68a',
+            color: '#92400e',
+            borderRadius: 10,
+            padding: '10px 16px',
+            marginBottom: 16,
+            fontSize: 13,
+          }}
+        >
+          <strong>Triage recovered</strong> — {pipeline.count} tickets from the outage
+          {pipeline.since ? ` (since ${pipeline.since.slice(0, 10)})` : ''} still need a Re-classify. Cause was:{' '}
+          <code>{pipeline.cause}</code>
+        </div>
+      )}
+      {!pipeline.broken && !pipeline.stale && (triageTotal ?? 0) > 0 && (
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 12 }}>
           {triageTotal} tickets waiting for triage.
         </div>
