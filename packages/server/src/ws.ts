@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { verifyToken } from './auth.js';
+import { isTokenRevoked, verifyToken } from './auth.js';
 import { db } from './db/connection.js';
 import { users } from './db/schema.js';
 import { eq } from 'drizzle-orm';
@@ -65,7 +65,9 @@ export async function registerWebSocket(app: FastifyInstance): Promise<void> {
 
       if (token) {
         try {
-          const payload = verifyToken(token);
+          const payload = verifyToken(token) as ReturnType<typeof verifyToken> & { iat?: number };
+          // A session ended by a password change stays anonymous here (#315).
+          if (await isTokenRevoked(payload.userId, payload.iat)) throw new Error('revoked');
           userId = payload.userId;
 
           // Fetch user name

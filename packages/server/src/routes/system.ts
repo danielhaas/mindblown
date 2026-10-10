@@ -117,12 +117,20 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'VALIDATION_ERROR', message: 'email is required' },
       });
     }
-    // Case-insensitive: the admin types what the user told them.
-    const [user] = await db
+    // Case-insensitive: the admin types what the user told them. The
+    // column is unique only case-sensitively, so two accounts may differ
+    // in case alone — then refuse rather than reset a random one.
+    const matches = await db
       .select({ id: users.id, email: users.email })
       .from(users)
       .where(sql`lower(${users.email}) = lower(${email})`)
-      .limit(1);
+      .limit(2);
+    if (matches.length > 1) {
+      return reply.status(409).send({
+        error: { code: 'AMBIGUOUS_EMAIL', message: `Several accounts match ${email} when case is ignored — type the address exactly` },
+      });
+    }
+    const [user] = matches;
     if (!user) {
       return reply.status(404).send({
         error: { code: 'USER_NOT_FOUND', message: `No user with email ${email}` },

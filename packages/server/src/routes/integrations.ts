@@ -28,7 +28,7 @@ import {
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
 import { recordWebhookCall } from '../sync/webhookAuthCheck.js';
-import { requireAdmin } from '../auth.js';
+import { isAgentRequest, requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
   ingestNewIssuesForRepo,
@@ -1269,7 +1269,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           forge: ctx.forge,
           // Explicit `=== false` so a missing/garbled field reports
           // rather than writes.
-          dryRun: body.dryRun !== false,
+          // A robot caller (API key, MCP loopback, long-lived token) only
+          // ever gets the report: write mode reopens tickets and rolls
+          // nodes back, so it needs an admin's web session (#315).
+          dryRun: isAgentRequest(req) ? true : body.dryRun !== false,
           closedBy: body.closedBy,
           since: body.since ?? null,
           limit: body.limit,

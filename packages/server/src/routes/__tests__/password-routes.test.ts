@@ -301,6 +301,25 @@ describe('POST /api/system/reset-password', () => {
     expect(updateSetCalls[1].passwordChangedAt).toBeInstanceOf(Date);
   });
 
+  it('409 when two accounts differ only in email case — never resets a random one', async () => {
+    selectQueue = [
+      [{ isAdmin: true }],
+      [
+        { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', email: 'Marcel@example.com' },
+        { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'marcel@example.com' },
+      ],
+    ];
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'MARCEL@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(409);
+    expect(updateSetCalls).toHaveLength(0);
+  });
+
   it('403 for an admin\'s long-lived token — admin actions need a web session (#315)', async () => {
     const app = await buildApp('long-lived');
     const res = await app.inject({
