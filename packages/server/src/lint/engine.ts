@@ -17,6 +17,8 @@ import {
   type LintRuleId,
   type Node,
   effectiveVersionId,
+  sprintSignals,
+  type SprintLike,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -144,6 +146,11 @@ export interface LintOptions {
   forgePrs?: Map<string, ForgePrCheck>;
   /** Set when the caller checked only the N most recent candidates. */
   forgePrsCap?: number;
+  /**
+   * The map's sprints, for the sprint-state rule (#324) — the same
+   * sprintSignals the Sprint panel shows. Omit to skip the rule.
+   */
+  sprints?: SprintLike[];
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -437,6 +444,32 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
       datedLeaves.length >= MIN_DATED_LEAVES_FOR_DEPS && totalDeps === 0
         ? [mapFinding(`${datedLeaves.length} dated leaves, 0 dependencies`)]
         : [],
+  });
+
+  // 9. sprint-state (map-level, #324) — the Sprint panel's own signals,
+  // so Plan Health and the panel cannot disagree about a sprint. ONE
+  // summary finding, like every map-level rule: dismissing a map-level
+  // finding mutes the rule, so per-sprint findings would let one dismiss
+  // silence every other sprint's problem.
+  const sprintProblems: string[] = [];
+  for (const sprint of opts.sprints ?? []) {
+    if (sprint.status === 'completed') continue;
+    const sig = sprintSignals({ sprint, sprints: opts.sprints!, items: [], now });
+    if (sig.stateIssue) sprintProblems.push(`"${sprint.name}": ${sig.stateIssue}`);
+    if (sig.overlaps.length > 0) {
+      sprintProblems.push(`"${sprint.name}" overlaps ${sig.overlaps.map((n) => `"${n}"`).join(', ')} of the same version`);
+    }
+  }
+  const sprintFindings: LintFinding[] =
+    sprintProblems.length > 0 ? [mapFinding(`${sprintProblems.length} sprint problem(s): ${sprintProblems.join('; ')}`)] : [];
+  rules.push({
+    ruleId: 'sprint-state',
+    severity: 'warn',
+    title: 'Sprint state disagrees with its dates (map-level)',
+    why: 'A sprint that ended while still "planned", or never got activated, means the sprint view and every sprint-scoped number describe a plan nobody is running.',
+    fix: 'Start, complete or re-date the sprint (Sprint panel); move overlapping sprints apart.',
+    findings: sprintFindings,
+    skipped: opts.sprints ? undefined : 'sprints not loaded',
   });
 
   // ── Requirements pack (map-wide — the register is map-global) ──
