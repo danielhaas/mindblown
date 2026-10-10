@@ -3,7 +3,7 @@
  * that AI agents can easily parse.
  */
 
-import type { MapDetail, NodeWithComputed, ScheduleResult } from './api.js';
+import type { MapDetail, NodeWithComputed, ScheduleResult, ReleaseTrendRow, ChangeEvent } from './api.js';
 import * as api from './api.js';
 
 // ── Status icons ────────────────────────────────────────────────
@@ -426,4 +426,127 @@ export function formatVersionWarnings(warnings: string[] | undefined): string {
     '\nThe forecast chains releases in target-date order, so this release order is what the forecast will use. ' +
     'Fix the target date (or sortOrder / name) if that is not what you meant.'
   );
+}
+
+// ── status_digest: slippage without due dates (#321) ───────────────
+
+interface SlippageNode {
+  id: string;
+  text: string;
+  effortEstimate: number | null;
+}
+
+/**
+ * The digest's "Slippage" section. A map whose items carry no dates can
+ * never be "behind", so date health alone reported "all on track" while
+ * scope grew and nothing shipped. These signals need no dates:
+ *   - each open release's forecast movement since the window start
+ *     (release snapshots — the Releases table's "+Nd slipped" trend);
+ *   - items pulled into an active release (versionId changes);
+ *   - estimates that grew; work reopened after done;
+ *   - a red line when no estimated effort was completed.
+ */
+export function slippageLines<N extends SlippageNode>(input: {
+  releaseRows: ReleaseTrendRow[];
+  events: ChangeEvent[];
+  nodes: N[];
+  sinceDays: number;
+  unit: string;
+  completedEffort: number;
+  completedCount: number;
+  /** How many of the finished items carry an estimate. */
+  completedWithEstimate: number;
+  /** Open leaves right now — the red line needs open work to mean anything. */
+  openLeaves: number;
+  /** True when the change log hit its row cap: the event signals undercount. */
+  eventsTruncated?: boolean;
+  fmtNode: (n: N) => string;
+  now?: Date;
+}): string[] {
+  const { events, nodes, sinceDays, unit, completedEffort, completedCount, completedWithEstimate, openLeaves, fmtNode, now = new Date() } = input;
+  const rows = input.releaseRows.filter(
+    (r) => (r.versionStatus === 'active' || r.versionStatus === 'planning') && r.remainingTickets > 0,
+  );
+  const activeIds = new Set(rows.filter((r) => r.versionStatus === 'active').map((r) => r.versionId));
+  const nameById = new Map(rows.map((r) => [r.versionId, r.versionName]));
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  const pulledIn = new Map<string, string>();
+  // Net per item: the estimate before the window's first change vs after
+  // its last (2→8→3 grew by 1, not 6). Events come newest first.
+  const estimateSpan = new Map<string, { first: number; last: number }>();
+  const reopened = new Set<string>();
+  for (const e of [...events].reverse()) {
+    if (e.eventType !== 'node.field_changed' || !e.nodeId) continue;
+    if (e.fieldName === 'versionId' && typeof e.newValue === 'string' && activeIds.has(e.newValue) && e.oldValue !== e.newValue) {
+      pulledIn.set(e.nodeId, nameById.get(e.newValue) ?? e.newValue);
+    } else if (e.fieldName === 'effortEstimate') {
+      const span = estimateSpan.get(e.nodeId);
+      if (span) span.last = Number(e.newValue ?? 0);
+      else estimateSpan.set(e.nodeId, { first: Number(e.oldValue ?? 0), last: Number(e.newValue ?? 0) });
+    } else if (e.fieldName === 'percentComplete' && Number(e.oldValue ?? 0) >= 100 && Number(e.newValue ?? 0) < 100) {
+      reopened.add(e.nodeId);
+    }
+  }
+  const grewBy = new Map<string, number>();
+  for (const [id, span] of estimateSpan) if (span.last > span.first) grewBy.set(id, span.last - span.first);
+  const live = (ids: Iterable<string>) => [...ids].filter((id) => nodeById.has(id));
+
+  const windowStart = new Date(now.getTime() - sinceDays * 86_400_000).toISOString().slice(0, 10);
+  const lines: string[] = [`## Slippage since ${windowStart}`];
+  const out: string[] = [];
+  for (const r of rows) {
+    const name = `**${r.versionName}**`;
+    if (r.evidence?.state === 'not_measurable') {
+      out.push(`- ${name}: not started yet — no forecast verdict (${r.remainingTickets} open)`);
+      continue;
+    }
+    const projected = r.velocityAdjustedFinishDate ?? r.plannedFinishDate;
+    // One model end to end: the velocity line when it has a delta, else planned.
+    const useVelocity = r.trend?.velocityFinishDeltaDays != null;
+    const d = useVelocity ? r.trend!.velocityFinishDeltaDays : (r.trend?.plannedFinishDeltaDays ?? null);
+    const was = useVelocity ? r.trend?.fromVelocityFinishDate : r.trend?.fromPlannedFinishDate;
+    const projectedNow = useVelocity ? r.velocityAdjustedFinishDate : r.plannedFinishDate;
+    const target = r.targetDate ? `, target ${r.targetDate.slice(0, 10)}` : '';
+    if (d == null) {
+      out.push(`- ${name}: forecast ${projected ?? '—'}${target} — no forecast snapshot from ${sinceDays}d ago to compare`);
+    } else if (d > 0) {
+      out.push(`- 🔴 ${name}: forecast ${projectedNow} slipped **+${d}d** since ${r.trend!.fromDate} (was ${was ?? '—'})${target}`);
+    } else if (d < 0) {
+      out.push(`- 🟢 ${name}: forecast ${projectedNow} pulled in ${-d}d since ${r.trend!.fromDate}${target}`);
+    } else {
+      out.push(`- ${name}: forecast ${projectedNow} unchanged since ${r.trend!.fromDate}${target}`);
+    }
+  }
+  const pulled = live(pulledIn.keys());
+  if (pulled.length > 0) {
+    const effort = pulled.reduce((s, id) => s + (nodeById.get(id)?.effortEstimate ?? 0), 0);
+    out.push(`- Pulled into an active release: ${pulled.length} item(s), +${effort.toFixed(2)} ${unit}`);
+    for (const id of pulled.slice(0, 8)) out.push(`  - ${fmtNode(nodeById.get(id)!)} → ${pulledIn.get(id)}`);
+  }
+  const grew = live(grewBy.keys()).sort((x, y) => grewBy.get(y)! - grewBy.get(x)!);
+  if (grew.length > 0) {
+    const total = grew.reduce((s, id) => s + grewBy.get(id)!, 0);
+    out.push(`- Estimates grew: ${grew.length} item(s), +${total.toFixed(2)} ${unit}`);
+    for (const id of grew.slice(0, 8)) out.push(`  - ${fmtNode(nodeById.get(id)!)} +${grewBy.get(id)!.toFixed(2)} ${unit}`);
+  }
+  const reopenedLive = live(reopened);
+  if (reopenedLive.length > 0) {
+    out.push(`- Reopened after done: ${reopenedLive.length} item(s)`);
+    for (const id of reopenedLive.slice(0, 8)) out.push(`  - ${fmtNode(nodeById.get(id)!)}`);
+  }
+  // A red signal, not a footnote: open work, and nothing estimated finished.
+  if (openLeaves > 0 && completedEffort <= 0) {
+    if (completedCount === 0) {
+      out.push(`- 🔴 **Nothing completed in ${sinceDays} days**`);
+    } else if (completedWithEstimate === 0) {
+      out.push(`- 🔴 **0 ${unit} of estimated effort completed in ${sinceDays} days** — the ${completedCount} item(s) finished carry no estimate, so the forecasts saw no progress`);
+    } else {
+      out.push(`- 🔴 **No net effort completed in ${sinceDays} days** — reopened work outweighs what was finished`);
+    }
+  }
+  if (input.eventsTruncated) {
+    out.push('- _The change log for this window hit its row cap — the counts above may be low; use a shorter window._');
+  }
+  lines.push(...(out.length > 0 ? out : ['_No release forecast moved, nothing was pulled into an active release, no estimate grew._']));
+  return lines;
 }

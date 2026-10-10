@@ -31,7 +31,7 @@ import { scopedLeaves } from './scope.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
-import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings } from './formatters.js';
+import { formatMapTree, filterMapData, formatHealthReport, formatScheduleReport, formatSprintOverview, formatNodeDetail, formatVersionWarnings, slippageLines } from './formatters.js';
 
 export { runWithApiContext } from './api.js';
 
@@ -1768,7 +1768,7 @@ server.tool(
 
 server.tool(
   'status_digest',
-  'Generate a markdown status digest for a map: what was done, what is in progress, what is behind/at-risk, what changed recently, and scope flow over the window. Combines current map state with the change_events log. Useful for standups, weekly reviews, or feeding into a narrative AI summary.',
+  'Generate a markdown status digest for a map: what was done, what is in progress, what slipped, what is behind/at-risk, what changed recently, and scope flow over the window. "Slippage" works without due dates: how far each open release\'s forecast moved since the window start, items pulled into an active release, estimates that grew, reopened work, and a red flag when no estimated effort was completed. Combines current map state with the change_events log and the release-forecast snapshots. Useful for standups, weekly reviews, or feeding into a narrative AI summary.',
   {
     mapId: z.string().describe('The map ID'),
     sinceDays: z.number().int().min(1).max(90).default(7).describe('Look-back window in days'),
@@ -1844,6 +1844,14 @@ server.tool(
         }
       }
 
+      // ── Slippage, honest without due dates (#321) — see slippageLines ──
+      let releaseRows: api.ReleaseTrendRow[] = [];
+      try {
+        releaseRows = (await api.getReleaseForecast(mapId, { trendDays: sinceDays })).releases;
+      } catch {
+        /* forecast unavailable — the event-based signals still stand */
+      }
+
       const unit = data.map.effortUnit ?? 'units';
       const fmtNode = (n: typeof leaves[number]) => {
         const bits: string[] = [`**${n.text}**`];
@@ -1876,9 +1884,33 @@ server.tool(
       }
       lines.push('');
 
+      lines.push(
+        ...slippageLines({
+          releaseRows,
+          events,
+          nodes: data.nodes,
+          sinceDays,
+          unit,
+          completedEffort,
+          completedCount: justCompleted.length,
+          completedWithEstimate: justCompleted.filter((n) => (n.effortEstimate ?? 0) > 0).length,
+          openLeaves: leaves.filter((n) => (n.percentComplete ?? 0) < 100).length,
+          eventsTruncated: events.length >= 1000,
+          fmtNode,
+        }),
+      );
+      lines.push('');
+
       lines.push(`## Behind (${behind.length}) / At risk (${atRisk.length})`);
       if (behind.length === 0 && atRisk.length === 0) {
-        lines.push('_All work on track._');
+        // Date health only sees dated work: say how much of it there is.
+        const open = leaves.filter((n) => (n.percentComplete ?? 0) < 100);
+        const dated = open.filter((n) => n.dueDate != null).length;
+        lines.push(
+          open.length > 0 && dated < open.length / 2
+            ? `_No dated item is behind or at risk — but only ${dated} of ${open.length} open items have a due date, so this says little; see Slippage above._`
+            : '_All work on track._',
+        );
       } else {
         for (const n of behind.slice(0, 10)) lines.push(`- 🔴 ${fmtNode(n)}`);
         for (const n of atRisk.slice(0, 10)) lines.push(`- 🟡 ${fmtNode(n)}`);

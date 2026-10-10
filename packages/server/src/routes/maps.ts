@@ -1098,7 +1098,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
   // so a manual refresh button produces a fresh history entry.
   app.get<{
     Params: { id: string };
-    Querystring: { refresh?: string };
+    Querystring: { refresh?: string; trendDays?: string };
   }>('/api/maps/:id/release-forecast', async (req, reply) => {
     const data = await mapDb.getMap(req.params.id);
     if (!data) {
@@ -1134,40 +1134,45 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // ── 7-day trend deltas ──
-    // For each version, find the most recent snapshot ≤ 7 days ago.
-    // "Slipped +5d" means the projected finish moved 5 days later vs
-    // the 7-day-ago snapshot — positive is bad, negative is good.
+    // ── Trend deltas ──
+    // For each version, the most recent snapshot at or before N days ago.
+    // "Slipped +5d" means the projected finish moved 5 days later vs that
+    // snapshot — positive is bad, negative is good. The 7-day pair feeds
+    // the Releases table; `?trendDays=N` (1–90) adds the same comparison
+    // over the caller's own window (#321: status_digest's look-back).
     const MS_PER_DAY = 86_400_000;
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
-    const sevenDaysAgo = new Date(today.getTime() - 7 * MS_PER_DAY);
-    const sevenDaysAgoIso = sevenDaysAgo.toISOString().slice(0, 10);
+    const trendDaysRaw = Number(req.query.trendDays);
+    const trendDays = Number.isInteger(trendDaysRaw) && trendDaysRaw >= 1 && trendDaysRaw <= 90 ? trendDaysRaw : null;
 
-    const historyRows = await db
-      .select()
-      .from(releaseSnapshots)
-      .where(
-        and(
-          eq(releaseSnapshots.mapId, req.params.id),
-          lte(releaseSnapshots.snapshotDate, sevenDaysAgoIso),
-        ),
-      )
-      .orderBy(desc(releaseSnapshots.snapshotDate));
-
-    // Pick the most recent snapshot per versionId (the ORDER BY above
-    // puts newest first, so the first row seen wins).
-    const historyByVersion = new Map<
-      string,
-      { plannedFinishDate: string | null; velocityAdjustedFinishDate: string | null }
-    >();
-    for (const row of historyRows) {
-      if (historyByVersion.has(row.versionId)) continue;
-      historyByVersion.set(row.versionId, {
-        plannedFinishDate: row.plannedFinishDate as string | null,
-        velocityAdjustedFinishDate: row.velocityAdjustedFinishDate as string | null,
-      });
-    }
+    type Prior = { snapshotDate: string; plannedFinishDate: string | null; velocityAdjustedFinishDate: string | null };
+    const priorsAsOf = async (days: number): Promise<Map<string, Prior>> => {
+      const cutoffIso = new Date(today.getTime() - days * MS_PER_DAY).toISOString().slice(0, 10);
+      const historyRows = await db
+        .select()
+        .from(releaseSnapshots)
+        .where(
+          and(
+            eq(releaseSnapshots.mapId, req.params.id),
+            lte(releaseSnapshots.snapshotDate, cutoffIso),
+          ),
+        )
+        .orderBy(desc(releaseSnapshots.snapshotDate));
+      // Most recent snapshot per versionId (newest first, first seen wins).
+      const byVersion = new Map<string, Prior>();
+      for (const row of historyRows) {
+        if (byVersion.has(row.versionId)) continue;
+        byVersion.set(row.versionId, {
+          snapshotDate: String(row.snapshotDate),
+          plannedFinishDate: row.plannedFinishDate as string | null,
+          velocityAdjustedFinishDate: row.velocityAdjustedFinishDate as string | null,
+        });
+      }
+      return byVersion;
+    };
+    const historyByVersion = await priorsAsOf(7);
+    const windowByVersion = trendDays != null && trendDays !== 7 ? await priorsAsOf(trendDays) : historyByVersion;
 
     // Fetch the most recent snapshot across all versions for this map
     // so the UI can display "last updated 2h ago" accurately.
@@ -1180,27 +1185,29 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
     const daysBetween = (a: string, b: string) =>
       Math.round((new Date(a).getTime() - new Date(b).getTime()) / MS_PER_DAY);
+    const delta = (now: string | null, then: string | null | undefined): number | null =>
+      now && then ? daysBetween(now, then) : null;
 
     const releasesWithTrend = forecast.releases.map((row) => {
       const prior = historyByVersion.get(row.versionId);
-      let plannedFinishDeltaDays7d: number | null = null;
-      let velocityFinishDeltaDays7d: number | null = null;
-      if (prior?.plannedFinishDate && row.plannedFinishDate) {
-        plannedFinishDeltaDays7d = daysBetween(
-          row.plannedFinishDate,
-          prior.plannedFinishDate,
-        );
-      }
-      if (prior?.velocityAdjustedFinishDate && row.velocityAdjustedFinishDate) {
-        velocityFinishDeltaDays7d = daysBetween(
-          row.velocityAdjustedFinishDate,
-          prior.velocityAdjustedFinishDate,
-        );
-      }
+      const inWindow = windowByVersion.get(row.versionId);
       return {
         ...row,
-        plannedFinishDeltaDays7d,
-        velocityFinishDeltaDays7d,
+        plannedFinishDeltaDays7d: delta(row.plannedFinishDate, prior?.plannedFinishDate),
+        velocityFinishDeltaDays7d: delta(row.velocityAdjustedFinishDate, prior?.velocityAdjustedFinishDate),
+        ...(trendDays != null
+          ? {
+              trend: {
+                days: trendDays,
+                /** The snapshot compared against, or null when none is that old. */
+                fromDate: inWindow?.snapshotDate ?? null,
+                fromVelocityFinishDate: inWindow?.velocityAdjustedFinishDate ?? null,
+                fromPlannedFinishDate: inWindow?.plannedFinishDate ?? null,
+                plannedFinishDeltaDays: delta(row.plannedFinishDate, inWindow?.plannedFinishDate),
+                velocityFinishDeltaDays: delta(row.velocityAdjustedFinishDate, inWindow?.velocityAdjustedFinishDate),
+              },
+            }
+          : {}),
       };
     });
 
