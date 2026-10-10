@@ -1347,5 +1347,26 @@ describe('search_nodes tool — issue references (#348)', () => {
     expect(any).toContain('Found 2 node(s)');
     const bad = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: 'crm 9307' } as never);
     expect(bad).toMatch(/not an issue reference/);
+    // A forgotten `#` after the repo is refused, not misread as crm930#7.
+    const noHash = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: 'FulcrumCRM/crm9307' } as never);
+    expect(noHash).toMatch(/not an issue reference/);
+  });
+
+  it('a bare number in the text query stays text — it does not pull in linked nodes', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const out = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '9307' } as never);
+    expect(out).toContain('id: mentions'); // description text
+    expect(out).not.toContain('id: linked');
+  });
+
+  it('the query ref is case-insensitive and issueRef narrows a real text query', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const upper = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: 'FULCRUMCRM/CRM#9307' } as never);
+    expect(upper).toContain('id: linked');
+    const narrowed = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: 'Same number', issueRef: '#9307' } as never);
+    expect(narrowed).toContain('Found 1 node(s)');
+    expect(narrowed).toContain('id: other-repo');
   });
 });

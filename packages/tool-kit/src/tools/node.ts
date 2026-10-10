@@ -338,9 +338,13 @@ export const clearBlockerTool = defineTool({
 
 
 
-/** "owner/repo#123", "#123" or "123" → the parts; anything else → null. */
+/**
+ * "owner/repo#123", "#123" or "123" → the parts; anything else → null.
+ * With a repo the `#` is required — "owner/crm9307" must not read as
+ * "owner/crm930#7" and answer a false "no such node".
+ */
 export function parseIssueRef(ref: string): { repo: string | null; number: number } | null {
-  const m = /^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/.exec(ref);
+  const m = /^(?:([\w.-]+\/[\w.-]+)#|#?)(\d+)$/.exec(ref);
   if (!m) return null;
   return { repo: m[1]?.toLowerCase() ?? null, number: Number(m[2]) };
 }
@@ -357,7 +361,7 @@ function linksToIssue(
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
-    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/unversioned/statusIsNull/phaseId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight checks: query="*", unestimated:true, versionId:"<id>" to find V-N leaves still missing estimates; query="*", unversioned:true, leavesOnly:true to find leaves with no version assigned (the §8.1 sweep).',
+    'Search nodes by text across a map, with optional structured filters. Pass an empty string or "*" as query to match all nodes and filter by status/priority/tag/unestimated/leavesOnly/versionId/unversioned/statusIsNull/phaseId/parentId only. Use parentId to enumerate the direct children of a specific node (e.g. before merging duplicate buckets or flattening a wrapper chain): query="*", parentId:"<id>". Common pre-flight checks: query="*", issueRef:"owner/repo#123" before creating a node for an issue (a query like "#123" also finds the node linked to that issue); query="*", unestimated:true, versionId:"<id>" to find V-N leaves still missing estimates; query="*", unversioned:true, leavesOnly:true to find leaves with no version assigned (the §8.1 sweep).',
   schema: {
     mapId: z.string().describe('The map ID'),
     query: z
@@ -418,7 +422,8 @@ export const searchNodesTool = defineTool({
     // the node linked to that issue (#348) — before, only text and
     // description were searched, so the linked node was missed and an
     // existence check created a duplicate.
-    const queryRef = matchAll ? null : parseIssueRef(trimmedQ);
+    // Only a query with a `#` is read as a ref — a bare "2026" stays text.
+    const queryRef = matchAll || !trimmedQ.includes('#') ? null : parseIssueRef(trimmedQ);
     let matches = matchAll
       ? data.nodes.slice()
       : data.nodes.filter(
