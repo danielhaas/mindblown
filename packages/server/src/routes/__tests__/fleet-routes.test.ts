@@ -21,19 +21,25 @@ vi.mock('../../db/fleet.js', () => ({
   listTicks: (...args: unknown[]) => listTicksMock(...(args as [])),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: (...args: unknown[]) => broadcastMock(...args) }));
-// The map guard (#403) asks permissions on the fleet read; this user may do anything.
-vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'admin', hasPermission: () => true }));
+// The map guard asks permissions: the read needs view (#403), the pushes edit (#405).
+const perm = vi.hoisted(() => ({ level: 'admin' as 'admin' | 'edit' | 'view' | null }));
+vi.mock('../../db/permissions.js', () => ({
+  getPermission: async () => perm.level,
+  hasPermission: (p: string | null, need: string) => {
+    const rank: Record<string, number> = { view: 1, edit: 2, admin: 3 };
+    return p != null && rank[p] >= rank[need];
+  },
+}));
 
 import { fleetRoutes } from '../fleet.js';
 
 const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
 
-async function buildApp(): Promise<FastifyInstance> {
+async function buildApp(opts: { anonymous?: boolean } = {}): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
-  // Only the read is guarded; the telemetry pushes stay token-less. Give
-  // the read a user so it reaches the handler.
+  // Every route is guarded (#405): the satellites send the Fleet user's key.
   app.addHook('preHandler', async (req) => {
-    if (req.method === 'GET') req.userId = 'user-1';
+    if (!opts.anonymous) req.userId = 'user-1';
   });
   await app.register(fleetRoutes);
   return app;
@@ -51,6 +57,7 @@ const rollup = {
 };
 
 beforeEach(() => {
+  perm.level = 'admin';
   upsertRollupMock.mockReset();
   insertTickMock.mockReset();
   broadcastMock.mockReset();
@@ -82,7 +89,7 @@ describe('PUT /api/maps/:id/fleet-status/:host', () => {
     expect(broadcastMock).not.toHaveBeenCalled();
   });
 
-  it('refuses a free-form host key (unauthenticated route, host is half the PK)', async () => {
+  it('refuses a free-form host key (host is half the PK)', async () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/${encodeURIComponent('a b/../c')}`, payload: { ...rollup, host: 'a b/../c' } });
     const long = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/${'h'.repeat(65)}`, payload: { ...rollup, host: 'h'.repeat(65) } });
@@ -199,5 +206,29 @@ describe('GET /api/maps/:id/fleet', () => {
     expect([since.statusCode, until.statusCode, limit.statusCode, repeated.statusCode]).toEqual([400, 400, 400, 400]);
     expect(since.json().error.code).toBe('VALIDATION_ERROR');
     expect(listTicksMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('telemetry pushes need a credential with edit on the map (#405)', () => {
+  it('an anonymous rollup or tick is refused with 401 and stores nothing', async () => {
+    const app = await buildApp({ anonymous: true });
+    const put = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/njoerd`, payload: rollup });
+    const post = await app.inject({ method: 'POST', url: `/api/maps/${MAP_ID}/fleet-ticks`, payload: { decision: 'hold' } });
+    await app.close();
+    expect(put.statusCode).toBe(401);
+    expect(post.statusCode).toBe(401);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
+    expect(insertTickMock).not.toHaveBeenCalled();
+  });
+
+  it('a view-only member may read the Fleet card but not push to it', async () => {
+    perm.level = 'view';
+    const app = await buildApp();
+    const put = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}/fleet-status/njoerd`, payload: rollup });
+    const get = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet` });
+    await app.close();
+    expect(put.statusCode).toBe(403);
+    expect(get.statusCode).toBe(200);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
   });
 });
