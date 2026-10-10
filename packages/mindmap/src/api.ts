@@ -502,13 +502,14 @@ export function testForgeConnection(
 export interface ForgeWebhookState {
   kind: string;
   repo: string;
-  url: string;
+  /** Null when the server has no PUBLIC_URL (then `readError` says so). */
+  url: string | null;
   contentType: string;
   events: string[];
   secretStored: boolean;
   hook: { id: number; active: boolean; events: string[] } | null;
   missingEvents?: string[];
-  /** Set when the token may not list the repo's hooks. */
+  /** Why the hook state is unknown: no PUBLIC_URL, or the token may not list the repo's hooks. */
   readError?: string;
 }
 

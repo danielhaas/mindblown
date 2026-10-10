@@ -1591,7 +1591,9 @@ function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: 
     : healthy
       ? `Active on ${state.repo} — changes arrive immediately.`
       : state.readError
-        ? `Could not read the repository's webhooks (${state.readError}).`
+        ? state.url
+          ? `Could not read the repository's webhooks (${state.readError}).`
+          : `${state.readError}. Set PUBLIC_URL in the server environment and restart.`
         : !hook
           ? `No webhook on ${state.repo} yet — MindBlown only polls every 5 minutes and never sees pull requests.`
           : !hook.active

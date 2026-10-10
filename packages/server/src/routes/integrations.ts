@@ -63,7 +63,7 @@ import {
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
-import { ensureForgeWebhook, publicWebhookUrl } from '../lib/forgeWebhook.js';
+import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 
 // ── Helper: find integration config for a workspace (PAT) ─────────
 
@@ -470,7 +470,9 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       owner: body.owner,
       repo: body.repo,
       token: body.token,
-      webhookSecret: body.webhookSecret,
+      // A re-connect without a secret keeps the stored one: the repo's
+      // webhook still signs with it, and dropping it 401s every delivery.
+      webhookSecret: body.webhookSecret || existing?.config.webhookSecret,
       ...(body.apiBaseUrl ? { apiBaseUrl: body.apiBaseUrl } : {}),
       ...(body.webBaseUrl ? { webBaseUrl: body.webBaseUrl } : {}),
     };
@@ -500,8 +502,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // A Gitea repo gets its webhook right away (#386) — without it the
     // 5-minute poll is the only way back. Best effort: the connection
     // stands either way, the result tells the dialog what to show.
-    const url = kind === 'gitea' ? publicWebhookUrl(req.headers) : null;
-    const webhook = url ? await ensureForgeWebhook({ id, provider: kind, config }, url) : undefined;
+    const webhook = kind === 'gitea' ? await setUpWebhookAfterBind({ id, provider: kind, config }) : undefined;
 
     return reply.status(existing ? 200 : 201).send({ id, provider: kind, enabled: true, ...(webhook ? { webhook } : {}) });
   });
@@ -566,7 +567,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         fullName: repo.full_name,
         defaultBranch: repo.default_branch,
         canPush: repo.permissions?.push ?? null,
-        webhookUrl: publicWebhookUrl(req.headers),
+        webhookUrl: publicWebhookUrl(),
       });
     } catch (err) {
       if (err instanceof GitHubApiError) {

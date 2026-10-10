@@ -14,7 +14,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { ForgeApiError, type ForgeClient, type ForgeKind } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { integrations } from '../db/schema.js';
@@ -45,19 +45,18 @@ export const WEBHOOK_EVENTS: Record<ForgeKind, string[]> = {
 };
 
 /**
- * The payload URL the forge must call: `PUBLIC_URL` (else `FRONTEND_URL`)
- * when set, otherwise the origin the request came in on (behind Caddy:
- * the forwarded proto/host). Null when neither yields an absolute URL.
+ * The payload URL the forge must call: `PUBLIC_URL`, else `FRONTEND_URL`.
+ * Configuration only, never a request header — a forged `Host` would
+ * point the repo's signed deliveries at someone else's server. Null when
+ * neither is an absolute URL.
  */
-export function publicWebhookUrl(headers: Record<string, string | string[] | undefined> = {}): string | null {
-  const configured = (process.env.PUBLIC_URL ?? process.env.FRONTEND_URL ?? '').trim().replace(/\/+$/, '');
-  if (/^https?:\/\//i.test(configured)) return `${configured}${WEBHOOK_PATH}`;
-  const first = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v)?.split(',')[0]?.trim();
-  const host = first(headers['x-forwarded-host']) ?? first(headers.host);
-  if (!host) return null;
-  const proto = first(headers['x-forwarded-proto']) ?? 'http';
-  return `${proto}://${host}${WEBHOOK_PATH}`;
+export function publicWebhookUrl(): string | null {
+  const configured = (process.env.PUBLIC_URL || process.env.FRONTEND_URL || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//i.test(configured) ? `${configured}${WEBHOOK_PATH}` : null;
 }
+
+/** Each forge call of the set-up; connect awaits it, so it must not hang. */
+const HOOK_CALL_TIMEOUT_MS = 10_000;
 
 interface RawHook {
   id: number;
@@ -93,7 +92,10 @@ function kindOf(row: IntegrationRow): ForgeKind {
 
 async function findHook(forge: ForgeClient, cfg: ForgeIntegrationConfig, url: string): Promise<RawHook | null> {
   // Gitea answers an empty list with `null`.
-  const hooks = (await forge.requestJson<RawHook[] | null>(`/repos/${cfg.owner}/${cfg.repo}/hooks`)) ?? [];
+  const hooks =
+    (await forge.requestJson<RawHook[] | null>(`/repos/${cfg.owner}/${cfg.repo}/hooks`, {}, {
+      signal: AbortSignal.timeout(HOOK_CALL_TIMEOUT_MS),
+    })) ?? [];
   return hooks.find((h) => h.config?.url === url) ?? null;
 }
 
@@ -131,6 +133,18 @@ function explain(err: unknown, kind: ForgeKind): { reason: string; hint?: string
   return { reason: err instanceof Error ? err.message : String(err) };
 }
 
+export const NO_PUBLIC_URL_REASON = 'PUBLIC_URL is not set on the MindBlown server, so the forge has no address to deliver to';
+
+/**
+ * After a connect / bind stored the binding: the webhook too, best effort —
+ * the binding stands either way, the result tells the caller what to show.
+ */
+export async function setUpWebhookAfterBind(row: IntegrationRow): Promise<WebhookSetupResult> {
+  const url = publicWebhookUrl();
+  if (!url) return { status: 'failed', reason: NO_PUBLIC_URL_REASON, hint: 'Set PUBLIC_URL (e.g. https://mind.example.com) in the server environment and restart.' };
+  return ensureForgeWebhook(row, url);
+}
+
 /** Create or re-arm the repo's hook to `url`; store a generated secret first when the row has none. */
 export async function ensureForgeWebhook(row: IntegrationRow, url: string): Promise<WebhookSetupResult> {
   const kind = kindOf(row);
@@ -139,34 +153,47 @@ export async function ensureForgeWebhook(row: IntegrationRow, url: string): Prom
   const forge = await forgeFromIntegration(row);
   if (!forge) return { status: 'failed', reason: 'the forge connection cannot authenticate (token or sign-in missing)' };
 
-  // Stored BEFORE the hook carries it: a failed hook write then leaves a
-  // secret no delivery uses yet, never a hook signing with a secret we lost.
-  let secret = cfg.webhookSecret;
-  if (!secret) {
-    secret = randomBytes(32).toString('hex');
-    await db
-      .update(integrations)
-      .set({ config: { ...cfg, webhookSecret: secret }, updatedAt: new Date() })
-      .where(eq(integrations.id, row.id));
-  }
-
-  const hookConfig = { url, content_type: 'json', secret };
   try {
+    // Stored BEFORE the hook carries it: a failed hook write then leaves a
+    // secret no delivery uses yet, never a hook signing with a secret we
+    // lost. Set only where none is stored and read back, so two set-ups
+    // racing agree on one secret, and the rest of the config (a connect
+    // that landed meanwhile) is not overwritten with a stale copy.
+    let secret = cfg.webhookSecret;
+    if (!secret) {
+      await db
+        .update(integrations)
+        .set({
+          config: sql`jsonb_set(${integrations.config}, '{webhookSecret}', to_jsonb(${randomBytes(32).toString('hex')}::text))`,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(integrations.id, row.id), sql`coalesce(${integrations.config}->>'webhookSecret', '') = ''`));
+      const [fresh] = await db.select({ config: integrations.config }).from(integrations).where(eq(integrations.id, row.id));
+      secret = (fresh?.config as ForgeIntegrationConfig | undefined)?.webhookSecret;
+      if (!secret) return { status: 'failed', reason: 'could not store a webhook secret for this connection' };
+    }
+
+    const hookConfig = { url, content_type: 'json', secret };
     const existing = await findHook(forge, cfg, url);
     if (existing) {
       // Gitea resets a hook to `push` only when a PATCH omits `events`.
-      const hook = await forge.requestJson<RawHook>(`/repos/${cfg.owner}/${cfg.repo}/hooks/${existing.id}`, {
-        method: 'PATCH',
-        body: { active: true, events, config: hookConfig },
-      });
+      const hook = await forge.requestJson<RawHook>(
+        `/repos/${cfg.owner}/${cfg.repo}/hooks/${existing.id}`,
+        { method: 'PATCH', body: { active: true, events, config: hookConfig } },
+        { signal: AbortSignal.timeout(HOOK_CALL_TIMEOUT_MS) },
+      );
       return { status: 'updated', hookId: hook?.id ?? existing.id, url, events };
     }
-    const hook = await forge.requestJson<RawHook>(`/repos/${cfg.owner}/${cfg.repo}/hooks`, {
-      method: 'POST',
-      body: kind === 'gitea'
-        ? { type: 'gitea', active: true, events, config: hookConfig }
-        : { name: 'web', active: true, events, config: { ...hookConfig, insecure_ssl: '0' } },
-    });
+    const hook = await forge.requestJson<RawHook>(
+      `/repos/${cfg.owner}/${cfg.repo}/hooks`,
+      {
+        method: 'POST',
+        body: kind === 'gitea'
+          ? { type: 'gitea', active: true, events, config: hookConfig }
+          : { name: 'web', active: true, events, config: { ...hookConfig, insecure_ssl: '0' } },
+      },
+      { signal: AbortSignal.timeout(HOOK_CALL_TIMEOUT_MS) },
+    );
     return { status: 'created', hookId: hook.id, url, events };
   } catch (err) {
     return { status: 'failed', ...explain(err, kind) };

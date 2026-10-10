@@ -6,30 +6,45 @@
  *
  * Same gate as binding the repo: a MindBlown admin, the workspace owner or
  * a map admin of the workspace. A GitHub App binding has the App's webhook
- * and is not handled here.
+ * and is not handled here. The secret never leaves the server.
  */
 
 import type { FastifyInstance } from 'fastify';
 import { getForgeIntegration } from '../lib/githubContext.js';
-import { ensureForgeWebhook, publicWebhookUrl, readForgeWebhook, WEBHOOK_EVENTS } from '../lib/forgeWebhook.js';
+import {
+  NO_PUBLIC_URL_REASON,
+  publicWebhookUrl,
+  readForgeWebhook,
+  setUpWebhookAfterBind,
+  WEBHOOK_EVENTS,
+} from '../lib/forgeWebhook.js';
 import { canManageWorkspaceForge } from './auth-gitea.js';
 
 type AuthedRequest = { userId?: string; authSource?: 'jwt' | 'api-key' };
 
 export async function forgeWebhookRoutes(app: FastifyInstance): Promise<void> {
-  app.get('/api/integrations/forge/webhook', async (req, reply) => {
-    const { workspaceId } = req.query as { workspaceId?: string };
+  /** The workspace's forge row, or the reply already sent. */
+  async function bindingFor(req: AuthedRequest, workspaceId: string | undefined, reply: import('fastify').FastifyReply) {
     if (!workspaceId) {
-      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'workspaceId is required' } });
+      reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'workspaceId is required' } });
+      return null;
     }
-    if (!(await canManageWorkspaceForge(req as AuthedRequest, workspaceId))) {
-      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Only a workspace or MindBlown admin may manage the forge webhook' } });
+    if (!(await canManageWorkspaceForge(req, workspaceId))) {
+      reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Only a workspace or MindBlown admin may manage the forge webhook' } });
+      return null;
     }
     const row = await getForgeIntegration(workspaceId);
-    if (!row) return reply.status(404).send({ error: { code: 'NOT_CONNECTED', message: 'No forge connected to this workspace' } });
-    const url = publicWebhookUrl(req.headers);
-    if (!url) return reply.status(500).send({ error: { code: 'NO_PUBLIC_URL', message: 'Set PUBLIC_URL so the forge knows where to deliver' } });
+    if (!row) {
+      reply.status(404).send({ error: { code: 'NOT_CONNECTED', message: 'No forge connected to this workspace' } });
+      return null;
+    }
+    return row;
+  }
 
+  app.get('/api/integrations/forge/webhook', async (req, reply) => {
+    const row = await bindingFor(req as AuthedRequest, (req.query as { workspaceId?: string }).workspaceId, reply);
+    if (!row) return reply;
+    const url = publicWebhookUrl();
     const base = {
       kind: row.provider,
       repo: `${row.config.owner}/${row.config.repo}`,
@@ -37,30 +52,22 @@ export async function forgeWebhookRoutes(app: FastifyInstance): Promise<void> {
       contentType: 'application/json',
       events: WEBHOOK_EVENTS[row.provider === 'gitea' ? 'gitea' : 'github'],
       secretStored: !!row.config.webhookSecret,
+      hook: null,
     };
+    if (!url) return reply.send({ ...base, readError: NO_PUBLIC_URL_REASON });
     try {
       return reply.send({ ...base, ...(await readForgeWebhook(row, url)) });
     } catch (err) {
       // Listing hooks needs repo admin; without it the instructions still help.
-      return reply.send({ ...base, hook: null, readError: err instanceof Error ? err.message : String(err) });
+      return reply.send({ ...base, readError: err instanceof Error ? err.message : String(err) });
     }
   });
 
   app.post('/api/integrations/forge/webhook', async (req, reply) => {
-    const { workspaceId } = (req.body ?? {}) as { workspaceId?: string };
-    if (!workspaceId) {
-      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'workspaceId is required' } });
-    }
-    if (!(await canManageWorkspaceForge(req as AuthedRequest, workspaceId))) {
-      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Only a workspace or MindBlown admin may manage the forge webhook' } });
-    }
-    const row = await getForgeIntegration(workspaceId);
-    if (!row) return reply.status(404).send({ error: { code: 'NOT_CONNECTED', message: 'No forge connected to this workspace' } });
-    const url = publicWebhookUrl(req.headers);
-    if (!url) return reply.status(500).send({ error: { code: 'NO_PUBLIC_URL', message: 'Set PUBLIC_URL so the forge knows where to deliver' } });
-
+    const row = await bindingFor(req as AuthedRequest, ((req.body ?? {}) as { workspaceId?: string }).workspaceId, reply);
+    if (!row) return reply;
     // 200 with `status: 'failed'` + reason/hint: the forge refusing is an
     // answer the dialog shows, not an error of this route.
-    return reply.send(await ensureForgeWebhook(row, url));
+    return reply.send(await setUpWebhookAfterBind(row));
   });
 }
