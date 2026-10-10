@@ -429,8 +429,14 @@ export function GitHubSettingsDialog({
   const loadMap = useMindmapStore((s) => s.loadMap);
 
   const workspaceId = currentMap?.workspaceId ?? 'default';
-  const hasAppRepo = !!(currentMap?.githubRepoOwner && currentMap?.githubRepoName);
-  const appRepoLabel = hasAppRepo ? `${currentMap!.githubRepoOwner}/${currentMap!.githubRepoName}` : null;
+  // The map names its repo AND a binding serves it (#421): a GitHub App
+  // install, or the workspace's token/sign-in connection for that repo.
+  // A map whose repo the workspace connection no longer names is not linked.
+  const hasLinkedRepo = !!(currentMap?.githubRepoOwner && currentMap?.githubRepoName && currentMap?.forgeKind);
+  const appRepoLabel = hasLinkedRepo ? `${currentMap!.githubRepoOwner}/${currentMap!.githubRepoName}` : null;
+  // Bound through the GitHub App — the Gitea sign-in and token forms are
+  // for the other bindings and stay available to a token/sign-in map.
+  const isAppBound = !!currentMap?.githubInstallationId;
 
   // PAT connect state (GitHub token, or a self-hosted Gitea/Forgejo — #368)
   const [ghToken, setGhToken] = useState('');
@@ -490,8 +496,9 @@ export function GitHubSettingsDialog({
     setError(null);
     try {
       const [o, r] = giteaSelected.split('/');
-      const res = await api.bindGiteaRepo(workspaceId, o, r, webhookSecret.trim() || undefined);
+      const res = await api.bindGiteaRepo(workspaceId, o, r, webhookSecret.trim() || undefined, mapId);
       setGiteaBound(res.repo);
+      loadMap(mapId); // the map now names its repo (#421)
       setConnected(true);
       setOwner(o);
       setRepo(r);
@@ -716,8 +723,9 @@ export function GitHubSettingsDialog({
     setConnecting(true);
     setError(null);
     try {
-      await api.connectGitHub(workspaceId, ghToken, owner, repo, webhookSecret.trim() || undefined, forgeOptions());
+      await api.connectGitHub(workspaceId, ghToken, owner, repo, webhookSecret.trim() || undefined, forgeOptions(), mapId);
       setConnected(true);
+      loadMap(mapId); // the map now names its repo (#421)
     } catch (e: any) {
       setError(e.message ?? 'Failed to connect');
     } finally {
@@ -876,7 +884,7 @@ export function GitHubSettingsDialog({
         </div>
 
         {/* App-connected repo */}
-        {hasAppRepo && (
+        {hasLinkedRepo && (
           <div>
             <div
               style={{
@@ -918,7 +926,7 @@ export function GitHubSettingsDialog({
               />
               <label htmlFor="github-auto-import" style={{ cursor: 'pointer', flex: 1 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
-                  Auto-import new GitHub issues
+                  Auto-import new {forge} issues
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
                   New issues on {appRepoLabel} appear under the "{forge} Inbox" node
@@ -1155,7 +1163,7 @@ export function GitHubSettingsDialog({
                 padding: 0,
               }}
             >
-              {showLegacy ? 'Hide legacy token' : 'Use legacy token instead...'}
+              {showLegacy ? (isAppBound ? 'Hide legacy token' : 'Hide connection form') : isAppBound ? 'Use legacy token instead...' : 'Change repository or token...'}
             </button>
           </div>
         )}
@@ -1165,7 +1173,7 @@ export function GitHubSettingsDialog({
         )}
 
         {/* Gitea sign-in + repo picker (#369): parity with the App install flow. */}
-        {giteaStatus?.configured && !hasAppRepo && (
+        {giteaStatus?.configured && !isAppBound && (
           <div style={{ marginBottom: 20, padding: '12px', border: '1px solid #e2e8f0', borderRadius: 8 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b', marginBottom: 6 }}>
               Gitea — {giteaStatus.instanceUrl}
@@ -1267,8 +1275,8 @@ export function GitHubSettingsDialog({
         )}
 
         {/* Legacy PAT form (shown when no App repo, or user clicks "legacy") */}
-        {(!hasAppRepo || showLegacy) && (
-          <div style={{ marginTop: hasAppRepo ? 12 : 0 }}>
+        {(!hasLinkedRepo || showLegacy) && (
+          <div style={{ marginTop: hasLinkedRepo ? 12 : 0 }}>
             {connected && (
               <div
                 style={{
@@ -1507,7 +1515,7 @@ export function GitHubSettingsDialog({
                 </button>
               )}
 
-              {!hasAppRepo && (
+              {!hasLinkedRepo && (
                 <button
                   onClick={onClose}
                   style={{

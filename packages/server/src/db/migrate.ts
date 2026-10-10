@@ -1078,5 +1078,44 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     )
   `);
 
+  // ── Per-map forge repo (#421) ──────────────────────────────────
+  // A PAT/OAuth forge row is per workspace; until #421 every map of the
+  // workspace inherited its repo. Now a map is bound only when its own
+  // github_repo_owner/name name the row's repo. One-shot: give that
+  // binding to the maps that really use the repo today — not archived,
+  // not App-bound, no repo of their own yet, and holding at least one
+  // live node linked to an issue of it. Newest enabled row per workspace,
+  // the same row the resolver picks.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'bind_maps_to_workspace_forge_repo_v1') THEN
+        WITH rows AS (
+          SELECT DISTINCT ON (workspace_id)
+                 workspace_id, config->>'owner' AS owner, config->>'repo' AS repo
+          FROM integrations
+          WHERE enabled AND provider IN ('github', 'gitea')
+            AND coalesce(config->>'owner', '') <> '' AND coalesce(config->>'repo', '') <> ''
+          ORDER BY workspace_id, updated_at DESC NULLS LAST
+        )
+        UPDATE maps m
+        SET github_repo_owner = r.owner, github_repo_name = r.repo
+        FROM rows r
+        WHERE m.workspace_id = r.workspace_id
+          AND m.github_installation_id IS NULL
+          AND m.github_repo_owner IS NULL
+          AND m.archived_at IS NULL
+          AND EXISTS (
+            SELECT 1
+            FROM nodes n,
+                 jsonb_array_elements(CASE WHEN jsonb_typeof(n.external_links) = 'array' THEN n.external_links ELSE '[]'::jsonb END) l
+            WHERE n.map_id = m.id AND n.deleted_at IS NULL
+              AND split_part(l->>'externalId', '#', 1) = r.owner || '/' || r.repo
+          );
+        INSERT INTO data_migrations (id) VALUES ('bind_maps_to_workspace_forge_repo_v1');
+      END IF;
+    END $$;
+  `);
+
   console.log('[db] Migrations complete.');
 }

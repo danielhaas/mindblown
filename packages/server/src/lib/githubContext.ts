@@ -9,8 +9,13 @@
  * Resolution order:
  *   1. The map's own GitHub App installation binding (mint a fresh
  *      installation token → github.com client).
- *   2. The workspace's PAT integration row (any forge kind; the row's
- *      `provider` column is the kind, `config` may carry base URLs).
+ *   2. The workspace's PAT/OAuth integration row (any forge kind; the
+ *      row's `provider` column is the kind, `config` may carry base URLs)
+ *      — but only for a map whose own `github_repo_owner/name` names the
+ *      row's repo (#421). The row supplies credentials and endpoint; the
+ *      map says which repo it plans. Before #421 every map of the
+ *      workspace inherited the row's repo, so re-binding the row to
+ *      another repo silently re-pointed every non-App map at it.
  *
  * Returns `null` when neither is configured.
  *
@@ -69,26 +74,14 @@ export async function getForgeIntegration(
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
 
-/**
- * The map's forge kind for labels — cheap (no token minted, no network):
- * a GitHub App installation binding is GitHub; otherwise the workspace's
- * enabled forge integration decides; nothing bound → null.
- */
-export async function getMapForgeKind(mapId: string): Promise<'github' | 'gitea' | null> {
-  const [map] = await db
-    .select({ githubInstallationId: maps.githubInstallationId, workspaceId: maps.workspaceId })
-    .from(maps)
-    .where(eq(maps.id, mapId));
-  if (!map) return null;
-  if (map.githubInstallationId) return 'github';
-  const integration = await getForgeIntegration(map.workspaceId);
-  if (!integration) return null;
-  return integration.provider === 'gitea' ? 'gitea' : 'github';
+interface MapBindingRow {
+  githubInstallationId: string | null;
+  githubRepoOwner: string | null;
+  githubRepoName: string | null;
+  workspaceId: string;
 }
 
-export async function getGitHubContextForMap(
-  mapId: string,
-): Promise<ForgeMapContext | null> {
+async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined> {
   const [map] = await db
     .select({
       githubInstallationId: maps.githubInstallationId,
@@ -98,7 +91,41 @@ export async function getGitHubContextForMap(
     })
     .from(maps)
     .where(eq(maps.id, mapId));
+  return map;
+}
 
+/**
+ * The workspace's forge row, if it binds THIS map: the map names the
+ * row's repo. A map without a repo of its own is unbound (#421).
+ */
+async function patIntegrationForMap(
+  map: MapBindingRow,
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
+  if (!map.githubRepoOwner || !map.githubRepoName) return null;
+  const integration = await getForgeIntegration(map.workspaceId);
+  if (!integration) return null;
+  const cfg = integration.config;
+  return cfg.owner === map.githubRepoOwner && cfg.repo === map.githubRepoName ? integration : null;
+}
+
+/**
+ * The map's forge kind for labels — cheap (no token minted, no network):
+ * a GitHub App installation binding is GitHub; otherwise the workspace
+ * forge row that binds this map decides; nothing bound → null.
+ */
+export async function getMapForgeKind(mapId: string): Promise<'github' | 'gitea' | null> {
+  const map = await loadMapBinding(mapId);
+  if (!map) return null;
+  if (map.githubInstallationId) return 'github';
+  const integration = await patIntegrationForMap(map);
+  if (!integration) return null;
+  return integration.provider === 'gitea' ? 'gitea' : 'github';
+}
+
+export async function getGitHubContextForMap(
+  mapId: string,
+): Promise<ForgeMapContext | null> {
+  const map = await loadMapBinding(mapId);
   if (!map) return null;
 
   // Try App installation binding first
@@ -123,8 +150,8 @@ export async function getGitHubContextForMap(
     }
   }
 
-  // Fallback: workspace PAT integration
-  const integration = await getForgeIntegration(map.workspaceId);
+  // Fallback: the workspace PAT/OAuth row — only if it binds this map.
+  const integration = await patIntegrationForMap(map);
   if (integration) {
     const forge = await forgeFromIntegration(integration);
     if (!forge) return null;
@@ -160,16 +187,10 @@ export async function getForgeEndpointForMap(mapId: string): Promise<ForgeEndpoi
 }
 
 async function lookupForgeEndpointForMap(mapId: string): Promise<ForgeEndpoint> {
-  const [map] = await db
-    .select({
-      githubInstallationId: maps.githubInstallationId,
-      workspaceId: maps.workspaceId,
-    })
-    .from(maps)
-    .where(eq(maps.id, mapId));
+  const map = await loadMapBinding(mapId);
   if (!map) return GITHUB_ENDPOINT;
   if (map.githubInstallationId) return GITHUB_ENDPOINT;
-  const integration = await getForgeIntegration(map.workspaceId);
+  const integration = await patIntegrationForMap(map);
   if (!integration) return GITHUB_ENDPOINT;
   return forgeEndpointFromIntegration(integration) ?? GITHUB_ENDPOINT;
 }

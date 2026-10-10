@@ -32,7 +32,8 @@ import { db } from '../db/connection.js';
 import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
 import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
-import { FORGE_PROVIDERS, type ForgeIntegrationConfig } from '../lib/forge.js';
+import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, type ForgeIntegrationConfig } from '../lib/forge.js';
+import { requireMapAccess } from '../lib/mapAccess.js';
 import { setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import {
   findGiteaIdentity,
@@ -247,7 +248,7 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/integrations/gitea/bind', async (req, reply) => {
     const userId = (req as { userId?: string }).userId;
     if (!userId) return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
-    const body = req.body as { workspaceId?: string; owner?: string; repo?: string; webhookSecret?: string };
+    const body = req.body as { workspaceId?: string; owner?: string; repo?: string; webhookSecret?: string; mapId?: string };
     if (!body.workspaceId || !body.owner || !body.repo) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'workspaceId, owner and repo are required' } });
     }
@@ -257,6 +258,12 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(403).send({
         error: { code: 'FORBIDDEN', message: 'Only the workspace owner, a map admin of this workspace, or a MindBlown admin may bind its repository' },
       });
+    }
+    if (body.mapId) {
+      // The map this bind plans the repo for (#421) — an admin act on that map.
+      if (!(await requireMapAccess(req, reply, body.mapId, 'admin'))) return reply;
+      const bindable = await mapBindableToWorkspaceForge(body.mapId, body.workspaceId);
+      if (!bindable.ok) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: bindable.reason } });
     }
     const identity = await findGiteaIdentity(userId);
     if (!identity) return reply.status(404).send({ error: { code: 'NO_IDENTITY', message: 'Sign in with Gitea first.' } });
@@ -302,11 +309,12 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
         .returning();
       id = row.id;
     }
+    if (body.mapId) await bindMapToForgeRepo(body.mapId, body.owner, body.repo);
     // The repo's webhook, same as the PAT connect (#386).
     const webhook = await setUpWebhookAfterBind({ id, provider: 'gitea', config });
     return reply
       .status(existing ? 200 : 201)
-      .send({ id, provider: 'gitea', enabled: true, repo: `${body.owner}/${body.repo}`, webhook });
+      .send({ id, provider: 'gitea', enabled: true, repo: `${body.owner}/${body.repo}`, boundMapId: body.mapId ?? null, webhook });
   });
 
   // ── POST /api/auth/gitea/disconnect ──────────────────────────────
