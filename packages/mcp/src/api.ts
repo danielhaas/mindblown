@@ -935,6 +935,10 @@ export interface VelocityResponse {
   bulkEventsExcluded: number;
   estCompletedExcludedAsBulk: number;
   sampleSufficient: boolean;
+  /** Delivery rate ÷ nominal capacity, uncapped — the pace against the plan. */
+  paceRatio?: number;
+  /** Organic completed estimate per UTC day, oldest first. */
+  daily?: Array<{ day: string; completed: number; completions: number }>;
   effortUnit: string;
   truncated: boolean;
   /** Net-of-rework rate + review latency from the connected repo; null if none. */

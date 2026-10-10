@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers, summarisePace } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -1877,6 +1877,16 @@ server.tool(
       lines.push(`# Status digest — ${data.map.name}`);
       lines.push(`*Window: last ${sinceDays} days*`);
       lines.push('');
+      // Pace: estimated days finished per calendar day vs the plan — the
+      // Cockpit's Pace card, one line.
+      // 56 days = the forecast's own measurement (a repo-throughput cache
+      // hit); the line reads its last 14 days, like the Cockpit card.
+      const velocity = await api.getVelocity(mapId, { windowDays: 56 }).catch(() => null);
+      if (velocity?.daily && velocity.daily.length > 0) {
+        const pace = summarisePace(velocity.daily.slice(-14), velocity.nominalCapacity, velocity.effortUnit ?? 'days');
+        lines.push(`**Pace:** ${pace.note} (today ${pace.today.toFixed(1)}, last 7 days ${pace.last7.toFixed(1)}, ${pace.windowDays} days ${pace.window.toFixed(1)})`);
+        lines.push('');
+      }
       // Triage itself failing (#320) leads — it explains a quiet Inbox.
       const triageLine = triagePipelineLine(await api.getTriagePipeline(mapId).catch(() => null));
       if (triageLine) {
@@ -2312,7 +2322,16 @@ server.tool(
       lines.push(`Delivery rate:        ${v.deliveryRate.toFixed(3)} ${unit}/calendar-day`);
       lines.push(`Nominal capacity:     ${v.nominalCapacity.toFixed(2)} ${unit}/day (workerCount ${v.workerCount} × ${v.unitsPerDay} ${unit}/day)`);
       lines.push('');
-      lines.push(`Measured focus factor: ${v.measuredFocusFactor.toFixed(2)} (${Math.round(v.measuredFocusFactor * 100)}% of nominal capacity reaches planned work)`);
+      // The pace is reported uncapped: the focus-factor knob tops out at
+      // 1.00, and a team finishing 18× the plan's days must see 18×, not
+      // "100%".
+      const ratio = v.paceRatio ?? v.deliveryRate / Math.max(1e-9, v.nominalCapacity);
+      lines.push(`Pace:                  ${ratio.toFixed(2)}× the plan (${(ratio * v.nominalCapacity).toFixed(2)} ${unit} of estimates finished per calendar day vs ${v.nominalCapacity.toFixed(2)} planned)`);
+      if (ratio > 1) {
+        lines.push(`Measured focus factor: 1.00 (capped — the knob only models LOSS of capacity). Above 1× either the estimates are larger than the work (get_estimation_accuracy) or more work tracks run in parallel than workerCount (${v.workerCount}) says — e.g. an agent fleet; set workerCount via update_map.`);
+      } else {
+        lines.push(`Measured focus factor: ${v.measuredFocusFactor.toFixed(2)} (${Math.round(v.measuredFocusFactor * 100)}% of nominal capacity reaches planned work)`);
+      }
       lines.push(`Current map setting:   ${v.currentFocusFactor.toFixed(2)}`);
       lines.push('');
 
