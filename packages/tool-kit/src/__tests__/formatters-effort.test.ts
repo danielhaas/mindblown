@@ -130,3 +130,16 @@ describe('formatMapTree — leaf effort rendering', () => {
     expect(parentLine).not.toMatch(/effort:/);
   });
 });
+
+describe('formatMapTree — PR mirror (#308)', () => {
+  it('shows the mirrored PR and its state; nothing without one', () => {
+    const root = stubNode({ id: 'root', text: 'Root', childrenIds: ['a', 'b', 'c'] });
+    const a = stubNode({ id: 'a', parentId: 'root', text: 'with pr', linkedPr: { number: 9, repo: 'o/r', state: 'open' } });
+    const b = stubNode({ id: 'b', parentId: 'root', text: 'draft pr', linkedPr: { number: 10, repo: 'o/r', state: 'open', draft: true } });
+    const c = stubNode({ id: 'c', parentId: 'root', text: 'no pr' });
+    const out = formatMapTree(detailWith([root, a, b, c]));
+    expect(out.split('\n').find((l) => l.includes('with pr'))).toContain('PR #9 open');
+    expect(out.split('\n').find((l) => l.includes('draft pr'))).toContain('PR #10 draft');
+    expect(out.split('\n').find((l) => l.includes('no pr'))).not.toContain('PR #');
+  });
+});

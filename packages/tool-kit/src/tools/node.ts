@@ -148,6 +148,12 @@ export const updateNodeTool = defineTool({
         'Assignee user IDs (REPLACE mode — overwrites the existing set; pass [] to clear). Must be users with access to the map. Drives the Workload view and the assignee chips in Kanban/List/Calendar.',
       ),
     versionId: z.string().nullable().optional().describe('Version ID (null to unassign)'),
+    clearLinkedPr: z
+      .literal(true)
+      .optional()
+      .describe(
+        "Repair escape for the node's PR mirror (shown as `PR #N open` in get_map). The mirror is kept by forge webhooks; when a `pull_request.closed` delivery was lost it can claim a PR is still open that is long merged or closed — that holds the issue close and lists a phantom PR. `true` drops the mirror and nothing else: a done node's issue is then closed by the next status/progress write (re-set status to done to trigger it), through the normal landing check. Only for that case: on a node whose PR really is in flight, clearing it disarms the gate that keeps the issue open until the merge. The next event of a still-open PR rebuilds it.",
+      ),
     autoProgress: z
       .enum(['off', 'children'])
       .optional()
@@ -213,11 +219,12 @@ export const updateNodeTool = defineTool({
         "Free-form scope tags declaring what work this node touches. Used by conflict_scan to surface in-flight nodes that might conflict with this node when it's dispatched. Examples: 'apps/workflows', 'model:Mandate', 'migration:workflows', 'frontend:contacts'. Empty array clears all scopes.",
       ),
   },
-  handler: async (backend, { mapId, nodeId, ...fields }) => {
+  handler: async (backend, { mapId, nodeId, clearLinkedPr, ...fields }) => {
     const cleanFields: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) cleanFields[k] = v;
     }
+    if (clearLinkedPr) cleanFields.linkedPr = null;
     if (Object.keys(cleanFields).length === 0) return 'No fields to update.';
     await backend.updateNode(mapId, nodeId, cleanFields);
     return `Updated node ${nodeId}: ${Object.keys(cleanFields).join(', ')}`;

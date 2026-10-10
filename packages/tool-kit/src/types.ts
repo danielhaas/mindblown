@@ -45,6 +45,8 @@ export interface NodeWithComputed {
     syncEnabled: boolean;
     lastSyncedAt: string | null;
   }>;
+  /** Forge PR mirror (webhook-maintained); absent/null when none. */
+  linkedPr?: { number: number; repo: string; state: 'open' | 'closed' | 'merged'; draft?: boolean } | null;
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;

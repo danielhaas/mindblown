@@ -136,6 +136,15 @@ describe('update_node tool', () => {
     expect(parsed.autoProgress).toBe('off');
   });
 
+  it('clearLinkedPr: true drops the PR mirror (linkedPr: null) — the repair escape (#308)', async () => {
+    const schema = z.object(updateNodeTool.schema);
+    expect(() => schema.parse({ mapId: 'm1', nodeId: 'n1', clearLinkedPr: false })).toThrow();
+    const recorder = makeRecordingBackend();
+    const result = await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', clearLinkedPr: true } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ linkedPr: null });
+    expect(result).toContain('linkedPr');
+  });
+
   it('rejects unknown autoProgress values', () => {
     const schema = z.object(updateNodeTool.schema);
     expect(() => schema.parse({ mapId: 'm1', nodeId: 'n1', autoProgress: 'auto' })).toThrow();
@@ -333,6 +342,7 @@ describe('create_node tool — description and schema parity (#389)', () => {
       'tagsAppend', // merge semantics only make sense against an existing set
       'tagsRemove',
       'blockedReason', // a node is blocked after it exists, not at birth
+      'clearLinkedPr', // repairs an existing PR mirror; a new node has none
     ]);
     const createKeys = new Set(Object.keys(createNodeTool.schema));
     const missing = Object.keys(updateNodeTool.schema).filter(

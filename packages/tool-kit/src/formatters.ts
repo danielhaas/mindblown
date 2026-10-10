@@ -69,6 +69,9 @@ function renderTreeNode(
   if (node.externalLinks?.length > 0) {
     parts.push(node.externalLinks.map((l) => `[${l.externalId}]`).join(' '));
   }
+  if (node.linkedPr) {
+    parts.push(`PR #${node.linkedPr.number} ${node.linkedPr.draft && node.linkedPr.state === 'open' ? 'draft' : node.linkedPr.state}`);
+  }
   if (node.attachments && node.attachments.length > 0) {
     // Title plus id, so read_attachment / remove_attachment can be called
     // straight from the tree without a list_attachments round trip.
