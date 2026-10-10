@@ -487,6 +487,15 @@ function Column({
                 >
                   <span style={{ width: 10 }}>{openGroups[g.key] ? '▾' : '▸'}</span>
                   <span style={{ flex: 1 }}>{g.label}</span>
+                  {/* What the group adds up to, not just how many cards (Dan). */}
+                  {(() => {
+                    const total = g.items.reduce((sum, c) => sum + (c.node.effortEstimate ?? 0), 0);
+                    return total > 0 ? (
+                      <span style={{ fontWeight: 600, color: '#475569', textTransform: 'none' }}>
+                        {formatEffort(Math.round(total * 10) / 10, effortUnit)}
+                      </span>
+                    ) : null;
+                  })()}
                   <span style={{ fontWeight: 600, color: '#94a3b8' }}>{g.items.length}</span>
                 </button>
                 {openGroups[g.key] && renderCards(g.items)}
