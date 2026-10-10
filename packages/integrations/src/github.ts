@@ -131,7 +131,7 @@ function buildExternalId(owner: string, repo: string, issueNumber: number): stri
   return `${owner}/${repo}#${issueNumber}`;
 }
 
-function parseExternalId(externalId: string): { owner: string; repo: string; issueNumber: number } | null {
+export function parseExternalId(externalId: string): { owner: string; repo: string; issueNumber: number } | null {
   const match = externalId.match(/^(.+?)\/(.+?)#(\d+)$/);
   if (!match) return null;
   return { owner: match[1], repo: match[2], issueNumber: parseInt(match[3], 10) };
