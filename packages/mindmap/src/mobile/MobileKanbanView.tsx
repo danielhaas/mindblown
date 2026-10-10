@@ -1,4 +1,5 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { groupDone, isBlockedCard, type DoneGroupKey } from '../kanban.js';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
 
@@ -32,6 +33,13 @@ interface Column {
 }
 
 export function MobileKanbanView({ nodes, map, onSelect }: Props) {
+  // Done columns: Today / This week / Earlier (collapsed) — see kanban.ts.
+  // Per column (a map can have several done-category statuses); "Earlier"
+  // starts collapsed.
+  const [openGroups, setOpenGroups] = useState<Record<string, Partial<Record<DoneGroupKey, boolean>>>>({});
+  const isOpen = (col: string, key: DoneGroupKey): boolean => openGroups[col]?.[key] ?? key !== 'earlier';
+  const toggle = (col: string, key: DoneGroupKey) =>
+    setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [key]: !isOpen(col, key) } }));
   const breadcrumbs = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const out = new Map<string, string>();
@@ -95,13 +103,37 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 Empty
               </div>
             )}
-            {col.nodes.map((n) => {
+            {(col.status?.category === 'done'
+              ? groupDone(col.nodes, (n) => n.completedAt)
+              : [{ key: null, label: '', items: col.nodes }]
+            ).map((g) => (
+              <div key={g.key ?? 'all'}>
+                {g.key && (
+                  <button
+                    type="button"
+                    className="mb-kanban-group"
+                    aria-expanded={isOpen(col.key, g.key)}
+                    onClick={() => toggle(col.key, g.key!)}
+                    style={{
+                      width: '100%', display: 'flex', gap: 6, padding: '6px 4px', background: 'none',
+                      border: 'none', borderBottom: '1px solid #e2e8f0', fontSize: 11, fontWeight: 600,
+                      color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left',
+                    }}
+                  >
+                    <span>{isOpen(col.key, g.key) ? '▾' : '▸'}</span>
+                    <span style={{ flex: 1 }}>{g.label}</span>
+                    <span style={{ color: '#94a3b8' }}>{g.items.length}</span>
+                  </button>
+                )}
+                {(!g.key || isOpen(col.key, g.key)) && g.items.map((n) => {
               const pct = Math.round(n.computedProgress ?? 0);
+              const blocked = isBlockedCard(n, col.status?.category === 'done');
               return (
                 <button
                   key={n.id}
                   className="mb-kanban-card"
                   onClick={() => onSelect(n.id)}
+                  style={blocked ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <span
@@ -128,11 +160,13 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}
-                    {n.blockedReason && <span style={{ color: '#dc2626' }}>· blocked</span>}
+                    {blocked && <span style={{ color: '#475569', fontWeight: 600 }}>· blocked{n.blockedReason ? `: ${n.blockedReason.length > 60 ? `${n.blockedReason.slice(0, 57)}…` : n.blockedReason}` : ''}</span>}
                   </div>
                 </button>
               );
             })}
+              </div>
+            ))}
           </div>
         </div>
       ))}

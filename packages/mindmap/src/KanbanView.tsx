@@ -4,6 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
+import { groupDone, isBlockedCard, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -28,6 +29,8 @@ interface KanbanColumn {
   id: string;
   name: string;
   color: string;
+  /** The status category; 'done' columns are grouped by completion time. */
+  category: string | null;
   cards: KanbanCard[];
 }
 
@@ -68,12 +71,15 @@ function Card({
   card,
   effortUnit,
   selected,
+  blocked,
   onClick,
   onDragStart,
 }: {
   card: KanbanCard;
   effortUnit: string;
   selected: boolean;
+  /** Explicitly blocked (isBlockedCard) — rendered greyed out with the reason. */
+  blocked: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
@@ -89,13 +95,15 @@ function Card({
       draggable
       onDragStart={onDragStart}
       onClick={onClick}
+      title={blocked ? `Blocked${node.blockedReason ? `: ${node.blockedReason}` : ''}` : undefined}
       style={{
-        background: '#ffffff',
+        background: blocked ? '#e2e8f0' : '#ffffff',
+        opacity: blocked ? 0.7 : 1,
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${borderColor}`,
+        borderLeft: `3px solid ${blocked ? '#94a3b8' : borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -153,6 +161,24 @@ function Card({
         >
           {node.text}
         </span>
+        {blocked && (
+          <span
+            style={{
+              fontSize: 9,
+              fontWeight: 700,
+              color: '#475569',
+              background: '#cbd5e1',
+              padding: '1px 6px',
+              borderRadius: 4,
+              flexShrink: 0,
+              marginTop: 2,
+              textTransform: 'uppercase',
+              letterSpacing: '0.04em',
+            }}
+          >
+            Blocked
+          </span>
+        )}
         {githubLink && (
           <a
             href={githubLink.url}
@@ -292,13 +318,30 @@ function Column({
   onDrop: (e: React.DragEvent, columnId: string) => void;
 }) {
   const totalEffort = column.cards.reduce((sum, c) => sum + (c.node.effortEstimate ?? 0), 0);
-  const overWip = column.cards.length > WIP_LIMIT;
+  const isDone = column.category === 'done';
+  // A WIP limit is about work in flight — a long Done column is not over it.
+  const overWip = !isDone && column.cards.length > WIP_LIMIT;
+
+  // Done: Today / This week / Earlier (collapsed by default) — the history
+  // stays one click away instead of burying this week's work.
+  // Keyed on the local date too, so a board left open overnight moves
+  // yesterday's cards out of "Today" on the next render.
+  const dayKey = new Date().toDateString();
+  const doneGroups = useMemo(
+    () => (isDone ? groupDone(column.cards, (c) => c.node.completedAt) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDone, column.cards, dayKey],
+  );
+  const [openGroups, setOpenGroups] = useState<Record<DoneGroupKey, boolean>>({
+    today: true,
+    week: true,
+    earlier: false,
+  });
 
   // Group by parent branch for swimlanes
-  const grouped = useMemo(() => {
-    if (!swimlanes) return null;
+  const laneGroups = (cards: KanbanCard[]): Record<string, KanbanCard[]> => {
     const groups: Record<string, KanbanCard[]> = {};
-    for (const card of column.cards) {
+    for (const card of cards) {
       // Use the first ancestor (direct parent) as the swimlane label
       const parent = card.node.parentId ? nodes[card.node.parentId] : null;
       const lane = parent ? parent.text : 'Root';
@@ -306,7 +349,7 @@ function Column({
       groups[lane].push(card);
     }
     return groups;
-  }, [column.cards, swimlanes, nodes]);
+  };
 
   const renderCard = (card: KanbanCard) => (
     <Card
@@ -314,6 +357,7 @@ function Column({
       card={card}
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
+      blocked={isBlockedCard(card.node, isDone)}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
     />
@@ -413,30 +457,66 @@ function Column({
           </div>
         )}
 
-        {swimlanes && grouped
-          ? Object.entries(grouped).map(([lane, cards]) => (
-              <div key={lane} style={{ marginBottom: 8 }}>
-                <div
+        {doneGroups
+          ? doneGroups.map((g) => (
+              <div key={g.key} style={{ marginBottom: 6 }}>
+                <button
+                  type="button"
+                  onClick={() => setOpenGroups((o) => ({ ...o, [g.key]: !o[g.key] }))}
+                  aria-expanded={openGroups[g.key]}
                   style={{
+                    width: '100%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                    padding: '4px 4px 6px',
+                    marginBottom: openGroups[g.key] && g.items.length > 0 ? 6 : 0,
+                    background: 'none',
+                    border: 'none',
+                    borderBottom: '1px solid #e2e8f0',
+                    cursor: 'pointer',
                     fontSize: 10,
                     fontWeight: 600,
-                    color: '#94a3b8',
+                    color: '#64748b',
                     textTransform: 'uppercase',
                     letterSpacing: '0.05em',
-                    padding: '4px 4px 6px',
-                    borderBottom: '1px solid #e2e8f0',
-                    marginBottom: 6,
+                    textAlign: 'left',
                   }}
                 >
-                  {lane}
-                </div>
-                {cards.map(renderCard)}
+                  <span style={{ width: 10 }}>{openGroups[g.key] ? '▾' : '▸'}</span>
+                  <span style={{ flex: 1 }}>{g.label}</span>
+                  <span style={{ fontWeight: 600, color: '#94a3b8' }}>{g.items.length}</span>
+                </button>
+                {openGroups[g.key] && renderCards(g.items)}
               </div>
             ))
-          : column.cards.map(renderCard)}
+          : renderCards(column.cards)}
       </div>
     </div>
   );
+
+  function renderCards(cards: KanbanCard[]) {
+    if (!swimlanes) return cards.map(renderCard);
+    return Object.entries(laneGroups(cards)).map(([lane, laneCards]) => (
+      <div key={lane} style={{ marginBottom: 8 }}>
+        <div
+          style={{
+            fontSize: 10,
+            fontWeight: 600,
+            color: '#94a3b8',
+            textTransform: 'uppercase',
+            letterSpacing: '0.05em',
+            padding: '4px 4px 6px',
+            borderBottom: '1px solid #e2e8f0',
+            marginBottom: 6,
+          }}
+        >
+          {lane}
+        </div>
+        {laneCards.map(renderCard)}
+      </div>
+    ));
+  }
 }
 
 // ── KanbanView ───────────────────────────────────────────────────
@@ -531,6 +611,7 @@ export function KanbanView() {
         id: '__unset__',
         name: 'Unset',
         color: '#cbd5e1',
+        category: null,
         cards: unset,
       });
     }
@@ -540,6 +621,7 @@ export function KanbanView() {
         id: s.id,
         name: s.name,
         color: s.color,
+        category: s.category,
         cards: buckets[s.id],
       });
     }
@@ -589,6 +671,23 @@ export function KanbanView() {
       const node = nodes[nodeId];
       if (node && node.status !== newStatus) {
         updateNode(nodeId, { status: newStatus });
+        // The server stamps completedAt and broadcasts it a moment later;
+        // mirror it locally now so a card dropped on Done lands under
+        // "Today" instead of vanishing into the collapsed "Earlier" group
+        // (and leaves the done groups when dragged back out).
+        const toDone = statusColumns.find((s) => s.id === columnId)?.category === 'done';
+        const fromDone = statusColumns.find(
+          (s) => s.id === node.status || s.name.toLowerCase() === (node.status ?? '').toLowerCase(),
+        )?.category === 'done';
+        if (toDone !== fromDone) {
+          const current = useMindmapStore.getState().nodes[nodeId];
+          if (current) {
+            useMindmapStore.getState().applyServerNode({
+              ...current,
+              completedAt: toDone ? new Date().toISOString() : null,
+            });
+          }
+        }
       }
     },
     [statusColumns, nodes, updateNode],
