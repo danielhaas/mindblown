@@ -157,7 +157,7 @@ MindBlown runs without any LLM. AI features are switched on by configuring a bac
 | `ANTHROPIC_API_KEY` | Claude API key. Enables the Claude backend (public internet). |
 | `ANTHROPIC_MODEL` | Claude model for chat. |
 | `TRIAGE_PROVIDER` | Backend for GitHub issue triage: `auto` (default, follows the admin-selected chat provider), `anthropic` or `ollama`. Falls back to whatever is configured. |
-| `TRIAGE_MODEL` | Model for triage. Default `claude-haiku-4-5` on Claude, the `AI_MODEL` on a local backend. |
+| `TRIAGE_MODEL` | Claude model for triage (default `claude-haiku-4-5`). A local backend always triages with its `AI_MODEL`. |
 | `TRIAGE_AUTO_APPLY_CONFIDENCE` | Confidence (0–100) at which a Claude `place` decision auto-creates the node. Default 75. |
 | `TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE` | Same lever for decisions made by a local model. Default 101 = never auto-apply; lower it once you trust the model. |
 | `TRIAGE_LOCAL_AUTO_CONFIRM_SKIP_CONFIDENCE` | Local-model counterpart of `TRIAGE_AUTO_CONFIRM_SKIP_CONFIDENCE`. Default 101 = every local skip waits for review. |
