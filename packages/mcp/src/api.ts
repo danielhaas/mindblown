@@ -983,6 +983,34 @@ export function getVelocity(
   return request<VelocityResponse>(`/api/maps/${mapId}/velocity${qs}`);
 }
 
+/** One Releases row as status_digest reads it (subset of the server's ReleaseForecastRow). */
+export interface ReleaseTrendRow {
+  versionId: string;
+  versionName: string;
+  versionStatus: string;
+  targetDate: string | null;
+  remainingTickets: number;
+  velocityAdjustedFinishDate: string | null;
+  plannedFinishDate: string | null;
+  evidence?: { state: string; note: string };
+  trend?: {
+    days: number;
+    fromDate: string | null;
+    fromVelocityFinishDate: string | null;
+    plannedFinishDeltaDays: number | null;
+    velocityFinishDeltaDays: number | null;
+  };
+}
+
+/** Releases forecast with the projection's movement over the last `trendDays` (#321). */
+export function getReleaseForecast(
+  mapId: string,
+  opts: { trendDays?: number } = {},
+): Promise<{ releases: ReleaseTrendRow[] }> {
+  const qs = opts.trendDays != null ? `?trendDays=${opts.trendDays}` : '';
+  return request<{ releases: ReleaseTrendRow[] }>(`/api/maps/${mapId}/release-forecast${qs}`);
+}
+
 // ── Versions ──────────────────────────────────────────────────
 
 export function listVersions(mapId: string): Promise<VersionInfo[]> {
