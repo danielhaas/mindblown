@@ -235,23 +235,37 @@ describe('schedule — pins and dep constraints', () => {
     expect(byId.get('b')!.computedEnd).toBe(10);
   });
 
-  it('stretches a leaf to meet a maxEnd pin (manual due date)', () => {
+  it('a due date does not stretch the bar — the bar is the work (#113)', () => {
     const a = makeNode({ id: 'a', effortEstimate: 3 });
     const constraints = new Map([['a', { maxEnd: 10 }]]);
-    const result = schedule([a], 0, constraints);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
-    expect(byId.get('a')!.computedStart).toBe(0);
-    expect(byId.get('a')!.computedEnd).toBe(10);
-    expect(byId.get('a')!.duration).toBe(10);
+    const byId = new Map(schedule([a], 0, constraints).map((s) => [s.nodeId, s]));
+    expect(byId.get('a')!.computedEnd).toBe(3);
+    expect(byId.get('a')!.duration).toBe(3);
+    expect(byId.get('a')!.dueOverrun).toBeUndefined(); // on time
   });
 
-  it('leaves duration alone when maxEnd is earlier than the estimate would finish', () => {
+  it('marks a leaf whose projected end lands after its due date (#113)', () => {
     const a = makeNode({ id: 'a', effortEstimate: 5 });
     const constraints = new Map([['a', { maxEnd: 3 }]]);
-    const result = schedule([a], 0, constraints);
-    const byId = new Map(result.map((s) => [s.nodeId, s]));
+    const byId = new Map(schedule([a], 0, constraints).map((s) => [s.nodeId, s]));
     expect(byId.get('a')!.duration).toBe(5);
     expect(byId.get('a')!.computedEnd).toBe(5);
+    expect(byId.get('a')!.dueOverrun).toBe(2);
+  });
+
+  it('marks a parent whose rolled-up end misses its due date, not a done leaf (#113)', () => {
+    const p = makeNode({ id: 'p', childrenIds: ['x', 'y'] });
+    const x = makeNode({ id: 'x', parentId: 'p', effortEstimate: 4 });
+    const y = makeNode({ id: 'y', parentId: 'p', effortEstimate: 4 });
+    const done = makeNode({ id: 'done', effortEstimate: 2, percentComplete: 100 });
+    const constraints = new Map([
+      ['p', { maxEnd: 5 }],
+      ['done', { maxEnd: -10 }],
+    ]);
+    const byId = new Map(schedule([p, x, y, done], 0, constraints, undefined, 1, 0).map((s) => [s.nodeId, s]));
+    expect(byId.get('p')!.computedEnd).toBe(8);
+    expect(byId.get('p')!.dueOverrun).toBe(3);
+    expect(byId.get('done')!.dueOverrun).toBeUndefined();
   });
 
   it('FS lag pushes a follower past the cursor', () => {

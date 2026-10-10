@@ -324,6 +324,16 @@ export interface ConflictScanResult {
   duplicateLinks: DuplicateLinkGroup[];
 }
 
+export interface FrozenBaseline {
+  id: string;
+  name: string;
+  createdAt: string;
+  /** Nodes whose projected bar the baseline holds. */
+  nodeCount: number;
+  /** Oldest baselines dropped to stay at the per-map cap (10). */
+  dropped?: string[];
+}
+
 export interface ToolBackend {
   listMaps(): Promise<MapSummary[]>;
   getMap(mapId: string): Promise<MapDetail>;
@@ -354,6 +364,8 @@ export interface ToolBackend {
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;
+  /** Freeze the current projected schedule as a named baseline (#113). */
+  freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
 
   createNode(
     mapId: string,

@@ -1,4 +1,5 @@
 import { and, eq, inArray, or } from 'drizzle-orm';
+import { buildBaseline, capBaselines } from '../lib/mapSchedule.js';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
@@ -247,30 +248,27 @@ export async function deleteMap(mapId: string): Promise<boolean> {
 
 // ── Baseline ───────────────────────────────────────────────────────
 
-export async function createBaseline(mapId: string, name: string): Promise<MindMap | null> {
+/**
+ * Freeze a baseline. Keeps the newest MAX_BASELINES; `dropped` names the
+ * oldest ones that made room, so callers can say so.
+ */
+export async function createBaseline(mapId: string, name: string): Promise<{ map: MindMap; dropped: string[] } | null> {
   const data = await getMap(mapId);
   if (!data) return null;
 
-  const nodeSnapshot: Record<string, unknown> = {};
-  for (const node of data.nodes) {
-    nodeSnapshot[node.id] = {
-      effortEstimate: node.effortEstimate,
-      percentComplete: node.percentComplete,
-      startDate: node.startDate,
-      dueDate: node.dueDate,
-      status: node.status,
-    };
-  }
+  const baseline = buildBaseline(data, name);
 
-  const baseline: Baseline = {
-    id: crypto.randomUUID(),
-    name,
-    createdAt: new Date().toISOString(),
-    nodes: nodeSnapshot as Baseline['nodes'],
-  };
+  const { kept, dropped } = capBaselines([...(data.map.baselines ?? []), baseline]);
 
-  const existingBaselines = data.map.baselines ?? [];
-  const updatedBaselines = [...existingBaselines, baseline];
+  const map = await updateMap(mapId, { baselines: kept });
+  return map ? { map, dropped } : null;
+}
 
-  return updateMap(mapId, { baselines: updatedBaselines });
+/** Remove one baseline; null when the map or the baseline does not exist. */
+export async function deleteBaseline(mapId: string, baselineId: string): Promise<MindMap | null> {
+  const data = await getMap(mapId);
+  if (!data) return null;
+  const existing = data.map.baselines ?? [];
+  if (!existing.some((b) => b.id === baselineId)) return null;
+  return updateMap(mapId, { baselines: existing.filter((b) => b.id !== baselineId) });
 }

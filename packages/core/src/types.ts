@@ -539,6 +539,11 @@ export interface Baseline {
       startDate: string | null;
       dueDate: string | null;
       status: string | null;
+      /** The projected bar when the baseline was frozen (#113), as the
+       *  Gantt drew it (YYYY-MM-DD). Absent on baselines frozen before
+       *  #113 — those fall back to startDate/dueDate. */
+      plannedStart?: string;
+      plannedEnd?: string;
     }
   >;
 }
@@ -845,6 +850,9 @@ export interface ScheduledNode {
   computedStart: number; // days from project start (epoch-like offset)
   computedEnd: number;
   duration: number;
+  /** Set when the node has a due date and its projected end lands after it
+   *  (#113): how far past, in scheduler units. Absent = on time / no due date. */
+  dueOverrun?: number;
 }
 
 export interface CriticalPathResult {

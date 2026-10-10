@@ -201,8 +201,12 @@ function expandParentDependencies(nodes: Node[]): Node[] {
  * Per-node constraints that pin a node's schedule in place.
  *
  * - `minStart`: forces computedStart >= this value (e.g. user-set startDate)
- * - `maxEnd`: forces computedEnd >= this value (e.g. user-set dueDate acts as a
- *   target end; we bump duration or push start as needed in a minimal way)
+ * - `maxEnd`: the deadline (user-set dueDate). It does NOT move or stretch
+ *   the bar — the bar is the work (#113). A node whose projected end lands
+ *   after it gets `dueOverrun` (how far past, in scheduler units) so the
+ *   miss is visible instead of absorbed. (Until #113 a later due date
+ *   stretched the bar to end on it, which also pushed planned finishes out
+ *   to the deadline.)
  *
  * Values are in the same unit as the rest of the scheduler (days/hours/points
  * relative to projectStartDay). The caller converts calendar dates.
@@ -434,7 +438,7 @@ export function schedule(
       continue;
     }
 
-    let duration = leafDuration(node.effortEstimate);
+    const duration = leafDuration(node.effortEstimate);
     let earliestStart = projectStartDay;
 
     // Dep constraints first — these don't depend on which track we pick.
@@ -464,10 +468,6 @@ export function schedule(
     if (pin) {
       if (pin.minStart !== undefined && pin.minStart > earliestStart) {
         earliestStart = pin.minStart;
-      }
-      if (pin.maxEnd !== undefined) {
-        const requiredDuration = pin.maxEnd - earliestStart;
-        if (requiredDuration > duration) duration = requiredDuration;
       }
     }
 
@@ -570,6 +570,19 @@ export function schedule(
         duration: 0,
       });
       doneMarkers.add(parent.id);
+    }
+  }
+
+  // Step 8: deadlines (#113). A node with a due date whose projected end
+  // lands after it — leaf or rolled-up parent — carries the overrun.
+  // Finished work (done leaves, fully-done parents) is history, not a miss.
+  if (constraints) {
+    for (const [id, pin] of constraints) {
+      if (pin.maxEnd === undefined || doneMarkers.has(id)) continue;
+      const s = scheduled.get(id);
+      if (s && s.computedEnd > pin.maxEnd) {
+        scheduled.set(id, { ...s, dueOverrun: s.computedEnd - pin.maxEnd });
+      }
     }
   }
 

@@ -10,6 +10,7 @@ import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
+import { computeMapSchedule } from '../lib/mapSchedule.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
@@ -429,20 +430,38 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const body = req.body as { name: string };
-    if (!body.name) {
-      return reply.status(400).send({
-        error: { code: 'VALIDATION_ERROR', message: 'name is required' },
-      });
-    }
+    // Name optional since #113: "Baseline <date>" by default.
+    const body = (req.body ?? {}) as { name?: string };
+    const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : `Baseline ${new Date().toISOString().slice(0, 10)}`;
 
-    const updated = await mapDb.createBaseline(req.params.id, body.name);
-    if (!updated) {
+    const created = await mapDb.createBaseline(req.params.id, name);
+    if (!created) {
       return reply.status(404).send({
         error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
       });
     }
-    return reply.status(201).send(updated);
+    broadcast(req.params.id, { type: 'map:updated', map: created.map });
+    // The map, plus the names of the oldest baselines dropped to stay at
+    // MAX_BASELINES.
+    return reply.status(201).send({ ...created.map, droppedBaselines: created.dropped });
+  });
+
+  // ── DELETE /api/maps/:id/baseline/:baselineId — Drop a baseline (#113) ──
+  app.delete<{ Params: { id: string; baselineId: string } }>('/api/maps/:id/baseline/:baselineId', async (req, reply) => {
+    const perm = await permDb.getPermission(req.params.id, req.userId!);
+    if (!permDb.hasPermission(perm, 'edit')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'You need edit permission to delete baselines' },
+      });
+    }
+    const updated = await mapDb.deleteBaseline(req.params.id, req.params.baselineId);
+    if (!updated) {
+      return reply.status(404).send({
+        error: { code: 'BASELINE_NOT_FOUND', message: `Baseline ${req.params.baselineId} not found` },
+      });
+    }
+    broadcast(req.params.id, { type: 'map:updated', map: updated });
+    return reply.send(updated);
   });
 
   // ── POST /api/maps/:id/simulate — Scope-simulation what-if ────
@@ -603,135 +622,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    // Anchor day 0 of the schedule to the map's projectStartDate (or today).
-    const projectStartDate = data.map.projectStartDate
-      ? new Date(data.map.projectStartDate)
-      : new Date(new Date().toISOString().slice(0, 10));
-    // Normalize to UTC midnight so day arithmetic is stable.
-    projectStartDate.setUTCHours(0, 0, 0, 0);
-
-    // Conversion factor: effort-unit → calendar days.
-    // - days: 1 unit = 1 day
-    // - hours: 1 unit = 1 / hoursPerDay days
-    // - points: undefined (clients should warn); default to 1 day/point so a
-    //   roadmap still renders something.
-    const unitsPerDay =
-      data.map.effortUnit === 'hours'
-        ? (data.map.hoursPerDay ?? 8)
-        : 1;
-
-    // ── Version scoping ──────────────────────────────────────
-    const versionId = req.query.versionId;
-    let scopedNodes = data.nodes;
-    const crossVersionDependencies: Array<{
-      fromNodeId: string;
-      fromText: string;
-      toNodeId: string;
-      toText: string;
-      type: string;
-    }> = [];
-    if (versionId) {
-      // A node is in scope when its EFFECTIVE version is this one — its own
-      // versionId, else the nearest ancestor's (#357). Walking up to *any*
-      // ancestor with the version kept nodes that override it with their
-      // own version, so a version-scoped landing date counted another
-      // release's work. Same rule as search_nodes and the dispatch gate.
-      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-      const inScope = nodesInVersion(data.nodes, versionId);
-      // Prune dependencies that cross the version boundary; record them.
-      scopedNodes = data.nodes
-        .filter((n) => inScope.has(n.id))
-        .map((n) => {
-          const kept: typeof n.dependencies = [];
-          for (const dep of n.dependencies) {
-            if (inScope.has(dep.targetNodeId)) {
-              kept.push(dep);
-            } else {
-              const target = nodeById.get(dep.targetNodeId);
-              crossVersionDependencies.push({
-                fromNodeId: n.id,
-                fromText: n.text,
-                toNodeId: dep.targetNodeId,
-                toText: target?.text ?? dep.targetNodeId,
-                type: dep.type,
-              });
-            }
-          }
-          // childrenIds also need pruning so the scheduler's tree view stays valid
-          const keptChildren = n.childrenIds.filter((cid) => inScope.has(cid));
-          return { ...n, dependencies: kept, childrenIds: keptChildren };
-        });
-    }
-
-    // Build per-node constraints from manual start/due dates. Any node with
-    // a user-set date gets pinned; everything else flows from effort + deps.
-    const MS_PER_DAY = 86_400_000;
-    const toDayOffset = (isoDate: string): number => {
-      const d = new Date(isoDate);
-      d.setUTCHours(0, 0, 0, 0);
-      const calendarDays = Math.round((d.getTime() - projectStartDate.getTime()) / MS_PER_DAY);
-      // Convert calendar-day offset back to the scheduler's effort-unit space.
-      return calendarDays * unitsPerDay;
-    };
-
-    const constraints = new Map<NodeId, ScheduleConstraint>();
-    for (const n of scopedNodes) {
-      const pin: ScheduleConstraint = {};
-      if (n.startDate) pin.minStart = toDayOffset(n.startDate);
-      if (n.dueDate) pin.maxEnd = toDayOffset(n.dueDate);
-      if (pin.minStart !== undefined || pin.maxEnd !== undefined) {
-        constraints.set(n.id, pin);
-      }
-    }
-
-    // Resolve effective worker count: query param overrides map setting.
-    // Floor at 1, cap at 100 to keep accidental ?workers=999999 from being
-    // weird.
-    const queryWorkers = req.query.workers ? Number(req.query.workers) : NaN;
-    const effectiveWorkers = Number.isFinite(queryWorkers) && queryWorkers >= 1
-      ? Math.min(100, Math.floor(queryWorkers))
-      : Math.max(1, Math.min(100, Math.floor(data.map.workerCount ?? 1)));
-
-    // Compute "today" in scheduler units. Used by the scheduler to pin
-    // done leaves so they end at the today line (and don't all stack at
-    // projectStartDay). If today is before the project anchor, the value
-    // is negative — done items render to the left of the anchor, which
-    // is the right semantic.
-    const todayDate = new Date(new Date().toISOString().slice(0, 10));
-    todayDate.setUTCHours(0, 0, 0, 0);
-    const todayDay = toDayOffset(todayDate.toISOString().slice(0, 10));
-
-    // Build per-node completedAt offsets so done bars sit at their actual
-    // close dates instead of all piling on `todayDay`. Backfill populated
-    // these via the migration; new completions write them on each status
-    // transition. Nodes without a completedAt fall back to today in the
-    // scheduler.
-    const completedAtByNodeId = new Map<NodeId, number>();
-    for (const n of scopedNodes) {
-      if (n.completedAt) {
-        completedAtByNodeId.set(n.id, toDayOffset(n.completedAt.slice(0, 10)));
-      }
-    }
-
-    const tracks = new Map<NodeId, number>();
-    const scheduled = schedule(scopedNodes, 0, constraints, undefined, effectiveWorkers, todayDay, completedAtByNodeId, tracks);
-    // The critical path is the chain that decides the projected end UNDER
-    // the worker count (#112); the dependency-only CPM stays available for
-    // callers that want the plan's logical chain regardless of capacity.
-    const cp = capacityCriticalPath(scopedNodes, scheduled, tracks);
-
-    return reply.send({
-      schedule: scheduled,
-      criticalPath: cp,
-      dependencyCriticalPath: criticalPath(scopedNodes),
-      projectStartDate: projectStartDate.toISOString().slice(0, 10),
-      effortUnit: data.map.effortUnit,
-      unitsPerDay,
-      workerCount: effectiveWorkers,
-      focusFactor: clampFocusFactor(data.map.focusFactor),
-      versionId: versionId ?? null,
-      crossVersionDependencies: versionId ? crossVersionDependencies : [],
-    });
+    const { barDates: _barDates, ...result } = computeMapSchedule(data, req.query);
+    return reply.send(result);
   });
 
   // ── GET /api/maps/:id/forecast — Completion forecast

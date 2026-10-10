@@ -174,6 +174,14 @@ export function createChatBackend(userId: string): ToolBackend {
       if (!ok) throw new Error(`Map ${mapId} not found`);
     },
 
+    async freezeBaseline(mapId, name) {
+      const created = await mapDb.createBaseline(mapId, name?.trim() || `Baseline ${new Date().toISOString().slice(0, 10)}`);
+      if (!created) throw new Error(`Map ${mapId} not found`);
+      broadcast(mapId, { type: 'map:updated', map: created.map });
+      const b = created.map.baselines[created.map.baselines.length - 1];
+      return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes).length, dropped: created.dropped };
+    },
+
     async createNode(mapId, parentId, text, fields) {
       const node = await nodeDb.createNode({
         mapId,

@@ -88,6 +88,7 @@ function makeRecorder(): Recorder {
     createMap: async () => { throw new Error('not used'); },
     updateMap: async () => { throw new Error('not used'); },
     deleteMap: async () => { throw new Error('not used'); },
+    freezeBaseline: async () => { throw new Error('not used'); },
     createNode: async () => { throw new Error('not used'); },
     updateNode: async () => { throw new Error('not used'); },
     deleteNode: async () => { throw new Error('not used'); },

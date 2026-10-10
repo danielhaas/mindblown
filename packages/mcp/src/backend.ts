@@ -19,6 +19,7 @@ export const httpBackend: ToolBackend = {
   },
   updateMap: (mapId, fields) => api.updateMap(mapId, fields),
   deleteMap: (mapId) => api.deleteMap(mapId),
+  freezeBaseline: (mapId, name) => api.freezeBaseline(mapId, name),
   createNode: (mapId, parentId, text, fields) => api.createNode(mapId, parentId, text, fields),
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),
   deleteNode: (mapId, nodeId) => api.deleteNode(mapId, nodeId),

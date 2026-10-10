@@ -1178,6 +1178,26 @@ export interface ScheduleResponse {
   workerCount: number;
   /** Fraction of calendar time reaching planned work (0.05–1.0); default 1. */
   focusFactor: number;
+  /** Nodes whose projected end lands after their due date, worst first (#113). */
+  dueViolations?: DueViolation[];
+}
+
+export interface DueViolation {
+  nodeId: string;
+  text: string;
+  dueDate: string;
+  projectedEnd: string;
+  lateDays: number;
+}
+
+/** Freeze the current projection as a named baseline (#113); returns the
+ *  map plus the names of the oldest baselines dropped to stay at 10. */
+export function createBaseline(mapId: string, name?: string): Promise<MindMap & { droppedBaselines?: string[] }> {
+  return request<MindMap & { droppedBaselines?: string[] }>(`/api/maps/${mapId}/baseline`, { method: 'POST', body: JSON.stringify(name ? { name } : {}) });
+}
+
+export function deleteBaseline(mapId: string, baselineId: string): Promise<MindMap> {
+  return request<MindMap>(`/api/maps/${mapId}/baseline/${baselineId}`, { method: 'DELETE' });
 }
 
 export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {
