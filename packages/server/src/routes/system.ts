@@ -125,12 +125,13 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
       .from(users)
       .where(sql`lower(${users.email}) = lower(${email})`)
       .limit(2);
-    if (matches.length > 1) {
+    // Several match: the exact spelling picks one; otherwise refuse.
+    const user = matches.length > 1 ? matches.find((m) => m.email === email) : matches[0];
+    if (matches.length > 1 && !user) {
       return reply.status(409).send({
-        error: { code: 'AMBIGUOUS_EMAIL', message: `Several accounts match ${email} when case is ignored — type the address exactly` },
+        error: { code: 'AMBIGUOUS_EMAIL', message: `Several accounts match ${email} when case is ignored — type one of them with its exact capitalisation` },
       });
     }
-    const [user] = matches;
     if (!user) {
       return reply.status(404).send({
         error: { code: 'USER_NOT_FOUND', message: `No user with email ${email}` },

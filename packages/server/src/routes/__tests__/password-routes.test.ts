@@ -320,6 +320,25 @@ describe('POST /api/system/reset-password', () => {
     expect(updateSetCalls).toHaveLength(0);
   });
 
+  it('several case-variants, but the exact spelling picks one', async () => {
+    selectQueue = [
+      [{ isAdmin: true }],
+      [
+        { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', email: 'Marcel@example.com' },
+        { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'marcel@example.com' },
+      ],
+    ];
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'marcel@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().email).toBe('marcel@example.com');
+  });
+
   it('403 for an admin\'s long-lived token — admin actions need a web session (#315)', async () => {
     const app = await buildApp('long-lived');
     const res = await app.inject({
