@@ -52,7 +52,8 @@ const CONFIDENCE_STYLE: Record<
  * The one-line under-label. Deliberately the *cause*, not a restatement of
  * the badge — the badge says how much to trust the date, this says why.
  */
-function summariseConfidence(c: ReleaseForecastRow['confidence']): string {
+function summariseConfidence(c: ReleaseForecastRow['confidence'], evidence?: ReleaseForecastRow['evidence']): string {
+  if (evidence?.state === 'not_measurable') return `no own completions yet (0 of ${evidence.required})`;
   if (c.unestimatedOpenLeaves > 0) {
     return `${c.unestimatedOpenLeaves} open task${c.unestimatedOpenLeaves === 1 ? '' : 's'} unestimated`;
   }
@@ -484,7 +485,11 @@ export function ReleasesView() {
                   ? row.velocityAdjustedFinishDate ?? row.plannedFinishDate ?? null
                   : null;
                 const slipDays = row ? row.slipVelocityDays ?? row.slipPlannedDays ?? null : null;
-                const slip = formatSlip(slipDays);
+                // No slip verdict on a release without history of its own (#343).
+                const unmeasurable = row?.evidence?.state === 'not_measurable' && row.remainingTickets > 0;
+                const slip = unmeasurable
+                  ? { text: 'not yet measurable', color: '#94a3b8' }
+                  : formatSlip(slipDays);
                 const pct =
                   row && row.totalEffort > 0
                     ? Math.round(((row.totalEffort - row.remainingEffort) / row.totalEffort) * 100)
@@ -618,7 +623,7 @@ export function ReleasesView() {
                                 {c.icon} {c.label}
                               </span>
                               <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 2 }}>
-                                {summariseConfidence(row.confidence)}
+                                {summariseConfidence(row.confidence, row.evidence)}
                               </div>
                             </div>
                           );
@@ -637,7 +642,12 @@ export function ReleasesView() {
                         )}
                       </td>
                     )}
-                    <td style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}>{slip.text}</td>
+                    <td
+                      style={{ ...tdStyle, color: slip.color, fontWeight: 500 }}
+                      title={unmeasurable ? row?.evidence?.note : undefined}
+                    >
+                      {slip.text}
+                    </td>
                     <td style={tdStyle}>
                       {row ? (
                         <>

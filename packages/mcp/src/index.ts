@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, countOwnCompletions, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -928,7 +928,7 @@ server.tool(
 
 server.tool(
   'completion_forecast',
-  'Forecast "when will it be done?" for a node/subtree/version/phase. Reports THREE dates: planned finish (scheduler-based, respects dependencies), velocity-adjusted finish (remaining effort ÷ measured NET rate), and the independent ticket model (open leaves ÷ net ticket completion rate — counts tickets instead of summing estimates, so unestimated work still weighs in). Plus target date (from version/phase or node dueDates) and slip vs target per model. The day and ticket models disagreeing hard means the estimate scale has drifted from ticket granularity. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
+  'Forecast "when will it be done?" for a node/subtree/version/phase. Reports THREE dates: planned finish (scheduler-based, respects dependencies), velocity-adjusted finish (remaining effort ÷ measured NET rate), and the independent ticket model (open leaves ÷ net ticket completion rate — counts tickets instead of summing estimates, so unestimated work still weighs in). Plus target date (from version/phase or node dueDates) and slip vs target per model. Starts with ONE headline date, a confidence word and the spread of the models. A scoped forecast also reports its evidence: a scope with no completions of its own in the measuring window is "not yet measurable" — no headline date, no slip verdict — because every number would be the map\'s past applied to it; the ticket model uses the scope\'s own pace once it has 3+ completions and says which population it measured. The day and ticket models disagreeing hard means the estimate scale has drifted from ticket granularity. Scope with nodeId (subtree), versionId, or phaseId; omit all to forecast the whole map.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().optional().describe('Scope to this node and its descendants'),
@@ -1046,7 +1046,12 @@ server.tool(
       // drifted from the ticket granularity.
       let ticketFinishDate: Date | null = null;
       let netTicketsPerDay: number | null = null;
-      let ticketWindowDays: number | null = null;
+      let ticketBasis = '';
+      // How much of THIS scope's own history stands behind the forecast
+      // (#342/#343): its completions in the measuring window decide both
+      // the evidence state and whether the ticket model may use its own pace.
+      let windowDays = 56;
+      let ownCompletions = countOwnCompletions(leaves, windowDays);
       if (remainingEffort > 0 || remainingTickets > 0) {
         try {
           const vel = await api.getVelocity(mapId);
@@ -1056,15 +1061,25 @@ server.tool(
             velocityFinishDate = addCalendarDays(anchor, velocityFinishCalendarDays);
             velocityBasis = `net rate ${rt.netRatePerDay.toFixed(2)} ${data.map.effortUnit ?? 'units'}/day, ${Math.round(rt.reworkFraction * 100)}% rework — measured ${vel.windowDays}d`;
           }
-          const ticketsRate =
+          const mapTicketsRate =
             vel.rates?.netTicketsPerDay ??
             (vel.completionEvents >= 3
               ? (vel.completionEvents / vel.windowDays) * (1 - (rt?.reworkFraction ?? 0))
               : null);
-          if (ticketsRate != null && ticketsRate > 0 && remainingTickets > 0) {
-            netTicketsPerDay = ticketsRate;
-            ticketWindowDays = vel.rates?.windowDays ?? vel.windowDays;
-            ticketFinishDate = addCalendarDays(anchor, remainingTickets / ticketsRate);
+          windowDays = vel.rates?.windowDays ?? vel.windowDays;
+          ownCompletions = countOwnCompletions(leaves, windowDays);
+          const choice = chooseTicketRate({
+            scoped,
+            ownCompletions,
+            windowDays,
+            mapRatePerDay: mapTicketsRate,
+            mapCompletions: vel.completionEvents,
+            reworkFraction: rt?.reworkFraction ?? 0,
+          });
+          if (choice.ratePerDay != null && choice.ratePerDay > 0 && remainingTickets > 0) {
+            netTicketsPerDay = choice.ratePerDay;
+            ticketBasis = choice.basis;
+            ticketFinishDate = addCalendarDays(anchor, remainingTickets / choice.ratePerDay);
           }
         } catch {
           /* velocity/repo unavailable — keep the focus-based line */
@@ -1098,10 +1113,48 @@ server.tool(
         targetSource = 'max leaf dueDate';
       }
 
+      const evidence = assessForecastEvidence({ scoped, ownCompletions, windowDays });
+      const notMeasurable = evidence.state === 'not_measurable';
+
+      // Verdict on the PRIMARY (velocity) line. Same helper the Releases
+      // table renders as its Confidence badge, so agents and humans read
+      // one judgement instead of arbitrating two dates themselves.
+      const confidence = assessForecastConfidence({
+        velocityHorizonDays: remainingEffort > 0 ? velocityFinishCalendarDays : null,
+        ticketHorizonDays:
+          netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0
+            ? remainingTickets / netTicketsPerDay
+            : null,
+        unestimatedOpenLeaves: remainingTicketsUnestimated,
+        openLeaves: remainingTickets,
+      });
+      const headline = forecastHeadline({
+        evidence,
+        plannedDate: hasSchedulableEffort ? iso(plannedFinishDate) : null,
+        velocityDate: remainingEffort > 0 ? iso(velocityFinishDate) : null,
+        ticketDate: ticketFinishDate ? iso(ticketFinishDate) : null,
+        crossCheck: confidence.level,
+        fudgeFactor,
+        openLeaves: remainingTickets,
+        unestimatedOpenLeaves: remainingTicketsUnestimated,
+      });
+
       // ── Format output ──
       const unit = data.map.effortUnit ?? 'units';
       const lines: string[] = [];
       lines.push(`Completion forecast — ${scopeLabel}`);
+      lines.push('');
+      // One answer first (#319): the reader who opens this for a single
+      // number gets one date, how far to trust it, and the spread.
+      if (headline.date) {
+        const spread = headline.range && headline.range.from !== headline.range.to
+          ? `; models span ${headline.range.from} – ${headline.range.to}`
+          : '';
+        lines.push(`Headline:            ~${headline.date} (${headline.confidence} confidence — ${headline.reason}${spread})`);
+      } else {
+        lines.push(`Headline:            no date — ${headline.reason}`);
+      }
+      if (scoped) lines.push(`Evidence:            ${evidence.note}`);
       lines.push('');
       lines.push(`Tasks in scope:      ${leaves.length}`);
       lines.push(
@@ -1116,14 +1169,19 @@ server.tool(
       lines.push(`Remaining:           ${remainingEffort.toFixed(2)} ${unit}`);
       lines.push('');
       if (fudgeFactor != null) {
-        lines.push(`Velocity calibration: fudge = ${fudgeFactor.toFixed(2)}x (${calibration.organicCount} organic samples, ${calibration.organicDays.toFixed(1)} estimate-days)`);
+        const ownSamples = scoped ? calibrationSamplesFromNodes(leaves).length : null;
+        lines.push(
+          `Velocity calibration: fudge = ${fudgeFactor.toFixed(2)}x (${calibration.organicCount} organic samples, ${calibration.organicDays.toFixed(1)} estimate-days` +
+            (ownSamples != null ? ` — map-wide; ${ownSamples} of them in this scope` : '') +
+            ')',
+        );
         // A fudge far from 1 means the estimate UNIT is broken, not the
         // team's pace — at 0.10x a "1d" node is really ~1h of work, and
         // every downstream number is unit-fiction until the estimates
         // are recalibrated (defaults 0.1-0.25d, not 1-2d).
         if (fudgeFactor < 0.5 || fudgeFactor > 2) {
           lines.push(
-            `⚠ UNCALIBRATED: fudge ${fudgeFactor.toFixed(2)}x means the estimate unit itself is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — treat every forecast below as unit-fiction until estimates are re-baselined (target defaults 0.1-0.25d per ticket).`,
+            `⚠ UNCALIBRATED: fudge ${fudgeFactor.toFixed(2)}x means the estimate unit itself is off by ${fudgeFactor < 1 ? (1 / fudgeFactor).toFixed(0) : fudgeFactor.toFixed(0)}x — treat the planned and velocity dates below as unit-fiction until estimates are re-baselined (target defaults 0.1-0.25d per ticket). The ticket model counts tickets and does not use estimates.`,
           );
         }
       } else if (calibration.note != null) {
@@ -1156,26 +1214,20 @@ server.tool(
           remainingTicketsUnestimated > 0
             ? `; counts ${remainingTicketsUnestimated} unestimated leaf(s) the day model can't see`
             : '';
-        lines.push(`Ticket model:        ${iso(ticketFinishDate)} (${remainingTickets} open tickets ÷ ${netTicketsPerDay.toFixed(2)}/day — measured ${ticketWindowDays}d${unestNote})`);
+        lines.push(`Ticket model:        ${iso(ticketFinishDate)} (${remainingTickets} open tickets ÷ ${netTicketsPerDay.toFixed(2)}/day — ${ticketBasis}${unestNote})`);
       } else if (remainingTickets > 0) {
         lines.push(`Ticket model:        unavailable (${remainingTickets} open tickets; need ≥3 organic completions in the window)`);
       }
 
-      // Verdict on the PRIMARY (velocity) line. Same helper the Releases
-      // table renders as its Confidence badge, so agents and humans read
-      // one judgement instead of arbitrating two dates themselves.
-      const confidence = assessForecastConfidence({
-        velocityHorizonDays: remainingEffort > 0 ? velocityFinishCalendarDays : null,
-        ticketHorizonDays:
-          netTicketsPerDay != null && netTicketsPerDay > 0 && remainingTickets > 0
-            ? remainingTickets / netTicketsPerDay
-            : null,
-        unestimatedOpenLeaves: remainingTicketsUnestimated,
-        openLeaves: remainingTickets,
-      });
-      const confidenceIcon =
-        confidence.level === 'agree' ? '✓' : confidence.level === 'caution' ? '⚠' : '·';
-      lines.push(`Confidence:          ${confidenceIcon} ${confidence.level} — ${confidence.note}`);
+      if (notMeasurable) {
+        // No verdict without own history (#343): the cross-check compares two
+        // projections of the MAP's pace, not this scope's.
+        lines.push(`Confidence:          · not yet measurable — no verdict until this scope has completions of its own`);
+      } else {
+        const confidenceIcon =
+          confidence.level === 'agree' ? '✓' : confidence.level === 'caution' ? '⚠' : '·';
+        lines.push(`Confidence:          ${confidenceIcon} ${confidence.level} — ${confidence.note}`);
+      }
 
       if (targetDate) {
         lines.push('');
@@ -1190,13 +1242,15 @@ server.tool(
             : days < 0
               ? `${label.padEnd(20)} ${Math.abs(days)} days buffer`
               : `${label.padEnd(20)} exactly on target (no buffer)`;
-        if (hasSchedulableEffort) {
+        if (notMeasurable) {
+          lines.push(`Vs target:           no slip verdict yet — the dates above are the map's pace applied to this scope`);
+        } else if (hasSchedulableEffort) {
           lines.push(slipLine('Planned vs target:', daysBetween(plannedFinishDate, targetDateObj)));
         }
-        if (remainingEffort > 0) {
+        if (!notMeasurable && remainingEffort > 0) {
           lines.push(slipLine('Velocity vs target:', daysBetween(velocityFinishDate, targetDateObj)));
         }
-        if (ticketFinishDate != null) {
+        if (!notMeasurable && ticketFinishDate != null) {
           lines.push(slipLine('Ticket vs target:', daysBetween(ticketFinishDate, targetDateObj)));
         }
       } else {

@@ -1317,6 +1317,17 @@ export interface ReleaseForecastRow {
     unestimatedOpenLeaves: number;
     note: string;
   };
+  /**
+   * How much of the release's own history stands behind the row (#343).
+   * `not_measurable`: no completions of its own yet — no slip, no verdict.
+   */
+  evidence?: {
+    state: 'not_measurable' | 'provisional' | 'measured';
+    ownCompletions: number;
+    required: number;
+    windowDays: number;
+    note: string;
+  };
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;

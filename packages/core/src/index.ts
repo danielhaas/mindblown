@@ -253,6 +253,23 @@ export type {
   ForecastConfidenceLevel,
 } from './velocity.js';
 
+// Forecast evidence — how much of a scope's own history stands behind its forecast (#319/#342/#343)
+export {
+  MIN_OWN_COMPLETIONS,
+  MIN_OWN_RATE_COMPLETIONS,
+  countOwnCompletions,
+  assessForecastEvidence,
+  chooseTicketRate,
+  forecastHeadline,
+} from './forecastEvidence.js';
+export type {
+  ForecastEvidence,
+  ForecastEvidenceState,
+  TicketRateChoice,
+  ForecastHeadline,
+  HeadlineConfidence,
+} from './forecastEvidence.js';
+
 // Fleet journal — what the fleet did in a window (ticks, claims, delivered, follow-ups, knob writes)
 export { buildFleetJournal, journalWindow, splitSession, JOURNAL_EVENT_TYPES } from './fleetJournal.js';
 export type {

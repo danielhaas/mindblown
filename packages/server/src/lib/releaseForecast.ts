@@ -1,6 +1,8 @@
-import type { ForecastConfidence, Node as CoreNode, MindMap, Version } from '@mindblown/core';
+import type { ForecastConfidence, ForecastEvidence, Node as CoreNode, MindMap, Version } from '@mindblown/core';
 import {
   assessCalibration,
+  assessForecastEvidence,
+  countOwnCompletions,
   assessForecastConfidence,
   calibrationSamplesFromNodes,
   clampFocusFactor,
@@ -50,6 +52,12 @@ export interface ReleaseForecastRow {
   unestimatedOpenLeaves: number;
   /** How much to trust `velocityAdjustedFinishDate`, and why not more. */
   confidence: ForecastConfidence;
+  /**
+   * How much of the release's OWN history stands behind its row (#343).
+   * `not_measurable` rows carry no slip and no cross-check verdict: their
+   * dates are the map's pace applied to the scope, not a finding about it.
+   */
+  evidence: ForecastEvidence;
   slipPlannedDays: number | null;
   slipVelocityDays: number | null;
   slipTicketDays: number | null;
@@ -236,19 +244,34 @@ export function computeReleaseForecast(
       }
     }
 
-    const confidence = assessForecastConfidence({
-      velocityHorizonDays,
-      ticketHorizonDays,
-      unestimatedOpenLeaves,
-      openLeaves: remainingTickets,
+    const evidence = assessForecastEvidence({
+      scoped: true,
+      ownCompletions: countOwnCompletions(scopedLeaves, rates?.windowDays ?? 56, now),
+      windowDays: rates?.windowDays ?? 56,
     });
+    const notMeasurable = evidence.state === 'not_measurable' && remainingTickets > 0;
+    const confidence: ForecastConfidence = notMeasurable
+      ? {
+          level: 'unmeasured',
+          divergenceDays: null,
+          unestimatedOpenLeaves,
+          note: evidence.note,
+        }
+      : assessForecastConfidence({
+          velocityHorizonDays,
+          ticketHorizonDays,
+          unestimatedOpenLeaves,
+          openLeaves: remainingTickets,
+        });
 
     let slipPlannedDays: number | null = null;
     let slipVelocityDays: number | null = null;
-    if (v.targetDate && plannedFinishDate) {
+    if (notMeasurable) {
+      // No verdict without own history (#343) — the dates stay, the slip goes.
+    } else if (v.targetDate && plannedFinishDate) {
       slipPlannedDays = daysBetween(new Date(plannedFinishDate), new Date(v.targetDate));
     }
-    if (v.targetDate && velocityAdjustedFinishDate) {
+    if (!notMeasurable && v.targetDate && velocityAdjustedFinishDate) {
       slipVelocityDays = daysBetween(
         new Date(velocityAdjustedFinishDate),
         new Date(v.targetDate),
@@ -272,10 +295,11 @@ export function computeReleaseForecast(
       ticketModelFinishDate,
       unestimatedOpenLeaves,
       confidence,
+      evidence,
       slipPlannedDays,
       slipVelocityDays,
       slipTicketDays:
-        v.targetDate && ticketModelFinishDate
+        !notMeasurable && v.targetDate && ticketModelFinishDate
           ? daysBetween(new Date(ticketModelFinishDate), new Date(v.targetDate))
           : null,
     };
