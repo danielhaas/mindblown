@@ -415,7 +415,7 @@ function Column({
         </span>
         {totalEffort > 0 && (
           <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 500 }}>
-            {totalEffort}d
+            {formatEffort(Math.round(totalEffort * 10) / 10, effortUnit)}
           </span>
         )}
         {overWip && (
