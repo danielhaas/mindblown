@@ -511,6 +511,7 @@ describe('auth middleware exemption', () => {
     // jsonwebtoken config or a Postgres connection.
     vi.doMock('../../auth.js', () => ({
       verifyToken: () => ({ userId: 'user-1' }),
+      isTokenRevoked: async () => false,
     }));
     vi.doMock('../../lib/apiKeys.js', () => ({
       API_KEY_PREFIX: 'mb_',

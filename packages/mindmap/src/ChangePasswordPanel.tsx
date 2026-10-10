@@ -3,7 +3,7 @@
  * every logged-in user (workspace-wide view only).
  */
 
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { changePassword } from './api.js';
 
 const inputStyle: React.CSSProperties = {
@@ -35,6 +35,13 @@ export function ChangePasswordPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // The confirmation shows for 3 s, then clears itself.
+  useEffect(() => {
+    if (savedAt == null) return;
+    const t = setTimeout(() => setSavedAt(null), 3000);
+    return () => clearTimeout(t);
+  }, [savedAt]);
 
   const mismatch = confirmPassword.length > 0 && newPassword !== confirmPassword;
   const tooShort = newPassword.length > 0 && newPassword.length < 8;
@@ -148,7 +155,7 @@ export function ChangePasswordPanel() {
         >
           {saving ? 'Saving...' : 'Change password'}
         </button>
-        {savedAt && Date.now() - savedAt < 3000 && (
+        {savedAt != null && (
           <span style={{ fontSize: 12, color: '#16a34a' }}>Password changed</span>
         )}
       </div>

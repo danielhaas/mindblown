@@ -15,10 +15,10 @@ import {
   type AiProviderSettings,
   type AiProviderPreference,
 } from '../db/settings.js';
-import { requireAdmin, hashPassword } from '../auth.js';
+import { requireAdmin, hashPassword, markPasswordChanged } from '../auth.js';
 import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
   // ── GET /api/system/registration-policy ────────────────────────
@@ -117,10 +117,11 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'VALIDATION_ERROR', message: 'email is required' },
       });
     }
+    // Case-insensitive: the admin types what the user told them.
     const [user] = await db
       .select({ id: users.id, email: users.email })
       .from(users)
-      .where(eq(users.email, email))
+      .where(sql`lower(${users.email}) = lower(${email})`)
       .limit(1);
     if (!user) {
       return reply.status(404).send({
@@ -130,6 +131,9 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     const tempPassword = `mb-${randomBytes(9).toString('base64url')}`;
     const passwordHash = await hashPassword(tempPassword);
     await db.update(users).set({ passwordHash }).where(eq(users.id, user.id));
+    // The panel promises access "stops working immediately": every
+    // session and long-lived token of that user ends here (#315).
+    await markPasswordChanged(user.id);
     return { email: user.email, tempPassword };
   });
 }

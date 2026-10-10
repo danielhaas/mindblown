@@ -21,6 +21,8 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   isAdmin: boolean('is_admin').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  /** Last password change or admin reset; JWTs issued before it are refused (#315). */
+  passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
 });
 
 // ── System-wide key/value settings ────────────────────────────────

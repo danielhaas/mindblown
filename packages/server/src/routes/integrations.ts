@@ -1236,7 +1236,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
         });
       }
-      if (!(await requireAdmin(req))) {
+      // Robot callers allowed (#315): this is the `audit_closed_issues`
+      // MCP tool's route, and MCP calls arrive as the /mcp loopback JWT —
+      // an agent. The user must still be an admin; dry run is the default.
+      if (!(await requireAdmin(req, { allowApiKey: true }))) {
         return reply.status(403).send({
           error: { code: 'FORBIDDEN', message: 'Admin access required' },
         });
