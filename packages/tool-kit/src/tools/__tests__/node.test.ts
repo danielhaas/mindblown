@@ -1299,3 +1299,74 @@ describe('clear_blocker tool', () => {
     expect(out).toContain('"blocked" tag removed');
   });
 });
+
+describe('search_nodes tool — issue references (#348)', () => {
+  function issueMap(): MapDetail {
+    const node = (id: string, text: string, externalIds: string[], description: string | null = null): NodeWithComputed =>
+      ({
+        id, mapId: 'm1', parentId: 'root', childrenIds: [], text, description,
+        effortEstimate: null, actualEffort: null, percentComplete: null, status: null, assigneeIds: [], priority: null,
+        dueDate: null, startDate: null, tags: [], dependencies: [], versionId: null, cycleId: null,
+        externalLinks: externalIds.map((externalId) => ({ provider: 'github', externalId, url: 'u', syncEnabled: true })),
+        attachments: [], collapsed: false, createdAt: '2026-06-10T00:00:00Z', updatedAt: '2026-06-10T00:00:00Z',
+        claimedBySession: null, claimedAt: null, computedEffort: 0, computedProgress: 0, healthSignal: 'on_track',
+      }) as unknown as NodeWithComputed;
+    return {
+      map: { id: 'm1', rootNodeId: 'root' } as unknown as MapDetail['map'],
+      nodes: [
+        node('linked', 'Login page renders blank', ['FulcrumCRM/crm#9307']),
+        node('mentions', 'Unrelated', [], 'see also #9307 in the notes'),
+        node('longer', 'Other ticket', ['FulcrumCRM/crm#93070']),
+        node('other-repo', 'Same number elsewhere', ['dan/other#9307']),
+      ],
+    };
+  }
+
+  it('a query that is an issue ref finds the node LINKED to it (exact number), besides text matches', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const out = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '#9307' } as never);
+    expect(out).toContain('id: linked');
+    expect(out).toContain('id: mentions'); // description text match, as before
+    expect(out).toContain('id: other-repo');
+    expect(out).not.toContain('id: longer'); // #93070 is a different issue
+  });
+
+  it('issueRef with a repo is the exact existence check', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const out = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: 'fulcrumcrm/crm#9307' } as never);
+    expect(out).toContain('Found 1 node(s)');
+    expect(out).toContain('id: linked');
+  });
+
+  it('issueRef as a bare number matches any repo; a malformed ref is explained', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const any = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: '9307' } as never);
+    expect(any).toContain('Found 2 node(s)');
+    const bad = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: 'crm 9307' } as never);
+    expect(bad).toMatch(/not an issue reference/);
+    // A forgotten `#` after the repo is refused, not misread as crm930#7.
+    const noHash = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '*', issueRef: 'FulcrumCRM/crm9307' } as never);
+    expect(noHash).toMatch(/not an issue reference/);
+  });
+
+  it('a bare number in the text query stays text — it does not pull in linked nodes', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const out = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: '9307' } as never);
+    expect(out).toContain('id: mentions'); // description text
+    expect(out).not.toContain('id: linked');
+  });
+
+  it('the query ref is case-insensitive and issueRef narrows a real text query', async () => {
+    const recorder = makeRecordingBackend();
+    recorder.backend.getMap = async () => issueMap();
+    const upper = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: 'FULCRUMCRM/CRM#9307' } as never);
+    expect(upper).toContain('id: linked');
+    const narrowed = await searchNodesTool.handler(recorder.backend, { mapId: 'm1', query: 'Same number', issueRef: '#9307' } as never);
+    expect(narrowed).toContain('Found 1 node(s)');
+    expect(narrowed).toContain('id: other-repo');
+  });
+});
