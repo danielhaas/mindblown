@@ -940,14 +940,13 @@ export async function importGitHubIssues(
     settledAt: null,
     list: fetchImportedIssues(repoOwner, repoName, forge, state),
   };
-  const key = repoKey;
-  issueListCache.set(key, entry);
+  issueListCache.set(repoKey, entry);
   try {
     const list = await entry.list;
     entry.settledAt = Date.now();
     return [...list];
   } catch (err) {
-    if (issueListCache.get(key) === entry) issueListCache.delete(key);
+    if (issueListCache.get(repoKey) === entry) issueListCache.delete(repoKey);
     throw err;
   }
 }
