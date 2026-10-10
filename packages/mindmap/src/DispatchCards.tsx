@@ -20,7 +20,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import type { Version } from '@mindblown/core';
-import { dispatchQueueSnapshot, DISPATCH_POLICY_KEYS } from '@mindblown/core';
+import { dispatchQueueSnapshot, DISPATCH_POLICY_KEYS, gateVersionIds, parseGateEntry } from '@mindblown/core';
 import type { DispatchQueueSnapshot } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -138,7 +138,7 @@ export function LeidangCards({ readOnly = false }: { readOnly?: boolean }) {
 
 const KNOB_HINT: Record<KnobField, string> = {
   maxActiveClaims: 'Fleet-wide claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out.',
-  dispatchGate: 'AND-filter. version: matches the ticket\'s effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised.',
+  dispatchGate: 'AND-filter; an "or" chip matches either side (the Bugs-first preset sets one). version: matches the ticket\'s effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised.',
   dispatchPolicy: 'Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age). The bug-share control adds one mix:bugs=N entry that weaves bugs into the stream at a fixed percentage.',
 };
 
@@ -393,7 +393,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
           >
             <option value="">+ version…</option>
             {versionOptions.map((v) => (
-              <option key={v.id} value={v.id} disabled={gateDraft.includes(versionGateEntry(v.id))}>
+              <option key={v.id} value={v.id} disabled={gateVersionIds(gateDraft).includes(v.id)}>
                 {v.name} ({v.status}{v.targetDate ? ` · ${v.targetDate}` : ''})
               </option>
             ))}
@@ -402,7 +402,14 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
             title='Matches tickets tagged "bug" or "type:bug" (case-insensitive) — GitHub-mirrored labels arrive as "type:bug".'
             style={{ fontSize: 12, color: '#334155', display: 'flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap' }}
           >
-            <input type="checkbox" checked={gateDraft.includes(GATE_BUGS_ONLY)} onChange={() => setGateDraft(toggleGateEntry(gateDraft, GATE_BUGS_ONLY))} />
+            <input
+              type="checkbox"
+              checked={gateDraft.includes(GATE_BUGS_ONLY)}
+              // An "or" chip already names bugs; a second, plain bugs entry
+              // would AND with it and silently drop the release side.
+              disabled={gateDraft.some((g) => { const p = parseGateEntry(g); return p.kind === 'any' && p.options.some((o) => o.kind === 'bugs'); })}
+              onChange={() => setGateDraft(toggleGateEntry(gateDraft, GATE_BUGS_ONLY))}
+            />
             Bugs only
           </label>
           <ApplyButton dirty={gateDirty} busy={busy === 'dispatchGate'} locked={busyAny} onClick={() => save('dispatchGate', { dispatchGate: gateDraft })} />
@@ -574,7 +581,7 @@ function FleetCard({ knobs, writes }: { knobs: KnobState; writes: Writes }) {
 
   const stale = claims.filter((c) => c.stale).length;
   const last = newestKnobWrite(writes);
-  const gateHasVersion = gate.some((g) => g.startsWith('version:'));
+  const gateHasVersion = gateVersionIds(gate).length > 0;
 
   return (
     <Card title="Fleet" accent={stale > 0 ? '#fed7aa' : undefined}>

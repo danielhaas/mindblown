@@ -1,3 +1,4 @@
+import { gateVersionIds } from '@mindblown/core';
 import { useEffect, useMemo, useState } from 'react';
 import { compareVersions, findVersionOrderInversions } from '@mindblown/core';
 import type { Version } from '@mindblown/core';
@@ -509,7 +510,7 @@ export function ReleasesView() {
                     <td style={tdStyle}>
                       <div style={{ fontWeight: 600, color: '#1e293b', display: 'flex', alignItems: 'center', gap: 6 }}>
                         <span>{v.name}</span>
-                        {dispatchGate?.includes(`version:${v.id}`) && (
+                        {gateVersionIds(dispatchGate ?? []).includes(v.id) && (
                           <span
                             data-testid="dispatching-badge"
                             title="The Leidang fleet's dispatch gate is fenced to this version — tickets in it are being pulled right now. Change the gate in the Cockpit."
