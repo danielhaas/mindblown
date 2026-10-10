@@ -1991,7 +1991,14 @@ server.tool(
         return true;
       });
 
-      const blocked = inScope.filter((n) => n.isBlocked);
+      // Done work is not blocked — the Cockpit's rule (status category done
+      // OR 100 %), applied to every list below so the counts add up.
+      const doneStatusIds = new Set(
+        (data.map.statusWorkflow ?? []).filter((s) => s.category === 'done').map((s) => s.id),
+      );
+      const isDone = (n: (typeof inScope)[number]) =>
+        (n.percentComplete ?? 0) >= 100 || (n.status != null && (doneStatusIds.has(n.status) || n.status.toLowerCase() === 'done'));
+      const blocked = inScope.filter((n) => n.isBlocked && !isDone(n));
       const manual = blocked.filter((n) => n.blockedBy?.manual);
       const depWaiting = blocked.filter((n) => !n.blockedBy?.manual && (n.blockedBy?.predecessorIds.length ?? 0) > 0);
 
@@ -2038,9 +2045,7 @@ server.tool(
       // and the Blocked panel show: one action for one person, not 200
       // free-text reasons. Done leaves are not blockers.
       const causeGroups = groupBlockers(
-        [...manual, ...depWaiting]
-          .filter((n) => (n.percentComplete ?? 0) < 100)
-          .map((n) => ({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: n.blockedBy?.predecessorIds ?? [] })),
+        [...manual, ...depWaiting].map((n) => ({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: n.blockedBy?.predecessorIds ?? [] })),
       );
       if (causeGroups.length > 0) {
         lines.push(`## By cause (${causeGroups.length})`);

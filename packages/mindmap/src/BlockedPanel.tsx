@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
-import { groupBlockers } from '@mindblown/core';
+import { groupBlockers, resolveStatusDef } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { dependencyNeighbourhood } from './blockedNeighbourhood.js';
 
@@ -22,13 +22,18 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const [mode, setMode] = useState<PanelMode>('cause');
 
+  const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow);
   const { manual, depWaiting } = useMemo(() => {
     const manual: BlockedLeaf[] = [];
     const depWaiting: BlockedLeaf[] = [];
+    // Done work is not blocked — the Cockpit's rule: a done-category
+    // status OR 100 %, for every tab and the header count alike.
+    const isDone = (node: Node, cv: ComputedNodeValues) =>
+      (cv.computedProgress ?? 0) >= 100 || resolveStatusDef(workflow ?? [], node.status)?.category === 'done';
     for (const node of Object.values(nodes)) {
       if (node.childrenIds.length > 0) continue;
       const cv = computed.get(node.id);
-      if (!cv || !cv.isBlocked) continue;
+      if (!cv || !cv.isBlocked || isDone(node, cv)) continue;
       const predecessorTitles = (cv.blockedBy?.predecessorIds ?? []).map(
         (pid) => nodes[pid]?.text ?? pid,
       );
@@ -37,7 +42,7 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
       else if (predecessorTitles.length > 0) depWaiting.push(entry);
     }
     return { manual, depWaiting };
-  }, [nodes, computed]);
+  }, [nodes, computed, workflow]);
 
   const total = manual.length + depWaiting.length;
 
@@ -45,9 +50,8 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
   // groupBlockers): one action for one person, not N free-text reasons.
   const byCause = useMemo(() => {
     const entryById = new Map([...manual, ...depWaiting].map((e) => [e.node.id, e]));
-    const open = [...entryById.values()].filter((e) => e.cv.computedProgress < 100);
     return groupBlockers(
-      open.map((e) => ({ id: e.node.id, blockedReason: e.node.blockedReason ?? null, predecessorIds: e.cv.blockedBy?.predecessorIds ?? [] })),
+      [...entryById.values()].map((e) => ({ id: e.node.id, blockedReason: e.node.blockedReason ?? null, predecessorIds: e.cv.blockedBy?.predecessorIds ?? [] })),
     ).map((g) => ({ ...g, entries: g.nodeIds.map((id) => entryById.get(id)!) }));
   }, [manual, depWaiting]);
 
@@ -231,8 +235,9 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
           background: '#f8fafc',
         }}
       >
-        "Manually blocked" reads <code>blockedReason</code>; "Waiting on dependencies"
-        is derived from Finish-to-Start dependencies whose target is &lt; 100%.
+        {mode === 'around'
+          ? 'Click a node to walk the chain from there.'
+          : <>"Manually blocked" reads <code>blockedReason</code>; "Waiting on dependencies" is derived from Finish-to-Start dependencies whose target is &lt; 100%.</>}
       </div>
     </div>
   );

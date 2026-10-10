@@ -21,6 +21,15 @@ describe('dependencyNeighbourhood', () => {
     expect(r.downstream.map((m) => m.id)).toEqual(['d']);
   });
 
+  it('only finish-to-start links count; downstream keeps finished dependents', () => {
+    const ss = { id: 'b', text: 'b', percentComplete: 0, dependencies: [{ targetNodeId: 'a', type: 'SS', lag: 0 }] } as unknown as Node;
+    const nodes = Object.fromEntries([n('a'), ss, n('c', ['a'], 100)].map((m) => [m.id, m]));
+    const up = dependencyNeighbourhood(nodes, new Map(), 'b');
+    expect(up.upstream).toEqual([]); // SS predecessor does not block
+    const down = dependencyNeighbourhood(nodes, new Map(), 'a');
+    expect(down.downstream.map((m) => m.id)).toEqual(['c']); // done dependent kept, SS dependent not
+  });
+
   it('survives cycles', () => {
     const nodes = Object.fromEntries([n('a', ['b']), n('b', ['a'])].map((m) => [m.id, m]));
     const r = dependencyNeighbourhood(nodes, new Map(), 'a');
