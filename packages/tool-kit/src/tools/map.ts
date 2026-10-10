@@ -126,6 +126,13 @@ export const updateMapTool = defineTool({
         // enum + regex reports only the regex branch's error for an
         // off-vocabulary key like "chaos", which reads as if mix:bugs
         // were the only accepted shape.
+        //
+        // Deliberate trade (#354): a refine is opaque to zod-to-json-schema,
+        // so the tool's JSON schema now says only {"type":"string"} instead
+        // of anyOf[enum, pattern] — agents learn the keys from .describe()
+        // below, and runtime validation is unchanged. An errorMap on the
+        // union would keep the schema but does not work in zod 3.25
+        // (invalid_union still reports "Invalid"). Not an oversight.
         z.string().refine(
           (k) => (DISPATCH_POLICY_KEYS as readonly string[]).includes(k) || MIX_BUGS_REGEX.test(k),
           { message: 'policy entries must be "bugs", "priority", "size", "age", or "mix:bugs=<N>" with integer N 0-100' },
