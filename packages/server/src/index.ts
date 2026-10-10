@@ -16,6 +16,7 @@ import { parsePositiveIntMs } from './sync/parseInterval.js';
 import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { runTrashGc } from './sync/trashGc.js';
+import { runTriageLifecycle } from './sync/triageLifecycle.js';
 import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
 import { systemRoutes } from './routes/system.js';
@@ -427,6 +428,23 @@ async function main(): Promise<void> {
   };
   trashGcTick();
   setInterval(trashGcTick, TRASH_GC_INTERVAL_MS);
+
+  // ── Triage decision lifecycle (#313) ─────────────────────────────
+  // Daily, like the trash GC: rows that need no human decision (foreign
+  // repo, settled skips, uncertain on closed issues) are confirmed so the
+  // review queue holds only real questions. Archived maps are skipped.
+  const triageLifecycleTick = async (): Promise<void> => {
+    try {
+      const r = await runTriageLifecycle();
+      if (r.foreign + r.skipsSettled + r.uncertainClosed + r.placedSettled > 0) {
+        console.log(`[triage-lifecycle] confirmed foreign=${r.foreign} skipsSettled=${r.skipsSettled} uncertainClosed=${r.uncertainClosed} placedSettled=${r.placedSettled}`);
+      }
+    } catch (err) {
+      console.error('[triage-lifecycle] tick caught unexpected error:', err);
+    }
+  };
+  triageLifecycleTick();
+  setInterval(triageLifecycleTick, TRASH_GC_INTERVAL_MS);
 }
 
 main();
