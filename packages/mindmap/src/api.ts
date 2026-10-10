@@ -950,6 +950,22 @@ export function createNode(
   });
 }
 
+/** Per-item result of PATCH /nodes/bulk (#115) — items succeed or fail independently. */
+export type BulkNodeUpdateResult =
+  | { id: string; ok: true; node: Node }
+  | { id: string; ok: false; status: number; error: { code: string; message: string; current?: Node } };
+
+/** Several node updates in one request; each runs the single-node PUT path. */
+export function bulkUpdateNodes(
+  mapId: string,
+  updates: Array<{ id: string; fields: Partial<Node>; expectedRevision?: number }>,
+): Promise<{ results: BulkNodeUpdateResult[]; updated: number; failed: number }> {
+  return request(`/api/maps/${mapId}/nodes/bulk`, {
+    method: 'PATCH',
+    body: JSON.stringify({ updates }),
+  });
+}
+
 export function updateNode(
   mapId: string,
   nodeId: string,

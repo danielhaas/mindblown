@@ -366,113 +366,48 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       const { expectedRevision, ...body } = req.body as nodeDb.UpdateNodeInput & {
         expectedRevision?: number;
       };
-
-      // Snapshot current values of tracked fields before mutating so we can
-      // diff them into the change log.
-      const before = await nodeDb.getNode(req.params.nodeId);
-
-      let updated: CoreNode | null;
-      try {
-        updated = await nodeDb.updateNode(req.params.nodeId, body, expectedRevision);
-      } catch (err) {
-        if (err instanceof DependencyValidationError) {
-          return reply.status(400).send({
-            error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message },
-          });
-        }
-        if (err instanceof TagsModeConflictError) {
-          return reply.status(400).send({
-            error: { code: 'TAGS_MODE_CONFLICT', message: err.message },
-          });
-        }
-        if (err instanceof RequirementIdConflictError) {
-          return reply.status(400).send({
-            error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message },
-          });
-        }
-        if (err instanceof PhaseIdValidationError) {
-          return reply.status(400).send({
-            error: { code: 'UNKNOWN_PHASE_ID', message: err.message },
-          });
-        }
-        if (err instanceof RevisionConflictError) {
-          return reply.status(409).send({
-            error: {
-              code: 'REVISION_CONFLICT',
-              message: 'Node was modified by someone else; reload and retry.',
-              current: err.current,
-            },
-          });
-        }
-        throw err;
-      }
-      if (!updated) {
-        return reply.status(404).send({
-          error: { code: 'NODE_NOT_FOUND', message: `Node ${req.params.nodeId} not found` },
-        });
-      }
-
-      // If the root node's text changed, keep the map name in sync
-      if (body.text !== undefined && updated.parentId === null) {
-        await mapDb.updateMap(req.params.id, { name: body.text });
-      }
-
-      // Broadcast the change
-      broadcast(req.params.id, {
-        type: 'node:updated',
-        nodeId: req.params.nodeId,
-        fields: Object.keys(body),
-        node: updated,
-      });
-
-      // Re-embed if text or description changed (other fields don't affect the vector)
-      if (body.text !== undefined || body.description !== undefined) {
-        scheduleEmbedNode(req.params.nodeId);
-      }
-
-      // Fire outbound GitHub sync (non-blocking)
-      syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
-
-      // Auto-link to GitHub when the title was just changed AND the node has
-      // no existing GitHub link (#58). The "no existing link" gate is the
-      // important one — we must never override an explicit prior link, even
-      // if the new title points elsewhere.
-      if (body.text !== undefined && before) {
-        const hadGithubLink = before.externalLinks.some((l) => isForgeLink(l));
-        if (!hadGithubLink) {
-          autoLinkNodeFromTitle(req.params.nodeId, req.params.id, updated.text).catch((err) => {
-            console.warn('[github-autolink] update_node autolink failed:', err);
-          });
-        }
-      }
-
-      // Change history (fire-and-forget): one event per tracked field that
-      // actually changed.
-      if (before) {
-        events
-          .recordFieldChanges(req.params.id, req.params.nodeId, req.userId ?? null, before, updated)
-          .catch(() => {});
-        // Claim trail. The DB layer nulls the claim on a move to done; a
-        // worker parking a ticket writes status=blocked + claimedBySession
-        // null in one PUT; anything else that drops the claim here is a
-        // plain release. Same reason vocabulary as release_node / the sweeper.
-        const becameDone = updated.completedAt != null && before.completedAt == null;
-        // flag_blocker writes only blockedReason and leaves the status alone
-        // (blocked_digest / risk_scan key on the reason too) — that is a block
-        // as much as status=blocked is.
-        const becameBlocked =
-          (updated.status === 'blocked' && before.status !== 'blocked') || (updated.blockedReason != null && before.blockedReason == null);
-        events
-          .recordClaimTransition(req.params.id, req.params.nodeId, req.userId ?? null, before, updated, {
-            reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',
-            note: becameBlocked ? updated.blockedReason : null,
-          })
-          .catch(() => {});
-      }
-
-      return reply.send(updated);
+      const result = await applyNodeUpdate(req.params.id, req.params.nodeId, body, expectedRevision, req.userId ?? null);
+      if (!result.ok) return reply.status(result.status).send({ error: result.error });
+      return reply.send(result.node);
     },
   );
+
+  // ── PATCH /api/maps/:id/nodes/bulk — several node updates, one request (#115)
+  //
+  // Each item runs through exactly the single-node PUT path
+  // (applyNodeUpdate: optimistic lock, broadcast, change history, claim
+  // trail, outbound sync), so the two cannot drift. Items are independent:
+  // one failing (revision conflict, validation, node of another map) does
+  // not stop the rest — the response carries a result per item, in order.
+  app.patch<{ Params: { id: string } }>('/api/maps/:id/nodes/bulk', async (req, reply) => {
+    const items = (req.body as { updates?: unknown } | null)?.updates;
+    if (!Array.isArray(items) || items.length === 0 || items.length > BULK_UPDATE_MAX) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `updates must be an array of 1–${BULK_UPDATE_MAX} items` },
+      });
+    }
+    const results: Array<
+      | { id: string; ok: true; node: CoreNode }
+      | { id: string; ok: false; status: number; error: { code: string; message: string; current?: unknown } }
+    > = [];
+    for (const raw of items as Array<{ id?: unknown; fields?: unknown; expectedRevision?: unknown }>) {
+      const id = typeof raw?.id === 'string' ? raw.id : '';
+      if (!id || typeof raw.fields !== 'object' || raw.fields === null) {
+        results.push({ id, ok: false, status: 400, error: { code: 'VALIDATION_ERROR', message: 'each item needs an id and a fields object' } });
+        continue;
+      }
+      // The map guard checked THIS map; every node must belong to it.
+      if ((await nodeDb.getNodeMapId(id)) !== req.params.id) {
+        results.push({ id, ok: false, status: 404, error: { code: 'NODE_NOT_FOUND', message: `Node ${id} not found` } });
+        continue;
+      }
+      const expectedRevision = typeof raw.expectedRevision === 'number' ? raw.expectedRevision : undefined;
+      const result = await applyNodeUpdate(req.params.id, id, raw.fields as nodeDb.UpdateNodeInput, expectedRevision, req.userId ?? null);
+      results.push(result.ok ? { id, ok: true, node: result.node } : { id, ok: false, status: result.status, error: result.error });
+    }
+    const failed = results.filter((r) => !r.ok).length;
+    return reply.send({ results, updated: results.length - failed, failed });
+  });
 
   // ── POST /api/maps/:id/nodes/:nodeId/dependencies — Add a dependency ──
   app.post<{ Params: { id: string; nodeId: string } }>(
@@ -974,4 +909,120 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     const actors = await events.getLastActorByNode(req.params.id);
     return reply.send({ actors });
   });
+}
+
+/** Upper bound on one bulk request — a drag-renumber or multi-select edit, not a migration. */
+export const BULK_UPDATE_MAX = 500;
+
+type NodeUpdateResult =
+  | { ok: true; node: CoreNode }
+  | { ok: false; status: number; error: { code: string; message: string; current?: unknown } };
+
+/**
+ * One node update with everything the PUT route does around the write:
+ * optimistic lock, root-text → map name, broadcast, re-embed, outbound
+ * forge sync, title auto-link, change history and claim trail. Shared by
+ * PUT /nodes/:nodeId and PATCH /nodes/bulk (#115).
+ */
+async function applyNodeUpdate(
+  mapId: string,
+  nodeId: string,
+  body: nodeDb.UpdateNodeInput,
+  expectedRevision: number | undefined,
+  userId: string | null,
+): Promise<NodeUpdateResult> {
+  // Snapshot current values of tracked fields before mutating so we can
+  // diff them into the change log.
+  const before = await nodeDb.getNode(nodeId);
+
+  let updated: CoreNode | null;
+  try {
+    updated = await nodeDb.updateNode(nodeId, body, expectedRevision);
+  } catch (err) {
+    if (err instanceof DependencyValidationError) {
+      return { ok: false, status: 400, error: { code: 'DEPENDENCY_VALIDATION_ERROR', message: err.message } };
+    }
+    if (err instanceof TagsModeConflictError) {
+      return { ok: false, status: 400, error: { code: 'TAGS_MODE_CONFLICT', message: err.message } };
+    }
+    if (err instanceof RequirementIdConflictError) {
+      return { ok: false, status: 400, error: { code: 'REQUIREMENT_ID_CONFLICT', message: err.message } };
+    }
+    if (err instanceof PhaseIdValidationError) {
+      return { ok: false, status: 400, error: { code: 'UNKNOWN_PHASE_ID', message: err.message } };
+    }
+    if (err instanceof RevisionConflictError) {
+      return {
+        ok: false,
+        status: 409,
+        error: {
+          code: 'REVISION_CONFLICT',
+          message: 'Node was modified by someone else; reload and retry.',
+          current: err.current,
+        },
+      };
+    }
+    throw err;
+  }
+  if (!updated) {
+    return { ok: false, status: 404, error: { code: 'NODE_NOT_FOUND', message: `Node ${nodeId} not found` } };
+  }
+
+  // If the root node's text changed, keep the map name in sync
+  if (body.text !== undefined && updated.parentId === null) {
+    await mapDb.updateMap(mapId, { name: body.text });
+  }
+
+  // Broadcast the change
+  broadcast(mapId, {
+    type: 'node:updated',
+    nodeId,
+    fields: Object.keys(body),
+    node: updated,
+  });
+
+  // Re-embed if text or description changed (other fields don't affect the vector)
+  if (body.text !== undefined || body.description !== undefined) {
+    scheduleEmbedNode(nodeId);
+  }
+
+  // Fire outbound GitHub sync (non-blocking)
+  syncNodeToGitHub(updated, Object.keys(body)).catch(() => {});
+
+  // Auto-link to GitHub when the title was just changed AND the node has
+  // no existing GitHub link (#58). The "no existing link" gate is the
+  // important one — we must never override an explicit prior link, even
+  // if the new title points elsewhere.
+  if (body.text !== undefined && before) {
+    const hadGithubLink = before.externalLinks.some((l) => isForgeLink(l));
+    if (!hadGithubLink) {
+      autoLinkNodeFromTitle(nodeId, mapId, updated.text).catch((err) => {
+        console.warn('[github-autolink] update_node autolink failed:', err);
+      });
+    }
+  }
+
+  // Change history (fire-and-forget): one event per tracked field that
+  // actually changed.
+  if (before) {
+    events.recordFieldChanges(mapId, nodeId, userId, before, updated).catch(() => {});
+    // Claim trail. The DB layer nulls the claim on a move to done; a
+    // worker parking a ticket writes status=blocked + claimedBySession
+    // null in one PUT; anything else that drops the claim here is a
+    // plain release. Same reason vocabulary as release_node / the sweeper.
+    const becameDone = updated.completedAt != null && before.completedAt == null;
+    // flag_blocker writes only blockedReason and leaves the status alone
+    // (blocked_digest / risk_scan key on the reason too) — that is a block
+    // as much as status=blocked is.
+    const becameBlocked =
+      (updated.status === 'blocked' && before.status !== 'blocked') || (updated.blockedReason != null && before.blockedReason == null);
+    events
+      .recordClaimTransition(mapId, nodeId, userId, before, updated, {
+        reason: becameDone ? 'done' : becameBlocked ? 'blocked' : 'release',
+        note: becameBlocked ? updated.blockedReason : null,
+      })
+      .catch(() => {});
+  }
+
+  return { ok: true, node: updated };
 }
