@@ -1380,3 +1380,19 @@ describe('search_nodes tool — issue references (#348)', () => {
     expect(narrowed).toContain('id: other-repo');
   });
 });
+
+describe('estimateSource round trip (#318)', () => {
+  it('create_node and update_node accept it and forward it', async () => {
+    for (const tool of [createNodeTool, updateNodeTool]) {
+      const schema = z.object(tool.schema);
+      expect(schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', estimateSource: 'ai' }).estimateSource).toBe('ai');
+      expect(schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', estimateSource: null }).estimateSource).toBeNull();
+      expect(() => schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', estimateSource: 'human' })).toThrow();
+    }
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'x', effortEstimate: 2, estimateSource: 'ai' } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ effortEstimate: 2, estimateSource: 'ai' });
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', estimateSource: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ estimateSource: null });
+  });
+});

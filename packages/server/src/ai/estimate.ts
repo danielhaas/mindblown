@@ -47,7 +47,10 @@ export async function estimateEffort(
       (n) =>
         (n.childrenIds?.length ?? 0) === 0 &&
         n.effortEstimate != null &&
-        n.actualEffort != null,
+        n.actualEffort != null &&
+        // A draft (#318) is the model's own guess — calibrating against it
+        // would teach the model its own bias.
+        n.estimateSource !== 'ai',
     )
     .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
     .slice(0, 30);

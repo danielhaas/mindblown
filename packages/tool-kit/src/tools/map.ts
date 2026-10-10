@@ -167,6 +167,10 @@ export const updateMapTool = defineTool({
       .nullable()
       .optional()
       .describe('Profile routing table for get_next_ticket (#262). Presence ACTIVATES routing: heavy-class tickets (P0 or estimate ≥ heavyMinHours) go only to profile "heavy"; profile "light" gets only tickets ≤ lightMaxHours with priority P2/P3; unestimated tickets and profile "standard"/unknown/absent fail open. Ranking is unchanged — this only filters eligibility. null (the default) = profile-blind queue, the pre-#262 behavior.'),
+    aiEstimateDrafts: z
+      .boolean()
+      .optional()
+      .describe("Draft estimates for committed work (#318, default true): unestimated leaves in a todo/in-progress status or in the active version get an AI estimate from the local model, marked as a draft (estimateSource 'ai') until someone sets or accepts it. false switches it off for this map. Never runs when aiPolicy is none."),
     autoImportNewIssues: z
       .boolean()
       .optional()
@@ -196,7 +200,7 @@ export const updateMapTool = defineTool({
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, phases, archived }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, aiEstimateDrafts, phases, archived }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -211,6 +215,7 @@ export const updateMapTool = defineTool({
       profilePolicy?: { heavyMinHours?: number; lightMaxHours?: number } | null;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
+      aiEstimateDrafts?: boolean;
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
       archived?: boolean;
     } = {};
@@ -227,6 +232,7 @@ export const updateMapTool = defineTool({
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
+    if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;
     if (archived !== undefined) fields.archived = archived;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the

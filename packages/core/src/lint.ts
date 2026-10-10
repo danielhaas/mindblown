@@ -9,6 +9,7 @@
 
 export const LINT_RULE_IDS = [
   'unestimated-leaf',
+  'ai-draft-estimate',
   'oversized-leaf',
   'stale-progress',
   'overdue-unreplanned',

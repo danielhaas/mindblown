@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createNode, type DbHandle } from '../nodes.js';
+import { createNode, estimateSourceUpdate, type DbHandle } from '../nodes.js';
 
 function stubHandle(): { handle: DbHandle; inserted: () => Record<string, unknown> | null } {
   let inserted: Record<string, unknown> | null = null;
@@ -64,5 +64,27 @@ describe('createNode forwards every data field to the INSERT (#389)', () => {
       versionId: null,
       cycleId: null,
     });
+  });
+});
+
+describe('estimate drafts (#318): the source marker', () => {
+  it('create keeps an AI marker only alongside an estimate', async () => {
+    const a = stubHandle();
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', effortEstimate: 2, estimateSource: 'ai' }, a.handle);
+    expect(a.inserted()).toMatchObject({ effortEstimate: 2, estimateSource: 'ai' });
+    const b = stubHandle();
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', estimateSource: 'ai' }, b.handle);
+    expect(b.inserted()).toMatchObject({ effortEstimate: null, estimateSource: null });
+    const c = stubHandle();
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', effortEstimate: 3 }, c.handle);
+    expect(c.inserted()).toMatchObject({ estimateSource: null });
+  });
+
+  it('update: writing an estimate without a source makes it a person\'s; explicit values win; untouched otherwise', () => {
+    expect(estimateSourceUpdate({ effortEstimate: 4 })).toBeNull();
+    expect(estimateSourceUpdate({ effortEstimate: null })).toBeNull();
+    expect(estimateSourceUpdate({ effortEstimate: 4, estimateSource: 'ai' })).toBe('ai');
+    expect(estimateSourceUpdate({ estimateSource: null })).toBeNull(); // "Accept" keeps the number
+    expect(estimateSourceUpdate({})).toBeUndefined();
   });
 });

@@ -243,6 +243,8 @@ export interface CreateNodeInput {
   x?: number; // explicit canvas position; omit = auto-layout
   y?: number;
   effortEstimate?: number;
+  /** 'ai' = the estimate is an AI draft (#318). */
+  estimateSource?: 'ai' | null;
   percentComplete?: number;
   status?: string;
   priority?: Priority;
@@ -302,6 +304,7 @@ export async function createNode(
       x: input.x ?? null,
       y: input.y ?? null,
       effortEstimate: input.effortEstimate ?? null,
+      estimateSource: input.effortEstimate != null && input.estimateSource === 'ai' ? 'ai' : null,
       percentComplete: input.percentComplete ?? null,
       status: input.status ?? null,
       priority: input.priority ?? null,
@@ -417,6 +420,18 @@ export async function resolveInheritedVersionId(nodeId: string): Promise<string 
 
 // ── Update ─────────────────────────────────────────────────────────
 
+/**
+ * The estimate_source an update writes (#318), or undefined for "leave it".
+ * An explicit value wins; otherwise writing an estimate makes it a person's
+ * (null) — whoever sets the number owns it, so a draft never outlives an
+ * edit.
+ */
+export function estimateSourceUpdate(input: Pick<UpdateNodeInput, 'effortEstimate' | 'estimateSource'>): 'ai' | null | undefined {
+  if (input.estimateSource !== undefined) return input.estimateSource === 'ai' ? 'ai' : null;
+  if (input.effortEstimate !== undefined) return null;
+  return undefined;
+}
+
 export interface UpdateNodeInput {
   text?: string;
   description?: unknown;
@@ -424,6 +439,12 @@ export interface UpdateNodeInput {
   y?: number | null;
   collapsed?: boolean;
   effortEstimate?: number | null;
+  /**
+   * 'ai' marks the estimate as an AI draft (#318); null accepts it as a
+   * person's. Omitted while effortEstimate is written = null: whoever sets
+   * an estimate owns it.
+   */
+  estimateSource?: 'ai' | null;
   actualEffort?: number | null;
   percentComplete?: number | null;
   status?: string | null;
@@ -557,6 +578,8 @@ export async function updateNode(
   if (input.y !== undefined) updates.y = input.y;
   if (input.collapsed !== undefined) updates.collapsed = input.collapsed;
   if (input.effortEstimate !== undefined) updates.effortEstimate = input.effortEstimate;
+  const source = estimateSourceUpdate(input);
+  if (source !== undefined) updates.estimateSource = source;
   if (input.actualEffort !== undefined) updates.actualEffort = input.actualEffort;
   if (input.percentComplete !== undefined) updates.percentComplete = input.percentComplete;
   if (input.status !== undefined) updates.status = input.status;

@@ -341,7 +341,11 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
         : 'unset'
     }`,
   );
-  lines.push(`- **Effort estimate:** ${node.effortEstimate ?? 'unestimated'}`);
+  lines.push(
+    `- **Effort estimate:** ${node.effortEstimate ?? 'unestimated'}${
+      node.effortEstimate != null && node.estimateSource === 'ai' ? ' (AI draft — set or accept it with update_node)' : ''
+    }`,
+  );
   lines.push(`- **Actual effort:** ${node.actualEffort ?? 'unrecorded'}`);
   lines.push(`- **Percent complete:** ${node.percentComplete ?? 'unset'}`);
   lines.push(`- **Start date:** ${node.startDate ?? 'unset'}`);

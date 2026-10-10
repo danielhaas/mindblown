@@ -20,6 +20,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     y: (get('y', 'y') as number) ?? null,
     collapsed: (get('collapsed', 'collapsed') as boolean) ?? false,
     effortEstimate: (get('effortEstimate', 'effort_estimate') as number) ?? null,
+    estimateSource: get('estimateSource', 'estimate_source') === 'ai' ? 'ai' : null,
     actualEffort: (get('actualEffort', 'actual_effort') as number) ?? null,
     percentComplete: (get('percentComplete', 'percent_complete') as number) ?? null,
     status: (get('status', 'status') as string) ?? null,
@@ -120,6 +121,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     githubInboxNodeId: (get('githubInboxNodeId', 'github_inbox_node_id') as string) ?? null,
     triageEnabled: (get('triageEnabled', 'triage_enabled') as boolean) ?? false,
     triageLabelWriteback: (get('triageLabelWriteback', 'triage_label_writeback') as boolean) ?? false,
+    aiEstimateDrafts: (get('aiEstimateDrafts', 'ai_estimate_drafts') as boolean) ?? true,
     aiPolicy: (() => {
       const v = get('aiPolicy', 'ai_policy');
       return isAiPolicy(v) ? v : 'any';

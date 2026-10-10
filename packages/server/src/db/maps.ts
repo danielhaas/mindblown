@@ -158,6 +158,8 @@ export interface UpdateMapInput {
   triageLabelWriteback?: boolean;
   /** Per-map AI policy (#375). Invalid values are ignored, not stored. */
   aiPolicy?: AiPolicy;
+  /** Draft estimates for committed work (#318). */
+  aiEstimateDrafts?: boolean;
   /**
    * Archive switch. `true` stamps `archivedAt` now (idempotent — an
    * already-archived map keeps its original stamp), `false` clears it.
@@ -215,6 +217,7 @@ export async function updateMap(
   if (input.triageEnabled !== undefined) updates.triageEnabled = input.triageEnabled;
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
+  if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
   // Boolean only: a raw REST caller sending `archived: null` must not
   // unarchive by accident (the tool-kit schema already rejects it).
   if (typeof input.archived === 'boolean') {

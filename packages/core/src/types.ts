@@ -257,6 +257,13 @@ export interface Node {
 
   // ── Task properties (all optional — gradual enrichment) ───
   effortEstimate: number | null; // leaf-only input; null = unestimated
+  /**
+   * Who the estimate came from (#318): 'ai' = a draft the estimate job wrote
+   * when the node became committed work; null / absent = a person or agent
+   * set it. Any write of effortEstimate without this field clears it, so a
+   * draft never masquerades as a real estimate once someone touches it.
+   */
+  estimateSource?: 'ai' | null;
   actualEffort: number | null; // leaf-only input; null = unrecorded. Same unit as effortEstimate. Used to compute estimation accuracy.
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
@@ -722,6 +729,14 @@ export interface MindMap {
    * `maps.ai_policy`. Absent = `any`.
    */
   aiPolicy?: AiPolicy;
+  /**
+   * Draft estimates for committed work (#318): when true (the default), the
+   * server's estimate job gives unestimated leaves that are in a todo /
+   * in-progress status or in the active version an AI estimate marked
+   * `estimateSource: 'ai'`. Local model only; off when `aiPolicy` is none.
+   * Server source: `maps.ai_estimate_drafts`.
+   */
+  aiEstimateDrafts?: boolean;
 }
 
 /** Per-map AI policy — see `MindMap.aiPolicy`. */

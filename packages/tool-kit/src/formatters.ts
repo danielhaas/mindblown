@@ -58,7 +58,11 @@ function renderTreeNode(
   parts.push(progressBar(node.computedProgress));
 
   if (isLeaf) {
-    parts.push(node.effortEstimate == null ? 'effort: —' : `effort: ${node.effortEstimate}`);
+    parts.push(
+      node.effortEstimate == null
+        ? 'effort: —'
+        : `effort: ${node.effortEstimate}${node.estimateSource === 'ai' ? ' (AI draft)' : ''}`,
+    );
   } else if (node.computedEffort > 0) {
     parts.push(`effort: ${node.computedEffort}`);
   }

@@ -216,6 +216,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       x?: number;
       y?: number;
       effortEstimate?: number;
+      estimateSource?: 'ai' | null;
       percentComplete?: number;
       status?: string;
       priority?: 'P0' | 'P1' | 'P2' | 'P3';

@@ -17,6 +17,7 @@ import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { runTrashGc } from './sync/trashGc.js';
 import { runSprintAutomation } from './sync/sprintAutomation.js';
+import { runEstimateDrafts } from './sync/estimateDrafts.js';
 import { runTriageLifecycle } from './sync/triageLifecycle.js';
 import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
 import { authRoutes } from './auth.js';
@@ -449,6 +450,30 @@ async function main(): Promise<void> {
   };
   sprintAutomationTick();
   setInterval(sprintAutomationTick, SPRINT_AUTOMATION_INTERVAL_MS);
+
+  // ── AI estimate drafts (#318) ────────────────────────────────────
+  // Every 10 min: committed leaves without an estimate get a draft from the
+  // local model (never Claude), a few per map per run. Skipped silently
+  // while no local model answers.
+  const ESTIMATE_DRAFTS_INTERVAL_MS = 10 * 60 * 1000;
+  let estimateDraftsRunning = false;
+  const estimateDraftsTick = async (): Promise<void> => {
+    if (estimateDraftsRunning) return; // a slow model must not stack runs
+    estimateDraftsRunning = true;
+    try {
+      const r = await runEstimateDrafts();
+      if (r.drafted > 0 || r.errors.length > 0) {
+        console.log(`[estimate-drafts] drafted=${r.drafted} maps=${r.maps} errors=${r.errors.length}`);
+      }
+      for (const err of r.errors.slice(0, 5)) console.warn(`[estimate-drafts] ${err}`);
+    } catch (err) {
+      console.error('[estimate-drafts] tick caught unexpected error:', err);
+    } finally {
+      estimateDraftsRunning = false;
+    }
+  };
+  setTimeout(estimateDraftsTick, 60_000); // after the AI health probe has answered once
+  setInterval(estimateDraftsTick, ESTIMATE_DRAFTS_INTERVAL_MS);
 
   // ── Triage decision lifecycle (#313) ─────────────────────────────
   // Daily, like the trash GC: rows that need no human decision (foreign
