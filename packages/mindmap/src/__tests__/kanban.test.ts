@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { groupDone, doneGroupBounds, isBlockedCard } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState } from '../kanban.js';
 
 // Friday 10 Oct 2026, 15:00 local.
 const NOW = new Date(2026, 9, 10, 15, 0, 0);
@@ -31,18 +31,25 @@ describe('groupDone', () => {
   });
 });
 
-describe('isBlockedCard', () => {
+describe('cardBlockState — the Blocked panel\'s rule', () => {
   const n = (p: Partial<{ status: string | null; blockedReason: string | null; tags: string[] }>) => ({
     status: 'in_progress', blockedReason: null, tags: [], ...p,
   });
-  it('a reason, the fleet\'s blocked tag, or a "blocked" status', () => {
-    expect(isBlockedCard(n({ blockedReason: 'waiting on legal' }), false)).toBe(true);
-    expect(isBlockedCard(n({ tags: ['blocked'] }), false)).toBe(true);
-    expect(isBlockedCard(n({ status: 'Blocked' }), false)).toBe(true);
-    expect(isBlockedCard(n({ blockedReason: '  ' }), false)).toBe(false);
-    expect(isBlockedCard(n({}), false)).toBe(false);
+  const title = (id: string) => ({ a1: 'Appliance #1' } as Record<string, string>)[id] ?? id;
+  const none = { manual: false, predecessorIds: [] };
+
+  it('manual: a reason, the fleet\'s blocked tag, or a "blocked" status', () => {
+    expect(cardBlockState(n({ blockedReason: 'waiting on legal' }), { manual: true, predecessorIds: [] }, false, title))
+      .toEqual({ kind: 'blocked', detail: 'Blocked: waiting on legal' });
+    expect(cardBlockState(n({ tags: ['blocked'] }), none, false, title)?.kind).toBe('blocked');
+    expect(cardBlockState(n({ status: 'Blocked' }), none, false, title)?.kind).toBe('blocked');
   });
-  it('done work is never shown as blocked', () => {
-    expect(isBlockedCard(n({ blockedReason: 'stale' }), true)).toBe(false);
+  it('waiting: an unfinished finish-to-start predecessor, named', () => {
+    expect(cardBlockState(n({}), { manual: false, predecessorIds: ['a1'] }, false, title))
+      .toEqual({ kind: 'waiting', detail: 'Waiting on: Appliance #1' });
+  });
+  it('nothing otherwise; done work never', () => {
+    expect(cardBlockState(n({}), none, false, title)).toBeNull();
+    expect(cardBlockState(n({ blockedReason: 'stale' }), { manual: true, predecessorIds: ['a1'] }, true, title)).toBeNull();
   });
 });

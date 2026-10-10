@@ -11,7 +11,7 @@
  * Within a group the most recently finished card comes first.
  */
 
-import { BLOCKED_TAG } from '@mindblown/core';
+import { BLOCKED_TAG, type BlockedBy } from '@mindblown/core';
 
 export type DoneGroupKey = 'today' | 'week' | 'earlier';
 
@@ -57,6 +57,9 @@ export function groupDone<T>(
 
 // ── Blocked ──
 
+/** What a card shows: a manual block, a dependency wait, or nothing. */
+export type CardBlock = { kind: 'blocked' | 'waiting'; detail: string } | null;
+
 interface BlockableNode {
   status: string | null;
   blockedReason?: string | null;
@@ -64,17 +67,33 @@ interface BlockableNode {
 }
 
 /**
- * Explicitly blocked: a blocked reason, the `blocked` tag the fleet sets
- * when it parks a ticket, or a status named `blocked` — the three markers
- * the fleet's park/unblock path writes and clears (core `planUnblock`).
- * Waiting on unfinished dependencies is not this (the dependency arrows
- * already show it). Done work is never shown as blocked.
+ * The Blocked panel's rule (core computeIsBlocked), so the board and the
+ * panel always show the same set:
+ *   - blocked: a blocked reason (manual), plus the two other markers the
+ *     fleet's park path writes — the `blocked` tag and a status named
+ *     "blocked";
+ *   - waiting: a finish-to-start predecessor that is not 100% done.
+ * Done work is never shown as blocked.
  */
-export function isBlockedCard(node: BlockableNode, isDone: boolean): boolean {
-  if (isDone) return false;
-  return (
+export function cardBlockState(
+  node: BlockableNode,
+  blockedBy: Pick<BlockedBy, 'manual' | 'predecessorIds'> | null | undefined,
+  isDone: boolean,
+  titleOf: (id: string) => string,
+): CardBlock {
+  if (isDone) return null;
+  const manual =
+    Boolean(blockedBy?.manual) ||
     (node.blockedReason ?? '').trim() !== '' ||
     node.tags.includes(BLOCKED_TAG) ||
-    (node.status ?? '').toLowerCase() === 'blocked'
-  );
+    (node.status ?? '').toLowerCase() === 'blocked';
+  if (manual) {
+    const reason = (node.blockedReason ?? '').trim();
+    return { kind: 'blocked', detail: reason ? `Blocked: ${reason}` : 'Blocked' };
+  }
+  const preds = blockedBy?.predecessorIds ?? [];
+  if (preds.length > 0) {
+    return { kind: 'waiting', detail: `Waiting on: ${preds.map(titleOf).join(', ')}` };
+  }
+  return null;
 }
