@@ -6,11 +6,15 @@
  *   GET  /api/maps/:id/fleet               — what the cockpit's Fleet card renders
  *        ?since=<ISO>&until=<ISO>&limit=<n>  — tick history for a window (Verlauf)
  *
- * Auth model mirrors the orchestration routes the same callers already
- * use (pull-next, claim, release): map-scoped, no per-route permission
- * check — satellites push without a token today. Payloads are stored
- * verbatim after a minimal shape check; the reading (staleness, dead
- * workers, silent satellites) is core `fleet.ts`, shared with the card.
+ * Auth (#405): like every map route — the pushes need edit on the map,
+ * the read needs view. Both callers send the Fleet user's credential
+ * (claude-fleet `mb_curl` in rollup.sh, `mb_post` in the orchestrator);
+ * until #405 the pushes were open to anyone, so a forged rollup could
+ * paint the Fleet tab and the journal. The archive guard still lets them
+ * through on an archived map (inbound reporting, not a plan edit).
+ * Payloads are stored verbatim after a minimal shape check; the reading
+ * (staleness, dead workers, silent satellites) is core `fleet.ts`,
+ * shared with the card.
  */
 import type { FastifyInstance } from 'fastify';
 import { parseRollup, parseTick, parseTickWindow } from '@mindblown/core';
@@ -18,18 +22,16 @@ import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as fleetDb from '../db/fleet.js';
 import { broadcast } from '../ws.js';
 
-/** Hostnames as `hostname -s` / config `host` produce them. The PK is (map, host) and the route is unauthenticated — no free-form keys. */
+/** Hostnames as `hostname -s` / config `host` produce them. The PK is (map, host) — no free-form keys. */
 const HOST_RE = /^[A-Za-z0-9._-]{1,64}$/;
 /** A 10-worker rollup is ~15 kB; this leaves room for blocked_nodes histories, not for abuse. */
 const PUSH_BODY_LIMIT = 256 * 1024;
 
 export async function fleetRoutes(app: FastifyInstance): Promise<void> {
-  // The fleet read needs view (#403). The two telemetry pushes stay
-  // token-less as documented above — inbound reporting, not an action on
-  // the plan — so they opt out of the guard explicitly.
+  // Read: view (#403). Pushes: edit (#405).
   guardMapRoutes(app);
 
-  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT, config: { mapAccess: 'public' } }, async (req, reply) => {
+  app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     if (!HOST_RE.test(req.params.host)) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'host must match [A-Za-z0-9._-]{1,64}' },
@@ -65,7 +67,7 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ host: row.host, generatedAt: row.generatedAt, receivedAt: row.receivedAt, workers: rollup.workers.length });
   });
 
-  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT, config: { mapAccess: 'public' } }, async (req, reply) => {
+  app.post<{ Params: { id: string } }>('/api/maps/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     const payload = parseTick(req.body);
     if (!payload) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'Body must be a decision object' } });
