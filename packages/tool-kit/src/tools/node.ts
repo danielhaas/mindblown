@@ -336,6 +336,24 @@ export const clearBlockerTool = defineTool({
   },
 });
 
+
+
+/** "owner/repo#123", "#123" or "123" → the parts; anything else → null. */
+export function parseIssueRef(ref: string): { repo: string | null; number: number } | null {
+  const m = /^(?:([\w.-]+\/[\w.-]+))?#?(\d+)$/.exec(ref);
+  if (!m) return null;
+  return { repo: m[1]?.toLowerCase() ?? null, number: Number(m[2]) };
+}
+
+function linksToIssue(
+  n: { externalLinks?: Array<{ externalId: string }> },
+  ref: { repo: string | null; number: number },
+): boolean {
+  return (n.externalLinks ?? []).some((l) => {
+    const m = /^(.+)#(\d+)$/.exec(l.externalId);
+    return m != null && Number(m[2]) === ref.number && (ref.repo == null || m[1].toLowerCase() === ref.repo);
+  });
+}
 export const searchNodesTool = defineTool({
   name: 'search_nodes',
   description:
@@ -386,19 +404,34 @@ export const searchNodesTool = defineTool({
       .string()
       .optional()
       .describe('Filter to direct children of this node id. Combine with query="*" to enumerate the contents of a specific bucket — the only way to do so, since get_map truncates on large maps.'),
+    issueRef: z
+      .string()
+      .optional()
+      .describe('Filter to nodes linked to this issue: "owner/repo#123", "#123" or "123" (exact number, any repo unless one is given). The existence check before creating a node for an issue: query="*", issueRef:"owner/repo#123".'),
   },
-  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, unversioned, statusIsNull, phaseId, parentId }) => {
+  handler: async (backend, { mapId, query, status, notStatus, priority, tag, unestimated, leavesOnly, versionId, unversioned, statusIsNull, phaseId, parentId, issueRef }) => {
     const data = await backend.getMap(mapId);
     const trimmedQ = query.trim();
     const matchAll = trimmedQ === '' || trimmedQ === '*';
     const lowerQ = trimmedQ.toLowerCase();
+    // A query that IS an issue ref ("#9307", "owner/repo#9307") also finds
+    // the node linked to that issue (#348) — before, only text and
+    // description were searched, so the linked node was missed and an
+    // existence check created a duplicate.
+    const queryRef = matchAll ? null : parseIssueRef(trimmedQ);
     let matches = matchAll
       ? data.nodes.slice()
       : data.nodes.filter(
           (n) =>
             n.text.toLowerCase().includes(lowerQ) ||
-            (n.description?.toLowerCase().includes(lowerQ) ?? false),
+            (n.description?.toLowerCase().includes(lowerQ) ?? false) ||
+            (queryRef != null && linksToIssue(n, queryRef)),
         );
+    if (issueRef !== undefined) {
+      const ref = parseIssueRef(issueRef.trim());
+      if (!ref) return `issueRef "${issueRef}" is not an issue reference — use "owner/repo#123", "#123" or "123".`;
+      matches = matches.filter((n) => linksToIssue(n, ref));
+    }
     if (status) matches = matches.filter((n) => n.status === status);
     if (notStatus) matches = matches.filter((n) => n.status !== notStatus);
     if (priority) matches = matches.filter((n) => n.priority === priority);
