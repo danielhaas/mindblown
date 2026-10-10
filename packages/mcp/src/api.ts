@@ -997,6 +997,7 @@ export interface ReleaseTrendRow {
     days: number;
     fromDate: string | null;
     fromVelocityFinishDate: string | null;
+    fromPlannedFinishDate: string | null;
     plannedFinishDeltaDays: number | null;
     velocityFinishDeltaDays: number | null;
   };

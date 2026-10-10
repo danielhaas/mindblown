@@ -1893,6 +1893,9 @@ server.tool(
           unit,
           completedEffort,
           completedCount: justCompleted.length,
+          completedWithEstimate: justCompleted.filter((n) => (n.effortEstimate ?? 0) > 0).length,
+          openLeaves: leaves.filter((n) => (n.percentComplete ?? 0) < 100).length,
+          eventsTruncated: events.length >= 1000,
           fmtNode,
         }),
       );

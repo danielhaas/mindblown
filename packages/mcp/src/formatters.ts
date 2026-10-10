@@ -454,10 +454,16 @@ export function slippageLines<N extends SlippageNode>(input: {
   unit: string;
   completedEffort: number;
   completedCount: number;
+  /** How many of the finished items carry an estimate. */
+  completedWithEstimate: number;
+  /** Open leaves right now — the red line needs open work to mean anything. */
+  openLeaves: number;
+  /** True when the change log hit its row cap: the event signals undercount. */
+  eventsTruncated?: boolean;
   fmtNode: (n: N) => string;
   now?: Date;
 }): string[] {
-  const { events, nodes, sinceDays, unit, completedEffort, completedCount, fmtNode, now = new Date() } = input;
+  const { events, nodes, sinceDays, unit, completedEffort, completedCount, completedWithEstimate, openLeaves, fmtNode, now = new Date() } = input;
   const rows = input.releaseRows.filter(
     (r) => (r.versionStatus === 'active' || r.versionStatus === 'planning') && r.remainingTickets > 0,
   );
@@ -465,19 +471,24 @@ export function slippageLines<N extends SlippageNode>(input: {
   const nameById = new Map(rows.map((r) => [r.versionId, r.versionName]));
   const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const pulledIn = new Map<string, string>();
-  const grewBy = new Map<string, number>();
+  // Net per item: the estimate before the window's first change vs after
+  // its last (2→8→3 grew by 1, not 6). Events come newest first.
+  const estimateSpan = new Map<string, { first: number; last: number }>();
   const reopened = new Set<string>();
-  for (const e of events) {
+  for (const e of [...events].reverse()) {
     if (e.eventType !== 'node.field_changed' || !e.nodeId) continue;
     if (e.fieldName === 'versionId' && typeof e.newValue === 'string' && activeIds.has(e.newValue) && e.oldValue !== e.newValue) {
       pulledIn.set(e.nodeId, nameById.get(e.newValue) ?? e.newValue);
     } else if (e.fieldName === 'effortEstimate') {
-      const d = Number(e.newValue ?? 0) - Number(e.oldValue ?? 0);
-      if (d > 0) grewBy.set(e.nodeId, (grewBy.get(e.nodeId) ?? 0) + d);
+      const span = estimateSpan.get(e.nodeId);
+      if (span) span.last = Number(e.newValue ?? 0);
+      else estimateSpan.set(e.nodeId, { first: Number(e.oldValue ?? 0), last: Number(e.newValue ?? 0) });
     } else if (e.fieldName === 'percentComplete' && Number(e.oldValue ?? 0) >= 100 && Number(e.newValue ?? 0) < 100) {
       reopened.add(e.nodeId);
     }
   }
+  const grewBy = new Map<string, number>();
+  for (const [id, span] of estimateSpan) if (span.last > span.first) grewBy.set(id, span.last - span.first);
   const live = (ids: Iterable<string>) => [...ids].filter((id) => nodeById.has(id));
 
   const windowStart = new Date(now.getTime() - sinceDays * 86_400_000).toISOString().slice(0, 10);
@@ -490,16 +501,20 @@ export function slippageLines<N extends SlippageNode>(input: {
       continue;
     }
     const projected = r.velocityAdjustedFinishDate ?? r.plannedFinishDate;
-    const d = r.trend?.velocityFinishDeltaDays ?? r.trend?.plannedFinishDeltaDays ?? null;
+    // One model end to end: the velocity line when it has a delta, else planned.
+    const useVelocity = r.trend?.velocityFinishDeltaDays != null;
+    const d = useVelocity ? r.trend!.velocityFinishDeltaDays : (r.trend?.plannedFinishDeltaDays ?? null);
+    const was = useVelocity ? r.trend?.fromVelocityFinishDate : r.trend?.fromPlannedFinishDate;
+    const projectedNow = useVelocity ? r.velocityAdjustedFinishDate : r.plannedFinishDate;
     const target = r.targetDate ? `, target ${r.targetDate.slice(0, 10)}` : '';
     if (d == null) {
       out.push(`- ${name}: forecast ${projected ?? '—'}${target} — no forecast snapshot from ${sinceDays}d ago to compare`);
     } else if (d > 0) {
-      out.push(`- 🔴 ${name}: forecast ${projected} slipped **+${d}d** since ${r.trend!.fromDate} (was ${r.trend!.fromVelocityFinishDate ?? '—'})${target}`);
+      out.push(`- 🔴 ${name}: forecast ${projectedNow} slipped **+${d}d** since ${r.trend!.fromDate} (was ${was ?? '—'})${target}`);
     } else if (d < 0) {
-      out.push(`- 🟢 ${name}: forecast ${projected} pulled in ${-d}d since ${r.trend!.fromDate}${target}`);
+      out.push(`- 🟢 ${name}: forecast ${projectedNow} pulled in ${-d}d since ${r.trend!.fromDate}${target}`);
     } else {
-      out.push(`- ${name}: forecast ${projected} unchanged since ${r.trend!.fromDate}${target}`);
+      out.push(`- ${name}: forecast ${projectedNow} unchanged since ${r.trend!.fromDate}${target}`);
     }
   }
   const pulled = live(pulledIn.keys());
@@ -519,13 +534,18 @@ export function slippageLines<N extends SlippageNode>(input: {
     out.push(`- Reopened after done: ${reopenedLive.length} item(s)`);
     for (const id of reopenedLive.slice(0, 8)) out.push(`  - ${fmtNode(nodeById.get(id)!)}`);
   }
-  // A red signal, not a footnote: nothing estimated got finished.
-  if (completedEffort <= 0) {
-    out.push(
-      completedCount > 0
-        ? `- 🔴 **0 ${unit} of estimated effort completed in ${sinceDays} days** — the ${completedCount} item(s) finished carry no estimate, so the forecasts saw no progress`
-        : `- 🔴 **Nothing completed in ${sinceDays} days**`,
-    );
+  // A red signal, not a footnote: open work, and nothing estimated finished.
+  if (openLeaves > 0 && completedEffort <= 0) {
+    if (completedCount === 0) {
+      out.push(`- 🔴 **Nothing completed in ${sinceDays} days**`);
+    } else if (completedWithEstimate === 0) {
+      out.push(`- 🔴 **0 ${unit} of estimated effort completed in ${sinceDays} days** — the ${completedCount} item(s) finished carry no estimate, so the forecasts saw no progress`);
+    } else {
+      out.push(`- 🔴 **No net effort completed in ${sinceDays} days** — reopened work outweighs what was finished`);
+    }
+  }
+  if (input.eventsTruncated) {
+    out.push('- _The change log for this window hit its row cap — the counts above may be low; use a shorter window._');
   }
   lines.push(...(out.length > 0 ? out : ['_No release forecast moved, nothing was pulled into an active release, no estimate grew._']));
   return lines;

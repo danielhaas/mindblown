@@ -1202,6 +1202,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
                 /** The snapshot compared against, or null when none is that old. */
                 fromDate: inWindow?.snapshotDate ?? null,
                 fromVelocityFinishDate: inWindow?.velocityAdjustedFinishDate ?? null,
+                fromPlannedFinishDate: inWindow?.plannedFinishDate ?? null,
                 plannedFinishDeltaDays: delta(row.plannedFinishDate, inWindow?.plannedFinishDate),
                 velocityFinishDeltaDays: delta(row.velocityAdjustedFinishDate, inWindow?.velocityAdjustedFinishDate),
               },
