@@ -95,7 +95,7 @@ export const attachLinkTool = defineTool({
 export const attachFileTool = defineTool({
   name: 'attach_file',
   description:
-    `Upload a small file (up to ${INLINE_FILE_MAX_BYTES / (1024 * 1024)} MB) and hang it on a node in one step — a report, a screenshot, an export. Send the bytes as base64. The server stores it and answers the URL it is reachable at; the attachment shows in the node's property panel, in the map's Files tab, and in get_map / list_attachments. Images, video and PDF are served inline; everything else downloads under its original name. Anyone with the URL can read the file. For bigger files use multipart POST /api/media, then attach_link with kind 'file'. For a map-level file, use the root node id.`,
+    `Upload a small file (up to ${INLINE_FILE_MAX_BYTES / (1024 * 1024)} MB) and hang it on a node in one step — a report, a screenshot, an export. Send the bytes as base64. The server stores it and answers the URL it is reachable at; the attachment shows in the node's property panel, in the map's Files tab, and in get_map / list_attachments. Images and video are served inline and readable by anyone with the URL; every other file (PDF, documents, exports) downloads under its original name, and only for a signed-in user who can see a map the file is attached to. For bigger files use multipart POST /api/media, then attach_link with kind 'file'. For a map-level file, use the root node id.`,
   schema: {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('Node to hang the file on (the root node id for a map-level file)'),

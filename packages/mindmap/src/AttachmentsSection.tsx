@@ -8,6 +8,7 @@
  * check two places for the same question.
  */
 
+import { attachmentClick } from './mediaDownload.js';
 import { useState } from 'react';
 import type { Attachment } from '@mindblown/core';
 import { MediaUploadButton } from './MediaUploadButton.js';
@@ -106,6 +107,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
             </span>
             <a
               href={a.url}
+              onClick={attachmentClick(a.url)}
               target="_blank"
               rel="noopener noreferrer"
               style={{

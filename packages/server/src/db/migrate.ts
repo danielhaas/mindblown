@@ -1140,5 +1140,26 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     CREATE INDEX IF NOT EXISTS nodes_external_links_gin ON nodes USING gin (external_links jsonb_path_ops)
   `);
 
+  // ── Document ownership (#292) ───────────────────────────────────
+  // A document belongs to the map it was first attached on. Backfill from
+  // existing attachments: earliest live node wins.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS media_owners (
+      media_id TEXT PRIMARY KEY,
+      map_id UUID NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`
+    INSERT INTO media_owners (media_id, map_id)
+    SELECT DISTINCT ON (m[1]) m[1], n.map_id
+    FROM nodes n,
+         jsonb_array_elements(CASE WHEN jsonb_typeof(n.attachments) = 'array' THEN n.attachments ELSE '[]'::jsonb END) a,
+         regexp_matches(a->>'url', '/api/media/([0-9a-f]{40})/') m
+    WHERE n.deleted_at IS NULL
+    ORDER BY m[1], n.created_at
+    ON CONFLICT (media_id) DO NOTHING
+  `);
+
   console.log('[db] Migrations complete.');
 }

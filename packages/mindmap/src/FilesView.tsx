@@ -22,6 +22,7 @@
  *   MCP `list_attachments` tool does, so both surfaces agree.
  */
 
+import { attachmentClick } from './mediaDownload.js';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Attachment, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
@@ -404,6 +405,7 @@ function FileRowView({
         <span aria-hidden style={{ marginRight: 6 }}>{a.kind === 'file' ? '📎' : '🔗'}</span>
         <a
           href={a.url}
+          onClick={attachmentClick(a.url)}
           target="_blank"
           rel="noopener noreferrer"
           title={a.url}

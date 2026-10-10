@@ -23,6 +23,7 @@ import { GuideView } from './GuideView.js';
 import { FilesView } from './FilesView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
+import { downloadWithSession } from './mediaDownload.js';
 import { ShareDialog } from './ShareDialog.js';
 import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
@@ -1525,6 +1526,19 @@ function MinimisedChip({
 
 export function App() {
   const user = useMindmapStore((s) => s.user);
+  // A document link opened without a session (a Word export, a mail) is
+  // redirected here as ?download=<path> (#292); once signed in, fetch it
+  // with the session and drop the parameter.
+  useEffect(() => {
+    if (!user) return;
+    const params = new URLSearchParams(window.location.search);
+    const path = params.get('download');
+    if (!path || !/^\/api\/media\/[0-9a-f]{40}\/[^/?#]+$/.test(path)) return;
+    params.delete('download');
+    const rest = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${rest ? `?${rest}` : ''}${window.location.hash}`);
+    downloadWithSession(path).catch((err: unknown) => alert(err instanceof Error ? err.message : String(err)));
+  }, [user]);
   const token = useMindmapStore((s) => s.token);
   const checkAuth = useMindmapStore((s) => s.checkAuth);
   const logout = useMindmapStore((s) => s.logout);

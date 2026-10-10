@@ -673,7 +673,7 @@ The guarantee is about the browser. `Content-Disposition` restores the real name
 |---|---|---|
 | `MEDIA_DIR` | `.media` under the server's working directory | Set **in the unit file**, not `api.env` — see below. Production: `/var/lib/mindblown/media`. |
 | `MEDIA_MAX_BYTES` | `104857600` (100 MB) | Per-file ceiling. Oversized uploads get a 413 and nothing is kept. |
-| `MEDIA_PUBLIC_BASE_URL` | falls back to `FRONTEND_URL` | Only needed if media is served from a different origin than the app. |
+| `MEDIA_PUBLIC_BASE_URL` | falls back to `FRONTEND_URL` | Only needed if media is served from a different origin than the app. Since #292 only video and images work from another origin: documents need the signed-in app session, which only exists on the app's own origin — leave this unset unless you serve no documents. |
 
 There is nothing to add to `/etc/mindblown/api.env`. Copy the new unit file and `systemctl daemon-reload && systemctl restart mindblown-api` — that's the whole change.
 

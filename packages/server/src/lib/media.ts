@@ -15,7 +15,13 @@
  *    `packages/mindmap/dist` wholesale — anything stored under it would be
  *    gone on the next release.
  *
- * 2. **The URL is the capability.** The path carries 160 bits of
+ * 2. **The URL is the capability — for video and images (#292).** Since
+ *    10.10.2026 (decision D) only those skip auth; every other file is
+ *    served to a signed-in caller who can see a map whose live node
+ *    carries it (`routes/media.ts`), and the web app downloads it with the
+ *    session. The original reasoning below still holds for what stays public.
+ *
+ *    The path carries 160 bits of
  *    randomness, and `GET /api/media/*` is deliberately unauthenticated
  *    (see `middleware/auth.ts`). A `<video src=…>` cannot send an
  *    `Authorization` header, and the app keeps its JWT in localStorage
@@ -57,6 +63,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
+import { isPublicMediaFileName } from '@mindblown/core';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -165,6 +172,14 @@ export function newMediaId(): string {
 /** An id we minted, and nothing else. Guards the path we build from it. */
 export function isMediaId(value: string): boolean {
   return /^[0-9a-f]{40}$/.test(value);
+}
+
+/** Which stored files stay capability URLs (#292, decision D): see core `PUBLIC_MEDIA_EXTENSIONS`. */
+
+/** A playback path whose file is video or an image — served without a credential. */
+export function isPublicMediaPath(url: string): boolean {
+  if (!isMediaPlaybackPath(url)) return false;
+  return isPublicMediaFileName(url.split(/[?#]/)[0].split('/').pop() ?? '');
 }
 
 /**

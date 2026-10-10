@@ -626,6 +626,15 @@ export const asks = pgTable(
 
 // The last push's meta (tick id, generated_at, the collector's own counts)
 // — one row per map, overwritten on every push.
+// Which map an uploaded document belongs to (#292): the map it was first
+// attached on. Access to a document = view on that map, while a live node
+// there still references it. Video and images are public and not tracked.
+export const mediaOwners = pgTable('media_owners', {
+  mediaId: text('media_id').primaryKey(),
+  mapId: uuid('map_id').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const asksPushes = pgTable('asks_pushes', {
   mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
   pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),

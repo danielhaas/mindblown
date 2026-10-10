@@ -8,12 +8,17 @@
  */
 
 import type { FastifyInstance } from 'fastify';
+import { sql } from 'drizzle-orm';
+import { db } from '../db/connection.js';
+import { mediaOwners, nodes } from '../db/schema.js';
+import { checkMapAccess } from '../lib/mapAccess.js';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import { createWriteStream, mkdirSync } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import { pipeline } from 'node:stream/promises';
 import path from 'node:path';
+import { isPublicMediaFileName } from '@mindblown/core';
 import {
   MEDIA_ROUTE_PREFIX,
   downloadName,
@@ -72,9 +77,54 @@ export async function mediaRoutes(app: FastifyInstance): Promise<void> {
     },
   });
 
-  // Playback. Unauthenticated by design — `middleware/auth.ts` skips
-  // GET/HEAD under this prefix, and the 160-bit id in the path is what
-  // stands in for a credential.
+  // Documents (#292, decision D): a file that is not video or an image is
+  // served only to a caller who can view the map it belongs to (the map it
+  // was first attached on — `media_owners`), while a live node there still
+  // carries it. Removing it from that map revokes the link; pasting the
+  // link onto another map grants nothing.
+  //
+  // Decided on what @fastify/static will actually serve — the decoded
+  // wildcard, split the way the plugin resolves it — never on the raw URL:
+  // `//`, `%2F` and percent-encoded letters all reach the same file, and a
+  // check keyed on the URL's shape let them through (review, 10.10.2026).
+  // Anything that is not exactly `<id>/<public video or image>` takes the
+  // full check, so an odd spelling can only ever be refused.
+  app.addHook('preHandler', async (req, reply) => {
+    if (req.method !== 'GET' && req.method !== 'HEAD') return;
+    const wildcard = (req.params as Record<string, string> | undefined)?.['*'];
+    if (wildcard === undefined) return; // not the static route
+    const parts = wildcard.split('/').filter((p) => p.length > 0);
+    const [id, name] = parts;
+    const canonical = parts.length === 2 && /^[0-9a-f]{40}$/.test(id) && name !== undefined;
+    if (canonical && isPublicMediaFileName(name)) return;
+
+    const notFound = () => reply.status(404).send({ error: { code: 'NOT_FOUND', message: 'File not found' } });
+    if (!canonical) return notFound();
+    if (!req.userId) {
+      return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Sign in to download this file' } });
+    }
+    const [owner] = await db.select({ mapId: mediaOwners.mapId }).from(mediaOwners).where(sql`${mediaOwners.mediaId} = ${id}`);
+    if (!owner) return notFound();
+    if (await checkMapAccess(req.userId, owner.mapId, 'view')) return notFound();
+    // Still carried by a live node of that map — attachments, the
+    // verification link, or the description text.
+    const [carrier] = await db
+      .select({ id: nodes.id })
+      .from(nodes)
+      .where(
+        sql`${nodes.mapId} = ${owner.mapId} AND ${nodes.deletedAt} IS NULL AND (
+          ${nodes.attachments}::text LIKE ${`%${id}%`}
+          OR coalesce(${nodes.verificationUrl}, '') LIKE ${`%${id}%`}
+          OR coalesce(${nodes.description}::text, '') LIKE ${`%${id}%`}
+        )`,
+      )
+      .limit(1);
+    if (!carrier) return notFound();
+  });
+
+  // Playback. Video and images are unauthenticated by design —
+  // `middleware/auth.ts` skips GET/HEAD for them, and the 160-bit id in the
+  // path is what stands in for a credential. Everything else: see above.
   await app.register(fastifyStatic, {
     root,
     prefix: `${MEDIA_ROUTE_PREFIX}/`,
