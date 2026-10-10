@@ -12,9 +12,10 @@
  *   - **skip, settled** — a skip on an issue that is closed, or a skip older
  *     than EXPIRE_DAYS. The model said "not this map" and nobody objected.
  *   - **uncertain on a closed issue with no node** — the question went away
- *     with the issue.
- *   - **place, settled** — the node exists, and the issue is closed or the
- *     placement is older than EXPIRE_DAYS. Moving it is still possible any
+ *     with the issue (model failures — `triage_error` — excepted: they are
+ *     the #320 pipeline signal).
+ *   - **place, settled** — the node exists (live, not parked in the Inbox),
+ *     and the issue is closed or the placement is older than EXPIRE_DAYS. Moving it is still possible any
  *     time; the queue just stops asking.
  *
  * Confirmed = `reviewed = true`, `reviewed_at = now`, `reviewed_by = NULL`
@@ -29,7 +30,7 @@
  */
 import { and, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { maps, triageDecisions } from '../db/schema.js';
+import { maps, nodes, triageDecisions } from '../db/schema.js';
 
 /** A skip on an open issue is settled after this long. */
 export const TRIAGE_SKIP_EXPIRE_DAYS = Number(process.env.TRIAGE_SKIP_EXPIRE_DAYS ?? 14);
@@ -87,6 +88,9 @@ export async function runTriageLifecycle(now: Date = new Date()): Promise<Triage
         eq(triageDecisions.decision, 'uncertain'),
         eq(triageDecisions.issueState, 'closed'),
         isNull(triageDecisions.placedNodeId),
+        // A model failure is not an answer: those rows feed the #320
+        // "pipeline broken" state and must stay visible.
+        sql`${triageDecisions.reason} NOT LIKE 'triage_error%'`,
       ),
     )
     .returning({ id: triageDecisions.id });
@@ -98,7 +102,14 @@ export async function runTriageLifecycle(now: Date = new Date()): Promise<Triage
       and(
         pendingOnLiveMap,
         eq(triageDecisions.decision, 'place'),
-        sql`${triageDecisions.placedNodeId} IS NOT NULL`,
+        // The node exists, is live, and is NOT parked in the map's Inbox — a
+        // parked node (low-confidence placement) is still an open question.
+        sql`EXISTS (
+          SELECT 1 FROM ${nodes}
+          WHERE ${nodes.id} = ${triageDecisions.placedNodeId}
+            AND ${nodes.deletedAt} IS NULL
+            AND ${nodes.parentId} IS DISTINCT FROM (SELECT ${maps.githubInboxNodeId} FROM ${maps} WHERE ${maps.id} = ${triageDecisions.mapId})
+        )`,
         or(eq(triageDecisions.issueState, 'closed'), lt(triageDecisions.decidedAt, cutoff)),
       ),
     )

@@ -20,7 +20,8 @@ vi.mock('../../db/connection.js', () => ({
   },
 }));
 vi.mock('../../db/schema.js', () => ({
-  maps: { id: 'maps.id', archivedAt: 'a', githubRepoOwner: 'o', githubRepoName: 'r' },
+  maps: { id: 'maps.id', archivedAt: 'a', githubRepoOwner: 'o', githubRepoName: 'r', githubInboxNodeId: 'inbox' },
+  nodes: { id: 'n.id', deletedAt: 'n.del', parentId: 'n.parent' },
   triageDecisions: { reviewed: 'rv', mapId: 'm', externalId: 'e', decision: 'd', issueState: 's', decidedAt: 'at', placedNodeId: 'p' },
 }));
 
