@@ -1053,6 +1053,16 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS dispatch_mix_acc INTEGER NOT NULL DEFAULT 0
   `);
+  // Defense in depth (#354): both read paths already clamp, the database
+  // now refuses anything outside the accumulator's range too. Postgres has
+  // no ADD CONSTRAINT IF NOT EXISTS — guard on pg_constraint.
+  await db.execute(sql`
+    DO $$ BEGIN
+      IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'maps_dispatch_mix_acc_range') THEN
+        ALTER TABLE maps ADD CONSTRAINT maps_dispatch_mix_acc_range CHECK (dispatch_mix_acc BETWEEN 0 AND 99);
+      END IF;
+    END $$
+  `);
 
   // ── Asks inbox (the fleet's human questions, answered in the UI) ──
   // One row per collector item; the open set is replaced on every push,
