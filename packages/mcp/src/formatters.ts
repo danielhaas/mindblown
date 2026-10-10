@@ -242,7 +242,9 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
       const node = lookup.get(nodeId);
       const name = node?.text ?? nodeId;
       const progress = node ? Math.round(node.computedProgress) : 0;
-      lines.push(`  -> ${name} (${progress}% complete)`);
+      // The id on every line: callers act on these nodes (tag, claim,
+      // re-prioritise) and otherwise had to look each title up (#191).
+      lines.push(`  -> ${name} [${nodeId}] (${progress}% complete)`);
     }
   }
   lines.push('');
@@ -255,7 +257,7 @@ export function formatScheduleReport(mapData: MapDetail, scheduleData: ScheduleR
     const name = node?.text ?? s.nodeId;
     const floatVal = scheduleData.criticalPath.float[s.nodeId] ?? 0;
     const isCritical = floatVal === 0;
-    lines.push(`- ${name}: day ${s.computedStart} - ${s.computedEnd} (${s.duration} duration)${isCritical ? ' **CRITICAL**' : ` float: ${floatVal}`}`);
+    lines.push(`- ${name} [${s.nodeId}]: day ${s.computedStart} - ${s.computedEnd} (${s.duration} duration)${isCritical ? ' **CRITICAL**' : ` float: ${floatVal}`}`);
   }
 
   return lines.join('\n');
