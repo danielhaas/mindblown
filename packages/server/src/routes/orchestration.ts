@@ -33,7 +33,11 @@ function handleOrchestrationError(err: unknown, reply: FastifyReply): FastifyRep
   if (err instanceof OrchestrationNotFoundError) {
     return reply.status(404).send({
       error: {
-        code: err.message.startsWith('Map ') ? 'MAP_NOT_FOUND' : 'NODE_NOT_FOUND',
+        code: err.message.startsWith('Map ')
+          ? 'MAP_NOT_FOUND'
+          : err.message.startsWith('Sprint ')
+            ? 'SPRINT_NOT_FOUND'
+            : 'NODE_NOT_FOUND',
         message: err.message,
       },
     });
