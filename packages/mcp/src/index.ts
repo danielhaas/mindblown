@@ -2326,7 +2326,7 @@ server.tool(
       // 1.00, and a team finishing 18× the plan's days must see 18×, not
       // "100%".
       const ratio = v.paceRatio ?? v.deliveryRate / Math.max(1e-9, v.nominalCapacity);
-      lines.push(`Pace:                  ${ratio.toFixed(2)}× the plan (${v.deliveryRate.toFixed(2)} ${unit} of estimates finished per calendar day vs ${v.nominalCapacity.toFixed(2)} planned)`);
+      lines.push(`Pace:                  ${ratio.toFixed(2)}× the plan (${(ratio * v.nominalCapacity).toFixed(2)} ${unit} of estimates finished per calendar day vs ${v.nominalCapacity.toFixed(2)} planned)`);
       if (ratio > 1) {
         lines.push(`Measured focus factor: 1.00 (capped — the knob only models LOSS of capacity). Above 1× either the estimates are larger than the work (get_estimation_accuracy) or more work tracks run in parallel than workerCount (${v.workerCount}) says — e.g. an agent fleet; set workerCount via update_map.`);
       } else {
