@@ -15,6 +15,7 @@
  * counts as reachable: a cold start must not hide AI for a minute.
  */
 
+import OpenAI from 'openai';
 import { aiEnabled, embedEnabled, getClient, probeEmbedding, AI_MODEL_NAME } from './client.js';
 
 export interface BackendHealth {
@@ -25,9 +26,13 @@ export interface BackendHealth {
   /** When it went from reachable/unknown to unreachable; null while up. */
   downSince: string | null;
   lastError: string | null;
+  /** Up, but something looks off (e.g. AI_MODEL not in the server's list). */
+  warning?: string | null;
 }
 
 const PROBE_TIMEOUT_MS = 10_000;
+/** A cold embedding-model load can take longer than a chat list call. */
+const EMBED_PROBE_TIMEOUT_MS = 30_000;
 export const PROBE_INTERVAL_MS = 60_000;
 
 const fresh = (configured: boolean): BackendHealth => ({
@@ -43,18 +48,27 @@ const state = {
   embeddings: fresh(embedEnabled),
 };
 
-function record(which: 'chat' | 'embeddings', ok: boolean, error: string | null): void {
+const recoveryHooks: Array<() => void> = [];
+/** Called when the embedder comes back after being down — the server re-embeds what changed meanwhile. */
+export function onEmbeddingsRecovered(hook: () => void): void {
+  recoveryHooks.push(hook);
+}
+
+function record(which: 'chat' | 'embeddings', ok: boolean, error: string | null, warning: string | null = null): void {
   const h = state[which];
   const now = new Date().toISOString();
-  if (!ok && h.reachable !== false) {
+  const wasDown = h.reachable === false;
+  if (!ok && !wasDown) {
     h.downSince = now;
     console.warn(`[ai-health] ${which} backend unreachable: ${error}`);
   }
-  if (ok && h.reachable === false) console.log(`[ai-health] ${which} backend reachable again`);
+  if (ok && wasDown) console.log(`[ai-health] ${which} backend reachable again`);
   h.reachable = ok;
   h.checkedAt = now;
   h.lastError = ok ? null : error;
+  h.warning = ok ? warning : null;
   if (ok) h.downSince = null;
+  if (ok && wasDown && which === 'embeddings') for (const hook of recoveryHooks) hook();
 }
 
 const errText = (err: unknown) => (err instanceof Error ? err.message : String(err)).slice(0, 300);
@@ -64,8 +78,13 @@ export async function probeChat(): Promise<void> {
   try {
     const page = await getClient().models.list({ timeout: PROBE_TIMEOUT_MS });
     const ids = page.data.map((m) => m.id);
-    if (ids.includes(AI_MODEL_NAME)) record('chat', true, null);
-    else record('chat', false, `model ${AI_MODEL_NAME} is not served (has: ${ids.slice(0, 5).join(', ') || 'none'})`);
+    // The server answered: it is up. A model it does not list is only a
+    // warning — servers spell ids differently (Ollama "x:latest" for "x",
+    // LM Studio quantisation suffixes) and a false "down" would switch off
+    // working AI.
+    const base = (id: string) => id.replace(/(:latest|@[^/]+)$/, '');
+    const listed = ids.some((id) => id === AI_MODEL_NAME || base(id) === base(AI_MODEL_NAME));
+    record('chat', true, null, listed ? null : `model ${AI_MODEL_NAME} is not in the server's list (has: ${ids.slice(0, 5).join(', ') || 'none'})`);
   } catch (err) {
     record('chat', false, errText(err));
   }
@@ -74,16 +93,27 @@ export async function probeChat(): Promise<void> {
 export async function probeEmbeddings(): Promise<void> {
   if (!embedEnabled) return;
   try {
-    await probeEmbedding(PROBE_TIMEOUT_MS);
+    await probeEmbedding(EMBED_PROBE_TIMEOUT_MS);
     record('embeddings', true, null);
   } catch (err) {
     record('embeddings', false, errText(err));
   }
 }
 
-/** A real embedding call failed: stop sending more until the probe sees the backend back. */
+/**
+ * Down, not merely refused: no connection, a timeout, or a 5xx. A 4xx
+ * (one oversized or malformed input) says nothing about the host and
+ * must not switch embeddings off for everyone.
+ */
+export function isBackendDownError(err: unknown): boolean {
+  if (err instanceof OpenAI.APIConnectionError) return true; // incl. timeouts
+  if (err instanceof OpenAI.APIError) return (err.status ?? 0) >= 500;
+  return false;
+}
+
+/** A real embedding call failed: if the host is down, stop sending more until the probe sees it back. */
 export function markEmbeddingsFailed(err: unknown): void {
-  record('embeddings', false, errText(err));
+  if (isBackendDownError(err)) record('embeddings', false, errText(err));
 }
 
 /** Configured and not known to be down. */

@@ -78,7 +78,8 @@ export function capabilitiesForPolicy(policy: AiPolicy): AiCapabilities {
         chat: local,
         structured: local,
         embeddings: embeddingsUsable(),
-        triage: local,
+        // Configured, not reachable: an outage shows as triage_error (see capabilities.ts).
+        triage: aiEnabled,
       };
     }
     default:

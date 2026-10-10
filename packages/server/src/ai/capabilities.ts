@@ -23,6 +23,7 @@
  *                 (auto-apply is off by default on the local backend)
  */
 
+import { aiEnabled } from './client.js';
 import { embeddingsUsable, localChatUsable } from './health.js';
 import { anthropicAvailable } from './providers/anthropic.js';
 
@@ -48,7 +49,10 @@ export function aiCapabilities(): AiCapabilities {
     chat: enabled,
     structured: enabled,
     embeddings: embeddingsUsable(),
-    triage: enabled,
+    // Triage stays on what is CONFIGURED: while the backend is down a
+    // triage attempt fails visibly (a triage_error row, retried on the
+    // issue's next change) instead of the issue skipping triage unseen.
+    triage: aiEnabled || anthropicAvailable,
   };
 }
 
