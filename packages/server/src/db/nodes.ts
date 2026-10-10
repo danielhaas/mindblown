@@ -4,7 +4,7 @@ import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle, resolveStatusDef, isForgeLink } from '@mindblown/core';
+import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
@@ -723,7 +723,7 @@ export async function setExternalLinkState(
 export async function patchExternalLink(
   nodeId: string,
   externalId: string,
-  patch: Partial<Pick<ExternalLink, 'state' | 'isPullRequest' | 'reopenedForPr'>>,
+  patch: Partial<Pick<ExternalLink, 'state' | 'isPullRequest' | 'closeCheckedForPr'>>,
   handle: DbHandle = db,
 ): Promise<boolean> {
   const [row] = await handle
@@ -1000,7 +1000,7 @@ export async function findLinksMissingState(
  * (#295/#309): the node reads done, `linked_pr.state` is `open`, but the
  * synced forge link to `repoFullName` is already `closed` with no merge
  * commit behind it — and this PR has not been healed yet
- * (`reopenedForPr`). The shape a close leaves when it beat the PR to the
+ * (`closeCheckedForPr`). The shape a close leaves when it beat the PR to the
  * mirror: done before `gh pr create`, or the PR not yet visible to the
  * outbound landing probe. Oldest mirror first, at most `limit`.
  */
@@ -1033,13 +1033,7 @@ export async function findPrematureCloseCandidates(
     const pr = row.linkedPr as LinkedPrState | null;
     if (!looksDone || !pr || pr.state !== 'open') continue;
     const link = ((row.externalLinks as ExternalLink[]) ?? []).find(
-      (l) =>
-        isForgeLink(l) &&
-        l.syncEnabled &&
-        l.state === 'closed' &&
-        !l.mergeCommitSha &&
-        l.reopenedForPr !== pr.number &&
-        l.externalId.startsWith(`${repoFullName}#`),
+      (l) => l.externalId.startsWith(`${repoFullName}#`) && isPrematureCloseLink(l, pr.number),
     );
     if (!link) continue;
     out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, at: pr.lastSyncedAt ?? '' });

@@ -180,6 +180,7 @@ function makeResult(overrides: Partial<ReconcileResult> = {}): ReconcileResult {
     mirrorRepaired: 0,
     directResolved: 0,
     heldClosesResolved: 0,
+    prematureClosesHealed: 0,
     stateSyncErrored: 0,
     ingested: 0,
     ingestErrored: 0,
@@ -1277,14 +1278,22 @@ describe('healPrematureCloses (#295/#309) — an issue closed while its PR is st
   it('PR open, issue closed by an API call: reopened, the link records the PR, the node is left alone', async () => {
     expect(await healPrematureCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, reopened: 1 });
     expect(reopenGitHubIssue).toHaveBeenCalledWith({ externalId: 'o/r#5' }, forge);
-    expect(nodeDb.patchExternalLink).toHaveBeenCalledWith('n1', 'o/r#5', { state: 'open', reopenedForPr: 9 });
+    expect(nodeDb.patchExternalLink).toHaveBeenCalledWith('n1', 'o/r#5', { state: 'open', closeCheckedForPr: 9 });
     expect(nodeDb.updateNode).not.toHaveBeenCalled(); // no revision bump
   });
 
-  it('a commit closed it (the work landed): left closed', async () => {
+  it('a commit closed it (the work landed): left closed, verdict settled for this PR', async () => {
     closeEvent = { ...closeEvent!, commitId: 'abc123' };
     expect(await healPrematureCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, reopened: 0 });
     expect(reopenGitHubIssue).not.toHaveBeenCalled();
+    expect(nodeDb.patchExternalLink).toHaveBeenCalledWith('n1', 'o/r#5', { closeCheckedForPr: 9 });
+  });
+
+  it('another PR already landed the work (no close reason to tell, e.g. Gitea): left closed', async () => {
+    vi.mocked(probeIssueLanded).mockResolvedValueOnce({ closingPrs: [], defaultBranch: 'main', inFlight: true, landed: { number: 7 } } as never);
+    expect(await healPrematureCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, reopened: 0 });
+    expect(reopenGitHubIssue).not.toHaveBeenCalled();
+    expect(nodeDb.patchExternalLink).toHaveBeenCalledWith('n1', 'o/r#5', { closeCheckedForPr: 9 });
   });
 
   it('closed as not planned: left closed, no timeline read', async () => {
