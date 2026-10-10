@@ -27,6 +27,8 @@ export interface NodeWithComputed {
   text: string;
   description: string | null;
   effortEstimate: number | null;
+  /** 'ai' = an AI draft estimate (#318); null/absent = a person's. */
+  estimateSource?: 'ai' | null;
   actualEffort: number | null;
   percentComplete: number | null;
   status: string | null;

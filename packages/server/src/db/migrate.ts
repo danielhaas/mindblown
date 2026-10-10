@@ -1161,5 +1161,15 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ON CONFLICT (media_id) DO NOTHING
   `);
 
+  // ── AI estimate drafts (#318) ───────────────────────────────────
+  // nodes.estimate_source: 'ai' marks an estimate the draft job wrote;
+  // maps.ai_estimate_drafts: the per-map switch (default on).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS estimate_source TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS ai_estimate_drafts BOOLEAN NOT NULL DEFAULT TRUE
+  `);
+
   console.log('[db] Migrations complete.');
 }

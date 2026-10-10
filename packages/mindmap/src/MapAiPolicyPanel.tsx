@@ -95,6 +95,31 @@ export function MapAiPolicyPanel() {
           </label>
         ))}
       </div>
+      <label
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 14, cursor: saving ? 'wait' : 'pointer' }}
+      >
+        <input
+          type="checkbox"
+          data-testid="map-ai-estimate-drafts"
+          checked={current !== 'none' && (map.aiEstimateDrafts ?? true)}
+          disabled={saving || current === 'none'}
+          onChange={async (e) => {
+            setSaving(true);
+            const ok = await updateMapSettings({ aiEstimateDrafts: e.target.checked });
+            setSaving(false);
+            if (ok) setSavedAt(Date.now());
+          }}
+          style={{ marginTop: 3 }}
+        />
+        <span style={{ flex: 1 }}>
+          <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#1e293b' }}>AI estimate drafts</span>
+          <span style={{ display: 'block', fontSize: 11, color: '#64748b', marginTop: 2 }}>
+            Committed work without an estimate (a Todo or In Progress status, or the active version) gets a draft
+            estimate from the local model, marked &ldquo;AI draft&rdquo; until someone changes or accepts it. Never uses a
+            cloud model.
+          </span>
+        </span>
+      </label>
     </div>
   );
 }

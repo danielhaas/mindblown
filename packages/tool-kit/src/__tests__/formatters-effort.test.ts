@@ -143,3 +143,17 @@ describe('formatMapTree — PR mirror (#308)', () => {
     expect(out.split('\n').find((l) => l.includes('no pr'))).not.toContain('PR #');
   });
 });
+
+describe('formatMapTree — AI draft estimates (#318)', () => {
+  const root = stubNode({ id: 'root', text: 'Root', childrenIds: ['draft', 'person'], computedEffort: 5 });
+  const draft = stubNode({ id: 'draft', parentId: 'root', text: 'drafted', effortEstimate: 2, estimateSource: 'ai' });
+  const person = stubNode({ id: 'person', parentId: 'root', text: 'by-hand', effortEstimate: 3, estimateSource: null });
+  const out = formatMapTree(detailWith([root, draft, person]));
+  const line = (substr: string) => out.split('\n').find((l) => l.includes(substr))!;
+
+  it('marks a draft, and only a draft', () => {
+    expect(line('drafted')).toContain('effort: 2 (AI draft)');
+    expect(line('by-hand')).toContain('effort: 3');
+    expect(line('by-hand')).not.toContain('AI draft');
+  });
+});

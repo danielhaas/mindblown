@@ -115,6 +115,8 @@ export const maps = pgTable('maps', {
   // Per-map AI policy (#375): 'any' | 'local' | 'none' — which LLM this
   // map's content may reach; consulted by every AI entry point.
   aiPolicy: text('ai_policy').notNull().default('any'),
+  // Draft estimates for committed work (#318).
+  aiEstimateDrafts: boolean('ai_estimate_drafts').notNull().default(true),
   // Per-map opt-in for Phase 3 GitHub label write-back (#96). When true,
   // finalized triage decisions write `triage:placed` / `triage:skipped`
   // labels back to the source GitHub issue. Default false so existing
@@ -182,6 +184,7 @@ export const nodes = pgTable('nodes', {
   y: real('y'),
   collapsed: boolean('collapsed').notNull().default(false),
   effortEstimate: real('effort_estimate'),
+  estimateSource: text('estimate_source'), // 'ai' = draft (#318); null = person
   actualEffort: real('actual_effort'),
   percentComplete: real('percent_complete'),
   status: text('status'),

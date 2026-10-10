@@ -348,6 +348,7 @@ export interface ToolBackend {
       profilePolicy?: ProfilePolicy | null;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
+      aiEstimateDrafts?: boolean;
       phases?: PhaseDef[];
       archived?: boolean;
     },

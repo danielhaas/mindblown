@@ -621,7 +621,9 @@ function PropertyPanelInner({
                 if (hasChildren) return;
                 setEffort(e.target.value);
                 const val = e.target.value ? parseFloat(e.target.value) : null;
-                debouncedUpdate({ effortEstimate: val });
+                // Typing an estimate makes it a person's — the server clears
+                // the draft marker too; this keeps the local copy in step.
+                debouncedUpdate({ effortEstimate: val, estimateSource: null });
               }}
               onKeyDown={(e) => e.stopPropagation()}
               disabled={hasChildren}
@@ -655,6 +657,22 @@ function PropertyPanelInner({
           {estimateError && (
             <div style={{ color: '#dc2626', fontSize: 11, marginTop: 4 }}>{estimateError}</div>
           )}
+          {!hasChildren && node.estimateSource === 'ai' && node.effortEstimate != null && (
+            <div
+              data-testid="estimate-ai-draft"
+              style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6d28d9' }}
+              title="Drafted by the local AI model when this became committed work (#318). Change the number or accept it."
+            >
+              <span style={{ padding: '1px 6px', borderRadius: 999, background: '#ede9fe', fontWeight: 600 }}>AI draft</span>
+              <button
+                type="button"
+                onClick={() => directUpdate(nodeId, { estimateSource: null })}
+                style={acceptEstimateBtnStyle}
+              >
+                Accept
+              </button>
+            </div>
+          )}
           {estimateResult && !hasChildren && (
             <div
               style={{
@@ -685,7 +703,7 @@ function PropertyPanelInner({
                   type="button"
                   onClick={() => {
                     setEffort(String(estimateResult.estimate));
-                    debouncedUpdate({ effortEstimate: estimateResult.estimate });
+                    debouncedUpdate({ effortEstimate: estimateResult.estimate, estimateSource: null });
                     setEstimateResult(null);
                   }}
                   style={acceptEstimateBtnStyle}
