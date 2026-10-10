@@ -116,7 +116,7 @@ export async function answerAsk(mapId: string, askId: string, input: AskAnswerIn
     writes.push(w);
     const ctx = await getGitHubContextForMap(mapId);
     if (!ctx) {
-      w.error = 'map has no GitHub integration — comment not posted';
+      w.error = 'map has no issue tracker connected — comment not posted';
     } else {
       try {
         await commentOnGitHubIssue(ctx.owner, ctx.repo, plan.github.ticket, plan.github.body, ctx.forge);

@@ -1639,6 +1639,7 @@ function SyncOverviewSection({
   onToggleClosed: (val: boolean) => void;
   onPromote: (nodeId: string) => void;
 }) {
+  const forge = forgeLabel(useMindmapStore((s) => s.currentMap)?.forgeKind);
   return (
     <div
       style={{
@@ -1728,7 +1729,7 @@ function SyncOverviewSection({
               <button
                 onClick={() => onPromote(n.nodeId)}
                 style={promoteButtonStyle}
-                title="Create a new GitHub issue for this node"
+                title={`Create a new ${forge} issue for this node`}
               >
                 Promote →
               </button>
@@ -1737,7 +1738,7 @@ function SyncOverviewSection({
         </SyncBucket>
 
         <SyncBucket
-          title="Only in GitHub"
+          title={`Only in ${forge}`}
           count={overview.counts.onlyInGitHub}
           tint="#fef3c7"
           border="#fde68a"

@@ -27,13 +27,13 @@ describe('conflict_scan — map-wide duplicate sweep (no candidate)', () => {
       backendReturning({ candidateId: null, candidateScopes: [], conflicts: [], duplicateLinks: [DUPE] }),
       { mapId: 'm1' } as never,
     );
-    expect(out).toContain('Map-wide duplicate sweep: 1 GitHub link(s)');
+    expect(out).toContain('Map-wide duplicate sweep: 1 issue link(s)');
     expect(out).toContain('FulcrumCRM/crm#2649 on 2 nodes');
     expect(out).toContain('n-done');
     expect(out).toContain('n-zero');
     // The resolution warning must mention stripping links before delete —
     // deleting a linked node closes the GitHub issue as not_planned.
-    expect(out).toMatch(/unlink_github_issue BEFORE deleting/i);
+    expect(out).toMatch(/unlink_issue BEFORE deleting/i);
   });
 
   it('reports a clean map tersely', async () => {
@@ -77,7 +77,7 @@ describe('conflict_scan — per-candidate duplicate section', () => {
       { mapId: 'm1', candidateNodeId: 'n-zero' } as never,
     );
     expect(out).toContain('scope-conflict detection skipped');
-    expect(out).toContain('duplicate GitHub link(s) involving this node');
+    expect(out).toContain('duplicate issue link(s) involving this node');
     expect(out).toContain('FulcrumCRM/crm#2649');
   });
 

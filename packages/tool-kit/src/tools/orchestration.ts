@@ -85,11 +85,11 @@ export const getNextTicketTool = defineTool({
     '     a drained class is back-filled by the other). The weave phase is',
     '     persisted per map and advances only on actual grants, so repeated',
     '     single-ticket pulls walk the pattern instead of restarting it.',
-    '  4. Empty-brief guard: ready nodes with no description and no linked GitHub',
+    '  4. Empty-brief guard: ready nodes with no description and no linked',
     '     issue are refused, auto-tagged "needs-brief", and listed in skipped[].',
     '',
     'On success you get the full self-contained brief: title, plain-text',
-    'description, priority, scopes, tags, effective version, GitHub links.',
+    'description, priority, scopes, tags, effective version, issue links.',
     'Finish with set_status("done") (auto-releases the claim) or release_node',
     'to hand the ticket back. Unlike claim_node, a pull NEVER steals an',
     'existing claim.',
@@ -127,7 +127,7 @@ export const getNextTicketTool = defineTool({
       if (t.scopes.length > 0) lines.push(`  scopes: [${t.scopes.join(', ')}]`);
       for (const l of t.githubLinks) lines.push(`  github: ${l.externalId} — ${l.url}`);
       lines.push('');
-      lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked GitHub issue)');
+      lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked issue)');
     } else {
       const why =
         result.reason === 'hold'
@@ -233,7 +233,7 @@ export const conflictScanTool = defineTool({
     'If the candidate has no scopes declared, scope conflicts are skipped (set scopes',
     'via update_node), but duplicate detection still runs.',
     '',
-    'DUPLICATE DETECTION: the scan also reports GitHub issue links attached to more',
+    'DUPLICATE DETECTION: the scan also reports issue links attached to more',
     'than one node — the duplicate-node pattern that falsifies progress rollups.',
     'Per-candidate scans check the candidate\'s links; calling WITHOUT candidateNodeId',
     'runs a map-wide duplicate sweep (hygiene check for housekeeping agents).',
@@ -264,16 +264,16 @@ export const conflictScanTool = defineTool({
 
     if (candidate === undefined) {
       if (result.duplicateLinks.length === 0) {
-        return 'Map-wide duplicate sweep: no GitHub link is attached to more than one node. Clean.';
+        return 'Map-wide duplicate sweep: no issue link is attached to more than one node. Clean.';
       }
       lines.push(
-        `Map-wide duplicate sweep: ${result.duplicateLinks.length} GitHub link(s) attached to multiple nodes:`,
+        `Map-wide duplicate sweep: ${result.duplicateLinks.length} issue link(s) attached to multiple nodes:`,
         '',
       );
       formatDupes();
       lines.push('');
       lines.push(
-        'Resolution pattern: keep the node with real progress/children, strip the duplicate\'s links via unlink_github_issue BEFORE deleting it — deleting a still-linked node closes the GitHub issue as not_planned.',
+        'Resolution pattern: keep the node with real progress/children, strip the duplicate\'s links via unlink_issue BEFORE deleting it — deleting a still-linked node closes its issue as not_planned.',
       );
       return lines.join('\n');
     }
@@ -303,7 +303,7 @@ export const conflictScanTool = defineTool({
 
     if (result.duplicateLinks.length > 0) {
       lines.push('');
-      lines.push(`⚠ ${result.duplicateLinks.length} duplicate GitHub link(s) involving this node:`);
+      lines.push(`⚠ ${result.duplicateLinks.length} duplicate issue link(s) involving this node:`);
       formatDupes();
     }
     return lines.join('\n');

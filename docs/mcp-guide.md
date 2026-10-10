@@ -237,7 +237,7 @@ Files and links hung on nodes. `get_map` shows them on each node's line (`files:
 | `bulk_set_actual_effort` | Record actual effort on many leaves | `mapId`, `updates` |
 | `bulk_assign_to_sprint` | Assign many nodes to a sprint | `cycleId`, `nodeIds` |
 | `bulk_assign_to_version` | Assign many nodes to a version (empty string to unassign) | `mapId`, `versionId`, `nodeIds` |
-| `bulk_link_github_issue` | Link many nodes to GitHub issues (shared default owner/repo) | `mapId`, `owner?`, `repo?`, `links` |
+| `bulk_link_issues` | Link many nodes to issues (shared default owner/repo) | `mapId`, `owner?`, `repo?`, `links` |
 
 ### Task Property Tools
 
@@ -306,15 +306,18 @@ Files and links hung on nodes. `get_map` shows them on each node's line (`files:
 | `plan_lint` | Plan-quality coach: 11 hygiene checks (unestimated/oversized leaves, stale progress, overdue-unreplanned, calibration drift, missing done-criteria, stale plan, missing dependencies, uncovered/unscheduled must-requirements, stale acceptances), each with a teaching why + fix | `mapId`, `nodeId?`, `versionId?`, `cycleId?`, `stalledDays?`, `rule?`, `limit?` |
 | `scope_simulate` | In-memory what-if: before/after totals for a list of add/remove/update patches | `mapId`, `patches` |
 
-### GitHub Integration Tools
+### Issue Tracker Tools (GitHub or Gitea)
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
-| `connect_github_repo` | Connect a GitHub repo to a workspace | `workspaceId`, `owner`, `repo`, `token`, `webhookSecret?` |
-| `import_github_issues` | Import issues into a functional tree; auto-creates versions/milestones | `mapId`, `parentNodeId?`, `includeAll?`, `owner?`, `repo?` |
-| `link_github_issue` | Link a node to an existing GitHub issue | `mapId`, `nodeId`, `owner`, `repo`, `issueNumber` |
-| `create_github_issue_from_node` | Promote a node to a new GitHub issue and link it | `mapId`, `nodeId` |
-| `github_sync_overview` | Three-way diff: synced / only in MindBlown / only in GitHub | `mapId`, `includeClosed?`, `format?` |
+| `connect_forge_repo` | Connect a GitHub or Gitea repo to a workspace | `workspaceId`, `owner`, `repo`, `token`, `webhookSecret?`, `kind?`, `apiBaseUrl?`, `webBaseUrl?` |
+| `import_issues` | Import issues into a functional tree; auto-creates versions/milestones | `mapId`, `parentNodeId?`, `includeAll?`, `owner?`, `repo?` |
+| `link_issue` | Link a node to an existing issue | `mapId`, `nodeId`, `owner`, `repo`, `issueNumber` |
+| `unlink_issue` | Remove a node's issue link without touching the issue | `mapId`, `nodeId`, `externalId?` |
+| `create_issue_from_node` | Promote a node to a new issue and link it | `mapId`, `nodeId` |
+| `forge_sync_overview` | Three-way diff: synced / only in MindBlown / only in the forge | `mapId`, `includeClosed?`, `format?` |
+
+The pre-Gitea names (`connect_github_repo`, `import_github_issues`, `link_github_issue`, `bulk_link_github_issue`, `unlink_github_issue`, `create_github_issue_from_node`, `github_sync_overview`) still work as deprecated aliases.
 
 ### AI Tools (v0.7.0)
 

@@ -18,10 +18,14 @@ import { getGitHubContextForMap, getForgeEndpointForMap } from '../lib/githubCon
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { broadcast } from '../ws.js';
 
+/** The NO_INTEGRATION message every map route sends when the map has no forge. */
+export const NO_FORGE_MESSAGE =
+  'No issue tracker (GitHub or Gitea) is connected to this map. Link a repo in settings first.';
+
 export class NoForgeIntegrationError extends Error {
   readonly code = 'NO_INTEGRATION' as const;
   constructor() {
-    super('GitHub not configured for this map. Link a repo in settings first.');
+    super(NO_FORGE_MESSAGE);
     this.name = 'NoForgeIntegrationError';
   }
 }

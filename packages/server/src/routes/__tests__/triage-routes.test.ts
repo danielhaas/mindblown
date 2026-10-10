@@ -2413,7 +2413,7 @@ describe('GET .../triage-decisions/not-in-mindblown', () => {
     await app.close();
     expect(res.statusCode).toBe(200);
     expect(res.json().orphansAvailable).toBe(false);
-    expect(res.json().orphansError).toMatch(/not configured/);
+    expect(res.json().orphansError).toMatch(/No issue tracker/);
     // Decision-row buckets still return cleanly.
     expect(res.json().items).toHaveLength(1);
   });

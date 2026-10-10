@@ -673,6 +673,8 @@ export function importGitHubIssues(
   linkedNodes: Array<{ nodeId: string; issueNumber: number }>;
   skippedNodes: Array<{ nodeId: string; issueNumber: number }>;
   versions: Record<string, string>;
+  /** The map's forge, so tool output can say "Gitea" instead of "GitHub". */
+  forgeKind?: string;
 }> {
   return request(`/api/maps/${mapId}/github/import`, {
     method: 'POST',
@@ -707,6 +709,8 @@ export function createGitHubIssueFromNode(
 
 export interface GitHubSyncOverview {
   repo: string;
+  /** The map's forge ('github' | 'gitea'); the onlyInGitHub fields keep their names on Gitea maps. */
+  forgeKind?: string;
   includeClosed: boolean;
   counts: {
     synced: number;

@@ -77,7 +77,7 @@ export const listTriageDecisionsTool = defineTool({
     issueState: z
       .enum(['open', 'closed'])
       .optional()
-      .describe("Filter by GitHub issue state captured at triage time"),
+      .describe("Filter by issue state captured at triage time"),
     since: z
       .string()
       .optional()
@@ -216,13 +216,13 @@ function renderNotInMindBlownItem(it: NotInMindBlownItem): string {
 export const listNotInMindBlownTool = defineTool({
   name: 'list_not_in_mindblown',
   description:
-    "List every GitHub ticket that is NOT currently a node in this map, across four buckets: 'skipped' (decision=skip + reviewed), 'pending-skipped' (decision=skip + unreviewed), 'uncertain' (decision=uncertain), and 'orphan' (no triage row + no node — same set as github_sync_overview.onlyInGitHub). Answers the operator's question 'what's in GitHub that's not on our roadmap?' in one call. The orphan bucket needs GitHub configured on the map; when it's unavailable the response still carries the decision-row buckets and surfaces the reason via orphansAvailable/orphansError. Default returns all four buckets; narrow with bucket=. Default limit 50, max 200.",
+    "List every issue on the map's issue tracker (GitHub or Gitea) that is NOT currently a node in this map, across four buckets: 'skipped' (decision=skip + reviewed), 'pending-skipped' (decision=skip + unreviewed), 'uncertain' (decision=uncertain), and 'orphan' (no triage row + no node — same set as forge_sync_overview.onlyInGitHub). Answers the operator's question 'what's in the tracker that's not on our roadmap?' in one call. The orphan bucket needs a repo connected to the map; when it's unavailable the response still carries the decision-row buckets and surfaces the reason via orphansAvailable/orphansError. Default returns all four buckets; narrow with bucket=. Default limit 50, max 200.",
   schema: {
     mapId: z.string().describe('The map ID'),
     bucket: notInMindBlownBucketEnum
       .optional()
       .describe(
-        "Narrow to one bucket. Pass 'all' (or omit) for every bucket. 'orphans' returns only the GitHub-issue-with-no-decision-row set.",
+        "Narrow to one bucket. Pass 'all' (or omit) for every bucket. 'orphans' returns only the issue-with-no-decision-row set.",
       ),
     limit: z
       .number()
@@ -247,7 +247,7 @@ export const listNotInMindBlownTool = defineTool({
     if (result.total === 0) {
       const orphanNote = result.orphansAvailable
         ? ''
-        : ` (orphan bucket unavailable: ${result.orphansError ?? 'GitHub fetch failed'})`;
+        : ` (orphan bucket unavailable: ${result.orphansError ?? 'issue tracker fetch failed'})`;
       return `No issues found matching bucket='${result.bucket}' in map ${mapId}${orphanNote}.`;
     }
     // Per-kind breakdown — gives Eve a one-line "what's the shape" so
@@ -269,7 +269,7 @@ export const listNotInMindBlownTool = defineTool({
         : `Showing ${result.returned} item(s) in map ${mapId}`;
     const orphanWarning = result.orphansAvailable
       ? ''
-      : `\n(Note: orphan bucket unavailable — ${result.orphansError ?? 'GitHub fetch failed'})`;
+      : `\n(Note: orphan bucket unavailable — ${result.orphansError ?? 'issue tracker fetch failed'})`;
     const lines = result.items.map(renderNotInMindBlownItem);
     return `${summary} [${breakdownLine}]:${orphanWarning}\n${lines.join('\n')}`;
   },
