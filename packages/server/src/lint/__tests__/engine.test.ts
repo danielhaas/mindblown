@@ -594,3 +594,32 @@ describe('computePlanLint — sync pack', () => {
     expect(r.findings.map((f) => f.nodeId)).toEqual(['in-leaf']);
   });
 });
+
+describe('computePlanLint — sprint-state (#324)', () => {
+  const sprint = (p: Record<string, unknown>) => ({
+    id: 's1', name: 'V1 fertigstellen', status: 'planned', startDate: '2026-01-01', endDate: '2026-01-05', versionId: 'v1', ...p,
+  }) as never;
+  const run = (sprints?: unknown[]) =>
+    computePlanLint({ map: {}, nodes: [makeNode({ id: 'root' })], unitsPerDay: 1, history: emptyHistory(), dismissals: [], sprints: sprints as never, now: NOW });
+
+  it('lists sprints whose state disagrees with their dates, and overlaps — the Sprint panel\'s signals', () => {
+    const r = run([
+      sprint({}),
+      sprint({ id: 's2', name: 'A', status: 'active', startDate: '2099-01-01', endDate: '2099-01-14' }),
+      sprint({ id: 's3', name: 'B', startDate: '2099-01-10', endDate: '2099-01-20' }),
+    ]);
+    if ('error' in r) throw new Error(r.error);
+    const details = rule(r, 'sprint-state').findings.map((f) => f.detail);
+    expect(details).toContain('Sprint "V1 fertigstellen": Ended 2026-01-05 but still planned — never started');
+    expect(details).toContain('Sprint "A" overlaps "B" of the same version');
+  });
+
+  it('skipped when sprints were not loaded; completed sprints never flagged', () => {
+    const r = run();
+    if ('error' in r) throw new Error(r.error);
+    expect(rule(r, 'sprint-state').skipped).toBe('sprints not loaded');
+    const done = run([sprint({ status: 'completed' })]);
+    if ('error' in done) throw new Error(done.error);
+    expect(rule(done, 'sprint-state').findings).toEqual([]);
+  });
+});

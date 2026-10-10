@@ -16,6 +16,7 @@ export const LINT_RULE_IDS = [
   'no-done-criteria',
   'stale-plan',
   'dates-without-dependencies',
+  'sprint-state',
   // Requirements pack — evaluated map-wide (the register is map-global).
   'uncovered-requirement',
   'stale-acceptance',

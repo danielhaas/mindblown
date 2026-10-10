@@ -318,3 +318,7 @@ export type {
   ChangeEventLike,
   ClaimTrailEntry,
 } from './claimTrail.js';
+
+// Sprint signals — state vs dates, overlaps, WIP, stalled (#324)
+export { sprintSignals, SPRINT_STALLED_DAYS } from './sprintSignals.js';
+export type { SprintLike, SprintItem, SprintSignals } from './sprintSignals.js';

@@ -10,6 +10,7 @@
  * The engine itself is pure (../lint/engine.ts); this file supplies data:
  * nodes from the map, change-event digests, dismissals, unitsPerDay.
  */
+import * as cycleDb from '../db/cycles.js';
 import type { FastifyInstance } from 'fastify';
 import { computeTree, isForgeLink, type ExternalLink, type Node } from '@mindblown/core';
 import { getForgeContextForMap } from '../lib/githubContext.js';
@@ -257,7 +258,7 @@ export async function lintRoutes(app: FastifyInstance) {
     }
     const wantsForge = rule == null || rule === 'done-without-pr';
 
-    const [history, dismissalRows, acceptances, forge] = await Promise.all([
+    const [history, dismissalRows, acceptances, forge, sprints] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
       // Best-effort: a failed acceptance load skips stale-acceptance
@@ -272,6 +273,8 @@ export async function lintRoutes(app: FastifyInstance) {
             now,
           ).catch(() => undefined)
         : Promise.resolve(undefined),
+      // Same contract: a failed load skips sprint-state, not the run.
+      cycleDb.listCycles(req.params.id).catch(() => undefined),
     ]);
 
     // Rolled-up progress so requirement rules work on parent nodes too.
@@ -289,6 +292,7 @@ export async function lintRoutes(app: FastifyInstance) {
       computedProgress,
       forgePrs: forge?.forgePrs,
       forgePrsCap: forge?.capped ? FORGE_PR_CHECK_CAP : undefined,
+      sprints,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,

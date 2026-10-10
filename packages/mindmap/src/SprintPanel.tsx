@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Cycle, NodeId } from '@mindblown/core';
+import type { Cycle, Node, NodeId, StatusDef } from '@mindblown/core';
+import { resolveStatusDef, sprintSignals, type SprintSignals } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 
@@ -317,6 +318,79 @@ function SprintNodeList({ cycleId }: { cycleId: string }) {
 
 // ── Sprint Card ─────────────────────────────────────────────────
 
+/**
+ * Leaves in a sprint: the leaf or an ancestor carries the sprint — the same
+ * membership plan_lint and ready_nodes use.
+ */
+function sprintLeaves(nodes: Record<string, Node>, cycleId: string): Node[] {
+  const inSprint = (n: Node): boolean => {
+    const seen = new Set<string>();
+    let cur: Node | undefined = n;
+    while (cur && !seen.has(cur.id)) {
+      seen.add(cur.id);
+      if (cur.cycleId === cycleId) return true;
+      cur = cur.parentId ? nodes[cur.parentId] : undefined;
+    }
+    return false;
+  };
+  return Object.values(nodes).filter((n) => n.childrenIds.length === 0 && inSprint(n));
+}
+
+/** The sprint's signals for this map's nodes (#324) — same helper as Plan Health. */
+function useSprintSignals(cycle: Cycle): SprintSignals {
+  const nodes = useMindmapStore((s) => s.nodes);
+  const cycles = useMindmapStore((s) => s.cycles);
+  const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow) as StatusDef[] | undefined;
+  const wipLimit = useMindmapStore((s) => s.currentMap?.wipLimit ?? null);
+  return useMemo(
+    () =>
+      sprintSignals({
+        sprint: cycle,
+        sprints: cycles,
+        items: sprintLeaves(nodes, cycle.id).map((n) => ({
+          category: resolveStatusDef(workflow ?? [], n.status)?.category ?? null,
+          percentComplete: n.percentComplete,
+          updatedAt: n.updatedAt,
+        })),
+        wipLimit,
+      }),
+    [cycle, cycles, nodes, workflow, wipLimit],
+  );
+}
+
+function SignalChips({ sig, status }: { sig: SprintSignals; status: Cycle['status'] }) {
+  if (status === 'completed') return null;
+  const chip = (text: string, tone: 'red' | 'amber' | 'grey', title?: string) => (
+    <span
+      key={text}
+      title={title}
+      style={{
+        fontSize: 10,
+        fontWeight: 600,
+        padding: '1px 6px',
+        borderRadius: 4,
+        background: tone === 'red' ? '#fee2e2' : tone === 'amber' ? '#fef3c7' : '#f1f5f9',
+        color: tone === 'red' ? '#b91c1c' : tone === 'amber' ? '#92400e' : '#64748b',
+      }}
+    >
+      {text}
+    </span>
+  );
+  const chips = [];
+  if (sig.stateIssue) chips.push(chip(`⚠ ${sig.stateIssue}`, 'red'));
+  for (const o of sig.overlaps) chips.push(chip(`overlaps ${o}`, 'amber', 'Another open sprint of the same version covers the same days'));
+  if (sig.wip.count > 0 || sig.wip.over) {
+    chips.push(
+      sig.wip.limit != null
+        ? chip(`WIP ${sig.wip.count}/${sig.wip.limit}`, sig.wip.over ? 'red' : 'grey', 'Items in progress in this sprint vs the map\'s WIP limit')
+        : chip(`${sig.wip.count} in progress`, 'grey', 'No WIP limit set on this map'),
+    );
+  }
+  if (sig.stalled > 0) chips.push(chip(`${sig.stalled} stalled >${sig.stalledDays}d`, 'amber', `In progress with no change for ${sig.stalledDays}+ days`));
+  if (chips.length === 0) return null;
+  return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 16px 8px 34px' }}>{chips}</div>;
+}
+
 function SprintCard({
   cycle,
   isExpanded,
@@ -349,6 +423,7 @@ function SprintCard({
   const progress = totalNodes > 0 ? (doneNodes / totalNodes) * 100 : 0;
 
   const statusInfo = STATUS_COLORS[cycle.status] ?? STATUS_COLORS.planned;
+  const signals = useSprintSignals(cycle);
   const isFilterActive = activeCycleFilter === cycle.id;
 
   const handleStatusChange = useCallback(
@@ -471,6 +546,9 @@ function SprintCard({
           </span>
         </div>
       </div>
+
+      {/* Signals (#324): state vs dates, overlaps, WIP, stalled */}
+      <SignalChips sig={signals} status={cycle.status} />
 
       {/* Expanded content */}
       {isExpanded && (
@@ -648,6 +726,18 @@ export function SprintPanel({ onClose }: { onClose: () => void }) {
     loadCycles();
   }, [loadCycles]);
 
+  // Sprints whose state disagrees with their dates or that overlap — the
+  // same findings Plan Health's sprint-state rule lists.
+  const sprintIssues = useMemo(
+    () =>
+      cycles.filter((c) => {
+        if (c.status === 'completed') return false;
+        const sig = sprintSignals({ sprint: c, sprints: cycles, items: [], wipLimit: null });
+        return sig.stateIssue != null || sig.overlaps.length > 0;
+      }).length,
+    [cycles],
+  );
+
   // Sort cycles: active first, then planned, then completed
   const sortedCycles = useMemo(() => {
     const order = { active: 0, planned: 1, completed: 2 };
@@ -691,7 +781,17 @@ export function SprintPanel({ onClose }: { onClose: () => void }) {
           <line x1="12" y1="1" x2="12" y2="5" stroke="#4f46e5" strokeWidth="1.5" strokeLinecap="round" />
           <line x1="1" y1="7" x2="15" y2="7" stroke="#4f46e5" strokeWidth="1" />
         </svg>
-        <span style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', flex: 1 }}>Sprints</span>
+        <span style={{ fontSize: 14, fontWeight: 700, color: '#1e293b', flex: 1 }}>
+          Sprints
+          {sprintIssues > 0 && (
+            <span
+              title="Sprints whose state disagrees with their dates, or that overlap another sprint of the same version"
+              style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#b91c1c', background: '#fee2e2', padding: '1px 6px', borderRadius: 4 }}
+            >
+              ⚠ {sprintIssues}
+            </span>
+          )}
+        </span>
         <button
           onClick={() => setShowCreate(!showCreate)}
           style={{
