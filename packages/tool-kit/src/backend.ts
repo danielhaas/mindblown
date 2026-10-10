@@ -289,7 +289,10 @@ export interface TicketBrief {
 export interface SkippedTicket {
   id: string;
   text: string;
-  reason: 'needs-brief';
+  /** needs-brief: no description and no linked issue; human-only: tagged for a person (#266). */
+  reason: 'needs-brief' | 'human-only';
+  /** The skip tag, for human-only. */
+  tag?: string;
 }
 
 export interface GetNextTicketResult {

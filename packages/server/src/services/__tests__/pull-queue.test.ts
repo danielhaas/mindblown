@@ -501,6 +501,23 @@ describe('empty-brief guard', () => {
   });
 });
 
+describe('human-only guard (#266)', () => {
+  it('tickets tagged for a person are never ranked, reported with their tag, and not lumped with needs-brief', () => {
+    const ok = makeNode({ id: 'ok' });
+    const human = makeNode({ id: 'human', tags: ['bug', 'needs-human'] });
+    const skip = makeNode({ id: 'skip', tags: ['Kira-Skip'] }); // case-insensitive
+    const bare = makeNode({ id: 'bare', description: null, tags: ['needs-daniel-input'] });
+    const d = select([ok, human, skip, bare]);
+    expect(d.ranked.map((n) => n.id)).toEqual(['ok']);
+    expect(d.humanOnly.map((h) => [h.node.id, h.tag]).sort()).toEqual([
+      ['bare', 'needs-daniel-input'],
+      ['human', 'needs-human'],
+      ['skip', 'Kira-Skip'],
+    ]);
+    expect(d.skipped).toEqual([]); // a human-only ticket is not also tagged needs-brief
+  });
+});
+
 // ── Profile routing (#262) ─────────────────────────────────────────
 //
 // A configured profilePolicy FILTERS the gated ready set by the puller's

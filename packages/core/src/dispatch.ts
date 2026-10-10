@@ -178,6 +178,21 @@ export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable:
   return { pullable, nodeMap };
 }
 
+/**
+ * Tags that mark a ticket as NOT agent-actionable (#266) — the pre-Leidang
+ * Kira dispatcher's SKIP_LABELS plus `needs-human`. A ticket carrying one
+ * is never granted by get_next_ticket: it needs a person (a token scope, a
+ * decision, credentials), and every worker turn spent on it came back
+ * blocked. Case-insensitive.
+ */
+export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review'] as const;
+
+/** The skip tag a node carries, or null — the first match, as written on the node. */
+export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
+  const skip = new Set<string>(DISPATCH_SKIP_TAGS);
+  return node.tags.find((t) => skip.has(t.toLowerCase())) ?? null;
+}
+
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
 
 export interface DispatchQueueSnapshot {
@@ -196,6 +211,8 @@ export interface DispatchQueueSnapshot {
   needsBrief: number;
   /** Grantable (inGate) tickets without an effort estimate. */
   unestimated: number;
+  /** Pullable, inside the gate, but tagged for a human (DISPATCH_SKIP_TAGS) — never granted. */
+  humanOnly: number;
   /**
    * Pullable tickets with NO effective version while the gate fences on a
    * version — invisible to the fleet until someone versions them. The
@@ -231,7 +248,9 @@ export function dispatchQueueSnapshot(
   const cap = Math.max(0, Math.floor(opts.cap));
   const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
-  const gated = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
+  // Human-only tickets (#266) are inside the gate but never granted.
+  const gated = gatedAll.filter((n) => dispatchSkipTag(n) === null);
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = opts.gate.some((g) => parseGateEntry(g).kind === 'version');
   const unversionedOutsideGate = gateHasVersion
@@ -252,6 +271,7 @@ export function dispatchQueueSnapshot(
     inGate: inGate.length,
     needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
+    humanOnly: gatedAll.length - gated.length,
     unversionedOutsideGate,
     unknownGateEntries,
     inGateIds: inGate.map((n) => n.id),

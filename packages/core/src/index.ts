@@ -127,6 +127,8 @@ export {
   matchesDispatchGate,
   pullableNodes,
   dispatchQueueSnapshot,
+  dispatchSkipTag,
+  DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
   planUnblock,
 } from './dispatch.js';
