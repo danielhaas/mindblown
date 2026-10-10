@@ -44,6 +44,7 @@ import type { MapSummary } from './api.js';
 import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.js';
 import { DigestView } from './DigestView.js';
 import { CockpitView } from './CockpitView.js';
+import { PaceStrip } from './PaceStrip.js';
 import { FleetView } from './FleetView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 
@@ -2393,13 +2394,13 @@ export function App() {
           {activeView === 'cockpit' && <CockpitView />}
           {activeView === 'fleet' && <FleetView />}
           {activeView === 'mindmap' && <MindmapEditor />}
-          {activeView === 'kanban' && <KanbanView />}
+          {activeView === 'kanban' && (<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}><PaceStrip /><div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}><KanbanView /></div></div>)}
           {activeView === 'gantt' && <GanttView />}
           {activeView === 'releases' && <ReleasesView />}
           {activeView === 'requirements' && <RequirementsView />}
           {activeView === 'guide' && <GuideView />}
           {activeView === 'files' && <FilesView />}
-          {activeView === 'list' && <ListView />}
+          {activeView === 'list' && (<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}><PaceStrip /><div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}><ListView /></div></div>)}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}
           {activeView === 'workload' && <WorkloadView />}
