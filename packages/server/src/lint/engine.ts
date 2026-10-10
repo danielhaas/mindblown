@@ -695,6 +695,54 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     skipped: history.ok ? undefined : 'change history unavailable',
   });
 
+  // 18. duplicate-issue-link (#341) — two live nodes tracking the same
+  // issue double-count its work and show it twice in every list. Keyed on
+  // the issue id, or the URL for links imported without one. A node and its
+  // own ancestor sharing a link (an issue split into sub-tickets) is
+  // deliberate and not flagged; the oldest node of a group is the original.
+  const isAncestor = (a: Node, b: Node): boolean => {
+    for (let p = b.parentId ? nodeById.get(b.parentId) : undefined; p; p = p.parentId ? nodeById.get(p.parentId) : undefined) {
+      if (p.id === a.id) return true;
+    }
+    return false;
+  };
+  // Every link counts under its issue id AND its URL, so a URL-only import
+  // and a later id-carrying link to the same issue meet in one group.
+  const byIssue = new Map<string, Node[]>();
+  for (const n of nodes) {
+    const keys = new Set<string>();
+    for (const l of n.externalLinks ?? []) {
+      if (l.externalId) keys.add(l.externalId.trim());
+      const url = (l.url ?? '').trim().replace(/\/+$/, '');
+      if (url) keys.add(url);
+    }
+    for (const k of keys) byIssue.set(k, [...(byIssue.get(k) ?? []), n]);
+  }
+  const inScope = new Set(scopedNodes.map((n) => n.id));
+  const flagged = new Map<string, LintFinding>();
+  for (const [issue, group] of byIssue) {
+    // A node whose ancestor tracks the same issue is a sub-ticket of it, not
+    // a copy — whatever the creation order. The oldest of the rest is the
+    // original.
+    const tops = group.filter((n) => !group.some((o) => o.id !== n.id && isAncestor(o, n)));
+    if (tops.length < 2) continue;
+    const ordered = [...tops].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const original = ordered[0];
+    for (const copy of ordered.slice(1)) {
+      if (!inScope.has(copy.id) || flagged.has(copy.id)) continue;
+      flagged.set(copy.id, finding(copy, `same issue as "${original.text}" (${issue})`));
+    }
+  }
+  const duplicateFindings = [...flagged.values()];
+  rules.push({
+    ruleId: 'duplicate-issue-link',
+    severity: 'warn',
+    title: 'Two nodes track the same issue',
+    why: 'A copy counts the issue\'s work twice, shows it twice in every list and splits its progress between two places.',
+    fix: 'Delete the copy (it lands in the trash), or unlink the issue from it if it is really separate work.',
+    findings: duplicateFindings,
+  });
+
   // ── Apply dismissals ──
   const mutedRules = new Set(dismissals.filter((d) => d.nodeId == null).map((d) => d.ruleId));
   const nodeDismissals = new Set(

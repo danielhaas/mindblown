@@ -29,6 +29,7 @@ export const LINT_RULE_IDS = [
   'done-without-pr',
   'stale-blocked-reason',
   'claim-churn',
+  'duplicate-issue-link',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 
