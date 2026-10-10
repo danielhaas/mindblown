@@ -50,6 +50,7 @@ import {
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
+import { FORGE_REQUEST_TIMEOUT_MS } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
 export interface GiteaForgeOptions {
@@ -234,7 +235,9 @@ export class GiteaForge implements ForgeClient {
         ...(init.headers ?? {}),
       },
       body: init.body,
-      signal: init.signal,
+      // No forge call may hang a request handler or a sync tick forever
+      // (#312): callers that pass their own signal keep it.
+      signal: init.signal ?? AbortSignal.timeout(FORGE_REQUEST_TIMEOUT_MS),
     });
   }
 

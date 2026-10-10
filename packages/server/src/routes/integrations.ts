@@ -747,7 +747,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       // group/milestone metadata and just use the raw issue objects).
       let importedIssues;
       try {
-        importedIssues = await importGitHubIssues(owner, repo, forge, { includeAll: includeClosed });
+        // Read-only view: a list up to a minute old will do (#312).
+        importedIssues = await importGitHubIssues(owner, repo, forge, { includeAll: includeClosed, maxAgeMs: 60_000 });
       } catch (err) {
         return reply.status(400).send({
           error: {

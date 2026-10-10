@@ -14,3 +14,11 @@ export const GITHUB_ENDPOINT: ForgeEndpoint = {
   apiBaseUrl: GITHUB_API_BASE,
   webBaseUrl: GITHUB_WEB_BASE,
 };
+
+/**
+ * Upper bound for one forge HTTP call when the caller passes no signal of
+ * its own (#312). Generous — a 100-item issue page answers in well under a
+ * second — it only exists so a hung connection cannot stall a request
+ * handler or a sync tick indefinitely.
+ */
+export const FORGE_REQUEST_TIMEOUT_MS = 30_000;

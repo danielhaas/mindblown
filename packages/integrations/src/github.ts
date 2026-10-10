@@ -903,11 +903,82 @@ export async function importGitHubIssues(
   repoOwner: string,
   repoName: string,
   forge: ForgeClient,
-  options?: { includeAll?: boolean },
+  options?: {
+    includeAll?: boolean;
+    /**
+     * Accept a list fetched at most this long ago (#312). A full list is
+     * one API call per 100 issues — ~90 sequential calls on a large repo —
+     * and the read-only views that need it (sync overview, the triage
+     * orphan bucket) fetched it on every load, from the same hourly budget
+     * as the webhooks' work. Callers that ACT on the list (import,
+     * backfill) leave it unset and always fetch fresh. Concurrent callers
+     * share one in-flight fetch either way; failures are not kept.
+     */
+    maxAgeMs?: number;
+  },
+): Promise<ImportedIssue[]> {
+  const state = options?.includeAll ? 'all' : 'open';
+  const repoKey = `${forge.endpoint.apiBaseUrl}|${repoOwner}/${repoName}|${state}`;
+  const now = Date.now();
+  const hit = issueListCache.get(repoKey);
+  // The credential is part of the identity: a list is only ever served to
+  // the token that fetched it.
+  if (
+    hit &&
+    hit.token === forge.token &&
+    (hit.settledAt === null || (options?.maxAgeMs != null && now - hit.settledAt <= options.maxAgeMs))
+  ) {
+    return [...(await hit.list)];
+  }
+  // One entry per repo + state (a rotated App token replaces, never adds),
+  // and lists nobody asked for in a while are let go — full lists are large.
+  for (const [k, e] of issueListCache) {
+    if (e.settledAt !== null && now - e.settledAt > ISSUE_LIST_KEEP_MS) issueListCache.delete(k);
+  }
+  const entry: IssueListEntry = {
+    token: forge.token,
+    settledAt: null,
+    list: fetchImportedIssues(repoOwner, repoName, forge, state),
+  };
+  issueListCache.set(repoKey, entry);
+  try {
+    const list = await entry.list;
+    entry.settledAt = Date.now();
+    return [...list];
+  } catch (err) {
+    if (issueListCache.get(repoKey) === entry) issueListCache.delete(repoKey);
+    throw err;
+  }
+}
+
+interface IssueListEntry {
+  /** The credential that fetched it — the list is served to it alone. */
+  token: string;
+  /** null while the fetch is in flight. */
+  settledAt: number | null;
+  list: Promise<ImportedIssue[]>;
+}
+/**
+ * Last full list per (forge, repo, state) — #312. Bounded by the repos
+ * MindBlown is bound to, and an entry is dropped once nobody has refreshed
+ * it for ISSUE_LIST_KEEP_MS (above every caller's maxAgeMs).
+ */
+const issueListCache = new Map<string, IssueListEntry>();
+const ISSUE_LIST_KEEP_MS = 15 * 60_000;
+
+/** Test hook. */
+export function _clearIssueListCacheForTests(): void {
+  issueListCache.clear();
+}
+
+async function fetchImportedIssues(
+  repoOwner: string,
+  repoName: string,
+  forge: ForgeClient,
+  state: 'open' | 'all',
 ): Promise<ImportedIssue[]> {
   const issues: GitHubIssue[] = [];
   const perPage = 100;
-  const state = options?.includeAll ? 'all' : 'open';
 
   // Paginate by following `Link: rel="next"` — see paginateGitHub. The
   // hand-rolled `page++` this used to run hits GitHub's 422 depth limit

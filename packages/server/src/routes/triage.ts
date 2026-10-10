@@ -590,11 +590,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           orphansError = 'No issue tracker (GitHub or Gitea) is connected to this map — orphan bucket skipped';
         } else {
           try {
+            // Fetched on every triage-view load — a list up to a minute
+            // old will do (#312).
             const imported = await importGitHubIssues(
               ghCtx.owner,
               ghCtx.repo,
               ghCtx.forge,
-              { includeAll: true },
+              { includeAll: true, maxAgeMs: 60_000 },
             );
             // Build the set of externalIds already on a node in this
             // map (any node with a github externalLink, deleted or not

@@ -25,7 +25,7 @@ import {
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
-import { GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
+import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
 export { GITHUB_API_BASE, GITHUB_WEB_BASE, GITHUB_ENDPOINT } from './constants.js';
@@ -80,7 +80,9 @@ export class GitHubForge implements ForgeClient {
         ...(init.headers ?? {}),
       },
       body: init.body,
-      signal: init.signal,
+      // No forge call may hang a request handler or a sync tick forever
+      // (#312): callers that pass their own signal keep it.
+      signal: init.signal ?? AbortSignal.timeout(FORGE_REQUEST_TIMEOUT_MS),
     });
   }
 
