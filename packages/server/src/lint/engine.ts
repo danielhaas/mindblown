@@ -16,6 +16,7 @@ import {
   type LintActionId,
   type LintRuleId,
   type Node,
+  effectiveVersionId,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -215,8 +216,12 @@ export function scopeLeaves(
     scopedNodes = nodes;
   }
 
-  // A leaf is in scope when it OR any ancestor carries the tag.
+  // Version: the EFFECTIVE version — the node's own, else the nearest
+  // ancestor's (#357): a node with its own version leaves its ancestors'
+  // scope, as in search_nodes and get_schedule. Sprint: the node OR any
+  // ancestor carries it (unchanged).
   const inheritsTag = (leaf: Node, field: 'versionId' | 'cycleId', value: string): boolean => {
+    if (field === 'versionId') return effectiveVersionId(leaf.id, nodeById) === value;
     let cur: Node | undefined = leaf;
     while (cur) {
       if (cur[field] === value) return true;

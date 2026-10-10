@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -1535,6 +1535,7 @@ server.tool(
     try {
       const data = await api.getMap(mapId);
       const leaves = data.nodes.filter((n) => (n.childrenIds?.length ?? 0) === 0);
+      const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
       const today = new Date().toISOString().slice(0, 10);
 
       // Slipped versions: targetDate < today AND any contributing leaf incomplete
@@ -1543,7 +1544,8 @@ server.tool(
       for (const v of versions) {
         if (!v.targetDate) continue;
         if (v.targetDate.slice(0, 10) >= today) continue;
-        const contributing = leaves.filter((l) => l.versionId === v.id && (l.percentComplete ?? 0) < 100);
+        // Effective version, inherited from the nearest tagged ancestor (#357).
+        const contributing = leaves.filter((l) => effectiveVersionId(l.id, nodeById) === v.id && (l.percentComplete ?? 0) < 100);
         if (contributing.length > 0) {
           slippedVersions.push({
             name: v.name,
@@ -2754,10 +2756,10 @@ server.tool(
   },
   async ({ mapId, nodeId, versionId }) => {
     try {
-      const effectiveVersionId = versionId === '' ? null : versionId;
-      await api.updateNode(mapId, nodeId, { versionId: effectiveVersionId });
-      if (effectiveVersionId) {
-        return toolResult(`Assigned node ${nodeId} to version ${effectiveVersionId}.`);
+      const nextVersionId = versionId === '' ? null : versionId;
+      await api.updateNode(mapId, nodeId, { versionId: nextVersionId });
+      if (nextVersionId) {
+        return toolResult(`Assigned node ${nodeId} to version ${nextVersionId}.`);
       } else {
         return toolResult(`Unassigned node ${nodeId} from its version.`);
       }
@@ -2776,17 +2778,17 @@ server.tool(
     nodeIds: z.array(z.string()).describe('Array of node IDs to assign'),
   },
   async ({ mapId, versionId, nodeIds }) => {
-    const effectiveVersionId = versionId === '' ? null : versionId;
+    const nextVersionId = versionId === '' ? null : versionId;
     const results: string[] = [];
     for (const nodeId of nodeIds) {
       try {
-        await api.updateNode(mapId, nodeId, { versionId: effectiveVersionId });
+        await api.updateNode(mapId, nodeId, { versionId: nextVersionId });
         results.push(`${nodeId}: OK`);
       } catch (err) {
         results.push(`${nodeId}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    const action = effectiveVersionId ? `assigned to version ${effectiveVersionId}` : 'unassigned from version';
+    const action = nextVersionId ? `assigned to version ${nextVersionId}` : 'unassigned from version';
     return toolResult(`${results.filter(r => r.includes('OK')).length}/${nodeIds.length} nodes ${action}.\n${results.join('\n')}`);
   },
 );

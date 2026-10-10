@@ -161,3 +161,16 @@ export function effectiveVersionId<T extends VersionMembershipNode>(
   }
   return null;
 }
+
+/**
+ * The ids of the nodes whose effective version is `versionId` — the
+ * version scope of a schedule or report (#357). A node that sets its own
+ * version leaves its ancestors' version, so it is out of their scope.
+ */
+export function nodesInVersion<T extends VersionMembershipNode & { id: string }>(
+  nodes: T[],
+  versionId: string,
+): Set<string> {
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  return new Set(nodes.filter((n) => effectiveVersionId(n.id, nodeById) === versionId).map((n) => n.id));
+}

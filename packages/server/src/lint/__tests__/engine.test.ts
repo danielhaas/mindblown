@@ -320,6 +320,17 @@ describe('computePlanLint — scoping and dismissals', () => {
     expect(rule(report, 'unestimated-leaf').findings.map((f) => f.nodeId).sort()).toEqual(['a1', 'a2']);
   });
 
+  it('versionId scopes by the EFFECTIVE version — a node with its own version leaves the ancestor\'s scope (#357)', () => {
+    const nodes = [
+      makeNode({ id: 'root', childrenIds: ['epic'] }),
+      makeNode({ id: 'epic', parentId: 'root', versionId: 'v1', childrenIds: ['in1', 'in2'] }),
+      makeNode({ id: 'in1', parentId: 'epic' }),
+      makeNode({ id: 'in2', parentId: 'epic', versionId: 'v2' }),
+    ];
+    expect(rule(lint(nodes, { versionId: 'v1' }), 'unestimated-leaf').findings.map((f) => f.nodeId)).toEqual(['in1']);
+    expect(rule(lint(nodes, { versionId: 'v2' }), 'unestimated-leaf').findings.map((f) => f.nodeId)).toEqual(['in2']);
+  });
+
   it('cycleId scopes with ancestor inheritance', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['epic', 'other'] }),
