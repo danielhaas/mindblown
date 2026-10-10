@@ -18,8 +18,9 @@ export interface WebhookHeaders {
   /**
    * Gitea's precise event type (`X-Gitea-Event-Type`), e.g.
    * `pull_request_review_approved` where the event name is only
-   * `pull_request_approved` — and a review comment shares its event name
-   * `pull_request_comment` with a plain PR comment. Undefined for GitHub.
+   * `pull_request_approved`; a review comment's event name is the generic
+   * `pull_request_comment`, so only the type says "review". Undefined for
+   * GitHub.
    */
   eventType: string | undefined;
 }

@@ -176,8 +176,9 @@ const GITEA_REVIEW_STATES: Record<string, string> = {
  * A Gitea review delivery in GitHub's shape: event `pull_request_review`,
  * action `submitted`, `review: { user, state, body, submitted_at }` — what
  * the review handler reads. Keyed on `X-Gitea-Event-Type`, because the
- * event name of a review comment (`pull_request_comment`) is shared with
- * a plain PR comment. Null for anything that is not a review.
+ * event name of a review comment is the generic `pull_request_comment`;
+ * only the type (and action `reviewed`) says "review". Null for anything
+ * that is not a review.
  */
 export function normalizeGiteaReviewDelivery(
   eventType: string | undefined,
