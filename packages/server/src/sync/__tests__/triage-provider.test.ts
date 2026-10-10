@@ -163,6 +163,21 @@ describe('resolveTriageProvider', () => {
   });
 });
 
+describe('triageModelFor with TRIAGE_MODEL set', () => {
+  it('a Claude TRIAGE_MODEL applies to Claude only — the local backend keeps its own model', async () => {
+    vi.resetModules();
+    vi.stubEnv('TRIAGE_MODEL', 'claude-opus-4-7');
+    try {
+      const mod = await import('../triage.js');
+      expect(mod.triageModelFor({ name: 'anthropic', model: 'claude-haiku-4-5' })).toBe('claude-opus-4-7');
+      expect(mod.triageModelFor({ name: 'ollama', model: 'qwen/qwen3.8-27b' })).toBe('qwen/qwen3.8-27b');
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+});
+
 describe('triageModelFor', () => {
   it('uses Haiku on Claude and the backend default locally (no TRIAGE_MODEL in this test env)', () => {
     expect(triageModelFor({ name: 'anthropic', model: 'claude-opus-4-7' })).toBe(TRIAGE_MODEL);

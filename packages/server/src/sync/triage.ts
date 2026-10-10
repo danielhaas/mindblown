@@ -116,9 +116,6 @@ export const TRIAGE_PROVIDER: AiProviderPreference = (() => {
   return raw === 'anthropic' || raw === 'ollama' ? raw : 'auto';
 })();
 
-/** Explicit `TRIAGE_MODEL` from env, applied to whichever backend runs. */
-const TRIAGE_MODEL_OVERRIDE = process.env.TRIAGE_MODEL;
-
 /**
  * Resolve the backend for one triage call. Exported for tests and for
  * the re-triage routes, which want the same answer the ingest path gets.
@@ -137,9 +134,14 @@ export async function resolveTriageProvider(
   return resolveProvider();
 }
 
-/** Model for a given backend: env override, else Haiku on Claude, else the backend's own default. */
+/**
+ * Model for a given backend: on Claude `TRIAGE_MODEL` (env, else Haiku);
+ * on the local backend its own `AI_MODEL`. `TRIAGE_MODEL` names a Claude
+ * model — applied to the local backend it asked LM Studio / vLLM for
+ * `claude-opus-4-7`, so every triage on an aiPolicy `local` map failed
+ * while the Claude maps worked.
+ */
 export function triageModelFor(provider: Pick<ChatProvider, 'name' | 'model'>): string {
-  if (TRIAGE_MODEL_OVERRIDE) return TRIAGE_MODEL_OVERRIDE;
   return provider.name === 'anthropic' ? TRIAGE_MODEL : provider.model;
 }
 /**
