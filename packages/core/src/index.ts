@@ -95,7 +95,7 @@ export { LINT_RULE_IDS, LINT_ACTIONS, LINT_ACTION_IDS, LINT_FIX_ACTIONS } from '
 export type { LintRuleId, LintActionId } from './lint.js';
 
 // Release ordering
-export { compareVersions, effectiveVersionId, findVersionOrderInversions } from './versions.js';
+export { compareVersions, effectiveVersionId, findVersionOrderInversions, nodesInVersion } from './versions.js';
 // Per-map AI policy (#375)
 export { AI_POLICIES, isAiPolicy } from './types.js';
 export type { VersionOrderFields, VersionOrderInversion, VersionMembershipNode } from './versions.js';

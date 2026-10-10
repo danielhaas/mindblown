@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compareVersions, findVersionOrderInversions } from '../versions.js';
+import { compareVersions, findVersionOrderInversions, nodesInVersion } from '../versions.js';
 
 function v(name: string, targetDate: string | null, sortOrder = 0) {
   return { name, targetDate, sortOrder };
@@ -127,5 +127,25 @@ describe('findVersionOrderInversions', () => {
       v('V2', '2026-10-15'),
     ]);
     expect(out.map((i) => `${i.a}<${i.b}`).sort()).toEqual(['V1.5<V1', 'V2<V1']);
+  });
+});
+
+describe('nodesInVersion (#357)', () => {
+  // root (V-cutover) → wochenplan (inherits) → a (inherits), b (own: V-abnahme) → b1 (inherits V-abnahme)
+  const nodes = [
+    { id: 'root', parentId: null, versionId: 'V-cutover' },
+    { id: 'wochenplan', parentId: 'root', versionId: null },
+    { id: 'a', parentId: 'wochenplan', versionId: null },
+    { id: 'b', parentId: 'wochenplan', versionId: 'V-abnahme' },
+    { id: 'b1', parentId: 'b', versionId: null },
+  ];
+
+  it('a node overriding the version leaves its ancestors\' scope, with its subtree', () => {
+    expect([...nodesInVersion(nodes, 'V-cutover')].sort()).toEqual(['a', 'root', 'wochenplan']);
+    expect([...nodesInVersion(nodes, 'V-abnahme')].sort()).toEqual(['b', 'b1']);
+  });
+
+  it('a version nobody carries scopes nothing', () => {
+    expect(nodesInVersion(nodes, 'V-other').size).toBe(0);
   });
 });

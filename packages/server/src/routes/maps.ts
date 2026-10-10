@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -631,19 +631,13 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       type: string;
     }> = [];
     if (versionId) {
-      // A node is in scope if itself OR any ancestor has the matching versionId.
+      // A node is in scope when its EFFECTIVE version is this one — its own
+      // versionId, else the nearest ancestor's (#357). Walking up to *any*
+      // ancestor with the version kept nodes that override it with their
+      // own version, so a version-scoped landing date counted another
+      // release's work. Same rule as search_nodes and the dispatch gate.
       const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-      const inScope = new Set<string>();
-      for (const n of data.nodes) {
-        let cur: typeof n | undefined = n;
-        while (cur) {
-          if (cur.versionId === versionId) {
-            inScope.add(n.id);
-            break;
-          }
-          cur = cur.parentId ? nodeById.get(cur.parentId) : undefined;
-        }
-      }
+      const inScope = nodesInVersion(data.nodes, versionId);
       // Prune dependencies that cross the version boundary; record them.
       scopedNodes = data.nodes
         .filter((n) => inScope.has(n.id))
