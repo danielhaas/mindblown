@@ -152,7 +152,7 @@ export const updateNodeTool = defineTool({
       .literal(true)
       .optional()
       .describe(
-        "Repair escape for the node's PR mirror (shown as `PR #N open` in get_map). The mirror is kept by forge webhooks; when a `pull_request.closed` delivery was lost it can claim a PR is still open that is long merged or closed — that holds the issue close and lists a phantom PR. `true` drops the mirror. Only for that case: on a node whose PR really is in flight, clearing it disarms the gate that keeps the issue open until the merge. The next event of a still-open PR rebuilds it.",
+        "Repair escape for the node's PR mirror (shown as `PR #N open` in get_map). The mirror is kept by forge webhooks; when a `pull_request.closed` delivery was lost it can claim a PR is still open that is long merged or closed — that holds the issue close and lists a phantom PR. `true` drops the mirror and nothing else: a done node's issue is then closed by the next status/progress write (re-set status to done to trigger it), through the normal landing check. Only for that case: on a node whose PR really is in flight, clearing it disarms the gate that keeps the issue open until the merge. The next event of a still-open PR rebuilds it.",
       ),
     autoProgress: z
       .enum(['off', 'children'])

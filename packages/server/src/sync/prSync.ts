@@ -339,6 +339,14 @@ export async function handlePrClosed(
   pr: GhPrPayload,
   defaultBranch: string | null = null,
   closedAt: string | null = null,
+  /**
+   * Rewrite only this node's mirror. The catch-up replays a missed close
+   * per candidate node; a sibling referenced by the same PR (another
+   * `Closes #N`, or a second node on the same issue) must keep its mirror
+   * until its own turn settles it — clearing a done sibling's mirror here
+   * would skip its close check and strand it done with its issue open.
+   */
+  onlyNodeId: string | null = null,
 ): Promise<number> {
   const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
@@ -352,6 +360,7 @@ export async function handlePrClosed(
 
   let updated = 0;
   for (const ref of refs) {
+    if (onlyNodeId != null && ref.id !== onlyNodeId) continue;
     const cur = ref.linkedPr;
     if (!cur || cur.number !== pr.number) continue;
     if (mergedToDefault) {

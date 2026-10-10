@@ -452,8 +452,12 @@ export async function resolveHeldCloses(
   for (const [id, at] of heldCloseCheckedAt) {
     if (now - at >= HELD_CLOSE_RECHECK_MS) heldCloseCheckedAt.delete(id);
   }
-  const candidates = (await nodeDb.findHeldCloseCandidates(repoFullName, budget * 5))
+  // Recently-asked nodes are excluded BEFORE the budget cut, done nodes
+  // first: idle in-review PRs on not-done nodes (#308) must not crowd a
+  // stuck done node out of every tick.
+  const candidates = (await nodeDb.findHeldCloseCandidates(repoFullName))
     .filter((c) => !heldCloseCheckedAt.has(c.nodeId))
+    .sort((a, b) => Number(b.done) - Number(a.done))
     .slice(0, budget);
   let checked = 0;
   let closed = 0;
@@ -477,6 +481,7 @@ export async function resolveHeldCloses(
           { number: pr.number, title: pr.title, body: pr.body, state: 'closed', merged, base: { ref: pr.base.ref } } as GhPrPayload,
           defaultBranch,
           closedAt,
+          c.nodeId, // this candidate's mirror only — siblings are settled on their own turn
         );
 
       // One probe answers the default branch, a replacement PR in flight

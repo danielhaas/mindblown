@@ -1156,7 +1156,7 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
     forgePr = pr({});
     vi.mocked(nodeDb.getNode).mockResolvedValue(doneNode(mirror('closed', T_DEATH)) as never);
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 1, mirrorsCleared: 0 });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH, 'n1');
     expect(nodeDb.updateNode).toHaveBeenCalledWith('n1', expect.objectContaining({ status: 'in_progress' }));
     expect(updateGitHubIssue).not.toHaveBeenCalled();
   });
@@ -1187,7 +1187,7 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
       externalLinks: [expect.objectContaining({ mergeCommitSha: 'abc123', mergedPrNumber: 9 })],
     });
     expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'abc123' });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH, 'n1');
     expect(vi.mocked(updateGitHubIssue).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(handlePrClosed).mock.invocationCallOrder[0]);
   });
 
@@ -1210,7 +1210,7 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
     vi.mocked(updateGitHubIssue).mockResolvedValue({ stateAction: 'closed_completed', holdReason: null } as never);
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 1, rolledBack: 0, mirrorsCleared: 0 });
     expect(vi.mocked(updateGitHubIssue).mock.calls[0][1]).toMatchObject({ mergeCommitSha: 'def456', mergedPrNumber: 12 });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH, 'n1');
   });
 
   it('merged without a sha on the PR: the landing probe\'s sha is the evidence', async () => {
@@ -1228,7 +1228,7 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
   it('merged to a release branch: the mirror records it, nothing rolled back, nothing closed', async () => {
     forgePr = pr({ merged: true, merged_at: T_DEATH, base: { ref: 'release/v1' } });
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0, mirrorsCleared: 0 });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH, 'n1');
     expect(nodeDb.updateNode).not.toHaveBeenCalled();
     expect(updateGitHubIssue).not.toHaveBeenCalled();
   });
@@ -1246,7 +1246,7 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
     ]);
     forgePr = pr({});
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0, mirrorsCleared: 1 });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ number: 9, merged: false }), 'main', T_DEATH, 'n1');
     expect(nodeDb.updateNode).not.toHaveBeenCalled();
     expect(updateGitHubIssue).not.toHaveBeenCalled();
   });
@@ -1257,8 +1257,23 @@ describe('resolveHeldCloses (#423) — a PR close the webhook never delivered', 
     ]);
     forgePr = pr({ merged: true, merged_at: T_DEATH, merge_commit_sha: 'abc123' });
     expect(await resolveHeldCloses(makeTarget('o', 'r'), forge)).toEqual({ checked: 1, closed: 0, rolledBack: 0, mirrorsCleared: 1 });
-    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH);
+    expect(handlePrClosed).toHaveBeenCalledWith('o/r', expect.objectContaining({ merged: true }), 'main', T_DEATH, 'n1');
     expect(updateGitHubIssue).not.toHaveBeenCalled();
+  });
+
+  it('done nodes are asked first, and recently-asked nodes do not eat the budget (#308)', async () => {
+    forgePr = pr({ state: 'open', closed_at: null });
+    vi.mocked(nodeDb.findHeldCloseCandidates).mockResolvedValue([
+      { nodeId: 'idle1', externalId: 'o/r#1', prNumber: 1, mirrorSyncedAt: '2026-01-01T00:00:00Z', done: false },
+      { nodeId: 'idle2', externalId: 'o/r#2', prNumber: 2, mirrorSyncedAt: '2026-01-02T00:00:00Z', done: false },
+      { nodeId: 'stuck', externalId: 'o/r#5', prNumber: 9, mirrorSyncedAt: '2026-09-01T00:00:00Z', done: true },
+    ]);
+    const t0 = Date.parse('2026-10-10T00:00:00Z');
+    await resolveHeldCloses(makeTarget('o', 'r'), forge, 1, t0);
+    expect(vi.mocked(forge.getPullRequest).mock.calls.map((c) => c[2])).toEqual([9]);
+    await resolveHeldCloses(makeTarget('o', 'r'), forge, 1, t0 + 5 * 60_000);
+    await resolveHeldCloses(makeTarget('o', 'r'), forge, 1, t0 + 10 * 60_000);
+    expect(vi.mocked(forge.getPullRequest).mock.calls.map((c) => c[2])).toEqual([9, 1, 2]);
   });
 
   it('a forge error on one node is logged and the pass goes on', async () => {

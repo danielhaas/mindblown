@@ -83,6 +83,9 @@ function toNodeWithComputed(
       syncEnabled: l.syncEnabled,
       lastSyncedAt: l.lastSyncedAt,
     })),
+    linkedPr: node.linkedPr
+      ? { number: node.linkedPr.number, repo: node.linkedPr.repo, state: node.linkedPr.state, draft: node.linkedPr.draft }
+      : null,
     collapsed: node.collapsed,
     createdAt: toIsoString((node as unknown as { createdAt: unknown }).createdAt),
     updatedAt: toIsoString((node as unknown as { updatedAt: unknown }).updatedAt),

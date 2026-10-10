@@ -1052,11 +1052,11 @@ export async function findPrematureCloseCandidates(
  * arrived (the issue close stays held forever). Not-done nodes with any
  * synced link to the repo (#308): a lost delivery leaves a phantom open
  * PR that `/api/prs/open` keeps reporting. The caller tells the cases
- * apart by asking the forge. Oldest mirror first, at most `limit`.
+ * apart by asking the forge. Oldest mirror first; the caller applies its
+ * own recheck window and budget.
  */
 export async function findHeldCloseCandidates(
   repoFullName: string,
-  limit: number,
 ): Promise<Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null; done: boolean }>> {
   const rows = await db
     .select({
@@ -1095,7 +1095,7 @@ export async function findHeldCloseCandidates(
     out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, mirrorSyncedAt: pr.lastSyncedAt ?? null, done: looksDone });
   }
   out.sort((a, b) => (a.mirrorSyncedAt ?? '').localeCompare(b.mirrorSyncedAt ?? ''));
-  return out.slice(0, limit);
+  return out;
 }
 
 /**
