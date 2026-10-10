@@ -324,9 +324,13 @@ function Column({
 
   // Done: Today / This week / Earlier (collapsed by default) — the history
   // stays one click away instead of burying this week's work.
+  // Keyed on the local date too, so a board left open overnight moves
+  // yesterday's cards out of "Today" on the next render.
+  const dayKey = new Date().toDateString();
   const doneGroups = useMemo(
     () => (isDone ? groupDone(column.cards, (c) => c.node.completedAt) : null),
-    [isDone, column.cards],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isDone, column.cards, dayKey],
   );
   const [openGroups, setOpenGroups] = useState<Record<DoneGroupKey, boolean>>({
     today: true,
@@ -667,6 +671,23 @@ export function KanbanView() {
       const node = nodes[nodeId];
       if (node && node.status !== newStatus) {
         updateNode(nodeId, { status: newStatus });
+        // The server stamps completedAt and broadcasts it a moment later;
+        // mirror it locally now so a card dropped on Done lands under
+        // "Today" instead of vanishing into the collapsed "Earlier" group
+        // (and leaves the done groups when dragged back out).
+        const toDone = statusColumns.find((s) => s.id === columnId)?.category === 'done';
+        const fromDone = statusColumns.find(
+          (s) => s.id === node.status || s.name.toLowerCase() === (node.status ?? '').toLowerCase(),
+        )?.category === 'done';
+        if (toDone !== fromDone) {
+          const current = useMindmapStore.getState().nodes[nodeId];
+          if (current) {
+            useMindmapStore.getState().applyServerNode({
+              ...current,
+              completedAt: toDone ? new Date().toISOString() : null,
+            });
+          }
+        }
       }
     },
     [statusColumns, nodes, updateNode],

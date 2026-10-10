@@ -11,6 +11,8 @@
  * Within a group the most recently finished card comes first.
  */
 
+import { BLOCKED_TAG } from '@mindblown/core';
+
 export type DoneGroupKey = 'today' | 'week' | 'earlier';
 
 export interface DoneGroup<T> {
@@ -63,16 +65,16 @@ interface BlockableNode {
 
 /**
  * Explicitly blocked: a blocked reason, the `blocked` tag the fleet sets
- * when it parks a ticket, or a status named `blocked` — the "manually
- * blocked" set of the Blocked panel. Waiting on unfinished dependencies is
- * not this (the dependency arrows already show it). Done work is never
- * shown as blocked.
+ * when it parks a ticket, or a status named `blocked` — the three markers
+ * the fleet's park/unblock path writes and clears (core `planUnblock`).
+ * Waiting on unfinished dependencies is not this (the dependency arrows
+ * already show it). Done work is never shown as blocked.
  */
 export function isBlockedCard(node: BlockableNode, isDone: boolean): boolean {
   if (isDone) return false;
   return (
     (node.blockedReason ?? '').trim() !== '' ||
-    node.tags.includes('blocked') ||
+    node.tags.includes(BLOCKED_TAG) ||
     (node.status ?? '').toLowerCase() === 'blocked'
   );
 }

@@ -34,11 +34,12 @@ interface Column {
 
 export function MobileKanbanView({ nodes, map, onSelect }: Props) {
   // Done columns: Today / This week / Earlier (collapsed) — see kanban.ts.
-  const [openGroups, setOpenGroups] = useState<Record<DoneGroupKey, boolean>>({
-    today: true,
-    week: true,
-    earlier: false,
-  });
+  // Per column (a map can have several done-category statuses); "Earlier"
+  // starts collapsed.
+  const [openGroups, setOpenGroups] = useState<Record<string, Partial<Record<DoneGroupKey, boolean>>>>({});
+  const isOpen = (col: string, key: DoneGroupKey): boolean => openGroups[col]?.[key] ?? key !== 'earlier';
+  const toggle = (col: string, key: DoneGroupKey) =>
+    setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [key]: !isOpen(col, key) } }));
   const breadcrumbs = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
     const out = new Map<string, string>();
@@ -111,20 +112,20 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                   <button
                     type="button"
                     className="mb-kanban-group"
-                    aria-expanded={openGroups[g.key]}
-                    onClick={() => setOpenGroups((o) => ({ ...o, [g.key!]: !o[g.key!] }))}
+                    aria-expanded={isOpen(col.key, g.key)}
+                    onClick={() => toggle(col.key, g.key!)}
                     style={{
                       width: '100%', display: 'flex', gap: 6, padding: '6px 4px', background: 'none',
                       border: 'none', borderBottom: '1px solid #e2e8f0', fontSize: 11, fontWeight: 600,
                       color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left',
                     }}
                   >
-                    <span>{openGroups[g.key] ? '▾' : '▸'}</span>
+                    <span>{isOpen(col.key, g.key) ? '▾' : '▸'}</span>
                     <span style={{ flex: 1 }}>{g.label}</span>
                     <span style={{ color: '#94a3b8' }}>{g.items.length}</span>
                   </button>
                 )}
-                {(!g.key || openGroups[g.key]) && g.items.map((n) => {
+                {(!g.key || isOpen(col.key, g.key)) && g.items.map((n) => {
               const pct = Math.round(n.computedProgress ?? 0);
               const blocked = isBlockedCard(n, col.status?.category === 'done');
               return (
