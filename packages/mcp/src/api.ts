@@ -653,6 +653,8 @@ export function connectGitHubRepo(
   token: string,
   webhookSecret?: string,
   forge?: { kind?: 'github' | 'gitea'; apiBaseUrl?: string; webBaseUrl?: string },
+  /** The map that plans this repo (#421). */
+  mapId?: string,
 ): Promise<{
   id: string;
   provider: string;
@@ -664,7 +666,7 @@ export function connectGitHubRepo(
 }> {
   return request('/api/integrations/github/connect', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret, ...(forge ?? {}) }),
+    body: JSON.stringify({ workspaceId, owner, repo, token, webhookSecret, mapId, ...(forge ?? {}) }),
   });
 }
 

@@ -102,6 +102,33 @@ export async function forgeFromIntegration(row: { id?: string; provider: string;
   }
 }
 
+/**
+ * Can `mapId` take the workspace's PAT/OAuth binding? It must belong to
+ * the workspace and not be bound through the GitHub App (that binding has
+ * its own repo and token). Checked BEFORE a connect stores anything.
+ */
+export async function mapBindableToWorkspaceForge(
+  mapId: string,
+  workspaceId: string,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const [map] = await db
+    .select({ workspaceId: maps.workspaceId, githubInstallationId: maps.githubInstallationId })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!map || map.workspaceId !== workspaceId) return { ok: false, reason: `map ${mapId} is not in workspace ${workspaceId}` };
+  if (map.githubInstallationId) return { ok: false, reason: 'this map is bound through the GitHub App; disconnect it there first' };
+  return { ok: true };
+}
+
+/**
+ * Record on the map which repo it plans (#421): the workspace row brings
+ * credentials and endpoint, the map's `github_repo_owner/name` say whether
+ * that row binds it. Without this a connect binds no map at all.
+ */
+export async function bindMapToForgeRepo(mapId: string, owner: string, repo: string): Promise<void> {
+  await db.update(maps).set({ githubRepoOwner: owner, githubRepoName: repo }).where(eq(maps.id, mapId));
+}
+
 /** Build a github.com client from a freshly minted App installation token. */
 export async function forgeFromInstallation(installationId: string): Promise<ForgeClient> {
   const token = await mintInstallationToken(installationId);

@@ -4,7 +4,7 @@ import { db } from '../db/connection.js';
 import { integrations, versions, nodes, triageDecisions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
 import { notDeleted } from '../db/nodes.js';
-import { guardMapRoutes } from '../lib/mapAccess.js';
+import { guardMapRoutes, requireMapAccess } from '../lib/mapAccess.js';
 import * as events from '../db/events.js';
 import {
   getGitHubIssue,
@@ -57,9 +57,11 @@ import {
   type GitHubMapContext as GitHubMapContextImpl,
 } from '../lib/githubContext.js';
 import {
+  bindMapToForgeRepo,
   forgeFromInstallation,
   forgeFromIntegration,
   isServableIntegrationConfig,
+  mapBindableToWorkspaceForge,
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
@@ -418,6 +420,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       kind?: string;
       apiBaseUrl?: string;
       webBaseUrl?: string;
+      /** The map that plans this repo (#421). Without it no map is bound. */
+      mapId?: string;
     };
 
     // Pointing the server at a self-hosted forge (any URL, fetched
@@ -463,6 +467,15 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    if (body.mapId) {
+      // Re-pointing a map's sync is an admin act on that map.
+      if (!(await requireMapAccess(req, reply, body.mapId, 'admin'))) return reply;
+      const bindable = await mapBindableToWorkspaceForge(body.mapId, body.workspaceId);
+      if (!bindable.ok) {
+        return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: bindable.reason } });
+      }
+    }
+
     // Upsert: check if integration already exists
     const existing = await getForgeIntegration(body.workspaceId);
 
@@ -499,12 +512,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       id = row.id;
     }
 
+    // The map the connect came from plans this repo (#421).
+    if (body.mapId) await bindMapToForgeRepo(body.mapId, body.owner, body.repo);
+
     // A Gitea repo gets its webhook right away (#386) — without it the
     // 5-minute poll is the only way back. Best effort: the connection
     // stands either way, the result tells the dialog what to show.
     const webhook = kind === 'gitea' ? await setUpWebhookAfterBind({ id, provider: kind, config }) : undefined;
 
-    return reply.status(existing ? 200 : 201).send({ id, provider: kind, enabled: true, ...(webhook ? { webhook } : {}) });
+    return reply.status(existing ? 200 : 201).send({
+      id,
+      provider: kind,
+      enabled: true,
+      boundMapId: body.mapId ?? null,
+      ...(webhook ? { webhook } : {}),
+    });
   });
 
   // ── POST /api/integrations/forge/test ──────────────────────────

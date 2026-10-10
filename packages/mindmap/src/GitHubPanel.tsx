@@ -490,8 +490,9 @@ export function GitHubSettingsDialog({
     setError(null);
     try {
       const [o, r] = giteaSelected.split('/');
-      const res = await api.bindGiteaRepo(workspaceId, o, r, webhookSecret.trim() || undefined);
+      const res = await api.bindGiteaRepo(workspaceId, o, r, webhookSecret.trim() || undefined, mapId);
       setGiteaBound(res.repo);
+      loadMap(mapId); // the map now names its repo (#421)
       setConnected(true);
       setOwner(o);
       setRepo(r);
@@ -716,8 +717,9 @@ export function GitHubSettingsDialog({
     setConnecting(true);
     setError(null);
     try {
-      await api.connectGitHub(workspaceId, ghToken, owner, repo, webhookSecret.trim() || undefined, forgeOptions());
+      await api.connectGitHub(workspaceId, ghToken, owner, repo, webhookSecret.trim() || undefined, forgeOptions(), mapId);
       setConnected(true);
+      loadMap(mapId); // the map now names its repo (#421)
     } catch (e: any) {
       setError(e.message ?? 'Failed to connect');
     } finally {
@@ -918,7 +920,7 @@ export function GitHubSettingsDialog({
               />
               <label htmlFor="github-auto-import" style={{ cursor: 'pointer', flex: 1 }}>
                 <div style={{ fontSize: 12, fontWeight: 600, color: '#1e293b' }}>
-                  Auto-import new GitHub issues
+                  Auto-import new {forge} issues
                 </div>
                 <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
                   New issues on {appRepoLabel} appear under the "{forge} Inbox" node

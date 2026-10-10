@@ -2841,7 +2841,7 @@ server.tool(
 
 toolWithAlias(
   'connect_forge_repo',
-  'Connect a GitHub or Gitea/Forgejo repository to a workspace. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
+  'Connect a GitHub or Gitea/Forgejo repository to a workspace and bind it to a map. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. Pass mapId: only maps bound to the repo sync with it (a map planning another repo, or none, stays untouched). A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',
   {
     workspaceId: z.string().describe('The workspace ID'),
     owner: z.string().describe('Repo owner (e.g. "danielhaas")'),
@@ -2851,11 +2851,13 @@ toolWithAlias(
     kind: z.enum(['github', 'gitea']).optional().describe('Forge kind; default "github". "gitea" also covers Forgejo.'),
     apiBaseUrl: z.string().optional().describe('Self-hosted instance URL (e.g. "https://git.example.com"); required for gitea, optional GHES API URL for github'),
     webBaseUrl: z.string().optional().describe('Web URL for issue links when it differs from apiBaseUrl'),
+    mapId: z.string().optional().describe('The map that plans this repo — it gets bound to it. Without it the connection is stored but no map syncs with the repo.'),
   },
-  async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl }) => {
+  async ({ workspaceId, owner, repo, token, webhookSecret, kind, apiBaseUrl, webBaseUrl, mapId }) => {
     try {
-      const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret, { kind, apiBaseUrl, webBaseUrl });
+      const result = await api.connectGitHubRepo(workspaceId, owner, repo, token, webhookSecret, { kind, apiBaseUrl, webBaseUrl }, mapId);
       const lines = [`Connected ${forgeName(result.provider)} repo ${owner}/${repo} to workspace ${workspaceId} (integration id: ${result.id}).`];
+      lines.push(mapId ? `Map ${mapId} is bound to ${owner}/${repo}.` : 'No map bound — pass mapId so a map syncs with this repo.');
       const hook = result.webhook;
       if (hook?.status === 'failed') {
         lines.push(
@@ -2895,7 +2897,7 @@ toolWithAlias(
         if (!token) {
           return toolError('owner/repo provided but GITHUB_TOKEN environment variable is not set. Either set GITHUB_TOKEN or use connect_forge_repo to configure the integration first.');
         }
-        await api.connectGitHubRepo(mapForConnect.workspaceId, owner, repo, token);
+        await api.connectGitHubRepo(mapForConnect.workspaceId, owner, repo, token, undefined, undefined, mapId);
       }
 
       const maps = await api.listMaps();

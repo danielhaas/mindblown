@@ -422,10 +422,12 @@ export function bindGiteaRepo(
   owner: string,
   repo: string,
   webhookSecret?: string,
+  /** The map that plans this repo (#421). */
+  mapId?: string,
 ): Promise<{ id: string; provider: string; enabled: boolean; repo: string }> {
   return request('/api/integrations/gitea/bind', {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, owner, repo, webhookSecret }),
+    body: JSON.stringify({ workspaceId, owner, repo, webhookSecret, mapId }),
   });
 }
 
@@ -468,10 +470,12 @@ export function connectGitHub(
   repo: string,
   webhookSecret?: string,
   forge?: ForgeConnectOptions,
+  /** The map that plans this repo (#421). */
+  mapId?: string,
 ): Promise<{ id: string; provider: string; enabled: boolean }> {
   return request(`/api/integrations/github/connect`, {
     method: 'POST',
-    body: JSON.stringify({ workspaceId, token, owner, repo, webhookSecret, ...(forge ?? {}) }),
+    body: JSON.stringify({ workspaceId, token, owner, repo, webhookSecret, mapId, ...(forge ?? {}) }),
   });
 }
 

@@ -208,14 +208,11 @@ export async function findNodesByExternalIds(
 
 /**
  * Returns every map that has `autoImportNewIssues=true` AND is bound to
- * the given `(owner, repo)`. Covers both binding flavours:
- *
- *   - GitHub App: `maps.githubRepoOwner` / `githubRepoName` set directly.
- *   - PAT integrations: `integrations.config` records `{ owner, repo }`
- *     at the workspace level; every map in that workspace that has
- *     `autoImportNewIssues=true` is treated as bound to the repo. (PAT
- *     integrations are global to a workspace — there's no per-map
- *     binding row to filter on.)
+ * the given `(owner, repo)`: the map's own `githubRepoOwner` /
+ * `githubRepoName` name it. That is the binding for both flavours — a
+ * GitHub App map sets them on install, a PAT/OAuth map on connect (#421).
+ * Before #421 every auto-import map of a PAT workspace was a target,
+ * whatever repo it planned, so one repo's issues landed in all of them.
  *
  * Deduplicated by mapId. Order is unspecified.
  */
@@ -225,9 +222,9 @@ export async function findIngestTargetMaps(
 ): Promise<MapTarget[]> {
   const targets = new Map<string, MapTarget>();
 
-  // (1) App-bound maps with the flag on. We pull triageEnabled in the
+  // Maps bound to the repo with the flag on. We pull triageEnabled in the
   // same SELECT so callers don't have to re-query it per issue.
-  const appMaps = await db
+  const bound = await db
     .select({
       id: maps.id,
       createdBy: maps.createdBy,
@@ -242,45 +239,12 @@ export async function findIngestTargetMaps(
         isNull(maps.archivedAt), // archived = on hold, no ingest, no triage
       ),
     );
-  for (const m of appMaps) {
+  for (const m of bound) {
     targets.set(m.id, {
       mapId: m.id,
       createdBy: m.createdBy as string,
       triageEnabled: m.triageEnabled === true,
     });
-  }
-
-  // (2) PAT integrations whose (owner, repo) matches → every map in
-  // that workspace with autoImportNewIssues=true.
-  const patIntegrations = await db
-    .select()
-    .from(integrations)
-    .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
-  for (const integ of patIntegrations) {
-    const cfg = integ.config as { owner?: string; repo?: string } | null;
-    if (cfg?.owner !== owner || cfg?.repo !== repo) continue;
-    const wsMaps = await db
-      .select({
-        id: maps.id,
-        createdBy: maps.createdBy,
-        triageEnabled: maps.triageEnabled,
-      })
-      .from(maps)
-      .where(
-        and(
-          eq(maps.workspaceId, integ.workspaceId),
-          eq(maps.autoImportNewIssues, true),
-          isNull(maps.archivedAt),
-        ),
-      );
-    for (const m of wsMaps) {
-      if (targets.has(m.id)) continue;
-      targets.set(m.id, {
-        mapId: m.id,
-        createdBy: m.createdBy as string,
-        triageEnabled: m.triageEnabled === true,
-      });
-    }
   }
 
   return [...targets.values()];
@@ -1961,7 +1925,9 @@ export async function backfillMap(
       );
     if (integ) {
       const cfg = integ.config as { owner?: string; repo?: string; token?: string; oauthIdentityId?: string } | null;
-      if (isServableIntegrationConfig(cfg)) {
+      // Only when the row's repo is this map's own repo (#421).
+      const bindsThisMap = cfg?.owner === mapRow.githubRepoOwner && cfg?.repo === mapRow.githubRepoName;
+      if (bindsThisMap && isServableIntegrationConfig(cfg)) {
         owner = cfg!.owner!;
         repo = cfg!.repo!;
         forge = await forgeFromIntegration(integ);
