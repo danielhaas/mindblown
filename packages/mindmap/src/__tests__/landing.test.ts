@@ -338,6 +338,25 @@ describe('triagePipelineState', () => {
     const rows = Array.from({ length: 6 }, (_, i) => ({ decision: 'uncertain' as const, reason: `triage_error: ${full.replace('req_1', `req_${i}`)}`, decidedAt: '2026-08-24T00:00:00Z' }));
     expect(triagePipelineState(rows).cause).toBe('400 Your credit balance is too low to access the Anthropic API.');
   });
+  it('only rows that START with the marker count — reasoning quoting it does not (#320 review)', () => {
+    const quoting = Array.from({ length: 6 }, () => ({ decision: 'uncertain' as const, reason: 'The issue says "triage_error: credit balance too low" — a duplicate', decidedAt: '2026-08-24T00:00:00Z' }));
+    expect(triagePipelineState(quoting)).toMatchObject({ broken: false, stale: false });
+  });
+  it('quoted model output never becomes the cause', () => {
+    const rows = Array.from({ length: 6 }, (_, i) => ({ decision: 'uncertain' as const, reason: `triage_error: no parseable JSON (got "I think issue #${i} is about the parser…")`, decidedAt: '2026-08-24T00:00:00Z' }));
+    const s = triagePipelineState(rows);
+    expect(s.cause).toBe('no parseable JSON');
+    expect(s.cause).not.toMatch(/parser/);
+  });
+  it('a successful decision newer than the newest error = recovered: stale, not broken', () => {
+    const ok = { decision: 'place' as const, reason: 'Fits under Parser', decidedAt: '2026-08-25T10:00:00Z' };
+    const s = triagePipelineState([err(1), err(2), err(3), err(4), err(5), err(6), ok]);
+    expect(s).toMatchObject({ broken: false, stale: true, count: 6 });
+  });
+  it('count is the rows with the top cause, not all errors', () => {
+    const other = (i: number) => ({ decision: 'uncertain' as const, reason: 'triage_error: timeout', decidedAt: `2026-08-2${i}T11:00:00Z` });
+    expect(triagePipelineState([err(1), err(2), err(3), err(4), err(5), err(6), other(1), other(2)]).count).toBe(6);
+  });
   it('stays quiet below the threshold or for ordinary uncertain rows', () => {
     expect(triagePipelineState([err(1), err(2)]).broken).toBe(false);
     expect(triagePipelineState(Array.from({ length: 10 }, () => ({ decision: 'uncertain' as const, reason: 'could be a feature or a bug', decidedAt: '' }))).broken).toBe(false);

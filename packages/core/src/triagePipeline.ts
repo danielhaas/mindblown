@@ -15,13 +15,29 @@ export interface TriagePipelineInput {
 }
 
 export interface TriagePipelineState {
+  /** Triage is failing right now: the newest decision is an error, many share one cause. */
   broken: boolean;
+  /**
+   * The pipeline recovered (a successful decision is newer than the newest
+   * error) but rows from the outage still carry the error — they need a
+   * Re-classify. Not an alert.
+   */
+  stale: boolean;
+  /** Rows carrying the top cause. */
   count: number;
   cause: string | null;
+  /** Oldest pending error row (ISO). */
   since: string | null;
 }
 
-const TRIAGE_ERROR_RE = /triage_error[:\s]*(.*)/i;
+/**
+ * Only rows whose reason STARTS with the marker (the server writes
+ * `triage_error: …` at the start). Model reasoning that merely quotes the
+ * text must not count — nor become the "cause", which API keys may read.
+ */
+const TRIAGE_ERROR_RE = /^triage_error[:\s]*(.*)/i;
+
+const NONE: TriagePipelineState = { broken: false, stale: false, count: 0, cause: null, since: null };
 
 /**
  * "400 {"type":"error","error":{"message":"Your credit balance is too low…"}}"
@@ -45,21 +61,39 @@ export function humaniseTriageCause(raw: string): string {
   return m ? `${raw.slice(0, start).trim()} ${m[1]}`.trim() : raw;
 }
 
-/** N pending decisions sharing one error text = the pipeline, not the tickets. */
+/**
+ * N pending decisions sharing one error text = the pipeline, not the tickets.
+ * A successful decision newer than the newest error means it recovered:
+ * `stale` instead of `broken`.
+ */
 export function triagePipelineState(decisions: TriagePipelineInput[], threshold = 5): TriagePipelineState {
-  const errors = decisions
-    .map((d) => ({ m: TRIAGE_ERROR_RE.exec(d.reason ?? ''), at: d.decidedAt }))
-    .filter((x) => x.m);
-  if (errors.length < threshold) return { broken: false, count: 0, cause: null, since: null };
-  const causes = new Map<string, number>();
-  for (const e of errors) {
-    // Same cause, different ticket number → one key.
-    const key = humaniseTriageCause(e.m![1]).replace(/\(?#\d+\)?/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
-    causes.set(key, (causes.get(key) ?? 0) + 1);
+  const errors: Array<{ cause: string; at: string }> = [];
+  let newestOk = '';
+  for (const d of decisions) {
+    const m = TRIAGE_ERROR_RE.exec(d.reason ?? '');
+    if (m) errors.push({ cause: triageCauseKey(m[1]), at: d.decidedAt });
+    else if (d.decidedAt > newestOk) newestOk = d.decidedAt;
   }
+  if (errors.length < threshold) return NONE;
+  const causes = new Map<string, number>();
+  for (const e of errors) causes.set(e.cause, (causes.get(e.cause) ?? 0) + 1);
   const [cause, count] = [...causes.entries()].sort((a, b) => b[1] - a[1])[0];
-  if (count < threshold) return { broken: false, count: 0, cause: null, since: null };
-  const since = errors.map((e) => e.at).sort()[0] ?? null;
-  return { broken: true, count: errors.length, cause, since };
+  if (count < threshold) return NONE;
+  const ats = errors.map((e) => e.at).sort();
+  const recovered = newestOk > ats[ats.length - 1];
+  return { broken: !recovered, stale: recovered, count, cause, since: ats[0] ?? null };
 }
 
+/**
+ * The comparable cause: provider error message, no ticket numbers, and no
+ * quoted model output — "no parseable JSON (got \"…\")" carries up to 200
+ * chars of what the model said, which the session-only row routes exist to
+ * keep from API-key callers.
+ */
+export function triageCauseKey(raw: string): string {
+  return humaniseTriageCause(raw.replace(/\s*\(?got\s+["“][\s\S]*$/i, ''))
+    .replace(/\(?#\d+\)?/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 120);
+}

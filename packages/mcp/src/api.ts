@@ -1349,6 +1349,7 @@ export interface TriageActionResultApi {
 /** Is triage itself broken (#320)? Aggregated over the map's pending decisions. */
 export interface TriagePipelineApi {
   broken: boolean;
+  stale?: boolean;
   count: number;
   cause: string | null;
   since: string | null;

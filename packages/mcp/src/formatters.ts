@@ -435,9 +435,16 @@ export function formatVersionWarnings(warnings: string[] | undefined): string {
  * the Triage panel and the PM Cockpit show (core triagePipelineState) —
  * instead of N identical "uncertain" rows nobody reads. Null when healthy.
  */
-export function triagePipelineLine(p: { broken: boolean; count: number; cause: string | null; since: string | null } | null): string | null {
-  if (!p?.broken) return null;
-  return `🔴 **Triage pipeline broken since ${p.since?.slice(0, 10) ?? '?'}**: ${p.cause ?? 'unknown error'} — ${p.count} ticket(s) untriaged`;
+export function triagePipelineLine(
+  p: { broken: boolean; stale?: boolean; count: number; cause: string | null; since: string | null } | null,
+): string | null {
+  if (p?.broken) {
+    return `🔴 **Triage pipeline broken since ${p.since?.slice(0, 10) ?? '?'}**: ${p.cause ?? 'unknown error'} — ${p.count} ticket(s) untriaged`;
+  }
+  if (p?.stale) {
+    return `🟡 Triage recovered, but ${p.count} ticket(s) from the outage (since ${p.since?.slice(0, 10) ?? '?'}: ${p.cause ?? 'unknown error'}) still need a Re-classify`;
+  }
+  return null;
 }
 
 // ── status_digest: slippage without due dates (#321) ───────────────

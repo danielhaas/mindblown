@@ -324,5 +324,5 @@ export { sprintSignals, SPRINT_STALLED_DAYS } from './sprintSignals.js';
 export type { SprintLike, SprintItem, SprintSignals } from './sprintSignals.js';
 
 // Triage pipeline state — N identical triage errors folded into one (#320)
-export { triagePipelineState, humaniseTriageCause } from './triagePipeline.js';
+export { triagePipelineState, humaniseTriageCause, triageCauseKey } from './triagePipeline.js';
 export type { TriagePipelineState, TriagePipelineInput } from './triagePipeline.js';

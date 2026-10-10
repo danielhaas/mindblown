@@ -1634,8 +1634,11 @@ server.tool(
         (n) => n.dueDate != null && n.dueDate < today && (n.percentComplete ?? 0) < 100,
       );
 
-      // Triage itself failing (#320) is an alert of its own.
-      const triageLine = triagePipelineLine(await api.getTriagePipeline(mapId).catch(() => null));
+      // Triage failing right now (#320) is an alert of its own; a recovered
+      // pipeline with leftover rows is not — push delivery would repeat it
+      // until every row is re-classified.
+      const triageState = await api.getTriagePipeline(mapId).catch(() => null);
+      const triageLine = triageState?.broken ? triagePipelineLine(triageState) : null;
 
       const totalAlerts =
         slippedVersions.length +

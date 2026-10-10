@@ -787,25 +787,28 @@ export function TriagePanel({
       )}
 
       {/* Pipeline banner (#320) */}
-      {pipeline?.broken && (
+      {(pipeline?.broken || pipeline?.stale) && (
         <div
-          data-testid="triage-pipeline-broken"
+          data-testid={pipeline.broken ? 'triage-pipeline-broken' : 'triage-pipeline-stale'}
           style={{
             padding: '10px 16px',
-            background: '#fef2f2',
-            borderBottom: '1px solid #fecaca',
-            color: '#991b1b',
+            background: pipeline.broken ? '#fef2f2' : '#fffbeb',
+            borderBottom: `1px solid ${pipeline.broken ? '#fecaca' : '#fde68a'}`,
+            color: pipeline.broken ? '#991b1b' : '#92400e',
             fontSize: 12,
             lineHeight: 1.45,
           }}
         >
           <div style={{ fontWeight: 700 }}>
-            Triage pipeline broken since {pipeline.since?.slice(0, 10) ?? '?'}
+            {pipeline.broken
+              ? `Triage pipeline broken since ${pipeline.since?.slice(0, 10) ?? '?'}`
+              : `Triage recovered — ${pipeline.count} ticket${pipeline.count === 1 ? '' : 's'} from the outage still carry its error`}
           </div>
           <div>{pipeline.cause}</div>
-          <div style={{ color: '#b91c1c', marginTop: 2 }}>
-            {pipeline.count} ticket{pipeline.count === 1 ? '' : 's'} untriaged — the rows below all carry this error.
-            Fix the cause, then use Re-classify on them.
+          <div style={{ marginTop: 2 }}>
+            {pipeline.broken
+              ? `${pipeline.count} pending ticket${pipeline.count === 1 ? '' : 's'} carry this error. Fix the cause, then Re-classify them.`
+              : 'Re-classify them to triage them properly.'}
           </div>
         </div>
       )}

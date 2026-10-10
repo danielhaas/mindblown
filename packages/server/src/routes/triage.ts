@@ -264,6 +264,54 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  // ── GET /api/maps/:mapId/triage-pipeline — is triage itself broken? (#320)
+  //
+  // One aggregated state over the map's pending (unreviewed) decisions:
+  // N rows failing with the same error = the pipeline, not N tickets.
+  // Readable like any map data (map-route guard: view; API keys allowed —
+  // the MCP digests use it). Unlike the row routes it exposes no model
+  // reasoning: counts, dates and the provider's error cause.
+  app.get<{ Params: { mapId: string } }>('/api/maps/:mapId/triage-pipeline', async (req, reply) => {
+    const pending = and(eq(triageDecisions.mapId, req.params.mapId), eq(triageDecisions.reviewed, false));
+    const isError = sql`${triageDecisions.reason} LIKE 'triage_error%'`;
+    const [errorRows, [newestOk], [totals]] = await Promise.all([
+      // The newest error rows decide the cause; aggregates below give the
+      // true count and first date beyond this sample.
+      db
+        .select({ reason: triageDecisions.reason, decidedAt: triageDecisions.decidedAt, decision: triageDecisions.decision })
+        .from(triageDecisions)
+        .where(and(pending, isError))
+        .orderBy(desc(triageDecisions.decidedAt))
+        .limit(2000),
+      db
+        .select({ reason: triageDecisions.reason, decidedAt: triageDecisions.decidedAt, decision: triageDecisions.decision })
+        .from(triageDecisions)
+        .where(and(pending, sql`NOT (${isError})`))
+        .orderBy(desc(triageDecisions.decidedAt))
+        .limit(1),
+      db
+        .select({
+          pending: sql<number>`count(*)::int`,
+          firstError: sql<string | null>`min(${triageDecisions.decidedAt}) FILTER (WHERE ${isError})`,
+        })
+        .from(triageDecisions)
+        .where(pending),
+    ]);
+    const iso = (d: unknown) => (d instanceof Date ? d.toISOString() : String(d));
+    const state = triagePipelineState(
+      [...errorRows, ...(newestOk ? [newestOk] : [])].map((r) => ({
+        reason: r.reason as string | null,
+        decision: r.decision as string,
+        decidedAt: iso(r.decidedAt),
+      })),
+    );
+    return reply.send({
+      ...state,
+      since: state.since && totals?.firstError ? iso(totals.firstError) : state.since,
+      pending: totals?.pending ?? 0,
+    });
+  });
+
   // ── GET /api/maps/:mapId/triage-decisions ─────────────────────
   // Filter params (Phase 0 baseline + Phase 2 additions):
   //   reviewed=true|false           — exact-match on the boolean.
@@ -283,30 +331,6 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
   // server-side so the bulk-workflow case (290 Fulcrum roadmap orphans
   // → operator picks the top-confidence band) doesn't have to fetch
   // every row then filter client-side, AND so a select-all-and-confirm
-  // ── GET /api/maps/:mapId/triage-pipeline — is triage itself broken? (#320)
-  //
-  // One aggregated state over the map's pending (unreviewed) decisions:
-  // N rows failing with the same error = the pipeline, not N tickets.
-  // Readable like any map data (map-route guard: view; API keys allowed —
-  // the MCP digests use it). Unlike the row routes it exposes no model
-  // reasoning: a count, a date and the error cause.
-  app.get<{ Params: { mapId: string } }>('/api/maps/:mapId/triage-pipeline', async (req, reply) => {
-    const rows = await db
-      .select({ reason: triageDecisions.reason, decidedAt: triageDecisions.decidedAt, decision: triageDecisions.decision })
-      .from(triageDecisions)
-      .where(and(eq(triageDecisions.mapId, req.params.mapId), eq(triageDecisions.reviewed, false)))
-      .orderBy(desc(triageDecisions.decidedAt))
-      .limit(5000);
-    const state = triagePipelineState(
-      rows.map((r) => ({
-        reason: r.reason as string | null,
-        decision: r.decision as string,
-        decidedAt: r.decidedAt instanceof Date ? r.decidedAt.toISOString() : String(r.decidedAt),
-      })),
-    );
-    return reply.send({ ...state, pending: rows.length });
-  });
-
   // operates only on the rows the operator's filter actually surfaced.
   app.get<{
     Params: { mapId: string };
