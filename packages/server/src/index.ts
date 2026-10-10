@@ -1,3 +1,8 @@
+import { db } from './db/connection.js';
+import { maps } from './db/schema.js';
+import { isNull } from 'drizzle-orm';
+import { aiHealth, onEmbeddingsRecovered, startAiHealthProbe, type BackendHealth } from './ai/health.js';
+import { backfillMapEmbeddings } from './ai/embeddings.js';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
@@ -78,6 +83,18 @@ async function main(): Promise<void> {
   // ── Health check (before auth middleware) ───────────────────────
   app.get('/api/health', async () => {
     return { status: 'ok', timestamp: new Date().toISOString() };
+  });
+
+  // ── AI backend health (#429) — for the monitor, before auth ────
+  // 503 once a configured local backend has been unreachable for 2 min.
+  // Booleans and times only: the error texts name internal hosts.
+  app.get('/api/health/ai', async (_req, reply) => {
+    const h = aiHealth();
+    const brief = (b: BackendHealth) => ({ configured: b.configured, reachable: b.reachable, checkedAt: b.checkedAt, downSince: b.downSince });
+    const downTooLong = [h.chat, h.embeddings].some(
+      (b) => b.configured && b.reachable === false && b.downSince != null && Date.now() - Date.parse(b.downSince) > 120_000,
+    );
+    return reply.status(downTooLong ? 503 : 200).send({ status: downTooLong ? 'down' : 'ok', chat: brief(h.chat), embeddings: brief(h.embeddings) });
   });
 
   // ── Auth routes (register/login are public) ────────────────────
@@ -200,6 +217,19 @@ async function main(): Promise<void> {
   };
   runCatchup();
   setInterval(runCatchup, CATCHUP_INTERVAL_MS);
+
+  // Probe the local AI backends every minute (#429). When the embedder
+  // comes back after an outage, re-embed what changed meanwhile — the
+  // backfill only touches nodes whose text differs from what was embedded.
+  onEmbeddingsRecovered(() => {
+    void (async () => {
+      const active = await db.select({ id: maps.id }).from(maps).where(isNull(maps.archivedAt));
+      let embedded = 0;
+      for (const m of active) embedded += (await backfillMapEmbeddings(m.id)).embedded;
+      console.log(`[ai-health] embeddings back — re-embedded ${embedded} node(s) changed during the outage`);
+    })().catch((err) => console.warn('[ai-health] post-outage re-embed failed:', err instanceof Error ? err.message : err));
+  });
+  startAiHealthProbe();
 
   // ── Systemd watchdog heartbeat (decoupled from catchup tick) ───
   //

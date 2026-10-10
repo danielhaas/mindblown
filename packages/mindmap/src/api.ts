@@ -1786,6 +1786,17 @@ export interface AiConfigResponse {
   preferenceHonored: boolean;
   available: { ollama: boolean; anthropic: boolean };
   models: { ollama: string | null; anthropic: string | null };
+  /** Reachability of the local backends (#429). */
+  health?: { chat: AiBackendHealth; embeddings: AiBackendHealth };
+}
+
+export interface AiBackendHealth {
+  configured: boolean;
+  reachable: boolean | null;
+  checkedAt: string | null;
+  downSince: string | null;
+  /** Only for a signed-in caller. */
+  lastError: string | null;
 }
 
 export function aiConfig(mapId?: string): Promise<AiConfigResponse> {

@@ -106,6 +106,22 @@ export function AiProviderPanel() {
         </div>
       )}
 
+      {!loading && config?.health && (['chat', 'embeddings'] as const).map((which) => {
+        const h = config.health![which];
+        if (!h.configured || h.reachable !== false) return null;
+        return (
+          <div
+            key={which}
+            style={{ fontSize: 12, color: '#92400e', background: '#fef3c7', padding: '8px 12px', borderRadius: 6, marginBottom: 12 }}
+          >
+            {which === 'chat' ? 'Local chat model' : 'Embedding model'} unreachable
+            {h.downSince ? ` since ${new Date(h.downSince).toLocaleString()}` : ''}
+            {which === 'chat' ? ' — local AI features are off until it answers.' : ' — semantic search is off until it answers.'}
+            {h.lastError ? <div style={{ marginTop: 4, color: '#b45309', wordBreak: 'break-word' }}>{h.lastError}</div> : null}
+          </div>
+        );
+      })}
+
       {!loading && config && (
         <>
           <p style={{ fontSize: 12, color: '#64748b', margin: '0 0 12px' }}>

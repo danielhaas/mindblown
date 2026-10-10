@@ -18,6 +18,7 @@
  * as `none` — a privacy setting must never silently widen.
  */
 
+import { embeddingsUsable, localChatUsable } from './health.js';
 import { eq } from 'drizzle-orm';
 import type { AiPolicy } from '@mindblown/core';
 import { isAiPolicy } from '@mindblown/core';
@@ -69,14 +70,18 @@ export function capabilitiesForPolicy(policy: AiPolicy): AiCapabilities {
   switch (policy) {
     case 'none':
       return { ...NONE };
-    case 'local':
+    case 'local': {
+      // Only the local backend, and only while it answers (#429).
+      const local = localChatUsable();
       return {
-        enabled: aiEnabled,
-        chat: aiEnabled,
-        structured: aiEnabled,
-        embeddings: embedEnabled,
+        enabled: local,
+        chat: local,
+        structured: local,
+        embeddings: embeddingsUsable(),
+        // Configured, not reachable: an outage shows as triage_error (see capabilities.ts).
         triage: aiEnabled,
       };
+    }
     default:
       return aiCapabilities();
   }

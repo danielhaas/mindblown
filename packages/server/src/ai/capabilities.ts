@@ -16,11 +16,15 @@
  *   embeddings  — semantic search + backfill: needs an OpenAI-compatible
  *                 embeddings endpoint (`AI_EMBED_BASE_URL`, defaulting to
  *                 `AI_BASE_URL`); Claude has no embeddings API
+ *
+ * A configured local backend counts only while it is reachable — see
+ * `health.ts` (#429).
  *   triage      — GitHub issue triage: either backend
  *                 (auto-apply is off by default on the local backend)
  */
 
-import { aiEnabled, embedEnabled } from './client.js';
+import { aiEnabled } from './client.js';
+import { embeddingsUsable, localChatUsable } from './health.js';
 import { anthropicAvailable } from './providers/anthropic.js';
 
 export interface AiCapabilities {
@@ -37,13 +41,18 @@ export interface AiCapabilities {
 }
 
 export function aiCapabilities(): AiCapabilities {
-  const enabled = aiEnabled || anthropicAvailable;
+  // A local backend that is configured but unreachable offers nothing
+  // (#429); Claude, when configured, still does.
+  const enabled = localChatUsable() || anthropicAvailable;
   return {
     enabled,
     chat: enabled,
     structured: enabled,
-    embeddings: embedEnabled,
-    triage: enabled,
+    embeddings: embeddingsUsable(),
+    // Triage stays on what is CONFIGURED: while the backend is down a
+    // triage attempt fails visibly (a triage_error row, retried on the
+    // issue's next change) instead of the issue skipping triage unseen.
+    triage: aiEnabled || anthropicAvailable,
   };
 }
 
