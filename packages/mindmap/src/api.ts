@@ -264,11 +264,16 @@ export function getMe(): Promise<AuthUser> {
   return request<AuthUser>('/api/auth/me');
 }
 
-export function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  return request<void>('/api/auth/change-password', {
+/**
+ * Every session issued before the change ends with it (#315), this one
+ * included — the answer carries a fresh session token, stored here.
+ */
+export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  const { token } = await request<{ token: string }>('/api/auth/change-password', {
     method: 'POST',
     body: JSON.stringify({ currentPassword, newPassword }),
   });
+  setToken(token);
 }
 
 export function adminResetPassword(email: string): Promise<{ email: string; tempPassword: string }> {

@@ -236,7 +236,9 @@ export function AuthScreen() {
               onChange={(e) => setPassword(e.target.value)}
               placeholder="Enter password"
               required
-              minLength={4}
+              // New accounts: same minimum as the server and the change form.
+              // Not on sign-in — older accounts may have shorter passwords.
+              minLength={mode === 'register' ? 8 : undefined}
               style={{
                 width: '100%',
                 padding: '8px 12px',

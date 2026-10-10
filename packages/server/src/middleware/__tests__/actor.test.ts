@@ -12,7 +12,16 @@ import { describe, it, expect, vi } from 'vitest';
 import Fastify from 'fastify';
 import jwt from 'jsonwebtoken';
 
-vi.mock('../../db/connection.js', () => ({ db: {} }));
+// The revocation lookup (#315): no password change recorded, except for
+// the user the revocation test names.
+const revoked = vi.hoisted(() => ({ changedAt: null as Date | null }));
+vi.mock('../../db/connection.js', () => ({
+  db: {
+    select: () => ({
+      from: () => ({ where: () => ({ limit: async () => (revoked.changedAt ? [{ changedAt: revoked.changedAt }] : []) }) }),
+    }),
+  },
+}));
 vi.mock('../../db/schema.js', () => ({ users: {}, pendingInvites: {} }));
 // getPermission/hasPermission: the archive guard asks the map guard's
 // question before it answers 409 (#403); every credential here is a member.
@@ -34,6 +43,7 @@ vi.mock('../../db/comments.js', () => ({ getComment: async () => null }));
 vi.mock('../../db/nodes.js', () => ({ getNode: async () => null }));
 
 import { registerAuthMiddleware } from '../auth.js';
+import { _resetRevocationCacheForTests } from '../../auth.js';
 import { registerArchiveGuard } from '../archiveGuard.js';
 
 const SECRET = process.env.JWT_SECRET ?? 'mindblown-dev-secret-change-in-production';
@@ -130,5 +140,29 @@ describe('archive guard behind the real auth middleware', () => {
   it('no credential is refused — as 401, before the map is even looked at (#403)', async () => {
     // An anonymous caller must not learn from a 409 that the map exists.
     expect(await post()).toBe(401);
+  });
+});
+
+describe('token revocation (#315)', () => {
+  it('a JWT issued before the password change is refused with TOKEN_REVOKED; a newer one passes', async () => {
+    _resetRevocationCacheForTests();
+    const nowSec = Math.floor(Date.now() / 1000);
+    revoked.changedAt = new Date((nowSec - 60) * 1000);
+    try {
+      const old = jwt.sign({ userId: 'u9', email: 'x@example.com', iat: nowSec - 3600 }, SECRET, { expiresIn: '7d' });
+      const app = Fastify();
+      await registerAuthMiddleware(app);
+      app.get('/api/whoami', async (req) => ({ userId: req.userId ?? null }));
+      await app.ready();
+      const res = await app.inject({ method: 'GET', url: '/api/whoami', headers: { authorization: `Bearer ${old}` } });
+      expect(res.statusCode).toBe(401);
+      expect(res.json().error.code).toBe('TOKEN_REVOKED');
+      // Issued after the change (e.g. the token the change route hands back).
+      const fresh = jwt.sign({ userId: 'u9', email: 'x@example.com' }, SECRET, { expiresIn: '7d' });
+      expect((await whoami(`Bearer ${fresh}`)).userId).toBe('u9');
+    } finally {
+      revoked.changedAt = null;
+      _resetRevocationCacheForTests();
+    }
   });
 });

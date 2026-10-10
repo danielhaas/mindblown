@@ -14,6 +14,7 @@
 
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { createApiKey, listApiKeysForUser, revokeApiKey } from '../lib/apiKeys.js';
+import { isAgentRequest } from '../auth.js';
 
 /**
  * Require an interactive session for any /api/api-keys mutation OR read.
@@ -33,11 +34,11 @@ function requireSessionAuth(req: FastifyRequest, reply: FastifyReply): string | 
     });
     return null;
   }
-  if (req.authSource === 'api-key') {
+  if (isAgentRequest(req)) {
     reply.status(403).send({
       error: {
         code: 'FORBIDDEN',
-        message: 'API keys cannot manage other API keys. Sign in via the web UI to manage keys.',
+        message: 'API keys and long-lived tokens cannot manage API keys. Sign in via the web UI to manage keys.',
       },
     });
     return null;

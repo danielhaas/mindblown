@@ -28,7 +28,7 @@ import {
 import { reconcileRepo } from '../sync/githubCatchup.js';
 import { runDriftAudit } from '../sync/driftAudit.js';
 import { recordWebhookCall } from '../sync/webhookAuthCheck.js';
-import { requireAdmin } from '../auth.js';
+import { isAgentRequest, requireAdmin } from '../auth.js';
 import { rollupParentsForChildTitle } from '../sync/parentEpicRollup.js';
 import {
   ingestNewIssuesForRepo,
@@ -1236,7 +1236,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
         });
       }
-      if (!(await requireAdmin(req))) {
+      // Robot callers allowed (#315): this is the `audit_closed_issues`
+      // MCP tool's route, and MCP calls arrive as the /mcp loopback JWT —
+      // an agent. The user must still be an admin; dry run is the default.
+      if (!(await requireAdmin(req, { allowApiKey: true }))) {
         return reply.status(403).send({
           error: { code: 'FORBIDDEN', message: 'Admin access required' },
         });
@@ -1266,7 +1269,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           forge: ctx.forge,
           // Explicit `=== false` so a missing/garbled field reports
           // rather than writes.
-          dryRun: body.dryRun !== false,
+          // A robot caller (API key, MCP loopback, long-lived token) only
+          // ever gets the report: write mode reopens tickets and rolls
+          // nodes back, so it needs an admin's web session (#315).
+          dryRun: isAgentRequest(req) ? true : body.dryRun !== false,
           closedBy: body.closedBy,
           since: body.since ?? null,
           limit: body.limit,

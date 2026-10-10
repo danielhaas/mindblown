@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
-import { verifyToken, type JwtPayload } from '../auth.js';
+import { isTokenRevoked, verifyToken, type JwtPayload } from '../auth.js';
 import { API_KEY_PREFIX, validateApiKey } from '../lib/apiKeys.js';
 import { isMediaPlaybackPath } from '../lib/media.js';
 
@@ -49,21 +49,28 @@ async function authPreHandler(req: FastifyRequest, reply: FastifyReply): Promise
     return;
   }
 
+  let payload: JwtPayload & { iat?: number; exp?: number };
   try {
-    const payload = verifyToken(token) as JwtPayload & { iat?: number; exp?: number };
-    req.userId = payload.userId;
-    req.authSource = 'jwt';
-    // A person holds an interactive session token: no `kind`, and a
-    // lifetime of JWT_EXPIRES_IN (days, not a year). Long-lived tokens
-    // minted before `kind` existed carry no marker, so the lifetime is
-    // the tie-breaker — anything living longer than 8 days is a script.
-    const lifetimeSec = payload.exp != null && payload.iat != null ? payload.exp - payload.iat : 0;
-    req.actor = payload.kind || lifetimeSec > 8 * 86_400 ? 'agent' : 'person';
+    payload = verifyToken(token) as JwtPayload & { iat?: number; exp?: number };
   } catch {
     return reply.status(401).send({
       error: { code: 'UNAUTHORIZED', message: 'Invalid or expired token' },
     });
   }
+  // Issued before the user's last password change or admin reset (#315).
+  if (await isTokenRevoked(payload.userId, payload.iat)) {
+    return reply.status(401).send({
+      error: { code: 'TOKEN_REVOKED', message: 'This session ended when the password was changed — sign in again' },
+    });
+  }
+  req.userId = payload.userId;
+  req.authSource = 'jwt';
+  // A person holds an interactive session token: no `kind`, and a
+  // lifetime of JWT_EXPIRES_IN (days, not a year). Long-lived tokens
+  // minted before `kind` existed carry no marker, so the lifetime is
+  // the tie-breaker — anything living longer than 8 days is a script.
+  const lifetimeSec = payload.exp != null && payload.iat != null ? payload.exp - payload.iat : 0;
+  req.actor = payload.kind || lifetimeSec > 8 * 86_400 ? 'agent' : 'person';
 }
 
 /**

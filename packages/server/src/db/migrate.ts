@@ -446,6 +446,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT false
   `);
 
+  // ── Token revocation on password change (#315) ─────────────────
+  // JWTs are stateless; a JWT whose `iat` predates this is refused.
+  await db.execute(sql`
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TIMESTAMPTZ
+  `);
+
   // First-run bootstrap: if no user is an admin yet, promote the
   // oldest-registered REAL user. We explicitly skip users in the seed
   // domain (@mindblown.dev) so the example workspace's demo account

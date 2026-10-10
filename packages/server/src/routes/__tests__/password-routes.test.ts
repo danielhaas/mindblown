@@ -46,19 +46,21 @@ vi.mock('../../db/settings.js', () => ({
   getAiProviderSettings: vi.fn(async () => ({ preference: 'auto' })),
   setAiProviderSettings: vi.fn(async (s: unknown) => s),
 }));
-vi.mock('drizzle-orm', () => ({ eq: vi.fn() }));
+vi.mock('drizzle-orm', () => ({ eq: vi.fn(), sql: vi.fn() }));
 
-import { authRoutes, hashPassword, verifyPassword } from '../../auth.js';
+import { authRoutes, hashPassword, verifyPassword, isTokenRevoked, _resetRevocationCacheForTests } from '../../auth.js';
 import { systemRoutes } from '../system.js';
 
 const UID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 
-async function buildApp(authSource: 'jwt' | 'api-key' | 'none'): Promise<FastifyInstance> {
+/** `long-lived` = a headless JWT: authSource 'jwt' but actor 'agent' (#315). */
+async function buildApp(authSource: 'jwt' | 'api-key' | 'long-lived' | 'none'): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   app.addHook('preHandler', async (req) => {
     if (authSource === 'none') return;
     req.userId = UID;
-    req.authSource = authSource;
+    req.authSource = authSource === 'long-lived' ? 'jwt' : authSource;
+    req.actor = authSource === 'jwt' ? 'person' : 'agent';
   });
   await app.register(authRoutes);
   await app.register(systemRoutes);
@@ -68,6 +70,7 @@ async function buildApp(authSource: 'jwt' | 'api-key' | 'none'): Promise<Fastify
 beforeEach(() => {
   selectQueue = [];
   updateSetCalls = [];
+  _resetRevocationCacheForTests();
 });
 
 // ── POST /api/auth/change-password ───────────────────────────────
@@ -134,8 +137,8 @@ describe('POST /api/auth/change-password', () => {
     expect(updateSetCalls).toHaveLength(0);
   });
 
-  it('204 on success and the stored hash verifies against the new password', async () => {
-    selectQueue = [[{ id: UID, passwordHash: await hashPassword('old-password') }]];
+  it('200 on success: new hash stored, change time recorded, fresh session token returned', async () => {
+    selectQueue = [[{ id: UID, email: 'me@example.com', passwordHash: await hashPassword('old-password') }]];
     const app = await buildApp('jwt');
     const res = await app.inject({
       method: 'POST',
@@ -143,11 +146,79 @@ describe('POST /api/auth/change-password', () => {
       payload: { currentPassword: 'old-password', newPassword: 'new-password-1' },
     });
     await app.close();
-    expect(res.statusCode).toBe(204);
-    expect(updateSetCalls).toHaveLength(1);
+    expect(res.statusCode).toBe(200);
+    expect(typeof res.json().token).toBe('string');
+    expect(updateSetCalls).toHaveLength(2);
     const stored = updateSetCalls[0].passwordHash as string;
     expect(await verifyPassword('new-password-1', stored)).toBe(true);
     expect(await verifyPassword('old-password', stored)).toBe(false);
+    expect(updateSetCalls[1].passwordChangedAt).toBeInstanceOf(Date);
+  });
+
+  it('403 for a long-lived token (a JWT, but a robot) — #315', async () => {
+    const app = await buildApp('long-lived');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/change-password',
+      payload: { currentPassword: 'old-password', newPassword: 'new-password-1' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(updateSetCalls).toHaveLength(0);
+  });
+
+  it('400 instead of 500 when the body is missing', async () => {
+    const app = await buildApp('jwt');
+    const res = await app.inject({ method: 'POST', url: '/api/auth/change-password' });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /api/auth/long-lived-token (#315)', () => {
+  it('403 for a long-lived token — it cannot renew itself', async () => {
+    const app = await buildApp('long-lived');
+    const res = await app.inject({ method: 'POST', url: '/api/auth/long-lived-token' });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+  });
+
+  it('200 for a web session', async () => {
+    selectQueue = [[{ id: UID, email: 'me@example.com' }]];
+    const app = await buildApp('jwt');
+    const res = await app.inject({ method: 'POST', url: '/api/auth/long-lived-token' });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(typeof res.json().token).toBe('string');
+  });
+});
+
+describe('POST /api/auth/register password length', () => {
+  it('400 for a password under 8 characters', async () => {
+    const app = await buildApp('none');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/auth/register',
+      payload: { email: 'new@example.com', password: 'short', name: 'N' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('isTokenRevoked (#315)', () => {
+  it('a token issued before the last password change is revoked; one issued after is not', async () => {
+    const changed = new Date('2026-10-10T04:00:00Z');
+    selectQueue = [[{ changedAt: changed }]];
+    const cut = Math.floor(changed.getTime() / 1000);
+    expect(await isTokenRevoked(UID, cut - 60)).toBe(true);
+    expect(await isTokenRevoked(UID, cut)).toBe(false); // cached — no second lookup
+    expect(selectQueue).toHaveLength(0);
+  });
+
+  it('a user who never changed the password keeps every token', async () => {
+    selectQueue = [[{ changedAt: null }]];
+    expect(await isTokenRevoked(UID, 1)).toBe(false);
   });
 });
 
@@ -223,8 +294,60 @@ describe('POST /api/system/reset-password', () => {
     expect(body.email).toBe('marcel@example.com');
     expect(body.tempPassword).toMatch(/^mb-/);
     expect(body.tempPassword.length).toBeGreaterThanOrEqual(12);
-    expect(updateSetCalls).toHaveLength(1);
+    expect(updateSetCalls).toHaveLength(2);
     const stored = updateSetCalls[0].passwordHash as string;
     expect(await verifyPassword(body.tempPassword, stored)).toBe(true);
+    // The user's sessions and long-lived tokens end with the reset (#315).
+    expect(updateSetCalls[1].passwordChangedAt).toBeInstanceOf(Date);
+  });
+
+  it('409 when two accounts differ only in email case — never resets a random one', async () => {
+    selectQueue = [
+      [{ isAdmin: true }],
+      [
+        { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', email: 'Marcel@example.com' },
+        { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'marcel@example.com' },
+      ],
+    ];
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'MARCEL@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(409);
+    expect(updateSetCalls).toHaveLength(0);
+  });
+
+  it('several case-variants, but the exact spelling picks one', async () => {
+    selectQueue = [
+      [{ isAdmin: true }],
+      [
+        { id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', email: 'Marcel@example.com' },
+        { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', email: 'marcel@example.com' },
+      ],
+    ];
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'marcel@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().email).toBe('marcel@example.com');
+  });
+
+  it('403 for an admin\'s long-lived token — admin actions need a web session (#315)', async () => {
+    const app = await buildApp('long-lived');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/system/reset-password',
+      payload: { email: 'marcel@example.com' },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(selectQueue).toHaveLength(0);
   });
 });

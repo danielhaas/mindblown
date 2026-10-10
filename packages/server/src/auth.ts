@@ -71,6 +71,63 @@ export function verifyToken(token: string): JwtPayload {
   return payload;
 }
 
+// ── Revocation on password change (#315) ──────────────────────────
+//
+// JWTs are stateless, so a password change or an admin reset used to
+// leave every session and long-lived token valid for up to a year. A JWT
+// issued before the user's `password_changed_at` is now refused. The
+// lookup runs on every JWT request, so it is cached briefly per user and
+// dropped the moment this process changes a password (prod is one
+// process; another node would lag by at most the TTL).
+
+const REVOCATION_CACHE_MS = 60_000;
+const passwordChangedAtCache = new Map<string, { at: number | null; fetched: number }>();
+
+async function passwordChangedAtSec(userId: string): Promise<number | null> {
+  const hit = passwordChangedAtCache.get(userId);
+  if (hit && Date.now() - hit.fetched < REVOCATION_CACHE_MS) return hit.at;
+  const [row] = await db
+    .select({ changedAt: users.passwordChangedAt })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  const at = row?.changedAt ? Math.floor(row.changedAt.getTime() / 1000) : null;
+  passwordChangedAtCache.set(userId, { at, fetched: Date.now() });
+  return at;
+}
+
+/** True when the token was issued before the user's last password change or reset. */
+export async function isTokenRevoked(userId: string, iat: number | undefined): Promise<boolean> {
+  const changedAt = await passwordChangedAtSec(userId);
+  return changedAt != null && (iat ?? 0) < changedAt;
+}
+
+/** Record a password change: every JWT issued before now stops working. */
+export async function markPasswordChanged(userId: string): Promise<void> {
+  const now = new Date();
+  await db.update(users).set({ passwordChangedAt: now }).where(eq(users.id, userId));
+  passwordChangedAtCache.set(userId, { at: Math.floor(now.getTime() / 1000), fetched: Date.now() });
+}
+
+/** Test hook. */
+export function _resetRevocationCacheForTests(): void {
+  passwordChangedAtCache.clear();
+}
+
+/**
+ * A robot rather than a person in the browser: an API key, the /mcp
+ * loopback JWT or a long-lived token (`req.actor`, set by the auth
+ * middleware from the JWT's `kind` and lifetime). The routes that guard
+ * credentials or system-wide state check this — not `authSource`, which
+ * reads `jwt` for a year-long script token too (#315).
+ */
+export function isAgentRequest(req: { authSource?: 'jwt' | 'api-key'; actor?: 'person' | 'agent' }): boolean {
+  return req.authSource === 'api-key' || req.actor === 'agent';
+}
+
+/** Shared by registration, password change and the UI hints. */
+export const MIN_PASSWORD_LENGTH = 8;
+
 // ── Admin check ───────────────────────────────────────────────────
 //
 // Returns true if the request was authenticated via a session JWT AND
@@ -103,12 +160,13 @@ export function verifyToken(token: string): JwtPayload {
 // AI provider, drift fan-out) keep the session-only rule.
 
 export async function requireAdmin(
-  req: { userId?: string; authSource?: 'jwt' | 'api-key' },
+  req: { userId?: string; authSource?: 'jwt' | 'api-key'; actor?: 'person' | 'agent' },
   opts: { allowApiKey?: boolean } = {},
 ): Promise<boolean> {
-  // API keys never reach admin endpoints, even if the issuing user is an
-  // admin — unless the route opted in. See security note above.
-  if (req.authSource === 'api-key' && !opts.allowApiKey) return false;
+  // API keys — and long-lived / loopback JWTs, which are the same kind of
+  // robot credential (#315) — never reach admin endpoints, even if the
+  // issuing user is an admin, unless the route opted in.
+  if (isAgentRequest(req) && !opts.allowApiKey) return false;
   if (!req.userId) return false;
   const [row] = await db
     .select({ isAdmin: users.isAdmin })
@@ -186,11 +244,16 @@ async function canRegister(email: string): Promise<{ ok: boolean; reason?: strin
 export async function authRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/auth/register ─────────────────────────────────────
   app.post('/api/auth/register', async (req, reply) => {
-    const body = req.body as { email?: string; password?: string; name?: string };
+    const body = (req.body ?? {}) as { email?: string; password?: string; name?: string };
 
     if (!body.email || !body.password) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'email and password are required' },
+      });
+    }
+    if (body.password.length < MIN_PASSWORD_LENGTH) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: `Password must be at least ${MIN_PASSWORD_LENGTH} characters` },
       });
     }
 
@@ -299,29 +362,32 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
   // ── POST /api/auth/change-password ─────────────────────────────
   // Self-serve password change for a logged-in user. Requires the current
   // password (so a hijacked session can't silently lock the owner out) and
-  // a web session — API keys can't rotate the credential that outlives them.
+  // an interactive web session — neither an API key nor a long-lived
+  // token can rotate the credential that outlives them (#315). Every JWT
+  // issued before the change stops working, the caller's own included, so
+  // the answer carries a fresh session token.
   app.post('/api/auth/change-password', async (req, reply) => {
-    const { userId, authSource } = req as { userId?: string; authSource?: 'jwt' | 'api-key' };
+    const { userId } = req as { userId?: string };
     if (!userId) {
       return reply.status(401).send({
         error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
       });
     }
-    if (authSource === 'api-key') {
+    if (isAgentRequest(req)) {
       return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'Password changes require a web session, not an API key' },
+        error: { code: 'FORBIDDEN', message: 'Password changes require a web session, not an API key or long-lived token' },
       });
     }
 
-    const body = req.body as { currentPassword?: string; newPassword?: string };
+    const body = (req.body ?? {}) as { currentPassword?: string; newPassword?: string };
     if (!body.currentPassword || !body.newPassword) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'currentPassword and newPassword are required' },
       });
     }
-    if (body.newPassword.length < 8) {
+    if (body.newPassword.length < MIN_PASSWORD_LENGTH) {
       return reply.status(400).send({
-        error: { code: 'VALIDATION_ERROR', message: 'New password must be at least 8 characters' },
+        error: { code: 'VALIDATION_ERROR', message: `New password must be at least ${MIN_PASSWORD_LENGTH} characters` },
       });
     }
 
@@ -334,8 +400,11 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
 
     const passwordHash = await hashPassword(body.newPassword);
     await db.update(users).set({ passwordHash }).where(eq(users.id, userId));
+    await markPasswordChanged(userId);
 
-    return reply.status(204).send();
+    // Signed after the change, so it outlives the revocation cut-off
+    // (iat is in whole seconds; the cut-off is floored to match).
+    return reply.send({ token: signToken({ userId: user.id, email: user.email }) });
   });
 
   // ── POST /api/auth/long-lived-token ───────────────────────────
@@ -347,6 +416,13 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     if (!userId) {
       return reply.status(401).send({
         error: { code: 'UNAUTHORIZED', message: 'Not authenticated' },
+      });
+    }
+    // Only a person in the browser may mint one: a leaked long-lived token
+    // must not be able to renew itself forever (#315).
+    if (isAgentRequest(req)) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Long-lived tokens can only be created from a web session' },
       });
     }
     const [user] = await db
