@@ -9,7 +9,7 @@ import {
 import { useMindmapStore } from './store.js';
 import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import { collectDoneNodeIds, collectRequirementKeepIds } from './viewScope.js';
-import { fetchSchedule, updateMap as updateMapApi } from './api.js';
+import { fetchSchedule, updateMap as updateMapApi, createBaseline, deleteBaseline, type DueViolation } from './api.js';
 
 // ── Schedule response shape (from GET /api/maps/:id/schedule) ────
 
@@ -20,6 +20,8 @@ interface ScheduleResponse {
   effortUnit: 'hours' | 'days' | 'points';
   unitsPerDay: number;
   workerCount: number;
+  /** Nodes whose projected end lands after their due date (#113). */
+  dueViolations?: DueViolation[];
 }
 
 // ── Constants ─────────────────────────────────────────────────────
@@ -285,6 +287,9 @@ export function GanttView() {
   const [workersInput, setWorkersInput] = useState<number>(1);
   const [savingWorkers, setSavingWorkers] = useState(false);
   const [showBehindOnly, setShowBehindOnly] = useState(false);
+  // "Misses its due date" filter (#113): the projection lands after a pin.
+  const [lateOnly, setLateOnly] = useState(false);
+  const [baselineBusy, setBaselineBusy] = useState(false);
   // Requirements-only mode: the chart collapses to the requirement register
   // (nodes carrying a requirementId) instead of every task in the tree.
   // Persisted like hideDone — it is a way of reading the plan, not a
@@ -357,6 +362,10 @@ export function GanttView() {
 
   const scheduleData: ScheduleResponse | null = serverScheduleData;
   const criticalPath = scheduleData?.criticalPath ?? null;
+  const lateById = useMemo(
+    () => new Map((scheduleData?.dueViolations ?? []).map((v) => [v.nodeId, v])),
+    [scheduleData],
+  );
 
   // Sync the visible Workers input to whatever the server says.
   useEffect(() => {
@@ -490,6 +499,22 @@ export function GanttView() {
       }
     }
 
+    // "Misses its due date" keeps late nodes plus their ancestors.
+    const lateKeep = new Set<string>();
+    if (lateOnly) {
+      const parentOf = new Map<string, string>();
+      for (const n of Object.values(nodes)) {
+        for (const cid of n.childrenIds) parentOf.set(cid, n.id);
+      }
+      for (const id of lateById.keys()) {
+        let cur: string | undefined = id;
+        while (cur && !lateKeep.has(cur)) {
+          lateKeep.add(cur);
+          cur = parentOf.get(cur);
+        }
+      }
+    }
+
     // "Requirements only" — requirement nodes + their connecting ancestors,
     // so the chart reads as one bar per REQ-ID (see collectRequirementKeepIds).
     const reqKeep = reqOnlyActive ? collectRequirementKeepIds(nodes) : new Set<string>();
@@ -500,6 +525,7 @@ export function GanttView() {
     const emitsRow = (nodeId: string): boolean => {
       if (scopeFilterActive && !inScope.has(nodeId)) return false;
       if (showBehindOnly && !behindKeep.has(nodeId)) return false;
+      if (lateOnly && !lateKeep.has(nodeId)) return false;
       if (reqOnlyActive && !reqKeep.has(nodeId)) return false;
       return true;
     };
@@ -561,6 +587,8 @@ export function GanttView() {
     activeCycleFilter,
     activePhaseFilter,
     showBehindOnly,
+    lateOnly,
+    lateById,
     hideDone,
     doneSet,
     computed,
@@ -574,7 +602,9 @@ export function GanttView() {
     const bl = currentMap.baselines.find((b) => b.id === selectedBaseline);
     if (!bl) return map;
     for (const [nodeId, snap] of Object.entries(bl.nodes)) {
-      map.set(nodeId, { startDate: snap.startDate, dueDate: snap.dueDate });
+      // The projected bar frozen with the baseline (#113); older baselines
+      // only carry the hand-set dates.
+      map.set(nodeId, { startDate: snap.plannedStart ?? snap.startDate, dueDate: snap.plannedEnd ?? snap.dueDate });
     }
     return map;
   }, [selectedBaseline, currentMap]);
@@ -1220,10 +1250,70 @@ export function GanttView() {
           {hideDone ? 'Hide done ✓' : 'Hide done'}
         </button>
 
+        {/* Missed due dates (#113) */}
+        {lateById.size > 0 && (
+          <>
+            <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+            <button
+              onClick={() => setLateOnly((v) => !v)}
+              title={[...lateById.values()].slice(0, 10).map((v) => `${v.text}: due ${v.dueDate}, projected ${v.projectedEnd} (${v.lateDays}d late)`).join('\n')}
+              style={{
+                padding: '3px 10px',
+                borderRadius: 4,
+                border: '1px solid #dc2626',
+                fontSize: 11,
+                fontWeight: 600,
+                fontFamily: 'inherit',
+                cursor: 'pointer',
+                background: lateOnly ? '#dc2626' : '#fef2f2',
+                color: lateOnly ? '#fff' : '#b91c1c',
+              }}
+            >
+              {lateById.size} {lateById.size === 1 ? 'node misses its' : 'nodes miss their'} due date
+            </button>
+          </>
+        )}
+
+        {/* Freeze baseline (#113): snapshot the projection as drawn now */}
+        <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
+        <button
+          disabled={baselineBusy || !currentMapId}
+          title="Freeze the schedule as it is projected right now. Pick it in the Baseline list to see later drift as ghost bars."
+          onClick={async () => {
+            if (!currentMapId) return;
+            const suggested = `Baseline ${new Date().toISOString().slice(0, 10)}`;
+            const name = window.prompt('Name this baseline', suggested);
+            if (name === null) return;
+            setBaselineBusy(true);
+            try {
+              const updated = await createBaseline(currentMapId, name.trim() || suggested);
+              useMindmapStore.setState({ currentMap: updated });
+              const newest = updated.baselines[updated.baselines.length - 1];
+              if (newest) setSelectedBaseline(newest.id);
+            } catch (err) {
+              alert(err instanceof Error ? err.message : String(err));
+            } finally {
+              setBaselineBusy(false);
+            }
+          }}
+          style={{
+            padding: '3px 10px',
+            borderRadius: 4,
+            border: '1px solid #cbd5e1',
+            fontSize: 11,
+            fontWeight: 600,
+            fontFamily: 'inherit',
+            cursor: baselineBusy ? 'wait' : 'pointer',
+            background: '#fff',
+            color: '#475569',
+          }}
+        >
+          Freeze baseline
+        </button>
+
         {/* Baseline selector */}
         {baselines.length > 0 && (
           <>
-            <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
             <span style={{ fontWeight: 600, color: '#64748b' }}>Baseline:</span>
             <select
               value={selectedBaseline ?? ''}
@@ -1245,6 +1335,31 @@ export function GanttView() {
                 </option>
               ))}
             </select>
+            {selectedBaseline && (
+              <button
+                disabled={baselineBusy}
+                aria-label="Delete this baseline"
+                title="Delete this baseline"
+                onClick={async () => {
+                  if (!currentMapId || !selectedBaseline) return;
+                  const bl = baselines.find((b) => b.id === selectedBaseline);
+                  if (!window.confirm(`Delete baseline "${bl?.name ?? ''}"?`)) return;
+                  setBaselineBusy(true);
+                  try {
+                    const updated = await deleteBaseline(currentMapId, selectedBaseline);
+                    useMindmapStore.setState({ currentMap: updated });
+                    setSelectedBaseline(null);
+                  } catch (err) {
+                    alert(err instanceof Error ? err.message : String(err));
+                  } finally {
+                    setBaselineBusy(false);
+                  }
+                }}
+                style={{ border: 'none', background: 'none', color: '#94a3b8', cursor: 'pointer', fontSize: 13, padding: '0 2px' }}
+              >
+                ×
+              </button>
+            )}
           </>
         )}
 
@@ -1815,7 +1930,16 @@ export function GanttView() {
                     row.node.status
                       ? (STATUS_LABELS[row.node.status] ?? row.node.status)
                       : 'no status';
-                  const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)\n${Math.round(progress)}% · ${statusLabel}`;
+                  const late = lateById.get(row.node.id);
+                  const pinned = Boolean(row.node.startDate || row.node.dueDate);
+                  const pinLine = pinned
+                    ? `\n⚓ ${[row.node.startDate ? `not before ${row.node.startDate.slice(0, 10)}` : null, row.node.dueDate ? `due ${row.node.dueDate.slice(0, 10)}` : null].filter(Boolean).join(', ')}`
+                    : '';
+                  const lateLine = late ? `\n⚠ ${late.lateDays} day${late.lateDays === 1 ? '' : 's'} past due ${late.dueDate}` : '';
+                  const tooltip = `${row.node.text}\n${fmt(startDate)} → ${fmt(dueDate)}  (${durDays}d)\n${Math.round(progress)}% · ${statusLabel}${pinLine}${lateLine}`;
+                  // The part of the bar past the due date, drawn red (#113).
+                  const dueAt = late ? parseDate(late.dueDate) : null;
+                  const dueX = dueAt ? Math.max(x, Math.min(x + w, getBarX(dueAt))) : null;
                   return (
                     <g
                       key={`bar-${row.node.id}`}
@@ -1852,6 +1976,19 @@ export function GanttView() {
                           fill={barColor}
                           opacity={0.7}
                         />
+                      )}
+                      {/* Missed due date: the overrun in red, a line at the due date */}
+                      {dueX !== null && (
+                        <>
+                          <rect x={dueX} y={y} width={Math.max(2, x + w - dueX)} height={barH} rx={2} fill="#dc2626" opacity={0.35} />
+                          <line x1={dueX} x2={dueX} y1={y - 3} y2={y + barH + 3} stroke="#dc2626" strokeWidth={2} />
+                        </>
+                      )}
+                      {/* Pinned by a start or due date */}
+                      {pinned && (
+                        <text x={x - 11} y={centerY + 4} fontSize={10} fill={late ? '#dc2626' : '#64748b'}>
+                          ⚓
+                        </text>
                       )}
                       {/* Text label on bar */}
                       {w > 50 && (

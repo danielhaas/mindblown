@@ -215,7 +215,11 @@ export interface ScheduleResult {
     computedStart: number;
     computedEnd: number;
     duration: number;
+    /** Projected end past the node's due date, in scheduler units (#113). */
+    dueOverrun?: number;
   }>;
+  /** Nodes whose projected end lands after their due date, worst first (#113). */
+  dueViolations?: Array<{ nodeId: string; text: string; dueDate: string; projectedEnd: string; lateDays: number }>;
   criticalPath: {
     path: string[];
     totalDuration: number;
@@ -503,6 +507,19 @@ export function deleteMap(mapId: string): Promise<void> {
   return request<void>(`/api/maps/${mapId}`, {
     method: 'DELETE',
   });
+}
+
+/** Freeze the current projection as a baseline (#113); the server returns the map. */
+export async function freezeBaseline(
+  mapId: string,
+  name?: string,
+): Promise<{ id: string; name: string; createdAt: string; nodeCount: number }> {
+  const map = await request<{ baselines: Array<{ id: string; name: string; createdAt: string; nodes: Record<string, unknown> }> }>(
+    `/api/maps/${mapId}/baseline`,
+    { method: 'POST', body: JSON.stringify(name ? { name } : {}) },
+  );
+  const b = map.baselines[map.baselines.length - 1];
+  return { id: b.id, name: b.name, createdAt: b.createdAt, nodeCount: Object.keys(b.nodes ?? {}).length };
 }
 
 export function getSchedule(mapId: string, versionId?: string): Promise<ScheduleResult> {

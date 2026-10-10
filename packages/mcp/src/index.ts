@@ -3285,7 +3285,7 @@ toolWithAlias(
 
 server.tool(
   'get_schedule',
-  'Get computed schedule and critical path for a map. The critical path is capacity-aware: the chain that decides the projected end under the map\'s workerCount — a task is on it when it waited for a dependency OR for a free worker. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
+  'Get computed schedule and critical path for a map, plus every node whose projected end lands after its due date (a due date is a deadline: it never moves or stretches the bar). The critical path is capacity-aware: the chain that decides the projected end under the map\'s workerCount — a task is on it when it waited for a dependency OR for a free worker. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
   {
     mapId: z.string().describe('The map ID'),
     versionId: z
@@ -3297,15 +3297,22 @@ server.tool(
     try {
       const scheduleData = await api.getSchedule(mapId, versionId);
       const mapData = await api.getMap(mapId);
-      const report = formatScheduleReport(mapData, scheduleData);
+      const lines = [formatScheduleReport(mapData, scheduleData)];
+      // Missed deadlines (#113): the projection lands after a node's due date.
+      const late = scheduleData.dueViolations ?? [];
+      if (late.length > 0) {
+        lines.push('', `## Missed due dates (${late.length})`);
+        for (const v of late) {
+          lines.push(`  - "${v.text}" [${v.nodeId}]: due ${v.dueDate}, projected ${v.projectedEnd} — ${v.lateDays} day(s) late`);
+        }
+      }
       if (versionId && scheduleData.crossVersionDependencies && scheduleData.crossVersionDependencies.length > 0) {
-        const lines = [report, '', '## Cross-version dependencies (dropped from scheduler)'];
+        lines.push('', '## Cross-version dependencies (dropped from scheduler)');
         for (const dep of scheduleData.crossVersionDependencies) {
           lines.push(`  - "${dep.fromText}" → "${dep.toText}" (${dep.type})`);
         }
-        return toolResult(lines.join('\n'));
       }
-      return toolResult(report);
+      return toolResult(lines.join('\n'));
     } catch (err) {
       return toolError(err);
     }
