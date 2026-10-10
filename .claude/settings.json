@@ -8,6 +8,7 @@
       "mcp__mindblown__list_cycles",
       "mcp__mindblown__get_schedule",
       "mcp__mindblown__github_sync_overview",
+      "mcp__mindblown__forge_sync_overview",
       "mcp__mindblown__list_triage_decisions",
       "mcp__mindblown__get_wip_status",
       "mcp__mindblown__requirements_overview",
