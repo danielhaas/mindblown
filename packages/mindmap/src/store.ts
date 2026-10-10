@@ -1249,7 +1249,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
         set({
           nodes: current,
           computed: recomputeValues(current),
-          error: `${failed.length} of ${results.length} updates failed — someone else may have changed those nodes.`,
+          error: `${failed.length} of ${results.length} updates failed${failed.some((r) => !r.ok && r.error.code === 'REVISION_CONFLICT') ? ' — some nodes were changed by someone else and now show their version' : ''}.`,
         });
       })
       .catch(() => revert(prev.keys(), 'Failed to update nodes'));

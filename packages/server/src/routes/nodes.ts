@@ -392,7 +392,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
     > = [];
     for (const raw of items as Array<{ id?: unknown; fields?: unknown; expectedRevision?: unknown }>) {
       const id = typeof raw?.id === 'string' ? raw.id : '';
-      if (!id || typeof raw.fields !== 'object' || raw.fields === null) {
+      if (!id || typeof raw.fields !== 'object' || raw.fields === null || Array.isArray(raw.fields)) {
         results.push({ id, ok: false, status: 400, error: { code: 'VALIDATION_ERROR', message: 'each item needs an id and a fields object' } });
         continue;
       }
@@ -402,8 +402,18 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         continue;
       }
       const expectedRevision = typeof raw.expectedRevision === 'number' ? raw.expectedRevision : undefined;
-      const result = await applyNodeUpdate(req.params.id, id, raw.fields as nodeDb.UpdateNodeInput, expectedRevision, req.userId ?? null);
-      results.push(result.ok ? { id, ok: true, node: result.node } : { id, ok: false, status: result.status, error: result.error });
+      // Same shape as PUT: the lock lives next to the fields, not in them.
+      const { expectedRevision: _ignored, ...fields } = raw.fields as nodeDb.UpdateNodeInput & { expectedRevision?: unknown };
+      try {
+        const result = await applyNodeUpdate(req.params.id, id, fields, expectedRevision, req.userId ?? null);
+        results.push(result.ok ? { id, ok: true, node: result.node } : { id, ok: false, status: result.status, error: result.error });
+      } catch (err) {
+        // Earlier items are committed and broadcast — an unexpected error on
+        // one item must not turn the whole answer into a 500 the client
+        // would read as "nothing happened".
+        req.log.error({ err, nodeId: id }, 'bulk node update failed');
+        results.push({ id, ok: false, status: 500, error: { code: 'INTERNAL_ERROR', message: 'Update failed' } });
+      }
     }
     const failed = results.filter((r) => !r.ok).length;
     return reply.send({ results, updated: results.length - failed, failed });

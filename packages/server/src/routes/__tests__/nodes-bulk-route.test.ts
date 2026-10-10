@@ -85,7 +85,17 @@ describe('PATCH /nodes/bulk (#115)', () => {
     expect((await patch({ updates: [] })).statusCode).toBe(400);
     expect((await patch({ updates: Array.from({ length: 501 }, () => ({ id: 'a', fields: {} })) })).statusCode).toBe(400);
     mocks.updateNode.mockResolvedValue({ id: 'a', mapId: 'm1', parentId: 'root', externalLinks: [], completedAt: null, status: null, blockedReason: null });
-    const res = await patch({ updates: [{ id: 'a' }, { id: 'a', fields: { text: 'x' } }] });
-    expect(res.json().results.map((r: { ok: boolean }) => r.ok)).toEqual([false, true]);
+    const res = await patch({ updates: [{ id: 'a' }, { id: 'a', fields: [] }, { id: 'a', fields: { text: 'x', expectedRevision: 7 } }] });
+    expect(res.json().results.map((r: { ok: boolean }) => r.ok)).toEqual([false, false, true]);
+    expect(mocks.updateNode).toHaveBeenLastCalledWith('a', { text: 'x' }, undefined); // lock key stripped from fields
+  });
+
+  it('an unexpected error on one item is that item\'s 500 — the rest still answer', async () => {
+    mocks.updateNode
+      .mockRejectedValueOnce(new Error('db hiccup'))
+      .mockResolvedValueOnce({ id: 'b', mapId: 'm1', parentId: 'root', externalLinks: [], completedAt: null, status: null, blockedReason: null });
+    const res = await patch({ updates: [{ id: 'a', fields: { text: 'x' } }, { id: 'b', fields: { text: 'y' } }] });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().results.map((r: { ok: boolean; status?: number }) => [r.ok, r.status])).toEqual([[false, 500], [true, undefined]]);
   });
 });

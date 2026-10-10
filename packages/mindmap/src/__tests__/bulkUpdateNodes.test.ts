@@ -72,7 +72,7 @@ describe('bulkUpdateNodes (#115)', () => {
     await flush();
     await flush();
     expect(ranks()).toEqual([65536, 42, 1]);
-    expect(useMindmapStore.getState().error).toContain('2 of 3 updates failed');
+    expect(useMindmapStore.getState().error).toContain('2 of 3 updates failed — some nodes were changed by someone else');
   });
 
   it('a failed request reverts the whole batch', async () => {
