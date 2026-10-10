@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, isNotNull, isNull, ne, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
@@ -1035,7 +1036,7 @@ export async function findNodeIdByExternalId(
   const rows = await db
     .select({ id: nodes.id, externalLinks: nodes.externalLinks })
     .from(nodes)
-    .where(and(notDeleted, onActiveMap));
+    .where(and(notDeleted, onActiveMap, linksAnyExternalId([externalId])));
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];
     if (links.some((l) => isForgeLink(l) && l.externalId === externalId)) {

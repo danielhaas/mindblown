@@ -20,6 +20,7 @@
  */
 
 import { and, eq, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { db } from '../db/connection.js';
 import { nodes } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -117,7 +118,7 @@ async function findNodesByExternalIds(
       linkedPr: nodes.linkedPr,
     })
     .from(nodes)
-    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap)); // archived maps: no PR sync
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap, linksAnyExternalId(wanted))); // archived maps: no PR sync
   const out: NodeRef[] = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];

@@ -1123,5 +1123,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── Issue-link lookups (#310) ──────────────────────────────────
+  // Webhooks and the catch-up find nodes by `external_links @> [{externalId}]`;
+  // jsonb_path_ops answers containment and is small.
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS nodes_external_links_gin ON nodes USING gin (external_links jsonb_path_ops)
+  `);
+
   console.log('[db] Migrations complete.');
 }

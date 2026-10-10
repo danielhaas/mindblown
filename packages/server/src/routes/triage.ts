@@ -57,6 +57,7 @@ import { guardMapRoutes } from '../lib/mapAccess.js';
 
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { db } from '../db/connection.js';
 import { maps, nodes, triageDecisions, triageDecisionHistory } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -1609,7 +1610,7 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         const mapNodes = await db
           .select({ id: nodes.id, externalLinks: nodes.externalLinks })
           .from(nodes)
-          .where(and(eq(nodes.mapId, req.params.mapId), notDeleted));
+          .where(and(eq(nodes.mapId, req.params.mapId), notDeleted, linksAnyExternalId([row.externalId as string])));
         for (const n of mapNodes) {
           const links = (n.externalLinks as ExternalLink[]) ?? [];
           if (links.some((l) => isForgeLink(l) && l.externalId === row.externalId)) {

@@ -39,6 +39,7 @@
  */
 
 import { and, eq } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue, ForgeClient } from '@mindblown/integrations';
 import { fetchChangedIssues } from '@mindblown/integrations';
 import type { ExternalLink, Node } from '@mindblown/core';
@@ -196,7 +197,7 @@ export function updateChildPrsTailLine(
  */
 async function findNodesByExternalId(externalId: string): Promise<Node[]> {
   // Archived maps are frozen: their parents are never rolled up.
-  const rows = await db.select().from(nodes).where(and(nodeDb.notDeleted, nodeDb.onActiveMap));
+  const rows = await db.select().from(nodes).where(and(nodeDb.notDeleted, nodeDb.onActiveMap, linksAnyExternalId([externalId])));
   const out: Node[] = [];
   for (const row of rows) {
     const links = (row.externalLinks as ExternalLink[]) ?? [];

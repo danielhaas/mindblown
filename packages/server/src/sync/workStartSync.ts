@@ -23,6 +23,7 @@
  */
 
 import { and, eq } from 'drizzle-orm';
+import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import { resolveStatusDef, isForgeLink } from '@mindblown/core';
 import type { ExternalLink, StatusDef } from '@mindblown/core';
 
@@ -95,7 +96,7 @@ export async function markWorkStarted(
       externalLinks: nodes.externalLinks,
     })
     .from(nodes)
-    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap)); // archived maps: no work-start sync
+    .where(and(nodeDb.notDeleted, nodeDb.onActiveMap, linksAnyExternalId(wanted))); // archived maps: no work-start sync
 
   const matched: MatchedNode[] = [];
   for (const row of rows) {

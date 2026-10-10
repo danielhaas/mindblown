@@ -25,6 +25,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // here; we test the per-repo paths separately by calling
 // `pushCatchupHeartbeat` directly with synthetic results.
 
+// The SQL pre-filter (#310) is a raw jsonb predicate this file's drizzle
+// stub can't evaluate; the JS check after it decides, so pass everything.
+vi.mock('../../db/externalLinkFilter.js', () => ({ linksAnyExternalId: () => ({ __pred: true, check: () => true }) }));
 vi.mock('drizzle-orm', async () => {
   const actual = await vi.importActual<Record<string, unknown>>('drizzle-orm');
   return {
