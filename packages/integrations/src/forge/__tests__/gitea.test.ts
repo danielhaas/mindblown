@@ -1,8 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { GiteaForge, giteaEndpoint, normalizeGiteaIssue, normalizeGiteaWebhookAction } from '../gitea.js';
 import { readWebhookHeaders, verifyWebhookSignature } from '../webhook.js';
-import { GitHubScanTruncatedError } from '../pagination.js';
-import { findClosingPrsForIssue, getIssueCloseEvent, importGitHubIssues, fetchChangedIssues, setGitHubIssueMilestone } from '../../github.js';
+import { GitHubScanTruncatedError, walkIssueScan } from '../pagination.js';
+import { GitHubForge } from '../github.js';
+import {
+  findClosingPrsForIssue,
+  getIssueCloseEvent,
+  importGitHubIssues,
+  fetchChangedIssues,
+  probeIssueLanded,
+  setGitHubIssueMilestone,
+  updateGitHubIssue,
+} from '../../github.js';
 import { describeForgeContract, fakeTransport, EXPECTED_ISSUE_MATCH } from './forge-contract.js';
 import {
   giteaIssue,
@@ -160,6 +169,14 @@ describe('GiteaForge wire format', () => {
     expect(res.bodyText).toContain('does-not-exist');
   });
 
+  it('addIssueLabels: nothing applied comes back as `null` — still the 422, not a crash', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 200, body: 'null' });
+    const res = await forge.addIssueLabels('dan', 'r', 1, ['does-not-exist']);
+    expect(res.status).toBe(422);
+  });
+
   it('removeIssueLabel: resolves the name to an id; unknown name → 404 without a DELETE', async () => {
     const t = fakeTransport();
     const forge = forgeWith(t);
@@ -222,6 +239,27 @@ describe('GiteaForge wire format', () => {
     await expect(forge.getLatestCloseEvent('dan', 'r', 3)).rejects.toBeInstanceOf(GitHubScanTruncatedError);
   });
 
+  it('an empty list arrives as `null` and reads as empty — timeline, milestones, search, PR files', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    const empty = { status: 200, body: 'null' };
+    t.respond(empty, empty, empty, empty, empty);
+    expect(await forge.listCrossReferencingPullRequests('dan', 'r', 9)).toEqual([]);
+    expect(await forge.getLatestCloseEvent('dan', 'r', 9)).toBeNull();
+    expect(await forge.listMilestones('dan', 'r')).toEqual([]);
+    expect(await forge.searchIssues('dan', 'r', 'nothing')).toEqual([]);
+    expect(await forge.listPullRequestFiles('dan', 'r', 4)).toEqual([]);
+  });
+
+  it('GitHub keeps the strict list check — `null` there is a shape change', async () => {
+    const t = fakeTransport();
+    t.respond({ status: 200, body: 'null' });
+    const github = new GitHubForge({ token: 'ghp_x', fetchImpl: t.fetchImpl });
+    await expect(walkIssueScan('/repos/o/r/issues/1/timeline', github, 'issue timeline', 'o/r#1')).rejects.toThrow(
+      /Expected a list/,
+    );
+  });
+
   it('PR list path uses Gitea sort vocabulary; PR files use limit', async () => {
     const t = fakeTransport();
     const forge = forgeWith(t);
@@ -256,6 +294,32 @@ describe('sync operations on Gitea', () => {
     // Issue #2 is only MENTIONED by PR #4 — no closing keyword for it.
     t.respond({ status: 200, body: giteaTimelineIssue3 }, { status: 200, body: giteaPullRequest });
     expect(await findClosingPrsForIssue('dan', 'mindblown-forge-test', 2, forge)).toEqual([]);
+  });
+
+  it('probeIssueLanded on an issue with no timeline yet: nothing in flight, so a done node may close it', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond({ status: 200, body: { default_branch: 'main' } }, { status: 200, body: 'null' });
+    expect(await probeIssueLanded('dan', 'r', 9, forge)).toMatchObject({ landed: null, inFlight: false });
+  });
+
+  it('updateGitHubIssue: a done node closes an issue with no timeline yet instead of holding on probe_failed', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond(
+      { status: 200, body: { default_branch: 'main' } }, // probe: repo
+      { status: 200, body: 'null' }, // probe: empty timeline
+      { status: 201, body: { ...giteaIssue, state: 'closed' } }, // PATCH
+      { status: 200, body: 'null' }, // repo labels: none
+      { status: 404, body: { message: 'not an org' } }, // org labels
+      { status: 200, body: 'null' }, // label PUT: empty set
+    );
+    const node = { id: 'n1', mapId: 'm1', text: 'Done thing', description: null, tags: [], priority: null, status: 'done', percentComplete: 100, linkedPr: null, completedAt: null, externalLinks: [] };
+    const link = { provider: 'gitea', externalId: 'dan/r#9', url: '', syncEnabled: true };
+    const res = await updateGitHubIssue(node as never, link as never, forge);
+    expect(res.holdReason).toBeNull();
+    expect(res.stateAction).toBe('closed_completed');
+    expect(t.calls.find((c) => c.method === 'PATCH')?.body).toContain('"state":"closed"');
   });
 
   it('getIssueCloseEvent reads the timeline close entry', async () => {
