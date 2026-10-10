@@ -179,7 +179,7 @@ export const reclassifyTriageTool = defineTool({
 export const confirmTriageTool = defineTool({
   name: 'confirm_triage',
   description:
-    "Mark a triage decision row as reviewed without changing parentage. Use this when the existing auto-decision (place/skip/uncertain) is correct and you just want to accept it. Does NOT take a parentNodeId — the dedicated route prevents the #100 Round 2 self-loop where 'confirm' was previously routed through override with parentNodeId === placedNodeId. Caller must have edit permission.",
+    "Mark a triage decision row as reviewed without changing parentage. Use this when the existing auto-decision (place/skip/uncertain) is correct and you just want to accept it. Does NOT take a parentNodeId — the dedicated route prevents the #100 Round 2 self-loop where 'confirm' was previously routed through override with parentNodeId === placedNodeId. A place decision parked in the Inbox is moved under its suggested parent; a place decision that has NO node yet is refused (PLACE_CONFIRM_REQUIRES_PARENT, the error names the suggested parent) — create it with override_triage(decision: 'place', parentNodeId). Caller must have edit permission.",
   schema: {
     mapId: z.string().describe('The map ID'),
     decisionId: z.string().describe('The triage decision row ID'),

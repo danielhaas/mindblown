@@ -185,6 +185,64 @@ function broadcastTriageUpdated(
 
 // ── Routes ────────────────────────────────────────────────────────
 
+/**
+ * What confirming a decision must do to the plan before the row is
+ * stamped reviewed — shared by the single and the bulk confirm. Returns
+ * the error to answer with, or null when the row may be stamped.
+ *
+ *   - a PLACE row whose node is still PARKED under the Inbox (#316): the
+ *     placement is applied (moved under the suggested parent, lane set);
+ *     only stamping reviewed would lock the node under the Inbox forever,
+ *     since operator-reviewed rows block every auto re-triage;
+ *   - a PLACE row with NO node at all (#198): refused — stamping it
+ *     reviewed created nothing and dropped the issue from the review
+ *     queue for good. The error names the suggested parent so the
+ *     caller can route it with override in one call.
+ */
+async function applyConfirmPlacement(
+  mapId: string,
+  row: typeof triageDecisions.$inferSelect,
+): Promise<{ code: string; message: string; suggestedParentNodeId?: string | null } | null> {
+  if (row.decision !== 'place') return null;
+  const suggested = (row.suggestedParentNodeId as string | null) ?? null;
+  const placedId = (row.placedNodeId as string | null) ?? null;
+  if (!placedId) {
+    return {
+      code: 'PLACE_CONFIRM_REQUIRES_PARENT',
+      message: suggested
+        ? `This place decision has no node yet — use override with parentNodeId ${suggested} (the suggested parent) to create it.`
+        : 'This place decision has no node and no suggested parent — use override with an explicit parentNodeId to create it.',
+      suggestedParentNodeId: suggested,
+    };
+  }
+  const parkedId = await findParkedNodeId(mapId, placedId);
+  if (!parkedId) return null;
+  const [parent] = suggested
+    ? await db
+        .select({ id: nodes.id, mapId: nodes.mapId })
+        .from(nodes)
+        .where(and(eq(nodes.id, suggested), notDeleted))
+    : [undefined];
+  if (!parent || parent.mapId !== mapId) {
+    return {
+      code: 'PARKED_NEEDS_OVERRIDE',
+      message:
+        'This place decision is parked in the Inbox and has no valid suggested parent — use /override with an explicit parentNodeId to route it.',
+    };
+  }
+  const movedNode = await nodeDb.moveNode(parkedId, suggested as string);
+  if (movedNode) {
+    if (row.issueState !== 'closed') {
+      const laneId = await resolveIngestVersionId(db, mapId, {
+        suggestedVersionId: (row.suggestedVersionId as string | null) ?? null,
+      });
+      if (laneId) await nodeDb.updateNode(parkedId, { versionId: laneId });
+    }
+    broadcast(mapId, { type: 'node:moved', nodeId: parkedId, newParentId: suggested, position: undefined });
+  }
+  return null;
+}
+
 export async function triageRoutes(app: FastifyInstance): Promise<void> {
   // 401 anonymous, 403 below view (reads) / edit (writes) on the map (#403);
   // the session-JWT-only rule below stays the handlers' own.
@@ -1384,47 +1442,8 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      // Inbox-fallback (#316): confirming a PLACE row whose node is
-      // still PARKED must apply the placement — one-click Confirm that
-      // only stamped reviewed would lock the node under the Inbox
-      // forever (operator-reviewed rows block all auto re-triage).
-      const parkedId = await findParkedNodeId(
-        req.params.mapId,
-        (row.placedNodeId as string | null) ?? null,
-      );
-      if (row.decision === 'place' && parkedId) {
-        const target = (row.suggestedParentNodeId as string | null) ?? null;
-        const [parent] = target
-          ? await db
-              .select({ id: nodes.id, mapId: nodes.mapId })
-              .from(nodes)
-              .where(and(eq(nodes.id, target), notDeleted))
-          : [undefined];
-        if (!parent || parent.mapId !== req.params.mapId) {
-          return reply.status(400).send({
-            error: {
-              code: 'PARKED_NEEDS_OVERRIDE',
-              message:
-                'This place decision is parked in the Inbox and has no valid suggested parent — use /override with an explicit parentNodeId to route it.',
-            },
-          });
-        }
-        const movedNode = await nodeDb.moveNode(parkedId, target as string);
-        if (movedNode) {
-          if (row.issueState !== 'closed') {
-            const laneId = await resolveIngestVersionId(db, req.params.mapId, {
-              suggestedVersionId: (row.suggestedVersionId as string | null) ?? null,
-            });
-            if (laneId) await nodeDb.updateNode(parkedId, { versionId: laneId });
-          }
-          broadcast(req.params.mapId, {
-            type: 'node:moved',
-            nodeId: parkedId,
-            newParentId: target,
-            position: undefined,
-          });
-        }
-      }
+      const blocked = await applyConfirmPlacement(req.params.mapId, row);
+      if (blocked) return reply.status(400).send({ error: blocked });
 
       // Stamp reviewed + operator. Intentionally NOT touching
       // placedNodeId, decision, reason, or confidence — confirm means
@@ -2226,6 +2245,13 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           continue;
         }
         try {
+          // Same rules as the single confirm (#198, #316): a parked
+          // placement is applied, a place row without a node is refused.
+          const blocked = await applyConfirmPlacement(req.params.mapId, row);
+          if (blocked) {
+            results.push({ id, error: blocked });
+            continue;
+          }
           await db
             .update(triageDecisions)
             .set({

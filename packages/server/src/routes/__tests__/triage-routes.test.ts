@@ -40,6 +40,8 @@ interface TriageRow {
 }
 
 const triageRows = new Map<string, TriageRow>();
+// Map rows for the Inbox lookup (findParkedNodeId); empty = no Inbox.
+const mapRows = new Map<string, { id: string; githubInboxNodeId: string | null }>();
 // #140 added `externalLinks` so the not-in-mindblown route's orphan
 // branch can filter out issues already attached to a node. Tests that
 // don't care about orphans seed `nodes` without setting externalLinks
@@ -133,6 +135,8 @@ function buildSelectChain(fields?: Record<string, unknown>) {
         );
     } else if (step.table === 'versions') {
       rows = []; // no lane rows seeded → place paths stay unversioned
+    } else if (step.table === 'maps') {
+      rows = [...mapRows.values()].map((m) => ({ ...m, inbox: m.githubInboxNodeId }));
     }
     const filtered = applyPred(rows, step.pred);
     if (isCountSelect) {
@@ -268,7 +272,7 @@ vi.mock('../../db/connection.js', () => {
 vi.mock('../../db/schema.js', () => {
   const col = (name: string) => ({ __col: name });
   return {
-    maps: { __name: 'maps', id: col('id') },
+    maps: { __name: 'maps', id: col('id'), githubInboxNodeId: col('githubInboxNodeId') },
     nodes: {
       __name: 'nodes',
       id: col('id'),
@@ -519,6 +523,7 @@ async function buildApp(authSource: 'jwt' | 'api-key' | 'none'): Promise<Fastify
 
 beforeEach(() => {
   triageRows.clear();
+  mapRows.clear();
   nodes.clear();
   historyRows.clear();
   permissionLevel = 'edit';
@@ -1096,6 +1101,19 @@ describe('POST .../confirm', () => {
     expect(row.decision).toBe('skip');
   });
 
+  it('a place decision with NO node is refused (#198) — names the suggested parent, does not mark reviewed', async () => {
+    seedRow({ id: 'tr-1', decision: 'place', placedNodeId: null, suggestedParentNodeId: 'epic-A', reviewed: false });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({ method: 'POST', url: '/api/maps/map-1/triage-decisions/tr-1/confirm' });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('PLACE_CONFIRM_REQUIRES_PARENT');
+    expect(res.json().error.suggestedParentNodeId).toBe('epic-A');
+    expect(triageRows.get('tr-1')!.reviewed).toBe(false);
+    expect(createNodeMock).not.toHaveBeenCalled();
+  });
+
   it('404 when the row does not exist', async () => {
     permissionLevel = 'edit';
     const app = await buildApp('jwt');
@@ -1481,6 +1499,46 @@ describe('GET /api/maps/:mapId/triage-decisions — Phase 2 filters', () => {
 });
 
 // ── Bulk routes — Phase 2 (#95) ──────────────────────────────────
+
+describe('POST .../bulk-confirm — placement rules shared with the single confirm (#198, #316)', () => {
+  it('a place row without a node gets a per-item error and stays unreviewed; the others confirm', async () => {
+    seedRow({ id: 'a', decision: 'skip', reviewed: false });
+    seedRow({ id: 'b', decision: 'place', placedNodeId: null, suggestedParentNodeId: 'epic-A', reviewed: false });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['a', 'b'] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const byId = Object.fromEntries(res.json().results.map((r: { id: string }) => [r.id, r]));
+    expect(byId.a.status).toBe('confirmed');
+    expect(byId.b.error.code).toBe('PLACE_CONFIRM_REQUIRES_PARENT');
+    expect(triageRows.get('a')!.reviewed).toBe(true);
+    expect(triageRows.get('b')!.reviewed).toBe(false);
+  });
+
+  it('a parked placement is applied — moved under its suggested parent — before the row is stamped', async () => {
+    mapRows.set('map-1', { id: 'map-1', githubInboxNodeId: 'inbox' });
+    nodes.set('inbox', { id: 'inbox', mapId: 'map-1', parentId: 'root' });
+    nodes.set('parked', { id: 'parked', mapId: 'map-1', parentId: 'inbox' });
+    nodes.set('epic-A', { id: 'epic-A', mapId: 'map-1', parentId: 'root' });
+    seedRow({ id: 'p', decision: 'place', placedNodeId: 'parked', suggestedParentNodeId: 'epic-A', reviewed: false });
+    permissionLevel = 'edit';
+    const app = await buildApp('jwt');
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/maps/map-1/triage-decisions/bulk-confirm',
+      payload: { decisionIds: ['p'] },
+    });
+    await app.close();
+    expect(res.json().results[0].status).toBe('confirmed');
+    expect(moveNodeMock).toHaveBeenCalledWith('parked', 'epic-A');
+    expect(triageRows.get('p')!.reviewed).toBe(true);
+  });
+});
 
 describe('POST .../bulk-confirm', () => {
   it('marks every supplied row reviewed=true, returns per-item ok', async () => {
