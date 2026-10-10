@@ -447,16 +447,21 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   });
 
   // 9. sprint-state (map-level, #324) — the Sprint panel's own signals,
-  // so Plan Health and the panel cannot disagree about a sprint.
-  const sprintFindings: LintFinding[] = [];
+  // so Plan Health and the panel cannot disagree about a sprint. ONE
+  // summary finding, like every map-level rule: dismissing a map-level
+  // finding mutes the rule, so per-sprint findings would let one dismiss
+  // silence every other sprint's problem.
+  const sprintProblems: string[] = [];
   for (const sprint of opts.sprints ?? []) {
     if (sprint.status === 'completed') continue;
-    const sig = sprintSignals({ sprint, sprints: opts.sprints!, items: [], wipLimit: null, now });
-    if (sig.stateIssue) sprintFindings.push(mapFinding(`Sprint "${sprint.name}": ${sig.stateIssue}`));
+    const sig = sprintSignals({ sprint, sprints: opts.sprints!, items: [], now });
+    if (sig.stateIssue) sprintProblems.push(`"${sprint.name}": ${sig.stateIssue}`);
     if (sig.overlaps.length > 0) {
-      sprintFindings.push(mapFinding(`Sprint "${sprint.name}" overlaps ${sig.overlaps.map((n) => `"${n}"`).join(', ')} of the same version`));
+      sprintProblems.push(`"${sprint.name}" overlaps ${sig.overlaps.map((n) => `"${n}"`).join(', ')} of the same version`);
     }
   }
+  const sprintFindings: LintFinding[] =
+    sprintProblems.length > 0 ? [mapFinding(`${sprintProblems.length} sprint problem(s): ${sprintProblems.join('; ')}`)] : [];
   rules.push({
     ruleId: 'sprint-state',
     severity: 'warn',

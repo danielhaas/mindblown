@@ -341,7 +341,6 @@ function useSprintSignals(cycle: Cycle): SprintSignals {
   const nodes = useMindmapStore((s) => s.nodes);
   const cycles = useMindmapStore((s) => s.cycles);
   const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow) as StatusDef[] | undefined;
-  const wipLimit = useMindmapStore((s) => s.currentMap?.wipLimit ?? null);
   return useMemo(
     () =>
       sprintSignals({
@@ -352,9 +351,8 @@ function useSprintSignals(cycle: Cycle): SprintSignals {
           percentComplete: n.percentComplete,
           updatedAt: n.updatedAt,
         })),
-        wipLimit,
       }),
-    [cycle, cycles, nodes, workflow, wipLimit],
+    [cycle, cycles, nodes, workflow],
   );
 }
 
@@ -379,13 +377,7 @@ function SignalChips({ sig, status }: { sig: SprintSignals; status: Cycle['statu
   const chips = [];
   if (sig.stateIssue) chips.push(chip(`⚠ ${sig.stateIssue}`, 'red'));
   for (const o of sig.overlaps) chips.push(chip(`overlaps ${o}`, 'amber', 'Another open sprint of the same version covers the same days'));
-  if (sig.wip.count > 0 || sig.wip.over) {
-    chips.push(
-      sig.wip.limit != null
-        ? chip(`WIP ${sig.wip.count}/${sig.wip.limit}`, sig.wip.over ? 'red' : 'grey', 'Items in progress in this sprint vs the map\'s WIP limit')
-        : chip(`${sig.wip.count} in progress`, 'grey', 'No WIP limit set on this map'),
-    );
-  }
+  if (sig.inProgress > 0) chips.push(chip(`${sig.inProgress} in progress`, 'grey'));
   if (sig.stalled > 0) chips.push(chip(`${sig.stalled} stalled >${sig.stalledDays}d`, 'amber', `In progress with no change for ${sig.stalledDays}+ days`));
   if (chips.length === 0) return null;
   return <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, padding: '0 16px 8px 34px' }}>{chips}</div>;
@@ -728,11 +720,27 @@ export function SprintPanel({ onClose }: { onClose: () => void }) {
 
   // Sprints whose state disagrees with their dates or that overlap — the
   // same findings Plan Health's sprint-state rule lists.
+  // Map-wide WIP vs the map's limit — the limit is a map setting, counted
+  // the way get_wip_status and the Cockpit count it.
+  const nodes = useMindmapStore((s) => s.nodes);
+  const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow) as StatusDef[] | undefined;
+  const wipLimit = useMindmapStore((s) => s.currentMap?.wipLimit ?? null);
+  const mapWip = useMemo(
+    () =>
+      Object.values(nodes).filter(
+        (n) =>
+          n.childrenIds.length === 0 &&
+          (n.percentComplete ?? 0) < 100 &&
+          resolveStatusDef(workflow ?? [], n.status)?.category === 'in_progress',
+      ).length,
+    [nodes, workflow],
+  );
+
   const sprintIssues = useMemo(
     () =>
       cycles.filter((c) => {
         if (c.status === 'completed') return false;
-        const sig = sprintSignals({ sprint: c, sprints: cycles, items: [], wipLimit: null });
+        const sig = sprintSignals({ sprint: c, sprints: cycles, items: [] });
         return sig.stateIssue != null || sig.overlaps.length > 0;
       }).length,
     [cycles],
@@ -789,6 +797,22 @@ export function SprintPanel({ onClose }: { onClose: () => void }) {
               style={{ marginLeft: 8, fontSize: 10, fontWeight: 700, color: '#b91c1c', background: '#fee2e2', padding: '1px 6px', borderRadius: 4 }}
             >
               ⚠ {sprintIssues}
+            </span>
+          )}
+          {(mapWip > 0 || wipLimit != null) && (
+            <span
+              title={wipLimit != null ? "Leaves in progress across the map vs the map's WIP limit" : 'Leaves in progress across the map (no WIP limit set)'}
+              style={{
+                marginLeft: 6,
+                fontSize: 10,
+                fontWeight: 700,
+                padding: '1px 6px',
+                borderRadius: 4,
+                color: wipLimit != null && mapWip > wipLimit ? '#b91c1c' : '#64748b',
+                background: wipLimit != null && mapWip > wipLimit ? '#fee2e2' : '#f1f5f9',
+              }}
+            >
+              WIP {mapWip}{wipLimit != null ? `/${wipLimit}` : ''}
             </span>
           )}
         </span>

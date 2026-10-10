@@ -9,9 +9,10 @@ const daysAgo = (d: number) => new Date(NOW.getTime() - d * 86_400_000).toISOStr
 
 describe('sprintSignals (#324)', () => {
   it('state vs dates: ended-but-planned, started-but-planned, ended-but-active, fine', () => {
-    const at = (p: Partial<SprintLike>) => sprintSignals({ sprint: sp(p), sprints: [], items: [], wipLimit: null, now: NOW }).stateIssue;
+    const at = (p: Partial<SprintLike>) => sprintSignals({ sprint: sp(p), sprints: [], items: [], now: NOW }).stateIssue;
     expect(at({ endDate: '2026-08-25' })).toBe('Ended 2026-08-25 but still planned — never started');
     expect(at({})).toBe('Started 2026-08-11 on paper but still planned'); // ends today
+    expect(at({ startDate: '2026-08-26', endDate: '2026-09-08' })).toBeNull(); // starts today: a day of grace
     expect(at({ status: 'active', endDate: '2026-08-20' })).toBe('Ended 2026-08-20 but still active');
     expect(at({ status: 'active' })).toBeNull();
     expect(at({ startDate: '2026-09-01', endDate: '2026-09-14' })).toBeNull();
@@ -25,20 +26,22 @@ describe('sprintSignals (#324)', () => {
       sp({ id: 's3', name: 'Other version', versionId: 'v2', startDate: '2026-08-20', endDate: '2026-09-01' }),
       sp({ id: 's4', name: 'Done one', status: 'completed', startDate: '2026-08-20', endDate: '2026-09-01' }),
       sp({ id: 's5', name: 'Later', startDate: '2026-08-27', endDate: '2026-09-10' }),
+      sp({ id: 's6', name: 'Handover', startDate: '2026-08-26', endDate: '2026-09-09' }), // shares only the boundary day
+      sp({ id: 's7', name: 'Unversioned', versionId: null, startDate: '2026-08-20', endDate: '2026-09-01' }),
     ];
-    expect(sprintSignals({ sprint: a, sprints, items: [], wipLimit: null, now: NOW }).overlaps).toEqual(['Sprint 0']);
+    expect(sprintSignals({ sprint: a, sprints, items: [], now: NOW }).overlaps).toEqual(['Sprint 0']);
   });
 
-  it('WIP against the limit, and stalled in-progress items', () => {
+  it("in-progress count and stalled (14 d, the Cockpit's threshold); finished work is not WIP", () => {
     const items = [
       { category: 'in_progress', percentComplete: 20, updatedAt: daysAgo(20) },
-      { category: 'in_progress', percentComplete: 50, updatedAt: daysAgo(1) },
+      { category: 'in_progress', percentComplete: 50, updatedAt: daysAgo(10) },
       { category: 'in_progress', percentComplete: 100, updatedAt: daysAgo(30) }, // finished
       { category: 'todo', percentComplete: 0, updatedAt: daysAgo(40) },
     ];
-    const sig = sprintSignals({ sprint: sp({ status: 'active' }), sprints: [], items, wipLimit: 1, now: NOW });
-    expect(sig.wip).toEqual({ count: 2, limit: 1, over: true });
+    const sig = sprintSignals({ sprint: sp({ status: 'active' }), sprints: [], items, now: NOW });
+    expect(sig.inProgress).toBe(2);
     expect(sig.stalled).toBe(1);
-    expect(sprintSignals({ sprint: sp({ status: 'active' }), sprints: [], items, wipLimit: null, now: NOW }).wip.over).toBe(false);
+    expect(sig.stalledDays).toBe(14);
   });
 });

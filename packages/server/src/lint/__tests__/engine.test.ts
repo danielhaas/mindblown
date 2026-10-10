@@ -609,9 +609,10 @@ describe('computePlanLint — sprint-state (#324)', () => {
       sprint({ id: 's3', name: 'B', startDate: '2099-01-10', endDate: '2099-01-20' }),
     ]);
     if ('error' in r) throw new Error(r.error);
-    const details = rule(r, 'sprint-state').findings.map((f) => f.detail);
-    expect(details).toContain('Sprint "V1 fertigstellen": Ended 2026-01-05 but still planned — never started');
-    expect(details).toContain('Sprint "A" overlaps "B" of the same version');
+    const findings = rule(r, 'sprint-state').findings;
+    expect(findings).toHaveLength(1); // one summary: a map-level dismiss mutes the rule
+    expect(findings[0].detail).toContain('"V1 fertigstellen": Ended 2026-01-05 but still planned — never started');
+    expect(findings[0].detail).toContain('"A" overlaps "B" of the same version');
   });
 
   it('skipped when sprints were not loaded; completed sprints never flagged', () => {
