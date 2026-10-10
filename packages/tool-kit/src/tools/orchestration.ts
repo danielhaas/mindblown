@@ -23,6 +23,7 @@ export const readyNodesTool = defineTool({
     '',
     'A node is ready when:',
     '  - It is a leaf (a node with children is a container — its children are the work)',
+    '  - It is not tagged for a person (kira-skip, needs-human, needs-daniel-input, needs-rita-review)',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',

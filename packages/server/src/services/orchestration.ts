@@ -134,8 +134,10 @@ export async function readyNodes(
   // Leaves only (#323): a node with live children is a container — its work
   // is its children, so listing it as pickable handed out whole epics.
   const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
+  // Tickets tagged for a person (#266) are not dev work for anyone pulling
+  // from a queue — same rule as get_next_ticket.
   const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id),
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchSkipTag(n) === null,
   );
   const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
 
