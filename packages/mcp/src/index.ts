@@ -1879,9 +1879,11 @@ server.tool(
       lines.push('');
       // Pace: estimated days finished per calendar day vs the plan — the
       // Cockpit's Pace card, one line.
-      const velocity = await api.getVelocity(mapId, { windowDays: 14 }).catch(() => null);
+      // 56 days = the forecast's own measurement (a repo-throughput cache
+      // hit); the line reads its last 14 days, like the Cockpit card.
+      const velocity = await api.getVelocity(mapId, { windowDays: 56 }).catch(() => null);
       if (velocity?.daily && velocity.daily.length > 0) {
-        const pace = summarisePace(velocity.daily, velocity.nominalCapacity, velocity.effortUnit ?? 'days');
+        const pace = summarisePace(velocity.daily.slice(-14), velocity.nominalCapacity, velocity.effortUnit ?? 'days');
         lines.push(`**Pace:** ${pace.note} (today ${pace.today.toFixed(1)}, last 7 days ${pace.last7.toFixed(1)}, ${pace.windowDays} days ${pace.window.toFixed(1)})`);
         lines.push('');
       }
@@ -2326,7 +2328,7 @@ server.tool(
       const ratio = v.paceRatio ?? v.deliveryRate / Math.max(1e-9, v.nominalCapacity);
       lines.push(`Pace:                  ${ratio.toFixed(2)}× the plan (${v.deliveryRate.toFixed(2)} ${unit} of estimates finished per calendar day vs ${v.nominalCapacity.toFixed(2)} planned)`);
       if (ratio > 1) {
-        lines.push(`Measured focus factor: 1.00 (capped — the knob only models LOSS of capacity; at ${ratio.toFixed(1)}× the estimates themselves are larger than the work, see get_estimation_accuracy)`);
+        lines.push(`Measured focus factor: 1.00 (capped — the knob only models LOSS of capacity). Above 1× either the estimates are larger than the work (get_estimation_accuracy) or more work tracks run in parallel than workerCount (${v.workerCount}) says — e.g. an agent fleet; set workerCount via update_map.`);
       } else {
         lines.push(`Measured focus factor: ${v.measuredFocusFactor.toFixed(2)} (${Math.round(v.measuredFocusFactor * 100)}% of nominal capacity reaches planned work)`);
       }

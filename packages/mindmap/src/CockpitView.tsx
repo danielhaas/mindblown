@@ -27,6 +27,9 @@ import { linkifyRefs } from './dispatch.js';
 
 const WINDOW_DAYS = 3;
 const EVENT_CAP = 1000;
+// Pace shows the last 14 days of the forecast's own 56-day measurement —
+// asking for 14 would evict the 56-day repo-throughput cache on every open.
+const PACE_FETCH_DAYS = 56;
 const PACE_DAYS = 14;
 const TRIAGE_PAGE = 500;
 const CAUSE_PREVIEW = 8;
@@ -53,7 +56,7 @@ export function CockpitView() {
   // Server-side total — the list is capped, the real backlog was 1946 (Round 2).
   const [triageTotal, setTriageTotal] = useState<number | null>(null);
   const [pipelineState, setPipelineState] = useState<api.TriagePipelineResponse | null>(null);
-  const [velocity, setVelocity] = useState<api.VelocityPaceResponse | null>(null);
+  const [velocity, setVelocity] = useState<api.VelocityPaceResponse | null | 'error'>(null);
   const [triageError, setTriageError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Asks loop: ids currently being released back into the queue. One at a
@@ -91,9 +94,9 @@ export function CockpitView() {
     setVelocity(null);
     // Pace: estimated days finished per calendar day (batch writes excluded).
     api
-      .fetchVelocity(currentMapId, PACE_DAYS)
+      .fetchVelocity(currentMapId, PACE_FETCH_DAYS)
       .then((v) => !cancelled && setVelocity(v))
-      .catch(() => {});
+      .catch(() => !cancelled && setVelocity('error'));
     // The pipeline state comes from the server (#320): it sees every pending
     // row and the reviewed successes that prove a recovery, and it answers
     // API-key callers too — the row list below does not.
@@ -489,7 +492,14 @@ const pillStyle: React.CSSProperties = {
  * weeks as bars. Batch writes (hygiene passes, sprint closes) are left out,
  * the same way velocity_report and the forecast count.
  */
-function PaceCard({ velocity }: { velocity: api.VelocityPaceResponse | null }) {
+function PaceCard({ velocity }: { velocity: api.VelocityPaceResponse | null | 'error' }) {
+  if (velocity === 'error') {
+    return (
+      <Card title="Pace">
+        <Muted>Could not measure the pace right now.</Muted>
+      </Card>
+    );
+  }
   if (!velocity) {
     return (
       <Card title="Pace">
@@ -498,8 +508,9 @@ function PaceCard({ velocity }: { velocity: api.VelocityPaceResponse | null }) {
     );
   }
   const unit = velocity.effortUnit === 'hours' ? 'h' : velocity.effortUnit === 'days' ? 'd' : 'pts';
-  const pace = summarisePace(velocity.daily, velocity.nominalCapacity, velocity.effortUnit);
-  const max = Math.max(...velocity.daily.map((d) => d.completed), velocity.nominalCapacity, 0.0001);
+  const daily = velocity.daily.slice(-PACE_DAYS);
+  const pace = summarisePace(daily, velocity.nominalCapacity, velocity.effortUnit);
+  const max = Math.max(...daily.map((d) => d.completed), velocity.nominalCapacity, 0.0001);
   const fmt = (n: number) => (n >= 10 ? n.toFixed(0) : n.toFixed(1));
   const fast = pace.ratio >= 1.5;
   return (
@@ -517,7 +528,8 @@ function PaceCard({ velocity }: { velocity: api.VelocityPaceResponse | null }) {
         </span>
       </div>
       <div
-        aria-label="Estimated work finished per day"
+        role="img"
+        aria-label={`Estimated work finished per day, last ${daily.length} days: ${daily.map((d) => fmt(d.completed)).join(', ')} ${velocity.effortUnit}`}
         style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 64, position: 'relative' }}
       >
         {/* the plan: what one calendar day is supposed to deliver */}
@@ -531,22 +543,22 @@ function PaceCard({ velocity }: { velocity: api.VelocityPaceResponse | null }) {
             borderTop: '1px dashed #94a3b8',
           }}
         />
-        {velocity.daily.map((d, i) => (
+        {daily.map((d, i) => (
           <div
             key={d.day}
             title={`${d.day}: ${fmt(d.completed)}${unit} finished (${d.completions} completion${d.completions === 1 ? '' : 's'})`}
             style={{
               flex: 1,
               height: `${Math.max(d.completed > 0 ? 2 : 0, (d.completed / max) * 64)}px`,
-              background: i === velocity.daily.length - 1 ? '#4f46e5' : '#c7d2fe',
+              background: i === daily.length - 1 ? '#4f46e5' : '#c7d2fe',
               borderRadius: 2,
             }}
           />
         ))}
       </div>
       <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 6 }}>
-        Estimated {velocity.effortUnit} finished per day; dashed line = planned {fmt(velocity.nominalCapacity)}
-        {unit}/day (workers × hours, map settings). Batch updates left out.
+        Estimated {velocity.effortUnit} finished per UTC day; dashed line = planned {fmt(velocity.nominalCapacity)}
+        {unit}/day (workers × capacity per worker, map settings). Batch updates left out.
       </div>
     </Card>
   );

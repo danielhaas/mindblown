@@ -196,7 +196,10 @@ export function computeVelocity(input: VelocityInput): VelocityResult {
     bulkEventsExcluded,
     estCompletedExcludedAsBulk,
     sampleSufficient: completionEvents >= MIN_SAMPLE_EVENTS && estCompleted > 0,
-    paceRatio: deliveryRate / nominalCapacity,
+    // From the same series the Cockpit draws, so the bars, the digest and
+    // velocity_report agree (the rolling fetch can reach a few hours before
+    // the first UTC day; those count in estCompleted but in no bar).
+    paceRatio: daily.reduce((s, d) => s + d.completed, 0) / daily.length / nominalCapacity,
     daily,
   };
 }

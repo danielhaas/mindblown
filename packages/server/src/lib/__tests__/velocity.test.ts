@@ -134,7 +134,8 @@ describe('computeVelocity — pace (Cockpit)', () => {
       ],
     });
     expect(result.measuredFocusFactor).toBeLessThanOrEqual(1); // the knob stays capped
-    expect(result.paceRatio).toBeCloseTo(4 / 3, 6); // 4 days of estimates in a 3-day window, capacity 1 — uncapped
+    expect(result.paceRatio).toBeCloseTo(4 / 3, 6); // 4 days of estimates over the 3 drawn days, capacity 1 — uncapped
+    expect(result.daily.reduce((s, d) => s + d.completed, 0) / 3).toBeCloseTo(result.paceRatio, 6); // same series
     expect(result.daily).toHaveLength(3);
     expect(result.daily[2]).toEqual({ day: today, completed: 4, completions: 2 });
     expect(result.daily[0].completed).toBe(0);
