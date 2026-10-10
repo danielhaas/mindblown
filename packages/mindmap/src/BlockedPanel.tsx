@@ -1,6 +1,10 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import type { Node, ComputedNodeValues } from '@mindblown/core';
+import { groupBlockers } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { dependencyNeighbourhood } from './blockedNeighbourhood.js';
+
+type PanelMode = 'cause' | 'kind' | 'around';
 
 const PANEL_WIDTH = 380;
 
@@ -15,6 +19,8 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
   const computed = useMindmapStore((s) => s.computed);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
+  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const [mode, setMode] = useState<PanelMode>('cause');
 
   const { manual, depWaiting } = useMemo(() => {
     const manual: BlockedLeaf[] = [];
@@ -34,6 +40,21 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
   }, [nodes, computed]);
 
   const total = manual.length + depWaiting.length;
+
+  // By cause and unblocker (#322) — the PM Cockpit's grouping (core
+  // groupBlockers): one action for one person, not N free-text reasons.
+  const byCause = useMemo(() => {
+    const entryById = new Map([...manual, ...depWaiting].map((e) => [e.node.id, e]));
+    const open = [...entryById.values()].filter((e) => e.cv.computedProgress < 100);
+    return groupBlockers(
+      open.map((e) => ({ id: e.node.id, blockedReason: e.node.blockedReason ?? null, predecessorIds: e.cv.blockedBy?.predecessorIds ?? [] })),
+    ).map((g) => ({ ...g, entries: g.nodeIds.map((id) => entryById.get(id)!) }));
+  }, [manual, depWaiting]);
+
+  const around = useMemo(
+    () => (mode === 'around' && selectedNodeId && nodes[selectedNodeId] ? dependencyNeighbourhood(nodes, computed, selectedNodeId) : null),
+    [mode, selectedNodeId, nodes, computed],
+  );
 
   const jumpTo = (nodeId: string) => {
     selectNode(nodeId);
@@ -93,12 +114,87 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
 
+      {/* Mode tabs */}
+      <div style={{ display: 'flex', gap: 4, padding: '8px 16px', borderBottom: '1px solid #f1f5f9' }}>
+        {(
+          [
+            ['cause', 'By cause'],
+            ['kind', 'By kind'],
+            ['around', 'Around selected'],
+          ] as Array<[PanelMode, string]>
+        ).map(([m, label]) => (
+          <button
+            key={m}
+            onClick={() => setMode(m)}
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              padding: '3px 10px',
+              borderRadius: 4,
+              border: 'none',
+              cursor: 'pointer',
+              background: mode === m ? '#4f46e5' : '#f1f5f9',
+              color: mode === m ? '#ffffff' : '#475569',
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
       {/* Body */}
       <div style={{ flex: 1, overflowY: 'auto' }}>
-        {total === 0 ? (
+        {mode === 'around' ? (
+          !around ? (
+            <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
+              Select a node on the map to see what it waits on and what waits on it.
+            </div>
+          ) : (
+            <>
+              <div style={{ padding: '10px 16px', fontSize: 12, color: '#334155', borderBottom: '1px solid #f1f5f9' }}>
+                Around <strong>{nodes[selectedNodeId!]?.text}</strong>
+              </div>
+              <NodeList
+                title="It waits on (unfinished)"
+                empty="Nothing — no unfinished predecessor."
+                nodes={around.upstream}
+                computed={computed}
+                jumpTo={jumpTo}
+              />
+              <NodeList
+                title="Waiting on it"
+                empty="Nothing depends on it."
+                nodes={around.downstream}
+                computed={computed}
+                jumpTo={jumpTo}
+              />
+            </>
+          )
+        ) : total === 0 ? (
           <div style={{ padding: 20, textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
             Nothing blocked. 🎉
           </div>
+        ) : mode === 'cause' ? (
+          <>
+            {byCause.map((g) => (
+              <BlockedSection
+                key={`${g.kind}:${g.label}`}
+                title={g.label}
+                count={g.entries.length}
+                entries={g.entries}
+                jumpTo={jumpTo}
+                renderDetail={(e) =>
+                  e.node.blockedReason ? (
+                    <span style={{ color: '#991b1b' }}>"{e.node.blockedReason}"</span>
+                  ) : (
+                    <span style={{ color: '#475569' }}>
+                      Blocked by: {e.predecessorTitles.map((t) => `"${t}"`).join(', ')}
+                    </span>
+                  )
+                }
+              />
+            ))}
+          </>
         ) : (
           <>
             <BlockedSection
@@ -210,6 +306,57 @@ function BlockedSection({
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+function NodeList({
+  title,
+  empty,
+  nodes,
+  computed,
+  jumpTo,
+}: {
+  title: string;
+  empty: string;
+  nodes: Node[];
+  computed: Map<string, ComputedNodeValues>;
+  jumpTo: (nodeId: string) => void;
+}) {
+  return (
+    <div>
+      <div
+        style={{
+          padding: '8px 16px',
+          fontSize: 11,
+          fontWeight: 700,
+          color: '#64748b',
+          textTransform: 'uppercase',
+          letterSpacing: '0.04em',
+          background: '#f8fafc',
+          borderBottom: '1px solid #f1f5f9',
+        }}
+      >
+        {title} ({nodes.length})
+      </div>
+      {nodes.length === 0 && <div style={{ padding: '10px 16px', fontSize: 12, color: '#94a3b8' }}>{empty}</div>}
+      {nodes.map((n) => {
+        const cv = computed.get(n.id);
+        const pct = Math.round(cv?.computedProgress ?? n.percentComplete ?? 0);
+        return (
+          <div
+            key={n.id}
+            onClick={() => jumpTo(n.id)}
+            style={{ padding: '8px 16px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', fontSize: 12, display: 'flex', gap: 8 }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = '#f8fafc')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
+          >
+            <span style={{ flex: 1, fontWeight: 600, color: '#1e293b' }}>{n.text}</span>
+            {cv?.isBlocked && <span style={{ fontSize: 10, fontWeight: 700, color: '#475569' }}>BLOCKED</span>}
+            <span style={{ fontSize: 11, color: '#94a3b8' }}>{pct}%</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

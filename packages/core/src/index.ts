@@ -326,3 +326,7 @@ export type { SprintLike, SprintItem, SprintSignals } from './sprintSignals.js';
 // Triage pipeline state — N identical triage errors folded into one (#320)
 export { triagePipelineState, humaniseTriageCause, triageCauseKey } from './triagePipeline.js';
 export type { TriagePipelineState, TriagePipelineInput } from './triagePipeline.js';
+
+// Blockers grouped by root cause / unblocker (#322)
+export { classifyBlocker, groupBlockers } from './blockers.js';
+export type { BlockerKind, BlockerGroup, BlockedItem } from './blockers.js';

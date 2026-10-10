@@ -23,7 +23,7 @@ import { McpServer, ResourceTemplate, type ToolCallback } from '@modelcontextpro
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { allTools as sharedTools, type ToolSpec } from '@mindblown/tool-kit';
-import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
+import { clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, requirementStage, stageCounts, BUILT_THRESHOLD, STAGE_ORDER, CLAIM_EVENT_TYPES, describeClaimEvent, effectiveVersionId, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline, groupBlockers } from '@mindblown/core';
 import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
@@ -1960,7 +1960,7 @@ server.tool(
 
 server.tool(
   'blocked_digest',
-  'List every blocked node across a map. A node counts as blocked if its `blockedReason` is set (manual) OR it has an incomplete Finish-to-Start predecessor (derived). Output groups manual vs dependency-waiting and includes blocker text or predecessor titles. Use this to triage what is stuck before a standup or to decide what to unblock first.',
+  'List every blocked node across a map. A node counts as blocked if its `blockedReason` is set (manual) OR it has an incomplete Finish-to-Start predecessor (derived). Output leads with the blockers grouped BY CAUSE and unblocker (orphaned claims, code done but cannot merge, waiting on a named decision — per person, PR in review, external party, predecessor tasks, other) — the same grouping as the PM Cockpit and the Blocked panel — then lists manual vs dependency-waiting with blocker text or predecessor titles. Use this to triage what is stuck before a standup or to decide what to unblock first.',
   {
     mapId: z.string().describe('The map ID'),
     versionId: z.string().optional().describe('Limit to nodes targeting this version'),
@@ -2033,6 +2033,23 @@ server.tool(
 
       lines.push(`**${blocked.length} blocked leaf node(s)** — ${manual.length} manual, ${depWaiting.length} waiting on dependencies.`);
       lines.push('');
+
+      // By cause and unblocker (#322) — the same grouping the PM Cockpit
+      // and the Blocked panel show: one action for one person, not 200
+      // free-text reasons. Done leaves are not blockers.
+      const causeGroups = groupBlockers(
+        [...manual, ...depWaiting]
+          .filter((n) => (n.percentComplete ?? 0) < 100)
+          .map((n) => ({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: n.blockedBy?.predecessorIds ?? [] })),
+      );
+      if (causeGroups.length > 0) {
+        lines.push(`## By cause (${causeGroups.length})`);
+        for (const g of causeGroups) {
+          const sample = g.nodeIds.slice(0, 3).map((id) => `"${titleById.get(id) ?? id}"`).join(', ');
+          lines.push(`- **${g.label}** — ${g.nodeIds.length}: ${sample}${g.nodeIds.length > 3 ? ', …' : ''}`);
+        }
+        lines.push('');
+      }
 
       if (manual.length > 0) {
         lines.push(`## Manually blocked (${manual.length})`);
