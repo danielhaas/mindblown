@@ -995,7 +995,17 @@ export async function findHeldCloseCandidates(
       linkedPr: nodes.linkedPr,
     })
     .from(nodes)
-    .where(and(isNotNull(nodes.linkedPr), notDeleted, onActiveMap));
+    .where(
+      and(
+        isNotNull(nodes.linkedPr),
+        // Coarse prefilter on the repo (an `_` in a name over-matches; the
+        // exact check below decides) — every tick, for every repo.
+        sql`${nodes.externalLinks}::text LIKE ${`%"${repoFullName}#%`}`,
+        sql`${nodes.linkedPr}->>'state' = 'open'`,
+        notDeleted,
+        onActiveMap,
+      ),
+    );
 
   const out: Array<{ nodeId: string; externalId: string; prNumber: number; mirrorSyncedAt: string | null }> = [];
   for (const row of rows) {

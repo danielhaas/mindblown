@@ -325,11 +325,19 @@ export async function handleCheckSuiteCompleted(
  * default merge. Clearing on unknown would disarm the close gate on
  * exactly the payloads we know least about; the sibling #152 handler
  * makes the same fail-safe choice for the done-transition.
+ *
+ * `closedAt` is when the PR died. The webhook omits it (the delivery IS
+ * the moment); a replay of a missed delivery (#423) must pass the PR's
+ * own close time, because the livelock rule in core/linkedPr.ts compares
+ * the node's completedAt against the mirror's lastSyncedAt — stamping the
+ * replay time would make a done claim made between the PR's death and the
+ * replay lose, and roll a deliberately finished node back.
  */
 export async function handlePrClosed(
   repo: string,
   pr: GhPrPayload,
   defaultBranch: string | null = null,
+  closedAt: string | null = null,
 ): Promise<number> {
   const issueNumbers = closesRefsFromPr(pr);
   if (issueNumbers.length === 0) return 0;
@@ -352,7 +360,7 @@ export async function handlePrClosed(
         ...cur,
         state: pr.merged ? 'merged' : 'closed',
         ...(pr.merged ? { landedOnDefault: false } : {}),
-        lastSyncedAt: new Date().toISOString(),
+        lastSyncedAt: closedAt ?? new Date().toISOString(),
       };
       await nodeDb.updateNode(ref.id, { linkedPr: next });
     }

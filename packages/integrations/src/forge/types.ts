@@ -89,6 +89,10 @@ export interface ForgePullRequest {
    */
   merged?: boolean;
   merged_at: string | null;
+  /** When the PR was closed (merged or not); null while open. Both forges send it. */
+  closed_at?: string | null;
+  /** The merge commit; meaningful only once merged. Both forges send it. */
+  merge_commit_sha?: string | null;
   created_at: string;
   updated_at: string;
   base: { ref: string };
