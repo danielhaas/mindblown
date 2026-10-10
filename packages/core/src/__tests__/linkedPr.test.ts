@@ -3,8 +3,7 @@ import {
   prBlocksIssueClose,
   prBlocksNodeReopen,
   hasCloseSnapshot,
-  issueCloseAction,
-} from '../linkedPr.js';
+  issueCloseAction, isPrematureCloseLink } from '../linkedPr.js';
 import type { ExternalLink, LinkedPrState } from '../types.js';
 
 const PR_CLOSED_AT = '2026-08-23T00:00:00.000Z';
@@ -166,5 +165,24 @@ describe('hasCloseSnapshot', () => {
     expect(hasCloseSnapshot({ previousPercentComplete: null, previousStatus: 'todo' })).toBe(true);
     expect(hasCloseSnapshot({ previousPercentComplete: null, previousStatus: null })).toBe(false);
     expect(hasCloseSnapshot({})).toBe(false);
+  });
+});
+
+describe('isPrematureCloseLink (#295/#309)', () => {
+  const base = { provider: 'github', externalId: 'o/r#5', url: 'u', syncEnabled: true, lastSyncedAt: null, state: 'closed' } as ExternalLink;
+  it('a closed synced link without merge commit, snapshot or verdict for this PR', () => {
+    expect(isPrematureCloseLink(base, 9)).toBe(true);
+  });
+  it('not when open, unsynced, merged, already judged for this PR, or not a forge link', () => {
+    expect(isPrematureCloseLink({ ...base, state: 'open' }, 9)).toBe(false);
+    expect(isPrematureCloseLink({ ...base, syncEnabled: false }, 9)).toBe(false);
+    expect(isPrematureCloseLink({ ...base, mergeCommitSha: 'abc' }, 9)).toBe(false);
+    expect(isPrematureCloseLink({ ...base, closeCheckedForPr: 9 }, 9)).toBe(false);
+    expect(isPrematureCloseLink({ ...base, closeCheckedForPr: 8 }, 9)).toBe(true); // a new PR is judged again
+    expect(isPrematureCloseLink({ ...base, provider: 'jira' }, 9)).toBe(false);
+  });
+  it('not with a close snapshot: an outside close, and the reopen echo would restore it over done', () => {
+    expect(isPrematureCloseLink({ ...base, previousStatus: 'in_progress', previousPercentComplete: 40 }, 9)).toBe(false);
+    expect(isPrematureCloseLink({ ...base, previousStatus: null, previousPercentComplete: 0 }, 9)).toBe(false);
   });
 });

@@ -4,7 +4,7 @@ import { linksAnyExternalId } from './externalLinkFilter.js';
 import { db } from './connection.js';
 import { nodes, maps, changeEvents } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
-import { hasCycle, resolveStatusDef, isForgeLink } from '@mindblown/core';
+import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
@@ -706,6 +706,26 @@ export async function setExternalLinkState(
   isPullRequest?: boolean,
   handle: DbHandle = db,
 ): Promise<boolean> {
+  return patchExternalLink(
+    nodeId,
+    externalId,
+    isPullRequest === undefined ? { state } : { state, isPullRequest },
+    handle,
+  );
+}
+
+/**
+ * Merge `patch` into one forge link — the jsonb column alone, for the
+ * same reasons as `setExternalLinkState` (no revision bump, no stale
+ * requirement acceptances). Returns false when the node is gone or
+ * carries no such link.
+ */
+export async function patchExternalLink(
+  nodeId: string,
+  externalId: string,
+  patch: Partial<Pick<ExternalLink, 'state' | 'isPullRequest' | 'closeCheckedForPr'>>,
+  handle: DbHandle = db,
+): Promise<boolean> {
   const [row] = await handle
     .select({ externalLinks: nodes.externalLinks })
     .from(nodes)
@@ -717,7 +737,7 @@ export async function setExternalLinkState(
   const next = links.map((l) => {
     if (!isForgeLink(l) || l.externalId !== externalId) return l;
     found = true;
-    return isPullRequest === undefined ? { ...l, state } : { ...l, state, isPullRequest };
+    return { ...l, ...patch };
   });
   if (!found) return false;
 
@@ -973,6 +993,53 @@ export async function findLinksMissingState(
     }
   }
   return out;
+}
+
+/**
+ * Done nodes whose issue was closed while their PR is still open
+ * (#295/#309): the node reads done, `linked_pr.state` is `open`, but the
+ * synced forge link to `repoFullName` is already `closed` with no merge
+ * commit or close snapshot behind it (`isPrematureCloseLink`), not yet
+ * judged for this PR (`closeCheckedForPr`). The shape a close leaves when it beat the PR to the
+ * mirror: done before `gh pr create`, or the PR not yet visible to the
+ * outbound landing probe. Oldest mirror first, at most `limit`.
+ */
+export async function findPrematureCloseCandidates(
+  repoFullName: string,
+  limit: number,
+): Promise<Array<{ nodeId: string; externalId: string; prNumber: number }>> {
+  const rows = await db
+    .select({
+      id: nodes.id,
+      percentComplete: nodes.percentComplete,
+      status: nodes.status,
+      externalLinks: nodes.externalLinks,
+      linkedPr: nodes.linkedPr,
+    })
+    .from(nodes)
+    .where(
+      and(
+        isNotNull(nodes.linkedPr),
+        sql`${nodes.externalLinks}::text LIKE ${`%"${repoFullName}#%`}`,
+        sql`${nodes.linkedPr}->>'state' = 'open'`,
+        notDeleted,
+        onActiveMap,
+      ),
+    );
+
+  const out: Array<{ nodeId: string; externalId: string; prNumber: number; at: string }> = [];
+  for (const row of rows) {
+    const looksDone = row.percentComplete === 100 || row.status === 'done';
+    const pr = row.linkedPr as LinkedPrState | null;
+    if (!looksDone || !pr || pr.state !== 'open') continue;
+    const link = ((row.externalLinks as ExternalLink[]) ?? []).find(
+      (l) => l.externalId.startsWith(`${repoFullName}#`) && isPrematureCloseLink(l, pr.number),
+    );
+    if (!link) continue;
+    out.push({ nodeId: row.id, externalId: link.externalId, prNumber: pr.number, at: pr.lastSyncedAt ?? '' });
+  }
+  out.sort((a, b) => a.at.localeCompare(b.at));
+  return out.slice(0, limit).map(({ at: _at, ...c }) => c);
 }
 
 /**

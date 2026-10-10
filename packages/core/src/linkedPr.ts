@@ -26,6 +26,7 @@
  */
 
 import type { ExternalLink, LinkedPrState } from './types.js';
+import { isForgeLink } from './types.js';
 
 /** Merged, but NOT to the default branch — the work is not on main. */
 function mergedOffDefault(pr: LinkedPrState): boolean {
@@ -187,4 +188,24 @@ export function issueCloseAction(
     return { kind: 'close', stateReason: 'completed', because: 'mirror_merged' };
   }
   return { kind: 'probe' };
+}
+
+/**
+ * The link half of a premature-close candidate (#295/#309): a synced
+ * forge link the mirror calls closed, with no merge commit, not yet
+ * judged for this PR — and with NO close snapshot. A snapshot is only
+ * captured when the close came from outside (it drove a not-done node to
+ * done); our own premature close never leaves one. Reopening such an
+ * issue would also let the reopen echo restore the snapshot and wipe the
+ * node's done state, so those closes are not ours to undo.
+ */
+export function isPrematureCloseLink(l: ExternalLink, prNumber: number): boolean {
+  return (
+    isForgeLink(l) &&
+    l.syncEnabled &&
+    l.state === 'closed' &&
+    !l.mergeCommitSha &&
+    !hasCloseSnapshot(l) &&
+    l.closeCheckedForPr !== prNumber
+  );
 }

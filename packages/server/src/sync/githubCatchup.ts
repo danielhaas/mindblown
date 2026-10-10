@@ -24,6 +24,7 @@ import {
   updateGitHubIssue,
   probeIssueLanded,
   extractClosingIssueRefs,
+  reopenGitHubIssue,
 } from '@mindblown/integrations';
 import {
   forgeFromInstallation,
@@ -139,6 +140,8 @@ export interface ReconcileResult {
   directResolved: number;
   /** Done nodes held open on a PR whose close was never delivered, resolved this tick (#423). */
   heldClosesResolved: number;
+  /** Issues closed while their PR is still open, reopened this tick (#295/#309). */
+  prematureClosesHealed: number;
   /**
    * Count of node-update errors hit during the state-sync loop. Surfaced
    * alongside `ingestErrored` so partial failures are observable.
@@ -397,10 +400,12 @@ const HELD_CLOSE_BUDGET = 10;
 /** An in-review PR is asked about again after this long, not every tick. */
 const HELD_CLOSE_RECHECK_MS = 30 * 60_000;
 const heldCloseCheckedAt = new Map<string, number>();
+const prematureCloseCheckedAt = new Map<string, number>();
 
 /** Test hook: forget when each node was last asked about. */
 export function _resetHeldCloseChecksForTests(): void {
   heldCloseCheckedAt.clear();
+  prematureCloseCheckedAt.clear();
 }
 
 /**
@@ -546,6 +551,95 @@ export async function resolveHeldCloses(
   return { checked, closed, rolledBack };
 }
 
+/**
+ * Reopen an issue that was closed while its PR is still open (#295/#309).
+ *
+ * The outbound close asks the forge for an open closing PR before it
+ * closes, but it cannot see a PR that does not exist yet (the node was set
+ * done before `gh pr create`) or that the forge has not indexed yet (done
+ * seconds after the PR opened). Then the issue closes as completed with
+ * no commit behind it; the PR webhook arms the mirror a moment later, and
+ * from then on every gate holds — on an issue that is already closed.
+ * Nothing healed that: the node is done and the issue closed, which reads
+ * as consistent.
+ *
+ * For a bounded slice of such nodes this asks the forge. The issue is
+ * reopened only when all of it holds: the PR is still open and still says
+ * `Closes #N`, the issue is still closed, not as "not planned", and its
+ * latest close came from no commit (an API/UI close — not work landing).
+ * The node stays done: with its PR in flight `prBlocksNodeReopen` keeps it
+ * there when the reopen echoes back, and the merge closes the issue
+ * through the normal gate. Links with a close snapshot are skipped (an
+ * outside close — and the reopen echo would restore the snapshot). Every
+ * verdict, reopen or genuine close, is recorded as `closeCheckedForPr`, so
+ * a person who closes the issue again during the same PR is not overruled
+ * and a genuine close is not re-asked every tick. Before reopening, the
+ * landing probe must find no merged PR for the issue — the backstop where
+ * the close event cannot tell (Gitea has no close reason).
+ */
+export async function healPrematureCloses(
+  target: RepoTarget,
+  forge: ForgeClient,
+  budget: number = HELD_CLOSE_BUDGET,
+  now: number = Date.now(),
+): Promise<{ checked: number; reopened: number }> {
+  const repoFullName = `${target.owner}/${target.repo}`;
+  for (const [id, at] of prematureCloseCheckedAt) {
+    if (now - at >= HELD_CLOSE_RECHECK_MS) prematureCloseCheckedAt.delete(id);
+  }
+  const candidates = (await nodeDb.findPrematureCloseCandidates(repoFullName, budget * 5))
+    .filter((c) => !prematureCloseCheckedAt.has(c.nodeId))
+    .slice(0, budget);
+  let checked = 0;
+  let reopened = 0;
+
+  for (const c of candidates) {
+    prematureCloseCheckedAt.set(c.nodeId, now);
+    checked++;
+    try {
+      const issueNumber = Number(c.externalId.slice(repoFullName.length + 1));
+      const pr = await forge.getPullRequest(target.owner, target.repo, c.prNumber);
+      if (pr.state !== 'open') continue; // its close is resolveHeldCloses' business
+      const settle = () => nodeDb.patchExternalLink(c.nodeId, c.externalId, { closeCheckedForPr: pr.number });
+      if (!extractClosingIssueRefs(`${pr.title ?? ''}\n${pr.body ?? ''}`).includes(issueNumber)) {
+        await settle();
+        continue;
+      }
+
+      const issue = await getGitHubIssue(target.owner, target.repo, issueNumber, forge);
+      if (issue.state !== 'closed') {
+        // Already open again (by a person, or a reopen we missed): just
+        // bring the mirror up to date.
+        await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'open');
+        continue;
+      }
+      if (issue.state_reason === 'not_planned') {
+        await settle();
+        continue;
+      }
+      const close = await forge.getLatestCloseEvent(target.owner, target.repo, issueNumber);
+      if (!close || close.commitId) {
+        await settle(); // a commit closed it: that work landed
+        continue;
+      }
+      const probe = await probeIssueLanded(target.owner, target.repo, issueNumber, forge);
+      if (probe.landed) {
+        await settle(); // another PR already landed the work
+        continue;
+      }
+
+      await reopenGitHubIssue({ externalId: c.externalId }, forge);
+      // Mirror-only write: the node itself does not change.
+      await nodeDb.patchExternalLink(c.nodeId, c.externalId, { state: 'open', closeCheckedForPr: pr.number });
+      reopened++;
+      console.log(`[catchup] premature close healed: ${c.externalId} reopened — PR #${pr.number} still open`);
+    } catch (err) {
+      console.warn(`[catchup] premature-close check failed for ${c.externalId}:`, err instanceof Error ? err.message : err);
+    }
+  }
+  return { checked, reopened };
+}
+
 // ── Per-repo reconcile ────────────────────────────────────────────
 
 async function findNodesByExternalIds(
@@ -631,7 +725,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
@@ -673,7 +767,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     }
     return {
       repo: repoLabel,
-      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+      fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
       durationMs: Date.now() - startedAt.getTime(),
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
@@ -781,6 +875,21 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   } catch (err) {
     console.warn(
       '[catchup] held-close pass failed for',
+      repoLabel,
+      ':',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  // ── Premature-close heal (#295/#309) ─────────────────────────────
+  // Same contract: bounded, best-effort, never fails the tick.
+  let prematureClosesHealed = 0;
+  try {
+    const r = await healPrematureCloses(target, forge);
+    prematureClosesHealed = r.reopened;
+  } catch (err) {
+    console.warn(
+      '[catchup] premature-close pass failed for',
       repoLabel,
       ':',
       err instanceof Error ? err.message : err,
@@ -943,6 +1052,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
     mirrorRepaired,
     directResolved,
     heldClosesResolved,
+    prematureClosesHealed,
     stateSyncErrored,
     ingested: ingestCreated,
     ingestErrored,
@@ -1047,7 +1157,7 @@ export async function runAllCatchups(): Promise<ReconcileResult[]> {
     } catch (err) {
       results.push({
         repo: `${t.owner}/${t.repo}`,
-        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
+        fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
         durationMs: 0,
         since: null,
         error: err instanceof Error ? err.message : String(err),

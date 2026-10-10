@@ -140,6 +140,15 @@ export interface ExternalLink {
   mergeCommitSha?: string | null;
   /** PR number whose merge produced `mergeCommitSha`. */
   mergedPrNumber?: number | null;
+
+  /**
+   * The open PR for which the catch-up already judged this issue's close
+   * (#295/#309): it either reopened a premature close or found the close
+   * genuine (a commit, not planned, work landed). Settled once per PR — a
+   * person who closes the issue again during that PR keeps that close, and
+   * a genuine close is not re-asked every tick.
+   */
+  closeCheckedForPr?: number | null;
 }
 
 /**

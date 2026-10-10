@@ -208,6 +208,7 @@ export {
   prBlocksIssueClose,
   prBlocksNodeReopen,
   hasCloseSnapshot,
+  isPrematureCloseLink,
   issueCloseAction,
 } from './linkedPr.js';
 export type { IssueCloseAction } from './linkedPr.js';
