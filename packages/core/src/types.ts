@@ -140,6 +140,13 @@ export interface ExternalLink {
   mergeCommitSha?: string | null;
   /** PR number whose merge produced `mergeCommitSha`. */
   mergedPrNumber?: number | null;
+
+  /**
+   * The open PR for which the catch-up reopened this issue after it was
+   * closed prematurely (#295/#309). Heals at most once per PR: a person
+   * who closes it again while that PR is open keeps that close.
+   */
+  reopenedForPr?: number | null;
 }
 
 /**
