@@ -150,7 +150,14 @@ export function computeForecastScorecard(
     const better = tick.mae < vel.mae ? 'ticket model' : 'day (velocity) model';
     const worse = tick.mae < vel.mae ? vel : tick;
     const best = tick.mae < vel.mae ? tick : vel;
-    verdict = `${better} wins: ${best.mae.toFixed(1)}d mean abs error vs ${worse.mae.toFixed(1)}d (${best.n + worse.n} comparable predictions)`;
+    // Say how thin the evidence is (#342/#343): one released version is
+    // an anecdote, not a law. The two sample counts are named per model —
+    // the old line summed them into one "comparable predictions" figure,
+    // counting every snapshot twice.
+    const releases = versionsScored.length;
+    const snapshots = versionsScored.reduce((sum, v) => sum + v.snapshots, 0);
+    const thin = releases < 3 ? ` — thin evidence (${releases} release${releases === 1 ? '' : 's'}), not a general rule` : '';
+    verdict = `${better} wins: ${best.mae.toFixed(1)}d mean abs error vs ${worse.mae.toFixed(1)}d (${vel.n} day / ${tick.n} ticket predictions from ${releases} released version${releases === 1 ? '' : 's'}, ${snapshots} snapshots${thin})`;
   }
 
   return { versionsScored, buckets, verdict };

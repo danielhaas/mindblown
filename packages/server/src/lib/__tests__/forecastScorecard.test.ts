@@ -52,6 +52,8 @@ describe('computeForecastScorecard', () => {
       ],
     );
     expect(sc.verdict).toContain('ticket model wins');
+    // How thin the evidence is, per model, never double-counted (#342/#343).
+    expect(sc.verdict).toMatch(/\(\d+ day \/ \d+ ticket predictions from 1 released version, \d+ snapshots — thin evidence \(1 release\), not a general rule\)/);
   });
 
   it('a model present only where the other is absent cannot win by forfeit', () => {

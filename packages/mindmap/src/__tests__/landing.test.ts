@@ -93,6 +93,23 @@ describe('nextRelease', () => {
 });
 
 describe('releaseVerdict', () => {
+  const ev = (state: 'not_measurable' | 'stalled', note = 'Stalled — x') => ({
+    state, ownCompletions: 0, ownCompletionsEver: 0, lastCompletion: null, required: 10, windowDays: 56, note,
+  });
+  it('a release that has not started gets no verdict, even with a late projection (#343)', () => {
+    const v = releaseVerdict(row({ velocityAdjustedFinishDate: '2026-12-25', evidence: ev('not_measurable') }), TODAY);
+    expect(v.level).toBe('unknown');
+    expect(v.headline).toContain('not started yet');
+    expect(v.reasons[0]).toContain("map's pace");
+  });
+  it('a stalled release keeps its verdict and says why', () => {
+    const v = releaseVerdict(row({ velocityAdjustedFinishDate: '2026-12-25', evidence: ev('stalled', 'Stalled — target passed') }), TODAY);
+    expect(v.level).toBe('behind');
+    expect(v.reasons).toContain('Stalled — target passed');
+  });
+  it('a stalled release is at risk even when its projections agree and fit the target', () => {
+    expect(releaseVerdict(row({ evidence: ev('stalled') }), TODAY).level).toBe('at_risk');
+  });
   it('is on track when forecast <= target and the models agree', () => {
     expect(releaseVerdict(row({}), TODAY).level).toBe('on_track');
   });

@@ -242,3 +242,44 @@ describe('computeReleaseForecast — effectiveStartDate rides the velocity curso
     expect(result.releases[1].plannedFinishDate).toBe('2026-01-13');
   });
 });
+
+describe('computeReleaseForecast — evidence (#343)', () => {
+  const targeted = { ...version, targetDate: '2026-01-05' } as unknown as Version;
+  const rates = { netTicketsPerDay: 0.5, netEffortPerDay: 1, windowDays: 56 };
+
+  it('a release with no completions of its own: dates stay, no slip, no verdict', () => {
+    const row = computeReleaseForecast(makeMap(1), [root, leaf], [targeted], NOW, rates).releases[0];
+    expect(row.evidence.state).toBe('not_measurable');
+    expect(row.velocityAdjustedFinishDate).toBe('2026-01-11');
+    expect(row.slipVelocityDays).toBeNull();
+    expect(row.slipPlannedDays).toBeNull();
+    expect(row.slipTicketDays).toBeNull();
+    expect(row.confidence.level).toBe('unmeasured');
+    expect(row.confidence.note).toContain('Not yet measurable');
+  });
+
+  it('overdue and unstarted is a red flag, not missing data: stalled, slip shown', () => {
+    const overdue = { ...version, targetDate: '2025-12-01' } as unknown as Version;
+    const row = computeReleaseForecast(makeMap(1), [root, leaf], [overdue], NOW, rates).releases[0];
+    expect(row.evidence.state).toBe('stalled');
+    expect(row.slipVelocityDays).toBe(41);
+    expect(row.confidence.level).not.toBe('unmeasured');
+  });
+
+  it('the ticket model names its reference class', () => {
+    const row = computeReleaseForecast(makeMap(1), [root, leaf], [targeted], NOW, { ...rates, completionEvents: 87 }).releases[0];
+    expect(row.ticketRateSource).toBe('map');
+    expect(row.ticketRateBasis).toContain('87 completions in 56d across the whole map');
+  });
+
+  it('with completions of its own the slip verdict is back', () => {
+    const done = Array.from({ length: 10 }, (_, i) => ({
+      id: `d${i}`, parentId: 'root', childrenIds: [], effortEstimate: 1, actualEffort: null,
+      percentComplete: 100, status: 'done', versionId: 'v1', completedAt: '2025-12-20T00:00:00Z', createdAt: '2025-11-01T00:00:00Z',
+    })) as unknown as CoreNode[];
+    const root2 = { ...root, childrenIds: ['leaf-1', ...done.map((d) => d.id)] } as unknown as CoreNode;
+    const row = computeReleaseForecast(makeMap(1), [root2, leaf, ...done], [targeted], NOW, rates).releases[0];
+    expect(row.evidence).toMatchObject({ state: 'measured', ownCompletions: 10 });
+    expect(row.slipVelocityDays).toBe(6);
+  });
+});

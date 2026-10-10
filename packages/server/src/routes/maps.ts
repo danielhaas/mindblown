@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, eq, lte, desc } from 'drizzle-orm';
-import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion } from '@mindblown/core';
+import { computeTree, schedule, criticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
@@ -914,11 +914,27 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     let netTicketsPerDay: number | null = null;
     let ticketModelFinishDate: string | null = null;
     let ratesWindowDays: number | null = null;
+    // The scope's own history (#342/#343) — same rule as the MCP tool.
+    let ownStats = ownCompletionStats(leaves, 56);
+    let ticketRateBasis: string | null = null;
+    let ticketRateSource: 'scope' | 'map' | null = null;
     try {
       const m = await measureMapVelocity(req.params.id, data, 56, req.log);
       ratesWindowDays = m.rates.windowDays ?? null;
       netEffortPerDay = m.rates.netEffortPerDay ?? null;
-      netTicketsPerDay = m.rates.netTicketsPerDay ?? null;
+      ownStats = ownCompletionStats(leaves, ratesWindowDays ?? 56);
+      const choice = chooseTicketRate({
+        scoped,
+        ownCompletions: ownStats.inWindow,
+        firstOwnCompletion: ownStats.firstInWindow,
+        windowDays: ratesWindowDays ?? 56,
+        mapRatePerDay: m.rates.netTicketsPerDay ?? null,
+        mapCompletions: m.velocity.completionEvents,
+        reworkFraction: m.repoThroughput?.reworkFraction ?? 0,
+      });
+      netTicketsPerDay = choice.ratePerDay;
+      ticketRateBasis = choice.basis;
+      ticketRateSource = choice.source;
       if (netEffortPerDay != null && netEffortPerDay > 0 && remainingEffort > 0) {
         velocityAdjustedFinishDate = addCalendarDays(anchor, remainingEffort / netEffortPerDay)
           .toISOString()
@@ -980,16 +996,41 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       unestimatedOpenLeaves: remainingTicketsUnestimated,
       openLeaves: remainingTickets,
     });
+    const evidence = assessForecastEvidence({
+      scoped,
+      stats: ownStats,
+      windowDays: ratesWindowDays ?? 56,
+      targetDate,
+      openLeaves: remainingTickets,
+    });
+    const headline = forecastHeadline({
+      evidence,
+      plannedDate: plannedFinishDate,
+      velocityDate: velocityAdjustedFinishDate,
+      ticketDate: ticketModelFinishDate,
+      crossCheck: confidence.level,
+      fudgeFactor,
+      openLeaves: remainingTickets,
+      unestimatedOpenLeaves: remainingTicketsUnestimated,
+    });
+    // No slip verdict without the scope's own history (#343).
+    const verdictsAllowed = evidence.state !== 'not_measurable';
 
     return reply.send({
       scopeLabel,
+      evidence,
+      headline,
+      ticketRateBasis,
+      ticketRateSource,
       leaves: leaves.length,
       noEstimateLeaves,
       totalEffort,
       remainingEffort,
       remainingTickets,
       remainingTicketsUnestimated,
-      confidence,
+      confidence: verdictsAllowed
+        ? confidence
+        : { ...confidence, level: 'unmeasured' as const, divergenceDays: null, note: evidence.note },
       effortUnit: data.map.effortUnit,
       fudgeFactor,
       focusFactor,
@@ -1000,14 +1041,14 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       netTicketsPerDay,
       ratesWindowDays,
       ticketModelFinishDate,
-      slipTicketDays,
+      slipTicketDays: verdictsAllowed ? slipTicketDays : null,
       projectStartDate: projectStart.toISOString().slice(0, 10),
       plannedFinishDate,
       velocityAdjustedFinishDate,
       targetDate,
       targetSource,
-      slipPlannedDays,
-      slipVelocityDays,
+      slipPlannedDays: verdictsAllowed ? slipPlannedDays : null,
+      slipVelocityDays: verdictsAllowed ? slipVelocityDays : null,
     });
   });
 

@@ -120,6 +120,8 @@ export async function measureMapVelocity(
       ? (velocity.completionEvents / windowDays) * (1 - rework)
       : null,
     windowDays,
+    completionEvents: velocity.completionEvents,
+    reworkFraction: rework,
   };
 
   return { velocity, eventsTruncated: progressEvents.length >= 10_000, repoThroughput, rates };
