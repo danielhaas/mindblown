@@ -289,10 +289,12 @@ export interface TicketBrief {
 export interface SkippedTicket {
   id: string;
   text: string;
-  /** needs-brief: no description and no linked issue; human-only: tagged for a person (#266). */
+  /** needs-brief: no description and no linked issue; human-only: tagged for a person (#266) or flagged with a blocker. */
   reason: 'needs-brief' | 'human-only';
   /** The skip tag, for human-only. */
   tag?: string;
+  /** The manual blocker text, for human-only. */
+  blockedReason?: string;
 }
 
 export interface GetNextTicketResult {

@@ -33,7 +33,7 @@ import {
   hasBrief,
   matchesDispatchGate,
   pullableNodes,
-  dispatchSkipTag,
+  dispatchHold,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
@@ -134,10 +134,10 @@ export async function readyNodes(
   // Leaves only (#323): a node with live children is a container — its work
   // is its children, so listing it as pickable handed out whole epics.
   const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
-  // Tickets tagged for a person (#266) are not dev work for anyone pulling
-  // from a queue — same rule as get_next_ticket.
+  // Tickets held for a person (#266 skip tag, or a manual blocker) are not
+  // dev work for anyone pulling from a queue — same rule as get_next_ticket.
   const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchSkipTag(n) === null,
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchHold(n) === null,
   );
   const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
 
@@ -588,8 +588,8 @@ interface PullDecision {
   /** Ready-but-empty-brief nodes to tag `needs-brief` and report. */
   /** Refused for having no brief — get_next_ticket tags these needs-brief. */
   skipped: CoreNode[];
-  /** Refused because a human must act (#266) — reported, never tagged. */
-  humanOnly: Array<{ node: CoreNode; tag: string }>;
+  /** Refused because a human must act (#266 skip tag or a manual blocker) — reported, never tagged. */
+  humanOnly: Array<{ node: CoreNode; tag: string | null; blockedReason: string | null }>;
 }
 
 /**
@@ -625,13 +625,14 @@ export function selectPullCandidates(
   // non-root, todo-or-null status, unclaimed, predecessors done.
   const { pullable: ready, nodeMap } = pullableNodes(allNodes, opts.workflow);
   const gatedAll = ready.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
-  // Tagged for a human (#266): never granted, reported so the queue starves
-  // loudly instead of silently — same reason needs-brief is reported.
+  // Held for a person (#266 skip tag, or a manual blocker): never granted,
+  // reported so the queue starves loudly instead of silently — same reason
+  // needs-brief is reported.
   const humanOnly = gatedAll.flatMap((n) => {
-    const tag = dispatchSkipTag(n);
-    return tag ? [{ node: n, tag }] : [];
+    const hold = dispatchHold(n);
+    return hold ? [{ node: n, ...hold }] : [];
   });
-  const gated = gatedAll.filter((n) => dispatchSkipTag(n) === null);
+  const gated = gatedAll.filter((n) => dispatchHold(n) === null);
   // Profile routing (#262): a configured policy FILTERS eligibility here;
   // ranking below is untouched. No policy = no filter = pre-#262 behavior.
   const profilePolicy = opts.profilePolicy ?? null;
@@ -740,7 +741,13 @@ export async function getNextTicket(
 
     const skipped = [
       ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
-      ...decision.humanOnly.map(({ node: n, tag }) => ({ id: n.id, text: n.text, reason: 'human-only' as const, tag })),
+      ...decision.humanOnly.map(({ node: n, tag, blockedReason }) => ({
+        id: n.id,
+        text: n.text,
+        reason: 'human-only' as const,
+        ...(tag !== null ? { tag } : {}),
+        ...(blockedReason !== null ? { blockedReason } : {}),
+      })),
     ];
 
     if (decision.reason !== undefined) {

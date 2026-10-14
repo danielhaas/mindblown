@@ -516,6 +516,19 @@ describe('human-only guard (#266)', () => {
     ]);
     expect(d.skipped).toEqual([]); // a human-only ticket is not also tagged needs-brief
   });
+
+  it('a todo ticket flagged with a blocker is held like a tagged one; a blank reason is not a blocker', () => {
+    const ok = makeNode({ id: 'ok' });
+    const flagged = makeNode({ id: 'flagged', blockedReason: 'Waiting on Dan: pick the board' });
+    const both = makeNode({ id: 'both', tags: ['needs-human'], blockedReason: 'token scope' });
+    const blank = makeNode({ id: 'blank', blockedReason: '  ' });
+    const d = select([ok, flagged, both, blank]);
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['blank', 'ok']);
+    expect(d.humanOnly.map((h) => [h.node.id, h.tag, h.blockedReason]).sort()).toEqual([
+      ['both', 'needs-human', 'token scope'],
+      ['flagged', null, 'Waiting on Dan: pick the board'],
+    ]);
+  });
 });
 
 // ── Profile routing (#262) ─────────────────────────────────────────

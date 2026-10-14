@@ -76,4 +76,15 @@ describe('readyNodes — developer queue (#323)', () => {
     selects.push([mapRow], [root(), row({ id: 'y' })], []);
     await expect(readyNodes('m1', { sprint: 'nope' })).rejects.toThrow(/Sprint nope not found/);
   });
+
+  it('leaves out tickets held for a person: skip tag or manual blocker', async () => {
+    selects.push([mapRow], [
+      root(),
+      row({ id: 'ok' }),
+      row({ id: 'tagged', tags: ['needs-human'] }),
+      row({ id: 'flagged', blockedReason: 'Waiting on Dan' }),
+    ], []);
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['ok']);
+  });
 });

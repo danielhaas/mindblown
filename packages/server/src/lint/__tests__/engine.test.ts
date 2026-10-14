@@ -462,7 +462,7 @@ describe('computePlanLint — sync pack', () => {
   it('status-progress-mismatch fires both ways on leaves only', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'p'] }),
-      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0, blockedReason: 'stale' }),
       makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 100 }),
       makeNode({ id: 'c', parentId: 'root', status: 'done', percentComplete: 100 }),
       // A parent's percentComplete is derived, never an input — not a leaf finding.
@@ -532,18 +532,18 @@ describe('computePlanLint — sync pack', () => {
     expect(skipped.findings).toHaveLength(0);
   });
 
-  it('stale-blocked-reason fires on done nodes and on pullable nodes (tag alone does not park), not on status-blocked ones', () => {
+  it('stale-blocked-reason fires on done nodes only — on an open node the reason is what holds it out of the queue', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e'] }),
-      makeNode({ id: 'a', parentId: 'root', status: 'done', blockedReason: 'swept claim' }),
-      makeNode({ id: 'b', parentId: 'root', status: 'todo', blockedReason: 'x'.repeat(100) }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', blockedReason: 'x'.repeat(100) }),
+      makeNode({ id: 'b', parentId: 'root', status: 'todo', blockedReason: 'waiting on Dan' }),
       makeNode({ id: 'c', parentId: 'root', status: 'blocked', blockedReason: 'waiting on Dan' }),
-      makeNode({ id: 'd', parentId: 'root', status: 'todo', tags: ['blocked'], blockedReason: 'parked' }),
-      makeNode({ id: 'e', parentId: 'root', status: 'todo', blockedReason: '   ' }),
+      makeNode({ id: 'd', parentId: 'root', status: 'in_progress', blockedReason: 'CI red' }),
+      makeNode({ id: 'e', parentId: 'root', status: 'done', blockedReason: '   ' }),
     ];
     const r = rule(syncLint(nodes), 'stale-blocked-reason');
-    expect(r.findings.map((f) => f.nodeId).sort()).toEqual(['a', 'b', 'd']);
-    expect(r.findings.find((f) => f.nodeId === 'b')!.detail).toBe(`status todo: "${'x'.repeat(77)}…"`);
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
+    expect(r.findings[0].detail).toBe(`status done: "${'x'.repeat(77)}…"`);
   });
 
   it('claim-churn needs 5 pickups in the window and is skipped without history', () => {
@@ -582,7 +582,7 @@ describe('computePlanLint — sync pack', () => {
   it('sync findings carry fix actions the route may apply; hygiene findings carry none', () => {
     const nodes = [
       makeNode({ id: 'root', childrenIds: ['a', 'b', 'c', 'd', 'e', 'p'] }),
-      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0 }),
+      makeNode({ id: 'a', parentId: 'root', status: 'done', percentComplete: 0, blockedReason: 'stale' }),
       makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 100 }),
       makeNode({ id: 'c', parentId: 'root', status: 'done', externalLinks: [link(2, 'open')] }),
       makeNode({ id: 'd', parentId: 'root', status: 'todo', externalLinks: [link(1, 'closed')] }),
@@ -608,7 +608,9 @@ describe('computePlanLint — sync pack', () => {
     expect(ids('issue-state-mismatch', 'd')).toEqual(['mark-done', 'reopen-issue']);
     expect(ids('issue-state-mismatch', 'pp')).toEqual(['close-issue']);
     expect(ids('issue-state-mismatch', 'po')).toEqual(['reopen-issue']);
-    expect(ids('stale-blocked-reason', 'e')).toEqual(['clear-blocker', 'park']);
+    expect(ids('stale-blocked-reason', 'a')).toEqual(['clear-blocker']);
+    // an open node's reason is a live hold, not a stale one
+    expect(rule(report, 'stale-blocked-reason').findings.some((f) => f.nodeId === 'e')).toBe(false);
     expect(ids('claim-churn', 'e')).toEqual(['park']);
     expect(rule(report, 'unestimated-leaf').findings.find((f) => f.nodeId === 'e')!.actions).toBeUndefined();
     // Every offered action is one the route will accept for that rule, and

@@ -232,6 +232,25 @@ export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
   return node.tags.find((t) => skip.has(t.toLowerCase())) ?? null;
 }
 
+/** Why a ticket waits for a person: a skip tag, a manual blocker, or both. */
+export interface DispatchHold {
+  tag: string | null;
+  blockedReason: string | null;
+}
+
+/**
+ * Whether a ticket is held for a person, or null when an agent may take it.
+ * A skip tag (#266) or a manual blocker (`blockedReason`, set by
+ * flag_blocker / the Blocked panel) — a flagged ticket keeps its todo
+ * status, so without this the queue handed "waiting on Dan" straight to a
+ * worker. Shared by get_next_ticket, ready_nodes and the Dispatch card.
+ */
+export function dispatchHold(node: Pick<Node, 'tags' | 'blockedReason'>): DispatchHold | null {
+  const tag = dispatchSkipTag(node);
+  const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
+  return tag === null && blockedReason === null ? null : { tag, blockedReason };
+}
+
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
 
 export interface DispatchQueueSnapshot {
@@ -250,7 +269,7 @@ export interface DispatchQueueSnapshot {
   needsBrief: number;
   /** Grantable (inGate) tickets without an effort estimate. */
   unestimated: number;
-  /** Pullable, inside the gate, but tagged for a human (DISPATCH_SKIP_TAGS) — never granted. */
+  /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, `dispatchHold`) — never granted. */
   humanOnly: number;
   /**
    * Pullable tickets with NO effective version while the gate fences on a
@@ -288,8 +307,8 @@ export function dispatchQueueSnapshot(
   const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
-  // Human-only tickets (#266) are inside the gate but never granted.
-  const gated = gatedAll.filter((n) => dispatchSkipTag(n) === null);
+  // Tickets held for a person (#266, blockers) are inside the gate but never granted.
+  const gated = gatedAll.filter((n) => dispatchHold(n) === null);
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an

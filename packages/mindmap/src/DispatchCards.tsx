@@ -232,7 +232,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
         : snapshot.needsBrief > 0
           ? <>{snapshot.needsBrief} tickets are inside the gate but have no brief (no description, no linked issue) — the pull refuses them. Write briefs, or nothing moves.</>
           : snapshot.humanOnly > 0
-            ? <>{snapshot.humanOnly} tickets inside the gate are tagged for a person (needs-human, kira-skip, …) — the fleet never takes them. Someone has to act on them, then remove the tag.</>
+            ? <>{snapshot.humanOnly} tickets inside the gate are held for a person (a needs-human / kira-skip … tag, or a blocker) — the fleet never takes them. Someone has to act on them, then remove the tag or clear the blocker.</>
           : snapshot.pullable > 0
             ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done ({readOnly ? 'the operator switches the gate' : 'switch the gate'}) or the work is unversioned (see Fleet).</>
             : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
@@ -612,7 +612,7 @@ function FleetCard({ knobs, writes }: { knobs: KnobState; writes: Writes }) {
           {(snapshot.inGate > 0 || snapshot.needsBrief > 0 || snapshot.humanOnly > 0) && (
             <span style={{ color: '#64748b' }}>
               {' '}— {snapshot.needsBrief} without a brief{snapshot.needsBrief > 0 ? ' (refused until one exists)' : ''}, {snapshot.unestimated} unestimated
-              {snapshot.humanOnly > 0 ? `, ${snapshot.humanOnly} tagged for a person (never pulled)` : ''}
+              {snapshot.humanOnly > 0 ? `, ${snapshot.humanOnly} held for a person (never pulled)` : ''}
             </span>
           )}
         </div>

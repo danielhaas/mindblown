@@ -24,6 +24,7 @@ export const readyNodesTool = defineTool({
     'A node is ready when:',
     '  - It is a leaf (a node with children is a container — its children are the work)',
     '  - It is not tagged for a person (kira-skip, needs-human, needs-daniel-input, needs-rita-review)',
+    '    and carries no manual blocker (blockedReason, see flag_blocker)',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
@@ -112,8 +113,9 @@ export const getNextTicketTool = defineTool({
     '  4. Empty-brief guard: ready nodes with no description and no linked',
     '     issue are refused, auto-tagged "needs-brief", and listed in skipped[].',
     '  5. Human-only guard: tickets tagged kira-skip, needs-human, needs-daniel-input',
-    '     or needs-rita-review are never granted (a person must act) and are listed',
-    '     in skipped[] with reason "human-only".',
+    '     or needs-rita-review, or flagged with a blocker (blockedReason), are never',
+    '     granted (a person must act) and are listed in skipped[] with reason',
+    '     "human-only". Clear whatever holds it (the blocker via clear_blocker, the tag, or both) to put it back.',
     '',
     'On success you get the full self-contained brief: title, plain-text',
     'description, priority, scopes, tags, effective version, issue links.',
@@ -173,8 +175,11 @@ export const getNextTicketTool = defineTool({
     }
     if (humanOnly.length > 0) {
       lines.push('');
-      lines.push(`Skipped ${humanOnly.length} ready node(s) tagged for a human — never granted to a worker:`);
-      for (const s of humanOnly) lines.push(`  - ${s.id} "${s.text}" [${s.tag}]`);
+      lines.push(`Skipped ${humanOnly.length} ready node(s) held for a human (tag or blocker) — never granted to a worker:`);
+      for (const s of humanOnly) {
+        const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ');
+        lines.push(`  - ${s.id} "${s.text}" [${why}]`);
+      }
     }
     return lines.join('\n');
   },

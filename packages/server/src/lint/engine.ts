@@ -172,7 +172,6 @@ export const REPLAN_LOOKBACK_DAYS = 90;
 export const DEFAULT_STALLED_DAYS = 7;
 export const CLAIM_CHURN_HOURS = 24;
 const CLAIM_CHURN_MIN_PICKUPS = 5;
-const BLOCKED_MARKER = 'blocked'; // status id or tag the fleet parks nodes with
 
 const isLeaf = (n: Node) => (n.childrenIds?.length ?? 0) === 0;
 
@@ -656,24 +655,24 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     skipped: forgePrs ? undefined : 'no forge connected or the forge was unreachable',
   });
 
-  // 16. stale-blocked-reason — only the status parks a node; the queue
-  // (core pullableNodes) never reads the tag, so a tag without the status
-  // is exactly the stale case.
-  const isParked = (n: Node) => n.status === BLOCKED_MARKER;
+  // 16. stale-blocked-reason — a blocker reason on a FINISHED node. On an
+  // open node the reason itself holds it out of the queue (core
+  // dispatchHold), so a todo ticket flagged "waiting on Dan" is the
+  // intended state, not a stale one — clearing it would hand it out.
   rules.push({
     ruleId: 'stale-blocked-reason',
     severity: 'info',
-    title: 'Blocker text on nodes that are not blocked',
-    why: 'A blocker reason without a blocked status is invisible to dispatch — the node stays pullable while the text says it should not be.',
-    fix: 'Clear the reason if it no longer applies, or set the status to blocked so the queue skips it.',
+    title: 'Blocker text on finished nodes',
+    why: 'The node is done but still says it is blocked — the map keeps showing it, and its parents, as blocked.',
+    fix: 'Clear the reason.',
     findings: scopedNodes
-      .filter((n) => (n.blockedReason ?? '').trim() !== '' && (isDone(n) || !isParked(n)))
+      .filter((n) => (n.blockedReason ?? '').trim() !== '' && isDone(n))
       .map((n) => {
         const reason = n.blockedReason!.trim();
         return finding(
           n,
           `status ${shortStatus(n)}: "${reason.length > 80 ? reason.slice(0, 77) + '…' : reason}"`,
-          isDone(n) ? act('clear-blocker') : act('clear-blocker', 'park'),
+          act('clear-blocker'),
         );
       }),
   });
