@@ -55,6 +55,6 @@ export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
   'done-parent-open-child': ['reopen'],
   'issue-state-mismatch': ['close-issue', 'reopen', 'mark-done', 'reopen-issue'],
   'done-without-pr': ['reopen'],
-  'stale-blocked-reason': ['clear-blocker', 'park'],
+  'stale-blocked-reason': ['clear-blocker'],
   'claim-churn': ['park'],
 };

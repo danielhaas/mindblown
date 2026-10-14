@@ -322,4 +322,16 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect(dispatchSkipTag({ tags: ['x', 'NEEDS-RITA-REVIEW'] })).toBe('NEEDS-RITA-REVIEW');
     expect(dispatchSkipTag({ tags: ['needs-brief'] })).toBeNull();
   });
+
+  it('a manual blocker holds a ticket like a skip tag', async () => {
+    const { dispatchQueueSnapshot, dispatchHold } = await import('../dispatch.js');
+    const node = (id: string, blockedReason: string | null) =>
+      ({ id, parentId: 'root', status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
+    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
+    const snap = dispatchQueueSnapshot([root, node('a', 'Waiting on Dan'), node('b', null)], { workflow: [], cap: 3, gate: [] });
+    expect(snap).toMatchObject({ inGate: 1, humanOnly: 1, inGateIds: ['b'], state: 'running' });
+    expect(dispatchHold({ tags: [], blockedReason: 'x' })).toEqual({ tag: null, blockedReason: 'x' });
+    expect(dispatchHold({ tags: ['kira-skip'], blockedReason: null })).toEqual({ tag: 'kira-skip', blockedReason: null });
+    expect(dispatchHold({ tags: [], blockedReason: ' ' })).toBeNull();
+  });
 });
