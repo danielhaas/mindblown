@@ -295,6 +295,8 @@ export interface SkippedTicket {
   tag?: string;
   /** The manual blocker text, for human-only. */
   blockedReason?: string;
+  /** The open ancestor carrying the tag/blocker, when the hold is inherited. */
+  heldBy?: { id: string; text: string };
 }
 
 export interface GetNextTicketResult {

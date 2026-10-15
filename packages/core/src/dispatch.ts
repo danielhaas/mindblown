@@ -236,6 +236,14 @@ export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
 export interface DispatchHold {
   tag: string | null;
   blockedReason: string | null;
+  /** The open ancestor that carries the hold, or null when it is on the ticket itself. */
+  heldBy: { id: string; text: string } | null;
+}
+
+function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold, 'heldBy'> | null {
+  const tag = dispatchSkipTag(node);
+  const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
+  return tag === null && blockedReason === null ? null : { tag, blockedReason };
 }
 
 /**
@@ -244,11 +252,32 @@ export interface DispatchHold {
  * flag_blocker / the Blocked panel) — a flagged ticket keeps its todo
  * status, so without this the queue handed "waiting on Dan" straight to a
  * worker. Shared by get_next_ticket, ready_nodes and the Dispatch card.
+ *
+ * With `ancestors`, a hold on an OPEN ancestor holds the whole subtree: an
+ * epic waiting on a decision makes its sub-tickets just as stuck. A done
+ * ancestor's leftover reason does not count — it would silently freeze
+ * every ticket added under it later (plan-lint flags that text instead).
+ * The nearest holding ancestor wins.
  */
-export function dispatchHold(node: Pick<Node, 'tags' | 'blockedReason'>): DispatchHold | null {
-  const tag = dispatchSkipTag(node);
-  const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
-  return tag === null && blockedReason === null ? null : { tag, blockedReason };
+export function dispatchHold(
+  node: Pick<Node, 'tags' | 'blockedReason'> & { parentId?: string | null },
+  ancestors?: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): DispatchHold | null {
+  const own = ownHold(node);
+  if (own) return { ...own, heldBy: null };
+  if (!ancestors) return null;
+  const seen = new Set<string>();
+  for (let id = node.parentId ?? null; id !== null && !seen.has(id); ) {
+    seen.add(id);
+    const a = ancestors.nodeMap.get(id);
+    if (!a) break;
+    if (!ancestors.isDone(a.status)) {
+      const hold = ownHold(a);
+      if (hold) return { ...hold, heldBy: { id: a.id, text: a.text } };
+    }
+    id = a.parentId;
+  }
+  return null;
 }
 
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
@@ -269,7 +298,7 @@ export interface DispatchQueueSnapshot {
   needsBrief: number;
   /** Grantable (inGate) tickets without an effort estimate. */
   unestimated: number;
-  /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, `dispatchHold`) — never granted. */
+  /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, on it or an open ancestor — `dispatchHold`) — never granted. */
   humanOnly: number;
   /**
    * Pullable tickets with NO effective version while the gate fences on a
@@ -308,7 +337,8 @@ export function dispatchQueueSnapshot(
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.
-  const gated = gatedAll.filter((n) => dispatchHold(n) === null);
+  const ancestors = { nodeMap, isDone: buildIsDonePredicate(opts.workflow) };
+  const gated = gatedAll.filter((n) => dispatchHold(n, ancestors) === null);
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an

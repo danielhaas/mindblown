@@ -656,7 +656,7 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
   });
 
   // 16. stale-blocked-reason — a blocker reason on a FINISHED node. On an
-  // open node the reason itself holds it out of the queue (core
+  // open node the reason itself holds it and its subtree out of the queue (core
   // dispatchHold), so a todo ticket flagged "waiting on Dan" is the
   // intended state, not a stale one — clearing it would hand it out.
   rules.push({

@@ -330,8 +330,30 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     const root = { id: 'root', parentId: null, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
     const snap = dispatchQueueSnapshot([root, node('a', 'Waiting on Dan'), node('b', null)], { workflow: [], cap: 3, gate: [] });
     expect(snap).toMatchObject({ inGate: 1, humanOnly: 1, inGateIds: ['b'], state: 'running' });
-    expect(dispatchHold({ tags: [], blockedReason: 'x' })).toEqual({ tag: null, blockedReason: 'x' });
-    expect(dispatchHold({ tags: ['kira-skip'], blockedReason: null })).toEqual({ tag: 'kira-skip', blockedReason: null });
+    expect(dispatchHold({ tags: [], blockedReason: 'x' })).toEqual({ tag: null, blockedReason: 'x', heldBy: null });
+    expect(dispatchHold({ tags: ['kira-skip'], blockedReason: null })).toEqual({ tag: 'kira-skip', blockedReason: null, heldBy: null });
     expect(dispatchHold({ tags: [], blockedReason: ' ' })).toBeNull();
+  });
+
+  it("an open ancestor's hold covers its subtree; a done ancestor's leftover text does not", async () => {
+    const { dispatchQueueSnapshot, dispatchHold } = await import('../dispatch.js');
+    const n = (id: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
+      ({ id, text: id, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+    const workflow = [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'done', name: 'Done', category: 'done' }] as never;
+    const nodes = [
+      n('root', null, { childrenIds: ['epic', 'old'] }),
+      n('epic', 'root', { blockedReason: 'Waiting on Dan', childrenIds: ['mid'] }),
+      n('mid', 'epic', { childrenIds: ['leaf'] }),
+      n('leaf', 'mid'),
+      n('old', 'root', { status: 'done', tags: ['needs-human'], childrenIds: ['fresh'] }),
+      n('fresh', 'old'),
+    ];
+    const snap = dispatchQueueSnapshot(nodes, { workflow, cap: 3, gate: [] });
+    expect(snap.inGateIds).toEqual(['fresh']);
+    expect(snap.humanOnly).toBe(3); // epic itself, mid and leaf
+    const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
+    const isDone = (st: string | null) => st === 'done';
+    expect(dispatchHold(nodes[3] as never, { nodeMap, isDone })).toEqual({ tag: null, blockedReason: 'Waiting on Dan', heldBy: { id: 'epic', text: 'epic' } });
+    expect(dispatchHold(nodes[3] as never)).toBeNull(); // without ancestors only the ticket itself counts
   });
 });

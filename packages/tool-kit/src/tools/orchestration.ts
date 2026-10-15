@@ -24,7 +24,8 @@ export const readyNodesTool = defineTool({
     'A node is ready when:',
     '  - It is a leaf (a node with children is a container — its children are the work)',
     '  - It is not tagged for a person (kira-skip, needs-human, needs-daniel-input, needs-rita-review)',
-    '    and carries no manual blocker (blockedReason, see flag_blocker)',
+    '    and carries no manual blocker (blockedReason, see flag_blocker) — on itself or on',
+    '    any not-done ancestor (a held epic holds its subtree)',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
@@ -115,7 +116,10 @@ export const getNextTicketTool = defineTool({
     '  5. Human-only guard: tickets tagged kira-skip, needs-human, needs-daniel-input',
     '     or needs-rita-review, or flagged with a blocker (blockedReason), are never',
     '     granted (a person must act) and are listed in skipped[] with reason',
-    '     "human-only". Clear whatever holds it (the blocker via clear_blocker, the tag, or both) to put it back.',
+    '     "human-only". A tag/blocker on a not-done ancestor holds the whole subtree',
+    '     (heldBy names that ancestor; on the map root it holds the whole map).',
+    '     Clear whatever holds it (the blocker via',
+    '     clear_blocker, the tag, or both) to put it back.',
     '',
     'On success you get the full self-contained brief: title, plain-text',
     'description, priority, scopes, tags, effective version, issue links.',
@@ -177,7 +181,8 @@ export const getNextTicketTool = defineTool({
       lines.push('');
       lines.push(`Skipped ${humanOnly.length} ready node(s) held for a human (tag or blocker) — never granted to a worker:`);
       for (const s of humanOnly) {
-        const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ');
+        const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
+          + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
         lines.push(`  - ${s.id} "${s.text}" [${why}]`);
       }
     }

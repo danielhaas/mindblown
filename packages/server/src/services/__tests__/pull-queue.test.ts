@@ -529,6 +529,18 @@ describe('human-only guard (#266)', () => {
       ['flagged', null, 'Waiting on Dan: pick the board'],
     ]);
   });
+
+  it('a hold on an open parent holds its children and names the parent; a done parent does not', () => {
+    const epic = makeNode({ id: 'epic', tags: ['needs-human'], childrenIds: ['kid'] });
+    const kid = makeNode({ id: 'kid', parentId: 'epic' });
+    const doneEpic = makeNode({ id: 'doneEpic', status: 'done', blockedReason: 'deferred', childrenIds: ['late'] });
+    const late = makeNode({ id: 'late', parentId: 'doneEpic' });
+    const d = select([epic, kid, doneEpic, late]);
+    expect(d.ranked.map((n) => n.id)).toEqual(['late']);
+    const kidHold = d.humanOnly.find((h) => h.node.id === 'kid')!;
+    expect(kidHold).toMatchObject({ tag: 'needs-human', blockedReason: null, heldBy: { id: 'epic', text: 'Node epic' } });
+    expect(d.humanOnly.find((h) => h.node.id === 'epic')!.heldBy).toBeNull();
+  });
 });
 
 // ── Profile routing (#262) ─────────────────────────────────────────

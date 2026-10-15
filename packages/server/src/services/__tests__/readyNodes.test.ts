@@ -87,4 +87,16 @@ describe('readyNodes — developer queue (#323)', () => {
     const r = await readyNodes('m1', { sprint: 'all' });
     expect(r.ready.map((n) => n.id)).toEqual(['ok']);
   });
+
+  it('a held open parent holds its leaves; a done parent does not', async () => {
+    selects.push([{ id: 'm1', statusWorkflow: [{ id: 'done', name: 'Done', category: 'done' }] }], [
+      root(),
+      row({ id: 'epic', blockedReason: 'Waiting on Dan' }),
+      row({ id: 'kid', parentId: 'epic' }),
+      row({ id: 'old', status: 'done', tags: ['needs-human'] }),
+      row({ id: 'late', parentId: 'old' }),
+    ], []);
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['late']);
+  });
 });
