@@ -232,7 +232,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
         : snapshot.needsBrief > 0
           ? <>{snapshot.needsBrief} tickets are inside the gate but have no brief (no description, no linked issue) — the pull refuses them. Write briefs, or nothing moves.</>
           : snapshot.humanOnly > 0
-            ? <>{snapshot.humanOnly} tickets inside the gate are held for a person (a needs-human / kira-skip … tag, or a blocker) — the fleet never takes them. Someone has to act on them, then remove the tag or clear the blocker.</>
+            ? <>{snapshot.humanOnly} tickets inside the gate are held for a person (a needs-human / kira-skip … tag, or a blocker, on the ticket or an open parent) — the fleet never takes them. Someone has to act on them, then remove the tag or clear the blocker.</>
           : snapshot.pullable > 0
             ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done ({readOnly ? 'the operator switches the gate' : 'switch the gate'}) or the work is unversioned (see Fleet).</>
             : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
