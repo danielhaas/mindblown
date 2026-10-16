@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useMindmapStore } from './store.js';
+import { authErrorMessage } from './authError.js';
 
 // Read ?email= and ?mode=register off the URL so invite links can prefill the
 // register form and skip the login/register toggle.
@@ -34,8 +35,8 @@ export function AuthScreen() {
       } else {
         await register(email, password, name);
       }
-    } catch (err: any) {
-      setError(err.message ?? 'Something went wrong');
+    } catch (err) {
+      setError(authErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
