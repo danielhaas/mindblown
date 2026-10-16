@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest';
-import { groupDone, doneGroupBounds, cardBlockState } from '../kanban.js';
+import type { StatusDef } from '@mindblown/core';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId } from '../kanban.js';
+
+describe('kanbanColumnId', () => {
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#94a3b8', position: 0 },
+    { id: 'wip', name: 'In Progress', category: 'in_progress', color: '#3b82f6', position: 1 },
+    { id: 'shipped', name: 'Done', category: 'done', color: '#10b981', position: 2 },
+  ];
+
+  it('matches a status by id or by name, case-insensitively', () => {
+    expect(kanbanColumnId({ status: 'wip', percentComplete: 0 }, workflow)).toBe('wip');
+    expect(kanbanColumnId({ status: 'in progress', percentComplete: 0 }, workflow)).toBe('wip');
+  });
+
+  it('puts a no-status leaf at 100 % in the done column, not under no status', () => {
+    expect(kanbanColumnId({ status: null, percentComplete: 100 }, workflow)).toBe('shipped');
+    expect(kanbanColumnId({ status: 'unknown', percentComplete: 100 }, workflow)).toBe('shipped');
+  });
+
+  it('leaves an unfinished no-status leaf under no status', () => {
+    expect(kanbanColumnId({ status: null, percentComplete: 99 }, workflow)).toBeNull();
+    expect(kanbanColumnId({ status: null, percentComplete: null }, workflow)).toBeNull();
+  });
+
+  it('keeps an explicit status even at 100 %, so a card dragged out of Done stays put', () => {
+    expect(kanbanColumnId({ status: 'todo', percentComplete: 100 }, workflow)).toBe('todo');
+  });
+
+  it('falls back to no status when the workflow has no done column', () => {
+    expect(kanbanColumnId({ status: null, percentComplete: 100 }, workflow.slice(0, 2))).toBeNull();
+  });
+});
 
 // Friday 10 Oct 2026, 15:00 local.
 const NOW = new Date(2026, 9, 10, 15, 0, 0);
