@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import {
   EMPTY_URL_STATE,
@@ -94,7 +94,7 @@ async function loadScopeLists(): Promise<void> {
   await Promise.all([s.loadCycles(), s.loadVersions()]);
 }
 
-export function useUrlState(): void {
+export function useUrlState(): boolean {
   const user = useMindmapStore((s) => s.user);
   const maps = useMindmapStore((s) => s.maps);
   const currentMapId = useMindmapStore((s) => s.currentMapId);
@@ -109,6 +109,11 @@ export function useUrlState(): void {
   const hydrateStarted = useRef(false);
   /** Set once a map has been opened, so auto-open doesn't fight hydration. */
   const mapClaimed = useRef(false);
+  /** True while the map named in the landing URL is still loading, so the
+   *  app can hold a spinner instead of flashing the map list on reload. */
+  const [restoring, setRestoring] = useState(
+    () => parseUrlState(window.location.search).map !== null,
+  );
 
   const writeUrl = useRef((): void => {
     const current = readStoreUrlState();
@@ -142,13 +147,17 @@ export function useUrlState(): void {
 
       if (target.map) {
         mapClaimed.current = true;
-        await useMindmapStore.getState().loadMap(target.map);
-        // A dead map id leaves currentMapId unset and an error on the
-        // store — surface that rather than applying view state onto
-        // nothing.
-        if (useMindmapStore.getState().currentMapId === target.map) {
-          await loadScopeLists();
-          applyToStore(validateUrlState(target, buildContext()));
+        try {
+          await useMindmapStore.getState().loadMap(target.map);
+          // A dead map id leaves currentMapId unset and an error on the
+          // store — surface that rather than applying view state onto
+          // nothing.
+          if (useMindmapStore.getState().currentMapId === target.map) {
+            await loadScopeLists();
+            applyToStore(validateUrlState(target, buildContext()));
+          }
+        } finally {
+          setRestoring(false);
         }
       }
 
@@ -217,4 +226,6 @@ export function useUrlState(): void {
     window.addEventListener('popstate', onPopState);
     return () => window.removeEventListener('popstate', onPopState);
   }, []);
+
+  return restoring;
 }

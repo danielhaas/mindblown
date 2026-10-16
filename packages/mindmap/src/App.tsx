@@ -1746,7 +1746,7 @@ export function App() {
   // and scope filters — so a copied link or a reload lands where you were.
   // Also owns opening the map (from ?map= or the single-map auto-open), so
   // that logic lives in one place instead of racing effects here.
-  useUrlState();
+  const restoringMap = useUrlState();
 
   // New-map dialog: name + AI policy (#375), asked up front instead of a
   // bare prompt() so a private project starts with the right policy.
@@ -1769,6 +1769,15 @@ export function App() {
 
   if (!user) {
     return <AuthScreen />;
+  }
+
+  // A reload on ?map= would otherwise flash the map list until the fetch lands.
+  if (!currentMapId && restoringMap) {
+    return (
+      <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+        <Spinner size={32} />
+      </div>
+    );
   }
 
   // ── Map list view ────────────────────────────────────────────
