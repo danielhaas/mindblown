@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -636,18 +636,11 @@ export function KanbanView() {
         blockedBy: cv?.blockedBy ?? null,
       };
 
-      if (!node.status) {
-        unset.push(card);
+      const columnId = kanbanColumnId(node, statusColumns);
+      if (columnId) {
+        buckets[columnId].push(card);
       } else {
-        // Match by status name (case-insensitive) or id
-        const match = statusColumns.find(
-          (s) => s.id === node.status || s.name.toLowerCase() === node.status!.toLowerCase(),
-        );
-        if (match) {
-          buckets[match.id].push(card);
-        } else {
-          unset.push(card);
-        }
+        unset.push(card);
       }
     }
 

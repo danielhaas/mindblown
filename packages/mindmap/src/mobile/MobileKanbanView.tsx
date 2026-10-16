@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -64,11 +64,12 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
       // Parents are containers, not work items — a card for "Backend"
       // next to its own children only adds noise on a phone screen.
       if (n.childrenIds.length > 0) continue;
-      if (n.status === null) {
+      const columnId = kanbanColumnId(n, workflow);
+      if (columnId === null) {
         unstatused.push(n);
       } else {
-        if (!byStatus.has(n.status)) byStatus.set(n.status, []);
-        byStatus.get(n.status)!.push(n);
+        if (!byStatus.has(columnId)) byStatus.set(columnId, []);
+        byStatus.get(columnId)!.push(n);
       }
     }
 

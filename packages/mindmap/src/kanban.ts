@@ -11,7 +11,32 @@
  * Within a group the most recently finished card comes first.
  */
 
-import { BLOCKED_TAG, type BlockedBy } from '@mindblown/core';
+import { BLOCKED_TAG, type BlockedBy, type StatusDef } from '@mindblown/core';
+
+/**
+ * Which column a leaf's card sits in: the workflow step its status names
+ * (by id, or by name case-insensitively), or `null` for the no-status column.
+ *
+ * A leaf with no recognised status that reached 100 % goes to the first
+ * done-category column — it is done by the shared `isLeafDone` rule
+ * (viewScope.ts), and parking it under "no status" made a finished map look
+ * full of open tickets. An explicit status always wins, so dragging such a
+ * card back out of Done sticks instead of snapping back.
+ */
+export function kanbanColumnId(
+  node: { status: string | null; percentComplete: number | null },
+  workflow: readonly StatusDef[],
+): string | null {
+  if (node.status) {
+    const status = node.status.toLowerCase();
+    const match = workflow.find((s) => s.id === node.status || s.name.toLowerCase() === status);
+    if (match) return match.id;
+  }
+  if ((node.percentComplete ?? 0) >= 100) {
+    return workflow.find((s) => s.category === 'done')?.id ?? null;
+  }
+  return null;
+}
 
 export type DoneGroupKey = 'today' | 'week' | 'earlier';
 
