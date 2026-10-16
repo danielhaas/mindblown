@@ -365,6 +365,55 @@ function Column({
     />
   );
 
+  // An empty column folds to a slim strip so the full-width columns are the
+  // ones with work in them. Still a drop target; widens again on the first card.
+  if (column.cards.length === 0) {
+    return (
+      <div
+        data-testid={`kanban-column-collapsed-${column.id}`}
+        title={`${column.name} — no items`}
+        style={{
+          flex: '0 0 40px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: 8,
+          padding: '10px 0',
+          minHeight: 160,
+          background: '#f1f5f9',
+          borderRadius: 10,
+        }}
+        onDragOver={onDragOver}
+        onDrop={(e) => onDrop(e, column.id)}
+      >
+        <div style={{ width: 10, height: 10, borderRadius: 3, background: column.color, flexShrink: 0 }} />
+        <span
+          style={{
+            fontSize: 11,
+            fontWeight: 600,
+            color: '#64748b',
+            background: '#e2e8f0',
+            padding: '1px 6px',
+            borderRadius: 10,
+          }}
+        >
+          0
+        </span>
+        <span
+          style={{
+            writingMode: 'vertical-rl',
+            fontSize: 13,
+            fontWeight: 700,
+            color: '#64748b',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {column.name}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -446,19 +495,6 @@ function Column({
           minHeight: 60,
         }}
       >
-        {column.cards.length === 0 && (
-          <div
-            style={{
-              padding: '20px 0',
-              textAlign: 'center',
-              fontSize: 11,
-              color: '#94a3b8',
-            }}
-          >
-            No items
-          </div>
-        )}
-
         {doneGroups
           ? doneGroups.map((g) => (
               <div key={g.key} style={{ marginBottom: 6 }}>
