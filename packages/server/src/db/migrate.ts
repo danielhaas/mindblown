@@ -1246,16 +1246,19 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   `);
   // One-shot (#478): instances that ran the backfill above before it
   // started at 0 hold a copy of the map's cap on each migrated fleet —
-  // reset it to 0 (no fleet-wide limit). Migrated fleets are the ones with
-  // exactly one map, named after it.
+  // reset it to 0 (no fleet-wide limit). Migrated fleets are matched by the
+  // backfill's own timestamp: its DO block is one statement, so NOW() — the
+  // fleets' created_at and the marker's applied_at — is the same instant.
+  // That holds even for a map renamed since. A fleet whose owner changed it
+  // since (updated_at moved) keeps the cap they set.
   await db.execute(sql`
     DO $$
     BEGIN
       IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'migrated_fleet_caps_unlimited_v1') THEN
         UPDATE fleets f SET max_active_claims = 0
         WHERE f.max_active_claims <> 0
-          AND (SELECT count(*) FROM maps m WHERE m.fleet_id = f.id) = 1
-          AND EXISTS (SELECT 1 FROM maps m WHERE m.fleet_id = f.id AND m.name = f.name);
+          AND f.updated_at = f.created_at
+          AND f.created_at = (SELECT applied_at FROM data_migrations WHERE id = 'fleets_from_active_maps_v1');
         INSERT INTO data_migrations (id) VALUES ('migrated_fleet_caps_unlimited_v1');
       END IF;
     END $$;

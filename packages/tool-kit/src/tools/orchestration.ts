@@ -101,7 +101,8 @@ export const getNextTicketTool = defineTool({
     '',
     'Selection pipeline (configured via update_map):',
     '  1. Cap gate: if the map\'s active claims >= maxActiveClaims, the pull is',
-    '     refused with reason "cap" (reason "hold" when the cap is 0 — the fleet hold).',
+    '     refused with reason "cap" (reason "hold" when the map\'s cap is 0). A map in',
+    '     a fleet is also refused with "fleet_cap" when the fleet\'s total cap is reached.',
     '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug",',
     '     or "type:bug|version:<id>" = either; empty = no fence). Tickets outside',
     '     the gate are invisible, not deprioritized.',
@@ -173,13 +174,20 @@ export const getNextTicketTool = defineTool({
         : await backend.getNextTicket(mapId!, sessionId, profile);
 
     const lines: string[] = [];
+    // A fleet cap of 0 is no limit — "3/0" would read as over capacity.
+    const fleetClaims = (active: number, cap: number) => (cap === 0 ? `${active}, no fleet cap` : `${active}/${cap}`);
     const fleetLine = result.fleet
-      ? ` — fleet "${result.fleet.name}" ${result.fleet.active}/${result.fleet.cap}`
+      ? ` — fleet "${result.fleet.name}" ${fleetClaims(result.fleet.active, result.fleet.cap)}`
       : '';
     if (result.granted && result.ticket) {
       const t = result.ticket;
-      const scope = fleetId !== undefined ? 'fleet' : 'map';
-      lines.push(`Ticket granted to session "${sessionId}" (${result.active}/${result.cap} ${scope} claims active${fleetId === undefined ? fleetLine : ''}):`);
+      const claims =
+        fleetId === undefined
+          ? `${result.active}/${result.cap} map claims active${fleetLine}`
+          : result.cap === 0
+            ? `${result.active} fleet claims active, no fleet cap`
+            : `${result.active}/${result.cap} fleet claims active`;
+      lines.push(`Ticket granted to session "${sessionId}" (${claims}):`);
       lines.push('');
       lines.push(`  map: ${result.mapName ?? '—'} (mapId: ${t.mapId})`);
       lines.push(`  id: ${t.id}`);

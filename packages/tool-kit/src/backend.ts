@@ -312,9 +312,10 @@ export interface FleetPullMapOutcome {
 export interface GetNextTicketResult {
   granted: boolean;
   /**
-   * Set when granted is false: `hold` = cap is 0, `cap` = the map's active
-   * claims have reached its ceiling, `fleet_cap` = the map's fleet is full
-   * (or on hold at 0) although the map itself is not, `empty` = nothing
+   * Set when granted is false: `hold` = the map's cap is 0, `cap` = the map's
+   * active claims have reached its ceiling, `fleet_cap` = the map's fleet is
+   * at its total cap (a fleet cap of 0 = no limit, never this) although the
+   * map itself is not, `empty` = nothing
    * dispatchable inside the gate. A fleet pull reports `hold` / `cap` only
    * when every map it looked at said so; `maps` has the per-map reasons.
    */

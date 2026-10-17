@@ -85,6 +85,17 @@ describe('get_next_ticket handler — fleet pull', () => {
     await expect(getNextTicketTool.handler(backend, { mapId: 'm', mapIds: ['m'], sessionId: 'w' } as never)).rejects.toThrow(/fleetId/);
   });
 
+  it('renders a fleet cap of 0 as no cap, never as "n/0"', async () => {
+    const fleetPull = makeBackend({ granted: true, active: 3, cap: 0, ticket, skipped: [], mapId: 'map-b', mapName: 'Beta', fleet: { id: FLEET, name: 'F', active: 3, cap: 0 } });
+    const out1 = await getNextTicketTool.handler(fleetPull.backend, { fleetId: FLEET, sessionId: 'w' } as never);
+    expect(out1).toContain('3 fleet claims active, no fleet cap');
+    expect(out1).not.toContain('3/0');
+    const mapPull = makeBackend({ granted: true, active: 1, cap: 4, ticket, skipped: [], mapId: 'map-b', mapName: 'Beta', fleet: { id: FLEET, name: 'F', active: 1, cap: 0 } });
+    const out2 = await getNextTicketTool.handler(mapPull.backend, { mapId: 'map-b', sessionId: 'w' } as never);
+    expect(out2).toContain('1/4 map claims active — fleet "F" 1, no fleet cap');
+    expect(out2).not.toContain('1/0');
+  });
+
   it('explains fleet_cap', async () => {
     const full = makeBackend({ granted: false, reason: 'fleet_cap', active: 4, cap: 4, skipped: [], fleet: { id: FLEET, name: 'F', active: 4, cap: 4 } });
     expect(await getNextTicketTool.handler(full.backend, { fleetId: FLEET, sessionId: 'w' } as never)).toContain('fleet is full (4/4');

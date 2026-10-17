@@ -663,11 +663,12 @@ export interface MindMap {
 
   // ── Pull queue (Leidang) ──────────────────────────────────
   /**
-   * Fleet-wide cap on concurrently claimed nodes for the pull queue
+   * This map's cap on concurrently claimed nodes for the pull queue
    * (`get_next_ticket`). Counted across ALL sessions — the constraint it
    * models (CI capacity) is shared, not per-worker. 0 = hold: the queue
    * grants nothing and the fleet drains naturally. Default 0 so a map
-   * must opt in before workers can pull from it.
+   * must opt in before workers can pull from it. In a fleet (#478) it is
+   * the map's ceiling; the fleet's own cap limits all its maps together.
    */
   maxActiveClaims: number;
   /**
