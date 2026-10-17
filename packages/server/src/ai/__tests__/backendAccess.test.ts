@@ -36,6 +36,7 @@ vi.mock('../../db/maps.js', () => throwing());
 vi.mock('../../db/nodes.js', () => throwing());
 vi.mock('../../db/events.js', () => throwing());
 vi.mock('../../db/fleet.js', () => throwing());
+vi.mock('../../db/fleets.js', () => throwing());
 vi.mock('../../db/asks.js', () => throwing());
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../embeddings.js', () => ({ scheduleEmbedNode: vi.fn() }));
@@ -136,5 +137,13 @@ describe('chat backend — map guard', () => {
   it('leaves the unscoped methods alone', async () => {
     // listMaps reaches the (throwing) DB straight away — no guard in between.
     expect(await outcome(asRecord.listMaps)).toBe(DB_TOUCHED);
+    // Fleets (#477) scope themselves to the user in services/fleets.
+    expect(await outcome(asRecord.listFleets)).toBe(DB_TOUCHED);
+  });
+
+  it('connecting a fleet through chat needs admin on the map, like REST (#477)', async () => {
+    const msg = await outcome(asRecord.updateMap, 'map-edit', { fleetId: '11111111-2222-4333-8444-555555555555' });
+    expect(msg).toMatch(/Only map admins/);
+    expect(msg).not.toBe(DB_TOUCHED);
   });
 });

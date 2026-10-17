@@ -55,11 +55,13 @@ import { githubAuditTools } from './tools/githubAudit.js';
 import { asksTools } from './tools/asks.js';
 import { fleetJournalTools } from './tools/fleetJournal.js';
 import { attachmentTools } from './tools/attachments.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools };
+import { fleetTools } from './tools/fleets.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools };
 export { renderAskList } from './tools/asks.js';
 
 export const allTools = [
   ...mapTools,
+  ...fleetTools,
   ...nodeTools,
   ...bulkTools,
   ...triageTools,

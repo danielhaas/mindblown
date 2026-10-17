@@ -82,7 +82,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps concurrently claimed nodes fleet-wide (0 = hold, grants nothing — the default); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps concurrently claimed nodes fleet-wide (0 = hold, grants nothing — the default); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. fleetId connects the map to a worker fleet (null disconnects), fleetShare is its weight there. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -174,6 +174,18 @@ export const updateMapTool = defineTool({
       .nullable()
       .optional()
       .describe('Profile routing table for get_next_ticket (#262). Presence ACTIVATES routing: heavy-class tickets (P0 or estimate ≥ heavyMinHours) go only to profile "heavy"; profile "light" gets only tickets ≤ lightMaxHours with priority P2/P3; unestimated tickets and profile "standard"/unknown/absent fail open. Ranking is unchanged — this only filters eligibility. null (the default) = profile-blind queue, the pre-#262 behavior.'),
+    fleetId: z
+      .string()
+      .uuid()
+      .nullable()
+      .optional()
+      .describe('Connect the map to a worker fleet (id from list_fleets / create_fleet); null disconnects it. A map has at most one fleet, a fleet serves many maps. Needs admin on the map, and connecting needs ownership of the fleet. The map keeps its own maxActiveClaims (its ceiling inside the fleet), gate and policy.'),
+    fleetShare: z
+      .number()
+      .min(0.1)
+      .max(100)
+      .optional()
+      .describe("This map's weight when its fleet picks between projects (0.1–100, default 1): a map with share 2 gets twice the pulls of a map with share 1 when both have ready work."),
     aiEstimateDrafts: z
       .boolean()
       .optional()
@@ -221,7 +233,7 @@ export const updateMapTool = defineTool({
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -234,6 +246,8 @@ export const updateMapTool = defineTool({
       dispatchGate?: string[];
       dispatchPolicy?: string[];
       profilePolicy?: { heavyMinHours?: number; lightMaxHours?: number } | null;
+      fleetId?: string | null;
+      fleetShare?: number;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
@@ -253,6 +267,8 @@ export const updateMapTool = defineTool({
     if (dispatchGate !== undefined) fields.dispatchGate = dispatchGate;
     if (dispatchPolicy !== undefined) fields.dispatchPolicy = dispatchPolicy;
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
+    if (fleetId !== undefined) fields.fleetId = fleetId;
+    if (fleetShare !== undefined) fields.fleetShare = fleetShare;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;

@@ -19,6 +19,10 @@ export const httpBackend: ToolBackend = {
   },
   updateMap: (mapId, fields) => api.updateMap(mapId, fields),
   deleteMap: (mapId) => api.deleteMap(mapId),
+  // ── Fleets (#477) ───────────────────────────────────────────────
+  listFleets: () => api.listFleets(),
+  createFleet: (name, maxActiveClaims) => api.createFleet(name, maxActiveClaims),
+  updateFleet: (fleetId, fields) => api.updateFleet(fleetId, fields),
   freezeBaseline: (mapId, name) => api.freezeBaseline(mapId, name),
   createNode: (mapId, parentId, text, fields) => api.createNode(mapId, parentId, text, fields),
   updateNode: (mapId, nodeId, fields) => api.updateNode(mapId, nodeId, fields),

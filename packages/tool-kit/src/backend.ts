@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
 export interface FleetStatusResult {
@@ -360,6 +360,8 @@ export interface ToolBackend {
       dispatchGate?: string[];
       dispatchPolicy?: string[];
       profilePolicy?: ProfilePolicy | null;
+      fleetId?: string | null;
+      fleetShare?: number;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
@@ -370,6 +372,10 @@ export interface ToolBackend {
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;
+  // ── Fleets (#477) — not map-scoped: the server scopes them to the caller ──
+  listFleets(): Promise<FleetWithMaps[]>;
+  createFleet(name: string, maxActiveClaims?: number): Promise<FleetWithMaps>;
+  updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps>;
   /** Freeze the current projected schedule as a named baseline (#113). */
   freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
 

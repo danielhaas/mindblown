@@ -6,7 +6,7 @@ import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
 import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
-import { clampFocusFactor, isAiPolicy } from '@mindblown/core';
+import { clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -150,6 +150,14 @@ export interface UpdateMapInput {
   dispatchPolicy?: string[];
   /** Profile routing table (#262); null clears = profile-blind queue. */
   profilePolicy?: ProfilePolicy | null;
+  /**
+   * Connect to a fleet (#477), null disconnects. Who may do it (admin on the
+   * map, owner of the fleet) is checked by the callers through
+   * services/fleets `authorizeMapFleetChange` — not here.
+   */
+  fleetId?: string | null;
+  /** Weight inside the fleet (#478); clamped to 0.1–100. */
+  fleetShare?: number;
   githubInstallationId?: string | null;
   githubRepoOwner?: string | null;
   githubRepoName?: string | null;
@@ -214,6 +222,8 @@ export async function updateMap(
   if (input.dispatchGate !== undefined) updates.dispatchGate = input.dispatchGate;
   if (input.dispatchPolicy !== undefined) updates.dispatchPolicy = input.dispatchPolicy;
   if (input.profilePolicy !== undefined) updates.profilePolicy = input.profilePolicy;
+  if (input.fleetId !== undefined) updates.fleetId = input.fleetId;
+  if (input.fleetShare !== undefined) updates.fleetShare = clampFleetShare(input.fleetShare);
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;
   if (input.githubRepoName !== undefined) updates.githubRepoName = input.githubRepoName;

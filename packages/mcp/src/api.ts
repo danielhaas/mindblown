@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions } from '@mindblown/tool-kit';
-import type { AskAnswerInput } from '@mindblown/core';
+import type { AskAnswerInput, FleetWithMaps } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -499,6 +499,8 @@ export function updateMap(
     dispatchGate?: string[];
     dispatchPolicy?: string[];
     profilePolicy?: ProfilePolicy | null;
+    fleetId?: string | null;
+    fleetShare?: number;
     autoImportNewIssues?: boolean;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
@@ -510,6 +512,26 @@ export function updateMap(
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {
     method: 'PUT',
+    body: JSON.stringify(fields),
+  });
+}
+
+// ── Fleets (#477) ──────────────────────────────────────────────
+
+export function listFleets(): Promise<FleetWithMaps[]> {
+  return request<FleetWithMaps[]>('/api/fleets');
+}
+
+export function createFleet(name: string, maxActiveClaims?: number): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>('/api/fleets', {
+    method: 'POST',
+    body: JSON.stringify(maxActiveClaims === undefined ? { name } : { name, maxActiveClaims }),
+  });
+}
+
+export function updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${encodeURIComponent(fleetId)}`, {
+    method: 'PATCH',
     body: JSON.stringify(fields),
   });
 }

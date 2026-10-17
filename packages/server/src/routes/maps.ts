@@ -6,6 +6,7 @@ import { listActiveAcceptances } from '../db/acceptances.js';
 import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
+import * as fleetService from '../services/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
@@ -252,10 +253,13 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
     // Derived, not stored: which forge the map syncs with, so the UI can say
     // "Gitea" where it used to say "GitHub" (labels, inbox, settings).
-    const forgeKind = await getMapForgeKind(req.params.id);
+    const [forgeKind, fleetName] = await Promise.all([
+      getMapForgeKind(req.params.id),
+      fleetService.fleetNameOf(data.map.fleetId),
+    ]);
 
     return reply.send({
-      map: { ...data.map, forgeKind },
+      map: { ...data.map, forgeKind, fleetName },
       nodes: nodesWithComputed,
     });
   });
@@ -385,6 +389,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const holidayError = normalizeHolidaySettings(body);
     if (holidayError) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: holidayError } });
+    }
+    // Fleet connection (#477): admin on the map, and owner of the target fleet.
+    if (body.fleetId !== undefined && body.fleetId !== null && typeof body.fleetId !== 'string') {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'fleetId must be a fleet id or null' } });
+    }
+    if (body.fleetShare !== undefined && (typeof body.fleetShare !== 'number' || !Number.isFinite(body.fleetShare))) {
+      return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'fleetShare must be a number' } });
+    }
+    const fleetDenied = await fleetService.authorizeMapFleetChange(userId, req.params.id, body);
+    if (fleetDenied) {
+      return reply.status(fleetDenied.status).send({ error: { code: fleetDenied.code, message: fleetDenied.message } });
     }
     const updated = await mapDb.updateMap(req.params.id, body, userId);
     if (!updated) {
