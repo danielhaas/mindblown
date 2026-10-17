@@ -554,8 +554,9 @@ export interface Baseline {
  */
 /**
  * A fleet of worker hosts (#477): the capacity several maps share. Its
- * `maxActiveClaims` is the total claim cap across every connected map
- * (0 = hold); each map keeps its own ceiling and queue knobs.
+ * `maxActiveClaims` is the total claim cap across every connected map;
+ * 0 = no fleet-wide limit (#478). Each map keeps its own ceiling (0 = hold,
+ * the default) and queue knobs, so nothing runs until a map opts in.
  */
 export interface Fleet {
   id: FleetId;

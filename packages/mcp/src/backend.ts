@@ -41,6 +41,7 @@ export const httpBackend: ToolBackend = {
   // ── Orchestration substrate (#111) ──────────────────────────────
   readyNodes: (mapId, opts) => api.readyNodes(mapId, opts),
   getNextTicket: (mapId, sessionId, profile) => api.getNextTicket(mapId, sessionId, profile),
+  pullFleetTicket: (fleetId, sessionId, opts) => api.pullFleetTicket(fleetId, sessionId, opts),
   claimNode: (mapId, nodeId, sessionId) => api.claimNode(mapId, nodeId, sessionId),
   releaseNode: (mapId, nodeId, sessionId, reason) => api.releaseNode(mapId, nodeId, sessionId, reason),
   unblockNode: (mapId, nodeId) => api.unblockNode(mapId, nodeId),

@@ -1202,15 +1202,22 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     CREATE INDEX IF NOT EXISTS maps_fleet_id_idx ON maps (fleet_id)
   `);
+  // Fleet pull (#478): weighted round-robin credit per connected map.
+  await db.execute(sql`
+    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS pull_deficits JSONB NOT NULL DEFAULT '{}'::jsonb
+  `);
   // One-shot: every map a fleet already works on gets a fleet of its own —
   // a pull cap above hold, or any telemetry row. Named after the map, owned
   // by the oldest admin (the operator who runs the satellites — a map's
   // creator can be an automated account, which then couldn't hand the fleet
   // over without SQL), falling back to the map's creator on an instance with
-  // no admin. The map's cap is copied as the fleet cap. Afterwards each
-  // existing satellite has a fleet and nothing behaves differently (one map
-  // per fleet). The CTE is materialized once (volatile gen_random_uuid,
-  // referenced twice), so insert and update see the same ids.
+  // no admin. The fleet cap starts at 0 = no fleet-wide limit (#478): the
+  // map keeps its own cap, which the orchestrator rewrites every tick — a
+  // copy on the fleet would go stale and, once the pull enforces the fleet
+  // cap, block every raise. Afterwards each existing satellite has a fleet
+  // and nothing behaves differently (one map per fleet). The CTE is
+  // materialized once (volatile gen_random_uuid, referenced twice), so
+  // insert and update see the same ids.
   await db.execute(sql`
     DO $$
     BEGIN
@@ -1226,7 +1233,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
           INSERT INTO fleets (id, name, owner_id, max_active_claims)
           SELECT fleet_id, name,
                  COALESCE((SELECT u.id FROM users u WHERE u.is_admin ORDER BY u.created_at ASC LIMIT 1), created_by),
-                 max_active_claims
+                 0
           FROM src
           RETURNING id
         )
@@ -1234,6 +1241,22 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
         FROM src
         WHERE maps.id = src.map_id;
         INSERT INTO data_migrations (id) VALUES ('fleets_from_active_maps_v1');
+      END IF;
+    END $$;
+  `);
+  // One-shot (#478): instances that ran the backfill above before it
+  // started at 0 hold a copy of the map's cap on each migrated fleet —
+  // reset it to 0 (no fleet-wide limit). Migrated fleets are the ones with
+  // exactly one map, named after it.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'migrated_fleet_caps_unlimited_v1') THEN
+        UPDATE fleets f SET max_active_claims = 0
+        WHERE f.max_active_claims <> 0
+          AND (SELECT count(*) FROM maps m WHERE m.fleet_id = f.id) = 1
+          AND EXISTS (SELECT 1 FROM maps m WHERE m.fleet_id = f.id AND m.name = f.name);
+        INSERT INTO data_migrations (id) VALUES ('migrated_fleet_caps_unlimited_v1');
       END IF;
     END $$;
   `);

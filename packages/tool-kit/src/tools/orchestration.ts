@@ -128,11 +128,30 @@ export const getNextTicketTool = defineTool({
     'existing claim.',
     '',
     'reason values when granted=false: "hold" (cap 0), "cap" (at capacity),',
-    '"empty" (nothing dispatchable inside the gate — if skipped[] is non-empty,',
-    'the queue has work that needs briefs written first).',
+    '"fleet_cap" (the map\'s fleet is at its total cap across all its maps,',
+    'although the map itself has room), "empty" (nothing dispatchable inside the',
+    'gate — if skipped[] is non-empty, the queue has work that needs briefs',
+    'written first).',
+    '',
+    'Fleet pull: pass fleetId instead of mapId to take the next ticket from ANY',
+    'map connected to that fleet that you may work on, optionally narrowed with',
+    'mapIds to the projects you have checked out. Each map applies its own cap,',
+    'gate, policy and profile routing exactly as above; between maps with ready',
+    'work the fleet picks by their fleetShare (weighted round-robin), within the',
+    'fleet cap. The result names the granted ticket\'s map — work in that repo.',
   ].join('\n'),
   schema: {
-    mapId: z.string().describe('The map ID to pull from'),
+    mapId: z.string().optional().describe('The map ID to pull from. Pass exactly one of mapId or fleetId.'),
+    fleetId: z
+      .string()
+      .uuid()
+      .optional()
+      .describe('Pull from any map of this fleet instead (id from list_fleets). Pass exactly one of mapId or fleetId.'),
+    mapIds: z
+      .array(z.string())
+      .min(1)
+      .optional()
+      .describe('With fleetId: only these maps — the projects this worker can serve (has the repo checked out). Omitted = every connected map you may work on.'),
     sessionId: z
       .string()
       .describe('Session identifier of the pulling worker (e.g. "claudia:worker-3:acct1"). Opaque to MindBlown; used as the claim owner.'),
@@ -141,14 +160,28 @@ export const getNextTicketTool = defineTool({
       .optional()
       .describe('Worker profile: "heavy" | "standard" | "light". On maps with a profilePolicy this filters eligibility — heavy gets first refusal on P0/big tickets, light gets only small P2/P3 tickets, standard (also unknown/absent — fail open) gets everything else; unestimated tickets go to every profile. Maps without a profilePolicy ignore it.'),
   },
-  handler: async (backend, { mapId, sessionId, profile }) => {
-    const result = await backend.getNextTicket(mapId, sessionId, profile);
+  handler: async (backend, { mapId, fleetId, mapIds, sessionId, profile }) => {
+    if ((mapId === undefined) === (fleetId === undefined)) {
+      throw new Error('Pass exactly one of mapId or fleetId');
+    }
+    if (mapIds !== undefined && fleetId === undefined) {
+      throw new Error('mapIds only applies to a fleet pull (fleetId)');
+    }
+    const result =
+      fleetId !== undefined
+        ? await backend.pullFleetTicket(fleetId, sessionId, { profile, mapIds })
+        : await backend.getNextTicket(mapId!, sessionId, profile);
 
     const lines: string[] = [];
+    const fleetLine = result.fleet
+      ? ` — fleet "${result.fleet.name}" ${result.fleet.active}/${result.fleet.cap}`
+      : '';
     if (result.granted && result.ticket) {
       const t = result.ticket;
-      lines.push(`Ticket granted to session "${sessionId}" (${result.active}/${result.cap} claims active):`);
+      const scope = fleetId !== undefined ? 'fleet' : 'map';
+      lines.push(`Ticket granted to session "${sessionId}" (${result.active}/${result.cap} ${scope} claims active${fleetId === undefined ? fleetLine : ''}):`);
       lines.push('');
+      lines.push(`  map: ${result.mapName ?? '—'} (mapId: ${t.mapId})`);
       lines.push(`  id: ${t.id}`);
       lines.push(`  title: ${t.text}`);
       if (t.priority || t.priorityRank !== null) {
@@ -162,20 +195,36 @@ export const getNextTicketTool = defineTool({
       lines.push('');
       lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked issue)');
     } else {
+      const fleetPull = fleetId !== undefined;
       const why =
-        result.reason === 'hold'
-          ? 'the map is on hold (maxActiveClaims = 0)'
-          : result.reason === 'cap'
-            ? `the claim cap is reached (${result.active}/${result.cap} active)`
-            : 'no dispatchable ticket inside the dispatch gate';
-      lines.push(`No ticket granted — ${why}.`);
+        result.reason === 'fleet_cap'
+          ? `the fleet is full (${result.fleet?.active ?? result.active}/${result.fleet?.cap ?? result.cap} claims across its maps)`
+          : result.reason === 'hold'
+            ? fleetPull
+              ? 'every map you can pull from is on hold (maxActiveClaims = 0)'
+              : 'the map is on hold (maxActiveClaims = 0)'
+            : result.reason === 'cap'
+              ? fleetPull
+                ? 'every map you can pull from is at its own claim ceiling'
+                : `the claim cap is reached (${result.active}/${result.cap} active)`
+              : fleetPull
+                ? 'no dispatchable ticket in any map you can pull from'
+                : 'no dispatchable ticket inside the dispatch gate';
+      lines.push(`No ticket granted — ${why}.${result.reason === 'fleet_cap' ? '' : fleetLine ? ` (${fleetLine.slice(3)})` : ''}`);
+      if (result.maps && result.maps.length > 0) {
+        lines.push('');
+        lines.push('Per map:');
+        for (const m of result.maps) lines.push(`  - ${m.name} (mapId: ${m.mapId}): ${m.reason}`);
+      } else if (fleetPull && result.reason === 'empty' && result.skipped.length === 0) {
+        lines.push('(No connected map you may work on matched — check mapIds and your access.)');
+      }
     }
     const noBrief = result.skipped.filter((s) => s.reason !== 'human-only');
     const humanOnly = result.skipped.filter((s) => s.reason === 'human-only');
     if (noBrief.length > 0) {
       lines.push('');
       lines.push(`Skipped ${noBrief.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
-      for (const s of noBrief) lines.push(`  - ${s.id} "${s.text}"`);
+      for (const s of noBrief) lines.push(`  - ${s.id} "${s.text}"${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
     }
     if (humanOnly.length > 0) {
       lines.push('');
@@ -183,7 +232,7 @@ export const getNextTicketTool = defineTool({
       for (const s of humanOnly) {
         const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
           + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
-        lines.push(`  - ${s.id} "${s.text}" [${why}]`);
+        lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
       }
     }
     return lines.join('\n');

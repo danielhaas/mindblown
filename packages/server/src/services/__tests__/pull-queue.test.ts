@@ -674,3 +674,25 @@ describe('profilePolicy routing', () => {
   });
 });
 
+describe('fleet cap (#478)', () => {
+  const pull = (cap: number, fleetFull: boolean, nodes: CoreNode[] = [makeNode({ id: 'a' })]) =>
+    selectPullCandidates([root, ...nodes], { workflow: WORKFLOW, cap, gate: [], policy: [], fleetFull });
+
+  it('a full fleet refuses with fleet_cap although the map has room', () => {
+    const d = pull(5, true);
+    expect(d.reason).toBe('fleet_cap');
+    expect(d.ranked).toEqual([]);
+    expect(d.skipped).toEqual([]); // like cap: no needs-brief tagging on a refusal
+  });
+
+  it("the map's own hold and ceiling come first", () => {
+    expect(pull(0, true).reason).toBe('hold');
+    const claimed = makeNode({ id: 'b', claimedBySession: 'w1', claimedAt: new Date().toISOString() });
+    expect(pull(1, true, [makeNode({ id: 'a' }), claimed]).reason).toBe('cap');
+  });
+
+  it('room in the fleet changes nothing', () => {
+    expect(pull(5, false).ranked.map((n) => n.id)).toEqual(['a']);
+  });
+});
+

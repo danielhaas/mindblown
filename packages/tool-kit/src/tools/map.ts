@@ -115,7 +115,7 @@ export const updateMapTool = defineTool({
       .int()
       .min(0)
       .optional()
-      .describe('Fleet-wide cap on concurrently claimed nodes for the get_next_ticket pull queue. 0 = hold: the queue grants nothing and in-flight work drains naturally (default 0).'),
+      .describe("Cap on this map's concurrently claimed nodes for the get_next_ticket pull queue. 0 = hold: the queue grants nothing and in-flight work drains naturally (default 0). On a map connected to a fleet it is the map's ceiling inside the fleet; the fleet's own maxActiveClaims (update_fleet) caps all its maps together."),
     dispatchGate: z
       .array(
         z
