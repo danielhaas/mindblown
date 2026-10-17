@@ -1204,7 +1204,10 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   `);
   // One-shot: every map a fleet already works on gets a fleet of its own —
   // a pull cap above hold, or any telemetry row. Named after the map, owned
-  // by its creator, the map's cap copied as the fleet cap. Afterwards each
+  // by the oldest admin (the operator who runs the satellites — a map's
+  // creator can be an automated account, which then couldn't hand the fleet
+  // over without SQL), falling back to the map's creator on an instance with
+  // no admin. The map's cap is copied as the fleet cap. Afterwards each
   // existing satellite has a fleet and nothing behaves differently (one map
   // per fleet). The CTE is materialized once (volatile gen_random_uuid,
   // referenced twice), so insert and update see the same ids.
@@ -1221,7 +1224,10 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
                  OR EXISTS (SELECT 1 FROM fleet_ticks t WHERE t.map_id = m.id))
         ), ins AS (
           INSERT INTO fleets (id, name, owner_id, max_active_claims)
-          SELECT fleet_id, name, created_by, max_active_claims FROM src
+          SELECT fleet_id, name,
+                 COALESCE((SELECT u.id FROM users u WHERE u.is_admin ORDER BY u.created_at ASC LIMIT 1), created_by),
+                 max_active_claims
+          FROM src
           RETURNING id
         )
         UPDATE maps SET fleet_id = src.fleet_id
