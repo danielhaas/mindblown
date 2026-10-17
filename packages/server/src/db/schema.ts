@@ -184,13 +184,16 @@ export const maps = pgTable('maps', {
 
 // ── Fleets (#477) ──────────────────────────────────────────────────
 // A fleet of worker hosts that several maps can share. max_active_claims
-// is the total claim cap across every connected map (0 = hold); the map's
-// own max_active_claims stays its ceiling inside the fleet.
+// is the total claim cap across every connected map (0 = no fleet-wide
+// limit); the map's own max_active_claims stays its ceiling inside the
+// fleet (0 = hold there).
 export const fleets = pgTable('fleets', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
   ownerId: uuid('owner_id').notNull().references(() => users.id),
   maxActiveClaims: integer('max_active_claims').notNull().default(0),
+  /** Weighted round-robin credit per connected map id (#478) — internal pull state, not a knob. */
+  pullDeficits: jsonb('pull_deficits').$type<Record<string, number>>().notNull().default({}),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

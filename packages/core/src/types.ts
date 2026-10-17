@@ -554,8 +554,9 @@ export interface Baseline {
  */
 /**
  * A fleet of worker hosts (#477): the capacity several maps share. Its
- * `maxActiveClaims` is the total claim cap across every connected map
- * (0 = hold); each map keeps its own ceiling and queue knobs.
+ * `maxActiveClaims` is the total claim cap across every connected map;
+ * 0 = no fleet-wide limit (#478). Each map keeps its own ceiling (0 = hold,
+ * the default) and queue knobs, so nothing runs until a map opts in.
  */
 export interface Fleet {
   id: FleetId;
@@ -662,11 +663,12 @@ export interface MindMap {
 
   // ── Pull queue (Leidang) ──────────────────────────────────
   /**
-   * Fleet-wide cap on concurrently claimed nodes for the pull queue
+   * This map's cap on concurrently claimed nodes for the pull queue
    * (`get_next_ticket`). Counted across ALL sessions — the constraint it
    * models (CI capacity) is shared, not per-worker. 0 = hold: the queue
    * grants nothing and the fleet drains naturally. Default 0 so a map
-   * must opt in before workers can pull from it.
+   * must opt in before workers can pull from it. In a fleet (#478) it is
+   * the map's ceiling; the fleet's own cap limits all its maps together.
    */
   maxActiveClaims: number;
   /**

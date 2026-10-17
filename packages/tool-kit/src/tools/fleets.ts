@@ -4,7 +4,7 @@ import { defineTool } from '../spec.js';
 
 /** One fleet as a few lines: name, id, cap, connected maps. */
 export function renderFleet(f: FleetWithMaps): string {
-  const cap = f.maxActiveClaims === 0 ? 'cap 0 = hold' : `cap ${f.maxActiveClaims} active claims`;
+  const cap = f.maxActiveClaims === 0 ? 'no fleet-wide cap' : `cap ${f.maxActiveClaims} active claims`;
   const lines = [`- ${f.name} (id: ${f.id}) — ${cap}${f.isOwner ? ', you own it' : ''}`];
   if (f.maps.length === 0 && f.hiddenMapCount === 0) lines.push('    no maps connected');
   for (const m of f.maps) {
@@ -31,7 +31,7 @@ export const listFleetsTool = defineTool({
 export const createFleetTool = defineTool({
   name: 'create_fleet',
   description:
-    'Create a worker fleet; you become its owner. Then connect maps with update_map(mapId, fleetId) — that needs admin on the map. maxActiveClaims is the total claim cap across all connected maps (0 = hold, the default).',
+    'Create a worker fleet; you become its owner. Then connect maps with update_map(mapId, fleetId) — that needs admin on the map. maxActiveClaims is the total claim cap across all connected maps (0 = no fleet-wide limit, the default — each map\'s own maxActiveClaims still applies, and 0 there holds the map).',
   schema: {
     name: z.string().min(1).max(200).describe('Fleet name, e.g. the host group it stands for'),
     maxActiveClaims: z
@@ -39,22 +39,22 @@ export const createFleetTool = defineTool({
       .int()
       .min(0)
       .optional()
-      .describe('Total cap on concurrently claimed nodes across every connected map. 0 = hold (default).'),
+      .describe('Total cap on concurrently claimed nodes across every connected map. 0 = no fleet-wide limit (default).'),
   },
   handler: async (backend, { name, maxActiveClaims }) => {
     const f = await backend.createFleet(name, maxActiveClaims);
-    return `Created fleet "${f.name}" with id: ${f.id} (cap ${f.maxActiveClaims}${f.maxActiveClaims === 0 ? ' = hold' : ''}). Connect a map with update_map(mapId, fleetId: "${f.id}").`;
+    return `Created fleet "${f.name}" with id: ${f.id} (${f.maxActiveClaims === 0 ? 'no fleet-wide cap' : `cap ${f.maxActiveClaims}`}). Connect a map with update_map(mapId, fleetId: "${f.id}").`;
   },
 });
 
 export const updateFleetTool = defineTool({
   name: 'update_fleet',
   description:
-    "Rename a fleet or set its total claim cap (maxActiveClaims across all connected maps; 0 = hold). Owner only. Each map's own ceiling and queue knobs stay on the map (update_map).",
+    "Rename a fleet or set its total claim cap (maxActiveClaims across all connected maps; 0 = no fleet-wide limit). Owner only. Each map's own ceiling (0 = hold) and queue knobs stay on the map (update_map).",
   schema: {
     fleetId: z.string().describe('The fleet ID'),
     name: z.string().min(1).max(200).optional().describe('New name'),
-    maxActiveClaims: z.number().int().min(0).optional().describe('Total claim cap across all connected maps; 0 = hold'),
+    maxActiveClaims: z.number().int().min(0).optional().describe('Total claim cap across all connected maps; 0 = no fleet-wide limit'),
   },
   handler: async (backend, { fleetId, name, maxActiveClaims }) => {
     if (name === undefined && maxActiveClaims === undefined) return 'No fields to update.';

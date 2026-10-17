@@ -94,6 +94,7 @@ function makeRecordingBackend(): {
     // Orchestration substrate (#111)
     readyNodes: async () => { throw new Error('not implemented'); },
     getNextTicket: async () => { throw new Error('not implemented'); },
+    pullFleetTicket: async () => { throw new Error('not implemented'); },
     claimNode: async () => { throw new Error('not implemented'); },
     releaseNode: async () => { throw new Error('not implemented'); },
     unblockNode: async (mapId, nodeId) => {

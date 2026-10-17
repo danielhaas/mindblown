@@ -12,9 +12,9 @@
  * (HTTP status codes for the routes, propagated to the LLM for the chat).
  */
 
-import { eq, and, isNull, sql } from 'drizzle-orm';
+import { eq, and, asc, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { nodes, maps, cycles } from '../db/schema.js';
+import { nodes, maps, cycles, fleets } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
@@ -38,9 +38,11 @@ import {
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
+  orderFleetPull,
+  advanceFleetPull,
 } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
-import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold } from '@mindblown/core';
+import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold, FleetPullDeficits } from '@mindblown/core';
 import type {
   ReadyNodesResult,
   ClaimNodeResult,
@@ -48,6 +50,8 @@ import type {
   ConflictScanResult,
   GetNextTicketResult,
   TicketBrief,
+  SkippedTicket,
+  FleetPullMapOutcome,
 } from '@mindblown/tool-kit';
 
 // ── Errors ──────────────────────────────────────────────────────
@@ -582,7 +586,7 @@ export function isProfileEligible(
 interface PullDecision {
   active: number;
   cap: number;
-  reason?: 'hold' | 'cap';
+  reason?: 'hold' | 'cap' | 'fleet_cap';
   /** Ranked, gated, dispatchable candidates in claim-attempt order. */
   ranked: CoreNode[];
   /** Ready-but-empty-brief nodes to tag `needs-brief` and report. */
@@ -614,12 +618,15 @@ export function selectPullCandidates(
     /** Persisted weave phase (maps.dispatch_mix_acc) so ranked[0] is the
      *  class the mix:bugs pattern actually owes next. Default 0. */
     mixAcc?: number;
+    /** The map's fleet has no capacity left (#478) — refused after the map's own hold/cap. */
+    fleetFull?: boolean;
   },
 ): PullDecision {
   const active = allNodes.filter((n) => n.claimedBySession !== null).length;
   const cap = Math.max(0, Math.floor(opts.cap));
   if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [], humanOnly: [] };
   if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [], humanOnly: [] };
+  if (opts.fleetFull) return { active, cap, reason: 'fleet_cap', ranked: [], skipped: [], humanOnly: [] };
 
   // Same pullable set the cockpit's Dispatch card renders (core/dispatch.ts):
   // non-root, todo-or-null status, unclaimed, predecessors done.
@@ -671,7 +678,9 @@ export function selectPullCandidates(
  * cap / gate / policy, claiming it in the same transaction.
  *
  * The whole read-decide-claim sequence is serialized per map with
- * `pg_advisory_xact_lock(hashtext(mapId))` — traffic is a few pulls per
+ * `pg_advisory_xact_lock(hashtext(mapId))` — or, when the map belongs to a
+ * fleet (#478), with the fleet's lock, so the fleet cap holds across all its
+ * maps and across this route and the fleet pull. Traffic is a few pulls per
  * minute, so the lock is free and structurally kills every
  * count-then-claim race between concurrent pulls. `claim_node` bypasses
  * this lock (row-level FOR UPDATE only), so the claim itself is still a
@@ -699,160 +708,351 @@ export async function getNextTicket(
 ): Promise<GetNextTicketResult> {
   const now = new Date();
 
-  const { result, taggedNodes, winnerNode } = await db.transaction(async (tx) => {
-    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${mapId}))`);
+  const outcome = await db.transaction(async (tx): Promise<PullOutcome> => {
+    const mapRow = await lockMapForPull(tx, mapId);
 
-    const [mapRow] = await tx.select().from(maps).where(eq(maps.id, mapId));
-    if (!mapRow) throw new OrchestrationNotFoundError(`Map ${mapId} not found`);
+    // A map in a fleet also counts against the fleet cap (#478); the lock
+    // above is the fleet's then, so the count is race-free.
+    const fleet = mapRow.fleetId ? await loadFleetForPull(tx, mapRow.fleetId) : null;
+    const fleetActive = fleet ? await countFleetClaims(tx, fleet.id) : 0;
+    const fleetInfo = (active: number) =>
+      fleet ? { fleet: { id: fleet.id, name: fleet.name, active, cap: fleet.maxActiveClaims } } : {};
 
-    const allRows = await tx
-      .select()
-      .from(nodes)
-      .where(and(eq(nodes.mapId, mapId), notDeleted));
-    const allNodes = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
-    const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
+    const ev = await evaluateMapPull(tx, mapRow, profile, now, fleet !== null && isFleetFull(fleet.maxActiveClaims, fleetActive));
+    const base = { active: ev.decision.active, cap: ev.decision.cap, skipped: ev.skipped, mapId, mapName: mapRow.name };
 
-    // Persisted mix:bugs weave phase — read under the same advisory lock
-    // that serializes pulls, advanced below only on an actual grant.
-    const mixAcc = (mapRow.dispatchMixAcc as number) ?? 0;
-    const mix = parseMixBugs((mapRow.dispatchPolicy as string[]) ?? []);
-
-    const decision = selectPullCandidates(allNodes, {
-      workflow: ((mapRow.statusWorkflow as StatusDef[]) ?? []),
-      cap: (mapRow.maxActiveClaims as number) ?? 0,
-      gate: ((mapRow.dispatchGate as string[]) ?? []),
-      policy: ((mapRow.dispatchPolicy as string[]) ?? []),
-      profilePolicy: (mapRow.profilePolicy as ProfilePolicy | null) ?? null,
-      profile,
-      effortUnit: (mapRow.effortUnit as EffortUnit) ?? 'days',
-      hoursPerDay: (mapRow.hoursPerDay as number) ?? 8,
-      mixAcc,
-    });
-
-    // Tag empty-brief nodes `needs-brief` so the queue starves loudly.
-    // Only write when the tag is new — repeat pulls stay read-only.
-    const tagged: CoreNode[] = [];
-    for (const n of decision.skipped) {
-      if (n.tags.includes(NEEDS_BRIEF_TAG)) continue;
-      const [row] = await tx
-        .update(nodes)
-        .set({ tags: [...n.tags, NEEDS_BRIEF_TAG], updatedAt: now })
-        .where(and(eq(nodes.id, n.id), notDeleted))
-        .returning();
-      if (row) tagged.push(dbNodeToCore(row as unknown as Record<string, unknown>));
-    }
-
-    const skipped = [
-      ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
-      ...decision.humanOnly.map(({ node: n, tag, blockedReason, heldBy }) => ({
-        id: n.id,
-        text: n.text,
-        reason: 'human-only' as const,
-        ...(tag !== null ? { tag } : {}),
-        ...(blockedReason !== null ? { blockedReason } : {}),
-        ...(heldBy !== null ? { heldBy } : {}),
-      })),
-    ];
-
-    if (decision.reason !== undefined) {
+    if (ev.decision.reason !== undefined) {
       return {
-        result: {
-          granted: false as const,
-          reason: decision.reason,
-          active: decision.active,
-          cap: decision.cap,
-          skipped,
-        },
-        taggedNodes: tagged,
-        winnerNode: null,
+        result: { granted: false, reason: ev.decision.reason, ...base, ...fleetInfo(fleetActive) },
+        tagged: [{ mapId, nodes: ev.tagged }],
+        winner: null,
       };
     }
-
-    for (const candidate of decision.ranked) {
-      const [row] = await tx
-        .update(nodes)
-        .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
-        .where(and(eq(nodes.id, candidate.id), notDeleted, isNull(nodes.claimedBySession)))
-        .returning();
-      if (!row) continue; // claimed out from under us via claim_node — next
-
-      const winner = dbNodeToCore(row as unknown as Record<string, unknown>);
-
-      // Advance the persisted weave phase — only here, on the ACTUAL
-      // grant (a raced-away candidate above must not count), inside the
-      // claim's transaction, from the winner's REAL class (a race can
-      // hand the grant to the other class than ranked[0]'s; advanceMixAcc
-      // clamps that case). Inert without a mix entry or at N=0: the
-      // stored phase stays untouched, no reset needed. Deliberately no
-      // updatedAt / audit write — internal state, not a knob change.
-      if (mix !== null && mix.ratio > 0) {
-        await tx
-          .update(maps)
-          .set({ dispatchMixAcc: advanceMixAcc(mixAcc, mix.ratio, isBugNode(winner)) })
-          .where(eq(maps.id, mapId));
-      }
-
-      const ticket: TicketBrief = {
-        id: winner.id,
-        mapId,
-        text: winner.text,
-        description: proseMirrorToPlainText(winner.description),
-        priority: winner.priority,
-        priorityRank: winner.priorityRank,
-        tags: winner.tags,
-        scopes: winner.scopes,
-        versionId: effectiveVersionId(winner.id, nodeMap),
-        effortEstimate: winner.effortEstimate,
-        githubLinks: winner.externalLinks
-          .filter((l) => isForgeLink(l))
-          .map((l) => ({ externalId: l.externalId, url: l.url })),
-        claimedAt: winner.claimedAt,
-      };
+    const claim = await claimFromMap(tx, ev, sessionId, now);
+    if (claim) {
       return {
-        result: {
-          granted: true as const,
-          active: decision.active + 1,
-          cap: decision.cap,
-          ticket,
-          skipped,
-        },
-        taggedNodes: tagged,
-        winnerNode: winner,
+        result: { granted: true, ...base, active: base.active + 1, ticket: claim.ticket, ...fleetInfo(fleetActive + 1) },
+        tagged: [{ mapId, nodes: ev.tagged }],
+        winner: { mapId, node: claim.winner },
       };
     }
-
     return {
-      result: {
-        granted: false as const,
-        reason: 'empty' as const,
-        active: decision.active,
-        cap: decision.cap,
-        skipped,
-      },
-      taggedNodes: tagged,
-      winnerNode: null,
+      result: { granted: false, reason: 'empty', ...base, ...fleetInfo(fleetActive) },
+      tagged: [{ mapId, nodes: ev.tagged }],
+      winner: null,
     };
   });
 
-  // Broadcasts after commit, mirroring claimNode.
-  for (const n of taggedNodes) {
-    broadcast(mapId, { type: 'node:updated', nodeId: n.id, fields: ['tags'], node: n });
+  announcePull(outcome, sessionId);
+  return outcome.result;
+}
+
+/**
+ * Fleet-wide pull (#478): the next ticket from any map of the fleet the
+ * caller may work on (`allowedMapIds` — the caller's layer decides access),
+ * narrowed to `mapIds` when the worker declares which projects it serves.
+ *
+ *   1. Fleet cap: claims across EVERY connected map against
+ *      fleets.max_active_claims → `fleet_cap`. 0 = no fleet-wide limit:
+ *      the maps' own caps (0 = hold) are the safety.
+ *   2. Each candidate map runs its own pipeline unchanged — hold, its own
+ *      ceiling, gate, profile routing, policy, brief guards.
+ *   3. Between the maps that have a ticket to give, smooth weighted
+ *      round-robin by fleet_share (core `orderFleetPull`); the credit is
+ *      persisted on the fleet and advanced only on an actual grant, in the
+ *      claim's transaction — the dispatch_mix_acc pattern.
+ *
+ * Serialized by the fleet's advisory lock, the same one a map-route pull on
+ * a connected map takes, so the fleet cap holds across both routes.
+ */
+export async function pullFleetTicket(
+  fleetId: string,
+  sessionId: string,
+  opts: { profile?: string; mapIds?: string[]; allowedMapIds: ReadonlySet<string> },
+): Promise<GetNextTicketResult> {
+  const now = new Date();
+
+  const outcome = await db.transaction(async (tx): Promise<PullOutcome> => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${fleetId}))`);
+    const fleet = await loadFleetForPull(tx, fleetId);
+    if (!fleet) throw new OrchestrationNotFoundError(`Fleet ${fleetId} not found`);
+
+    const connected = await tx.select().from(maps).where(eq(maps.fleetId, fleetId)).orderBy(asc(maps.createdAt));
+    const declared = opts.mapIds ? new Set(opts.mapIds) : null;
+    // Maps the worker didn't declare, or may not work on, are not part of
+    // this pull at all — and not named in the answer.
+    const considered = connected.filter((m) => opts.allowedMapIds.has(m.id) && (!declared || declared.has(m.id)));
+
+    const fleetActive = await countFleetClaims(tx, fleetId);
+    const fleetInfo = (active: number) => ({ fleet: { id: fleet.id, name: fleet.name, active, cap: fleet.maxActiveClaims } });
+    if (isFleetFull(fleet.maxActiveClaims, fleetActive)) {
+      return {
+        result: { granted: false, reason: 'fleet_cap', active: fleetActive, cap: fleet.maxActiveClaims, skipped: [], ...fleetInfo(fleetActive) },
+        tagged: [],
+        winner: null,
+      };
+    }
+
+    const outcomes: FleetPullMapOutcome[] = [];
+    const ready: MapPullEval[] = [];
+    const tagged: PullOutcome['tagged'] = [];
+    const skipped: SkippedTicket[] = [];
+    for (const m of considered) {
+      if (m.archivedAt) {
+        outcomes.push({ mapId: m.id, name: m.name, reason: 'archived' });
+        continue;
+      }
+      const ev = await evaluateMapPull(tx, m, opts.profile, now, false);
+      tagged.push({ mapId: m.id, nodes: ev.tagged });
+      skipped.push(...ev.skipped.map((s) => ({ ...s, mapId: m.id })));
+      const reason = ev.decision.reason ?? (ev.decision.ranked.length === 0 ? 'empty' : null);
+      if (reason === null) ready.push(ev);
+      else outcomes.push({ mapId: m.id, name: m.name, reason: reason === 'fleet_cap' ? 'cap' : reason });
+    }
+
+    const deficits = (fleet.pullDeficits ?? {}) as FleetPullDeficits;
+    const eligible = ready.map((ev) => ({ mapId: ev.mapRow.id, share: ev.mapRow.fleetShare, ev }));
+    for (const { ev } of orderFleetPull(eligible, deficits)) {
+      const claim = await claimFromMap(tx, ev, sessionId, now);
+      if (!claim) {
+        outcomes.push({ mapId: ev.mapRow.id, name: ev.mapRow.name, reason: 'empty' }); // every candidate raced away
+        continue;
+      }
+      await tx
+        .update(fleets)
+        .set({ pullDeficits: advanceFleetPull(deficits, eligible, ev.mapRow.id, connected.map((m) => m.id)) })
+        .where(eq(fleets.id, fleetId));
+      return {
+        result: {
+          granted: true,
+          active: fleetActive + 1,
+          cap: fleet.maxActiveClaims,
+          ticket: claim.ticket,
+          skipped,
+          mapId: ev.mapRow.id,
+          mapName: ev.mapRow.name,
+          ...fleetInfo(fleetActive + 1),
+          ...(outcomes.length > 0 ? { maps: outcomes } : {}),
+        },
+        tagged,
+        winner: { mapId: ev.mapRow.id, node: claim.winner },
+      };
+    }
+
+    // Nothing granted: hold / cap only when every map said so.
+    const reasons = new Set(outcomes.map((o) => o.reason));
+    const reason: GetNextTicketResult['reason'] =
+      outcomes.length > 0 && [...reasons].every((r) => r === 'hold') ? 'hold'
+        : outcomes.length > 0 && [...reasons].every((r) => r === 'hold' || r === 'cap') ? 'cap'
+          : 'empty';
+    return {
+      result: { granted: false, reason, active: fleetActive, cap: fleet.maxActiveClaims, skipped, ...fleetInfo(fleetActive), maps: outcomes },
+      tagged,
+      winner: null,
+    };
+  });
+
+  announcePull(outcome, sessionId);
+  return outcome.result;
+}
+
+// ── Pull internals ──────────────────────────────────────────────
+
+type PullTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+type MapRow = typeof maps.$inferSelect;
+
+interface PullOutcome {
+  result: GetNextTicketResult;
+  /** Nodes newly tagged needs-brief, per map — broadcast after commit. */
+  tagged: Array<{ mapId: string; nodes: CoreNode[] }>;
+  winner: { mapId: string; node: CoreNode } | null;
+}
+
+interface MapPullEval {
+  mapRow: MapRow;
+  decision: PullDecision;
+  nodeMap: NodeMap;
+  skipped: SkippedTicket[];
+  tagged: CoreNode[];
+}
+
+/**
+ * Take the lock every pull counting against the same cap takes: the
+ * fleet's when the map has one, else the map's (the pre-#478 key). The map
+ * row is re-read under the lock; if the map changed fleets in between, the
+ * new key is locked too (xact locks hold until commit, so that's safe).
+ */
+async function lockMapForPull(tx: PullTx, mapId: string): Promise<MapRow> {
+  const locked = new Set<string>();
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const [peek] = await tx.select({ fleetId: maps.fleetId }).from(maps).where(eq(maps.id, mapId));
+    if (!peek) throw new OrchestrationNotFoundError(`Map ${mapId} not found`);
+    const key = peek.fleetId ?? mapId;
+    if (!locked.has(key)) {
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${key}))`);
+      locked.add(key);
+    }
+    const [row] = await tx.select().from(maps).where(eq(maps.id, mapId));
+    if (!row) throw new OrchestrationNotFoundError(`Map ${mapId} not found`);
+    if (locked.has(row.fleetId ?? mapId)) return row;
   }
-  if (winnerNode) {
-    broadcast(mapId, {
-      type: 'node:updated',
-      nodeId: winnerNode.id,
-      fields: ['claimedBySession', 'claimedAt'],
-      node: winnerNode,
-    });
-    // The conditional UPDATE above only succeeds on an unclaimed node, so
-    // a pull never has a previous holder.
-    events
-      .recordClaimed(mapId, winnerNode.id, null, buildClaimedEvent(sessionId, 'pull', null))
-      .catch(() => {});
+  throw new Error(`Map ${mapId} changed fleets during the pull; retry`);
+}
+
+async function loadFleetForPull(tx: PullTx, fleetId: string) {
+  const [row] = await tx.select().from(fleets).where(eq(fleets.id, fleetId));
+  return row ?? null;
+}
+
+/** A fleet cap of 0 is no fleet-wide limit; each map's own cap still applies. */
+function isFleetFull(cap: number, active: number): boolean {
+  return cap > 0 && active >= cap;
+}
+
+/** Claims across every map of the fleet — what the fleet cap limits. */
+async function countFleetClaims(tx: PullTx, fleetId: string): Promise<number> {
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(nodes)
+    .innerJoin(maps, eq(nodes.mapId, maps.id))
+    .where(and(eq(maps.fleetId, fleetId), notDeleted, isNotNull(nodes.claimedBySession)));
+  return Number(row?.n ?? 0);
+}
+
+/**
+ * One map's pull decision — its cap, gate, profile, policy and brief guards
+ * — plus the needs-brief tagging that makes the queue starve loudly (only
+ * written when the tag is new, so repeat pulls stay read-only).
+ */
+async function evaluateMapPull(
+  tx: PullTx,
+  mapRow: MapRow,
+  profile: string | undefined,
+  now: Date,
+  fleetFull: boolean,
+): Promise<MapPullEval> {
+  const allRows = await tx
+    .select()
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapRow.id), notDeleted));
+  const allNodes = allRows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+  const nodeMap: NodeMap = new Map(allNodes.map((n) => [n.id, n]));
+
+  const decision = selectPullCandidates(allNodes, {
+    workflow: ((mapRow.statusWorkflow as StatusDef[]) ?? []),
+    cap: (mapRow.maxActiveClaims as number) ?? 0,
+    gate: ((mapRow.dispatchGate as string[]) ?? []),
+    policy: ((mapRow.dispatchPolicy as string[]) ?? []),
+    profilePolicy: (mapRow.profilePolicy as ProfilePolicy | null) ?? null,
+    profile,
+    effortUnit: (mapRow.effortUnit as EffortUnit) ?? 'days',
+    hoursPerDay: (mapRow.hoursPerDay as number) ?? 8,
+    // Persisted mix:bugs weave phase — read under the pull's advisory
+    // lock, advanced in claimFromMap only on an actual grant.
+    mixAcc: (mapRow.dispatchMixAcc as number) ?? 0,
+    fleetFull,
+  });
+
+  const tagged: CoreNode[] = [];
+  for (const n of decision.skipped) {
+    if (n.tags.includes(NEEDS_BRIEF_TAG)) continue;
+    const [row] = await tx
+      .update(nodes)
+      .set({ tags: [...n.tags, NEEDS_BRIEF_TAG], updatedAt: now })
+      .where(and(eq(nodes.id, n.id), notDeleted))
+      .returning();
+    if (row) tagged.push(dbNodeToCore(row as unknown as Record<string, unknown>));
   }
 
-  return result;
+  const skipped: SkippedTicket[] = [
+    ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
+    ...decision.humanOnly.map(({ node: n, tag, blockedReason, heldBy }) => ({
+      id: n.id,
+      text: n.text,
+      reason: 'human-only' as const,
+      ...(tag !== null ? { tag } : {}),
+      ...(blockedReason !== null ? { blockedReason } : {}),
+      ...(heldBy !== null ? { heldBy } : {}),
+    })),
+  ];
+
+  return { mapRow, decision, nodeMap, skipped, tagged };
+}
+
+/** Claim the first ranked candidate still unclaimed; null when all raced away. */
+async function claimFromMap(
+  tx: PullTx,
+  ev: MapPullEval,
+  sessionId: string,
+  now: Date,
+): Promise<{ winner: CoreNode; ticket: TicketBrief } | null> {
+  const mapId = ev.mapRow.id;
+  const mixAcc = (ev.mapRow.dispatchMixAcc as number) ?? 0;
+  const mix = parseMixBugs((ev.mapRow.dispatchPolicy as string[]) ?? []);
+
+  for (const candidate of ev.decision.ranked) {
+    const [row] = await tx
+      .update(nodes)
+      .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+      .where(and(eq(nodes.id, candidate.id), notDeleted, isNull(nodes.claimedBySession)))
+      .returning();
+    if (!row) continue; // claimed out from under us via claim_node — next
+
+    const winner = dbNodeToCore(row as unknown as Record<string, unknown>);
+
+    // Advance the persisted weave phase — only here, on the ACTUAL
+    // grant (a raced-away candidate above must not count), inside the
+    // claim's transaction, from the winner's REAL class (a race can
+    // hand the grant to the other class than ranked[0]'s; advanceMixAcc
+    // clamps that case). Inert without a mix entry or at N=0: the
+    // stored phase stays untouched, no reset needed. Deliberately no
+    // updatedAt / audit write — internal state, not a knob change.
+    if (mix !== null && mix.ratio > 0) {
+      await tx
+        .update(maps)
+        .set({ dispatchMixAcc: advanceMixAcc(mixAcc, mix.ratio, isBugNode(winner)) })
+        .where(eq(maps.id, mapId));
+    }
+
+    const ticket: TicketBrief = {
+      id: winner.id,
+      mapId,
+      text: winner.text,
+      description: proseMirrorToPlainText(winner.description),
+      priority: winner.priority,
+      priorityRank: winner.priorityRank,
+      tags: winner.tags,
+      scopes: winner.scopes,
+      versionId: effectiveVersionId(winner.id, ev.nodeMap),
+      effortEstimate: winner.effortEstimate,
+      githubLinks: winner.externalLinks
+        .filter((l) => isForgeLink(l))
+        .map((l) => ({ externalId: l.externalId, url: l.url })),
+      claimedAt: winner.claimedAt,
+    };
+    return { winner, ticket };
+  }
+  return null;
+}
+
+/** Broadcasts and the claim trail, after commit — mirroring claimNode. */
+function announcePull(outcome: PullOutcome, sessionId: string): void {
+  for (const { mapId, nodes: tagged } of outcome.tagged) {
+    for (const n of tagged) broadcast(mapId, { type: 'node:updated', nodeId: n.id, fields: ['tags'], node: n });
+  }
+  const w = outcome.winner;
+  if (!w) return;
+  broadcast(w.mapId, {
+    type: 'node:updated',
+    nodeId: w.node.id,
+    fields: ['claimedBySession', 'claimedAt'],
+    node: w.node,
+  });
+  // The conditional UPDATE in claimFromMap only succeeds on an unclaimed
+  // node, so a pull never has a previous holder.
+  events
+    .recordClaimed(w.mapId, w.node.id, null, buildClaimedEvent(sessionId, 'pull', null))
+    .catch(() => {});
 }
 
 // ── conflictScan ────────────────────────────────────────────────

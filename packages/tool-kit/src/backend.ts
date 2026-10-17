@@ -297,22 +297,42 @@ export interface SkippedTicket {
   blockedReason?: string;
   /** The open ancestor carrying the tag/blocker, when the hold is inherited. */
   heldBy?: { id: string; text: string };
+  /** The node's map — set on fleet pulls, which look at several maps. */
+  mapId?: string;
+}
+
+/** Why one map of a fleet pull gave no ticket (#478). */
+export interface FleetPullMapOutcome {
+  mapId: string;
+  name: string;
+  /** hold = the map's cap is 0; cap = the map is at its own ceiling; empty = nothing dispatchable; archived = on hold by archive. */
+  reason: 'hold' | 'cap' | 'empty' | 'archived';
 }
 
 export interface GetNextTicketResult {
   granted: boolean;
   /**
-   * Set when granted is false: `hold` = cap is 0 (fleet hold), `cap` =
-   * active claims have reached the cap, `empty` = nothing dispatchable
-   * inside the gate.
+   * Set when granted is false: `hold` = the map's cap is 0, `cap` = the map's
+   * active claims have reached its ceiling, `fleet_cap` = the map's fleet is
+   * at its total cap (a fleet cap of 0 = no limit, never this) although the
+   * map itself is not, `empty` = nothing
+   * dispatchable inside the gate. A fleet pull reports `hold` / `cap` only
+   * when every map it looked at said so; `maps` has the per-map reasons.
    */
-  reason?: 'hold' | 'cap' | 'empty';
-  /** Currently claimed node count (incl. the fresh claim when granted). */
+  reason?: 'hold' | 'cap' | 'fleet_cap' | 'empty';
+  /** Currently claimed node count (incl. the fresh claim when granted) — the map's, or on a fleet pull the fleet's. */
   active: number;
   cap: number;
   ticket?: TicketBrief;
   /** Ready nodes refused for having no brief (auto-tagged needs-brief). */
   skipped: SkippedTicket[];
+  /** The granted ticket's map (fleet pulls; map pulls set it too). */
+  mapId?: string;
+  mapName?: string;
+  /** Set when the map belongs to a fleet: claims across all its maps against the fleet cap. */
+  fleet?: { id: string; name: string; active: number; cap: number };
+  /** Fleet pulls only: maps that gave nothing, and why. */
+  maps?: FleetPullMapOutcome[];
 }
 
 export interface ConflictScanResult {
@@ -446,6 +466,16 @@ export interface ToolBackend {
   ): Promise<ReadyNodesResult>;
   claimNode(mapId: string, nodeId: string, sessionId: string): Promise<ClaimNodeResult>;
   getNextTicket(mapId: string, sessionId: string, profile?: string): Promise<GetNextTicketResult>;
+  /**
+   * Fleet-wide pull (#478, `POST /api/fleets/:id/pull-next`): the next ticket
+   * from any connected map the caller may work on, narrowed to `mapIds`
+   * (the projects this worker has checked out) when given.
+   */
+  pullFleetTicket(
+    fleetId: string,
+    sessionId: string,
+    opts?: { profile?: string; mapIds?: string[] },
+  ): Promise<GetNextTicketResult>;
   /** `reason` is free text for the claim trail (why the holder let go); it never gates the release. */
   releaseNode(mapId: string, nodeId: string, sessionId: string, reason?: string): Promise<ReleaseNodeResult>;
   /**

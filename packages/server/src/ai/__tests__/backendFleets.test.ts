@@ -20,8 +20,8 @@ vi.mock('../../db/fleets.js', () => ({
   createFleet: (...a: unknown[]) => fleets.createFleet(...a),
 }));
 vi.mock('../../db/maps.js', () => ({
-  // The chatting user can view map-a, which is connected to the fleet.
-  listMapsForUser: async () => [{ id: 'map-a', fleetId: FLEET_ID }],
+  // The chatting user can view map-a, which is connected to the fleet; a stranger sees nothing.
+  listMapsForUser: async (userId: string) => (userId === 'stranger' ? [] : [{ id: 'map-a', fleetId: FLEET_ID }]),
 }));
 vi.mock('../../db/permissions.js', () => ({ getPermission: async () => 'view', hasPermission: () => false }));
 vi.mock('../../db/nodes.js', () => ({}));
@@ -30,7 +30,8 @@ vi.mock('../../db/fleet.js', () => ({}));
 vi.mock('../../db/asks.js', () => ({}));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../embeddings.js', () => ({ scheduleEmbedNode: vi.fn() }));
-vi.mock('../../services/orchestration.js', () => ({}));
+const pullFleetTicket = vi.hoisted(() => vi.fn(async () => ({ granted: false, reason: 'empty', active: 0, cap: 2, skipped: [] })));
+vi.mock('../../services/orchestration.js', () => ({ pullFleetTicket }));
 vi.mock('../../services/unblock.js', () => ({}));
 vi.mock('../../services/asks.js', () => ({}));
 vi.mock('../../services/fleetJournal.js', () => ({}));
@@ -61,6 +62,17 @@ describe('chat backend — fleet methods', () => {
   it('lets the owner update', async () => {
     await createChatBackend('owner').updateFleet(FLEET_ID, { maxActiveClaims: 5 });
     expect(fleets.updateFleet).toHaveBeenCalledWith(FLEET_ID, { name: undefined, maxActiveClaims: 5 });
+  });
+
+  it('pullFleetTicket (#478) hands the service only maps the user may edit — none for a reader', async () => {
+    await createChatBackend('reader').pullFleetTicket(FLEET_ID, 's1', { mapIds: ['map-a'] });
+    expect(pullFleetTicket).toHaveBeenCalledWith(FLEET_ID, 's1', { mapIds: ['map-a'], allowedMapIds: new Set() });
+  });
+
+  it("pullFleetTicket refuses a fleet the user can't read", async () => {
+    pullFleetTicket.mockClear();
+    await expect(createChatBackend('stranger').pullFleetTicket(FLEET_ID, 's1')).rejects.toThrow(/not found/);
+    expect(pullFleetTicket).not.toHaveBeenCalled();
   });
 
   it('createFleet makes the chatting user the owner', async () => {

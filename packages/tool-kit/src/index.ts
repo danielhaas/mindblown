@@ -25,6 +25,7 @@ export type {
   TicketBrief,
   SkippedTicket,
   GetNextTicketResult,
+  FleetPullMapOutcome,
   // Closed-issue audit (premature-close backfill)
   ClosedIssueAuditOptions,
   ClosedIssueAuditVerdict,

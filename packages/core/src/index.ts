@@ -165,8 +165,11 @@ export {
   FLEET_SHARE_MAX,
   DEFAULT_FLEET_SHARE,
   clampFleetShare,
+  orderFleetPull,
+  advanceFleetPull,
 } from './fleet.js';
 export type {
+  FleetPullDeficits,
   FleetWorkerStatus,
   FleetRollup,
   FleetTickPayload,

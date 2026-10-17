@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, FleetWithMaps } from '@mindblown/core';
 
 /**
@@ -1600,28 +1600,8 @@ export function readyNodes(
   return request<ReadyNodesResultApi>(`/api/maps/${mapId}/nodes/ready${qs ? `?${qs}` : ''}`);
 }
 
-/** Mirrors tool-kit's GetNextTicketResult (this file stays import-free). */
-export interface GetNextTicketResultApi {
-  granted: boolean;
-  reason?: 'hold' | 'cap' | 'empty';
-  active: number;
-  cap: number;
-  ticket?: {
-    id: string;
-    mapId: string;
-    text: string;
-    description: string;
-    priority: string | null;
-    priorityRank: number | null;
-    tags: string[];
-    scopes: string[];
-    versionId: string | null;
-    effortEstimate: number | null;
-    githubLinks: Array<{ externalId: string; url: string }>;
-    claimedAt: string | null;
-  };
-  skipped: Array<{ id: string; text: string; reason: 'needs-brief' | 'human-only'; tag?: string; blockedReason?: string; heldBy?: { id: string; text: string } }>;
-}
+/** The tool-kit shape itself — a hand-kept mirror drifted once fleet pulls (#478) added fields. */
+export type GetNextTicketResultApi = GetNextTicketResult;
 
 export function getNextTicket(
   mapId: string,
@@ -1632,6 +1612,22 @@ export function getNextTicket(
     `/api/maps/${mapId}/pull-next`,
     { method: 'POST', body: JSON.stringify({ sessionId, ...(profile ? { profile } : {}) }) },
   );
+}
+
+/** Fleet-wide pull (#478). */
+export function pullFleetTicket(
+  fleetId: string,
+  sessionId: string,
+  opts: { profile?: string; mapIds?: string[] } = {},
+): Promise<GetNextTicketResult> {
+  return request<GetNextTicketResult>(`/api/fleets/${encodeURIComponent(fleetId)}/pull-next`, {
+    method: 'POST',
+    body: JSON.stringify({
+      sessionId,
+      ...(opts.profile ? { profile: opts.profile } : {}),
+      ...(opts.mapIds ? { mapIds: opts.mapIds } : {}),
+    }),
+  });
 }
 
 export function claimNode(

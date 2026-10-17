@@ -126,6 +126,22 @@ export async function deleteFleetForUser(userId: string, fleetId: string): Promi
   return disconnected;
 }
 
+/**
+ * Which of the fleet's maps `userId` may take tickets from in a fleet pull
+ * (#478): connected maps where the user has edit — the same level the map
+ * route's pull asks. A fleet the user can't read is a 404. (A per-fleet
+ * credential, #481, will replace this per-map membership check.)
+ */
+export async function fleetPullScope(userId: string, fleetId: string): Promise<{ allowedMapIds: Set<string> } | FleetAccessError> {
+  const view = await getFleetForUser(userId, fleetId);
+  if ('status' in view) return view;
+  const allowedMapIds = new Set<string>();
+  for (const m of await fleetDb.listFleetMaps(fleetId)) {
+    if (permDb.hasPermission(await permDb.getPermission(m.id, userId), 'edit')) allowedMapIds.add(m.id);
+  }
+  return { allowedMapIds };
+}
+
 /** Name of a map's fleet for read views (get_map, the map header); null when none. */
 export async function fleetNameOf(fleetId: string | null | undefined): Promise<string | null> {
   if (!fleetId) return null;

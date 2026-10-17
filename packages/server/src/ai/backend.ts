@@ -203,6 +203,11 @@ export function createChatBackend(userId: string): ToolBackend {
       if ('status' in view) throw new Error(view.message);
       return view;
     },
+    async pullFleetTicket(fleetId, sessionId, opts) {
+      const scope = await fleetService.fleetPullScope(userId, fleetId);
+      if ('status' in scope) throw new Error(scope.message);
+      return orchestrationService.pullFleetTicket(fleetId, sessionId, { ...opts, allowedMapIds: scope.allowedMapIds });
+    },
 
     async freezeBaseline(mapId, name) {
       const created = await mapDb.createBaseline(mapId, name?.trim() || `Baseline ${new Date().toISOString().slice(0, 10)}`);
@@ -470,6 +475,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'listFleets',
   'createFleet',
   'updateFleet',
+  // Fleet pull (#478): takes only from maps the user may edit (fleetPullScope).
+  'pullFleetTicket',
 ]);
 
 /**

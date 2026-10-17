@@ -22,6 +22,63 @@ export function clampFleetShare(value: number | null | undefined): number {
   return Math.min(FLEET_SHARE_MAX, Math.max(FLEET_SHARE_MIN, value));
 }
 
+// ── Fleet pull: which project's ticket wins (#478) ─────────────
+//
+// Smooth weighted round-robin (the nginx upstream scheme). Each grant,
+// every map with a ticket to give earns its share; the winner is the map
+// with the most credit and pays back the sum of the shares that took part.
+// Shares 2:1 grant A, B, A, A, B, A… — interleaved, not bursts, and with no
+// randomness, so the same state always picks the same map. A map that has
+// nothing to give takes no part and keeps its credit as it was; it doesn't
+// block the others and doesn't bank credit while it is idle.
+
+/** Persisted credit per map id (fleets.pull_deficits). */
+export type FleetPullDeficits = Record<string, number>;
+
+/** Credit outside this band is clamped — a guard against drift, never reached in steady state. */
+const DEFICIT_BOUND = 10_000;
+
+const creditOf = (deficits: FleetPullDeficits, mapId: string): number => {
+  const v = deficits[mapId];
+  return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+};
+
+/**
+ * The maps in the order the fleet should try them: most credit after this
+ * round's share first. Ties keep the input order (callers pass oldest map
+ * first). The caller claims from the first map that still has a ticket.
+ */
+export function orderFleetPull<T extends { mapId: string; share: number }>(eligible: T[], deficits: FleetPullDeficits): T[] {
+  return eligible
+    .map((m, i) => ({ m, i, score: creditOf(deficits, m.mapId) + clampFleetShare(m.share) }))
+    .sort((a, b) => b.score - a.score || a.i - b.i)
+    .map((x) => x.m);
+}
+
+/**
+ * Credit after one actual grant to `winnerId`. Only maps in `eligible`
+ * move; keys for maps no longer connected (`connectedIds`) are dropped.
+ */
+export function advanceFleetPull(
+  deficits: FleetPullDeficits,
+  eligible: Array<{ mapId: string; share: number }>,
+  winnerId: string,
+  connectedIds: string[],
+): FleetPullDeficits {
+  const keep = new Set(connectedIds);
+  const next: FleetPullDeficits = {};
+  for (const id of Object.keys(deficits)) if (keep.has(id)) next[id] = creditOf(deficits, id);
+  let total = 0;
+  for (const m of eligible) {
+    const share = clampFleetShare(m.share);
+    next[m.mapId] = creditOf(next, m.mapId) + share;
+    total += share;
+  }
+  next[winnerId] = creditOf(next, winnerId) - total;
+  for (const id of Object.keys(next)) next[id] = Math.max(-DEFICIT_BOUND, Math.min(DEFICIT_BOUND, next[id]));
+  return next;
+}
+
 /** One worker, as `driver/claude-code/status.sh` reports it (status file v1). */
 export interface FleetWorkerStatus {
   v?: number;

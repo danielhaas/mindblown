@@ -137,7 +137,7 @@ export function LeidangCards({ readOnly = false }: { readOnly?: boolean }) {
 }
 
 const KNOB_HINT: Record<KnobField, string> = {
-  maxActiveClaims: 'Fleet-wide claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out.',
+  maxActiveClaims: "This map's claim cap = CI capacity, not a phase. 0 = hold: satellites park, nothing is handed out. In a fleet, the fleet's own cap limits all its maps together.",
   dispatchGate: 'AND-filter; an "or" chip matches either side (the Bugs-first preset sets one). version: matches the ticket\'s effective version (own or inherited from its branch). A ticket outside the gate is invisible to the fleet, not deprioritised.',
   dispatchPolicy: 'Ordered sort keys for what is left inside the gate. Empty = default (bugs › priority › age). The bug-share control adds one mix:bugs=N entry that weaves bugs into the stream at a fixed percentage.',
 };
