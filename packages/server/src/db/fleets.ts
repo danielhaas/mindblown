@@ -35,6 +35,12 @@ export async function listFleetsByOwnerOrIds(ownerId: string, ids: string[]): Pr
   return rows.map((r) => dbFleetToCore(r as unknown as Record<string, unknown>));
 }
 
+/** The fleet a map is connected to; null when none (or no such map). */
+export async function getMapFleetId(mapId: string): Promise<string | null> {
+  const [row] = await db.select({ fleetId: maps.fleetId }).from(maps).where(eq(maps.id, mapId));
+  return row?.fleetId ?? null;
+}
+
 /** Every map connected to the fleet, oldest first. */
 export async function listFleetMaps(fleetId: string): Promise<FleetMapRow[]> {
   const rows = await db

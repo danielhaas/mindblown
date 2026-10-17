@@ -10,7 +10,7 @@
  *   - connecting or disconnecting a map needs admin on the map, and
  *     connecting needs ownership of the target fleet as well.
  */
-import type { Fleet, FleetWithMaps } from '@mindblown/core';
+import type { Fleet, FleetWithMaps, MindMap } from '@mindblown/core';
 import * as fleetDb from '../db/fleets.js';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
@@ -70,27 +70,60 @@ export async function requireFleetOwner(userId: string, fleetId: string): Promis
 }
 
 /**
- * May `userId` apply this map update's fleet fields? Only `fleetId` is
- * special — `fleetShare` is an ordinary edit-level knob like the map's cap.
- * null = allowed (or nothing fleet-related asked).
+ * May `userId` apply this map update's fleet fields? null = allowed (or
+ * nothing fleet-related asked).
+ *
+ *   - fleetId: admin on the map; connecting also needs ownership of the
+ *     target fleet (a fleet the user can't read is a 404, like everywhere).
+ *   - fleetShare: how the fleet splits its capacity between projects, so on
+ *     a connected map it is the fleet owner's call — an editor of one map
+ *     must not be able to starve the others. On a map without a fleet it is
+ *     inert and stays an ordinary edit-level knob.
  */
 export async function authorizeMapFleetChange(
   userId: string,
   mapId: string,
-  input: { fleetId?: string | null },
+  input: { fleetId?: string | null; fleetShare?: number },
 ): Promise<FleetAccessError | null> {
-  if (input.fleetId === undefined) return null;
-  const perm = await permDb.getPermission(mapId, userId);
-  if (!permDb.hasPermission(perm, 'admin')) {
-    return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can connect a map to a fleet or disconnect it' };
+  if (input.fleetId !== undefined) {
+    const perm = await permDb.getPermission(mapId, userId);
+    if (!permDb.hasPermission(perm, 'admin')) {
+      return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can connect a map to a fleet or disconnect it' };
+    }
+    if (input.fleetId !== null) {
+      const target = await getFleetForUser(userId, input.fleetId);
+      if ('status' in target) return target;
+      if (!target.isOwner) {
+        return { status: 403, code: 'FORBIDDEN', message: "Only the fleet's owner can connect maps to it" };
+      }
+    }
   }
-  if (input.fleetId === null) return null;
-  const fleet = await fleetDb.getFleet(input.fleetId);
-  if (!fleet) return notFound(input.fleetId);
-  if (fleet.ownerId !== userId) {
-    return { status: 403, code: 'FORBIDDEN', message: "Only the fleet's owner can connect maps to it" };
+  if (input.fleetShare !== undefined) {
+    // The share applies to the fleet being connected in this request, else the current one.
+    const fleetId = input.fleetId !== undefined ? input.fleetId : await fleetDb.getMapFleetId(mapId);
+    const fleet = fleetId ? await fleetDb.getFleet(fleetId) : null;
+    if (fleet && fleet.ownerId !== userId) {
+      return { status: 403, code: 'FORBIDDEN', message: "Only the fleet's owner sets a map's share in it" };
+    }
   }
   return null;
+}
+
+/**
+ * Delete a fleet the user owns. Each connected map is disconnected through
+ * the audited map update first (so change_history shows it); the callers
+ * broadcast the returned maps. The FK would null them anyway — silently.
+ */
+export async function deleteFleetForUser(userId: string, fleetId: string): Promise<MindMap[] | FleetAccessError> {
+  const owned = await requireFleetOwner(userId, fleetId);
+  if ('status' in owned) return owned;
+  const disconnected: MindMap[] = [];
+  for (const m of await fleetDb.listFleetMaps(fleetId)) {
+    const updated = await mapDb.updateMap(m.id, { fleetId: null }, userId);
+    if (updated) disconnected.push(updated);
+  }
+  await fleetDb.deleteFleet(fleetId);
+  return disconnected;
 }
 
 /** Name of a map's fleet for read views (get_map, the map header); null when none. */

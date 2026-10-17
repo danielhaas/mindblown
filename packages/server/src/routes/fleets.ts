@@ -5,7 +5,7 @@
  *   POST   /api/fleets      — create one; the caller becomes its owner
  *   GET    /api/fleets/:id  — one fleet (owner, or view on a connected map)
  *   PATCH  /api/fleets/:id  — rename / set the fleet cap (owner)
- *   DELETE /api/fleets/:id  — delete (owner); connected maps fall back to no fleet
+ *   DELETE /api/fleets/:id  — delete (owner); connected maps are disconnected (audited, broadcast)
  *
  * A map connects through PUT /api/maps/:id { fleetId } — see routes/maps.ts.
  * Fleet telemetry (rollups, ticks) still lives under /api/maps/:id until #479.
@@ -13,6 +13,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import * as fleetDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
+import { broadcast } from '../ws.js';
 
 const unauthorized = (reply: FastifyReply) =>
   reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
@@ -64,9 +65,10 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
 
   app.delete<{ Params: { id: string } }>('/api/fleets/:id', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
-    const owned = await fleetService.requireFleetOwner(req.userId, req.params.id);
-    if (isAccessError(owned)) return sendAccessError(reply, owned);
-    await fleetDb.deleteFleet(req.params.id);
+    const result = await fleetService.deleteFleetForUser(req.userId, req.params.id);
+    if (!Array.isArray(result)) return sendAccessError(reply, result);
+    // Open cockpits of the disconnected maps follow without a reload.
+    for (const map of result) broadcast(map.id, { type: 'map:updated', map });
     return reply.status(204).send();
   });
 }

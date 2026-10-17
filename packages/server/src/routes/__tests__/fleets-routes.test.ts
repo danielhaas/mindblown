@@ -34,6 +34,7 @@ const db = vi.hoisted(() => ({
   createFleet: vi.fn(),
   updateFleet: vi.fn(),
   deleteFleet: vi.fn(),
+  updateMap: vi.fn(),
   /** Maps each user can view, with their fleetId. */
   visible: {} as Record<string, Array<{ id: string; fleetId: string | null }>>,
 }));
@@ -48,8 +49,11 @@ vi.mock('../../db/fleets.js', () => ({
 }));
 vi.mock('../../db/maps.js', () => ({
   listMapsForUser: async (userId: string) => db.visible[userId] ?? [],
+  updateMap: (...a: unknown[]) => db.updateMap(...a),
 }));
 vi.mock('../../db/permissions.js', () => ({ getPermission: async () => null, hasPermission: () => false }));
+const broadcastMock = vi.hoisted(() => vi.fn());
+vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
 
 import { fleetEntityRoutes } from '../fleets.js';
 
@@ -65,7 +69,8 @@ async function call(userId: string | null, method: 'GET' | 'POST' | 'PATCH' | 'D
 }
 
 beforeEach(() => {
-  for (const fn of [db.getFleet, db.listFleetsByOwnerOrIds, db.listFleetMaps, db.createFleet, db.updateFleet, db.deleteFleet]) fn.mockReset();
+  for (const fn of [db.getFleet, db.listFleetsByOwnerOrIds, db.listFleetMaps, db.createFleet, db.updateFleet, db.deleteFleet, db.updateMap, broadcastMock]) fn.mockReset();
+  db.updateMap.mockImplementation(async (id: string) => ({ id, fleetId: null }));
   db.getFleet.mockResolvedValue(fleetRow());
   db.listFleetMaps.mockResolvedValue(connected);
   db.listFleetsByOwnerOrIds.mockResolvedValue([fleetRow()]);
@@ -162,5 +167,15 @@ describe('DELETE /api/fleets/:id', () => {
     expect(db.deleteFleet).not.toHaveBeenCalled();
     expect((await call(OWNER, 'DELETE', `/api/fleets/${FLEET_ID}`)).statusCode).toBe(204);
     expect(db.deleteFleet).toHaveBeenCalledWith(FLEET_ID);
+  });
+
+  it('disconnects every map through the audited update and broadcasts it, before deleting', async () => {
+    await call(OWNER, 'DELETE', `/api/fleets/${FLEET_ID}`);
+    expect(db.updateMap).toHaveBeenCalledWith(MAP_A, { fleetId: null }, OWNER);
+    expect(db.updateMap).toHaveBeenCalledWith(MAP_B, { fleetId: null }, OWNER);
+    expect(broadcastMock).toHaveBeenCalledWith(MAP_A, { type: 'map:updated', map: { id: MAP_A, fleetId: null } });
+    expect(broadcastMock).toHaveBeenCalledWith(MAP_B, expect.objectContaining({ type: 'map:updated' }));
+    const lastDisconnect = Math.max(...db.updateMap.mock.invocationCallOrder);
+    expect(db.deleteFleet.mock.invocationCallOrder[0]).toBeGreaterThan(lastDisconnect);
   });
 });

@@ -12,17 +12,24 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 const updateMapMock = vi.fn();
 const getFleetMock = vi.fn();
+/** Maps the caller can view (drives whether a foreign fleet is readable) and the map's current fleet. */
+const state = vi.hoisted(() => ({
+  visible: [] as Array<{ id: string; fleetId: string | null }>,
+  currentFleetId: null as string | null,
+}));
 
 vi.mock('../../db/maps.js', () => ({
   updateMap: (...args: unknown[]) => updateMapMock(...args),
   getMap: vi.fn(),
-  listMapsForUser: vi.fn(async () => []),
+  listMapsForUser: async () => state.visible,
   createBaseline: vi.fn(),
   deleteMap: vi.fn(),
   createMap: vi.fn(),
 }));
 vi.mock('../../db/fleets.js', () => ({
   getFleet: (...args: unknown[]) => getFleetMock(...args),
+  getMapFleetId: async () => state.currentFleetId,
+  listFleetMaps: async () => state.visible.map((m) => ({ id: m.id, name: 'Other', fleetShare: 1, maxActiveClaims: 0, archivedAt: null })),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
@@ -69,6 +76,8 @@ async function put(payload: Record<string, unknown>) {
 
 beforeEach(() => {
   perm.level = 'admin';
+  state.visible = [];
+  state.currentFleetId = null;
   updateMapMock.mockReset();
   updateMapMock.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({ id: MAP_ID, name: 'M', ...input }));
   getFleetMock.mockReset();
@@ -89,11 +98,20 @@ describe('PUT /api/maps/:id — fleet connection', () => {
     expect(updateMapMock).not.toHaveBeenCalled();
   });
 
-  it("refuses a map admin who doesn't own the fleet", async () => {
+  it("refuses a map admin who can read the fleet but doesn't own it (403)", async () => {
     getFleetMock.mockResolvedValue({ id: FLEET_ID, name: 'other', ownerId: 'someone-else', maxActiveClaims: 0 });
+    state.visible = [{ id: 'other-map', fleetId: FLEET_ID }];
     const res = await put({ fleetId: FLEET_ID });
     expect(res.statusCode).toBe(403);
     expect(res.json().error.message).toMatch(/owner/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 for a foreign fleet the admin can't even read — same as a missing one", async () => {
+    getFleetMock.mockResolvedValue({ id: FLEET_ID, name: 'other', ownerId: 'someone-else', maxActiveClaims: 0 });
+    const res = await put({ fleetId: FLEET_ID });
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error.code).toBe('FLEET_NOT_FOUND');
     expect(updateMapMock).not.toHaveBeenCalled();
   });
 
@@ -117,11 +135,27 @@ describe('PUT /api/maps/:id — fleet connection', () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it('lets an edit-level member change fleetShare alone', async () => {
+  it('lets an edit-level member set fleetShare on a map without a fleet (inert there)', async () => {
     perm.level = 'edit';
     const res = await put({ fleetShare: 2 });
     expect(res.statusCode).toBe(200);
     expect(updateMapMock).toHaveBeenCalledWith(MAP_ID, { fleetShare: 2 }, USER_ID);
+  });
+
+  it("refuses fleetShare on a connected map to anyone but the fleet's owner — even a map admin", async () => {
+    state.currentFleetId = FLEET_ID;
+    getFleetMock.mockResolvedValue({ id: FLEET_ID, name: 'other', ownerId: 'someone-else', maxActiveClaims: 0 });
+    const res = await put({ fleetShare: 100 });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/share/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it('lets the fleet owner set fleetShare on a connected map, at edit level on the map', async () => {
+    perm.level = 'edit';
+    state.currentFleetId = FLEET_ID;
+    const res = await put({ fleetShare: 3 });
+    expect(res.statusCode).toBe(200);
   });
 
   it('400s a fleetId that is neither a string nor null', async () => {
