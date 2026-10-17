@@ -156,6 +156,9 @@ export const AUDITED_MAP_FIELDS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Which fleet works the map, and its weight there (#477).
+  'fleetId',
+  'fleetShare',
   // Archive flips are the loudest setting of all: every automation goes
   // quiet on the map. Journal who did it and when.
   'archivedAt',

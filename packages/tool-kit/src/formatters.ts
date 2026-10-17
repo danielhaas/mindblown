@@ -156,6 +156,11 @@ export function formatMapTree(data: MapDetail): string {
   // Holiday calendar (#110) — only when set; otherwise every day counts.
   const calendarLine = describeHolidayCalendar(data.map);
   if (calendarLine) lines.push(calendarLine);
+  // Fleet (#477) — only when connected.
+  if (data.map.fleetId) {
+    const share = data.map.fleetShare != null && data.map.fleetShare !== 1 ? `, share ${data.map.fleetShare}` : '';
+    lines.push(`Fleet: ${data.map.fleetName ?? 'unnamed'} (fleetId: ${data.map.fleetId}${share})`);
+  }
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(

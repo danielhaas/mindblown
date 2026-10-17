@@ -1,5 +1,19 @@
-import type { Node as CoreNode, MindMap, CustomFieldValue } from '@mindblown/core';
+import type { Node as CoreNode, MindMap, Fleet, CustomFieldValue } from '@mindblown/core';
 import { isAiPolicy } from '@mindblown/core';
+
+/** Convert a database fleet row to the core Fleet type. */
+export function dbFleetToCore(row: Record<string, unknown>): Fleet {
+  const get = (camel: string, snake: string) => row[camel] ?? row[snake];
+  const iso = (v: unknown) => (v instanceof Date ? v.toISOString() : (v as string));
+  return {
+    id: get('id', 'id') as string,
+    name: get('name', 'name') as string,
+    ownerId: get('ownerId', 'owner_id') as string,
+    maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
+    createdAt: iso(get('createdAt', 'created_at')),
+    updatedAt: iso(get('updatedAt', 'updated_at')),
+  };
+}
 
 /**
  * Convert a database node row to the core Node type.
@@ -104,6 +118,8 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     // not mapped: internal pull-queue state owned by services/orchestration,
     // not part of the core MindMap surface (REST/MCP/UI never see it).
     profilePolicy: (get('profilePolicy', 'profile_policy') as MindMap['profilePolicy']) ?? null,
+    fleetId: (get('fleetId', 'fleet_id') as string | null) ?? null,
+    fleetShare: (get('fleetShare', 'fleet_share') as number) ?? 1,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

@@ -3,6 +3,7 @@
 export type NodeId = string;
 export type UserId = string;
 export type MapId = string;
+export type FleetId = string;
 export type CycleId = string;
 export type VersionId = string;
 
@@ -551,6 +552,39 @@ export interface Baseline {
 /**
  * The Map — a project, a plan, a collection of nodes.
  */
+/**
+ * A fleet of worker hosts (#477): the capacity several maps share. Its
+ * `maxActiveClaims` is the total claim cap across every connected map
+ * (0 = hold); each map keeps its own ceiling and queue knobs.
+ */
+export interface Fleet {
+  id: FleetId;
+  name: string;
+  ownerId: UserId;
+  maxActiveClaims: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * A fleet as one reader sees it (REST `GET /api/fleets[/:id]`, `list_fleets`):
+ * the connected maps this reader can view, plus how many others it can't.
+ */
+export interface FleetWithMaps extends Fleet {
+  maps: Array<{
+    id: MapId;
+    name: string;
+    fleetShare: number;
+    /** The map's own ceiling inside the fleet (0 = this map is on hold). */
+    maxActiveClaims: number;
+    archivedAt: string | null;
+  }>;
+  /** Connected maps the reader has no view permission on — named nowhere. */
+  hiddenMapCount: number;
+  /** The reader owns the fleet: may rename it, set its cap, connect maps. */
+  isOwner: boolean;
+}
+
 export interface MindMap {
   id: MapId;
   workspaceId: string;
@@ -674,6 +708,24 @@ export interface MindMap {
    * untouched.
    */
   profilePolicy: ProfilePolicy | null;
+
+  // ── Fleet (#477) ──────────────────────────────────────────
+  /**
+   * The worker fleet this map is connected to. A map has at most one
+   * fleet; a fleet serves any number of maps. null = no fleet. The map's
+   * own pull-queue knobs above stay per project: `maxActiveClaims` is this
+   * map's ceiling inside the fleet (0 still holds the map), gate / policy /
+   * profile decide what is ready here and in which order.
+   */
+  fleetId: FleetId | null;
+  /**
+   * This map's weight when its fleet picks between projects (weighted
+   * round-robin, #478). 0.1–100, default 1. Inert while the map has no
+   * fleet or is the fleet's only map.
+   */
+  fleetShare: number;
+  /** Name of `fleetId`, derived at read time by GET /api/maps/:id. Not stored. */
+  fleetName?: string | null;
 
   // ── Metadata ──────────────────────────────────────────────
   createdAt: string;

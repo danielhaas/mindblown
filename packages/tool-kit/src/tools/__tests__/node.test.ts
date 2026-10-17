@@ -70,6 +70,9 @@ function makeRecordingBackend(): {
     createMap: async () => { throw new Error('not implemented'); },
     updateMap: async () => { throw new Error('not implemented'); },
     deleteMap: async () => { throw new Error('not implemented'); },
+    listFleets: async () => { throw new Error('not implemented'); },
+    createFleet: async () => { throw new Error('not implemented'); },
+    updateFleet: async () => { throw new Error('not implemented'); },
     freezeBaseline: async () => { throw new Error('not implemented'); },
     createNode: async (mapId, parentId, text, fields) => {
       state.lastCreate = { mapId, parentId, text, fields };

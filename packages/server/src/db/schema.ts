@@ -173,6 +173,26 @@ export const maps = pgTable('maps', {
   // REST/MCP/UI, not audited, not reset on policy changes (0–99 is
   // ratio-agnostic; a changed N converges on its own).
   dispatchMixAcc: integer('dispatch_mix_acc').notNull().default(0),
+
+  // ── Fleet (#477) ────────────────────────────────────────────────
+  // The worker fleet this map is connected to (0..1). Deleting the fleet
+  // disconnects the map; the map's own queue knobs above stay put.
+  fleetId: uuid('fleet_id').references(() => fleets.id, { onDelete: 'set null' }),
+  // Weight when the fleet picks between its maps (#478); 0.1–100.
+  fleetShare: real('fleet_share').notNull().default(1),
+});
+
+// ── Fleets (#477) ──────────────────────────────────────────────────
+// A fleet of worker hosts that several maps can share. max_active_claims
+// is the total claim cap across every connected map (0 = hold); the map's
+// own max_active_claims stays its ceiling inside the fleet.
+export const fleets = pgTable('fleets', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  name: text('name').notNull(),
+  ownerId: uuid('owner_id').notNull().references(() => users.id),
+  maxActiveClaims: integer('max_active_claims').notNull().default(0),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── Nodes ──────────────────────────────────────────────────────────

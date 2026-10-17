@@ -3,6 +3,7 @@ export type {
   NodeId,
   UserId,
   MapId,
+  FleetId,
   CycleId,
   VersionId,
   DependencyType,
@@ -25,6 +26,8 @@ export type {
   AiPolicy,
   Baseline,
   MindMap,
+  Fleet,
+  FleetWithMaps,
   HolidayOverrides,
   User,
   Workspace,
@@ -158,6 +161,10 @@ export {
   parseTickWindow,
   severityRank,
   summarizeTick,
+  FLEET_SHARE_MIN,
+  FLEET_SHARE_MAX,
+  DEFAULT_FLEET_SHARE,
+  clampFleetShare,
 } from './fleet.js';
 export type {
   FleetWorkerStatus,

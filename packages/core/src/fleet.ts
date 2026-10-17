@@ -10,6 +10,18 @@
  * orchestrator's `decision.json`.
  */
 
+// ── Fleet entity knobs (#477) ──────────────────────────────────
+
+export const FLEET_SHARE_MIN = 0.1;
+export const FLEET_SHARE_MAX = 100;
+export const DEFAULT_FLEET_SHARE = 1;
+
+/** A map's weight inside its fleet, clamped to 0.1–100; junk → 1. */
+export function clampFleetShare(value: number | null | undefined): number {
+  if (value == null || !Number.isFinite(value)) return DEFAULT_FLEET_SHARE;
+  return Math.min(FLEET_SHARE_MAX, Math.max(FLEET_SHARE_MIN, value));
+}
+
 /** One worker, as `driver/claude-code/status.sh` reports it (status file v1). */
 export interface FleetWorkerStatus {
   v?: number;

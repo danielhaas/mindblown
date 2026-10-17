@@ -17,6 +17,8 @@ import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import * as fleetDb from '../db/fleet.js';
+import * as fleetEntityDb from '../db/fleets.js';
+import * as fleetService from '../services/fleets.js';
 import * as asksDb from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import { countAsks } from '@mindblown/core';
@@ -144,6 +146,9 @@ export function createChatBackend(userId: string): ToolBackend {
           baselines: data.map.baselines,
           wipLimit: data.map.wipLimit,
           phases: data.map.phases,
+          fleetId: data.map.fleetId,
+          fleetName: await fleetService.fleetNameOf(data.map.fleetId),
+          fleetShare: data.map.fleetShare,
         },
         nodes: nodesWithComputed,
       };
@@ -166,6 +171,9 @@ export function createChatBackend(userId: string): ToolBackend {
       // reach an open cockpit without a reload.
       const holidayError = normalizeHolidaySettings(fields);
       if (holidayError) throw new Error(holidayError);
+      // The edit-level guard already ran; connecting a fleet asks for more.
+      const fleetDenied = await fleetService.authorizeMapFleetChange(userId, mapId, fields);
+      if (fleetDenied) throw new Error(fleetDenied.message);
       const updated = await mapDb.updateMap(mapId, fields, userId);
       if (!updated) throw new Error(`Map ${mapId} not found`);
       broadcast(mapId, { type: 'map:updated', map: updated });
@@ -175,6 +183,25 @@ export function createChatBackend(userId: string): ToolBackend {
     async deleteMap(mapId) {
       const ok = await mapDb.deleteMap(mapId);
       if (!ok) throw new Error(`Map ${mapId} not found`);
+    },
+
+    // ── Fleets (#477) — scoped to the chatting user, same rules as REST ──
+    listFleets: () => fleetService.listFleetsForUser(userId),
+    async createFleet(name, maxActiveClaims) {
+      const invalid = fleetService.validateFleetFields({ name, maxActiveClaims }, true);
+      if (invalid) throw new Error(invalid);
+      const fleet = await fleetEntityDb.createFleet({ name: name.trim(), ownerId: userId, maxActiveClaims });
+      return { ...fleet, maps: [], hiddenMapCount: 0, isOwner: true };
+    },
+    async updateFleet(fleetId, fields) {
+      const owned = await fleetService.requireFleetOwner(userId, fleetId);
+      if ('status' in owned) throw new Error(owned.message);
+      const invalid = fleetService.validateFleetFields(fields, false);
+      if (invalid) throw new Error(invalid);
+      await fleetEntityDb.updateFleet(fleetId, { name: fields.name?.trim(), maxActiveClaims: fields.maxActiveClaims });
+      const view = await fleetService.getFleetForUser(userId, fleetId);
+      if ('status' in view) throw new Error(view.message);
+      return view;
     },
 
     async freezeBaseline(mapId, name) {
@@ -439,6 +466,10 @@ export const CHAT_BACKEND_ADMIN_METHODS: ReadonlySet<keyof ToolBackend> = new Se
 export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'listMaps',
   'createMap',
+  // Fleets (#477): owner / connected-map rules live in services/fleets.
+  'listFleets',
+  'createFleet',
+  'updateFleet',
 ]);
 
 /**

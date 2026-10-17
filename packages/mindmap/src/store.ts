@@ -24,6 +24,9 @@ const BROADCAST_MAP_SETTINGS = [
   'wipLimit',
   'focusFactor',
   'workerCount',
+  // Fleet connection (#477) — another tab or an agent connects the map.
+  'fleetId',
+  'fleetShare',
   // Holiday calendar (#110): the Gantt's label and dates follow it.
   'holidayJurisdiction',
   'holidayOverrides',
