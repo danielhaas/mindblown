@@ -292,6 +292,20 @@ export async function createNode(
     await assertPhaseIdKnown(handle, input.mapId, input.phaseId);
   }
 
+  // A node created already in flight (agents pass status / progress on
+  // create_node) starts now — same rule as updateNode.
+  let startedAt: Date | null = null;
+  if (input.percentComplete != null && input.percentComplete > 0 && input.percentComplete < 100) {
+    startedAt = now;
+  } else if (input.status != null) {
+    const [mapRow] = await handle
+      .select({ statusWorkflow: maps.statusWorkflow })
+      .from(maps)
+      .where(eq(maps.id, input.mapId));
+    const def = resolveStatusDef((mapRow?.statusWorkflow as StatusDef[]) ?? [], input.status);
+    if (def?.category === 'in_progress') startedAt = now;
+  }
+
   // Create the node
   let row;
   try {
@@ -313,6 +327,7 @@ export async function createNode(
       autoProgress: input.autoProgress ?? 'off',
       priorityRank: input.priorityRank ?? null,
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
+      startedAt,
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
@@ -661,8 +676,10 @@ export async function updateNode(
         if (input.percentComplete >= 100) movingToDone = true;
         else movingFromDone = true;
         if (input.percentComplete > 0 && input.percentComplete < 100) movingToStarted = true;
+        if (input.percentComplete <= 0) movingToTodo = true;
       } else if (pctChanging && input.percentComplete === null) {
         movingFromDone = true;
+        movingToTodo = true;
       }
 
       // First start wins: later progress ticks, a blocked detour or a

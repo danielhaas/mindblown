@@ -10,7 +10,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { StatusDef } from '@mindblown/core';
-import { updateNode, type DbHandle, type UpdateNodeInput } from '../nodes.js';
+import { createNode, updateNode, type CreateNodeInput, type DbHandle, type UpdateNodeInput } from '../nodes.js';
 
 const workflow: StatusDef[] = [
   { id: 'todo', name: 'Todo', category: 'todo', color: '#94a3b8', position: 0 },
@@ -66,7 +66,40 @@ describe('updateNode startedAt', () => {
     expect((await setFor({ percentComplete: 0 }, { status: 'wip', startedAt: started })).startedAt).toBeNull();
   });
 
+  it('progress 0 clears even when the status is already todo (no status change)', async () => {
+    const started = new Date('2026-10-01T08:00:00Z');
+    expect((await setFor({ percentComplete: 0 }, { status: 'todo', startedAt: started })).startedAt).toBeNull();
+  });
+
   it('leaves it alone when neither status nor progress moves', async () => {
     expect(await setFor({ text: 'renamed' }, { status: 'wip', startedAt: null })).not.toHaveProperty('startedAt');
+  });
+});
+
+describe('createNode startedAt', () => {
+  async function insertedFor(input: Partial<CreateNodeInput>): Promise<Record<string, unknown>> {
+    let inserted: Record<string, unknown> = {};
+    const handle = {
+      insert: () => ({
+        values: (v: Record<string, unknown>) => {
+          inserted = v;
+          return { returning: async () => [{ id: 'n-new', ...v }] };
+        },
+      }),
+      // Map workflow lookup answers the workflow; no parent row.
+      select: (cols?: Record<string, unknown>) => ({
+        from: () => ({ where: async () => (cols && 'statusWorkflow' in cols ? [{ statusWorkflow: workflow }] : []) }),
+      }),
+    } as unknown as DbHandle;
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', ...input }, handle);
+    return inserted;
+  }
+
+  it('a node created in flight starts now; a todo or done one does not', async () => {
+    expect((await insertedFor({ status: 'In Progress' })).startedAt).toBeInstanceOf(Date);
+    expect((await insertedFor({ percentComplete: 30 })).startedAt).toBeInstanceOf(Date);
+    expect((await insertedFor({ status: 'todo' })).startedAt).toBeNull();
+    expect((await insertedFor({ status: 'done', percentComplete: 100 })).startedAt).toBeNull();
+    expect((await insertedFor({})).startedAt).toBeNull();
   });
 });
