@@ -1,0 +1,34 @@
+import { describe, it, expect } from 'vitest';
+import type { StalledLeaf } from '@mindblown/core';
+import { stalledSectionLines, wipClaimMarker } from '../stalled.js';
+
+const now = new Date('2026-10-18T12:00:00Z');
+const dead: StalledLeaf = {
+  nodeId: 'n1',
+  percentComplete: 25,
+  lastChangeAt: '2026-10-18T03:00:00Z',
+  lastRelease: { session: 'host-a/worker-3', releasedAt: '2026-10-18T03:00:00Z', reason: 'release' },
+};
+
+describe('blocked_digest stalled section', () => {
+  it('lists each stalled leaf with progress, idle time and the last claim holder', () => {
+    const lines = stalledSectionLines([dead], () => 'Fix the importer', now);
+    expect(lines[0]).toBe('## Stalled — in progress, nobody working on it (1)');
+    expect(lines[1]).toBe(
+      '- ⏸ **Fix the importer** — 25 %, no change for 9 h, released by host-a/worker-3 9 h ago (release) (id: n1)',
+    );
+  });
+
+  it('is empty when nothing is stalled', () => {
+    expect(stalledSectionLines([], () => '', now)).toEqual([]);
+  });
+});
+
+describe('get_wip_status claim marker', () => {
+  const stalledById = new Map([['n1', dead]]);
+  it('names the holder, or says unclaimed — and stalled when it is', () => {
+    expect(wipClaimMarker({ id: 'n2', claimedBySession: 'host-a/worker-1' }, stalledById, now)).toBe(' (claimed by host-a/worker-1)');
+    expect(wipClaimMarker({ id: 'n3', claimedBySession: null }, stalledById, now)).toBe(' (unclaimed)');
+    expect(wipClaimMarker({ id: 'n1', claimedBySession: null }, stalledById, now)).toBe(' (unclaimed, stalled — no change for 9 h)');
+  });
+});

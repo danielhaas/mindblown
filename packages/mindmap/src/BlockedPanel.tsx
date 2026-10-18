@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
-import type { Node, ComputedNodeValues } from '@mindblown/core';
-import { groupBlockers, resolveStatusDef } from '@mindblown/core';
+import type { Node, ComputedNodeValues, StalledLeaf } from '@mindblown/core';
+import { groupBlockers, resolveStatusDef, describeStalled, STALLED_GROUP_LABEL } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
+import { useStalled } from './useStalled.js';
 import { dependencyNeighbourhood } from './blockedNeighbourhood.js';
 
 type PanelMode = 'cause' | 'kind' | 'around';
@@ -12,6 +13,12 @@ interface BlockedLeaf {
   node: Node;
   cv: ComputedNodeValues;
   predecessorTitles: string[];
+  /** Set for a stalled leaf (in progress, nobody on it). */
+  stalled?: StalledLeaf;
+}
+
+function StalledDetail({ s }: { s: StalledLeaf }) {
+  return <span style={{ color: '#92400e' }}>{describeStalled(s)}</span>;
 }
 
 export function BlockedPanel({ onClose }: { onClose: () => void }) {
@@ -44,16 +51,35 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
     return { manual, depWaiting };
   }, [nodes, computed, workflow]);
 
-  const total = manual.length + depWaiting.length;
+  // In progress with nobody on it (core findStalled) — not blocked, but the
+  // same "needs a decision" list; a leaf already blocked stays where it is.
+  const stalledLeaves = useStalled();
+  const stalled = useMemo(() => {
+    const blockedIds = new Set([...manual, ...depWaiting].map((e) => e.node.id));
+    const out: BlockedLeaf[] = [];
+    for (const s of stalledLeaves) {
+      const node = nodes[s.nodeId];
+      const cv = computed.get(s.nodeId);
+      if (node && cv && !blockedIds.has(s.nodeId)) out.push({ node, cv, predecessorTitles: [], stalled: s });
+    }
+    return out;
+  }, [stalledLeaves, manual, depWaiting, nodes, computed]);
+
+  const total = manual.length + depWaiting.length + stalled.length;
 
   // By cause and unblocker (#322) — the PM Cockpit's grouping (core
   // groupBlockers): one action for one person, not N free-text reasons.
   const byCause = useMemo(() => {
-    const entryById = new Map([...manual, ...depWaiting].map((e) => [e.node.id, e]));
+    const entryById = new Map([...manual, ...depWaiting, ...stalled].map((e) => [e.node.id, e]));
     return groupBlockers(
-      [...entryById.values()].map((e) => ({ id: e.node.id, blockedReason: e.node.blockedReason ?? null, predecessorIds: e.cv.blockedBy?.predecessorIds ?? [] })),
+      [...entryById.values()].map((e) => ({
+        id: e.node.id,
+        blockedReason: e.stalled ? null : (e.node.blockedReason ?? null),
+        predecessorIds: e.stalled ? [] : (e.cv.blockedBy?.predecessorIds ?? []),
+        stalled: e.stalled != null,
+      })),
     ).map((g) => ({ ...g, entries: g.nodeIds.map((id) => entryById.get(id)!) }));
-  }, [manual, depWaiting]);
+  }, [manual, depWaiting, stalled]);
 
   const around = useMemo(
     () => (mode === 'around' && selectedNodeId && nodes[selectedNodeId] ? dependencyNeighbourhood(nodes, computed, selectedNodeId) : null),
@@ -188,7 +214,9 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
                 entries={g.entries}
                 jumpTo={jumpTo}
                 renderDetail={(e) =>
-                  e.node.blockedReason ? (
+                  e.stalled ? (
+                    <StalledDetail s={e.stalled} />
+                  ) : e.node.blockedReason ? (
                     <span style={{ color: '#991b1b' }}>"{e.node.blockedReason}"</span>
                   ) : (
                     <span style={{ color: '#475569' }}>
@@ -220,6 +248,13 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
                   Blocked by: {e.predecessorTitles.map((t) => `"${t}"`).join(', ')}
                 </span>
               )}
+            />
+            <BlockedSection
+              title={STALLED_GROUP_LABEL}
+              count={stalled.length}
+              entries={stalled}
+              jumpTo={jumpTo}
+              renderDetail={(e) => <StalledDetail s={e.stalled!} />}
             />
           </>
         )}

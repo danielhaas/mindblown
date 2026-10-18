@@ -5,6 +5,7 @@
  */
 
 export type BlockerKind =
+  | 'stalled'
   | 'orphaned_claim'
   | 'merge_blocked'
   | 'pr_open'
@@ -58,13 +59,19 @@ export interface BlockedItem {
   blockedReason: string | null;
   /** Unfinished finish-to-start predecessors. */
   predecessorIds: string[];
+  /** In progress with nobody on it (core findStalled); used only when no reason or predecessor applies. */
+  stalled?: boolean;
 }
+
+/** Label of the stalled cause group — the same words on every surface. */
+export const STALLED_GROUP_LABEL = 'Stalled — in progress, nobody working on it';
 
 /**
  * Group open blocked leaves by cause: a manual reason is classified
  * (decisions are split per named person); a leaf blocked only by
- * predecessors joins "Waiting on a predecessor task". Orphaned claims and
- * merge blocks first, then by size.
+ * predecessors joins "Waiting on a predecessor task"; a stalled leaf
+ * (findStalled) joins the stalled group. Stalled work and orphaned claims
+ * first, then merge blocks, then by size.
  */
 export function groupBlockers(items: BlockedItem[]): BlockerGroup[] {
   const byKey = new Map<string, BlockerGroup>();
@@ -86,9 +93,11 @@ export function groupBlockers(items: BlockedItem[]): BlockerGroup[] {
       }
     } else if (n.predecessorIds.length) {
       add('dependency', { kind: 'dependency', label: 'Waiting on a predecessor task', unblocker: null }, n.id);
+    } else if (n.stalled) {
+      add('stalled', { kind: 'stalled', label: STALLED_GROUP_LABEL, unblocker: null }, n.id);
     }
   }
 
-  const rank: Record<BlockerKind, number> = { orphaned_claim: 0, merge_blocked: 1, decision: 2, pr_open: 3, external: 4, dependency: 5, other: 6 };
+  const rank: Record<BlockerKind, number> = { stalled: 0, orphaned_claim: 0, merge_blocked: 1, decision: 2, pr_open: 3, external: 4, dependency: 5, other: 6 };
   return [...byKey.values()].sort((a, b) => rank[a.kind] - rank[b.kind] || b.nodeIds.length - a.nodeIds.length);
 }

@@ -8,6 +8,7 @@ import type {
   ReleasedEvent,
   PrMergedEvent,
   ReleaseReason,
+  StalledActivity,
 } from '@mindblown/core';
 
 export type EventType =
@@ -368,6 +369,54 @@ export async function getLastActorByNode(
     userId: r.user_id,
     userName: r.user_name,
   }));
+}
+
+/**
+ * The change-log half of the stalled rule (core findStalled): per node, the
+ * latest event of any type and the latest `node.released` row. Called with
+ * the candidates only — in-progress unclaimed leaves, a handful per map.
+ */
+export async function loadStalledActivity(mapId: string, nodeIds: string[]): Promise<StalledActivity> {
+  const activity: StalledActivity = { lastChangeAt: new Map(), lastRelease: new Map() };
+  if (nodeIds.length === 0) return activity;
+  const [latest, releases] = await Promise.all([
+    db
+      .select({ nodeId: changeEvents.nodeId, at: sql<Date>`max(${changeEvents.createdAt})` })
+      .from(changeEvents)
+      .where(and(eq(changeEvents.mapId, mapId), inArray(changeEvents.nodeId, nodeIds)))
+      .groupBy(changeEvents.nodeId),
+    db
+      .selectDistinctOn([changeEvents.nodeId], {
+        nodeId: changeEvents.nodeId,
+        payload: changeEvents.newValue,
+        oldValue: changeEvents.oldValue,
+        createdAt: changeEvents.createdAt,
+      })
+      .from(changeEvents)
+      .where(
+        and(
+          eq(changeEvents.mapId, mapId),
+          inArray(changeEvents.nodeId, nodeIds),
+          eq(changeEvents.eventType, 'node.released'),
+        ),
+      )
+      .orderBy(changeEvents.nodeId, desc(changeEvents.createdAt)),
+  ]);
+  for (const r of latest) {
+    if (r.nodeId) activity.lastChangeAt.set(r.nodeId, new Date(r.at).toISOString());
+  }
+  for (const r of releases) {
+    if (!r.nodeId) continue;
+    const p = (r.payload ?? {}) as Partial<ReleasedEvent>;
+    const session = p.session ?? (typeof r.oldValue === 'string' ? r.oldValue : null);
+    if (!session) continue;
+    activity.lastRelease.set(r.nodeId, {
+      session,
+      releasedAt: r.createdAt.toISOString(),
+      reason: p.reason ?? null,
+    });
+  }
+  return activity;
 }
 
 /** Count events per event_type + field for a scope. Used by digest/burnup. */

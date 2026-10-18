@@ -78,6 +78,34 @@ function rule(report: LintReport, id: string) {
   return r;
 }
 
+describe('computePlanLint — stalled-unclaimed', () => {
+  const stalled = (nodeId: string) => ({
+    nodeId,
+    percentComplete: 25,
+    lastChangeAt: '2026-07-16T03:00:00Z',
+    lastRelease: { session: 'host-a/worker-3', releasedAt: '2026-07-16T03:00:00Z', reason: 'release' },
+  });
+  const nodes = [
+    makeNode({ id: 'root', childrenIds: ['a', 'b'] }),
+    makeNode({ id: 'a', parentId: 'root', status: 'wip', percentComplete: 25 }),
+    makeNode({ id: 'b', parentId: 'root', status: 'wip', percentComplete: 25 }),
+  ];
+
+  it('one finding per stalled leaf in scope, with the claim trail and park / reopen', () => {
+    const r = rule(lint(nodes, { stalled: [stalled('a')] }), 'stalled-unclaimed');
+    expect(r.findings.map((f) => f.nodeId)).toEqual(['a']);
+    expect(r.findings[0].detail).toBe('25 %, no change for 9 h, released by host-a/worker-3 9 h ago (release)');
+    expect(r.findings[0].actions?.map((a) => a.id)).toEqual(['park', 'reopen']);
+    expect(LINT_FIX_ACTIONS['stalled-unclaimed']).toEqual(['park', 'reopen']);
+    // scoped like every rule
+    expect(rule(lint(nodes, { stalled: [stalled('a')], nodeId: 'b' }), 'stalled-unclaimed').findings).toEqual([]);
+  });
+
+  it('is skipped, not silently green, when the stalled list could not be loaded', () => {
+    expect(rule(lint(nodes), 'stalled-unclaimed').skipped).toBe('change history unavailable');
+  });
+});
+
 describe('computePlanLint — duplicate-issue-link (#341)', () => {
   const link = (externalId: string | null, url: string) => ({ source: 'github', externalId, url }) as never;
   it('flags the copy, not the original; keys on the URL when a link has no issue id; spares a parent and its own sub-ticket', () => {

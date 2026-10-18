@@ -21,6 +21,21 @@ describe('groupBlockers (#322)', () => {
     expect(groups.find((g) => g.kind === 'decision')).toMatchObject({ unblocker: 'Thomas' });
   });
 
+  it('stalled leaves get their own group, ranked first; a reason or predecessor wins over the flag', () => {
+    const groups = groupBlockers([
+      { id: 'a', blockedReason: 'CI is red on main', predecessorIds: [] },
+      { id: 's1', blockedReason: null, predecessorIds: [], stalled: true },
+      { id: 's2', blockedReason: null, predecessorIds: [], stalled: true },
+      { id: 'w', blockedReason: null, predecessorIds: ['x'], stalled: true },
+    ]);
+    expect(groups.map((g) => [g.kind, g.nodeIds])).toEqual([
+      ['stalled', ['s1', 's2']],
+      ['merge_blocked', ['a']],
+      ['dependency', ['w']],
+    ]);
+    expect(groups[0].label).toBe('Stalled — in progress, nobody working on it');
+  });
+
   it('classifies the vocabulary', () => {
     expect(classifyBlocker('awaiting review on the PR')).toBe('pr_open');
     expect(classifyBlocker('Vendor has not answered')).toBe('external');

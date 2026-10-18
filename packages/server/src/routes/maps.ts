@@ -13,6 +13,7 @@ import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
+import { stalledForMap } from '../lib/stalled.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
 import { computeForecastScorecard } from '../lib/forecastScorecard.js';
@@ -253,15 +254,32 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
 
     // Derived, not stored: which forge the map syncs with, so the UI can say
     // "Gitea" where it used to say "GitHub" (labels, inbox, settings).
-    const [forgeKind, fleetName] = await Promise.all([
+    // Also derived: in-progress leaves nobody is working on (core findStalled),
+    // for the Blocked panel, the Cockpit and blocked_digest.
+    const [forgeKind, fleetName, stalled] = await Promise.all([
       getMapForgeKind(req.params.id),
       fleetService.fleetNameOf(data.map.fleetId),
+      stalledForMap(data.map, data.nodes),
     ]);
 
     return reply.send({
       map: { ...data.map, forgeKind, fleetName },
       nodes: nodesWithComputed,
+      stalled,
     });
+  });
+
+  // ── GET /api/maps/:id/stalled — just the stalled list ─────────────
+  // The Blocked panel and the Cockpit refresh it while open: work goes
+  // stale by the clock, with no write that would reach them over the socket.
+  app.get<{ Params: { id: string } }>('/api/maps/:id/stalled', async (req, reply) => {
+    const data = await mapDb.getMap(req.params.id);
+    if (!data) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+    return reply.send({ stalled: await stalledForMap(data.map, data.nodes) });
   });
 
   // ── GET /api/maps/:id/requirements-export — Anforderungsdokument ──

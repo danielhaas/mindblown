@@ -19,6 +19,9 @@ import {
   effectiveVersionId,
   sprintSignals,
   type SprintLike,
+  describeStalled,
+  STALLED_AFTER_HOURS,
+  type StalledLeaf,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -151,6 +154,11 @@ export interface LintOptions {
    * sprintSignals the Sprint panel shows. Omit to skip the rule.
    */
   sprints?: SprintLike[];
+  /**
+   * In-progress leaves nobody is working on (core findStalled, read from
+   * the change log by lib/stalled.ts). Omit to skip the stalled-unclaimed rule.
+   */
+  stalled?: StalledLeaf[];
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -692,6 +700,22 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
           .map((n) => finding(n, `${pickups.get(n.id)} pickups in the last ${CLAIM_CHURN_HOURS} h`, act('park')))
       : [],
     skipped: history.ok ? undefined : 'change history unavailable',
+  });
+
+  // stalled-unclaimed — in progress, no claim, no change for hours: the
+  // ticket a dead worker left behind. Same list as blocked_digest's
+  // stalled group; the rule only scopes it.
+  const leafIds = new Set(leaves.map((l) => l.id));
+  rules.push({
+    ruleId: 'stalled-unclaimed',
+    severity: 'warn',
+    title: `In progress, nobody working on it (no claim, no change for ${STALLED_AFTER_HOURS}+ h)`,
+    why: 'A worker that dies mid-ticket leaves it in progress with no claim — the pull queue skips it (not todo) and the board shows it like live work, so nobody decides.',
+    fix: 'Park it for a person, or reopen it so the queue hands it out again.',
+    findings: (opts.stalled ?? [])
+      .filter((s) => leafIds.has(s.nodeId))
+      .map((s) => finding(nodeById.get(s.nodeId)!, describeStalled(s, now), act('park', 'reopen'))),
+    skipped: opts.stalled ? undefined : 'change history unavailable',
   });
 
   // 18. duplicate-issue-link (#341) — two live nodes tracking the same
