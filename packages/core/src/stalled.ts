@@ -59,9 +59,13 @@ export interface StalledActivity {
 
 /**
  * The state half of the rule, no clock: an open leaf that is in progress
- * (an in_progress status, or 1–99 %), holds no claim and carries no
- * blocker (reason, `blocked` tag or a status named "blocked" — those are
- * already a decision and show in the Blocked panel).
+ * (an in_progress status, or 1–99 % without a todo status), holds no claim
+ * and carries no manual blocker (reason, `blocked` tag or a status named
+ * "blocked" — those are already a decision and show in the Blocked panel).
+ * A todo status is a queued ticket, whatever its % says: the pull queue
+ * hands it out, so it is not "nobody on it" — that is also what releasing
+ * a stalled node back to the queue leaves behind. Unfinished predecessors
+ * are the caller's check (they need the whole map).
  */
 export function isStalledCandidate(node: StalledNodeLike, workflow: readonly StatusDef[]): boolean {
   if (node.childrenIds.length > 0) return false;
@@ -71,7 +75,7 @@ export function isStalledCandidate(node: StalledNodeLike, workflow: readonly Sta
   if ((node.status ?? '').toLowerCase() === BLOCKED_TAG) return false;
   const pct = node.percentComplete ?? 0;
   const category = resolveStatusDef([...workflow], node.status)?.category;
-  if (category === 'done' || pct >= 100) return false;
+  if (category === 'done' || category === 'todo' || pct >= 100) return false;
   return category === 'in_progress' || pct > 0;
 }
 

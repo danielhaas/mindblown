@@ -66,8 +66,9 @@ describe('findStalled', () => {
     expect(findStalled([node('a', { status: 'done' }), node('b', { status: 'wip', percentComplete: 100 })], workflow, old, now)).toEqual([]);
   });
 
-  it('todo at 0 % and parents are not candidates; todo with progress is', () => {
+  it('a todo status is queued, not stalled, at any %; parents are not candidates; no status with progress is', () => {
     expect(isStalledCandidate(node('t', { status: 'todo', percentComplete: 0 }), workflow)).toBe(false);
+    expect(isStalledCandidate(node('r', { status: 'todo', percentComplete: 25 }), workflow)).toBe(false);
     expect(isStalledCandidate(node('p', { childrenIds: ['x'] }), workflow)).toBe(false);
     expect(isStalledCandidate(node('t', { status: null, percentComplete: 40 }), workflow)).toBe(true);
     expect(isStalledCandidate(node('n', { status: 'In Progress', percentComplete: 0 }), workflow)).toBe(true);

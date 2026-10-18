@@ -17,7 +17,7 @@ vi.mock('../../db/events.js', () => ({
   },
 }));
 
-import { stalledForMap } from '../stalled.js';
+import { stalledForMap, stalledOrEmpty } from '../stalled.js';
 
 const workflow: StatusDef[] = [
   { id: 'todo', name: 'Todo', category: 'todo', color: '', position: 0 },
@@ -34,6 +34,7 @@ const node = (id: string, over: Partial<Node> = {}) =>
     claimedBySession: null,
     blockedReason: null,
     tags: [],
+    dependencies: [],
     updatedAt: '2026-10-18T11:00:00Z',
     ...over,
   }) as Node;
@@ -63,10 +64,18 @@ describe('stalledForMap', () => {
     expect(loadStalledActivity).not.toHaveBeenCalled();
   });
 
-  it('a failed change-log read yields an empty list, not an error', async () => {
+  it('a leaf waiting on an unfinished predecessor is blocked, not stalled', async () => {
+    const pred = node('pred', { status: 'todo', percentComplete: 0 });
+    const waiting = node('waiting', { dependencies: [{ targetNodeId: 'pred', type: 'FS', lag: 0 }] as Node['dependencies'] });
+    expect(await stalledForMap(map, [pred, waiting], now)).toEqual([]);
+    expect(loadStalledActivity).not.toHaveBeenCalled();
+  });
+
+  it('a failed change-log read throws (plan_lint reports skipped); the map load gets an empty list', async () => {
     failRead = true;
+    await expect(stalledForMap(map, [node('dead')], now)).rejects.toThrow('db down');
     const err = vi.spyOn(console, 'error').mockImplementation(() => {});
-    expect(await stalledForMap(map, [node('dead')], now)).toEqual([]);
+    expect(await stalledOrEmpty(map, [node('dead')])).toEqual([]);
     expect(err).toHaveBeenCalled();
     err.mockRestore();
     failRead = false;

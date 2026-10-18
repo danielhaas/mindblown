@@ -400,8 +400,8 @@ export async function lintRoutes(app: FastifyInstance) {
 
     // A stale panel must not apply a fix the CURRENT finding would not
     // offer. The rules that need only the map are recomputed for this
-    // node right now; the two that need history / the forge are not
-    // (their actions — park, reopen — are safe against a vanished finding).
+    // node right now; done-without-pr and claim-churn are not (their
+    // actions — park, reopen — are safe against a vanished finding).
     if (RECHECKED_RULES.has(ruleId as LintRuleId)) {
       const data = await mapDb.getMap(req.params.id);
       if (!data) {
@@ -429,6 +429,26 @@ export async function lintRoutes(app: FastifyInstance) {
           error: {
             code: 'STALE_FINDING',
             message: 'That finding no longer applies to the node as it is now — re-run the checks.',
+          },
+        });
+      }
+    }
+    // stalled-unclaimed needs the change log, so it is re-checked through
+    // the same stalledForMap: park would drop a claim taken since, reopen
+    // would zero a node finished since.
+    if (ruleId === 'stalled-unclaimed') {
+      const data = await mapDb.getMap(req.params.id);
+      if (!data) {
+        return reply.status(404).send({
+          error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+        });
+      }
+      const stalled = await stalledForMap(data.map, data.nodes).catch(() => []);
+      if (!stalled.some((s) => s.nodeId === nodeId)) {
+        return reply.status(409).send({
+          error: {
+            code: 'STALE_FINDING',
+            message: 'That node is no longer stalled (claimed, changed, blocked or finished since) — re-run the checks.',
           },
         });
       }

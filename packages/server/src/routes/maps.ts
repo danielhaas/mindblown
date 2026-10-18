@@ -13,7 +13,7 @@ import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
-import { stalledForMap } from '../lib/stalled.js';
+import { stalledOrEmpty } from '../lib/stalled.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
 import { computeForecastScorecard } from '../lib/forecastScorecard.js';
@@ -259,7 +259,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     const [forgeKind, fleetName, stalled] = await Promise.all([
       getMapForgeKind(req.params.id),
       fleetService.fleetNameOf(data.map.fleetId),
-      stalledForMap(data.map, data.nodes),
+      stalledOrEmpty(data.map, data.nodes),
     ]);
 
     return reply.send({
@@ -279,7 +279,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
       });
     }
-    return reply.send({ stalled: await stalledForMap(data.map, data.nodes) });
+    return reply.send({ stalled: await stalledOrEmpty(data.map, data.nodes) });
   });
 
   // ── GET /api/maps/:id/requirements-export — Anforderungsdokument ──
