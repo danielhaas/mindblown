@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, ComputedNodeValues, Priority, ClaimTrailEntry } from '@mindblown/core';
-import { CLAIM_EVENT_TYPES, claimTrail, describeSession, parseSession } from '@mindblown/core';
+import { BLOCKED_TAG, CLAIM_EVENT_TYPES, claimTrail, describeSession, parseSession } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { CommentsPanel } from './CommentsPanel.js';
 import { GitHubNodeSection } from './GitHubPanel.js';
@@ -42,13 +42,23 @@ function useDebouncedUpdate(nodeId: string, delay = 400) {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  return useCallback(
-    (updates: Partial<Node>) => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timerRef.current = setTimeout(() => {
-        updateNode(nodeId, updates);
-      }, delay);
-    },
+  return useMemo(
+    () =>
+      Object.assign(
+        (updates: Partial<Node>) => {
+          if (timerRef.current) clearTimeout(timerRef.current);
+          timerRef.current = setTimeout(() => {
+            updateNode(nodeId, updates);
+          }, delay);
+        },
+        {
+          /** Drop a pending write — e.g. a half-typed blocked reason when Unblock is clicked. */
+          cancel: () => {
+            if (timerRef.current) clearTimeout(timerRef.current);
+            timerRef.current = null;
+          },
+        },
+      ),
     [nodeId, delay, updateNode],
   );
 }
@@ -232,6 +242,16 @@ function PropertyPanelInner({
   useEffect(() => { setDueDate(node.dueDate ?? ''); }, [node.dueDate]);
   useEffect(() => { setStartDate(node.startDate ?? ''); }, [node.startDate]);
   useEffect(() => { setBlockedReason(node.blockedReason ?? ''); }, [node.blockedReason]);
+
+  // Unblock = the Cockpit's Release (clear_blocker): reason, tag and a
+  // blocked status all go, the ticket returns to the queue. Shown for any of
+  // the three manual markers — the fleet's park path writes all of them.
+  const unblockNode = useMindmapStore((s) => s.unblockNode);
+  const [unblocking, setUnblocking] = useState(false);
+  const isManuallyBlocked =
+    (node.blockedReason ?? '').trim() !== '' ||
+    node.tags.includes(BLOCKED_TAG) ||
+    (node.status ?? '').toLowerCase() === BLOCKED_TAG;
   useEffect(() => { setRequirementId(node.requirementId ?? ''); }, [node.requirementId]);
   useEffect(() => { setVerificationText(node.verificationText ?? ''); }, [node.verificationText]);
   useEffect(() => { setVerificationUrl(node.verificationUrl ?? ''); }, [node.verificationUrl]);
@@ -417,23 +437,48 @@ function PropertyPanelInner({
 
         {/* Blocked reason */}
         <Field label="Blocked reason">
-          <input
-            value={blockedReason}
-            onChange={(e) => {
-              setBlockedReason(e.target.value);
-              debouncedUpdate({ blockedReason: e.target.value || null });
-            }}
-            onBlur={() => {
-              const trimmed = blockedReason.trim();
-              const persisted = node.blockedReason ?? '';
-              if (trimmed !== persisted) {
-                directUpdate(nodeId, { blockedReason: trimmed || null });
-              }
-            }}
-            onKeyDown={(e) => e.stopPropagation()}
-            style={inputStyle}
-            placeholder="Why is this blocked? (leave empty if not blocked)"
-          />
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              value={blockedReason}
+              onChange={(e) => {
+                setBlockedReason(e.target.value);
+                debouncedUpdate({ blockedReason: e.target.value || null });
+              }}
+              onBlur={() => {
+                const trimmed = blockedReason.trim();
+                const persisted = node.blockedReason ?? '';
+                if (trimmed !== persisted) {
+                  directUpdate(nodeId, { blockedReason: trimmed || null });
+                }
+              }}
+              onKeyDown={(e) => e.stopPropagation()}
+              style={{ ...inputStyle, flex: 1, minWidth: 0 }}
+              placeholder="Why is this blocked? (leave empty if not blocked)"
+            />
+            {isManuallyBlocked && (
+              <button
+                type="button"
+                data-testid="property-unblock"
+                // Before the input's blur, so a half-typed reason is not saved first.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={async () => {
+                  debouncedUpdate.cancel();
+                  setUnblocking(true);
+                  await unblockNode(nodeId);
+                  setUnblocking(false);
+                }}
+                disabled={unblocking}
+                title={
+                  node.claimedBySession
+                    ? `Clears the reason and the blocked tag. Still claimed by ${node.claimedBySession}, so the status stays — release the claim first if that worker is gone.`
+                    : 'Clears the reason and the blocked tag and puts the status back to todo, so the pull queue hands it out again (done stays done).'
+                }
+                style={aiEstimateBtnStyle}
+              >
+                {unblocking ? 'Unblocking…' : 'Unblock'}
+              </button>
+            )}
+          </div>
           {predecessorTitles.length > 0 && (
             <div
               style={{
