@@ -67,6 +67,7 @@ import {
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
+import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 
 // ── Helper: find integration config for a workspace (PAT) ─────────
 
@@ -1079,7 +1080,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           // Mirror write — stamp the link so the issues.edited guard
           // can tell mirror from curation (lib/descriptionMirror.ts).
           externalLinks: [stampMirrorHash(item.externalLink, item.issue.body)],
-          tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
+          // A bulk import of a public repo would make every stranger's
+          // open issue pullable at once — same hold as ingest (#489).
+          tags: withIngestHold(
+            item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
+            item.issue,
+            ownerOfExternalId(item.externalLink.externalId),
+          ),
           description: item.issue.body,
           ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
           ...getIdsForIssue(item),
@@ -1586,7 +1593,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const issue = payload.issue as GitHubIssue | undefined;
       if (issue) {
         try {
-          await syncIssueLabelsToNodes(externalId, issue.labels);
+          await syncIssueLabelsToNodes(externalId, issue.labels, issue);
         } catch (err) {
           console.warn(
             '[github-ingest] label sync failed:',
@@ -2474,6 +2481,20 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         ) {
           delete nodeUpdates.description;
         }
+      }
+    }
+
+    // labeled / unlabeled replace the tags with the labels — keep the
+    // outside-author hold (#489) through that, like syncIssueLabelsToNodes.
+    if (Array.isArray(nodeUpdates.tags) && payload.issue) {
+      const node = await nodeDb.getNode(nodeId);
+      if (node) {
+        nodeUpdates.tags = keepIngestHold(
+          node.tags ?? [],
+          nodeUpdates.tags,
+          payload.issue as GitHubIssue,
+          ownerOfExternalId(result.externalId),
+        );
       }
     }
 

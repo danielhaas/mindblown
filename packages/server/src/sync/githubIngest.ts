@@ -50,6 +50,7 @@ import { getMapForgeKind } from '../lib/githubContext.js';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { pickActiveLane } from '../lib/activeLane.js';
+import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -490,19 +491,24 @@ export async function resolveIngestVersionId(
  *
  * The write replaces the tags array entirely (overwriting any user-set
  * tags). This matches MindBlown's existing convention that tags mirror
- * GH labels — user-set tags don't survive bulk import either.
+ * GH labels — user-set tags don't survive bulk import either. The one
+ * exception is the outside-author hold (#489, lib/forgeTrust.ts): it is
+ * kept while the issue's author is untrusted, so pass the issue.
  *
  * Returns the number of nodes updated.
  */
 export async function syncIssueLabelsToNodes(
   externalId: string,
   ghLabels: Array<{ name: string }> | undefined,
+  issue: { user?: { login?: string | null } | null },
 ): Promise<number> {
   const matches = await findNodesByExternalIdAcrossMaps(externalId);
   if (matches.length === 0) return 0;
-  const nextTags = ghLabelsToTags(ghLabels);
+  const labelTags = ghLabelsToTags(ghLabels);
+  const owner = ownerOfExternalId(externalId);
   let updated = 0;
   for (const { id, tags } of matches) {
+    const nextTags = keepIngestHold(tags ?? [], labelTags, issue, owner).slice().sort();
     const cur = (tags ?? []).slice().sort();
     const same =
       cur.length === nextTags.length &&
@@ -742,7 +748,7 @@ async function ensureNodeForIssueViaTriage(
           {
             externalLinks: [parkLink],
             description: issue.body ?? null,
-            tags: ghLabelsToTags(issue.labels),
+            tags: withIngestHold(ghLabelsToTags(issue.labels), issue, ctx.owner),
           },
           undefined,
           tx,
@@ -1169,7 +1175,7 @@ async function ensureNodeForIssueViaTriage(
         {
           externalLinks: [parkLink],
           description: issue.body ?? null,
-          tags: ghLabelsToTags(issue.labels),
+          tags: withIngestHold(ghLabelsToTags(issue.labels), issue, ctx.owner),
         },
         undefined,
         tx,
@@ -1245,7 +1251,7 @@ async function ensureNodeForIssueViaTriage(
       {
         externalLinks: [link],
         description: issue.body ?? null,
-        tags: ghLabelsToTags(issue.labels),
+        tags: withIngestHold(ghLabelsToTags(issue.labels), issue, ctx.owner),
         ...(triageVersionId ? { versionId: triageVersionId } : {}),
       },
       undefined,
@@ -1677,7 +1683,7 @@ export async function ensureNodeForIssue(
       {
         externalLinks: [link],
         description: issue.body ?? null,
-        tags: ghLabelsToTags(issue.labels),
+        tags: withIngestHold(ghLabelsToTags(issue.labels), issue, ctx.owner),
         ...(versionId ? { versionId } : {}),
       },
       undefined,

@@ -1179,6 +1179,34 @@ describe('webhook: Gitea deliveries (#368)', () => {
     expect(seen).not.toContain('label_updated');
   });
 
+  it("a label event keeps an outside author's needs-human hold (#489)", async () => {
+    const node = { ...seedGiteaNode('n-g4', 'dan/forge-test#4'), tags: ['needs-human'] };
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('issues'),
+      payload: {
+        action: 'label_updated',
+        commit_id: '',
+        issue: { ...giteaIssue(4, 'open', ['triage:placed']), user: { id: 9, login: 'stranger' } },
+        repository: GITEA_REPO,
+        sender: { id: 1, login: 'dan' },
+      },
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    const tagWrites = mocks.updateNodeMock.mock.calls
+      .map((c) => (c[1] as { tags?: string[] }).tags)
+      .filter(Boolean);
+    expect(tagWrites).toEqual([['triage:placed', 'needs-human']]);
+  });
+
   it('verifies the signature over the raw bytes, not a re-serialised body (Gitea pretty-prints)', async () => {
     const pretty = JSON.stringify(
       { action: 'opened', issue: giteaIssue(9, 'open'), repository: GITEA_REPO, sender: { id: 1, login: 'dan' } },
