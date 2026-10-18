@@ -1264,5 +1264,50 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── nodes.started_at ───────────────────────────────────────────
+  // When work on a node started — stamped by updateNode on the first move
+  // into an 'in_progress' category or percentComplete > 0. Kanban shows it
+  // on In-Progress cards.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS started_at TIMESTAMPTZ
+  `);
+  // One-shot backfill for nodes in flight right now: the first status /
+  // percentComplete change on record, else the claim time, else updated_at.
+  // Imprecise for a node that went back and forth, but in the past — so an
+  // open card doesn't read "started just now" on deploy day.
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'backfill_started_at_v1') THEN
+        UPDATE nodes n
+        SET started_at = COALESCE(
+          (
+            SELECT MIN(ce.created_at) FROM change_events ce
+            WHERE ce.node_id = n.id
+              AND ce.event_type = 'node.field_changed'
+              AND ce.field_name IN ('status', 'percentComplete')
+          ),
+          n.claimed_at,
+          n.updated_at
+        )
+        FROM maps m
+        WHERE m.id = n.map_id
+          AND n.started_at IS NULL
+          AND n.deleted_at IS NULL
+          AND (
+            (n.percent_complete > 0 AND n.percent_complete < 100)
+            OR EXISTS (
+              SELECT 1 FROM jsonb_array_elements(
+                CASE WHEN jsonb_typeof(m.status_workflow) = 'array' THEN m.status_workflow ELSE '[]'::jsonb END
+              ) s
+              WHERE s->>'category' = 'in_progress'
+                AND (s->>'id' = n.status OR lower(s->>'name') = lower(n.status))
+            )
+          );
+        INSERT INTO data_migrations (id) VALUES ('backfill_started_at_v1');
+      END IF;
+    END $$;
+  `);
+
   console.log('[db] Migrations complete.');
 }

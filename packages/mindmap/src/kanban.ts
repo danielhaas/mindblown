@@ -80,6 +80,36 @@ export function groupDone<T>(
   return groups;
 }
 
+// ── Started ──
+
+/**
+ * When work on an in-progress card began (node.startedAt): a short relative
+ * label for the card ("started 3h ago", "started Oct 3" once older than two
+ * weeks) and the exact local date and time for the hover title.
+ * null when the node has no start on record.
+ */
+export function startedLabel(
+  startedAt: string | null | undefined,
+  now: Date = new Date(),
+): { short: string; full: string } | null {
+  const t = startedAt ? Date.parse(startedAt) : NaN;
+  if (!Number.isFinite(t)) return null;
+  const started = new Date(t);
+  const minutes = Math.max(0, Math.floor((now.getTime() - t) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  const ago =
+    minutes < 1 ? 'just now'
+      : minutes < 60 ? `${minutes}m ago`
+        : hours < 24 ? `${hours}h ago`
+          : days < 14 ? `${days}d ago`
+            : started.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const full = started.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  return { short: `started ${ago}`, full: `Started ${full}` };
+}
+
 // ── Blocked ──
 
 /** What a card shows: a manual block, a dependency wait, or nothing. */

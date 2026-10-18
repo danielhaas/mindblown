@@ -138,6 +138,8 @@ export interface NodeWithComputed {
   updatedAt: string;
   /** Set when the node's status entered a done-category (core Node field). */
   completedAt: string | null;
+  /** Set when work on the node started (core Node field). */
+  startedAt: string | null;
   revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;

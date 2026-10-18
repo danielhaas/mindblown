@@ -308,6 +308,15 @@ export interface Node {
    */
   completedAt: string | null;
 
+  /**
+   * ISO 8601 timestamp of when work on this node started. Set the first time
+   * status moves into an 'in_progress' workflow category OR percentComplete
+   * goes above 0; kept through done (so start→done is the cycle time);
+   * cleared when the node goes back to todo. Shown on In-Progress Kanban cards.
+   * null = not started, or started before the column existed and not backfilled.
+   */
+  startedAt: string | null;
+
   // ── Orchestration substrate (#111) ────────────────────────────
 
   /**

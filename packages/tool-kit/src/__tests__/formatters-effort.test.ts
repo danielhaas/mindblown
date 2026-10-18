@@ -157,3 +157,17 @@ describe('formatMapTree — AI draft estimates (#318)', () => {
     expect(line('by-hand')).not.toContain('AI draft');
   });
 });
+
+describe('formatMapTree — started', () => {
+  it('shows when open work started; not once done, not without a start', () => {
+    const root = stubNode({ id: 'root', text: 'Root', childrenIds: ['a', 'b', 'c'] });
+    const a = stubNode({ id: 'a', parentId: 'root', text: 'running', startedAt: '2026-10-18T08:00:00.000Z', computedProgress: 30 });
+    const b = stubNode({ id: 'b', parentId: 'root', text: 'finished', startedAt: '2026-10-01T08:00:00.000Z', computedProgress: 100 });
+    const c = stubNode({ id: 'c', parentId: 'root', text: 'untouched' });
+    const out = formatMapTree(detailWith([root, a, b, c]));
+    const line = (substr: string) => out.split('\n').find((l) => l.includes(substr))!;
+    expect(line('running')).toContain('started: 2026-10-18T08:00:00.000Z');
+    expect(line('finished')).not.toContain('started:');
+    expect(line('untouched')).not.toContain('started:');
+  });
+});

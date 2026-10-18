@@ -40,6 +40,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     autoProgress: 'off',
     priorityRank: null,
     completedAt: null,
+    startedAt: null,
     requirementId: null,
     requirementPriority: null,
     requirementText: null,

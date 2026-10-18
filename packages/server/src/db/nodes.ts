@@ -616,20 +616,21 @@ export async function updateNode(
   // + write completedAt timestamp for the Gantt scheduler (v0.17.6).
   // Both behaviors hinge on the same workflow lookup, so we do them
   // together. We only act when the caller doesn't already manipulate
-  // those fields explicitly in this same call.
+  // those fields explicitly in this same call. startedAt rides the same
+  // lookup and is never caller-set.
   const statusChanging = input.status !== undefined;
   const pctChanging = input.percentComplete !== undefined;
   const completedAtTouched = input.completedAt !== undefined;
   const claimTouched =
     input.claimedBySession !== undefined || input.claimedAt !== undefined;
 
-  if ((statusChanging || pctChanging) && (!claimTouched || !completedAtTouched)) {
+  if (statusChanging || pctChanging) {
     // #118 issue 3 — single JOIN replaces the previous 2-query path
     // (SELECT node.mapId → SELECT map.statusWorkflow). Cuts the status-
     // update hot path from 3 queries to 2 (the original UPDATE still
     // fires below).
     const [row] = await handle
-      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow })
+      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow, startedAt: nodes.startedAt })
       .from(nodes)
       .innerJoin(maps, eq(maps.id, nodes.mapId))
       .where(and(eq(nodes.id, nodeId), notDeleted));
@@ -639,12 +640,19 @@ export async function updateNode(
       // Resolve whether the post-update node is "done":
       //   - status (if changing) → check its category in the workflow
       //   - percentComplete >= 100 (if changing) → done
+      // Started: status enters an 'in_progress' category or progress
+      // goes above 0. Back to todo: status enters a 'todo' category
+      // (which is also what progress → 0 auto-derives above).
       let movingToDone = false;
       let movingFromDone = false;
+      let movingToStarted = false;
+      let movingToTodo = false;
       if (statusChanging && input.status !== null) {
         const targetDef = resolveStatusDef(workflow, input.status as string);
         if (targetDef?.category === 'done') movingToDone = true;
         else movingFromDone = true;
+        if (targetDef?.category === 'in_progress') movingToStarted = true;
+        if (targetDef?.category === 'todo') movingToTodo = true;
       } else if (statusChanging && input.status === null) {
         // Status cleared → no longer done.
         movingFromDone = true;
@@ -652,8 +660,17 @@ export async function updateNode(
       if (pctChanging && input.percentComplete !== null && input.percentComplete !== undefined) {
         if (input.percentComplete >= 100) movingToDone = true;
         else movingFromDone = true;
+        if (input.percentComplete > 0 && input.percentComplete < 100) movingToStarted = true;
       } else if (pctChanging && input.percentComplete === null) {
         movingFromDone = true;
+      }
+
+      // First start wins: later progress ticks, a blocked detour or a
+      // reopen keep the original start. Done keeps it too (cycle time).
+      if (movingToStarted && row.startedAt == null) {
+        updates.startedAt = new Date();
+      } else if (movingToTodo && !movingToStarted && !movingToDone) {
+        updates.startedAt = null;
       }
 
       if (movingToDone && !claimTouched) {
