@@ -41,21 +41,31 @@ const HEALTH_LABELS: Record<string, { text: string; color: string; bg: string }>
 function useDebouncedUpdate(nodeId: string, delay = 400) {
   const updateNode = useMindmapStore((s) => s.updateNode);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingRef = useRef<Partial<Node> | null>(null);
 
   return useMemo(
     () =>
       Object.assign(
         (updates: Partial<Node>) => {
           if (timerRef.current) clearTimeout(timerRef.current);
+          pendingRef.current = updates;
           timerRef.current = setTimeout(() => {
+            pendingRef.current = null;
             updateNode(nodeId, updates);
           }, delay);
         },
         {
-          /** Drop a pending write — e.g. a half-typed blocked reason when Unblock is clicked. */
-          cancel: () => {
+          /**
+           * Drop the pending write only if it is for `field` — e.g. a
+           * half-typed blocked reason when Unblock is clicked. The timer is
+           * shared by every field, so a pending write to another field (a
+           * description typed just before) still goes out.
+           */
+          cancelField: (field: keyof Node) => {
+            if (!pendingRef.current || !(field in pendingRef.current)) return;
             if (timerRef.current) clearTimeout(timerRef.current);
             timerRef.current = null;
+            pendingRef.current = null;
           },
         },
       ),
@@ -462,9 +472,12 @@ function PropertyPanelInner({
                 // Before the input's blur, so a half-typed reason is not saved first.
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={async () => {
-                  debouncedUpdate.cancel();
+                  debouncedUpdate.cancelField('blockedReason');
                   setUnblocking(true);
-                  await unblockNode(nodeId);
+                  // Clear the field too: when the reason was already null the
+                  // resync effect does not fire, and a half-typed reason would
+                  // be saved on the next blur — blocking the node again.
+                  if (await unblockNode(nodeId)) setBlockedReason('');
                   setUnblocking(false);
                 }}
                 disabled={unblocking}
