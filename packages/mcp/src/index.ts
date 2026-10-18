@@ -28,6 +28,7 @@ import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
+import { stalledSectionLines, wipClaimMarker } from './stalled.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
@@ -1980,7 +1981,7 @@ server.tool(
 
 server.tool(
   'blocked_digest',
-  'List every blocked node across a map. A node counts as blocked if its `blockedReason` is set (manual) OR it has an incomplete Finish-to-Start predecessor (derived). Output leads with the blockers grouped BY CAUSE and unblocker (orphaned claims, code done but cannot merge, waiting on a named decision — per person, PR in review, external party, predecessor tasks, other) — the same grouping as the PM Cockpit and the Blocked panel — then lists manual vs dependency-waiting with blocker text or predecessor titles. Use this to triage what is stuck before a standup or to decide what to unblock first.',
+  'List every blocked node across a map. A node counts as blocked if its `blockedReason` is set (manual) OR it has an incomplete Finish-to-Start predecessor (derived). Also lists STALLED leaves — in progress, no claim held, no change for 2+ hours (typically a worker that died mid-ticket and had its claim released) — with progress, idle time and the last claim holder; those need a decision (park or reopen). Output leads with the blockers grouped BY CAUSE and unblocker (stalled, orphaned claims, code done but cannot merge, waiting on a named decision — per person, PR in review, external party, predecessor tasks, other) — the same grouping as the PM Cockpit and the Blocked panel — then lists manual vs dependency-waiting with blocker text or predecessor titles. Use this to triage what is stuck before a standup or to decide what to unblock first.',
   {
     mapId: z.string().describe('The map ID'),
     versionId: z.string().optional().describe('Limit to nodes targeting this version'),
@@ -2053,20 +2054,30 @@ server.tool(
       lines.push(`# Blocked — ${data.map.name}${scopeNote}`);
       lines.push('');
 
-      if (blocked.length === 0) {
+      // In progress with nobody on it (server-side findStalled) — not a
+      // blocker, but the same "needs a decision" list, scoped like the rest.
+      const inScopeIds = new Set(inScope.map((n) => n.id));
+      const blockedIds = new Set(blocked.map((n) => n.id));
+      const stalled = (data.stalled ?? []).filter((s) => inScopeIds.has(s.nodeId) && !blockedIds.has(s.nodeId));
+
+      if (blocked.length === 0 && stalled.length === 0) {
         lines.push('_Nothing blocked. 🎉_');
         return toolResult(lines.join('\n'));
       }
 
-      lines.push(`**${blocked.length} blocked leaf node(s)** — ${manual.length} manual, ${depWaiting.length} waiting on dependencies.`);
+      lines.push(
+        `**${blocked.length} blocked leaf node(s)** — ${manual.length} manual, ${depWaiting.length} waiting on dependencies` +
+          (stalled.length > 0 ? `; **${stalled.length} stalled** (in progress, nobody working on it).` : '.'),
+      );
       lines.push('');
 
       // By cause and unblocker (#322) — the same grouping the PM Cockpit
       // and the Blocked panel show: one action for one person, not 200
       // free-text reasons. Done leaves are not blockers.
-      const causeGroups = groupBlockers(
-        [...manual, ...depWaiting].map((n) => ({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: n.blockedBy?.predecessorIds ?? [] })),
-      );
+      const causeGroups = groupBlockers([
+        ...[...manual, ...depWaiting].map((n) => ({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: n.blockedBy?.predecessorIds ?? [] })),
+        ...stalled.map((s) => ({ id: s.nodeId, blockedReason: null, predecessorIds: [], stalled: true })),
+      ]);
       if (causeGroups.length > 0) {
         lines.push(`## By cause (${causeGroups.length})`);
         for (const g of causeGroups) {
@@ -2075,6 +2086,8 @@ server.tool(
         }
         lines.push('');
       }
+
+      lines.push(...stalledSectionLines(stalled, (id) => titleById.get(id) ?? id));
 
       if (manual.length > 0) {
         lines.push(`## Manually blocked (${manual.length})`);
@@ -2579,7 +2592,7 @@ server.tool(
 
 server.tool(
   'get_wip_status',
-  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map).',
+  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest).',
   {
     mapId: z.string().describe('The map ID'),
   },
@@ -2605,13 +2618,16 @@ server.tool(
         const over = inProgressNodes.length > wipLimit;
         lines.push(`Over:    ${over ? 'yes ⚠' : 'no'}`);
       }
+      const unclaimed = inProgressNodes.filter((n) => !n.claimedBySession).length;
+      if (unclaimed > 0) lines.push(`Unclaimed: ${unclaimed}`);
       lines.push('');
       if (inProgressNodes.length === 0) {
         lines.push('No tasks currently in progress.');
       } else {
+        const stalledById = new Map((data.stalled ?? []).map((s) => [s.nodeId, s]));
         lines.push('In progress:');
         for (const n of inProgressNodes) {
-          lines.push(`  - ${n.id} ${n.text}`);
+          lines.push(`  - ${n.id} ${n.text}${wipClaimMarker(n, stalledById)}`);
         }
       }
       return toolResult(lines.join('\n'));

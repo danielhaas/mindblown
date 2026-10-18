@@ -16,6 +16,7 @@ import type {
   AskWritePlan,
   AskStatus,
   FleetJournal,
+  StalledLeaf,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -695,6 +696,11 @@ export function fetchMap(
 ): Promise<MapDetail> {
   const q = opts?.omit?.length ? `?omit=${opts.omit.join(',')}` : '';
   return request<MapDetail>(`/api/maps/${id}${q}`);
+}
+
+/** In-progress leaves nobody is working on (core findStalled). */
+export function fetchStalled(mapId: string): Promise<{ stalled: StalledLeaf[] }> {
+  return request<{ stalled: StalledLeaf[] }>(`/api/maps/${mapId}/stalled`);
 }
 
 export function fetchNode(mapId: string, nodeId: string): Promise<Node> {

@@ -6,7 +6,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import { summarisePace } from '@mindblown/core';
+import { summarisePace, describeStalled } from '@mindblown/core';
+import { useStalled } from './useStalled.js';
 import type { ReleaseForecastResponse, TriageDecision } from './api.js';
 import { statusCategory } from './viewScope.js';
 import {
@@ -143,7 +144,12 @@ export function CockpitView() {
     [forecast],
   );
   const growth = useMemo(() => scopeGrowth(events, release?.versionId ?? null), [events, release?.versionId]);
-  const blockers = useMemo(() => groupBlockers(nodes, computed, categoryOf), [nodes, computed, categoryOf]);
+  const stalled = useStalled();
+  const stalledById = useMemo(() => new Map(stalled.map((s) => [s.nodeId, s])), [stalled]);
+  const blockers = useMemo(
+    () => groupBlockers(nodes, computed, categoryOf, stalled),
+    [nodes, computed, categoryOf, stalled],
+  );
   const sprint = useMemo(
     () => sprintHealth(pickCurrentCycle(cycles), nodes, categoryOf, currentMap?.wipLimit ?? null),
     [cycles, nodes, categoryOf, currentMap?.wipLimit],
@@ -296,6 +302,7 @@ export function CockpitView() {
                       <span style={{ color: '#94a3b8', fontSize: 10 }}>{open ? '▾' : '▸'}</span> {g.label}
                     </Link>
                     {g.kind === 'orphaned_claim' && <span style={{ color: '#b91c1c' }}> — reset to todo or re-dispatch</span>}
+                    {g.kind === 'stalled' && <span style={{ color: '#b91c1c' }}> — release to the queue, or park it</span>}
                     {g.kind === 'merge_blocked' && <span style={{ color: '#b91c1c' }}> — one fix unblocks all</span>}
                     {/* Bulk only where re-queueing is the right default. pr_open /
                         merge_blocked tickets have finished code in review — a
@@ -332,6 +339,9 @@ export function CockpitView() {
                                 >
                                   {releasing.has(id) ? 'Releasing…' : 'Release'}
                                 </button>
+                              )}
+                              {g.kind === 'stalled' && stalledById.has(id) && (
+                                <div style={{ color: '#92400e', fontSize: 11 }}>{describeStalled(stalledById.get(id)!)}</div>
                               )}
                               {g.kind !== 'orphaned_claim' && nodes[id].blockedReason && (
                                 <div style={{ color: '#94a3b8', fontSize: 11 }}>

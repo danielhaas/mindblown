@@ -30,6 +30,7 @@ export const LINT_RULE_IDS = [
   'stale-blocked-reason',
   'claim-churn',
   'duplicate-issue-link',
+  'stalled-unclaimed',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 
@@ -57,4 +58,6 @@ export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
   'done-without-pr': ['reopen'],
   'stale-blocked-reason': ['clear-blocker'],
   'claim-churn': ['park'],
+  // Park it for a person, or reopen to put it back in the pull queue.
+  'stalled-unclaimed': ['park', 'reopen'],
 };

@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, FleetWithMaps } from '@mindblown/core';
+import type { AskAnswerInput, FleetWithMaps, StalledLeaf } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -212,6 +212,8 @@ export interface MapDetail {
     holidayOverrides?: { add: string[]; remove: string[] };
   };
   nodes: NodeWithComputed[];
+  /** In-progress leaves nobody is working on (core findStalled); absent on older servers. */
+  stalled?: StalledLeaf[];
 }
 
 export interface ScheduleResult {

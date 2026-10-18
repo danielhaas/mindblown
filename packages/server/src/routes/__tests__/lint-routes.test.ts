@@ -58,8 +58,14 @@ vi.mock('../../db/maps.js', () => ({
   getMap: vi.fn(async (id: string) => (id === 'map-1' ? mapData : null)),
 }));
 
+// stalled-unclaimed: the change-log read behind lib/stalled.ts.
+let stalledReadFails = false;
 vi.mock('../../db/events.js', () => ({
   listEvents: vi.fn(async () => []),
+  loadStalledActivity: async (_mapId: string, ids: string[]) => {
+    if (stalledReadFails) throw new Error('change log down');
+    return { lastChangeAt: new Map(ids.map((id) => [id, '2026-01-01T00:00:00Z'])), lastRelease: new Map() };
+  },
 }));
 
 vi.mock('../../db/acceptances.js', () => ({
@@ -176,6 +182,25 @@ describe('GET /api/maps/:id/lint', () => {
     expect(unest.findings[0].nodeId).toBe('leaf-1');
     expect(unest.why).toBeTruthy();
     expect(unest.fix).toBeTruthy();
+  });
+
+  it('stalled-unclaimed: flags a stalled leaf, and reports skipped (not green) when the change log is down', async () => {
+    const leaf = mapData.nodes[1] as { status: string | null; percentComplete: number | null };
+    leaf.status = 'wip';
+    leaf.percentComplete = 25;
+    const app = await buildApp();
+    const run = async () =>
+      (await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?rule=stalled-unclaimed' })).json().rules[0];
+    const ok = await run();
+    expect(ok.findings.map((f: { nodeId: string }) => f.nodeId)).toEqual(['leaf-1']);
+    stalledReadFails = true;
+    const down = await run();
+    stalledReadFails = false;
+    leaf.status = null;
+    leaf.percentComplete = 0;
+    await app.close();
+    expect(down.skipped).toBe('change history unavailable');
+    expect(down.findings).toEqual([]);
   });
 
   it('403 without view permission', async () => {
@@ -410,6 +435,30 @@ describe('POST /api/maps/:id/lint/fix', () => {
     await app.close();
     expect(live.statusCode).toBe(200);
     expect(applyLintFix).toHaveBeenCalledTimes(1);
+  });
+
+  it('stalled-unclaimed is re-checked against the change log: 409 once the node is no longer stalled', async () => {
+    const leaf = mapData.nodes[1] as { status: string | null; percentComplete: number | null; claimedBySession?: string | null };
+    const app = await buildApp();
+    const fix = () =>
+      app.inject({ method: 'POST', url: '/api/maps/map-1/lint/fix', payload: { ruleId: 'stalled-unclaimed', nodeId: 'leaf-1', action: 'reopen' } });
+
+    leaf.status = 'wip';
+    leaf.percentComplete = 25;
+    leaf.claimedBySession = 'host-a/worker-1'; // picked up again since the panel was drawn
+    const stale = await fix();
+    expect(stale.statusCode).toBe(409);
+    expect(stale.json().error.code).toBe('STALE_FINDING');
+    expect(applyLintFix).not.toHaveBeenCalled();
+
+    leaf.claimedBySession = null;
+    const live = await fix();
+    expect(live.statusCode).toBe(200);
+    expect(applyLintFix).toHaveBeenCalledWith('map-1', 'leaf-1', 'reopen', 'user-1', { note: undefined });
+
+    leaf.status = null;
+    leaf.percentComplete = 0;
+    await app.close();
   });
 
   it('403 without edit permission; service errors map to 404 / 409', async () => {

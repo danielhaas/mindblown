@@ -7,8 +7,8 @@
  * answers exist in the data; they were just never assembled on one screen.
  * Each function answers one question the persona asked, in its words.
  */
-import type { Node, ComputedNodeValues, Cycle, Priority, BlockedItem, BlockerGroup } from '@mindblown/core';
-import { effectiveVersionId, groupBlockers as coreGroupBlockers } from '@mindblown/core';
+import type { Node, ComputedNodeValues, Cycle, Priority, BlockedItem, BlockerGroup, StalledLeaf, StatusDef } from '@mindblown/core';
+import { effectiveVersionId, groupBlockers as coreGroupBlockers, isStalledCandidate } from '@mindblown/core';
 import type { ReleaseForecastRow } from './api.js';
 import { isLeafDone } from './viewScope.js';
 
@@ -413,6 +413,8 @@ export function groupBlockers(
   nodes: Record<string, Node>,
   computed: Map<string, ComputedNodeValues>,
   categoryOf: CategoryOf,
+  /** Stalled leaves (liveStalled) — the "nobody working on it" group. */
+  stalled: StalledLeaf[] = [],
 ): BlockerGroup[] {
   const items: BlockedItem[] = [];
   for (const n of leavesOf(nodes)) {
@@ -420,7 +422,27 @@ export function groupBlockers(
     if (!c?.isBlocked || !isOpen(n, categoryOf)) continue;
     items.push({ id: n.id, blockedReason: n.blockedReason ?? null, predecessorIds: c.blockedBy.predecessorIds });
   }
+  const listed = new Set(items.map((i) => i.id));
+  for (const s of stalled) {
+    if (!listed.has(s.nodeId)) items.push({ id: s.nodeId, blockedReason: null, predecessorIds: [], stalled: true });
+  }
   return coreGroupBlockers(items);
+}
+
+/**
+ * The server's stalled list (GET /api/maps/:id/stalled, refreshed by the
+ * clock) narrowed by the live store: a node claimed, blocked, finished or
+ * sent back to todo since the fetch leaves the list right away.
+ */
+export function liveStalled(
+  stalled: StalledLeaf[],
+  nodes: Record<string, Node>,
+  workflow: StatusDef[],
+): StalledLeaf[] {
+  return stalled.filter((s) => {
+    const n = nodes[s.nodeId];
+    return n != null && isStalledCandidate(n, workflow);
+  });
 }
 
 // ── Sprint health (PM Q4, issue #324) ────────────────────────────────

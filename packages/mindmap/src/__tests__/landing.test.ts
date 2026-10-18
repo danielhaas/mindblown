@@ -20,6 +20,7 @@ import {
   inVersion,
   paceRate,
   calendarAtPace,
+  liveStalled,
 } from '../landing.js';
 
 const TODAY = new Date('2026-08-26T09:00:00Z');
@@ -291,6 +292,39 @@ describe('groupBlockers', () => {
     const p = node({ id: 'p', versionId: 'v' });
     const child = node({ id: 'c', parentId: 'p', versionId: 'w' });
     expect(inVersion(byId([p, child]), child, 'v')).toBe(false);
+  });
+
+  it('stalled leaves join as their own group, first; a blocked leaf stays under its cause', () => {
+    const s = (nodeId: string) => ({ nodeId, percentComplete: 25, lastChangeAt: '2026-10-18T03:00:00Z', lastRelease: null });
+    const dead = node({ id: 'dead', status: 'in_progress', percentComplete: 25 });
+    const ci = node({ id: 'ci', blockedReason: 'CI red on main' });
+    const nodes = byId([dead, ci]);
+    const groups = groupBlockers(nodes, computedFor(nodes, ['ci']), cat, [s('dead'), s('ci')]);
+    expect(groups.map((g) => [g.kind, g.nodeIds])).toEqual([
+      ['stalled', ['dead']],
+      ['merge_blocked', ['ci']],
+    ]);
+  });
+});
+
+describe('liveStalled', () => {
+  const workflow = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '', position: 0 },
+    { id: 'in_progress', name: 'In Progress', category: 'in_progress', color: '', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '', position: 2 },
+  ] as const;
+  const s = (nodeId: string) => ({ nodeId, percentComplete: 25, lastChangeAt: '2026-10-18T03:00:00Z', lastRelease: null });
+  it('drops what the live store has resolved since the fetch: claimed, blocked, done, back to todo, deleted', () => {
+    const leaf = (p: Partial<Node>) => node({ childrenIds: [], ...p });
+    const nodes = byId([
+      leaf({ id: 'still', status: 'in_progress', percentComplete: 25 }),
+      leaf({ id: 'claimed', status: 'in_progress', percentComplete: 25, claimedBySession: 'w-1' }),
+      leaf({ id: 'parked', status: 'in_progress', percentComplete: 25, blockedReason: 'needs a person' }),
+      leaf({ id: 'done', status: 'done', percentComplete: 100 }),
+      leaf({ id: 'todo', status: 'todo', percentComplete: 0 }),
+    ]);
+    const list = ['still', 'claimed', 'parked', 'done', 'todo', 'gone'].map(s);
+    expect(liveStalled(list, nodes, [...workflow]).map((x) => x.nodeId)).toEqual(['still']);
   });
 });
 
