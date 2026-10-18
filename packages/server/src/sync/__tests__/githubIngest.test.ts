@@ -49,6 +49,7 @@ type DbState = {
     text?: string;
     description?: unknown;
     childrenOrder?: string[];
+    tags?: string[];
   }>;
   // PAT integrations
   integrations: Array<{ workspaceId: string; provider: string; enabled: boolean; config: { owner?: string; repo?: string } }>;
@@ -139,6 +140,7 @@ function buildChain(): {
         text: n.text ?? '',
         description: n.description ?? null,
         childrenOrder: n.childrenOrder ?? [],
+        tags: n.tags ?? [],
       }));
     } else if (step.table === 'integrations') {
       rows = dbState.integrations.map((i) => ({ ...i }));
@@ -653,6 +655,7 @@ import {
   findIngestTargetMaps,
   findNodesByExternalIds,
   ghLabelsToTags,
+  syncIssueLabelsToNodes,
 } from '../githubIngest.js';
 
 // ── Fixtures ──────────────────────────────────────────────────────
@@ -2113,5 +2116,71 @@ describe('GH label → node tags sync (raw names, matches MindBlown convention)'
   it('ghLabelsToTags result is sorted for stable diff against existing tags', () => {
     const next = ghLabelsToTags([{ name: 'zeta' }, { name: 'alpha' }, { name: 'mike' }]);
     expect(next).toEqual(['alpha', 'mike', 'zeta']);
+  });
+});
+
+// ── #489 stopgap: outside authors land held ───────────────────────
+
+describe('outside-author hold (#489)', () => {
+  const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
+  const tagsWritten = () => updateNodeCalls.filter((c) => Array.isArray(c.input.tags)).map((c) => c.input.tags);
+
+  beforeEach(() => {
+    delete process.env.FORGE_TRUSTED_LOGINS;
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+  });
+
+  it('webhook path: an issue from a stranger lands with needs-human, its labels kept', async () => {
+    await ensureNodeForIssue('m1', 'inbox-1', issue(1, { user: { login: 'stranger' }, labels: [{ name: 'bug' }] }), ctx);
+    expect(tagsWritten()).toEqual([['bug', 'needs-human']]);
+  });
+
+  it('webhook path: the repo owner and allowlisted logins behave as today', async () => {
+    process.env.FORGE_TRUSTED_LOGINS = 'Fleet-Bot, other';
+    await ensureNodeForIssue('m1', 'inbox-1', issue(2, { user: { login: 'OWNER' } }), ctx);
+    await ensureNodeForIssue('m1', 'inbox-1', issue(3, { user: { login: 'fleet-bot' } }), ctx);
+    expect(tagsWritten()).toEqual([[], []]);
+  });
+
+  it('catch-up path: ingestNewIssuesForRepo holds the stranger, not the owner', async () => {
+    const summary = await ingestNewIssuesForRepo({ owner: 'owner', repo: 'repo' }, [
+      issue(10, { user: { login: 'stranger' } }),
+      issue(11, { user: { login: 'owner' } }),
+    ]);
+    expect(summary.created).toBe(2);
+    expect(tagsWritten()).toEqual([['needs-human'], []]);
+  });
+
+  it('triage auto-place: a confidently placed stranger issue is still held', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1', triageEnabled: true });
+    triageMockResponse = { decision: 'place', parentNodeId: 'epic-1', reason: 'fits', confidence: 95 };
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(20, { user: { login: 'stranger' } }), ctx);
+    expect(result.status).toBe('created');
+    expect(createNodeCalls[0]).toMatchObject({ parentId: 'epic-1' });
+    expect(tagsWritten()).toEqual([['needs-human']]);
+  });
+
+  it('label sync keeps the hold for a stranger, drops it once a person removed it', async () => {
+    const link = { provider: 'github', externalId: 'owner/repo#30' };
+    dbState.nodes.set('n30', { id: 'n30', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['needs-human'] });
+    const stranger = { user: { login: 'stranger' } };
+
+    // Our own triage label write-back fires a label event — the hold stays.
+    await syncIssueLabelsToNodes('owner/repo#30', [{ name: 'triage:placed' }], stranger);
+    expect(tagsWritten()).toEqual([['needs-human', 'triage:placed']]);
+
+    // Approved: the node no longer carries the tag, nothing puts it back.
+    dbState.nodes.set('n30', { id: 'n30', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['triage:placed'] });
+    updateNodeCalls.length = 0;
+    await syncIssueLabelsToNodes('owner/repo#30', [{ name: 'triage:placed' }, { name: 'bug' }], stranger);
+    expect(tagsWritten()).toEqual([['bug', 'triage:placed']]);
+  });
+
+  it('label sync mirrors labels as before for a trusted author', async () => {
+    const link = { provider: 'github', externalId: 'owner/repo#31' };
+    dbState.nodes.set('n31', { id: 'n31', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['needs-human'] });
+    await syncIssueLabelsToNodes('owner/repo#31', [], { user: { login: 'owner' } });
+    expect(tagsWritten()).toEqual([[]]);
   });
 });

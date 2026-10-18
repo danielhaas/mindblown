@@ -37,6 +37,8 @@ export interface GitHubIssue {
   state: 'open' | 'closed';
   labels: Array<{ name: string }>;
   assignees: Array<{ login: string; id: number }>;
+  /** Who opened the issue (both forges send it). */
+  user?: { login: string } | null;
   milestone: GitHubMilestone | null;
   html_url: string;
   created_at: string;

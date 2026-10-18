@@ -67,6 +67,7 @@ import {
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
+import { keepIngestHold, ownerOfExternalId } from '../lib/forgeTrust.js';
 
 // ── Helper: find integration config for a workspace (PAT) ─────────
 
@@ -1586,7 +1587,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const issue = payload.issue as GitHubIssue | undefined;
       if (issue) {
         try {
-          await syncIssueLabelsToNodes(externalId, issue.labels);
+          await syncIssueLabelsToNodes(externalId, issue.labels, issue);
         } catch (err) {
           console.warn(
             '[github-ingest] label sync failed:',
@@ -2474,6 +2475,20 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         ) {
           delete nodeUpdates.description;
         }
+      }
+    }
+
+    // labeled / unlabeled replace the tags with the labels — keep the
+    // outside-author hold (#489) through that, like syncIssueLabelsToNodes.
+    if (Array.isArray(nodeUpdates.tags) && payload.issue) {
+      const node = await nodeDb.getNode(nodeId);
+      if (node) {
+        nodeUpdates.tags = keepIngestHold(
+          node.tags ?? [],
+          nodeUpdates.tags,
+          payload.issue as GitHubIssue,
+          ownerOfExternalId(result.externalId),
+        );
       }
     }
 

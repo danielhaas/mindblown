@@ -228,6 +228,12 @@ Issue numbers and labels behave as on GitHub. Labels that don't exist on the rep
 
 Existing GitHub installs need no change: connections created before the Gitea support default to github.com.
 
+### Issues from outside authors
+
+On a public repository anyone can open an issue, and ingest turns each new issue into a todo node an agent fleet can pull. So a new issue whose author is not trusted lands with the `needs-human` tag: it is created, placed and visible, but the pull queue holds it until a person removes the tag. Label changes on the issue don't strip the tag; once you remove it, it stays removed.
+
+Trusted authors are the repository owner plus the logins in `FORGE_TRUSTED_LOGINS` (comma-separated, case-insensitive), e.g. `FORGE_TRUSTED_LOGINS=fleet-bot,my-app[bot]`. Issues that were already ingested are not touched. This is a stopgap until per-map trust levels land (#495).
+
 Limits worth knowing:
 
 - Connecting a self-hosted forge (and the *Test connection* call for one) is an admin action done from a web session: the server fetches the URL you type with the token you type, so API keys — including the MCP HTTP transport — are refused for that. Connecting github.com is open to any authenticated user, as before.
