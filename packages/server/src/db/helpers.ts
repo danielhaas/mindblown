@@ -55,6 +55,9 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     completedAt: (get('completedAt', 'completed_at') instanceof Date
       ? (get('completedAt', 'completed_at') as Date).toISOString()
       : (get('completedAt', 'completed_at') as string)) ?? null,
+    startedAt: (get('startedAt', 'started_at') instanceof Date
+      ? (get('startedAt', 'started_at') as Date).toISOString()
+      : (get('startedAt', 'started_at') as string)) ?? null,
     requirementId: (get('requirementId', 'requirement_id') as string) ?? null,
     requirementPriority:
       (get('requirementPriority', 'requirement_priority') as CoreNode['requirementPriority']) ?? null,

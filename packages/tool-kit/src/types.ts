@@ -62,6 +62,8 @@ export interface NodeWithComputed {
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
+  /** When work started (core Node field); optional — older servers omit it. */
+  startedAt?: string | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;

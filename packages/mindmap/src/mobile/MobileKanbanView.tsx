@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, kanbanColumnId, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -138,6 +138,8 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 col.status?.category === 'done',
                 (id) => nodeMap.get(id)?.text ?? id,
               );
+              const started =
+                col.status?.category === 'in_progress' ? startedLabel(n.startedAt) : null;
               return (
                 <button
                   key={n.id}
@@ -167,6 +169,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                   </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#64748b' }}>
                     <span>{pct}%</span>
+                    {started && <span title={started.full}>· {started.short}</span>}
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}

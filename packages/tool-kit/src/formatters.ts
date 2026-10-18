@@ -68,6 +68,7 @@ function renderTreeNode(
     parts.push(`effort: ${node.computedEffort}`);
   }
   if (node.status) parts.push(`status: ${node.status}`);
+  if (node.startedAt && node.computedProgress < 100) parts.push(`started: ${node.startedAt}`);
   if (node.priority) parts.push(node.priority);
   if (node.phaseId) parts.push(`phase: ${phaseNameById?.get(node.phaseId) ?? node.phaseId}`);
   if (node.dueDate) parts.push(`due: ${node.dueDate}`);

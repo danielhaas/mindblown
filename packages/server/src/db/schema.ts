@@ -261,6 +261,11 @@ export const nodes = pgTable('nodes', {
   // the past instead of piling them on the today line.
   completedAt: timestamp('completed_at', { withTimezone: true }),
 
+  // Set when work starts (status → 'in_progress' category or
+  // percentComplete > 0) and nothing is stamped yet; kept through done,
+  // cleared when the node goes back to todo. Kanban In-Progress cards.
+  startedAt: timestamp('started_at', { withTimezone: true }),
+
   // ── Requirements register ─────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01').
   //   Non-null marks the node as a requirement. Unique per map,

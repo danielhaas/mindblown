@@ -1,6 +1,32 @@
 import { describe, it, expect } from 'vitest';
 import type { StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
+
+describe('startedLabel', () => {
+  const now = new Date('2026-10-18T12:00:00Z');
+  const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const short = (iso: string | null) => startedLabel(iso, now)?.short;
+
+  it('is relative while recent', () => {
+    expect(short(ago(20_000))).toBe('started just now');
+    expect(short(ago(25 * 60_000))).toBe('started 25m ago');
+    expect(short(ago(3 * 3_600_000))).toBe('started 3h ago');
+    expect(short(ago(5 * 86_400_000))).toBe('started 5d ago');
+  });
+
+  it('is a date once older than two weeks', () => {
+    expect(short(ago(20 * 86_400_000))).toMatch(/^started Sep 2[78]$/);
+  });
+
+  it('carries the exact time for the hover title', () => {
+    expect(startedLabel(ago(3 * 3_600_000), now)?.full).toMatch(/^Started Oct 18, 2026/);
+  });
+
+  it('is null without a start on record', () => {
+    expect(startedLabel(null, now)).toBeNull();
+    expect(startedLabel('garbage', now)).toBeNull();
+  });
+});
 
 describe('kanbanColumnId', () => {
   const workflow: StatusDef[] = [

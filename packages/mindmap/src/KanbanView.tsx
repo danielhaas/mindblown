@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -74,6 +74,7 @@ function Card({
   effortUnit,
   selected,
   block,
+  showStarted,
   onClick,
   onDragStart,
 }: {
@@ -82,6 +83,8 @@ function Card({
   selected: boolean;
   /** Blocked or waiting on a predecessor (cardBlockState) — greyed out, detail on hover. */
   block: CardBlock;
+  /** In-progress columns show when the work started. */
+  showStarted: boolean;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
@@ -91,6 +94,7 @@ function Card({
   const borderColor = HEALTH_BORDER[healthSignal];
   const progress = node.percentComplete ?? computedProgress;
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
+  const started = showStarted ? startedLabel(node.startedAt) : null;
 
   return (
     <div
@@ -264,6 +268,17 @@ function Card({
           </span>
         )}
 
+        {/* Started */}
+        {started && (
+          <span
+            data-testid="kanban-card-started"
+            title={started.full}
+            style={{ fontSize: 10, color: '#64748b' }}
+          >
+            {started.short}
+          </span>
+        )}
+
         <div style={{ flex: 1 }} />
 
         {/* Assignee initials */}
@@ -360,6 +375,7 @@ function Column({
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
       block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id)}
+      showStarted={column.category === 'in_progress'}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
     />
@@ -715,17 +731,23 @@ export function KanbanView() {
         // The server stamps completedAt and broadcasts it a moment later;
         // mirror it locally now so a card dropped on Done lands under
         // "Today" instead of vanishing into the collapsed "Earlier" group
-        // (and leaves the done groups when dragged back out).
-        const toDone = statusColumns.find((s) => s.id === columnId)?.category === 'done';
+        // (and leaves the done groups when dragged back out). Same for
+        // startedAt: a card dropped on In Progress reads "started just now".
+        const toCategory = statusColumns.find((s) => s.id === columnId)?.category;
+        const toDone = toCategory === 'done';
         const fromDone = statusColumns.find(
           (s) => s.id === node.status || s.name.toLowerCase() === (node.status ?? '').toLowerCase(),
         )?.category === 'done';
-        if (toDone !== fromDone) {
+        const stampStart = toCategory === 'in_progress' && !node.startedAt;
+        const clearStart = toCategory === 'todo' && node.startedAt != null;
+        if (toDone !== fromDone || stampStart || clearStart) {
           const current = useMindmapStore.getState().nodes[nodeId];
           if (current) {
             useMindmapStore.getState().applyServerNode({
               ...current,
-              completedAt: toDone ? new Date().toISOString() : null,
+              ...(toDone !== fromDone && { completedAt: toDone ? new Date().toISOString() : null }),
+              ...(stampStart && { startedAt: new Date().toISOString() }),
+              ...(clearStart && { startedAt: null }),
             });
           }
         }
