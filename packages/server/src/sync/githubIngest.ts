@@ -500,7 +500,7 @@ export async function resolveIngestVersionId(
 export async function syncIssueLabelsToNodes(
   externalId: string,
   ghLabels: Array<{ name: string }> | undefined,
-  issue: { user?: { login?: string | null } | null } = {},
+  issue: { user?: { login?: string | null } | null },
 ): Promise<number> {
   const matches = await findNodesByExternalIdAcrossMaps(externalId);
   if (matches.length === 0) return 0;

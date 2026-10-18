@@ -67,7 +67,7 @@ import {
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
-import { keepIngestHold, ownerOfExternalId } from '../lib/forgeTrust.js';
+import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 
 // ── Helper: find integration config for a workspace (PAT) ─────────
 
@@ -1080,7 +1080,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           // Mirror write — stamp the link so the issues.edited guard
           // can tell mirror from curation (lib/descriptionMirror.ts).
           externalLinks: [stampMirrorHash(item.externalLink, item.issue.body)],
-          tags: item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
+          // A bulk import of a public repo would make every stranger's
+          // open issue pullable at once — same hold as ingest (#489).
+          tags: withIngestHold(
+            item.issue.labels.map((l) => l.name).filter((n) => !n.startsWith('priority:')),
+            item.issue,
+            ownerOfExternalId(item.externalLink.externalId),
+          ),
           description: item.issue.body,
           ...(priority ? { priority: priority as import('@mindblown/core').Priority } : {}),
           ...getIdsForIssue(item),
