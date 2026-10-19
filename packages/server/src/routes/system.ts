@@ -18,6 +18,7 @@ import {
 import { requireAdmin, hashPassword, markPasswordChanged } from '../auth.js';
 import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
+import { FLEET_RETIRED } from '../db/fleets.js';
 import { eq, sql } from 'drizzle-orm';
 
 export async function systemRoutes(app: FastifyInstance): Promise<void> {
@@ -139,7 +140,8 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     }
     // A fleet's service user (#481) has no password by design: one set here
     // would turn it into a login account.
-    if (user.kind === 'fleet') {
+    // Retired ones too (#481): a deleted fleet's user must not come back as an account.
+    if (user.kind === 'fleet' || user.kind === FLEET_RETIRED) {
       return reply.status(400).send({
         error: { code: 'FLEET_USER', message: 'This is a fleet service user — it has no password. Issue it an API key from the fleet instead.' },
       });

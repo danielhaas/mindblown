@@ -51,7 +51,7 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
 
       // A fleet's service user (#481) gets edit on exactly its fleet's
       // connected maps, from the connection — never by sharing, never admin.
-      if (targetUser?.kind === 'fleet') {
+      if (targetUser && (await isFleetUser(targetUser.id))) {
         return reply.status(400).send({
           error: { code: 'FLEET_USER', message: 'A fleet gets access by connecting the map to it (map Settings → Fleet), not by sharing' },
         });
