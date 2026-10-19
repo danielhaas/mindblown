@@ -214,6 +214,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   useEffect(() => {
     if (lastMapIdRef.current === mapId) return;
     lastMapIdRef.current = mapId;
+    // The running turn belongs to the old map's conversation — stop it, or its
+    // reply (and an auto-continue) would land in this map's history.
+    abortRef.current?.abort();
+    setPendingAutoContinue(null);
     setMessages(loadStoredMessages(mapId));
   }, [mapId]);
 
