@@ -41,6 +41,10 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   const [shareDraft, setShareDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Name of a fleet we just connected: neither the PUT response nor the
+  // map:updated broadcast carries fleetName, and a fleet created a moment
+  // ago is not in `fleets` until the reload lands.
+  const [connected, setConnected] = useState<{ id: string; name: string } | null>(null);
 
   const fleetId = map?.fleetId ?? null;
   const share = map?.fleetShare ?? 1;
@@ -59,9 +63,10 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   useEffect(reload, [reload, fleetId]);
   useEffect(() => setDraft(fleetId ?? NONE), [fleetId]);
   useEffect(() => setShareDraft(String(share)), [share]);
+  const mapId = map?.id;
   useEffect(() => {
-    if (map && membersMapId !== map.id) void loadMembers();
-  }, [map, membersMapId, loadMembers]);
+    if (mapId && membersMapId !== mapId) void loadMembers();
+  }, [mapId, membersMapId, loadMembers]);
 
   const current = fleets?.find((f) => f.id === fleetId);
   const options = useMemo(() => fleetOptions(fleets ?? [], fleetId), [fleets, fleetId]);
@@ -72,45 +77,47 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   const isMapAdmin =
     (user !== null && map.createdBy === user.id) ||
     (membersMapId === map.id && members.some((m) => m.userId === user?.id && m.permission === 'admin'));
-  const currentName = current?.name ?? map.fleetName ?? 'its fleet';
+  const currentName = current?.name ?? (connected?.id === fleetId ? connected.name : null) ?? map.fleetName ?? 'its fleet';
   const liveClaims = claimRows(nodes, new Date()).length;
 
   // The store parks a failed save's server message in the global banner;
   // show it here, next to the control that caused it, instead.
-  const failed = (fallback: string) => {
-    setError(useMindmapStore.getState().error ?? fallback);
+  const failed = (message: string) => {
+    const cause = useMindmapStore.getState().error;
+    setError(cause ? `${message}: ${cause}` : message);
     useMindmapStore.setState({ error: null });
-  };
-
-  const connect = async (target: string | null, targetName: string | null) => {
-    if (fleetId && target !== fleetId) {
-      const warning = leaveFleetWarning(currentName, liveClaims, targetName);
-      if (warning && !window.confirm(warning)) return false;
-    }
-    const ok = await updateMapSettings({ fleetId: target });
-    if (!ok) failed('Saving the fleet failed.');
-    return ok;
   };
 
   const apply = async () => {
     if (busy) return;
+    const creating = draft === CREATE;
+    const target = creating || draft === NONE ? null : draft;
+    const targetName = creating ? newName.trim() : target ? (fleets?.find((f) => f.id === target)?.name ?? null) : null;
+    // Ask before anything is written — a cancelled move must not leave a new fleet behind.
+    if (fleetId) {
+      const warning = leaveFleetWarning(currentName, liveClaims, targetName);
+      if (warning && !window.confirm(warning)) return;
+    }
     setBusy(true);
     setError(null);
     try {
-      if (draft === CREATE) {
-        const name = newName.trim();
-        let created: FleetWithMaps;
+      let connectTo = target;
+      if (creating) {
         try {
-          created = await api.createFleet(name);
+          const created = await api.createFleet(targetName!);
+          connectTo = created.id;
+          // From here on a retry is a plain connect, not a second fleet.
+          setDraft(created.id);
+          setNewName('');
         } catch (e: unknown) {
           setError(e instanceof Error ? e.message : 'Creating the fleet failed.');
           return;
         }
-        if (await connect(created.id, created.name)) setNewName('');
-        else setError((err) => `Fleet "${created.name}" was created but not connected: ${err}`);
+      }
+      if (await updateMapSettings({ fleetId: connectTo })) {
+        setConnected(connectTo && targetName ? { id: connectTo, name: targetName } : null);
       } else {
-        const target = draft === NONE ? null : draft;
-        await connect(target, target ? (fleets?.find((f) => f.id === target)?.name ?? null) : null);
+        failed(creating ? `Fleet "${targetName}" was created but not connected` : 'Saving the fleet failed');
       }
     } finally {
       setBusy(false);
@@ -128,7 +135,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
     const ok = await updateMapSettings({ fleetShare: shareNumber });
     setBusy(false);
     if (ok) reload();
-    else failed('Saving the share failed.');
+    else failed('Saving the share failed');
   };
 
   const dirty = draft === CREATE ? newName.trim() !== '' : draft !== (fleetId ?? NONE);
@@ -145,9 +152,10 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
           {current.hiddenMapCount > 0 && <> {otherMaps.length > 0 ? 'and' : '· also serves'} {current.hiddenMapCount} map{current.hiddenMapCount === 1 ? '' : 's'} you can&apos;t see</>}
         </span>
       )}
+      {map.archivedAt && <span style={{ color: '#b45309' }}> · archived: the fleet skips this map until it is unarchived</span>}
     </>
   ) : (
-    <>No fleet. No worker pulls tickets from this map until it is connected to one.</>
+    <>No fleet. A fleet&apos;s workers take tickets from this map only once it is connected; a worker pulling this map directly still can, within its own cap.</>
   );
 
   return (
@@ -158,7 +166,8 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
       {variant === 'settings' && (
         <div style={{ fontSize: 12, color: '#64748b', marginBottom: 10 }}>
           A fleet is a group of worker hosts several projects share. Connect this map to let its workers pull tickets
-          from here; the map&apos;s own cap, gate and policy on the Fleet tab still decide what is handed out.
+          from here; they also need edit access to the map. The map&apos;s own cap, gate and policy on the Fleet tab
+          still decide what is handed out.
         </div>
       )}
       <div style={{ fontSize: 13, color: '#334155', marginBottom: readOnly ? 0 : 10 }} data-testid="map-fleet-status">{status}</div>
@@ -170,64 +179,63 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
           </div>
         )
       ) : (
-        <>
-          <div style={row}>
-            <select
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              disabled={busy || fleets === null}
-              style={input}
-              aria-label="Fleet"
-              data-testid="map-fleet-select"
-            >
-              <option value={NONE}>No fleet</option>
-              {options.map((o) => (
-                <option key={o.id} value={o.id} disabled={o.disabled}>{o.label}</option>
-              ))}
-              <option value={CREATE}>Create fleet…</option>
-            </select>
-            {draft === CREATE && (
-              <input
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && void apply()}
-                placeholder="Fleet name"
-                maxLength={200}
-                autoFocus
-                style={{ ...input, flex: 1, minWidth: 120 }}
-                data-testid="map-fleet-new-name"
-              />
-            )}
-            <button style={{ ...btn, ...(dirty ? btnPrimary : {}) }} disabled={!dirty || busy} onClick={() => void apply()} data-testid="map-fleet-apply">
-              {busy ? 'Saving…' : draft === CREATE ? 'Create and connect' : draft === NONE && fleetId ? 'Disconnect' : 'Connect'}
-            </button>
-          </div>
-
-          {showShare && (
-            <div style={{ ...row, marginTop: 10 }}>
-              <label style={{ fontSize: 12, color: '#334155' }} title="How often the fleet picks this map relative to its other maps (weighted round-robin). 1 = equal; 2 = twice as often.">
-                Share
-              </label>
-              <input
-                type="number"
-                min={FLEET_SHARE_MIN}
-                max={FLEET_SHARE_MAX}
-                step={0.1}
-                value={shareDraft}
-                onChange={(e) => setShareDraft(e.target.value)}
-                style={{ ...input, width: 70 }}
-                data-testid="map-fleet-share"
-              />
-              <button style={{ ...btn, ...(shareDirty ? btnPrimary : {}) }} disabled={!shareDirty || busy} onClick={() => void applyShare()} data-testid="map-fleet-share-apply">
-                Apply
-              </button>
-              <span style={{ fontSize: 11, color: '#94a3b8' }}>
-                vs {otherMaps.map((m) => `${m.name} ${m.fleetShare}`).join(', ') || 'the other maps'}
-              </span>
-            </div>
+        <div style={row}>
+          <select
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            disabled={busy}
+            style={input}
+            aria-label="Fleet"
+            data-testid="map-fleet-select"
+          >
+            <option value={NONE}>No fleet</option>
+            {options.map((o) => (
+              <option key={o.id} value={o.id} disabled={o.disabled}>{o.label}</option>
+            ))}
+            <option value={CREATE}>Create fleet…</option>
+          </select>
+          {draft === CREATE && (
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void apply()}
+              placeholder="Fleet name"
+              maxLength={200}
+              autoFocus
+              style={{ ...input, flex: 1, minWidth: 120 }}
+              data-testid="map-fleet-new-name"
+            />
           )}
-        </>
+          <button style={{ ...btn, ...(dirty ? btnPrimary : {}) }} disabled={!dirty || busy} onClick={() => void apply()} data-testid="map-fleet-apply">
+            {busy ? 'Saving…' : draft === CREATE ? 'Create and connect' : draft === NONE && fleetId ? 'Disconnect' : 'Connect'}
+          </button>
+        </div>
       )}
+
+      {/* The share is the fleet owner's call, even with only edit on the map. */}
+      {!readOnly && showShare && (
+        <div style={{ ...row, marginTop: 10 }}>
+          <label style={{ fontSize: 12, color: '#334155' }} title="How often the fleet picks this map relative to its other maps (weighted round-robin). 1 = equal; 2 = twice as often.">
+            Share
+          </label>
+          <input
+            type="number"
+            min={FLEET_SHARE_MIN}
+            max={FLEET_SHARE_MAX}
+            step={0.1}
+            value={shareDraft}
+            onChange={(e) => setShareDraft(e.target.value)}
+            style={{ ...input, width: 70 }}
+            data-testid="map-fleet-share"
+          />
+          <button style={{ ...btn, ...(shareDirty ? btnPrimary : {}) }} disabled={!shareDirty || busy} onClick={() => void applyShare()} data-testid="map-fleet-share-apply">
+            Apply
+          </button>
+          <span style={{ fontSize: 11, color: '#94a3b8' }}>
+            vs {otherMaps.map((m) => `${m.name} ${m.fleetShare}`).join(', ') || 'the other maps'}
+          </span>
+        </div>
+          )}
 
       {error && <div style={warnBox}>{error}</div>}
       {loadError && <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Fleet list unavailable ({loadError}).</div>}

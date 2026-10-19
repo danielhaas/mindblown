@@ -60,5 +60,6 @@ export function leaveFleetWarning(fleetName: string, liveClaims: number, nextFle
   if (liveClaims === 0) return null;
   const tickets = `${liveClaims} ticket${liveClaims === 1 ? ' is' : 's are'}`;
   const move = nextFleetName ? `Move this map from "${fleetName}" to "${nextFleetName}"?` : `Disconnect this map from "${fleetName}"?`;
-  return `${move}\n\n${tickets} claimed by workers right now. The claims stay on the tickets; the workers finish or release them, but no new ticket from this map goes to "${fleetName}".`;
+  const after = nextFleetName ? ` They count against "${nextFleetName}"'s cap from now on.` : '';
+  return `${move}\n\n${tickets} claimed by workers right now. The claims stay on the tickets; the workers finish or release them, but no new ticket from this map goes to "${fleetName}".${after}`;
 }

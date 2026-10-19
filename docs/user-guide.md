@@ -318,11 +318,11 @@ MindBlown is real-time. Multiple users can edit the same map at the same time, a
 
 ### Fleets: workers on your map
 
-A **fleet** is a group of worker hosts (AI coding agents) that pulls ready tickets from your maps and works on them. One fleet can serve several projects; a map is connected to at most one fleet. Without a fleet, no worker takes tickets from the map.
+A **fleet** is a group of worker hosts (AI coding agents) that pulls ready tickets from your maps and works on them. One fleet can serve several projects; a map is connected to at most one fleet. A fleet's workers take tickets only from the maps connected to it (a worker set up to pull one map directly still can, within that map's own cap). The workers' account also needs **edit** access to each connected map, and an archived map is skipped until it is unarchived.
 
-- **Connect a map** -- open the **Fleet** tab (or the map's **Settings**), pick a fleet in the **Fleet** picker and click **Connect**. **Create fleet…** makes a new one, owned by you, and connects the map in one step. Choose **No fleet** to disconnect; if workers hold claims on the map right now, you are asked first. Their claims stay on the tickets; the fleet just takes no new ones from this map.
+- **Connect a map** -- open the **Fleet** tab (or the map's **Settings**), pick a fleet in the **Fleet** picker and click **Connect**. **Create fleet…** makes a new one, owned by you, and connects the map in one step. Choose **No fleet** to disconnect; if workers hold claims on the map right now, you are asked first. Their claims stay on the tickets; the fleet just takes no new ones from this map. Moving the map to another fleet moves its claims too: they count against the new fleet's cap from then on.
 - **Shares** -- when a fleet serves more than one map, each map has a **share**: how often the fleet picks it relative to the others. 1 is an equal turn; 2 means twice as often as a map with 1.
-- **Who may do what** -- connecting and disconnecting needs admin on the map, and connecting needs ownership of the fleet. Only the fleet's owner sets the share. Everyone else, and the Developer and Stakeholder lenses, see which fleet a map is on but get no controls.
+- **Who may do what** -- connecting and disconnecting needs admin on the map, and connecting needs ownership of the fleet. Only the fleet's owner sets the share; that works with edit access to the map, too. Everyone else, and the Developer and Stakeholder lenses, see which fleet a map is on but get no controls.
 
 The map's own pull-queue knobs on the Fleet tab -- its cap, gate and policy -- still decide which tickets are handed out and how many at once. A cap of 0 holds the map even when it is connected.
 

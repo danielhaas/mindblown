@@ -54,11 +54,13 @@ describe('shareApplies', () => {
 
 describe('leaveFleetWarning', () => {
   it('asks nothing when no ticket is claimed', () => {
-    expect(leaveFleetWarning('Sonarpipe', 0, null)).toBeNull();
+    expect(leaveFleetWarning('Alpha', 0, null)).toBeNull();
   });
 
   it('names the claims and whether it is a disconnect or a move', () => {
-    expect(leaveFleetWarning('Sonarpipe', 1, null)).toMatch(/^Disconnect this map from "Sonarpipe"\?\n\n1 ticket is claimed/);
-    expect(leaveFleetWarning('Sonarpipe', 3, 'Navy')).toMatch(/^Move this map from "Sonarpipe" to "Navy"\?\n\n3 tickets are claimed/);
+    expect(leaveFleetWarning('Alpha', 1, null)).toMatch(/^Disconnect this map from "Alpha"\?\n\n1 ticket is claimed/);
+    expect(leaveFleetWarning('Alpha', 3, 'Beta')).toMatch(/^Move this map from "Alpha" to "Beta"\?\n\n3 tickets are claimed/);
+    expect(leaveFleetWarning('Alpha', 3, 'Beta')).toMatch(/count against "Beta"'s cap/);
+    expect(leaveFleetWarning('Alpha', 1, null)).not.toMatch(/count against/);
   });
 });
