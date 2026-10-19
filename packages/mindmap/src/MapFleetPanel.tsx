@@ -60,7 +60,9 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   }, []);
 
   // Re-read when the connection changes — ours, or another tab's / an agent's.
-  useEffect(reload, [reload, fleetId]);
+  // fleetRev: a rename on the Fleet tab (or another tab's write) shows here too.
+  const fleetRev = useMindmapStore((s) => s.fleetRev);
+  useEffect(reload, [reload, fleetId, fleetRev]);
   useEffect(() => setDraft(fleetId ?? NONE), [fleetId]);
   useEffect(() => setShareDraft(String(share)), [share]);
   const mapId = map?.id;
