@@ -59,6 +59,15 @@ export async function upsertRollup(fleetId: string, rollup: FleetRollup, viaMapI
   return toStatusRow(row);
 }
 
+/** Which map route the host's current row came in through, and when — the v1 collision check. */
+export async function getRollupOrigin(fleetId: string, host: string): Promise<{ viaMapId: string | null; receivedAt: string } | null> {
+  const [row] = await db
+    .select({ mapId: fleetStatus.mapId, receivedAt: fleetStatus.receivedAt })
+    .from(fleetStatus)
+    .where(and(eq(fleetStatus.fleetId, fleetId), eq(fleetStatus.host, host)));
+  return row ? { viaMapId: row.mapId, receivedAt: row.receivedAt.toISOString() } : null;
+}
+
 export async function listRollups(fleetId: string): Promise<FleetStatusRow[]> {
   const rows = await db.select().from(fleetStatus).where(eq(fleetStatus.fleetId, fleetId));
   return rows.map(toStatusRow).sort((a, b) => a.host.localeCompare(b.host));

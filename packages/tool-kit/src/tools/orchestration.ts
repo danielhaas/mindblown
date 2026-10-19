@@ -492,6 +492,7 @@ export const fleetStatusTool = defineTool({
       const p = tick.payload;
       lines.push('');
       lines.push(`Last orchestrator tick ${tick.tickAt}${p.noJudgment ? ` — NO JUDGMENT (${p.noJudgment})` : ''}`);
+      if (p.redacted) lines.push("  (numbers only — the orchestrator's notes cover maps of this fleet you can't view)");
       if (p.assessment) lines.push(`  ${p.assessment}`);
       if (p.summary?.heartbeat) lines.push(`  numbers: ${p.summary.heartbeat}`);
       const silent = silentSatellites(p.pullStatus, summary.hosts.map((h) => h.host));

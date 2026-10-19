@@ -22,7 +22,7 @@ import * as fleetService from '../services/fleets.js';
 import * as asksDb from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import { countAsks } from '@mindblown/core';
-import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
+import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
@@ -353,9 +353,7 @@ export function createChatBackend(userId: string): ToolBackend {
       if ('error' in window) throw new Error(window.error);
       // The map's fleet, narrowed to the hosts serving this map (#479).
       const scope = await fleetTelemetry.mapReadScope(userId, mapId);
-      const read = scope.fleetId
-        ? await fleetTelemetry.readTelemetry(scope.fleetId, scope.visible, window, mapId)
-        : { fleetId: null, hosts: [], ticks: [] };
+      const read = 'visible' in scope ? await fleetTelemetry.readTelemetry(scope, window, mapId) : { fleetId: null, hosts: [], ticks: [] };
       return {
         ...read,
         now: new Date().toISOString(),
@@ -368,7 +366,7 @@ export function createChatBackend(userId: string): ToolBackend {
       const scope = await fleetTelemetry.fleetReadScope(userId, fleetId);
       if ('status' in scope) throw new Error(scope.message);
       return {
-        ...(await fleetTelemetry.readTelemetry(scope.fleetId, scope.visible, window)),
+        ...(await fleetTelemetry.readTelemetry(scope, window)),
         now: new Date().toISOString(),
         window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
       };
@@ -377,8 +375,7 @@ export function createChatBackend(userId: string): ToolBackend {
       // Same window rules as GET /fleet-journal (defaults, 31-day cap).
       const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
       if ('error' in window) throw new Error(window.error);
-      const fleetId = await fleetEntityDb.getMapFleetId(mapId);
-      const journal = await loadFleetJournal({ mapIds: [mapId], fleetId }, window.from, window.to);
+      const journal = await loadFleetJournal(await mapJournalScope(userId, mapId), window.from, window.to);
       return { journal, now: new Date().toISOString() };
     },
     async getFleetJournalForFleet(fleetId, opts) {
@@ -387,7 +384,8 @@ export function createChatBackend(userId: string): ToolBackend {
       const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
       if ('error' in window) throw new Error(window.error);
       const maps = view.maps.map((m) => ({ id: m.id, name: m.name }));
-      const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true }, window.from, window.to);
+      const full = view.isOwner || view.hiddenMapCount === 0;
+      const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true, redactTicks: !full }, window.from, window.to);
       return { journal, maps, now: new Date().toISOString() };
     },
 

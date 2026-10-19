@@ -14,9 +14,8 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { guardMapRoutes } from '../lib/mapAccess.js';
-import * as fleetEntityDb from '../db/fleets.js';
 import { getFleetForUser } from '../services/fleets.js';
-import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
+import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 
 export async function fleetJournalRoutes(app: FastifyInstance): Promise<void> {
   guardMapRoutes(app); // view on the map (#403)
@@ -25,8 +24,7 @@ export async function fleetJournalRoutes(app: FastifyInstance): Promise<void> {
     if ('error' in w) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: w.error } });
     }
-    const fleetId = await fleetEntityDb.getMapFleetId(req.params.id);
-    const journal = await loadFleetJournal({ mapIds: [req.params.id], fleetId }, w.from, w.to);
+    const journal = await loadFleetJournal(await mapJournalScope(req.userId!, req.params.id), w.from, w.to);
     return reply.send({ journal, now: new Date().toISOString() });
   });
 }
@@ -41,7 +39,8 @@ export async function fleetJournalByFleetRoutes(app: FastifyInstance): Promise<v
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: w.error } });
     }
     const maps = view.maps.map((m) => ({ id: m.id, name: m.name }));
-    const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true }, w.from, w.to);
+    const full = view.isOwner || view.hiddenMapCount === 0;
+    const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true, redactTicks: !full }, w.from, w.to);
     return reply.send({ journal, maps, now: new Date().toISOString() });
   });
 }

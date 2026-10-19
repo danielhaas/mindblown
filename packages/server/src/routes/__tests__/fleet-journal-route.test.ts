@@ -37,6 +37,8 @@ async function buildApp(): Promise<FastifyInstance> {
 }
 
 beforeEach(() => {
+  // A reader who sees every map of the fleet: ticks come in full.
+  fleetView.value = { id: FLEET_ID, isOwner: false, hiddenMapCount: 0, maps: [] };
   loadMock.mockReset();
   loadMock.mockResolvedValue({ window: { from: 'a', to: 'b' }, ticks: [], delivered: [], totals: { ticks: 0 } });
 });
@@ -49,7 +51,7 @@ describe('GET /api/maps/:id/fleet-journal', () => {
     expect(res.statusCode).toBe(200);
     const [scope, from, to] = loadMock.mock.calls[0] as [{ mapIds: string[]; fleetId: string }, Date, Date];
     // The map's events, its fleet's ticks (#479).
-    expect(scope).toEqual({ mapIds: [MAP_ID], fleetId: FLEET_ID });
+    expect(scope).toEqual({ mapIds: [MAP_ID], fleetId: FLEET_ID, redactTicks: false });
     expect(from.toISOString()).toBe('2026-09-02T15:00:00.000Z');
     expect(to.toISOString()).toBe('2026-09-03T05:00:00.000Z');
     expect(res.json().journal.totals.ticks).toBe(0);
@@ -68,14 +70,15 @@ describe('GET /api/maps/:id/fleet-journal', () => {
   });
 
   it('the fleet route reads the connected maps the reader can view, tagged, and names them', async () => {
-    fleetView.value = { id: FLEET_ID, maps: [{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }] };
+    // One connected map stays hidden from this reader: the ticks lose their prose.
+    fleetView.value = { id: FLEET_ID, isOwner: false, hiddenMapCount: 1, maps: [{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }] };
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET_ID}/fleet-journal` });
     fleetView.value = { status: 404, code: 'FLEET_NOT_FOUND', message: 'Fleet x not found' };
     const hidden = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET_ID}/fleet-journal` });
     await app.close();
     expect(res.statusCode).toBe(200);
-    expect(loadMock.mock.calls[0][0]).toEqual({ mapIds: ['m1', 'm2'], fleetId: FLEET_ID, tagMaps: true });
+    expect(loadMock.mock.calls[0][0]).toEqual({ mapIds: ['m1', 'm2'], fleetId: FLEET_ID, tagMaps: true, redactTicks: true });
     expect(res.json().maps).toEqual([{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }]);
     expect(hidden.statusCode).toBe(404);
     expect(loadMock).toHaveBeenCalledTimes(1);

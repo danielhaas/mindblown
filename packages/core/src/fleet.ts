@@ -154,6 +154,8 @@ export interface FleetTickPayload {
   pullStatus?: { sat: string; ok: boolean; files: string[]; at?: string }[];
   /** Set when the tick ran without judgment (orchestrator account at its limit). */
   noJudgment?: string | null;
+  /** Set by the server on a read (#479): the prose was removed for a reader who can't view every map of the fleet. */
+  redacted?: true;
 }
 
 /** Mirrors the orchestrator/dashboard constant: older than this = host down, paused, or agent stopped. */
@@ -192,18 +194,52 @@ export function rollupServedMaps(rollup: FleetRollup, pushedFor: string | null):
 /**
  * A rollup as a reader who can view only `visible` may see it (#479): maps
  * they can't view drop out of `maps`, and a claim on one becomes
- * `{ redacted: true }`. A claim that names no map belongs to the host's
- * only served map; with several, it can't be placed and is redacted too.
+ * `{ redacted: true }` — together with everything else that talks about
+ * that ticket (the worker's prompt question, what it waits on, its PR,
+ * the nodes it parked). A claim that names no map belongs to the host's
+ * only served map, or to any of them when the reader sees them all; else
+ * it can't be placed and is redacted too. Node lists that carry no map
+ * (`blocked_nodes`, `blocked.recent`) stay only when the reader sees every
+ * map the host serves.
  */
 export function redactRollup(rollup: FleetRollup, served: string[], visible: ReadonlySet<string>): FleetRollup {
+  const seesAll = served.length > 0 && served.every((m) => visible.has(m));
   const workers = rollup.workers.map((w) => {
-    if (!w.claim) return w;
-    const mapId = w.claim.mapId ?? (served.length === 1 ? served[0] : null);
-    return mapId && visible.has(mapId) ? w : { ...w, claim: { redacted: true as const } };
+    const out: FleetWorkerStatus = { ...w };
+    if (w.claim) {
+      const mapId = w.claim.mapId ?? (served.length === 1 ? served[0] : null);
+      const placed = mapId ? visible.has(mapId) : seesAll;
+      if (!placed) {
+        out.claim = { redacted: true };
+        delete out.prompt_question;
+        delete out.waiting;
+        delete out.pr_number;
+        delete out.blocked_nodes;
+      }
+    }
+    if (!seesAll) delete out.blocked_nodes;
+    return out;
   });
   const out: FleetRollup = { ...rollup, workers };
   if (rollup.maps) out.maps = rollup.maps.filter((m) => visible.has(m));
   if (rollup.map_id && !visible.has(rollup.map_id)) delete out.map_id;
+  if (!seesAll && rollup.blocked) out.blocked = { count: rollup.blocked.count, recent: [] };
+  return out;
+}
+
+/**
+ * A tick as a reader who can't view every map of the fleet may see it
+ * (#479): one orchestrator writes about all projects, so its prose —
+ * assessment, anomalies, asks, recommendations, reasons, the files it
+ * pulled — stays with readers who see them all. The numbers stay.
+ */
+export function redactTick(payload: FleetTickPayload): FleetTickPayload {
+  const out: FleetTickPayload = { redacted: true };
+  if (payload.summary) out.summary = payload.summary;
+  if (payload.cap) out.cap = { set: payload.cap.set, reason: null };
+  if (payload.policy) out.policy = { set: payload.policy.set, reason: null };
+  if (payload.noJudgment !== undefined) out.noJudgment = payload.noJudgment;
+  if (payload.pullStatus) out.pullStatus = payload.pullStatus.map((p) => ({ sat: p.sat, ok: p.ok, files: [], ...(p.at ? { at: p.at } : {}) }));
   return out;
 }
 

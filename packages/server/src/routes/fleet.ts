@@ -93,6 +93,11 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     if (isFail(rollup)) return send(reply, rollup);
     const fleetId = await telemetry.fleetForMapPush(req.params.id);
     if (isFail(fleetId)) return send(reply, fleetId);
+    // The guard checked edit on this map; a v2 rollup may name more.
+    if (rollup.maps && rollup.maps.length > 0) {
+      const denied = await telemetry.authorizeRollupPush(req.userId!, fleetId, rollup.maps);
+      if (denied) return send(reply, denied);
+    }
     const out = rollupReply(await telemetry.pushRollup(fleetId, rollup, req.params.id), rollup.workers.length, fleetId);
     return isFail(out) ? send(reply, out) : reply.send(out);
   });
@@ -102,6 +107,9 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     if (isFail(tick)) return send(reply, tick);
     const fleetId = await telemetry.fleetForMapPush(req.params.id);
     if (isFail(fleetId)) return send(reply, fleetId);
+    // Every cockpit of the fleet shows the tick, not only this map's.
+    const denied = await telemetry.authorizeTickPush(req.userId!, fleetId);
+    if (denied) return send(reply, denied);
     const row = await telemetry.pushTick(fleetId, tick.payload, tick.tickAt, req.params.id);
     return reply.status(201).send({ id: row.id, tickAt: row.tickAt, receivedAt: row.receivedAt, fleetId });
   });
@@ -112,9 +120,7 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     const window = parseTickWindow(req.query ?? {});
     if ('error' in window) return send(reply, invalid(window.error));
     const scope = await telemetry.mapReadScope(req.userId!, req.params.id);
-    const read = scope.fleetId
-      ? await telemetry.readTelemetry(scope.fleetId, scope.visible, window, req.params.id)
-      : { fleetId: null, hosts: [], ticks: [] };
+    const read = 'visible' in scope ? await telemetry.readTelemetry(scope, window, req.params.id) : { fleetId: null, hosts: [], ticks: [] };
     return reply.send(readReply(read, window));
   });
 }
@@ -125,17 +131,21 @@ export async function fleetTelemetryRoutes(app: FastifyInstance): Promise<void> 
 
   app.put<{ Params: { id: string; host: string } }>('/api/fleets/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
-    const denied = await telemetry.authorizeFleetPush(req.userId, req.params.id);
-    if (denied) return send(reply, denied);
     const rollup = readRollup(req, null);
     if (isFail(rollup)) return send(reply, rollup);
+    // Without maps[] the rollup would serve no map and show on no card.
+    if (!rollup.maps || rollup.maps.length === 0) {
+      return send(reply, invalid('A rollup pushed to the fleet route names the maps it serves (maps[], v2); a v1 rollup goes to /api/maps/:id/fleet-status/:host'));
+    }
+    const denied = await telemetry.authorizeRollupPush(req.userId, req.params.id, rollup.maps);
+    if (denied) return send(reply, denied);
     const out = rollupReply(await telemetry.pushRollup(req.params.id, rollup, null), rollup.workers.length, req.params.id);
     return isFail(out) ? send(reply, out) : reply.send(out);
   });
 
   app.post<{ Params: { id: string } }>('/api/fleets/:id/fleet-ticks', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
-    const denied = await telemetry.authorizeFleetPush(req.userId, req.params.id);
+    const denied = await telemetry.authorizeTickPush(req.userId, req.params.id);
     if (denied) return send(reply, denied);
     const tick = readTick(req.body);
     if (isFail(tick)) return send(reply, tick);
@@ -149,6 +159,6 @@ export async function fleetTelemetryRoutes(app: FastifyInstance): Promise<void> 
     if ('error' in window) return send(reply, invalid(window.error));
     const scope = await telemetry.fleetReadScope(req.userId, req.params.id);
     if ('status' in scope) return send(reply, scope);
-    return reply.send(readReply(await telemetry.readTelemetry(scope.fleetId, scope.visible, window), window));
+    return reply.send(readReply(await telemetry.readTelemetry(scope, window), window));
   });
 }

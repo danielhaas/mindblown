@@ -24,7 +24,9 @@ const listRollupsMock = vi.fn(async () => [] as unknown[]);
 const listTicksMock = vi.fn(async () => [] as unknown[]);
 const broadcastMock = vi.fn();
 
+const originMock = vi.fn(async () => null as unknown);
 vi.mock('../../db/fleet.js', () => ({
+  getRollupOrigin: (...args: unknown[]) => originMock(...(args as [])),
   upsertRollup: (...args: unknown[]) => upsertRollupMock(...args),
   insertTick: (...args: unknown[]) => insertTickMock(...args),
   listRollups: (...args: unknown[]) => listRollupsMock(...(args as [])),
@@ -93,8 +95,12 @@ const statusRow = (host: string, mapIds: string[], workers: unknown[]) => ({
 });
 
 beforeEach(() => {
-  state.perm = { [MAP_A]: 'admin', [MAP_B]: null, [LONE]: 'admin' };
+  // Pushes ask permissions (edit on every map named / of the fleet); reads
+  // ask the visible-map list. Kept apart so each rule is tested on its own.
+  state.perm = { [MAP_A]: 'admin', [MAP_B]: 'edit', [LONE]: 'admin' };
   state.visibleMaps = [MAP_A, LONE];
+  originMock.mockReset();
+  originMock.mockResolvedValue(null);
   state.ownerId = 'owner-1';
   upsertRollupMock.mockReset();
   upsertRollupMock.mockImplementation(async (_f: string, r: { host: string }, via: string | null) => ({
@@ -163,6 +169,30 @@ describe('PUT /api/maps/:id/fleet-status/:host', () => {
     expect(upsertRollupMock).toHaveBeenCalledTimes(1);
   });
 
+  it('a v1 host already reporting for another map of the fleet gets 409 instead of flapping', async () => {
+    originMock.mockResolvedValue({ viaMapId: MAP_B, receivedAt: new Date().toISOString() });
+    const app = await buildApp();
+    const fresh = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/njoerd`, payload: rollup });
+    originMock.mockResolvedValue({ viaMapId: MAP_B, receivedAt: new Date(Date.now() - 3_600_000).toISOString() });
+    const stale = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/njoerd`, payload: rollup });
+    originMock.mockResolvedValue({ viaMapId: MAP_A, receivedAt: new Date().toISOString() });
+    const same = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/njoerd`, payload: rollup });
+    await app.close();
+    expect(fresh.statusCode).toBe(409);
+    expect(fresh.json().error.code).toBe('HOST_SERVES_SEVERAL_MAPS');
+    // A stale row from the other map (the host moved) or its own map's row is fine.
+    expect([stale.statusCode, same.statusCode]).toEqual([200, 200]);
+  });
+
+  it('a v2 rollup naming a map the pusher can\'t edit is refused', async () => {
+    state.perm[MAP_B] = 'view';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/njoerd`, payload: { ...rollup, v: 2, map_id: undefined, maps: [MAP_A, MAP_B] } });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a free-form host key (host is half the PK)', async () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/${encodeURIComponent('a b/../c')}`, payload: { ...rollup, host: 'a b/../c' } });
@@ -203,6 +233,15 @@ describe('POST /api/maps/:id/fleet-ticks', () => {
     expect(broadcastMock).toHaveBeenCalledWith(MAP_B, expect.objectContaining({ type: 'fleet:updated', kind: 'tick' }));
   });
 
+  it('a tick needs edit on every map of the fleet (every cockpit shows it)', async () => {
+    state.perm[MAP_B] = 'view';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP_A}/fleet-ticks`, payload: { assessment: 'x' } });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(insertTickMock).not.toHaveBeenCalled();
+  });
+
   it('falls back to now for a missing/invalid/future tickAt and rejects a non-object body', async () => {
     const app = await buildApp();
     const before = Date.now();
@@ -226,11 +265,21 @@ describe('GET /api/maps/:id/fleet', () => {
     listRollupsMock.mockResolvedValueOnce([
       statusRow('both', [MAP_A, MAP_B], [
         { session: 'both:worker-1:default', state: 'working', claim: { mapId: MAP_A, nodeId: 'n1', title: 'Visible ticket' } },
-        { session: 'both:worker-2:default', state: 'working', claim: { mapId: MAP_B, nodeId: 'n2', title: 'Secret ticket' } },
+        {
+          session: 'both:worker-2:default',
+          state: 'prompt',
+          claim: { mapId: MAP_B, nodeId: 'n2', title: 'Secret ticket' },
+          prompt_question: 'Secret: merge the payroll PR?',
+          waiting: { since: 'x', reason: 'Secret review' },
+          pr_number: 4711,
+          blocked_nodes: [{ node: 'secret-node', at: 'x' }],
+        },
       ]),
       statusRow('only-b', [MAP_B], [{ session: 'only-b:worker-1:default', state: 'parked', claim: null }]),
     ]);
-    listTicksMock.mockResolvedValueOnce([{ id: 't1', tickAt: 'a', receivedAt: 'b', payload: { assessment: 'x' } }]);
+    listTicksMock.mockResolvedValueOnce([
+      { id: 't1', tickAt: 'a', receivedAt: 'b', payload: { assessment: 'Secret: B is stuck on payroll', asks: ['Secret ask'], summary: { claims: 2, cap: 4 } } },
+    ]);
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet` });
     await app.close();
@@ -241,12 +290,24 @@ describe('GET /api/maps/:id/fleet', () => {
     const [visible, hidden] = body.hosts[0].rollup.workers;
     expect(visible.claim.title).toBe('Visible ticket');
     expect(hidden.claim).toEqual({ redacted: true });
+    // Everything else about B's ticket goes with the claim.
+    for (const k of ['prompt_question', 'waiting', 'pr_number', 'blocked_nodes']) expect(hidden).not.toHaveProperty(k);
     expect(body.hosts[0].mapIds).toEqual([MAP_A]);
     expect(body.hosts[0].rollup.maps).toEqual([MAP_A]);
-    expect(JSON.stringify(body)).not.toContain('Secret ticket');
-    expect(body.ticks[0].payload.assessment).toBe('x');
+    // The reader can't view B: the tick keeps its numbers, loses its prose.
+    expect(body.ticks[0].payload).toEqual({ redacted: true, summary: { claims: 2, cap: 4 } });
+    expect(JSON.stringify(body)).not.toMatch(/secret/i);
     expect(listTicksMock).toHaveBeenCalledWith(FLEET, { since: null, until: null, limit: 20 });
     expect(body.window).toEqual({ since: null, until: null, limit: 20 });
+  });
+
+  it('a reader who sees every map of the fleet gets the full tick', async () => {
+    state.visibleMaps = [MAP_A, MAP_B];
+    listTicksMock.mockResolvedValueOnce([{ id: 't1', tickAt: 'a', receivedAt: 'b', payload: { assessment: 'all fine' } }]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet` });
+    await app.close();
+    expect(res.json().ticks[0].payload).toEqual({ assessment: 'all fine' });
   });
 
   it('is an empty read for a map without a fleet', async () => {
@@ -331,7 +392,15 @@ describe('fleet routes (#479)', () => {
     expect(upsertRollupMock).toHaveBeenCalledWith(FLEET, expect.objectContaining({ maps: [MAP_A, MAP_B] }), null);
   });
 
-  it('pushes need the owner or edit on a connected map; a fleet the user can\'t read is a 404', async () => {
+  it('a fleet-route rollup without maps[] is refused (it would serve no map)', async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'PUT', url: `/api/fleets/${FLEET}/fleet-status/big`, payload: { ...v2, maps: undefined } });
+    await app.close();
+    expect(res.statusCode).toBe(400);
+    expect(upsertRollupMock).not.toHaveBeenCalled();
+  });
+
+  it('pushes need the owner or edit on the maps involved; a fleet the user can\'t read is a 404', async () => {
     state.perm[MAP_A] = 'view';
     const app = await buildApp();
     const viewOnly = await app.inject({ method: 'PUT', url: `/api/fleets/${FLEET}/fleet-status/big`, payload: v2 });

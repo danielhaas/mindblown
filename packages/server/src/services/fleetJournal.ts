@@ -15,10 +15,12 @@
  * window. The assembly itself is pure and lives in core.
  */
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
-import { buildFleetJournal, JOURNAL_EVENT_TYPES } from '@mindblown/core';
+import { buildFleetJournal, JOURNAL_EVENT_TYPES, redactTick } from '@mindblown/core';
 import type { ExternalLink, FleetJournal, FleetTickPayload, JournalEventRow, JournalNodeRow } from '@mindblown/core';
 import { db } from '../db/connection.js';
+import * as fleetEntityDb from '../db/fleets.js';
 import { changeEvents, fleetTicks, nodes, users, versions } from '../db/schema.js';
+import { getFleetForUser } from './fleets.js';
 
 /** Longest window a single read serves — a month of a busy fleet is ~1500 ticks and thousands of events. */
 export const MAX_WINDOW_MS = 31 * 86_400_000;
@@ -78,6 +80,20 @@ export interface JournalScope {
   mapIds: string[];
   fleetId: string | null;
   tagMaps?: boolean;
+  /** The reader can't view every map of the fleet: ticks keep their numbers, lose their prose (core `redactTick`). */
+  redactTicks?: boolean;
+}
+
+/**
+ * The journal scope for a reader through one map: that map's events, its
+ * fleet's ticks — redacted unless the reader owns the fleet or sees all its maps.
+ */
+export async function mapJournalScope(userId: string, mapId: string): Promise<JournalScope> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return { mapIds: [mapId], fleetId: null };
+  const view = await getFleetForUser(userId, fleetId);
+  const full = !('status' in view) && (view.isOwner || view.hiddenMapCount === 0);
+  return { mapIds: [mapId], fleetId, redactTicks: !full };
 }
 
 export async function loadFleetJournal(scope: JournalScope, from: Date, to: Date): Promise<FleetJournal> {
@@ -181,7 +197,10 @@ export async function loadFleetJournal(scope: JournalScope, from: Date, to: Date
 
   return buildFleetJournal({
     window: { from, to },
-    ticks: tickRows.map((t) => ({ tickAt: t.tickAt.toISOString(), receivedAt: t.receivedAt.toISOString(), payload: t.payload as FleetTickPayload })),
+    ticks: tickRows.map((t) => {
+      const payload = t.payload as FleetTickPayload;
+      return { tickAt: t.tickAt.toISOString(), receivedAt: t.receivedAt.toISOString(), payload: scope.redactTicks ? redactTick(payload) : payload };
+    }),
     events: allEvents.map((e) => toEventRow(e, tag)),
     nodes: allNodes.map((n) => toNodeRow(n, tag)),
     versions: versionRows,

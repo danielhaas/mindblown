@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { FleetRollup } from '../fleet.js';
-import { parseRollup, redactRollup, rollupServedMaps, summarizeFleet } from '../fleet.js';
+import { parseRollup, redactRollup, redactTick, rollupServedMaps, summarizeFleet } from '../fleet.js';
 import { buildFleetJournal } from '../fleetJournal.js';
 
 const base = { host: 'big', generated_at: '2026-10-19T10:00:00Z' };
@@ -54,10 +54,59 @@ describe('rollup v2 (#479)', () => {
       expect(hidden.map_id).toBeUndefined();
     });
 
+    it('a claim without mapId is shown when the reader sees every served map', () => {
+      expect(redactRollup(rollup, ['a', 'b'], new Set(['a', 'b'])).workers[2].claim).toEqual({ nodeId: 'n3', title: 'Unplaced' });
+    });
+
+    it('strips everything about a hidden ticket, and unplaceable node lists, but keeps counts', () => {
+      const r: FleetRollup = {
+        ...base,
+        v: 2,
+        maps: ['a', 'b'],
+        blocked: { count: 2, recent: [{ node: 'x', at: 't' }] },
+        workers: [
+          { session: 's1', state: 'prompt', claim: { mapId: 'b', title: 'Hidden' }, prompt_question: 'q?', waiting: { since: 't', reason: 'r' }, pr_number: 7, blocked_nodes: [{ node: 'x', at: 't' }] },
+          { session: 's2', state: 'working', claim: { mapId: 'a', title: 'Seen' }, blocked_nodes: [{ node: 'y', at: 't' }], prompt_question: 'fine?' },
+        ],
+      };
+      const out = redactRollup(r, ['a', 'b'], new Set(['a']));
+      expect(out.workers[0]).toEqual({ session: 's1', state: 'prompt', claim: { redacted: true } });
+      // A visible claim keeps its own prose; node lists without a map can't be placed, so they go.
+      expect(out.workers[1]).toEqual({ session: 's2', state: 'working', claim: { mapId: 'a', title: 'Seen' }, prompt_question: 'fine?' });
+      expect(out.blocked).toEqual({ count: 2, recent: [] });
+      expect(redactRollup(r, ['a', 'b'], new Set(['a', 'b'])).blocked?.recent).toHaveLength(1);
+    });
+
     it('a redacted claim still counts as a claim in the summary', () => {
       const out = redactRollup(rollup, ['a', 'b'], new Set());
       const summary = summarizeFleet([{ rollup: out, receivedAt: '2026-10-19T10:00:00Z' }], new Date('2026-10-19T10:01:00Z'));
       expect(summary.hosts[0].claims).toBe(3);
+    });
+  });
+});
+
+describe('redactTick', () => {
+  it('keeps the numbers, drops the prose', () => {
+    const out = redactTick({
+      assessment: 'B stuck',
+      anomalies: [{ severity: 'warn', what: 'B red' }],
+      asks: ['decide B'],
+      cap: { set: 4, reason: 'B CI' },
+      policy: { set: ['bugs'], reason: 'B P0' },
+      gate_recommendation: { set: ['v'], reason: 'r' },
+      phase_recommendation: { phase: 'p', why: 'w' },
+      notify: { title: 't' },
+      summary: { claims: 2, cap: 4 },
+      pullStatus: [{ sat: 's', ok: true, files: ['b-secret.json'], at: 't' }],
+      noJudgment: null,
+    });
+    expect(out).toEqual({
+      redacted: true,
+      summary: { claims: 2, cap: 4 },
+      cap: { set: 4, reason: null },
+      policy: { set: ['bugs'], reason: null },
+      noJudgment: null,
+      pullStatus: [{ sat: 's', ok: true, files: [], at: 't' }],
     });
   });
 });

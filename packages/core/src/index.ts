@@ -150,6 +150,7 @@ export {
   parseRollup,
   rollupServedMaps,
   redactRollup,
+  redactTick,
   parseTick,
   hostFreshness,
   isWorkerDead,

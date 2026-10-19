@@ -12,7 +12,7 @@
  * routes keep asking edit on their map, as before (#405). A per-fleet
  * credential (#481) will replace the membership check.
  */
-import { redactRollup } from '@mindblown/core';
+import { redactRollup, redactTick, ROLLUP_STALE_MIN } from '@mindblown/core';
 import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
 import * as fleetDb from '../db/fleet.js';
 import * as fleetEntityDb from '../db/fleets.js';
@@ -32,47 +32,75 @@ export interface TelemetryRead {
   ticks: fleetDb.FleetTickRow[];
 }
 
+/**
+ * Who reads: the fleet, the connected maps they can view, and `full` —
+ * the owner or a reader who sees every connected map. Only a full reader
+ * gets the ticks' prose; the orchestrator writes about all projects.
+ */
+export interface TelemetryScope {
+  fleetId: string;
+  visible: Set<string>;
+  full: boolean;
+}
+
 /** What one reader sees of the fleet's telemetry; `onlyMapId` keeps the hosts serving that map. */
-export async function readTelemetry(
-  fleetId: string,
-  visible: ReadonlySet<string>,
-  window: number | fleetDb.TickListWindow,
-  onlyMapId?: string,
-): Promise<TelemetryRead> {
+export async function readTelemetry(scope: TelemetryScope, window: number | fleetDb.TickListWindow, onlyMapId?: string): Promise<TelemetryRead> {
+  const { fleetId, visible } = scope;
   const [rows, ticks] = await Promise.all([fleetDb.listRollups(fleetId), fleetDb.listTicks(fleetId, window)]);
   const hosts = rows
     .filter((h) => !onlyMapId || h.mapIds.includes(onlyMapId))
     .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: redactRollup(h.rollup, h.mapIds, visible) }));
-  return { fleetId, hosts, ticks };
+  return { fleetId, hosts, ticks: scope.full ? ticks : ticks.map((t) => ({ ...t, payload: redactTick(t.payload) })) };
 }
 
 /** The fleet a reader may read, with the connected maps they can view — or why not (404 hides it). */
-export async function fleetReadScope(userId: string, fleetId: string): Promise<{ fleetId: string; visible: Set<string> } | FleetAccessError> {
+export async function fleetReadScope(userId: string, fleetId: string): Promise<TelemetryScope | FleetAccessError> {
   const view = await getFleetForUser(userId, fleetId);
   if ('status' in view) return view;
-  return { fleetId: view.id, visible: new Set(view.maps.map((m) => m.id)) };
+  return { fleetId: view.id, visible: new Set(view.maps.map((m) => m.id)), full: view.isOwner || view.hiddenMapCount === 0 };
 }
 
 /**
  * Read through a map the reader can view (the route guard checked that):
  * the map's fleet, or null when it has none — an empty read, not an error.
  */
-export async function mapReadScope(userId: string, mapId: string): Promise<{ fleetId: string | null; visible: Set<string> }> {
+export async function mapReadScope(userId: string, mapId: string): Promise<TelemetryScope | { fleetId: null }> {
   const fleetId = await fleetEntityDb.getMapFleetId(mapId);
-  if (!fleetId) return { fleetId: null, visible: new Set([mapId]) };
+  if (!fleetId) return { fleetId: null };
   const scope = await fleetReadScope(userId, fleetId);
-  return 'status' in scope ? { fleetId, visible: new Set([mapId]) } : scope;
+  return 'status' in scope ? { fleetId, visible: new Set([mapId]), full: false } : scope;
 }
 
-/** May this user push telemetry to the fleet? The owner, or edit on a connected map. */
-export async function authorizeFleetPush(userId: string, fleetId: string): Promise<TelemetryError | null> {
+async function canEditAll(userId: string, mapIds: string[]): Promise<boolean> {
+  for (const id of mapIds) {
+    if (!permDb.hasPermission(await permDb.getPermission(id, userId), 'edit')) return false;
+  }
+  return true;
+}
+
+/**
+ * May this user push a rollup naming these maps? The owner, or edit on
+ * every map it names — an editor of one project must not paint another's
+ * card. A fleet the user can't read is a 404.
+ */
+export async function authorizeRollupPush(userId: string, fleetId: string, mapIds: string[]): Promise<TelemetryError | null> {
+  const view = await getFleetForUser(userId, fleetId);
+  if ('status' in view) return view;
+  if (view.isOwner || (mapIds.length > 0 && (await canEditAll(userId, mapIds)))) return null;
+  return { status: 403, code: 'FORBIDDEN', message: "Pushing a rollup needs the fleet's owner or edit on every map it names" };
+}
+
+/**
+ * May this user push a tick? Every cockpit of the fleet shows it, so the
+ * owner, or edit on every connected map (hidden ones included).
+ */
+export async function authorizeTickPush(userId: string, fleetId: string): Promise<TelemetryError | null> {
   const view = await getFleetForUser(userId, fleetId);
   if ('status' in view) return view;
   if (view.isOwner) return null;
-  for (const m of view.maps) {
-    if (permDb.hasPermission(await permDb.getPermission(m.id, userId), 'edit')) return null;
-  }
-  return { status: 403, code: 'FORBIDDEN', message: "Pushing fleet telemetry needs the fleet's owner or edit on one of its maps" };
+  const all = (await fleetEntityDb.listFleetMaps(fleetId)).map((m) => m.id);
+  if (all.length > 0 && (await canEditAll(userId, all))) return null;
+  return { status: 403, code: 'FORBIDDEN', message: "Pushing an orchestrator tick needs the fleet's owner or edit on every map of the fleet" };
 }
 
 /** The map's fleet for a push through the map route — 409 when it has none. */
@@ -100,6 +128,19 @@ export async function pushRollup(fleetId: string, rollup: FleetRollup, viaMapId:
     const stray = rollup.maps.filter((id) => !connected.has(id));
     if (stray.length > 0) {
       return { status: 400, code: 'VALIDATION_ERROR', message: `Rollup names maps not connected to this fleet: ${stray.join(', ')}` };
+    }
+  } else if (viaMapId) {
+    // A v1 host that reports once per map would overwrite its own row for
+    // the other map every push — the card flaps. One live row per host per
+    // fleet: the second map is refused until the host sends one v2 rollup.
+    const prev = await fleetDb.getRollupOrigin(fleetId, rollup.host);
+    const fresh = prev && Date.now() - new Date(prev.receivedAt).getTime() < ROLLUP_STALE_MIN * 60_000;
+    if (prev && fresh && prev.viaMapId && prev.viaMapId !== viaMapId) {
+      return {
+        status: 409,
+        code: 'HOST_SERVES_SEVERAL_MAPS',
+        message: `Host ${rollup.host} already reports for map ${prev.viaMapId} in this fleet. A host serving several maps sends one v2 rollup (maps[]) to /api/fleets/${fleetId}/fleet-status/${rollup.host}.`,
+      };
     }
   }
   const row = await fleetDb.upsertRollup(fleetId, rollup, viaMapId);
