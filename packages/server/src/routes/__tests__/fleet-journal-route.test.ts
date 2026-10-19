@@ -16,7 +16,12 @@ vi.mock('../../services/fleetJournal.js', async (importOriginal) => {
   return { ...actual, loadFleetJournal: (...args: unknown[]) => loadMock(...args) };
 });
 
-import { fleetJournalRoutes } from '../fleetJournal.js';
+const FLEET_ID = 'ffff-ffff-ffff-ffff';
+vi.mock('../../db/fleets.js', () => ({ getMapFleetId: async () => 'ffff-ffff-ffff-ffff' }));
+const fleetView = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock('../../services/fleets.js', () => ({ getFleetForUser: async () => fleetView.value }));
+
+import { fleetJournalRoutes, fleetJournalByFleetRoutes } from '../fleetJournal.js';
 import { parseJournalWindow } from '../../services/fleetJournal.js';
 
 const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
@@ -27,6 +32,7 @@ async function buildApp(): Promise<FastifyInstance> {
     req.userId = 'user-1';
   });
   await app.register(fleetJournalRoutes);
+  await app.register(fleetJournalByFleetRoutes);
   return app;
 }
 
@@ -41,8 +47,9 @@ describe('GET /api/maps/:id/fleet-journal', () => {
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet-journal?from=2026-09-02T15:00:00Z&to=2026-09-03T05:00:00Z` });
     await app.close();
     expect(res.statusCode).toBe(200);
-    const [mapId, from, to] = loadMock.mock.calls[0] as [string, Date, Date];
-    expect(mapId).toBe(MAP_ID);
+    const [scope, from, to] = loadMock.mock.calls[0] as [{ mapIds: string[]; fleetId: string }, Date, Date];
+    // The map's events, its fleet's ticks (#479).
+    expect(scope).toEqual({ mapIds: [MAP_ID], fleetId: FLEET_ID });
     expect(from.toISOString()).toBe('2026-09-02T15:00:00.000Z');
     expect(to.toISOString()).toBe('2026-09-03T05:00:00.000Z');
     expect(res.json().journal.totals.ticks).toBe(0);
@@ -55,9 +62,23 @@ describe('GET /api/maps/:id/fleet-journal', () => {
     const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_ID}/fleet-journal` });
     await app.close();
     expect(res.statusCode).toBe(200);
-    const [, from, to] = loadMock.mock.calls[0] as [string, Date, Date];
+    const [, from, to] = loadMock.mock.calls[0] as [unknown, Date, Date];
     expect(to.getTime()).toBeGreaterThanOrEqual(before);
     expect(to.getTime() - from.getTime()).toBe(24 * 3_600_000);
+  });
+
+  it('the fleet route reads the connected maps the reader can view, tagged, and names them', async () => {
+    fleetView.value = { id: FLEET_ID, maps: [{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }] };
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET_ID}/fleet-journal` });
+    fleetView.value = { status: 404, code: 'FLEET_NOT_FOUND', message: 'Fleet x not found' };
+    const hidden = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET_ID}/fleet-journal` });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(loadMock.mock.calls[0][0]).toEqual({ mapIds: ['m1', 'm2'], fleetId: FLEET_ID, tagMaps: true });
+    expect(res.json().maps).toEqual([{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }]);
+    expect(hidden.statusCode).toBe(404);
+    expect(loadMock).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a bad date, an inverted window and one over 31 days', async () => {

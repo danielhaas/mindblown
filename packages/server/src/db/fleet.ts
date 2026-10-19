@@ -1,16 +1,19 @@
 /**
- * Fleet telemetry store — last-known rollup per (map, host) and the
- * orchestrator's recent ticks.
+ * Fleet telemetry store — last-known rollup per (fleet, host) and the
+ * orchestrator's recent ticks, keyed by fleet since #479.
  *
  * Snapshots, not a register: a rollup row is overwritten on every push,
  * a tick row is appended and old ones are trimmed. MindBlown never
  * derives fleet topology from this — a host that stops pushing simply
  * goes stale (the card says so) and one that never pushed is unknown.
+ *
+ * (db/fleets.ts, plural, is the fleet entity itself.)
  */
 import { and, desc, eq, gte, lte, sql } from 'drizzle-orm';
+import { rollupServedMaps } from '@mindblown/core';
+import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
 import { db } from './connection.js';
 import { fleetStatus, fleetTicks } from './schema.js';
-import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
 
 /**
  * Ticks are kept by AGE, not by count: the question the history answers is
@@ -30,6 +33,8 @@ export interface FleetStatusRow {
   host: string;
   generatedAt: string;
   receivedAt: string;
+  /** The maps this host serves: v2 names them, v1 serves the map it was pushed for. */
+  mapIds: string[];
   rollup: FleetRollup;
 }
 
@@ -40,21 +45,22 @@ export interface FleetTickRow {
   payload: FleetTickPayload;
 }
 
-export async function upsertRollup(mapId: string, rollup: FleetRollup): Promise<FleetStatusRow> {
+/** `viaMapId` = the map route the rollup came in through; null for the fleet route. */
+export async function upsertRollup(fleetId: string, rollup: FleetRollup, viaMapId: string | null): Promise<FleetStatusRow> {
   const generatedAt = new Date(rollup.generated_at);
   const [row] = await db
     .insert(fleetStatus)
-    .values({ mapId, host: rollup.host, generatedAt, payload: rollup })
+    .values({ fleetId, host: rollup.host, mapId: viaMapId, generatedAt, payload: rollup })
     .onConflictDoUpdate({
-      target: [fleetStatus.mapId, fleetStatus.host],
-      set: { generatedAt, payload: rollup, receivedAt: sql`now()` },
+      target: [fleetStatus.fleetId, fleetStatus.host],
+      set: { mapId: viaMapId, generatedAt, payload: rollup, receivedAt: sql`now()` },
     })
     .returning();
   return toStatusRow(row);
 }
 
-export async function listRollups(mapId: string): Promise<FleetStatusRow[]> {
-  const rows = await db.select().from(fleetStatus).where(eq(fleetStatus.mapId, mapId));
+export async function listRollups(fleetId: string): Promise<FleetStatusRow[]> {
+  const rows = await db.select().from(fleetStatus).where(eq(fleetStatus.fleetId, fleetId));
   return rows.map(toStatusRow).sort((a, b) => a.host.localeCompare(b.host));
 }
 
@@ -63,16 +69,16 @@ export async function listRollups(mapId: string): Promise<FleetStatusRow[]> {
  * caller's `tick_at`: an orchestrator with a wrong clock could otherwise
  * pin "latest tick" forever and push real ticks out of the window.
  */
-export async function insertTick(mapId: string, payload: FleetTickPayload, tickAt: Date): Promise<FleetTickRow> {
-  const [row] = await db.insert(fleetTicks).values({ mapId, tickAt, payload }).returning();
+export async function insertTick(fleetId: string, payload: FleetTickPayload, tickAt: Date, viaMapId: string | null): Promise<FleetTickRow> {
+  const [row] = await db.insert(fleetTicks).values({ fleetId, mapId: viaMapId, tickAt, payload }).returning();
   // Trim on every insert — one statement, no cron: older than the window,
-  // or beyond the hard cap counted from the newest.
+  // or beyond the hard cap counted from the newest. Per fleet (#479).
   await db.execute(sql`
     DELETE FROM fleet_ticks
-    WHERE map_id = ${mapId}
+    WHERE fleet_id = ${fleetId}
       AND (
         received_at < now() - make_interval(days => ${TICK_RETENTION_DAYS})
-        OR id NOT IN (SELECT id FROM fleet_ticks WHERE map_id = ${mapId} ORDER BY received_at DESC LIMIT ${TICK_HARD_CAP})
+        OR id NOT IN (SELECT id FROM fleet_ticks WHERE fleet_id = ${fleetId} ORDER BY received_at DESC LIMIT ${TICK_HARD_CAP})
       )
   `);
   return toTickRow(row);
@@ -87,12 +93,12 @@ export interface TickListWindow {
 
 /**
  * Newest first, capped by `limit`. A plain number is the pre-history
- * signature (`listTicks(mapId, 20)`); the window form is what the
+ * signature (`listTicks(fleetId, 20)`); the window form is what the
  * `?since=` read uses.
  */
-export async function listTicks(mapId: string, window: number | TickListWindow = 20): Promise<FleetTickRow[]> {
+export async function listTicks(fleetId: string, window: number | TickListWindow = 20): Promise<FleetTickRow[]> {
   const w = typeof window === 'number' ? { limit: window } : window;
-  const conds = [eq(fleetTicks.mapId, mapId)];
+  const conds = [eq(fleetTicks.fleetId, fleetId)];
   if (w.since) conds.push(gte(fleetTicks.receivedAt, w.since));
   if (w.until) conds.push(lte(fleetTicks.receivedAt, w.until));
   const rows = await db
@@ -105,11 +111,13 @@ export async function listTicks(mapId: string, window: number | TickListWindow =
 }
 
 function toStatusRow(r: typeof fleetStatus.$inferSelect): FleetStatusRow {
+  const rollup = r.payload as FleetRollup;
   return {
     host: r.host,
     generatedAt: r.generatedAt.toISOString(),
     receivedAt: r.receivedAt.toISOString(),
-    rollup: r.payload as FleetRollup,
+    mapIds: rollupServedMaps(rollup, r.mapId),
+    rollup,
   };
 }
 

@@ -87,6 +87,8 @@ export interface FleetWorkerStatus {
   worker?: string;
   pane?: string;
   runner?: string;
+  /** Rollup v2 (#479): which agent runs this worker — `claude-code`, `qwen-code`, … Shown verbatim. */
+  agent?: string;
   model?: string;
   account?: string;
   profile?: string;
@@ -95,7 +97,11 @@ export interface FleetWorkerStatus {
   state_since?: string | null;
   last_activity?: string | null;
   ctx_pct?: number | null;
-  claim?: { mapId?: string; nodeId?: string; title?: string } | null;
+  /**
+   * `redacted` is set by the server on a read (#479): the claim is on a map
+   * the reader can't view, so its map, node and title were removed.
+   */
+  claim?: { mapId?: string; nodeId?: string; title?: string; redacted?: true } | null;
   limit_reset_at?: string | null;
   /** Set by the satellite: state says working but nothing moved past the threshold. */
   derived_dead?: boolean;
@@ -105,12 +111,18 @@ export interface FleetWorkerStatus {
   blocked_nodes?: { node: string; at: string }[];
 }
 
-/** One host's rollup (`rollup/<host>.json`, v1). */
+/**
+ * One host's rollup (`rollup/<host>.json`). v1 is pushed per map and
+ * serves that map; v2 (#479) is pushed once per fleet and names the maps
+ * the host serves in `maps`. Everything else is shared.
+ */
 export interface FleetRollup {
   v: number;
   host: string;
   generated_at: string;
   map_id?: string;
+  /** v2: the maps this host takes tickets from. */
+  maps?: string[];
   /** Non-null = host is draining (DRAIN file), string = the reason. */
   draining?: string | null;
   workers: FleetWorkerStatus[];
@@ -159,7 +171,40 @@ export function parseRollup(x: unknown): FleetRollup | null {
   const workers = r.workers.filter(
     (w): w is FleetWorkerStatus => !!w && typeof w === 'object' && typeof (w as FleetWorkerStatus).session === 'string' && typeof (w as FleetWorkerStatus).state === 'string',
   );
-  return { ...(r as unknown as FleetRollup), v: typeof r.v === 'number' ? r.v : 1, workers };
+  const out: FleetRollup = { ...(r as unknown as FleetRollup), v: typeof r.v === 'number' ? r.v : 1, workers };
+  if (r.maps !== undefined) {
+    if (!Array.isArray(r.maps)) return null;
+    out.maps = [...new Set(r.maps.filter((m): m is string => typeof m === 'string' && m !== ''))];
+  }
+  return out;
+}
+
+/**
+ * The maps a rollup reports for: v2 names them; a v1 rollup serves the
+ * single map it was pushed for (`pushedFor`, the map route's id).
+ */
+export function rollupServedMaps(rollup: FleetRollup, pushedFor: string | null): string[] {
+  if (rollup.maps && rollup.maps.length > 0) return rollup.maps;
+  const one = rollup.map_id ?? pushedFor;
+  return one ? [one] : [];
+}
+
+/**
+ * A rollup as a reader who can view only `visible` may see it (#479): maps
+ * they can't view drop out of `maps`, and a claim on one becomes
+ * `{ redacted: true }`. A claim that names no map belongs to the host's
+ * only served map; with several, it can't be placed and is redacted too.
+ */
+export function redactRollup(rollup: FleetRollup, served: string[], visible: ReadonlySet<string>): FleetRollup {
+  const workers = rollup.workers.map((w) => {
+    if (!w.claim) return w;
+    const mapId = w.claim.mapId ?? (served.length === 1 ? served[0] : null);
+    return mapId && visible.has(mapId) ? w : { ...w, claim: { redacted: true as const } };
+  });
+  const out: FleetRollup = { ...rollup, workers };
+  if (rollup.maps) out.maps = rollup.maps.filter((m) => visible.has(m));
+  if (rollup.map_id && !visible.has(rollup.map_id)) delete out.map_id;
+  return out;
 }
 
 /** Minimal shape check for an incoming tick. */
@@ -247,7 +292,7 @@ export function summarizeFleet(
       for (const w of rollup.workers) {
         const s = effectiveWorkerState(w, now);
         counts[s] = (counts[s] ?? 0) + 1;
-        if (w.claim && (w.claim.nodeId || w.claim.title)) claims += 1;
+        if (w.claim && (w.claim.nodeId || w.claim.title || w.claim.redacted)) claims += 1;
       }
       return {
         host: rollup.host,

@@ -608,29 +608,35 @@ export const lintDismissals = pgTable('lint_dismissals', {
 });
 
 // ── Leidang fleet telemetry ───────────────────────────────────────
-// Last-known satellite rollup per (map, host) — overwritten on every push
+// Last-known satellite rollup per (fleet, host) — overwritten on every push
 // (rollup.sh, every ~2 min). A row that stops being refreshed IS the
 // host-down signal; nothing here is a session register. `payload` is the
-// rollup v1 document verbatim (core `FleetRollup`).
+// rollup document verbatim (core `FleetRollup`, v1 or v2). Keyed by fleet
+// since #479: a host reports once for every project it serves. `map_id` is
+// the map route a rollup came in through (what a v1 rollup serves); null
+// when pushed to the fleet route.
 
 export const fleetStatus = pgTable(
   'fleet_status',
   {
-    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
     host: text('host').notNull(),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'set null' }),
     generatedAt: timestamp('generated_at', { withTimezone: true }).notNull(),
     receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
     payload: jsonb('payload').notNull(),
   },
-  (t) => [primaryKey({ columns: [t.mapId, t.host] })],
+  (t) => [primaryKey({ columns: [t.fleetId, t.host] })],
 );
 
 // One row per orchestrator tick (decision.json + the numbers it judged
-// from); trimmed per map on insert to TICK_RETENTION_DAYS of received_at
-// plus a TICK_HARD_CAP row guard (db/fleet.ts).
+// from); trimmed per fleet on insert to TICK_RETENTION_DAYS of received_at
+// plus a TICK_HARD_CAP row guard (db/fleet.ts). `map_id` = the map route
+// it came in through, if any (#479).
 export const fleetTicks = pgTable('fleet_ticks', {
   id: uuid('id').primaryKey().defaultRandom(),
-  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').references(() => maps.id, { onDelete: 'set null' }),
   tickAt: timestamp('tick_at', { withTimezone: true }).notNull(),
   receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
   payload: jsonb('payload').notNull(),

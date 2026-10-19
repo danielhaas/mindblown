@@ -1,0 +1,114 @@
+/**
+ * Fleet telemetry (#479) — rollups and orchestrator ticks belong to a
+ * fleet, not a map. Shared by the REST routes (fleet routes and the old
+ * map routes that forward to the map's fleet) and the in-app chat backend.
+ *
+ * Reads follow the fleet read rule (services/fleets.ts): the owner, or
+ * anyone with view on a connected map. A worker's claim on a map the
+ * reader can't view is redacted (core `redactRollup`). A read through a
+ * map narrows the hosts to those serving that map.
+ *
+ * Pushes need the fleet owner or edit on a connected map — the map
+ * routes keep asking edit on their map, as before (#405). A per-fleet
+ * credential (#481) will replace the membership check.
+ */
+import { redactRollup } from '@mindblown/core';
+import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
+import * as fleetDb from '../db/fleet.js';
+import * as fleetEntityDb from '../db/fleets.js';
+import * as permDb from '../db/permissions.js';
+import { broadcast } from '../ws.js';
+import { getFleetForUser, type FleetAccessError } from './fleets.js';
+
+export interface TelemetryError {
+  status: 400 | 403 | 404 | 409;
+  code: string;
+  message: string;
+}
+
+export interface TelemetryRead {
+  fleetId: string | null;
+  hosts: fleetDb.FleetStatusRow[];
+  ticks: fleetDb.FleetTickRow[];
+}
+
+/** What one reader sees of the fleet's telemetry; `onlyMapId` keeps the hosts serving that map. */
+export async function readTelemetry(
+  fleetId: string,
+  visible: ReadonlySet<string>,
+  window: number | fleetDb.TickListWindow,
+  onlyMapId?: string,
+): Promise<TelemetryRead> {
+  const [rows, ticks] = await Promise.all([fleetDb.listRollups(fleetId), fleetDb.listTicks(fleetId, window)]);
+  const hosts = rows
+    .filter((h) => !onlyMapId || h.mapIds.includes(onlyMapId))
+    .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: redactRollup(h.rollup, h.mapIds, visible) }));
+  return { fleetId, hosts, ticks };
+}
+
+/** The fleet a reader may read, with the connected maps they can view — or why not (404 hides it). */
+export async function fleetReadScope(userId: string, fleetId: string): Promise<{ fleetId: string; visible: Set<string> } | FleetAccessError> {
+  const view = await getFleetForUser(userId, fleetId);
+  if ('status' in view) return view;
+  return { fleetId: view.id, visible: new Set(view.maps.map((m) => m.id)) };
+}
+
+/**
+ * Read through a map the reader can view (the route guard checked that):
+ * the map's fleet, or null when it has none — an empty read, not an error.
+ */
+export async function mapReadScope(userId: string, mapId: string): Promise<{ fleetId: string | null; visible: Set<string> }> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return { fleetId: null, visible: new Set([mapId]) };
+  const scope = await fleetReadScope(userId, fleetId);
+  return 'status' in scope ? { fleetId, visible: new Set([mapId]) } : scope;
+}
+
+/** May this user push telemetry to the fleet? The owner, or edit on a connected map. */
+export async function authorizeFleetPush(userId: string, fleetId: string): Promise<TelemetryError | null> {
+  const view = await getFleetForUser(userId, fleetId);
+  if ('status' in view) return view;
+  if (view.isOwner) return null;
+  for (const m of view.maps) {
+    if (permDb.hasPermission(await permDb.getPermission(m.id, userId), 'edit')) return null;
+  }
+  return { status: 403, code: 'FORBIDDEN', message: "Pushing fleet telemetry needs the fleet's owner or edit on one of its maps" };
+}
+
+/** The map's fleet for a push through the map route — 409 when it has none. */
+export async function fleetForMapPush(mapId: string): Promise<string | TelemetryError> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (fleetId) return fleetId;
+  return {
+    status: 409,
+    code: 'NO_FLEET',
+    message: `Map ${mapId} is not connected to a fleet. Connect it first (map Settings → Fleet, or update_map fleetId), then push again.`,
+  };
+}
+
+/** Tell every open view of the fleet's maps that the telemetry moved. */
+async function broadcastFleet(fleetId: string, event: Record<string, unknown>): Promise<void> {
+  for (const m of await fleetEntityDb.listFleetMaps(fleetId)) broadcast(m.id, { type: 'fleet:updated', ...event });
+}
+
+export async function pushRollup(fleetId: string, rollup: FleetRollup, viaMapId: string | null): Promise<fleetDb.FleetStatusRow | TelemetryError> {
+  // A v2 rollup may only name maps of this fleet — it is what the reads
+  // filter and redact by, so a stray id would show the host on a project
+  // it does not work for.
+  if (rollup.maps && rollup.maps.length > 0) {
+    const connected = new Set((await fleetEntityDb.listFleetMaps(fleetId)).map((m) => m.id));
+    const stray = rollup.maps.filter((id) => !connected.has(id));
+    if (stray.length > 0) {
+      return { status: 400, code: 'VALIDATION_ERROR', message: `Rollup names maps not connected to this fleet: ${stray.join(', ')}` };
+    }
+  }
+  const row = await fleetDb.upsertRollup(fleetId, rollup, viaMapId);
+  await broadcastFleet(fleetId, { kind: 'rollup', host: row.host, receivedAt: row.receivedAt });
+  return row;
+}
+
+export async function pushTick(fleetId: string, payload: FleetTickPayload, tickAt: Date, viaMapId: string | null): Promise<fleetDb.FleetTickRow> {
+  const row = await fleetDb.insertTick(fleetId, payload, tickAt, viaMapId);
+  await broadcastFleet(fleetId, { kind: 'tick', tickAt: row.tickAt });
+  return row;
+}

@@ -40,10 +40,15 @@ function tickLine(t: JournalTick): string {
   return bits.join(' · ');
 }
 
-/** Text rendering — exported so the chat backend and tests share it. */
-export function renderFleetJournal(j: FleetJournal): string {
+/**
+ * Text rendering — exported so the chat backend and tests share it. With
+ * `maps` (a fleet-wide read, #479) every entry is prefixed with its map.
+ */
+export function renderFleetJournal(j: FleetJournal, maps?: { id: string; name: string }[]): string {
   const t = j.totals;
   const lines: string[] = [];
+  const names = new Map((maps ?? []).map((m) => [m.id, m.name]));
+  const on = (x: { mapId?: string }) => (x.mapId && names.has(x.mapId) ? `[${names.get(x.mapId)}] ` : '');
   lines.push(`Fleet journal ${j.window.from.slice(0, 16).replace('T', ' ')} → ${j.window.to.slice(0, 16).replace('T', ' ')} (UTC)`);
   lines.push(
     `${t.ticks} ticks · cap ${t.capMin ?? '?'}${t.capMax !== null && t.capMax !== t.capMin ? `–${t.capMax}` : ''} · claims max ${t.claimsMax ?? '?'} · ` +
@@ -76,7 +81,7 @@ export function renderFleetJournal(j: FleetJournal): string {
     const issues = d.issues.length ? ` — ${d.issues.map((i) => i.externalId).join(', ')}` : '';
     // No worker on record = closed by a person, or before the claim trail existed.
     const by = d.deliveredBy ? ` — by ${worker(d.deliveredBy)}` : '';
-    lines.push(`  ${dayOf(d.completedAt)} ${hhmm(d.completedAt)}  ${pr}: ${d.text}${by} · ${eff}${d.versionName ? ` · ${d.versionName}` : ''}${issues}`);
+    lines.push(`  ${dayOf(d.completedAt)} ${hhmm(d.completedAt)}  ${on(d)}${pr}: ${d.text}${by} · ${eff}${d.versionName ? ` · ${d.versionName}` : ''}${issues}`);
   }
   const closed = j.delivered.flatMap((d) => d.issues.map((i) => i.externalId));
   if (closed.length > 0) {
@@ -88,16 +93,16 @@ export function renderFleetJournal(j: FleetJournal): string {
   if (j.claims.length > 0 || j.releases.length > 0) {
     lines.push('');
     lines.push(`## Picked up (${j.claims.length}) / handed back (${j.releases.length})`);
-    for (const c of j.claims) lines.push(`  ${hhmm(c.at)}  ${worker(c)} picked up ${c.text} (${c.via})`);
+    for (const c of j.claims) lines.push(`  ${hhmm(c.at)}  ${on(c)}${worker(c)} picked up ${c.text} (${c.via})`);
     for (const r of j.releases) {
-      lines.push(`  ${hhmm(r.at)}  ${worker(r)} handed back ${r.text} — ${r.reason}${r.heldMinutes !== null ? ` after ${r.heldMinutes} min` : ''}${r.note ? `: ${r.note}` : ''}`);
+      lines.push(`  ${hhmm(r.at)}  ${on(r)}${worker(r)} handed back ${r.text} — ${r.reason}${r.heldMinutes !== null ? ` after ${r.heldMinutes} min` : ''}${r.note ? `: ${r.note}` : ''}`);
     }
   }
 
   if (j.blocked.length > 0) {
     lines.push('');
     lines.push(`## Blocked (${j.blocked.length})`);
-    for (const b of j.blocked) lines.push(`  ${hhmm(b.at)}  ${b.text}${b.reason ? ` — ${b.reason}` : ''}`);
+    for (const b of j.blocked) lines.push(`  ${hhmm(b.at)}  ${on(b)}${b.text}${b.reason ? ` — ${b.reason}` : ''}`);
   }
 
   lines.push('');
@@ -112,7 +117,7 @@ export function renderFleetJournal(j: FleetJournal): string {
     lines.push(`  by priority: ${tally(t.createdByPriority)}`);
     for (const c of j.created) {
       const meta = [c.priority, c.effortEstimate !== null ? `est ${c.effortEstimate}` : null, c.versionName].filter(Boolean).join(' · ');
-      lines.push(`  ${hhmm(c.createdAt)}  ${c.text}${meta ? ` [${meta}]` : ''}${c.createdBy ? ` — ${c.createdBy}` : ''}`);
+      lines.push(`  ${hhmm(c.createdAt)}  ${on(c)}${c.text}${meta ? ` [${meta}]` : ''}${c.createdBy ? ` — ${c.createdBy}` : ''}`);
     }
   } else {
     lines.push('  none');
@@ -121,7 +126,7 @@ export function renderFleetJournal(j: FleetJournal): string {
   if (j.knobWrites.length > 0) {
     lines.push('');
     lines.push(`## Knob writes (${j.knobWrites.length})`);
-    for (const k of j.knobWrites) lines.push(`  ${hhmm(k.at)}  ${k.field}: ${fmtVal(k.oldValue)} → ${fmtVal(k.newValue)}${k.userName ? ` — ${k.userName}` : k.userId ? ` — ${k.userId.slice(0, 8)}` : ' — fleet'}`);
+    for (const k of j.knobWrites) lines.push(`  ${hhmm(k.at)}  ${on(k)}${k.field}: ${fmtVal(k.oldValue)} → ${fmtVal(k.newValue)}${k.userName ? ` — ${k.userName}` : k.userId ? ` — ${k.userId.slice(0, 8)}` : ' — fleet'}`);
   }
 
   return lines.join('\n');
@@ -139,9 +144,12 @@ export const fleetJournalTool = defineTool({
     'the trailing 24 h; `preset` = last-night (yesterday 17:00 → today 07:00',
     'local), 24h, 7d; or explicit `from`/`to` (ISO 8601, max 31 days). Use',
     'this for "what happened last night?" instead of reading ticks one by one.',
+    'Pass `mapId` for one project, or `fleetId` for every project of a fleet',
+    '(each entry then names its map).',
   ].join('\n'),
   schema: {
-    mapId: z.string().describe('The map ID the fleet pulls from'),
+    mapId: z.string().optional().describe('The map ID the fleet pulls from — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('A fleet ID (list_fleets): the journal across all its maps you can view'),
     preset: z.enum(['last-night', '24h', '7d']).optional().describe('Window preset; ignored when from/to are given'),
     timeZone: z
       .string()
@@ -150,14 +158,15 @@ export const fleetJournalTool = defineTool({
     from: z.string().optional().describe('Window start, ISO 8601'),
     to: z.string().optional().describe('Window end, ISO 8601 (default now)'),
   },
-  handler: async (backend, { mapId, preset, timeZone, from, to }) => {
+  handler: async (backend, { mapId, fleetId, preset, timeZone, from, to }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
     let opts: { from?: string; to?: string } = { from, to };
     if (!from && !to && preset) {
       const w = journalWindow(preset, new Date(), timeZone);
       opts = { from: w.from.toISOString(), to: w.to.toISOString() };
     }
-    const r = await backend.getFleetJournal(mapId, opts);
-    return renderFleetJournal(r.journal);
+    const r = fleetId ? await backend.getFleetJournalForFleet(fleetId, opts) : await backend.getFleetJournal(mapId!, opts);
+    return renderFleetJournal(r.journal, r.maps);
   },
 });
 

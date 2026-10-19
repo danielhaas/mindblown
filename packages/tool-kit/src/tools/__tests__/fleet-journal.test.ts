@@ -75,4 +75,28 @@ describe('fleet_journal tool', () => {
     expect(Date.parse(opts.to) - Date.parse(opts.from)).toBe(7 * 86_400_000);
     expect(out).toContain('Fleet journal');
   });
+
+  it('with fleetId reads the whole fleet and prefixes every entry with its map (#479)', async () => {
+    const tagged: FleetJournal = {
+      ...journal,
+      delivered: journal.delivered.map((d) => ({ ...d, mapId: 'm1' })),
+      claims: journal.claims.map((c) => ({ ...c, mapId: 'm2' })),
+    };
+    const getFleetJournalForFleet = vi.fn(async (): Promise<FleetJournalResult> => ({
+      journal: tagged,
+      maps: [{ id: 'm1', name: 'Alpha' }, { id: 'm2', name: 'Beta' }],
+      now: '2026-09-03T05:00:00Z',
+    }));
+    const backend = { getFleetJournalForFleet } as unknown as ToolBackend;
+    const out = await fleetJournalTool.handler(backend, { fleetId: 'f1' } as never);
+    expect(getFleetJournalForFleet).toHaveBeenCalledWith('f1', { from: undefined, to: undefined });
+    expect(out).toContain('[Alpha] PR #10256');
+    expect(out).toContain('[Beta] worker-2@sat3 picked up');
+  });
+
+  it('refuses neither or both of mapId / fleetId', async () => {
+    const backend = {} as ToolBackend;
+    await expect(fleetJournalTool.handler(backend, {} as never)).rejects.toThrow(/exactly one/);
+    await expect(fleetJournalTool.handler(backend, { mapId: 'm', fleetId: 'f' } as never)).rejects.toThrow(/exactly one/);
+  });
 });

@@ -1264,6 +1264,43 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── Fleet telemetry keyed by fleet (#479) ─────────────────────
+  // A host reports once for every project it serves, and one orchestrator
+  // judges the whole fleet: fleet_status moves to (fleet_id, host),
+  // fleet_ticks to fleet_id. map_id stays as "the map route it came in
+  // through" (nullable, SET NULL). Existing rows move onto their map's
+  // fleet (the backfill above gave every map with telemetry one); rows of
+  // a map without a fleet are snapshots nothing can read any more — gone.
+  // Two maps of one fleet reporting the same host keep the newest row.
+  await db.execute(sql`ALTER TABLE fleet_status ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`ALTER TABLE fleet_ticks ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'fleet_telemetry_by_fleet_v1') THEN
+        UPDATE fleet_status s SET fleet_id = m.fleet_id FROM maps m WHERE m.id = s.map_id AND s.fleet_id IS NULL;
+        UPDATE fleet_ticks t SET fleet_id = m.fleet_id FROM maps m WHERE m.id = t.map_id AND t.fleet_id IS NULL;
+        DELETE FROM fleet_status WHERE fleet_id IS NULL;
+        DELETE FROM fleet_ticks WHERE fleet_id IS NULL;
+        DELETE FROM fleet_status a USING fleet_status b
+          WHERE a.fleet_id = b.fleet_id AND a.host = b.host
+            AND (a.received_at < b.received_at OR (a.received_at = b.received_at AND a.map_id < b.map_id));
+        ALTER TABLE fleet_status DROP CONSTRAINT IF EXISTS fleet_status_pkey;
+        ALTER TABLE fleet_status ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE fleet_status ADD PRIMARY KEY (fleet_id, host);
+        ALTER TABLE fleet_status DROP CONSTRAINT IF EXISTS fleet_status_map_id_fkey;
+        ALTER TABLE fleet_status ADD CONSTRAINT fleet_status_map_id_fkey FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE SET NULL;
+        ALTER TABLE fleet_ticks ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE fleet_ticks DROP CONSTRAINT IF EXISTS fleet_ticks_map_id_fkey;
+        ALTER TABLE fleet_ticks ADD CONSTRAINT fleet_ticks_map_id_fkey FOREIGN KEY (map_id) REFERENCES maps(id) ON DELETE SET NULL;
+        INSERT INTO data_migrations (id) VALUES ('fleet_telemetry_by_fleet_v1');
+      END IF;
+    END $$;
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS fleet_ticks_fleet_received_idx ON fleet_ticks (fleet_id, received_at DESC)
+  `);
+
   // ── nodes.started_at ───────────────────────────────────────────
   // When work on a node started — stamped by updateNode on the first move
   // into an 'in_progress' category or percentComplete > 0. Kanban shows it
