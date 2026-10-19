@@ -51,6 +51,7 @@ vi.mock('../../db/fleets.js', () => ({
   getServiceUserId: async (id: string) => (id === FLEET_ID ? SERVICE_USER : null),
   getFleet: (...a: unknown[]) => db.getFleet(...a),
   listFleetsByOwnerOrIds: (...a: unknown[]) => db.listFleetsByOwnerOrIds(...a),
+  countActiveClaims: async () => 2,
   listFleetMaps: (...a: unknown[]) => db.listFleetMaps(...a),
   createFleet: (...a: unknown[]) => db.createFleet(...a),
   updateFleet: (...a: unknown[]) => db.updateFleet(...a),
@@ -134,7 +135,8 @@ describe('GET /api/fleets/:id', () => {
   it('shows the owner every connected map', async () => {
     const res = await call(OWNER, 'GET', `/api/fleets/${FLEET_ID}`);
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ isOwner: true, hiddenMapCount: 0 });
+    // activeClaims: claims across every connected map, for the cap display (#480).
+    expect(res.json()).toMatchObject({ isOwner: true, hiddenMapCount: 0, activeClaims: 2 });
     expect(res.json().maps.map((m: { id: string }) => m.id)).toEqual([MAP_A, MAP_B]);
   });
 

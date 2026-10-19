@@ -29,6 +29,7 @@ vi.mock('../../db/maps.js', () => ({
 vi.mock('../../db/fleets.js', () => ({
   getFleet: (...args: unknown[]) => getFleetMock(...args),
   getMapFleetId: async () => state.currentFleetId,
+  countActiveClaims: async () => 2,
   listFleetMaps: async () => state.visible.map((m) => ({ id: m.id, name: 'Other', fleetShare: 1, maxActiveClaims: 0, archivedAt: null })),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));

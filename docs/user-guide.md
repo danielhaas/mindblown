@@ -326,6 +326,9 @@ A **fleet** is a group of worker hosts (AI coding agents) that pulls ready ticke
 
 The map's own pull-queue knobs on the Fleet tab -- its cap, gate and policy -- still decide which tickets are handed out and how many at once. A cap of 0 holds the map even when it is connected.
 
+- **One fleet, many projects** -- on a connected map the Fleet tab shows the fleet: its cap against the claims held across all its maps, and each map's share. The workers, the Questions and the journal show **this project** by default; switch to **All projects** to see the whole fleet, each entry labelled with its project. A worker busy on a project you can't view shows as such, without its ticket. **Fleet page →** opens the same view without a map (`?fleet=<id>`).
+- **Fleet keys** -- a fleet's workers sign in with a key of the fleet itself (map Settings → Fleet → Fleet keys, fleet owner only). It reaches exactly the maps connected to the fleet, with edit, and loses a map the moment it is disconnected. A key is shown once; to rotate, issue a new one, switch the workers, revoke the old one.
+
 ---
 
 ## 12. GitHub integration

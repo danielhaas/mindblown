@@ -21,6 +21,7 @@ const s = vi.hoisted(() => ({
 
 vi.mock('../../db/fleets.js', () => ({
   getFleet: async () => ({ id: FLEET_ID, name: 'F', ownerId: 'owner', maxActiveClaims: 4, createdAt: '', updatedAt: '' }),
+  countActiveClaims: async () => 2,
   listFleetMaps: async () => [
     { id: 'map-a', name: 'Alpha', fleetShare: 1, maxActiveClaims: 2, archivedAt: null },
     { id: 'map-b', name: 'Beta', fleetShare: 1, maxActiveClaims: 2, archivedAt: null },

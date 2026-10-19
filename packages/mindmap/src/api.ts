@@ -1040,10 +1040,30 @@ export function revokeFleetCredential(fleetId: string, keyId: string): Promise<v
   return request(`/api/fleets/${fleetId}/credentials/${keyId}`, { method: 'DELETE' });
 }
 
+/** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
+}
+
 // ── Leidang fleet telemetry ──────────────────────────────────────
 
+/**
+ * What a Fleet-tab section reads (#480): one map (`/api/maps/:id/…`, the
+ * fleet narrowed to that map) or the whole fleet (`/api/fleets/:id/…`).
+ * A bare string is a map id — the pre-#480 signature.
+ */
+export type FleetTarget = string | { mapId: string } | { fleetId: string };
+
+function fleetBase(target: FleetTarget): string {
+  if (typeof target === 'string') return `/api/maps/${target}`;
+  return 'fleetId' in target ? `/api/fleets/${target.fleetId}` : `/api/maps/${target.mapId}`;
+}
+
 export interface FleetResponse {
-  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  /** The fleet the telemetry belongs to; null = the map has no fleet. */
+  fleetId?: string | null;
+  /** `mapIds` = the maps the host serves that the reader can view. */
+  hosts: { host: string; generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[];
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock — staleness is judged against it, not the browser's. */
   now: string;
@@ -1060,22 +1080,25 @@ export interface FleetWindowOptions {
 }
 
 /** Last-known satellite rollups + recent orchestrator ticks; `opts` widens the ticks to a history window. */
-export function fetchFleet(mapId: string, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
+export function fetchFleet(target: FleetTarget, opts: FleetWindowOptions = {}): Promise<FleetResponse> {
   const params = new URLSearchParams();
   if (opts.since !== undefined) params.set('since', opts.since);
   if (opts.until !== undefined) params.set('until', opts.until);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  return request<FleetResponse>(`/api/maps/${mapId}/fleet${qs ? `?${qs}` : ''}`);
+  return request<FleetResponse>(`${fleetBase(target)}/fleet${qs ? `?${qs}` : ''}`);
 }
 
 /** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
-export function fetchFleetJournal(mapId: string, opts: { from?: string; to?: string } = {}): Promise<{ journal: FleetJournal; now: string }> {
+export function fetchFleetJournal(
+  target: FleetTarget,
+  opts: { from?: string; to?: string } = {},
+): Promise<{ journal: FleetJournal; now: string; maps?: { id: string; name: string }[] }> {
   const params = new URLSearchParams();
   if (opts.from !== undefined) params.set('from', opts.from);
   if (opts.to !== undefined) params.set('to', opts.to);
   const qs = params.toString();
-  return request(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
+  return request(`${fleetBase(target)}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
 // ── Asks inbox (/leidang-asks) ───────────────────────────────────
@@ -1086,6 +1109,8 @@ export interface AsksResponse {
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
   now: string;
+  /** Fleet read (#480): the maps covered — rows name theirs by `mapId` (null = fleet-level). */
+  maps?: { id: string; name: string }[];
 }
 
 export interface AnswerAskResponse {
@@ -1096,16 +1121,25 @@ export interface AnswerAskResponse {
 }
 
 /** The fleet's open human questions, as the orchestrator last pushed them. */
-export function fetchAsks(mapId: string, opts: { status?: AskStatus | 'all' } = {}): Promise<AsksResponse> {
+export function fetchAsks(target: FleetTarget, opts: { status?: AskStatus | 'all' } = {}): Promise<AsksResponse> {
   const params = new URLSearchParams();
   if (opts.status) params.set('status', opts.status);
   const qs = params.toString();
-  return request<AsksResponse>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+  return request<AsksResponse>(`${fleetBase(target)}/asks${qs ? `?${qs}` : ''}`);
 }
 
 /** Record an answer — the server writes ticket comment + node like leidang-asks-apply. */
 export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AnswerAskResponse> {
   return request<AnswerAskResponse>(`/api/maps/${mapId}/asks/${encodeURIComponent(askId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** Answer through the fleet (#480) — `askMapId` picks the row ('' = fleet-level). */
+export function answerFleetAsk(fleetId: string, askId: string, input: AskAnswerInput, askMapId: string | null): Promise<AnswerAskResponse> {
+  const qs = `?mapId=${encodeURIComponent(askMapId ?? '')}`;
+  return request<AnswerAskResponse>(`/api/fleets/${fleetId}/asks/${encodeURIComponent(askId)}/answer${qs}`, {
     method: 'POST',
     body: JSON.stringify(input),
   });

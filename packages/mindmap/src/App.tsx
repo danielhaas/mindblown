@@ -45,7 +45,7 @@ import { ROLE_CONFIG, ROLE_ORDER, isTabVisible, isPanelVisible } from './roles.j
 import { DigestView } from './DigestView.js';
 import { CockpitView } from './CockpitView.js';
 import { PaceStrip } from './PaceStrip.js';
-import { FleetView } from './FleetView.js';
+import { FleetPage, FleetView } from './FleetView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 
 // ── Health badge colors ────────────────────────────────────────
@@ -1778,6 +1778,14 @@ export function App() {
         <Spinner size={32} />
       </div>
     );
+  }
+
+  // ── Fleet page (#480) ────────────────────────────────────────
+  // ?fleet=<id> without a map: the fleet's workers, Questions and journal
+  // across every project the reader can view. Reached from a map's Fleet tab.
+  const fleetPageId = !currentMapId ? new URLSearchParams(window.location.search).get('fleet') : null;
+  if (fleetPageId) {
+    return <FleetPage fleetId={fleetPageId} />;
   }
 
   // ── Map list view ────────────────────────────────────────────

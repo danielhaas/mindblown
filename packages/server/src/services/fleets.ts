@@ -28,9 +28,11 @@ const notFound = (fleetId: string): FleetAccessError => ({
 });
 
 async function withMaps(fleet: Fleet, userId: string, visibleMapIds: Set<string>): Promise<FleetWithMaps> {
-  const connected = await fleetDb.listFleetMaps(fleet.id);
+  const [connected, activeClaims] = await Promise.all([fleetDb.listFleetMaps(fleet.id), fleetDb.countActiveClaims(fleet.id)]);
   const maps = connected.filter((m) => visibleMapIds.has(m.id));
-  return { ...fleet, maps, hiddenMapCount: connected.length - maps.length, isOwner: fleet.ownerId === userId };
+  // activeClaims is a count across every connected map — capacity, not
+  // which projects; the Fleet tab sets it against the fleet cap (#480).
+  return { ...fleet, maps, hiddenMapCount: connected.length - maps.length, isOwner: fleet.ownerId === userId, activeClaims };
 }
 
 async function visibleMapIdsFor(userId: string): Promise<{ ids: Set<string>; fleetIds: string[] }> {
