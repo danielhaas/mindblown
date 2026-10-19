@@ -1041,6 +1041,11 @@ export function revokeFleetCredential(fleetId: string, keyId: string): Promise<v
 }
 
 /** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+/** Rename a fleet (owner only). */
+export function renameFleet(fleetId: string, name: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
+}
+
 export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
 }

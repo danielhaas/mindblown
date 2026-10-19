@@ -41,7 +41,11 @@ const ENTITY_POLL_MS = 60_000;
  * The fleet as this reader sees it: refetched when telemetry moves and every
  * minute (claims change the count; a failed first load retries).
  */
-function useFleetEntity(fleetId: string | null): { fleet: FleetWithMaps | null; error: string | null } {
+function useFleetEntity(fleetId: string | null): {
+  fleet: FleetWithMaps | null;
+  error: string | null;
+  renamed: (f: FleetWithMaps) => void;
+} {
   const fleetRev = useMindmapStore((s) => s.fleetRev);
   const [fleet, setFleet] = useState<FleetWithMaps | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -68,14 +72,19 @@ function useFleetEntity(fleetId: string | null): { fleet: FleetWithMaps | null; 
       cancelled = true;
     };
   }, [fleetId, fleetRev, poll]);
-  return { fleet, error };
+  // A rename keeps the count this read carried (the PATCH answer has none), and tells the other views.
+  const renamed = (f: FleetWithMaps) => {
+    setFleet((old) => ({ ...f, activeClaims: old?.activeClaims ?? f.activeClaims }));
+    useMindmapStore.setState((s) => ({ fleetRev: s.fleetRev + 1 }));
+  };
+  return { fleet, error, renamed };
 }
 
 export function FleetView() {
   const currentMap = useMindmapStore((s) => s.currentMap);
   const viewRole = useMindmapStore((s) => s.viewRole);
   const fleetId = currentMap?.fleetId ?? null;
-  const { fleet } = useFleetEntity(fleetId);
+  const { fleet, renamed } = useFleetEntity(fleetId);
   const [all, setAll] = useState(false);
   // A map that leaves its fleet drops back to its own view.
   useEffect(() => {
@@ -95,7 +104,7 @@ export function FleetView() {
         {/* Which fleet works this map (#480) — and, without one, the way to
             connect it, before any card explains an empty rollup. */}
         <MapFleetPanel variant="tab" readOnly={readOnly} />
-        {fleet && <FleetOverview fleet={fleet} mapId={currentMap.id} all={all} onAll={setAll} />}
+        {fleet && <FleetOverview fleet={fleet} mapId={currentMap.id} all={all} onAll={setAll} onRenamed={renamed} />}
         {/* The pull queue needs a status workflow; Questions do not (the push
             route never checks it), so only the cards sit behind the gate. */}
         {currentMap.statusWorkflow ? (
@@ -130,14 +139,20 @@ export function FleetView() {
  * way to the fleet page. On the fleet page itself (`mapId` null) the
  * switch is gone — it is always all projects.
  */
-function FleetOverview({ fleet, mapId, all, onAll }: { fleet: FleetWithMaps; mapId: string | null; all: boolean; onAll?: (v: boolean) => void }) {
+function FleetOverview({ fleet, mapId, all, onAll, onRenamed }: {
+  fleet: FleetWithMaps;
+  mapId: string | null;
+  all: boolean;
+  onAll?: (v: boolean) => void;
+  onRenamed?: (f: FleetWithMaps) => void;
+}) {
   const active = fleet.activeClaims ?? null;
   const cap = fleet.maxActiveClaims;
   const full = cap > 0 && active !== null && active >= cap;
   return (
     <section style={{ ...overviewBox, borderColor: full ? '#fed7aa' : '#e2e8f0' }} data-testid="fleet-overview">
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap' }}>
-        <strong style={{ fontSize: 14, color: '#1e293b' }}>{fleet.name}</strong>
+        <FleetName fleet={fleet} onRenamed={onRenamed} />
         <span style={{ fontSize: 13, color: full ? '#9a3412' : '#334155' }} data-testid="fleet-cap">
           <strong>{active ?? '?'}</strong> active {cap > 0 ? <>/ fleet cap <strong>{cap}</strong></> : <span style={{ color: '#64748b' }}>· no fleet-wide cap — each map&apos;s own cap limits it</span>}
         </span>
@@ -172,12 +187,69 @@ function FleetOverview({ fleet, mapId, all, onAll }: { fleet: FleetWithMaps; map
 }
 
 /**
+ * The fleet's name — and, for its owner, a rename in place (Enter saves,
+ * Esc cancels). The server checks ownership again (PATCH /api/fleets/:id).
+ */
+function FleetName({ fleet, onRenamed }: { fleet: FleetWithMaps; onRenamed?: (f: FleetWithMaps) => void }) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const name = <strong style={{ fontSize: 14, color: '#1e293b' }} data-testid="fleet-name">{fleet.name}</strong>;
+  if (!fleet.isOwner || !onRenamed) return name;
+  if (draft === null) {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
+        {name}
+        <button style={linkBtn} onClick={() => { setDraft(fleet.name); setError(null); }} data-testid="fleet-rename">Rename</button>
+      </span>
+    );
+  }
+  const trimmed = draft.trim();
+  const save = async () => {
+    if (busy || !trimmed || trimmed === fleet.name) return setDraft(null);
+    setBusy(true);
+    setError(null);
+    try {
+      onRenamed(await api.renameFleet(fleet.id, trimmed));
+      setDraft(null);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Renaming failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') void save();
+          if (e.key === 'Escape') setDraft(null);
+        }}
+        maxLength={200}
+        autoFocus
+        disabled={busy}
+        aria-label="Fleet name"
+        style={{ fontSize: 13, padding: '2px 6px', border: '1px solid #cbd5e1', borderRadius: 6, fontFamily: 'inherit' }}
+        data-testid="fleet-name-input"
+      />
+      <button style={{ ...seg, ...segOn, borderRadius: 6 }} disabled={busy || !trimmed} onClick={() => void save()} data-testid="fleet-name-save">
+        {busy ? 'Saving…' : 'Save'}
+      </button>
+      <button style={linkBtn} onClick={() => setDraft(null)}>Cancel</button>
+      {error && <span style={{ fontSize: 12, color: '#991b1b' }}>{error}</span>}
+    </span>
+  );
+}
+
+/**
  * The fleet page (`?fleet=<id>`, #480): the fleet without a map context —
  * its workers, the Questions and the journal of every project the reader
  * can view. The map knobs (cap, gate, policy) stay on each map's tab.
  */
 export function FleetPage({ fleetId }: { fleetId: string }) {
-  const { fleet, error } = useFleetEntity(fleetId);
+  const { fleet, error, renamed } = useFleetEntity(fleetId);
   const scope = useMemo<FleetScope>(
     () => ({ mapId: null, fleetId, all: true, mapNames: new Map((fleet?.maps ?? []).map((m) => [m.id, m.name])) }),
     [fleetId, fleet],
@@ -192,7 +264,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         {!fleet && !error && <Muted>Loading…</Muted>}
         {fleet && (
           <>
-            <FleetOverview fleet={fleet} mapId={null} all />
+            <FleetOverview fleet={fleet} mapId={null} all onRenamed={renamed} />
             <Card title="Workers">
               <FleetTelemetry />
             </Card>
@@ -212,3 +284,4 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
 const overviewBox: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 12, padding: '12px 16px', marginBottom: 16 };
 const seg: React.CSSProperties = { fontSize: 12, padding: '3px 12px', border: 'none', background: '#fff', color: '#334155', cursor: 'pointer', fontFamily: 'inherit' };
 const segOn: React.CSSProperties = { background: '#4f46e5', color: '#fff' };
+const linkBtn: React.CSSProperties = { background: 'none', border: 'none', padding: 0, fontSize: 12, color: '#4f46e5', cursor: 'pointer', fontFamily: 'inherit' };
