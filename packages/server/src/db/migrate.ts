@@ -1301,6 +1301,35 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     CREATE INDEX IF NOT EXISTS fleet_ticks_fleet_received_idx ON fleet_ticks (fleet_id, received_at DESC)
   `);
 
+  // ── Asks keyed by fleet (#479) ────────────────────────────────
+  // One orchestrator collects the questions of the whole fleet. asks and
+  // asks_pushes gain fleet_id; map_id becomes nullable (a fleet-level ask
+  // concerns no project). Uniqueness moves to (fleet, ask, map) with NULLS
+  // NOT DISTINCT (PG 15): two projects' collectors may reuse an ask id.
+  // Rows move onto their map's fleet; a map without a fleet has no reader
+  // left for them — gone, like the telemetry above.
+  await db.execute(sql`ALTER TABLE asks ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`ALTER TABLE asks_pushes ADD COLUMN IF NOT EXISTS fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE`);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'asks_by_fleet_v1') THEN
+        UPDATE asks a SET fleet_id = m.fleet_id FROM maps m WHERE m.id = a.map_id AND a.fleet_id IS NULL;
+        UPDATE asks_pushes p SET fleet_id = m.fleet_id FROM maps m WHERE m.id = p.map_id AND p.fleet_id IS NULL;
+        DELETE FROM asks WHERE fleet_id IS NULL;
+        DELETE FROM asks_pushes WHERE fleet_id IS NULL;
+        ALTER TABLE asks DROP CONSTRAINT IF EXISTS asks_pkey;
+        ALTER TABLE asks ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE asks ADD CONSTRAINT asks_fleet_ask_map_uq UNIQUE NULLS NOT DISTINCT (fleet_id, ask_id, map_id);
+        ALTER TABLE asks_pushes DROP CONSTRAINT IF EXISTS asks_pushes_pkey;
+        ALTER TABLE asks_pushes ALTER COLUMN fleet_id SET NOT NULL, ALTER COLUMN map_id DROP NOT NULL;
+        ALTER TABLE asks_pushes ADD CONSTRAINT asks_pushes_fleet_map_uq UNIQUE NULLS NOT DISTINCT (fleet_id, map_id);
+        INSERT INTO data_migrations (id) VALUES ('asks_by_fleet_v1');
+      END IF;
+    END $$;
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS asks_fleet_status_idx ON asks (fleet_id, status)`);
+
   // ── nodes.started_at ───────────────────────────────────────────
   // When work on a node started — stamped by updateNode on the first move
   // into an 'in_progress' category or percentComplete > 0. Kanban shows it

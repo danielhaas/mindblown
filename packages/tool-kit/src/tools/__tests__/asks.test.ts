@@ -76,6 +76,30 @@ describe('answer_ask', () => {
     expect(out).toContain('wrote: gh-comment #6823');
     expect(out).toContain('FAILED: mb-put n1n1n1n1 — status → todo (boom)');
   });
+
+  it('with fleetId answers through the fleet, passing askMapId (#479)', async () => {
+    const calls: unknown[][] = [];
+    const result: AskAnswerResult = { ask: row(ask(), { status: 'later' }), plan: { github: null, node: null, worker: null, skip: null }, ok: true, node: null };
+    const backend = { answerAskForFleet: async (...a: unknown[]) => { calls.push(a); return result; } } as unknown as ToolBackend;
+    await answerAskTool.handler(backend, { fleetId: 'f1', askMapId: 'm2', askId: '#6823', action: 'later' } as never);
+    expect(calls[0][0]).toBe('f1');
+    expect(calls[0][1]).toBe('#6823');
+    expect(calls[0][3]).toBe('m2');
+    await expect(answerAskTool.handler(backend, { askId: '#6823', action: 'later' } as never)).rejects.toThrow(/exactly one/);
+  });
+});
+
+describe('list_asks across a fleet (#479)', () => {
+  it('prefixes every row with its map, [fleet] for a fleet-level ask', async () => {
+    const res: AskListResult = {
+      ...listResult([row(ask({ id: '#1' }), { mapId: 'm1' }), row(ask({ id: 'fleet:hosts', ticket: null, title: 'More hosts' }), { mapId: null })]),
+      maps: [{ id: 'm1', name: 'Alpha' }],
+    };
+    const backend = { listAsksForFleet: async () => res } as unknown as ToolBackend;
+    const out = await listAsksTool.handler(backend, { fleetId: 'f1' } as never);
+    expect(out).toContain('- [Alpha] #1 · #6823');
+    expect(out).toContain('- [fleet] fleet:hosts');
+  });
 });
 
 describe('asks_digest', () => {

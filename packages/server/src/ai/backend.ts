@@ -19,9 +19,10 @@ import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import * as fleetTelemetry from '../services/fleetTelemetry.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
-import * as asksDb from '../db/asks.js';
+import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
-import { countAsks } from '@mindblown/core';
+import * as asksInbox from '../services/asksInbox.js';
+import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
@@ -110,6 +111,15 @@ function toNodeWithComputed(
  * on the relevant mapId so connected frontends update in real time.
  */
 export function createChatBackend(userId: string): ToolBackend {
+  // An answer writes to the ask's map; a fleet-level one tells every map of the fleet.
+  const answerAndBroadcast = async (key: AskKey, input: AskAnswerInput) => {
+    const out = await answerAskService(key, input, userId);
+    if (out.node) broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
+    const event = { type: 'asks:updated', kind: 'answer', askId: key.askId, status: out.row.status };
+    if (key.mapId) broadcast(key.mapId, event);
+    else for (const m of await fleetEntityDb.listFleetMaps(key.fleetId)) broadcast(m.id, event);
+    return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
+  };
   const backend: ToolBackend = {
     async listMaps(): Promise<MapSummary[]> {
       const all = await mapDb.listMapsForUser(userId);
@@ -390,17 +400,22 @@ export function createChatBackend(userId: string): ToolBackend {
     },
 
     // ── Asks inbox (/leidang-asks) ────────────────────────────────
-    async listAsks(mapId, opts) {
-      const [items, push] = await Promise.all([asksDb.listAsks(mapId, opts ?? {}), asksDb.getPushMeta(mapId)]);
-      return { items, counts: countAsks(items), pushedAt: push?.pushedAt ?? null, meta: push?.meta ?? null, now: new Date().toISOString() };
+    // Same scoping as the REST routes (services/asksInbox) — #479.
+    listAsks: (mapId, opts) => asksInbox.mapInbox(userId, mapId, opts ?? {}),
+    async listAsksForFleet(fleetId, opts) {
+      const out = await asksInbox.fleetInbox(userId, fleetId, opts ?? {});
+      if ('status' in out) throw new Error(out.message);
+      return out;
     },
     async answerAsk(mapId, askId, input) {
-      const out = await answerAskService(mapId, askId, input, userId);
-      if (out.node) {
-        broadcast(mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
-      }
-      broadcast(mapId, { type: 'asks:updated', kind: 'answer', askId, status: out.row.status });
-      return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
+      const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+      if (!fleetId) throw new Error(`Ask ${askId} not found`);
+      return answerAndBroadcast({ fleetId, mapId, askId }, input);
+    },
+    async answerAskForFleet(fleetId, askId, input, mapId) {
+      const key = await asksInbox.resolveFleetAnswer(userId, fleetId, askId, mapId);
+      if ('status' in key) throw new Error(key.message);
+      return answerAndBroadcast(key, input);
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────
@@ -502,6 +517,9 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   // Fleet telemetry reads (#479): the fleet read rule, claims redacted.
   'getFleetStatusForFleet',
   'getFleetJournalForFleet',
+  // Fleet asks (#479): services/asksInbox scopes the read and checks the answer.
+  'listAsksForFleet',
+  'answerAskForFleet',
 ]);
 
 /**

@@ -1695,7 +1695,7 @@ export function getFleetJournalForFleet(fleetId: string, opts: { from?: string; 
 
 // ── Asks inbox (/leidang-asks) ─────────────────────────────────────
 
-export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+function askQuery(opts: AskListOptions): string {
   const params = new URLSearchParams();
   if (opts.status) params.set('status', opts.status);
   if (opts.hint) params.set('hint', opts.hint);
@@ -1703,11 +1703,29 @@ export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskL
   if (opts.since) params.set('since', opts.since);
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
-  return request<AskListResult>(`/api/maps/${mapId}/asks${qs ? `?${qs}` : ''}`);
+  return qs ? `?${qs}` : '';
+}
+
+export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+  return request<AskListResult>(`/api/maps/${mapId}/asks${askQuery(opts)}`);
+}
+
+/** list_asks for a whole fleet (#479). */
+export function listAsksForFleet(fleetId: string, opts: AskListOptions = {}): Promise<AskListResult> {
+  return request<AskListResult>(`/api/fleets/${fleetId}/asks${askQuery(opts)}`);
 }
 
 export function answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult> {
   return request<AskAnswerResult>(`/api/maps/${mapId}/asks/${encodeURIComponent(askId)}/answer`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+/** answer_ask through the fleet (#479); `mapId` disambiguates a shared ask id ('' = fleet-level). */
+export function answerAskForFleet(fleetId: string, askId: string, input: AskAnswerInput, mapId?: string): Promise<AskAnswerResult> {
+  const qs = mapId !== undefined ? `?mapId=${encodeURIComponent(mapId)}` : '';
+  return request<AskAnswerResult>(`/api/fleets/${fleetId}/asks/${encodeURIComponent(askId)}/answer${qs}`, {
     method: 'POST',
     body: JSON.stringify(input),
   });
