@@ -77,6 +77,9 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   const isMapAdmin =
     (user !== null && map.createdBy === user.id) ||
     (membersMapId === map.id && members.some((m) => m.userId === user?.id && m.permission === 'admin'));
+  // The share PUT needs edit on the map (routes/maps.ts) on top of fleet ownership.
+  const canEditMap =
+    isMapAdmin || (membersMapId === map.id && members.some((m) => m.userId === user?.id && m.permission === 'edit'));
   const currentName = current?.name ?? (connected?.id === fleetId ? connected.name : null) ?? map.fleetName ?? 'its fleet';
   const liveClaims = claimRows(nodes, new Date()).length;
 
@@ -139,7 +142,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
   };
 
   const dirty = draft === CREATE ? newName.trim() !== '' : draft !== (fleetId ?? NONE);
-  const showShare = fleetId !== null && current?.isOwner === true && shareApplies(current, map.id);
+  const showShare = fleetId !== null && canEditMap && current?.isOwner === true && shareApplies(current, map.id);
   const otherMaps = current ? current.maps.filter((m) => m.id !== map.id) : [];
 
   const status = fleetId ? (
@@ -198,7 +201,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
             <input
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void apply()}
+              onKeyDown={(e) => e.key === 'Enter' && dirty && void apply()}
               placeholder="Fleet name"
               maxLength={200}
               autoFocus
