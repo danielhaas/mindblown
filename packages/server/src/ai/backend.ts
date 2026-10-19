@@ -16,13 +16,13 @@ import { broadcast } from '../ws.js';
 import { scheduleEmbedNode } from './embeddings.js';
 import * as orchestrationService from '../services/orchestration.js';
 import { unblockNode as unblockNodeService } from '../services/unblock.js';
-import * as fleetDb from '../db/fleet.js';
+import * as fleetTelemetry from '../services/fleetTelemetry.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
 import * as asksDb from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import { countAsks } from '@mindblown/core';
-import { loadFleetJournal, parseJournalWindow } from '../services/fleetJournal.js';
+import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
@@ -351,10 +351,22 @@ export function createChatBackend(userId: string): ToolBackend {
       // in chat than over MCP.
       const window = parseTickWindow({ since: opts?.since, limit: opts?.limit });
       if ('error' in window) throw new Error(window.error);
-      const [hosts, ticks] = await Promise.all([fleetDb.listRollups(mapId), fleetDb.listTicks(mapId, window)]);
+      // The map's fleet, narrowed to the hosts serving this map (#479).
+      const scope = await fleetTelemetry.mapReadScope(userId, mapId);
+      const read = 'visible' in scope ? await fleetTelemetry.readTelemetry(scope, window, mapId) : { fleetId: null, hosts: [], ticks: [] };
       return {
-        hosts,
-        ticks,
+        ...read,
+        now: new Date().toISOString(),
+        window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
+      };
+    },
+    async getFleetStatusForFleet(fleetId, opts) {
+      const window = parseTickWindow({ since: opts?.since, limit: opts?.limit });
+      if ('error' in window) throw new Error(window.error);
+      const scope = await fleetTelemetry.fleetReadScope(userId, fleetId);
+      if ('status' in scope) throw new Error(scope.message);
+      return {
+        ...(await fleetTelemetry.readTelemetry(scope, window)),
         now: new Date().toISOString(),
         window: { since: window.since?.toISOString() ?? null, until: window.until?.toISOString() ?? null, limit: window.limit },
       };
@@ -363,8 +375,18 @@ export function createChatBackend(userId: string): ToolBackend {
       // Same window rules as GET /fleet-journal (defaults, 31-day cap).
       const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
       if ('error' in window) throw new Error(window.error);
-      const journal = await loadFleetJournal(mapId, window.from, window.to);
+      const journal = await loadFleetJournal(await mapJournalScope(userId, mapId), window.from, window.to);
       return { journal, now: new Date().toISOString() };
+    },
+    async getFleetJournalForFleet(fleetId, opts) {
+      const view = await fleetService.getFleetForUser(userId, fleetId);
+      if ('status' in view) throw new Error(view.message);
+      const window = parseJournalWindow({ from: opts?.from, to: opts?.to });
+      if ('error' in window) throw new Error(window.error);
+      const maps = view.maps.map((m) => ({ id: m.id, name: m.name }));
+      const full = view.isOwner || view.hiddenMapCount === 0;
+      const journal = await loadFleetJournal({ mapIds: maps.map((m) => m.id), fleetId: view.id, tagMaps: true, redactTicks: !full }, window.from, window.to);
+      return { journal, maps, now: new Date().toISOString() };
     },
 
     // ── Asks inbox (/leidang-asks) ────────────────────────────────
@@ -477,6 +499,9 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'updateFleet',
   // Fleet pull (#478): takes only from maps the user may edit (fleetPullScope).
   'pullFleetTicket',
+  // Fleet telemetry reads (#479): the fleet read rule, claims redacted.
+  'getFleetStatusForFleet',
+  'getFleetJournalForFleet',
 ]);
 
 /**

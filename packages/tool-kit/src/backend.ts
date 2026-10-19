@@ -11,9 +11,15 @@
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
 import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps } from '@mindblown/core';
 
-/** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet). */
+/** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
-  hosts: { host: string; generatedAt: string; receivedAt: string; rollup: FleetRollup }[];
+  /** The fleet the telemetry belongs to (#479); null = the map has no fleet. Absent from pre-#479 servers. */
+  fleetId?: string | null;
+  /**
+   * `mapIds` = the maps the host serves that the reader can view (#479). Claims
+   * on maps the reader can't view come as `claim: { redacted: true }`.
+   */
+  hosts: { host: string; generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[];
   ticks: { id: string; tickAt: string; receivedAt: string; payload: FleetTickPayload }[];
   /** Server clock at read time — staleness is judged against this, not the caller's clock. */
   now: string;
@@ -36,6 +42,8 @@ export interface FleetJournalOptions {
 /** GET /api/maps/:id/fleet-journal — what the fleet did in the window, assembled by core `buildFleetJournal`. */
 export interface FleetJournalResult {
   journal: FleetJournal;
+  /** Fleet-wide read (#479): the maps covered — entries name theirs by `mapId`. */
+  maps?: { id: string; name: string }[];
   now: string;
 }
 
@@ -485,10 +493,17 @@ export interface ToolBackend {
    */
   unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResult>;
   conflictScan(mapId: string, candidateNodeId?: string): Promise<ConflictScanResult>;
-  /** Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window. */
+  /**
+   * Last-known satellite rollups + recent orchestrator ticks (read-only); `since` widens the ticks to a history window.
+   * Through a map: that map's fleet, hosts narrowed to the ones serving the map.
+   */
   getFleetStatus(mapId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
+  /** The same for a whole fleet (#479): every host, claims on maps the caller can't view redacted. */
+  getFleetStatusForFleet(fleetId: string, opts?: FleetStatusOptions): Promise<FleetStatusResult>;
   /** What the fleet did in a window — ticks, claims, delivered nodes with PR/effort, follow-ups, knob writes (read-only). */
   getFleetJournal(mapId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
+  /** The journal across a fleet's maps the caller can view (#479); every entry names its map. */
+  getFleetJournalForFleet(fleetId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
 
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   /** The fleet's open human questions as the collector pushed them (read-only). */

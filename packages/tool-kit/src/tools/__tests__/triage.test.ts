@@ -140,6 +140,8 @@ function makeRecorder(): Recorder {
     conflictScan: async () => { throw new Error('not used'); },
     getFleetStatus: async () => { throw new Error('not used'); },
     getFleetJournal: async () => { throw new Error('not used'); },
+    getFleetStatusForFleet: async () => { throw new Error('not used'); },
+    getFleetJournalForFleet: async () => { throw new Error('not used'); },
     auditClosedIssues: async () => { throw new Error('not used'); },
     listAsks: async () => { throw new Error('not used'); },
     answerAsk: async () => { throw new Error('not used'); },

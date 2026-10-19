@@ -1,6 +1,8 @@
 /**
  * Fleet journal loader — collects what core `buildFleetJournal` needs for
- * one map and one window, from the three substrates the fleet writes into:
+ * a set of maps and one window, from the three substrates the fleet writes
+ * into. One map is the map route; a fleet's connected maps (#479) is the
+ * fleet route, and then every entry names its map.
  *
  *   change_events  — claim trail (node.claimed / released / pr_merged),
  *                    knob writes (map.field_changed), status → blocked
@@ -13,10 +15,12 @@
  * window. The assembly itself is pure and lives in core.
  */
 import { and, desc, eq, gte, inArray, isNull, lte, or, sql } from 'drizzle-orm';
-import { buildFleetJournal, JOURNAL_EVENT_TYPES } from '@mindblown/core';
+import { buildFleetJournal, JOURNAL_EVENT_TYPES, redactTick } from '@mindblown/core';
 import type { ExternalLink, FleetJournal, FleetTickPayload, JournalEventRow, JournalNodeRow } from '@mindblown/core';
 import { db } from '../db/connection.js';
+import * as fleetEntityDb from '../db/fleets.js';
 import { changeEvents, fleetTicks, nodes, users, versions } from '../db/schema.js';
+import { getFleetForUser } from './fleets.js';
 
 /** Longest window a single read serves — a month of a busy fleet is ~1500 ticks and thousands of events. */
 export const MAX_WINDOW_MS = 31 * 86_400_000;
@@ -34,8 +38,9 @@ function iso(d: Date | string | null | undefined): string | null {
   return d instanceof Date ? d.toISOString() : d;
 }
 
-function toEventRow(r: typeof changeEvents.$inferSelect): JournalEventRow {
+function toEventRow(r: typeof changeEvents.$inferSelect, tag: boolean): JournalEventRow {
   return {
+    ...(tag ? { mapId: r.mapId } : {}),
     eventType: r.eventType,
     nodeId: r.nodeId,
     userId: r.userId,
@@ -46,8 +51,9 @@ function toEventRow(r: typeof changeEvents.$inferSelect): JournalEventRow {
   };
 }
 
-function toNodeRow(r: typeof nodes.$inferSelect): JournalNodeRow {
+function toNodeRow(r: typeof nodes.$inferSelect, tag: boolean): JournalNodeRow {
   return {
+    ...(tag ? { mapId: r.mapId } : {}),
     id: r.id,
     text: r.text,
     status: r.status,
@@ -65,14 +71,46 @@ function toNodeRow(r: typeof nodes.$inferSelect): JournalNodeRow {
   };
 }
 
-export async function loadFleetJournal(mapId: string, from: Date, to: Date): Promise<FleetJournal> {
+/**
+ * What the journal covers: the maps whose events and nodes it reads, the
+ * fleet whose ticks it shows (null = a map without a fleet: no ticks), and
+ * whether entries name their map (the fleet-wide read).
+ */
+export interface JournalScope {
+  mapIds: string[];
+  fleetId: string | null;
+  tagMaps?: boolean;
+  /** The reader can't view every map of the fleet: ticks keep their numbers, lose their prose (core `redactTick`). */
+  redactTicks?: boolean;
+}
+
+/**
+ * The journal scope for a reader through one map: that map's events, its
+ * fleet's ticks — redacted unless the reader owns the fleet or sees all its maps.
+ */
+export async function mapJournalScope(userId: string, mapId: string): Promise<JournalScope> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return { mapIds: [mapId], fleetId: null };
+  const view = await getFleetForUser(userId, fleetId);
+  const full = !('status' in view) && (view.isOwner || view.hiddenMapCount === 0);
+  return { mapIds: [mapId], fleetId, redactTicks: !full };
+}
+
+export async function loadFleetJournal(scope: JournalScope, from: Date, to: Date): Promise<FleetJournal> {
+  const { mapIds, fleetId } = scope;
+  const tag = scope.tagMaps === true;
+  if (mapIds.length === 0 && !fleetId) {
+    return buildFleetJournal({ window: { from, to }, ticks: [], events: [], nodes: [], versions: [], users: [] });
+  }
+  // inArray of an empty list is "false" — a fleet whose maps the reader can't see still shows its ticks.
+  const onMaps = (col: typeof changeEvents.mapId | typeof nodes.mapId) => (mapIds.length > 0 ? inArray(col, mapIds) : sql`false`);
   const [windowEvents, tickRows, windowNodes] = await Promise.all([
     db
       .select()
       .from(changeEvents)
       .where(
         and(
-          eq(changeEvents.mapId, mapId),
+          onMaps(changeEvents.mapId),
           gte(changeEvents.createdAt, from),
           lte(changeEvents.createdAt, to),
           or(
@@ -86,18 +124,20 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
       // Core re-sorts ascending.
       .orderBy(desc(changeEvents.createdAt))
       .limit(EVENT_LIMIT),
-    db
-      .select()
-      .from(fleetTicks)
-      .where(and(eq(fleetTicks.mapId, mapId), gte(fleetTicks.receivedAt, from), lte(fleetTicks.receivedAt, to)))
-      .orderBy(desc(fleetTicks.receivedAt))
-      .limit(TICK_LIMIT),
+    fleetId
+      ? db
+          .select()
+          .from(fleetTicks)
+          .where(and(eq(fleetTicks.fleetId, fleetId), gte(fleetTicks.receivedAt, from), lte(fleetTicks.receivedAt, to)))
+          .orderBy(desc(fleetTicks.receivedAt))
+          .limit(TICK_LIMIT)
+      : Promise.resolve([] as (typeof fleetTicks.$inferSelect)[]),
     db
       .select()
       .from(nodes)
       .where(
         and(
-          eq(nodes.mapId, mapId),
+          onMaps(nodes.mapId),
           isNull(nodes.deletedAt),
           or(
             and(gte(nodes.completedAt, from), lte(nodes.completedAt, to)),
@@ -116,7 +156,7 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
 
   const [extraNodes, trailEvents] = await Promise.all([
     eventNodeIds.length > 0
-      ? db.select().from(nodes).where(and(eq(nodes.mapId, mapId), isNull(nodes.deletedAt), inArray(nodes.id, eventNodeIds)))
+      ? db.select().from(nodes).where(and(onMaps(nodes.mapId), isNull(nodes.deletedAt), inArray(nodes.id, eventNodeIds)))
       : Promise.resolve([] as (typeof nodes.$inferSelect)[]),
     deliveredIds.length > 0
       ? db
@@ -124,7 +164,7 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
           .from(changeEvents)
           .where(
             and(
-              eq(changeEvents.mapId, mapId),
+              onMaps(changeEvents.mapId),
               inArray(changeEvents.nodeId, deliveredIds),
               inArray(changeEvents.eventType, CLAIM_TRAIL_TYPES),
               gte(changeEvents.createdAt, new Date(from.getTime() - TRAIL_REACH_MS)),
@@ -144,35 +184,44 @@ export async function loadFleetJournal(mapId: string, from: Date, to: Date): Pro
   // inherits the branch's version (core `effectiveVersionId`); the journal
   // tallies by that, not by the rarely-set own field. One recursive walk
   // up the tree for the nodes that need it, instead of loading the map.
-  const inherited = await inheritedVersionIds(mapId, allNodes.filter((n) => !n.versionId).map((n) => n.id));
+  const inherited = await inheritedVersionIds(allNodes.filter((n) => !n.versionId).map((n) => n.id));
   for (const n of allNodes) if (!n.versionId && inherited.has(n.id)) n.versionId = inherited.get(n.id) ?? null;
 
   const userIds = [...new Set([...allEvents.map((e) => e.userId), ...allNodes.map((n) => n.createdBy)].filter((id): id is string => !!id))];
   const [userRows, versionRows] = await Promise.all([
     userIds.length > 0 ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, userIds)) : Promise.resolve([]),
-    db.select({ id: versions.id, name: versions.name }).from(versions).where(eq(versions.mapId, mapId)),
+    mapIds.length > 0
+      ? db.select({ id: versions.id, name: versions.name }).from(versions).where(inArray(versions.mapId, mapIds))
+      : Promise.resolve([]),
   ]);
 
   return buildFleetJournal({
     window: { from, to },
-    ticks: tickRows.map((t) => ({ tickAt: t.tickAt.toISOString(), receivedAt: t.receivedAt.toISOString(), payload: t.payload as FleetTickPayload })),
-    events: allEvents.map(toEventRow),
-    nodes: allNodes.map(toNodeRow),
+    ticks: tickRows.map((t) => {
+      const payload = t.payload as FleetTickPayload;
+      return { tickAt: t.tickAt.toISOString(), receivedAt: t.receivedAt.toISOString(), payload: scope.redactTicks ? redactTick(payload) : payload };
+    }),
+    events: allEvents.map((e) => toEventRow(e, tag)),
+    nodes: allNodes.map((n) => toNodeRow(n, tag)),
     versions: versionRows,
     users: userRows,
     truncated: { events: windowEvents.length >= EVENT_LIMIT, ticks: tickRows.length >= TICK_LIMIT },
   });
 }
 
-/** start node id → nearest ancestor's version_id, for the given nodes (own version null). */
-async function inheritedVersionIds(mapId: string, nodeIds: string[]): Promise<Map<string, string>> {
+/**
+ * start node id → nearest ancestor's version_id, for the given nodes (own
+ * version null). The ids come from the scoped node reads, so they are on
+ * the journal's maps already; parents never cross a map.
+ */
+async function inheritedVersionIds(nodeIds: string[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   if (nodeIds.length === 0) return out;
   const rows = await db.execute(sql`
     with recursive anc as (
       select n.id as start_id, n.parent_id, n.version_id, 0 as depth
       from nodes n
-      where n.map_id = ${mapId} and n.id in ${nodeIds}
+      where n.id in ${nodeIds}
       union all
       select anc.start_id, p.parent_id, p.version_id, anc.depth + 1
       from nodes p join anc on p.id = anc.parent_id

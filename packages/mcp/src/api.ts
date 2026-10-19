@@ -1675,6 +1675,24 @@ export function getFleetJournal(mapId: string, opts: { from?: string; to?: strin
   return request<FleetJournalResult>(`/api/maps/${mapId}/fleet-journal${qs ? `?${qs}` : ''}`);
 }
 
+/** fleet_status for a whole fleet (#479). */
+export function getFleetStatusForFleet(fleetId: string, opts: { since?: string; limit?: number } = {}): Promise<FleetStatusResult> {
+  const params = new URLSearchParams();
+  if (opts.since !== undefined) params.set('since', opts.since);
+  if (opts.limit !== undefined) params.set('limit', String(opts.limit));
+  const qs = params.toString();
+  return request<FleetStatusResult>(`/api/fleets/${fleetId}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** fleet_journal across a fleet's maps (#479). */
+export function getFleetJournalForFleet(fleetId: string, opts: { from?: string; to?: string } = {}): Promise<FleetJournalResult> {
+  const params = new URLSearchParams();
+  if (opts.from !== undefined) params.set('from', opts.from);
+  if (opts.to !== undefined) params.set('to', opts.to);
+  const qs = params.toString();
+  return request<FleetJournalResult>(`/api/fleets/${fleetId}/fleet-journal${qs ? `?${qs}` : ''}`);
+}
+
 // ── Asks inbox (/leidang-asks) ─────────────────────────────────────
 
 export function listAsks(mapId: string, opts: AskListOptions = {}): Promise<AskListResult> {

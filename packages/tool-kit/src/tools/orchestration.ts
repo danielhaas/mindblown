@@ -426,9 +426,12 @@ export const fleetStatusTool = defineTool({
     'With `since`, a "Tick history" section follows: one line per tick in the',
     'window (oldest first) — claims/cap, in-gate, needs-brief, knob writes,',
     'warn+ anomalies — to see how a night went without a terminal.',
+    'Pass `mapId` (that map\'s fleet, hosts serving the map) or `fleetId` (every',
+    'host of the fleet; claims on maps you can\'t view show as redacted).',
   ].join('\n'),
   schema: {
-    mapId: z.string().describe('The map ID the fleet pulls from'),
+    mapId: z.string().optional().describe('The map ID the fleet pulls from — one of mapId / fleetId'),
+    fleetId: z.string().optional().describe('A fleet ID (list_fleets): the whole fleet'),
     since: z
       .string()
       .optional()
@@ -441,13 +444,19 @@ export const fleetStatusTool = defineTool({
       .optional()
       .describe(`Max ticks in the history (newest kept), 1..${TICK_WINDOW_MAX_LIMIT}; default ${TICK_WINDOW_MAX_LIMIT} with since`),
   },
-  handler: async (backend, { mapId, since, limit }) => {
-    const r = await backend.getFleetStatus(mapId, since !== undefined || limit !== undefined ? { since, limit } : undefined);
+  handler: async (backend, { mapId, fleetId, since, limit }) => {
+    if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
+    const window = since !== undefined || limit !== undefined ? { since, limit } : undefined;
+    const r = fleetId ? await backend.getFleetStatusForFleet(fleetId, window) : await backend.getFleetStatus(mapId!, window);
     const now = new Date(r.now);
     const summary = summarizeFleet(r.hosts.map((h) => ({ rollup: h.rollup, receivedAt: h.receivedAt })), now);
     const lines: string[] = [];
     if (summary.hosts.length === 0) {
-      lines.push(`No satellite rollup received yet for map ${mapId} — the fleet-status push is not wired, or the fleet is off.`);
+      lines.push(
+        r.fleetId === null
+          ? `Map ${mapId} is not connected to a fleet — connect it (update_map fleetId) before its satellites can report.`
+          : `No satellite rollup received yet for ${fleetId ? `fleet ${fleetId}` : `map ${mapId}`} — the fleet-status push is not wired, or the fleet is off.`,
+      );
     } else {
       const states = Object.entries(summary.totals)
         .sort((a, b) => b[1] - a[1])
@@ -462,11 +471,13 @@ export const fleetStatusTool = defineTool({
         const flag = h.freshness.stale ? ' — STALE: host down, paused, or agent stopped?' : '';
         const drain = h.draining ? ` — DRAINING: ${h.draining}` : '';
         lines.push('');
-        lines.push(`${h.host} (${age}${flag}${drain})`);
+        const served = r.hosts.find((x) => x.host === h.host)?.mapIds ?? [];
+        lines.push(`${h.host} (${age}${flag}${drain})${fleetId && served.length > 0 ? ` — serves maps ${served.join(', ')}` : ''}`);
         for (const w of h.workers) {
           const state = effectiveWorkerState(w, now);
-          const bits = [w.model ?? '', state];
-          if (w.claim?.title) bits.push(`claim: ${w.claim.title}`);
+          const bits = [[w.agent, w.model].filter(Boolean).join(' '), state];
+          if (w.claim?.redacted) bits.push('claim: on a map you can\'t view');
+          else if (w.claim?.title) bits.push(`claim: ${w.claim.title}`);
           else if (w.claim?.nodeId) bits.push(`claim: ${w.claim.nodeId}`);
           if (state === 'limit-parked' && w.limit_reset_at) bits.push(`reset ${w.limit_reset_at}`);
           if (state === 'prompt' && w.prompt_question) bits.push(`prompt: ${w.prompt_question}`);
@@ -481,6 +492,7 @@ export const fleetStatusTool = defineTool({
       const p = tick.payload;
       lines.push('');
       lines.push(`Last orchestrator tick ${tick.tickAt}${p.noJudgment ? ` — NO JUDGMENT (${p.noJudgment})` : ''}`);
+      if (p.redacted) lines.push("  (numbers only — the orchestrator's notes cover maps of this fleet you can't view)");
       if (p.assessment) lines.push(`  ${p.assessment}`);
       if (p.summary?.heartbeat) lines.push(`  numbers: ${p.summary.heartbeat}`);
       const silent = silentSatellites(p.pullStatus, summary.hosts.map((h) => h.host));

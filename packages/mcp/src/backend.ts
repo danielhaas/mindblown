@@ -48,6 +48,8 @@ export const httpBackend: ToolBackend = {
   conflictScan: (mapId, candidateNodeId?) => api.conflictScan(mapId, candidateNodeId),
   getFleetStatus: (mapId, opts) => api.getFleetStatus(mapId, opts),
   getFleetJournal: (mapId, opts) => api.getFleetJournal(mapId, opts),
+  getFleetStatusForFleet: (fleetId, opts) => api.getFleetStatusForFleet(fleetId, opts),
+  getFleetJournalForFleet: (fleetId, opts) => api.getFleetJournalForFleet(fleetId, opts),
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   listAsks: (mapId, opts) => api.listAsks(mapId, opts),
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),

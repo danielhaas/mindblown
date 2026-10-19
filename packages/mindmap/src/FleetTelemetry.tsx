@@ -226,8 +226,10 @@ function WorkerRow({ w, now, nodes, selectNode }: { w: FleetWorkerStatus; now: D
   return (
     <li>
       <span title={w.session}>{w.worker ?? w.session}</span>
-      {w.model && <span style={{ color: '#94a3b8' }}> {w.model}</span>}{' '}
+      {(w.agent || w.model) && <span style={{ color: '#94a3b8' }}> {[w.agent, w.model].filter(Boolean).join(' ')}</span>}{' '}
       <span style={{ ...pill, ...style }}>{state}</span>
+      {/* A claim on another project the viewer can't see (#479): the server removed its title. */}
+      {w.claim?.redacted && <span style={{ color: '#94a3b8' }}> — busy on a project you can&apos;t view</span>}
       {claimTitle && (
         <span>
           {' '}— {claimId && nodes[claimId] ? <Link onClick={() => selectNode(claimId)}>{claimTitle}</Link> : claimTitle}

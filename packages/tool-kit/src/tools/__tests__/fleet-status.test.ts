@@ -81,6 +81,50 @@ describe('fleet_status tool', () => {
     expect(out).toContain('No orchestrator tick received yet');
   });
 
+  it('says the map has no fleet when the server reports fleetId null (#479)', async () => {
+    const out = await fleetStatusTool.handler(backendWith({ fleetId: null, hosts: [], ticks: [], now: NOW }), { mapId: 'm1' } as never);
+    expect(out).toContain('is not connected to a fleet');
+  });
+
+  it('with fleetId reads the whole fleet: served maps, agent badge, redacted claims (#479)', async () => {
+    const calls: unknown[][] = [];
+    const result: FleetStatusResult = {
+      fleetId: 'f1',
+      hosts: [
+        {
+          host: 'big',
+          generatedAt: ago(1),
+          receivedAt: ago(1),
+          mapIds: ['m1'],
+          rollup: {
+            v: 2,
+            host: 'big',
+            generated_at: ago(1),
+            maps: ['m1'],
+            workers: [
+              { session: 'big:w1', worker: 'w1', agent: 'qwen-code', model: 'qwen3.8', state: 'working', last_activity: ago(1), claim: { mapId: 'm1', title: 'Seen ticket' } },
+              { session: 'big:w2', worker: 'w2', state: 'working', last_activity: ago(1), claim: { redacted: true } },
+            ],
+          },
+        },
+      ],
+      ticks: [],
+      now: NOW,
+    };
+    const backend = {
+      getFleetStatusForFleet: async (...args: unknown[]) => {
+        calls.push(args);
+        return result;
+      },
+    } as unknown as ToolBackend;
+    const out = await fleetStatusTool.handler(backend, { fleetId: 'f1' } as never);
+    expect(calls).toEqual([['f1', undefined]]);
+    expect(out).toContain('big (1m ago) — serves maps m1');
+    expect(out).toContain('w1: qwen-code qwen3.8 · working · claim: Seen ticket');
+    expect(out).toContain("w2: working · claim: on a map you can't view");
+    await expect(fleetStatusTool.handler(backend, {} as never)).rejects.toThrow(/exactly one/);
+  });
+
   it('renders hosts with worker states, flags stale hosts, names silent satellites and the asks', async () => {
     const result: FleetStatusResult = {
       now: NOW,

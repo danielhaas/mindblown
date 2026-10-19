@@ -104,6 +104,8 @@ function makeRecordingBackend(): {
     conflictScan: async () => { throw new Error('not implemented'); },
     getFleetStatus: async () => { throw new Error('not implemented'); },
     getFleetJournal: async () => { throw new Error('not implemented'); },
+    getFleetStatusForFleet: async () => { throw new Error('not implemented'); },
+    getFleetJournalForFleet: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
     listAsks: async () => { throw new Error('not implemented'); },
     answerAsk: async () => { throw new Error('not implemented'); },
