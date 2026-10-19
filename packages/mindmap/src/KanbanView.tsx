@@ -436,6 +436,9 @@ function Column({
         flex: '1 0 260px',
         maxWidth: 340,
         minWidth: 260,
+        // The board aligns columns to the top, so without a cap a long column
+        // grows past the board and is clipped; capped, its cards area scrolls.
+        maxHeight: '100%',
         display: 'flex',
         flexDirection: 'column',
         background: '#f1f5f9',
