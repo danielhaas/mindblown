@@ -68,6 +68,22 @@ interface Props {
 // (not loading/input/listening — those are session-local UI state).
 const STORAGE_KEY_PREFIX = 'mindblown:aichat:';
 
+// Auto-continue past the server's per-request tool-step cap. On by default;
+// capped so a looping model can't run forever — after the cap the usual
+// Continue button comes back. Stop aborts at any point.
+const AUTO_CONTINUE_KEY = 'mindblown:aichat:autoContinue';
+const MAX_AUTO_CONTINUES = 10;
+// A manual Continue counts as a new request: it resets the auto budget.
+const CONTINUE_ACTION = { label: 'Continue', payload: 'continue' };
+
+function loadAutoContinue(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_CONTINUE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Two-note Web-Audio chime played when a chat turn finishes — pulls the
  * user back when they've alt-tabbed away during a long restructure. No
@@ -161,6 +177,29 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   // ref rather than state so the Stop click reads the current controller
   // without dragging it through React's render loop.
   const abortRef = useRef<AbortController | null>(null);
+  const [autoContinue, setAutoContinue] = useState(loadAutoContinue);
+  // Auto-continues spent on the current user request; reset by any manual send.
+  const autoContinueCountRef = useRef(0);
+  // Read inside an in-flight turn, so a mid-run toggle-off takes effect.
+  const autoContinueRef = useRef(autoContinue);
+  // Map id of a turn that hit the step limit and should resume on its own.
+  // The effect below fires the follow-up once the render with loading=false
+  // and the finished messages has landed — sendMessage's closure needs both —
+  // and drops it if the user switched maps in the meantime.
+  const [pendingAutoContinue, setPendingAutoContinue] = useState<string | null>(null);
+
+  const toggleAutoContinue = useCallback(() => {
+    setAutoContinue((prev) => {
+      const next = !prev;
+      autoContinueRef.current = next;
+      try {
+        window.localStorage.setItem(AUTO_CONTINUE_KEY, next ? 'on' : 'off');
+      } catch {
+        /* storage disabled — the toggle still holds for this session */
+      }
+      return next;
+    });
+  }, []);
 
   // Persist on every change. localStorage writes are cheap for small payloads
   // and the chat history is bounded by what a human will type/read in a session.
@@ -175,6 +214,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   useEffect(() => {
     if (lastMapIdRef.current === mapId) return;
     lastMapIdRef.current = mapId;
+    // The running turn belongs to the old map's conversation — stop it, or its
+    // reply (and an auto-continue) would land in this map's history.
+    abortRef.current?.abort();
+    setPendingAutoContinue(null);
     setMessages(loadStoredMessages(mapId));
   }, [mapId]);
 
@@ -287,9 +330,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     rec.start();
   }, [listening, input]);
 
-  const sendMessage = useCallback(async (overrideText?: string) => {
+  const sendMessage = useCallback(async (overrideText?: string, opts?: { auto?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
+    if (!opts?.auto) autoContinueCountRef.current = 0;
 
     const userMsg: ChatMessage = { role: 'user', content: text };
     const updatedMessages = [...messages, userMsg];
@@ -317,7 +361,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     // (natural completion or step_limit). Stays false on abort/error so we
     // don't chime a misleading "success" for a failure.
     let shouldChime = false;
+    let resumeAutomatically = false;
     const flush = () => {
+      // The user switched maps mid-turn: `prev` is now the other map's history.
+      if (lastMapIdRef.current !== mapId) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         const draft: ChatMessage = {
@@ -373,17 +420,31 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
             break;
           }
 
-          case 'step_limit':
-            banner = {
-              kind: 'info',
-              text: `Stopped after ${event.maxSteps ?? 12} tool steps.`,
-              action: { label: 'Continue', payload: 'continue' },
-            };
-            shouldChime = true;
+          case 'step_limit': {
+            const steps = event.maxSteps ?? 12;
+            if (autoContinueRef.current && autoContinueCountRef.current < MAX_AUTO_CONTINUES) {
+              autoContinueCountRef.current += 1;
+              resumeAutomatically = true;
+              banner = {
+                kind: 'info',
+                text: `${steps} tool steps done — continuing automatically (${autoContinueCountRef.current}/${MAX_AUTO_CONTINUES}).`,
+              };
+            } else {
+              banner = {
+                kind: 'info',
+                text: autoContinueRef.current
+                  ? `Stopped after ${MAX_AUTO_CONTINUES} automatic continues.`
+                  : `Stopped after ${steps} tool steps.`,
+                action: CONTINUE_ACTION,
+              };
+              shouldChime = true;
+            }
             flush();
             break;
+          }
 
           case 'error':
+            resumeAutomatically = false;
             banner = {
               kind: 'error',
               text: event.message ?? 'The AI hit an error.',
@@ -406,7 +467,17 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       // Natural end of the SSE stream (no abort, no error) — treat as
       // success for chime purposes even if no explicit `done` event was
       // surfaced. step_limit also flips this above.
-      if (!controller.signal.aborted) shouldChime = true;
+      // Stopped or toggled off after step_limit (e.g. during loadMap): the
+      // "continuing automatically" banner would be a lie — hand back the button.
+      if (resumeAutomatically && (controller.signal.aborted || !autoContinueRef.current)) {
+        resumeAutomatically = false;
+        banner = { kind: 'info', text: 'Stopped.', action: CONTINUE_ACTION };
+        flush();
+      }
+      if (!controller.signal.aborted) {
+        if (resumeAutomatically) setPendingAutoContinue(mapId);
+        else shouldChime = true;
+      }
     } catch (err: any) {
       if (controller.signal.aborted) {
         banner = { kind: 'info', text: 'Stopped.' };
@@ -432,6 +503,13 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       if (shouldChime) playBell();
     }
   }, [input, messages, loading, mapId, loadMap, selectedNodeId]);
+
+  useEffect(() => {
+    if (pendingAutoContinue === null || loading) return;
+    setPendingAutoContinue(null);
+    if (pendingAutoContinue !== mapId || !autoContinueRef.current) return;
+    sendMessage('continue', { auto: true });
+  }, [pendingAutoContinue, loading, mapId, sendMessage]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -467,6 +545,13 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
             {config.active.model}
           </span>
         )}
+        <label
+          style={autoContinueLabelStyle}
+          title={`Keep going past the tool-step limit, up to ${MAX_AUTO_CONTINUES} times per request. Stop works at any time.`}
+        >
+          <input type="checkbox" checked={autoContinue} onChange={toggleAutoContinue} />
+          Auto-continue
+        </label>
         {messages.length > 0 && (
           <button
             onClick={clearMessages}
@@ -720,6 +805,17 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
   padding: '0 4px',
   lineHeight: 1,
+};
+
+const autoContinueLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 11,
+  color: '#64748b',
+  cursor: 'pointer',
+  marginRight: 6,
+  whiteSpace: 'nowrap',
 };
 
 const clearBtnStyle: React.CSSProperties = {
