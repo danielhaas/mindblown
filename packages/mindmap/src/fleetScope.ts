@@ -38,6 +38,22 @@ export function scopeTarget(scope: FleetScope | null, currentMapId: string | nul
 }
 
 /**
+ * Where an answer to a question goes (#480): through the map route when
+ * the question is this tab's own map's, else through the fleet — another
+ * project's question, a fleet-level one (`rowMapId` null), or anything on
+ * the fleet page (no tab map). `rowMapId` undefined = an older server that
+ * doesn't say: it was this map's. null = nowhere to send it.
+ */
+export type AnswerRoute = { kind: 'map'; mapId: string } | { kind: 'fleet'; fleetId: string; askMapId: string | null };
+
+export function answerRoute(scope: FleetScope | null, tabMapId: string | null, rowMapId: string | null | undefined): AnswerRoute | null {
+  const askMapId = rowMapId === undefined ? tabMapId : rowMapId;
+  if (askMapId !== null && askMapId === tabMapId) return { kind: 'map', mapId: askMapId };
+  if (scope?.fleetId) return { kind: 'fleet', fleetId: scope.fleetId, askMapId };
+  return askMapId ? { kind: 'map', mapId: askMapId } : null;
+}
+
+/**
  * The project label in front of a claim, a question or a journal entry:
  * none for this map's own (or when the data doesn't say), the map's name
  * for another one — a host serving this map can work for others too —

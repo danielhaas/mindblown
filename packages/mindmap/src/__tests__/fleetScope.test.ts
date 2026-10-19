@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { projectLabel, scopeTarget } from '../fleetScope.js';
+import { answerRoute, projectLabel, scopeTarget } from '../fleetScope.js';
 import type { FleetScope } from '../fleetScope.js';
 
 const names = new Map([['a', 'Alpha'], ['b', 'Beta']]);
@@ -18,6 +18,23 @@ describe('scopeTarget', () => {
     expect(scopeTarget(null, 'x')).toEqual({ mapId: 'x' });
     expect(scopeTarget(null, null)).toBeNull();
     expect(scopeTarget({ ...allProjects, fleetId: null }, 'a')).toEqual({ mapId: 'a' });
+  });
+});
+
+describe('answerRoute', () => {
+  it("this map's question goes through the map; another project's through the fleet", () => {
+    expect(answerRoute(allProjects, 'a', 'a')).toEqual({ kind: 'map', mapId: 'a' });
+    expect(answerRoute(allProjects, 'a', 'b')).toEqual({ kind: 'fleet', fleetId: 'f', askMapId: 'b' });
+  });
+
+  it('a fleet-level question on the fleet page goes through the fleet with an empty map (review finding)', () => {
+    expect(answerRoute(fleetPage, null, null)).toEqual({ kind: 'fleet', fleetId: 'f', askMapId: null });
+    expect(answerRoute(allProjects, 'a', null)).toEqual({ kind: 'fleet', fleetId: 'f', askMapId: null });
+  });
+
+  it("an older server's row (no mapId) is the tab's map; nothing to send without map or fleet", () => {
+    expect(answerRoute(thisProject, 'a', undefined)).toEqual({ kind: 'map', mapId: 'a' });
+    expect(answerRoute(null, null, null)).toBeNull();
   });
 });
 

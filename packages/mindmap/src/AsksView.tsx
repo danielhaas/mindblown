@@ -20,7 +20,7 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
 import { Card, Muted } from './DigestView.js';
-import { projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import { answerRoute, projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
 import type { FleetScope } from './fleetScope.js';
 import { projectTag } from './FleetTelemetry.js';
 
@@ -133,9 +133,11 @@ export function AsksSection() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
   }, [targetKey, asksRev, poll]);
   // A different scope is a different list: what vanished from the old one did not "go away".
+  // Nor does the old list stay on screen under the new switch position until the fetch lands.
   useEffect(() => {
     lastOpen.current = null;
     setGone({});
+    setData(null);
   }, [targetKey]);
 
   // Only the stakeholder lens is read-only; PM, developer and All answer.
@@ -357,7 +359,7 @@ function AskCard({
   // The ask's own map (#480): its node lives there, and an answer for another
   // project — or a fleet-level one — goes through the fleet.
   const askMapId = row.mapId === undefined ? mapId : row.mapId;
-  const viaFleet = !!scope?.fleetId && askMapId !== mapId;
+  const route = answerRoute(scope, mapId, row.mapId);
   // "More": everything the collector folded into this record plus the node
   // itself (blockedReason, description) — fetched on first open only.
   const [more, setMore] = useState(false);
@@ -385,7 +387,8 @@ function AskCard({
   async function submit(input: AskAnswerInput) {
     setBusy(true);
     try {
-      const r = viaFleet ? await api.answerFleetAsk(scope!.fleetId!, a.id, input, askMapId) : await api.answerAsk(askMapId!, a.id, input);
+      if (!route) throw new Error('This question names no map and no fleet to answer through.');
+      const r = route.kind === 'fleet' ? await api.answerFleetAsk(route.fleetId, a.id, input, route.askMapId) : await api.answerAsk(route.mapId, a.id, input);
       const head = `${STATUS_LABEL[r.ask.status] ?? r.ask.status}${r.ask.answeredBy ? ` (${r.ask.answeredBy})` : ''}`;
       setResult({
         ok: r.ok,
@@ -418,6 +421,13 @@ function AskCard({
         Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : nid.slice(0, 8)}
         {a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}
       </a>,
+    );
+  } else if (a.unblocks.node_id && !askMapId) {
+    // A fleet-level ask names a node but no map: nowhere to select it — show it, unlinked.
+    unb.push(
+      <span key="node" style={{ fontSize: 12, color: '#64748b' }}>
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : a.unblocks.node_id.slice(0, 8)}
+      </span>,
     );
   } else if (a.unblocks.node_id) {
     const nid = a.unblocks.node_id;

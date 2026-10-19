@@ -46,7 +46,6 @@ vi.mock('../../db/fleets.js', () => ({
   getMapFleetId: async (mapId: string) => (mapId === MAP_A || mapId === MAP_B ? FLEET : null),
   getFleet: async (id: string) =>
     id === FLEET ? { id: FLEET, name: 'Fleet', ownerId: state.ownerId, maxActiveClaims: 0, createdAt: 'c', updatedAt: 'u' } : null,
-  countActiveClaims: async () => 2,
   listFleetMaps: async (id: string) =>
     id === FLEET
       ? [MAP_A, MAP_B].map((m) => ({ id: m, name: m === MAP_A ? 'Alpha' : 'Beta', fleetShare: 1, maxActiveClaims: 1, archivedAt: null }))

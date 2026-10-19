@@ -10,16 +10,30 @@
  */
 import { useEffect, useState } from 'react';
 import type { FleetWithMaps } from '@mindblown/core';
-import { effectiveWorkerState, estimateServerNow } from '@mindblown/core';
+import { effectiveWorkerState, estimateServerNow, hostFreshness } from '@mindblown/core';
 import * as api from '../api.js';
 import type { FleetResponse } from '../api.js';
 import { projectLabel } from '../fleetScope.js';
 import type { FleetScope } from '../fleetScope.js';
 
+const POLL_MS = 60_000;
+const CLOCK_MS = 30_000;
+
 export function MobileFleetSection({ mapId, fleetId }: { mapId: string; fleetId: string }) {
   const [fleet, setFleet] = useState<FleetWithMaps | null>(null);
   const [telemetry, setTelemetry] = useState<{ data: FleetResponse; fetchedAt: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Refetch every minute; re-render every 30 s so a host that went silent turns stale on screen.
+  const [poll, setPoll] = useState(0);
+  const [, setClock] = useState(0);
+  useEffect(() => {
+    const p = setInterval(() => setPoll((n) => n + 1), POLL_MS);
+    const c = setInterval(() => setClock((n) => n + 1), CLOCK_MS);
+    return () => {
+      clearInterval(p);
+      clearInterval(c);
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -34,14 +48,18 @@ export function MobileFleetSection({ mapId, fleetId }: { mapId: string; fleetId:
     return () => {
       cancelled = true;
     };
-  }, [mapId, fleetId]);
+  }, [mapId, fleetId, poll]);
 
-  if (error) return <div className="mb-card" style={{ fontSize: 12, color: '#b45309' }}>Fleet unavailable ({error}).</div>;
+  if (error && !fleet) return <div className="mb-card" style={{ fontSize: 12, color: '#b45309' }}>Fleet unavailable ({error}).</div>;
   if (!fleet || !telemetry) return <div className="mb-card" style={{ fontSize: 12, color: '#94a3b8' }}>Loading the fleet…</div>;
 
   const scope: FleetScope = { mapId, fleetId, all: false, mapNames: new Map(fleet.maps.map((m) => [m.id, m.name])) };
   const now = estimateServerNow(telemetry.data.now, telemetry.fetchedAt, Date.now());
-  const workers = telemetry.data.hosts.flatMap((h) => h.rollup.workers.map((w) => ({ host: h.host, w })));
+  // Same staleness rule as the desktop card: a host whose rollup is old is down or paused — its workers are "last seen".
+  const workers = telemetry.data.hosts.flatMap((h) => {
+    const stale = hostFreshness(h.generatedAt, h.receivedAt, now).stale;
+    return h.rollup.workers.map((w) => ({ host: h.host, w, stale }));
+  });
   const cap = fleet.maxActiveClaims;
 
   return (
@@ -58,12 +76,13 @@ export function MobileFleetSection({ mapId, fleetId }: { mapId: string; fleetId:
       )}
       <ul style={{ margin: '10px 0 0', paddingLeft: 0, listStyle: 'none', fontSize: 13, lineHeight: 1.7 }}>
         {workers.length === 0 && <li style={{ color: '#94a3b8' }}>No worker reports for this map.</li>}
-        {workers.map(({ host, w }) => {
+        {workers.map(({ host, w, stale }) => {
           const project = projectLabel(scope, w.claim?.mapId);
           return (
-            <li key={`${host}/${w.session}`}>
+            <li key={`${host}/${w.session}`} style={stale ? { opacity: 0.6 } : undefined}>
               <span>{w.worker ?? w.session}@{host}</span>
-              {w.agent && <span style={badge} data-testid="agent-badge">{w.agent}</span>} <span style={{ color: '#64748b' }}>{effectiveWorkerState(w, now)}</span>
+              {w.agent && <span style={badge} data-testid="agent-badge">{w.agent}</span>}{' '}
+              <span style={{ color: stale ? '#991b1b' : '#64748b' }}>{stale ? 'host stale — last seen ' : ''}{effectiveWorkerState(w, now)}</span>
               {w.claim?.redacted && <span style={{ color: '#94a3b8' }}> — busy elsewhere</span>}
               {w.claim?.title && (
                 <span>

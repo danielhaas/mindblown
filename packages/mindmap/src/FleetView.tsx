@@ -34,11 +34,22 @@ import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
 import type { FleetScope } from './fleetScope.js';
 
-/** The fleet as this reader sees it, refetched when telemetry moves (claims change the count). */
+/** Claims move without a telemetry push, and the fleet page has no socket room — poll. */
+const ENTITY_POLL_MS = 60_000;
+
+/**
+ * The fleet as this reader sees it: refetched when telemetry moves and every
+ * minute (claims change the count; a failed first load retries).
+ */
 function useFleetEntity(fleetId: string | null): { fleet: FleetWithMaps | null; error: string | null } {
   const fleetRev = useMindmapStore((s) => s.fleetRev);
   const [fleet, setFleet] = useState<FleetWithMaps | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [poll, setPoll] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPoll((n) => n + 1), ENTITY_POLL_MS);
+    return () => clearInterval(t);
+  }, []);
   useEffect(() => {
     if (!fleetId) {
       setFleet(null);
@@ -56,7 +67,7 @@ function useFleetEntity(fleetId: string | null): { fleet: FleetWithMaps | null; 
     return () => {
       cancelled = true;
     };
-  }, [fleetId, fleetRev]);
+  }, [fleetId, fleetRev, poll]);
   return { fleet, error };
 }
 
@@ -177,7 +188,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         <div style={{ marginBottom: 12, fontSize: 12 }}>
           <a href="/" style={{ color: '#4f46e5' }}>← All maps</a>
         </div>
-        {error && <Muted>Fleet unavailable: {error}</Muted>}
+        {error && <Muted>Fleet unavailable: {error}{fleet ? ' — showing the last good read' : ' — retrying every minute'}</Muted>}
         {!fleet && !error && <Muted>Loading…</Muted>}
         {fleet && (
           <>

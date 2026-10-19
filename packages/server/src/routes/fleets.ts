@@ -57,7 +57,11 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>('/api/fleets/:id', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
     const view = await fleetService.getFleetForUser(req.userId, req.params.id);
-    return isAccessError(view) ? sendAccessError(reply, view) : reply.send(view);
+    if (isAccessError(view)) return sendAccessError(reply, view);
+    // Claims across every connected map — capacity, not which projects; the
+    // Fleet tab sets it against the fleet cap (#480). Counted on this read
+    // only, not in every internal fleet lookup.
+    return reply.send({ ...view, activeClaims: await fleetDb.countActiveClaims(view.id) });
   });
 
   app.patch<{ Params: { id: string } }>('/api/fleets/:id', async (req, reply) => {

@@ -92,6 +92,10 @@ export function FleetTelemetry() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
   }, [targetKey, fleetRev, poll]);
+  // The switch flipped: the old scope's hosts must not stand in for the new one's until the fetch lands.
+  useEffect(() => {
+    setLoaded(null);
+  }, [targetKey]);
 
   // Re-evaluated on every clock tick, so a fleet that went silent turns
   // stale on screen without anyone pushing.
@@ -356,6 +360,9 @@ function TickHistory({ target, targetKey, fleetRev, now }: { target: api.FleetTa
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
   }, [open, targetKey, preset, fleetRev]);
+  useEffect(() => {
+    setHistory(null);
+  }, [targetKey]);
 
   const rows = useMemo<TickSummary[]>(() => (history ? [...history.data.ticks].reverse().map(summarizeTick) : []), [history]);
   const shown = history?.preset === preset ? history : null;
