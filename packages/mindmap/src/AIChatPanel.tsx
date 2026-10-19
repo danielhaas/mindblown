@@ -73,6 +73,8 @@ const STORAGE_KEY_PREFIX = 'mindblown:aichat:';
 // Continue button comes back. Stop aborts at any point.
 const AUTO_CONTINUE_KEY = 'mindblown:aichat:autoContinue';
 const MAX_AUTO_CONTINUES = 10;
+// A manual Continue counts as a new request: it resets the auto budget.
+const CONTINUE_ACTION = { label: 'Continue', payload: 'continue' };
 
 function loadAutoContinue(): boolean {
   try {
@@ -178,14 +180,18 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   const [autoContinue, setAutoContinue] = useState(loadAutoContinue);
   // Auto-continues spent on the current user request; reset by any manual send.
   const autoContinueCountRef = useRef(0);
-  // Set when a turn hits the step limit and should resume on its own. The
-  // effect below fires the follow-up once the render with loading=false and
-  // the finished messages has landed — sendMessage's closure needs both.
-  const [pendingAutoContinue, setPendingAutoContinue] = useState(false);
+  // Read inside an in-flight turn, so a mid-run toggle-off takes effect.
+  const autoContinueRef = useRef(autoContinue);
+  // Map id of a turn that hit the step limit and should resume on its own.
+  // The effect below fires the follow-up once the render with loading=false
+  // and the finished messages has landed — sendMessage's closure needs both —
+  // and drops it if the user switched maps in the meantime.
+  const [pendingAutoContinue, setPendingAutoContinue] = useState<string | null>(null);
 
   const toggleAutoContinue = useCallback(() => {
     setAutoContinue((prev) => {
       const next = !prev;
+      autoContinueRef.current = next;
       try {
         window.localStorage.setItem(AUTO_CONTINUE_KEY, next ? 'on' : 'off');
       } catch {
@@ -410,7 +416,7 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
 
           case 'step_limit': {
             const steps = event.maxSteps ?? 12;
-            if (autoContinue && autoContinueCountRef.current < MAX_AUTO_CONTINUES) {
+            if (autoContinueRef.current && autoContinueCountRef.current < MAX_AUTO_CONTINUES) {
               autoContinueCountRef.current += 1;
               resumeAutomatically = true;
               banner = {
@@ -420,10 +426,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
             } else {
               banner = {
                 kind: 'info',
-                text: autoContinue
+                text: autoContinueRef.current
                   ? `Stopped after ${MAX_AUTO_CONTINUES} automatic continues.`
                   : `Stopped after ${steps} tool steps.`,
-                action: { label: 'Continue', payload: 'continue' },
+                action: CONTINUE_ACTION,
               };
               shouldChime = true;
             }
@@ -432,6 +438,7 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
           }
 
           case 'error':
+            resumeAutomatically = false;
             banner = {
               kind: 'error',
               text: event.message ?? 'The AI hit an error.',
@@ -454,8 +461,15 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       // Natural end of the SSE stream (no abort, no error) — treat as
       // success for chime purposes even if no explicit `done` event was
       // surfaced. step_limit also flips this above.
+      // Stopped or toggled off after step_limit (e.g. during loadMap): the
+      // "continuing automatically" banner would be a lie — hand back the button.
+      if (resumeAutomatically && (controller.signal.aborted || !autoContinueRef.current)) {
+        resumeAutomatically = false;
+        banner = { kind: 'info', text: 'Stopped.', action: CONTINUE_ACTION };
+        flush();
+      }
       if (!controller.signal.aborted) {
-        if (resumeAutomatically) setPendingAutoContinue(true);
+        if (resumeAutomatically) setPendingAutoContinue(mapId);
         else shouldChime = true;
       }
     } catch (err: any) {
@@ -482,13 +496,14 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       setLoading(false);
       if (shouldChime) playBell();
     }
-  }, [input, messages, loading, mapId, loadMap, selectedNodeId, autoContinue]);
+  }, [input, messages, loading, mapId, loadMap, selectedNodeId]);
 
   useEffect(() => {
-    if (!pendingAutoContinue || loading) return;
-    setPendingAutoContinue(false);
+    if (pendingAutoContinue === null || loading) return;
+    setPendingAutoContinue(null);
+    if (pendingAutoContinue !== mapId || !autoContinueRef.current) return;
     sendMessage('continue', { auto: true });
-  }, [pendingAutoContinue, loading, sendMessage]);
+  }, [pendingAutoContinue, loading, mapId, sendMessage]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
