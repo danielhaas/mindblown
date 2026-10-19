@@ -363,6 +363,8 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     let shouldChime = false;
     let resumeAutomatically = false;
     const flush = () => {
+      // The user switched maps mid-turn: `prev` is now the other map's history.
+      if (lastMapIdRef.current !== mapId) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         const draft: ChatMessage = {
