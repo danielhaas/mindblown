@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
+import { groupDone, groupByPriority, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
 
 describe('startedLabel', () => {
   const now = new Date('2026-10-18T12:00:00Z');
@@ -85,6 +85,32 @@ describe('groupDone', () => {
       ['today', ['today-pm', 'today-am']],
       ['week', ['wed', 'mon']],
       ['earlier', ['lastweek', 'imported']],
+    ]);
+  });
+});
+
+describe('groupByPriority — the no-status column', () => {
+  const card = (id: string, priority: string | null) => ({ id, priority });
+
+  it('groups P0→P3 then unprioritised, keeps card order, drops empty groups', () => {
+    const g = groupByPriority(
+      [card('a', 'P2'), card('b', 'P1'), card('c', null), card('d', 'P1'), card('e', 'P3')],
+      (c) => c.priority,
+    );
+    expect(g.map((x) => [x.key, x.items.map((i) => i.id)])).toEqual([
+      ['P1', ['b', 'd']],
+      ['P2', ['a']],
+      ['P3', ['e']],
+      ['none', ['c']],
+    ]);
+  });
+
+  it('opens P0/P1 only; an unknown priority counts as none', () => {
+    const g = groupByPriority([card('a', 'P0'), card('b', 'P2'), card('c', 'urgent')], (c) => c.priority);
+    expect(g.map((x) => [x.key, x.defaultOpen])).toEqual([
+      ['P0', true],
+      ['P2', false],
+      ['none', false],
     ]);
   });
 });

@@ -4,11 +4,12 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, groupByPriority, cardBlockState, kanbanColumnId, startedLabel, type CardBlock } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
 const WIP_LIMIT = 8;
+const NO_STATUS_COLUMN_ID = '__unset__';
 
 const PRIORITY_COLORS: Record<Priority, string> = {
   P0: '#dc2626',
@@ -336,24 +337,28 @@ function Column({
 }) {
   const totalEffort = column.cards.reduce((sum, c) => sum + (c.node.effortEstimate ?? 0), 0);
   const isDone = column.category === 'done';
-  // A WIP limit is about work in flight — a long Done column is not over it.
-  const overWip = !isDone && column.cards.length > WIP_LIMIT;
+  const isNoStatus = column.id === NO_STATUS_COLUMN_ID;
+  // A WIP limit is about work in flight — a long Done or No-status column is not over it.
+  const overWip = !isDone && !isNoStatus && column.cards.length > WIP_LIMIT;
 
   // Done: Today / This week / Earlier (collapsed by default) — the history
   // stays one click away instead of burying this week's work.
+  // No status: by priority, P0/P1 open — see groupByPriority.
   // Keyed on the local date too, so a board left open overnight moves
   // yesterday's cards out of "Today" on the next render.
   const dayKey = new Date().toDateString();
-  const doneGroups = useMemo(
-    () => (isDone ? groupDone(column.cards, (c) => c.node.completedAt) : null),
+  const groups = useMemo(
+    () =>
+      isDone
+        ? groupDone(column.cards, (c) => c.node.completedAt)
+        : isNoStatus
+          ? groupByPriority(column.cards, (c) => c.node.priority)
+          : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [isDone, column.cards, dayKey],
+    [isDone, isNoStatus, column.cards, dayKey],
   );
-  const [openGroups, setOpenGroups] = useState<Record<DoneGroupKey, boolean>>({
-    today: true,
-    week: true,
-    earlier: false,
-  });
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
+  const isOpen = (g: { key: string; defaultOpen: boolean }) => openGroups[g.key] ?? g.defaultOpen;
 
   // Group by parent branch for swimlanes
   const laneGroups = (cards: KanbanCard[]): Record<string, KanbanCard[]> => {
@@ -514,20 +519,20 @@ function Column({
           minHeight: 60,
         }}
       >
-        {doneGroups
-          ? doneGroups.map((g) => (
+        {groups
+          ? groups.map((g) => (
               <div key={g.key} style={{ marginBottom: 6 }}>
                 <button
                   type="button"
-                  onClick={() => setOpenGroups((o) => ({ ...o, [g.key]: !o[g.key] }))}
-                  aria-expanded={openGroups[g.key]}
+                  onClick={() => setOpenGroups((o) => ({ ...o, [g.key]: !isOpen(g) }))}
+                  aria-expanded={isOpen(g)}
                   style={{
                     width: '100%',
                     display: 'flex',
                     alignItems: 'center',
                     gap: 6,
                     padding: '4px 4px 6px',
-                    marginBottom: openGroups[g.key] && g.items.length > 0 ? 6 : 0,
+                    marginBottom: isOpen(g) && g.items.length > 0 ? 6 : 0,
                     background: 'none',
                     border: 'none',
                     borderBottom: '1px solid #e2e8f0',
@@ -540,7 +545,7 @@ function Column({
                     textAlign: 'left',
                   }}
                 >
-                  <span style={{ width: 10 }}>{openGroups[g.key] ? '▾' : '▸'}</span>
+                  <span style={{ width: 10 }}>{isOpen(g) ? '▾' : '▸'}</span>
                   <span style={{ flex: 1 }}>{g.label}</span>
                   {/* What the group adds up to, not just how many cards (Dan). */}
                   {(() => {
@@ -553,7 +558,7 @@ function Column({
                   })()}
                   <span style={{ fontWeight: 600, color: '#94a3b8' }}>{g.items.length}</span>
                 </button>
-                {openGroups[g.key] && renderCards(g.items)}
+                {isOpen(g) && renderCards(g.items)}
               </div>
             ))
           : renderCards(column.cards)}
@@ -665,11 +670,11 @@ export function KanbanView() {
 
     const result: KanbanColumn[] = [];
 
-    // Add "Unset" column first if there are unset cards
+    // "No status" column first if there are such cards (same name as mobile)
     if (unset.length > 0) {
       result.push({
-        id: '__unset__',
-        name: 'Unset',
+        id: NO_STATUS_COLUMN_ID,
+        name: 'No status',
         color: '#cbd5e1',
         category: null,
         cards: unset,
@@ -720,7 +725,7 @@ export function KanbanView() {
 
       // Determine the new status value
       let newStatus: string | null = null;
-      if (columnId === '__unset__') {
+      if (columnId === NO_STATUS_COLUMN_ID) {
         newStatus = null;
       } else {
         const col = statusColumns.find((s) => s.id === columnId);

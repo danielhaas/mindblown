@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type DoneGroupKey } from '../kanban.js';
+import { groupDone, groupByPriority, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -34,13 +34,14 @@ interface Column {
 }
 
 export function MobileKanbanView({ nodes, map, onSelect }: Props) {
-  // Done columns: Today / This week / Earlier (collapsed) — see kanban.ts.
-  // Per column (a map can have several done-category statuses); "Earlier"
-  // starts collapsed.
-  const [openGroups, setOpenGroups] = useState<Record<string, Partial<Record<DoneGroupKey, boolean>>>>({});
-  const isOpen = (col: string, key: DoneGroupKey): boolean => openGroups[col]?.[key] ?? key !== 'earlier';
-  const toggle = (col: string, key: DoneGroupKey) =>
-    setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [key]: !isOpen(col, key) } }));
+  // Done columns: Today / This week / Earlier (collapsed); No status: by
+  // priority, P0/P1 open — see kanban.ts. Per column (a map can have
+  // several done-category statuses).
+  type Group = { key: string; defaultOpen: boolean };
+  const [openGroups, setOpenGroups] = useState<Record<string, Record<string, boolean>>>({});
+  const isOpen = (col: string, g: Group): boolean => openGroups[col]?.[g.key] ?? g.defaultOpen;
+  const toggle = (col: string, g: Group) =>
+    setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [g.key]: !isOpen(col, g) } }));
   // Same rule as the Blocked panel: computeIsBlocked over the whole map.
   const nodeMap: NodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])) as NodeMap, [nodes]);
 
@@ -110,27 +111,29 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
             )}
             {(col.status?.category === 'done'
               ? groupDone(col.nodes, (n) => n.completedAt)
-              : [{ key: null, label: '', items: col.nodes }]
+              : col.status === null
+                ? groupByPriority(col.nodes, (n) => n.priority)
+                : [{ key: '', label: '', items: col.nodes, defaultOpen: true }]
             ).map((g) => (
-              <div key={g.key ?? 'all'}>
+              <div key={g.key || 'all'}>
                 {g.key && (
                   <button
                     type="button"
                     className="mb-kanban-group"
-                    aria-expanded={isOpen(col.key, g.key)}
-                    onClick={() => toggle(col.key, g.key!)}
+                    aria-expanded={isOpen(col.key, g)}
+                    onClick={() => toggle(col.key, g)}
                     style={{
                       width: '100%', display: 'flex', gap: 6, padding: '6px 4px', background: 'none',
                       border: 'none', borderBottom: '1px solid #e2e8f0', fontSize: 11, fontWeight: 600,
                       color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.04em', textAlign: 'left',
                     }}
                   >
-                    <span>{isOpen(col.key, g.key) ? '▾' : '▸'}</span>
+                    <span>{isOpen(col.key, g) ? '▾' : '▸'}</span>
                     <span style={{ flex: 1 }}>{g.label}</span>
                     <span style={{ color: '#94a3b8' }}>{g.items.length}</span>
                   </button>
                 )}
-                {(!g.key || isOpen(col.key, g.key)) && g.items.map((n) => {
+                {(!g.key || isOpen(col.key, g)) && g.items.map((n) => {
               const pct = Math.round(n.computedProgress ?? 0);
               const block = cardBlockState(
                 n,

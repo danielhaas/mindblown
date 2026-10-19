@@ -9,6 +9,8 @@
  *
  * Cards without a completedAt (imported already done) go to Earlier.
  * Within a group the most recently finished card comes first.
+ *
+ * ── No-status groups ── see groupByPriority.
  */
 
 import { BLOCKED_TAG, type BlockedBy, type StatusDef } from '@mindblown/core';
@@ -44,6 +46,8 @@ export interface DoneGroup<T> {
   key: DoneGroupKey;
   label: string;
   items: T[];
+  /** Whether the group starts expanded — Earlier starts folded. */
+  defaultOpen: boolean;
 }
 
 /** Local midnight today and local Monday 00:00 of this week, as epoch ms. */
@@ -67,9 +71,9 @@ export function groupDone<T>(
   };
   const sorted = [...items].sort((a, b) => at(b) - at(a));
   const groups: DoneGroup<T>[] = [
-    { key: 'today', label: 'Today', items: [] },
-    { key: 'week', label: 'This week', items: [] },
-    { key: 'earlier', label: 'Earlier', items: [] },
+    { key: 'today', label: 'Today', items: [], defaultOpen: true },
+    { key: 'week', label: 'This week', items: [], defaultOpen: true },
+    { key: 'earlier', label: 'Earlier', items: [], defaultOpen: false },
   ];
   for (const item of sorted) {
     const t = at(item);
@@ -78,6 +82,41 @@ export function groupDone<T>(
     else groups[2].items.push(item);
   }
   return groups;
+}
+
+// ── No-status groups ──
+
+/**
+ * The no-status column, split by priority. It holds whatever never got a
+ * status — go-live decisions next to someday ideas — and grows into the
+ * tallest column on the board. P0/P1 start open so the urgent ones stand
+ * out; P2, P3 and unprioritised start folded. Empty groups are left out.
+ */
+export type PriorityGroupKey = 'P0' | 'P1' | 'P2' | 'P3' | 'none';
+
+export interface PriorityGroup<T> {
+  key: PriorityGroupKey;
+  label: string;
+  items: T[];
+  defaultOpen: boolean;
+}
+
+export function groupByPriority<T>(
+  items: T[],
+  priority: (item: T) => string | null | undefined,
+): PriorityGroup<T>[] {
+  const groups: PriorityGroup<T>[] = [
+    { key: 'P0', label: 'P0', items: [], defaultOpen: true },
+    { key: 'P1', label: 'P1', items: [], defaultOpen: true },
+    { key: 'P2', label: 'P2', items: [], defaultOpen: false },
+    { key: 'P3', label: 'P3', items: [], defaultOpen: false },
+    { key: 'none', label: 'No priority', items: [], defaultOpen: false },
+  ];
+  for (const item of items) {
+    const p = priority(item);
+    (groups.find((g) => g.key === p) ?? groups[4]).items.push(item);
+  }
+  return groups.filter((g) => g.items.length > 0);
 }
 
 // ── Started ──
