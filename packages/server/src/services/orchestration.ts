@@ -274,19 +274,19 @@ export async function claimNode(
   // only refreshes claimedAt and is not a hand-over — no row for it, or a
   // worker's restart loop would flood the node's history.
   if (previousClaim !== sessionId) {
-    if (warned) {
-      events
-        .recordReleased(
-          mapId,
-          nodeId,
-          null,
-          buildReleasedEvent(previousClaim as string, previousClaimedAt, 'transfer', `transferred to ${sessionId}`),
-        )
-        .catch(() => {});
-    }
-    events
-      .recordClaimed(mapId, nodeId, null, buildClaimedEvent(sessionId, 'claim', previousClaim))
-      .catch(() => {});
+    // Still fire-and-forget, but in order: each write looks the fleet up
+    // first (#481), so two unchained writes could land claimed-before-released.
+    const released = warned
+      ? events
+          .recordReleased(
+            mapId,
+            nodeId,
+            null,
+            buildReleasedEvent(previousClaim as string, previousClaimedAt, 'transfer', `transferred to ${sessionId}`),
+          )
+          .catch(() => {})
+      : Promise.resolve();
+    void released.then(() => events.recordClaimed(mapId, nodeId, null, buildClaimedEvent(sessionId, 'claim', previousClaim))).catch(() => {});
   }
 
   return {

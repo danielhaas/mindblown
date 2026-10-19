@@ -24,6 +24,12 @@ export const users = pgTable('users', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   /** Last password change or admin reset; JWTs issued before it are refused (#315). */
   passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+  /**
+   * 'person' or 'fleet' (#481). A fleet user is a fleet's service identity:
+   * no password, no login, reached only through API keys its fleet's owner
+   * issues; its map grants follow the fleet's connections (db/maps.ts).
+   */
+  kind: text('kind').notNull().default('person'),
 });
 
 // ── System-wide key/value settings ────────────────────────────────
@@ -195,6 +201,8 @@ export const fleets = pgTable('fleets', {
   maxActiveClaims: integer('max_active_claims').notNull().default(0),
   /** Weighted round-robin credit per connected map id (#478) — internal pull state, not a knob. */
   pullDeficits: jsonb('pull_deficits').$type<Record<string, number>>().notNull().default({}),
+  /** The fleet's service user (#481, users.kind = 'fleet') — the identity its API keys act as. */
+  serviceUserId: uuid('service_user_id').references(() => users.id, { onDelete: 'set null' }),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

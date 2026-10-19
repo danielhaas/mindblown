@@ -36,6 +36,8 @@ export interface ClaimedEvent {
   profile: string | null;
   via: ClaimVia;
   previousSession: string | null;
+  /** The map's fleet when the claim happened (#481) — which fleet did the work. Absent on older rows. */
+  fleetId?: string | null;
 }
 
 export interface ReleasedEvent {
@@ -47,6 +49,8 @@ export interface ReleasedEvent {
   note: string | null;
   claimedAt: string | null;
   heldMinutes: number | null;
+  /** The map's fleet when the claim ended (#481). Absent on older rows. */
+  fleetId?: string | null;
 }
 
 export interface PrMergedEvent {

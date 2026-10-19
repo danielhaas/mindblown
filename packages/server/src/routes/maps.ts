@@ -7,6 +7,7 @@ import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@min
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as fleetService from '../services/fleets.js';
+import { isFleetUser } from '../db/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
@@ -157,6 +158,11 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'name and workspaceId are required' },
       });
+    }
+    // A fleet's key reaches only its connected maps (#481); a map it
+    // created would make it admin of something outside that.
+    if (req.userId && (await isFleetUser(req.userId))) {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'A fleet key cannot create maps' } });
     }
 
     // Resolve 'default' workspaceId to the first available workspace

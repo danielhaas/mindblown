@@ -1330,6 +1330,35 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS asks_fleet_status_idx ON asks (fleet_id, status)`);
 
+  // ── Fleet service users (#481) ────────────────────────────────
+  // Each fleet gets its own identity: a users row of kind 'fleet' (no
+  // password — it can't sign in), reached only through API keys its
+  // owner issues. Its grants follow the fleet's connections: edit on each
+  // connected map, never admin, nothing elsewhere (db/maps.ts keeps that
+  // in step on connect / disconnect / move).
+  // One-shot backfill for the fleets that exist: a fresh user each, with
+  // edit on its connected maps. The shared fleet@ user and its own grants
+  // are left alone (Dan's call, 19.10.2026) — its keys keep working, and
+  // clients move to per-fleet keys at their own pace.
+  await db.execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'person'`);
+  await db.execute(sql`ALTER TABLE fleets ADD COLUMN IF NOT EXISTS service_user_id UUID REFERENCES users(id) ON DELETE SET NULL`);
+  await db.execute(sql`
+    DO $$
+    DECLARE f RECORD; uid UUID;
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'fleet_service_users_v1') THEN
+        FOR f IN SELECT id, name FROM fleets WHERE service_user_id IS NULL LOOP
+          INSERT INTO users (email, name, kind) VALUES ('fleet-' || f.id || '@fleets.invalid', 'Fleet: ' || f.name, 'fleet') RETURNING id INTO uid;
+          UPDATE fleets SET service_user_id = uid WHERE id = f.id;
+          INSERT INTO map_permissions (map_id, user_id, permission)
+            SELECT m.id, uid, 'edit' FROM maps m WHERE m.fleet_id = f.id
+            ON CONFLICT DO NOTHING;
+        END LOOP;
+        INSERT INTO data_migrations (id) VALUES ('fleet_service_users_v1');
+      END IF;
+    END $$;
+  `);
+
   // ── nodes.started_at ───────────────────────────────────────────
   // When work on a node started — stamped by updateNode on the first move
   // into an 'in_progress' category or percentComplete > 0. Kanban shows it

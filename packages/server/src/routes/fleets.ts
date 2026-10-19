@@ -7,13 +7,19 @@
  *   PATCH  /api/fleets/:id  — rename / set the fleet cap (owner)
  *   DELETE /api/fleets/:id  — delete (owner); connected maps are disconnected (audited, broadcast)
  *   POST   /api/fleets/:id/pull-next — next ticket from any connected map the caller may edit (#478)
+ *   POST   /api/fleets/:id/credentials        — issue an API key for the fleet's service user (owner, web session)
+ *   GET    /api/fleets/:id/credentials        — the fleet's keys (prefix only)
+ *   DELETE /api/fleets/:id/credentials/:keyId — revoke one
  *
- * A map connects through PUT /api/maps/:id { fleetId } — see routes/maps.ts.
- * Fleet telemetry (rollups, ticks) still lives under /api/maps/:id until #479.
+ * A map connects through PUT /api/maps/:id { fleetId } — see routes/maps.ts;
+ * connecting grants the fleet's service user edit there (#481).
+ * Fleet telemetry routes: routes/fleet.ts (#479).
  */
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import * as fleetDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
+import { createApiKey, listApiKeysForUser, revokeApiKey } from '../lib/apiKeys.js';
+import { isAgentRequest } from '../auth.js';
 import { broadcast } from '../ws.js';
 import { pullFleetTicket, OrchestrationNotFoundError } from '../services/orchestration.js';
 
@@ -33,6 +39,10 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
 
   app.post('/api/fleets', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
+    // A fleet's key must not own fleets of its own (#481).
+    if (await fleetDb.isFleetUser(req.userId)) {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'A fleet key cannot create fleets' } });
+    }
     const body = (req.body ?? {}) as { name?: unknown; maxActiveClaims?: unknown };
     const invalid = fleetService.validateFleetFields(body, true);
     if (invalid) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: invalid } });
@@ -108,4 +118,58 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
     for (const map of result) broadcast(map.id, { type: 'map:updated', map });
     return reply.status(204).send();
   });
+
+  // ── Fleet credentials (#481) ──────────────────────────────────
+  // API keys for the fleet's service user. Owner only, and — like
+  // /api/api-keys — a signed-in session only: an API key must never mint,
+  // list or revoke keys, or a leaked one becomes a lasting foothold.
+  // Rotate = issue a new key, switch the clients, revoke the old one.
+
+  app.post<{ Params: { id: string }; Body: { name?: unknown } }>('/api/fleets/:id/credentials', async (req, reply) => {
+    const scope = await credentialScope(req, reply);
+    if (!scope) return reply;
+    const name = typeof req.body?.name === 'string' && req.body.name.trim() ? req.body.name.trim().slice(0, 100) : `fleet key ${new Date().toISOString().slice(0, 10)}`;
+    const created = await createApiKey(scope.serviceUserId, name);
+    // The plaintext key leaves the server once, here.
+    return reply.status(201).send({ id: created.id, name: created.name, key: created.key, prefix: created.prefix, createdAt: created.createdAt });
+  });
+
+  app.get<{ Params: { id: string } }>('/api/fleets/:id/credentials', async (req, reply) => {
+    const scope = await credentialScope(req, reply);
+    if (!scope) return reply;
+    return reply.send({ credentials: await listApiKeysForUser(scope.serviceUserId) });
+  });
+
+  app.delete<{ Params: { id: string; keyId: string } }>('/api/fleets/:id/credentials/:keyId', async (req, reply) => {
+    const scope = await credentialScope(req, reply);
+    if (!scope) return reply;
+    const revoked = await revokeApiKey(scope.serviceUserId, req.params.keyId);
+    if (!revoked) return reply.status(404).send({ error: { code: 'CREDENTIAL_NOT_FOUND', message: 'No active key with this id on this fleet' } });
+    return reply.status(204).send();
+  });
+}
+
+/** Owner of the fleet, on a web session; the fleet's service user to act for. Null = the error was sent. */
+async function credentialScope(req: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply): Promise<{ serviceUserId: string } | null> {
+  if (!req.userId) {
+    unauthorized(reply);
+    return null;
+  }
+  if (isAgentRequest(req)) {
+    reply.status(403).send({
+      error: { code: 'FORBIDDEN', message: 'API keys and long-lived tokens cannot manage fleet keys. Sign in via the web UI to manage keys.' },
+    });
+    return null;
+  }
+  const owned = await fleetService.requireFleetOwner(req.userId, req.params.id);
+  if (isAccessError(owned)) {
+    sendAccessError(reply, owned);
+    return null;
+  }
+  const serviceUserId = await fleetDb.getServiceUserId(req.params.id);
+  if (!serviceUserId) {
+    reply.status(409).send({ error: { code: 'NO_SERVICE_USER', message: 'This fleet has no service user' } });
+    return null;
+  }
+  return { serviceUserId };
 }

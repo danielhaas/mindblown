@@ -64,6 +64,8 @@ export interface JournalInput {
   nodes: JournalNodeRow[];
   versions: { id: string; name: string }[];
   users: { id: string; name: string }[];
+  /** Fleets the claim trail names (#481: `fleetId` on claim/release rows) — their names go next to the session. */
+  fleets?: { id: string; name: string }[];
   /** Set by the loader when a read limit cut the events or ticks — the lists are then the NEWEST part of the window. */
   truncated?: { events: boolean; ticks: boolean };
 }
@@ -72,6 +74,8 @@ export interface JournalWorker {
   session: string;
   host: string | null;
   worker: string | null;
+  /** The fleet that held the claim (#481), when the trail recorded one. */
+  fleet?: string;
 }
 
 /** Which project an entry is about — present when the journal spans a fleet's maps (#479). */
@@ -249,6 +253,13 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
   // Only a fleet-wide loader sets mapId; a single-map journal keeps its old shape.
   const mapRef = (mapId: string | undefined): JournalMapRef => (mapId ? { mapId } : {});
   const nodeMap = (e: JournalEventRow, id: string) => mapRef(e.mapId ?? nodeById.get(id)?.mapId);
+  const fleetName = new Map((input.fleets ?? []).map((f) => [f.id, f.name]));
+  // The session, plus the fleet that held it when the row names one (#481).
+  const workerOf = (session: string, v: Record<string, unknown>): JournalWorker => {
+    const w = splitSession(session);
+    const name = fleetName.get(str(v.fleetId) ?? '');
+    return name ? { ...w, fleet: name } : w;
+  };
 
   const events = [...input.events].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
 
@@ -267,7 +278,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
     if (e.eventType === 'node.claimed' && e.nodeId) {
       const session = str(v.session);
       if (!session) continue;
-      const w = splitSession(session);
+      const w = workerOf(session, v);
       lastClaim.set(e.nodeId, w);
       if (inside) {
         const via = v.via === 'pull' || v.via === 'claim' ? v.via : 'unknown';
@@ -276,7 +287,7 @@ export function buildFleetJournal(input: JournalInput): FleetJournal {
     } else if (e.eventType === 'node.released' && e.nodeId) {
       const session = str(v.session);
       if (!session) continue;
-      const w = splitSession(session);
+      const w = workerOf(session, v);
       const reason = str(v.reason) ?? 'release';
       if (reason === 'done') doneRelease.set(e.nodeId, w);
       else if (inside) {

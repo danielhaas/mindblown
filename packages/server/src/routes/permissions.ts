@@ -3,6 +3,7 @@ import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
 import { eq } from 'drizzle-orm';
 import * as permDb from '../db/permissions.js';
+import { isFleetUser } from '../db/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import { sendMapInvitationEmail } from '../lib/email.js';
 
@@ -43,10 +44,18 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
 
       // Find user by email
       const [targetUser] = await db
-        .select({ id: users.id })
+        .select({ id: users.id, kind: users.kind })
         .from(users)
         .where(eq(users.email, body.email.toLowerCase()))
         .limit(1);
+
+      // A fleet's service user (#481) gets edit on exactly its fleet's
+      // connected maps, from the connection — never by sharing, never admin.
+      if (targetUser && (await isFleetUser(targetUser.id))) {
+        return reply.status(400).send({
+          error: { code: 'FLEET_USER', message: 'A fleet gets access by connecting the map to it (map Settings → Fleet), not by sharing' },
+        });
+      }
 
       const isNewUser = !targetUser;
       const response = isNewUser
@@ -153,6 +162,12 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // The fleet's grant follows the connection (#481): disconnect the map instead.
+      if (await isFleetUser(req.params.userId)) {
+        return reply.status(400).send({
+          error: { code: 'FLEET_USER', message: "A fleet's access follows the connection — disconnect the map from the fleet (map Settings → Fleet)" },
+        });
+      }
       const deleted = await permDb.revokePermission(req.params.mapId, req.params.userId);
       if (!deleted) {
         return reply.status(404).send({

@@ -240,8 +240,103 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
         </div>
           )}
 
+      {/* The fleet's own keys (#481) — its owner manages them, in the settings only. */}
+      {/* key: a fresh plaintext key must not survive a switch to another fleet. */}
+      {variant === 'settings' && !readOnly && fleetId && current?.isOwner && <FleetKeysSection key={fleetId} fleetId={fleetId} fleetName={currentName} />}
+
       {error && <div style={warnBox}>{error}</div>}
       {loadError && <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Fleet list unavailable ({loadError}).</div>}
+    </div>
+  );
+}
+
+/**
+ * API keys of the fleet's service user (#481). The fleet acts as its own
+ * identity: edit on exactly the maps connected to it, nothing else. A key
+ * is shown once, right after it is issued; afterwards only its prefix.
+ * Rotate = issue a new one, switch the workers to it, revoke the old one.
+ */
+function FleetKeysSection({ fleetId, fleetName }: { fleetId: string; fleetName: string }) {
+  const [keys, setKeys] = useState<api.FleetCredential[] | null>(null);
+  const [name, setName] = useState('');
+  const [fresh, setFresh] = useState<{ prefix: string; key: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reload = useCallback(() => {
+    api
+      .listFleetCredentials(fleetId)
+      .then((r) => setKeys(r.credentials))
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : 'Keys unavailable'));
+  }, [fleetId]);
+  useEffect(reload, [reload]);
+
+  const issue = async () => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await api.issueFleetCredential(fleetId, name.trim() || `${fleetName} key`);
+      setFresh({ prefix: created.prefix, key: created.key });
+      setName('');
+      reload();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Issuing the key failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async (k: api.FleetCredential) => {
+    if (busy || !window.confirm(`Revoke "${k.name}" (${k.prefix}…)?\n\nEvery worker still using it is refused from the next request on.`)) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.revokeFleetCredential(fleetId, k.id);
+      if (fresh?.prefix === k.prefix) setFresh(null);
+      reload();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Revoking the key failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const active = (keys ?? []).filter((k) => !k.revokedAt);
+  return (
+    <div style={{ marginTop: 14 }} data-testid="fleet-keys">
+      <div style={{ fontSize: 12, fontWeight: 600, color: '#334155', marginBottom: 4 }}>Fleet keys</div>
+      <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
+        The workers of this fleet sign in with a fleet key. It reaches exactly the maps connected to the fleet — with edit, never
+        admin — and loses a map the moment it is disconnected.
+      </div>
+      {fresh && (
+        <div style={{ background: '#f0fdf4', border: '1px solid #bbf7d0', borderRadius: 8, padding: '6px 10px', fontSize: 12, marginBottom: 8 }} data-testid="fleet-key-fresh">
+          New key — copy it now, it is not shown again:
+          <code style={{ display: 'block', marginTop: 4, wordBreak: 'break-all', userSelect: 'all' }}>{fresh.key}</code>
+        </div>
+      )}
+      {active.length > 0 && (
+        <ul style={{ margin: '0 0 8px', paddingLeft: 18, fontSize: 12, lineHeight: 1.8 }}>
+          {active.map((k) => (
+            <li key={k.id}>
+              {k.name} <code>{k.prefix}…</code>
+              <span style={{ color: '#94a3b8' }}> · {k.lastUsedAt ? `last used ${k.lastUsedAt.slice(0, 10)}` : 'never used'}</span>{' '}
+              <button style={{ ...btn, padding: '0 8px' }} disabled={busy} onClick={() => void revoke(k)} data-testid="fleet-key-revoke">
+                Revoke
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {keys !== null && active.length === 0 && <div style={{ fontSize: 12, color: '#94a3b8', marginBottom: 8 }}>No key yet.</div>}
+      <div style={row}>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Key name (e.g. big-blower)" maxLength={100} style={{ ...input, flex: 1, minWidth: 140 }} data-testid="fleet-key-name" />
+        <button style={{ ...btn, ...btnPrimary }} disabled={busy} onClick={() => void issue()} data-testid="fleet-key-issue">
+          Issue key
+        </button>
+      </div>
+      {error && <div style={warnBox}>{error}</div>}
     </div>
   );
 }
