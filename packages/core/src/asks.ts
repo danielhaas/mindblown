@@ -29,6 +29,12 @@ export const ASK_NO_QUESTION_HINTS: readonly AskHint[] = ['already-decided', 'pa
 /** One collected question — the collector's item verbatim (the contract). */
 export interface Ask {
   id: string;
+  /**
+   * The project this ask is about, set by a fleet-wide collector (#479)
+   * pushing to /api/fleets/:id/asks. Absent = fleet-level (no project).
+   * A push through /api/maps/:id/asks belongs to that map regardless.
+   */
+  map_id?: string;
   ticket: number | null;
   requirement: string | null;
   title: string | null;
@@ -106,6 +112,8 @@ export interface AskWrite {
 /** A stored ask: the collector item plus MindBlown's answer state. */
 export interface AskRow {
   ask: Ask;
+  /** The project the ask is about; null = fleet-level (#479). Absent from pre-#479 servers. */
+  mapId?: string | null;
   status: AskStatus;
   /** When the collector last included this question. */
   pushedAt: string;
@@ -175,6 +183,7 @@ export function parseAsk(raw: unknown): Ask | null {
     moot: o.moot === true,
     ...(o.stale === true ? { stale: true } : {}),
     ...(typeof o.ticket_state === 'string' ? { ticket_state: o.ticket_state } : {}),
+    ...(typeof o.map_id === 'string' && o.map_id !== '' ? { map_id: o.map_id } : {}),
   };
 }
 
@@ -187,8 +196,10 @@ export function parseAskDocument(raw: unknown): AskDocument | null {
   const seen = new Set<string>();
   for (const it of o.items) {
     const a = parseAsk(it);
-    if (!a || seen.has(a.id)) continue;
-    seen.add(a.id);
+    // Unique per (id, map): a fleet-wide collector may carry `#12` of two projects (#479).
+    const key = `${a?.id}\u0000${a?.map_id ?? ''}`;
+    if (!a || seen.has(key)) continue;
+    seen.add(key);
     items.push(a);
   }
   const meta = (o.meta && typeof o.meta === 'object' ? o.meta : {}) as AskDocumentMeta;

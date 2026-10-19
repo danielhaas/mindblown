@@ -62,6 +62,11 @@ describe('parseAskDocument', () => {
     expect(doc!.meta.tick).toBe('20260903T0800Z');
   });
 
+  it('a fleet-wide document keeps the same id on two maps apart, and the map_id on the item (#479)', () => {
+    const doc = parseAskDocument({ items: [ask({ id: '#1', map_id: 'a' }), ask({ id: '#1', map_id: 'b' }), ask({ id: '#1', map_id: 'a' }), ask({ id: '#1' })] });
+    expect(doc!.items.map((i) => [i.id, i.map_id])).toEqual([['#1', 'a'], ['#1', 'b'], ['#1', undefined]]);
+  });
+
   it('rejects anything without items[]', () => {
     expect(parseAskDocument({ meta: {} })).toBeNull();
     expect(parseAskDocument(null)).toBeNull();

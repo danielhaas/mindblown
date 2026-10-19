@@ -1,4 +1,4 @@
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { buildBaseline, capBaselines } from '../lib/mapSchedule.js';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
@@ -245,6 +245,12 @@ export async function updateMap(
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();
   if (!row) return null;
   const updated = dbMapToCore(row as unknown as Record<string, unknown>);
+  // Asks are keyed by fleet (#479); the map routes read the map's current
+  // fleet. A map that moves takes its rows along — answer state and
+  // pending worker notes included — or they would be stranded on the old
+  // fleet. A disconnect leaves them where they are; nothing reads them
+  // until the map joins a fleet again, and then they move.
+  if (updated.fleetId && updated.fleetId !== before.fleetId) await moveMapAsks(mapId, updated.fleetId);
   await recordMapFieldChanges(
     mapId,
     userId,
@@ -252,6 +258,23 @@ export async function updateMap(
     updated as unknown as Record<string, unknown>,
   );
   return updated;
+}
+
+/**
+ * Re-key a map's asks onto `fleetId`. A row the new fleet already holds for
+ * this map wins over an older copy (same ask id, other fleet); the push
+ * meta is a snapshot the next push rewrites, so only the new fleet's stays.
+ */
+async function moveMapAsks(mapId: string, fleetId: string): Promise<void> {
+  await db.transaction(async (tx) => {
+    await tx.execute(sql`
+      DELETE FROM asks a USING asks b
+      WHERE a.map_id = ${mapId} AND b.map_id = ${mapId} AND a.ask_id = b.ask_id
+        AND a.fleet_id <> ${fleetId} AND b.fleet_id = ${fleetId}
+    `);
+    await tx.execute(sql`UPDATE asks SET fleet_id = ${fleetId} WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
+    await tx.execute(sql`DELETE FROM asks_pushes WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
+  });
 }
 
 // ── Delete ─────────────────────────────────────────────────────────

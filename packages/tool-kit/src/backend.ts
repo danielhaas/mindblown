@@ -59,14 +59,18 @@ export interface AskListOptions {
   limit?: number;
 }
 
-/** GET /api/maps/:id/asks */
+/** GET /api/maps/:id/asks, /api/fleets/:id/asks */
 export interface AskListResult {
   items: AskRow[];
   counts: AskCounts;
   /** When the collector last pushed — null until the first push. */
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
+  /** #479: which map's push `meta` is from (its counts are that project's); null = fleet-wide push. */
+  pushedFor?: string | null;
   now: string;
+  /** Fleet read (#479): the maps covered — rows name theirs by `mapId` (null = fleet-level). */
+  maps?: { id: string; name: string }[];
 }
 
 /** POST /api/maps/:id/asks/:askId/answer */
@@ -506,10 +510,14 @@ export interface ToolBackend {
   getFleetJournalForFleet(fleetId: string, opts?: FleetJournalOptions): Promise<FleetJournalResult>;
 
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
-  /** The fleet's open human questions as the collector pushed them (read-only). */
+  /** The fleet's open human questions as the collector pushed them (read-only) — through a map: that map's. */
   listAsks(mapId: string, opts?: AskListOptions): Promise<AskListResult>;
+  /** The whole fleet's asks the caller may see (#479): every viewable map, fleet-level ones for a reader of all maps. */
+  listAsksForFleet(fleetId: string, opts?: AskListOptions): Promise<AskListResult>;
   /** Record an answer and write it like `leidang-asks-apply` (ticket comment, node, worker flag). */
   answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult>;
+  /** The same through the fleet (#479); `mapId` picks between rows sharing an ask id ('' = fleet-level). */
+  answerAskForFleet(fleetId: string, askId: string, input: AskAnswerInput, mapId?: string): Promise<AskAnswerResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

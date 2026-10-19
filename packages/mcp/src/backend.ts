@@ -53,6 +53,8 @@ export const httpBackend: ToolBackend = {
   // ── Asks inbox (/leidang-asks) ──────────────────────────────────
   listAsks: (mapId, opts) => api.listAsks(mapId, opts),
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
+  listAsksForFleet: (fleetId, opts) => api.listAsksForFleet(fleetId, opts),
+  answerAskForFleet: (fleetId, askId, input, mapId) => api.answerAskForFleet(fleetId, askId, input, mapId),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
   // ── Attachments ─────────────────────────────────────────────────

@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getAskMock = vi.fn();
-const setAnswerMock = vi.fn(async (_m: string, _id: string, patch: unknown) => ({ ask: {}, ...(patch as object) }));
+const setAnswerMock = vi.fn(async (_k: unknown, patch: unknown) => ({ ask: {}, ...(patch as object) }));
 const getNodeMock = vi.fn();
 const updateNodeMock = vi.fn();
 const getStatusWorkflowMock = vi.fn(async () => [
@@ -25,7 +25,7 @@ const ghCtxMock = vi.fn(async () => ({ owner: 'FulcrumCRM', repo: 'crm', token: 
 const commentMock = vi.fn(async () => ({ id: 1, html_url: 'u' }));
 const milestoneMock = vi.fn(async () => ({ milestoneNumber: 3 }));
 
-vi.mock('../../db/asks.js', () => ({ getAsk: (...a: unknown[]) => getAskMock(...a), setAnswer: (...a: unknown[]) => setAnswerMock(...(a as [string, string, unknown])) }));
+vi.mock('../../db/asks.js', () => ({ getAsk: (...a: unknown[]) => getAskMock(...a), setAnswer: (...a: unknown[]) => setAnswerMock(...(a as [unknown, unknown])) }));
 vi.mock('../../db/nodes.js', () => ({ getNode: (...a: unknown[]) => getNodeMock(...a), updateNode: (...a: unknown[]) => updateNodeMock(...a) }));
 vi.mock('../../db/maps.js', () => ({ getStatusWorkflow: (...a: unknown[]) => getStatusWorkflowMock(...(a as [])) }));
 vi.mock('../../db/events.js', () => ({ recordFieldChanges: (...a: unknown[]) => recordFieldChangesMock(...(a as [])) }));
@@ -38,6 +38,9 @@ vi.mock('@mindblown/integrations', () => ({
 import { answerAsk, AskNotFoundError, AskValidationError } from '../asks.js';
 
 const MAP = 'map-1';
+const FLEET = 'fleet-1';
+/** The ask's key since #479: fleet, map, id. */
+const key = (askId: string) => ({ fleetId: FLEET, mapId: MAP, askId });
 const NODE = 'n1n1n1n1-2222-3333-4444-555555555555';
 
 function askRow(over: Record<string, unknown> = {}, unblocks: Record<string, unknown> = {}) {
@@ -68,7 +71,7 @@ const today = new Date().toISOString().slice(0, 10);
 
 describe('answerAsk — answered', () => {
   it('comments the ticket, rewrites the node like apply, records the writes', async () => {
-    const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
+    const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
     expect(commentMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, `**Entscheid (Dan, ${today}): skip**\n\n_via /leidang-asks_`, FORGE);
     expect(milestoneMock).not.toHaveBeenCalled();
     expect(updateNodeMock).toHaveBeenCalledWith(NODE, {
@@ -80,7 +83,7 @@ describe('answerAsk — answered', () => {
     expect(recordFieldChangesMock).toHaveBeenCalledWith(MAP, NODE, 'u1', expect.objectContaining({ status: 'blocked' }), expect.objectContaining({ status: 'todo' }));
     expect(out.ok).toBe(true);
     expect(out.changedFields).toEqual(['blockedReason', 'description', 'tags', 'status']);
-    const patch = setAnswerMock.mock.calls[0][2] as { status: string; answeredBy: string; writes: { kind: string; done: boolean }[]; workerPending: boolean };
+    const patch = setAnswerMock.mock.calls[0][1] as { status: string; answeredBy: string; writes: { kind: string; done: boolean }[]; workerPending: boolean };
     expect(patch.status).toBe('answered');
     expect(patch.answeredBy).toBe('Dan');
     expect(patch.writes.map((w) => [w.kind, w.done])).toEqual([['gh-comment', true], ['mb-put', true]]);
@@ -89,35 +92,35 @@ describe('answerAsk — answered', () => {
 
   it('sets the milestone and drops NEEDS-VERSION when that was the question', async () => {
     getAskMock.mockResolvedValue(askRow({ needs_version: true }));
-    await answerAsk(MAP, '#6823', { action: 'answered', decision: 'V1.5', milestone: 'V1.5' }, 'u1');
+    await answerAsk(key('#6823'), { action: 'answered', decision: 'V1.5', milestone: 'V1.5' }, 'u1');
     expect(milestoneMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, 'V1.5', 'NEEDS-VERSION', FORGE);
   });
 
   it('keeps a claimed node\'s status, and honours noRequeue', async () => {
     getNodeMock.mockResolvedValue(node({ status: 'in_progress', claimedBySession: 'sat3:worker-2' }));
-    await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
+    await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
     expect(updateNodeMock.mock.calls[0][1]).not.toHaveProperty('status');
     getNodeMock.mockResolvedValue(node());
-    await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip', noRequeue: true }, 'u1');
+    await answerAsk(key('#6823'), { action: 'answered', decision: 'skip', noRequeue: true }, 'u1');
     expect(updateNodeMock.mock.calls[1][1]).not.toHaveProperty('status');
     expect(updateNodeMock.mock.calls[1][1]).toMatchObject({ blockedReason: null, tagsRemove: ['blocked'] });
   });
 
   it('never touches a done node', async () => {
     getNodeMock.mockResolvedValue(node({ status: 'done', tags: [] }));
-    const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
+    const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
     expect(updateNodeMock).not.toHaveBeenCalled();
     expect(out.node).toBeNull();
-    const patch = setAnswerMock.mock.calls[0][2] as { writes: { kind: string; detail: string }[] };
+    const patch = setAnswerMock.mock.calls[0][1] as { writes: { kind: string; detail: string }[] };
     expect(patch.writes.find((w) => w.kind === 'mb-skip')!.detail).toContain('done');
   });
 
   it('flags a worker note for the next tick instead of writing it', async () => {
     getAskMock.mockResolvedValue(askRow({ ticket: null, id: 'q:x' }, { node_id: null, worker: 'sat3:worker-2' }));
-    const out = await answerAsk(MAP, 'q:x', { action: 'answered', decision: 'go', by: 'Dan' }, 'u1');
+    const out = await answerAsk(key('q:x'), { action: 'answered', decision: 'go', by: 'Dan' }, 'u1');
     expect(commentMock).not.toHaveBeenCalled();
     expect(updateNodeMock).not.toHaveBeenCalled();
-    const patch = setAnswerMock.mock.calls[0][2] as { workerPending: boolean; writes: { kind: string; done: boolean }[] };
+    const patch = setAnswerMock.mock.calls[0][1] as { workerPending: boolean; writes: { kind: string; done: boolean }[] };
     expect(patch.workerPending).toBe(true);
     expect(patch.writes).toEqual([expect.objectContaining({ kind: 'worker-note', target: 'sat3:worker-2', done: false })]);
     expect(out.ok).toBe(true); // a pending worker note is not a failure
@@ -125,10 +128,10 @@ describe('answerAsk — answered', () => {
 
   it('a moot ask writes nothing', async () => {
     getAskMock.mockResolvedValue(askRow({ moot: true }, { worker: 'sat3:worker-1', pr: 6869, pr_state: 'MERGED' }));
-    const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'x' }, 'u1');
+    const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'x' }, 'u1');
     expect(commentMock).not.toHaveBeenCalled();
     expect(updateNodeMock).not.toHaveBeenCalled();
-    const patch = setAnswerMock.mock.calls[0][2] as { status: string; workerPending: boolean; writes: { kind: string }[] };
+    const patch = setAnswerMock.mock.calls[0][1] as { status: string; workerPending: boolean; writes: { kind: string }[] };
     expect(patch.status).toBe('answered');
     expect(patch.workerPending).toBe(false);
     expect(patch.writes.map((w) => w.kind)).toEqual(['moot-skip']);
@@ -137,39 +140,55 @@ describe('answerAsk — answered', () => {
 
   it('records a failed GitHub call and still writes the node', async () => {
     commentMock.mockRejectedValueOnce(new Error('GitHub API 502'));
-    const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
+    const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
     expect(updateNodeMock).toHaveBeenCalled();
     expect(out.ok).toBe(false);
-    const patch = setAnswerMock.mock.calls[0][2] as { writes: { kind: string; done: boolean; error?: string }[] };
+    const patch = setAnswerMock.mock.calls[0][1] as { writes: { kind: string; done: boolean; error?: string }[] };
     expect(patch.writes[0]).toMatchObject({ kind: 'gh-comment', done: false, error: 'GitHub API 502' });
     expect(patch.writes[1]).toMatchObject({ kind: 'mb-put', done: true });
   });
 
   it('says so when the map has no GitHub integration', async () => {
     ghCtxMock.mockResolvedValueOnce(null as never);
-    const out = await answerAsk(MAP, '#6823', { action: 'answered', decision: 'skip' }, 'u1');
+    const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
     expect(commentMock).not.toHaveBeenCalled();
     expect(out.ok).toBe(false);
-    const patch = setAnswerMock.mock.calls[0][2] as { writes: { error?: string }[] };
+    const patch = setAnswerMock.mock.calls[0][1] as { writes: { error?: string }[] };
     expect(patch.writes[0].error).toContain('no issue tracker connected');
+  });
+});
+
+describe('answerAsk — fleet-level ask (#479)', () => {
+  it('records the answer and flags the worker, but writes no ticket and no node — there is no map', async () => {
+    getAskMock.mockResolvedValueOnce(askRow({}, { worker: 'sat2:worker-1' }));
+    const out = await answerAsk({ fleetId: FLEET, mapId: null, askId: '#6823' }, { action: 'answered', decision: 'skip' }, 'u1');
+    expect(getNodeMock).not.toHaveBeenCalled();
+    expect(updateNodeMock).not.toHaveBeenCalled();
+    expect(ghCtxMock).not.toHaveBeenCalled();
+    expect(commentMock).not.toHaveBeenCalled();
+    expect(setAnswerMock.mock.calls[0][0]).toEqual({ fleetId: FLEET, mapId: null, askId: '#6823' });
+    const patch = setAnswerMock.mock.calls[0][1] as { status: string; writes: { kind: string; error?: string }[] };
+    expect(patch.status).toBe('answered');
+    expect(patch.writes.find((w) => w.kind === 'gh-comment')?.error).toMatch(/fleet-level ask names no project/);
+    expect(out.node).toBeNull();
   });
 });
 
 describe('answerAsk — later / delegate / validation', () => {
   it('later and delegate only record', async () => {
-    await answerAsk(MAP, '#6823', { action: 'later' }, 'u1');
-    await answerAsk(MAP, '#6823', { action: 'delegate', delegateTo: 'Rita' }, 'u1');
+    await answerAsk(key('#6823'), { action: 'later' }, 'u1');
+    await answerAsk(key('#6823'), { action: 'delegate', delegateTo: 'Rita' }, 'u1');
     expect(commentMock).not.toHaveBeenCalled();
     expect(updateNodeMock).not.toHaveBeenCalled();
-    expect((setAnswerMock.mock.calls[0][2] as { status: string }).status).toBe('later');
-    expect(setAnswerMock.mock.calls[1][2]).toMatchObject({ status: 'delegated', writes: [expect.objectContaining({ kind: 'ledger-only', detail: 'delegate → Rita' })] });
+    expect((setAnswerMock.mock.calls[0][1] as { status: string }).status).toBe('later');
+    expect(setAnswerMock.mock.calls[1][1]).toMatchObject({ status: 'delegated', writes: [expect.objectContaining({ kind: 'ledger-only', detail: 'delegate → Rita' })] });
   });
 
   it('refuses an empty decision, a delegate without target, an unknown ask', async () => {
-    await expect(answerAsk(MAP, '#6823', { action: 'answered', decision: '  ' }, 'u1')).rejects.toBeInstanceOf(AskValidationError);
-    await expect(answerAsk(MAP, '#6823', { action: 'delegate' }, 'u1')).rejects.toBeInstanceOf(AskValidationError);
+    await expect(answerAsk(key('#6823'), { action: 'answered', decision: '  ' }, 'u1')).rejects.toBeInstanceOf(AskValidationError);
+    await expect(answerAsk(key('#6823'), { action: 'delegate' }, 'u1')).rejects.toBeInstanceOf(AskValidationError);
     getAskMock.mockResolvedValueOnce(null);
-    await expect(answerAsk(MAP, 'nope', { action: 'later' }, 'u1')).rejects.toBeInstanceOf(AskNotFoundError);
+    await expect(answerAsk(key('nope'), { action: 'later' }, 'u1')).rejects.toBeInstanceOf(AskNotFoundError);
     expect(setAnswerMock).not.toHaveBeenCalled();
   });
 });

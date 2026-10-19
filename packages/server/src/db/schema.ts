@@ -9,6 +9,7 @@ import {
   date,
   integer,
   primaryKey,
+  unique,
 } from 'drizzle-orm/pg-core';
 
 // ── Users ──────────────────────────────────────────────────────────
@@ -647,10 +648,14 @@ export const fleetTicks = pgTable('fleet_ticks', {
 // whole every orchestrator tick (PUT /maps/:id/asks). MindBlown never
 // derives this list itself — the collector is the truth; what lives here
 // is the answer state. `payload` is the collector item verbatim (core `Ask`).
+// Keyed by fleet since #479: `map_id` is the project the ask is about, null
+// for a fleet-level ask. Unique on (fleet, ask, map) with NULLS NOT DISTINCT
+// — two projects' collectors may reuse an ask id (`ticket-12` in two repos).
 export const asks = pgTable(
   'asks',
   {
-    mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
     askId: text('ask_id').notNull(),
     payload: jsonb('payload').notNull(),
     pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
@@ -662,11 +667,12 @@ export const asks = pgTable(
     writes: jsonb('writes').notNull().default([]), // AskWrite[]
     workerPending: boolean('worker_pending').notNull().default(false),
   },
-  (t) => [primaryKey({ columns: [t.mapId, t.askId] })],
+  (t) => [unique('asks_fleet_ask_map_uq').on(t.fleetId, t.askId, t.mapId).nullsNotDistinct()],
 );
 
 // The last push's meta (tick id, generated_at, the collector's own counts)
-// — one row per map, overwritten on every push.
+// — one row per (fleet, map) the push came for, map null for a fleet-wide
+// push; overwritten on every push.
 // Which map an uploaded document belongs to (#292): the map it was first
 // attached on. Access to a document = view on that map, while a live node
 // there still references it. Video and images are public and not tracked.
@@ -676,8 +682,13 @@ export const mediaOwners = pgTable('media_owners', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const asksPushes = pgTable('asks_pushes', {
-  mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
-  pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
-  meta: jsonb('meta').notNull(),
-});
+export const asksPushes = pgTable(
+  'asks_pushes',
+  {
+    fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+    mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
+    pushedAt: timestamp('pushed_at', { withTimezone: true }).notNull().defaultNow(),
+    meta: jsonb('meta').notNull(),
+  },
+  (t) => [unique('asks_pushes_fleet_map_uq').on(t.fleetId, t.mapId).nullsNotDistinct()],
+);
