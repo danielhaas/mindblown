@@ -121,7 +121,7 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     // column is unique only case-sensitively, so two accounts may differ
     // in case alone — then refuse rather than reset a random one.
     const matches = await db
-      .select({ id: users.id, email: users.email })
+      .select({ id: users.id, email: users.email, kind: users.kind })
       .from(users)
       .where(sql`lower(${users.email}) = lower(${email})`)
       .limit(2);
@@ -135,6 +135,13 @@ export async function systemRoutes(app: FastifyInstance): Promise<void> {
     if (!user) {
       return reply.status(404).send({
         error: { code: 'USER_NOT_FOUND', message: `No user with email ${email}` },
+      });
+    }
+    // A fleet's service user (#481) has no password by design: one set here
+    // would turn it into a login account.
+    if (user.kind === 'fleet') {
+      return reply.status(400).send({
+        error: { code: 'FLEET_USER', message: 'This is a fleet service user — it has no password. Issue it an API key from the fleet instead.' },
       });
     }
     const tempPassword = `mb-${randomBytes(9).toString('base64url')}`;

@@ -251,6 +251,9 @@ export async function updateMap(
   // fleet. A disconnect leaves them where they are; nothing reads them
   // until the map joins a fleet again, and then they move.
   if (updated.fleetId && updated.fleetId !== before.fleetId) await moveMapAsks(mapId, updated.fleetId);
+  // The fleet's service user (#481) has edit on exactly the maps its fleet
+  // is connected to: connecting is the one step that gives a fleet access.
+  if (updated.fleetId !== before.fleetId) await moveFleetGrant(mapId, before.fleetId ?? null, updated.fleetId ?? null);
   await recordMapFieldChanges(
     mapId,
     userId,
@@ -274,6 +277,29 @@ async function moveMapAsks(mapId: string, fleetId: string): Promise<void> {
     `);
     await tx.execute(sql`UPDATE asks SET fleet_id = ${fleetId} WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
     await tx.execute(sql`DELETE FROM asks_pushes WHERE map_id = ${mapId} AND fleet_id <> ${fleetId}`);
+  });
+}
+
+/**
+ * Revoke the old fleet's service user on this map and grant the new one
+ * `edit` — set, not merged, so a fleet user never holds more than edit.
+ */
+async function moveFleetGrant(mapId: string, oldFleetId: string | null, newFleetId: string | null): Promise<void> {
+  await db.transaction(async (tx) => {
+    if (oldFleetId) {
+      await tx.execute(sql`
+        DELETE FROM map_permissions p USING fleets f
+        WHERE f.id = ${oldFleetId} AND p.user_id = f.service_user_id AND p.map_id = ${mapId}
+      `);
+    }
+    if (newFleetId) {
+      await tx.execute(sql`
+        INSERT INTO map_permissions (map_id, user_id, permission)
+        SELECT ${mapId}, f.service_user_id, 'edit' FROM fleets f
+        WHERE f.id = ${newFleetId} AND f.service_user_id IS NOT NULL
+        ON CONFLICT (map_id, user_id) DO UPDATE SET permission = 'edit'
+      `);
+    }
   });
 }
 

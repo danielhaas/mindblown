@@ -7,7 +7,7 @@
 import { asc, eq, inArray, or } from 'drizzle-orm';
 import type { Fleet } from '@mindblown/core';
 import { db } from './connection.js';
-import { fleets, maps } from './schema.js';
+import { fleets, maps, users } from './schema.js';
 import { dbFleetToCore } from './helpers.js';
 
 /** Postgres rejects a malformed uuid with an error; callers get "not found" instead. */
@@ -57,16 +57,47 @@ export async function listFleetMaps(fleetId: string): Promise<FleetMapRow[]> {
   return rows.map((r) => ({ ...r, archivedAt: r.archivedAt ? r.archivedAt.toISOString() : null }));
 }
 
+/**
+ * Create a fleet together with its service user (#481): kind 'fleet', no
+ * password (it can't sign in), an address no mailbox or OAuth login can
+ * claim. The fleet's API keys act as this user.
+ */
 export async function createFleet(input: { name: string; ownerId: string; maxActiveClaims?: number }): Promise<Fleet> {
-  const [row] = await db
-    .insert(fleets)
-    .values({
-      name: input.name,
-      ownerId: input.ownerId,
-      maxActiveClaims: Math.max(0, Math.floor(input.maxActiveClaims ?? 0)),
-    })
-    .returning();
-  return dbFleetToCore(row as unknown as Record<string, unknown>);
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .insert(fleets)
+      .values({
+        name: input.name,
+        ownerId: input.ownerId,
+        maxActiveClaims: Math.max(0, Math.floor(input.maxActiveClaims ?? 0)),
+      })
+      .returning();
+    const [user] = await tx
+      .insert(users)
+      .values({ email: `fleet-${row.id}@fleets.invalid`, name: `Fleet: ${input.name}`, kind: 'fleet' })
+      .returning({ id: users.id });
+    await tx.update(fleets).set({ serviceUserId: user.id }).where(eq(fleets.id, row.id));
+    return dbFleetToCore(row as unknown as Record<string, unknown>);
+  });
+}
+
+/** The fleet's service user id; null when the fleet has none (or doesn't exist). */
+export async function getServiceUserId(fleetId: string): Promise<string | null> {
+  if (!isFleetId(fleetId)) return null;
+  const [row] = await db.select({ id: fleets.serviceUserId }).from(fleets).where(eq(fleets.id, fleetId));
+  return row?.id ?? null;
+}
+
+/** True for a fleet's service user (users.kind = 'fleet', #481). */
+export async function isFleetUser(userId: string): Promise<boolean> {
+  const [row] = await db.select({ kind: users.kind }).from(users).where(eq(users.id, userId));
+  return row?.kind === 'fleet';
+}
+
+/** Which fleet this user is the service identity of — null for a person. */
+export async function fleetOfServiceUser(userId: string): Promise<{ id: string; name: string } | null> {
+  const [row] = await db.select({ id: fleets.id, name: fleets.name }).from(fleets).where(eq(fleets.serviceUserId, userId));
+  return row ?? null;
 }
 
 export async function updateFleet(id: string, input: { name?: string; maxActiveClaims?: number }): Promise<Fleet | null> {
@@ -78,9 +109,13 @@ export async function updateFleet(id: string, input: { name?: string; maxActiveC
   return row ? dbFleetToCore(row as unknown as Record<string, unknown>) : null;
 }
 
-/** Connected maps fall back to no fleet (FK ON DELETE SET NULL). */
+/**
+ * Connected maps fall back to no fleet (FK ON DELETE SET NULL). The service
+ * user goes with the fleet — its keys and grants cascade with it.
+ */
 export async function deleteFleet(id: string): Promise<boolean> {
   if (!isFleetId(id)) return false;
-  const rows = await db.delete(fleets).where(eq(fleets.id, id)).returning({ id: fleets.id });
+  const rows = await db.delete(fleets).where(eq(fleets.id, id)).returning({ id: fleets.id, serviceUserId: fleets.serviceUserId });
+  if (rows[0]?.serviceUserId) await db.delete(users).where(eq(users.id, rows[0].serviceUserId));
   return rows.length > 0;
 }

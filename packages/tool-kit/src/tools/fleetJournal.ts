@@ -23,9 +23,11 @@ function fmtVal(v: unknown): string {
   if (Array.isArray(v)) return v.length ? v.join(' › ') : '[]';
   return typeof v === 'string' ? v : JSON.stringify(v);
 }
-function worker(w: { session: string; host: string | null; worker: string | null } | null): string {
+function worker(w: { session: string; host: string | null; worker: string | null; fleet?: string } | null): string {
   if (!w) return 'unknown worker';
-  return w.host && w.worker ? `${w.worker}@${w.host}` : w.session;
+  const who = w.host && w.worker ? `${w.worker}@${w.host}` : w.session;
+  // The fleet that held the claim (#481), when the trail recorded one.
+  return w.fleet ? `${who} (${w.fleet})` : who;
 }
 function tickLine(t: JournalTick): string {
   const bits = [`${hhmm(t.receivedAt)}  claims ${t.claims ?? '?'}/${t.cap ?? '?'}`];

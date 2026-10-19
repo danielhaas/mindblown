@@ -19,7 +19,7 @@ import { buildFleetJournal, JOURNAL_EVENT_TYPES, redactTick } from '@mindblown/c
 import type { ExternalLink, FleetJournal, FleetTickPayload, JournalEventRow, JournalNodeRow } from '@mindblown/core';
 import { db } from '../db/connection.js';
 import * as fleetEntityDb from '../db/fleets.js';
-import { changeEvents, fleetTicks, nodes, users, versions } from '../db/schema.js';
+import { changeEvents, fleets, fleetTicks, nodes, users, versions } from '../db/schema.js';
 import { getFleetForUser } from './fleets.js';
 
 /** Longest window a single read serves — a month of a busy fleet is ~1500 ticks and thousands of events. */
@@ -188,11 +188,20 @@ export async function loadFleetJournal(scope: JournalScope, from: Date, to: Date
   for (const n of allNodes) if (!n.versionId && inherited.has(n.id)) n.versionId = inherited.get(n.id) ?? null;
 
   const userIds = [...new Set([...allEvents.map((e) => e.userId), ...allNodes.map((n) => n.createdBy)].filter((id): id is string => !!id))];
-  const [userRows, versionRows] = await Promise.all([
+  // Claim / release rows name the fleet that held them (#481).
+  const fleetIds = [
+    ...new Set(
+      allEvents
+        .map((e) => (e.newValue && typeof e.newValue === 'object' ? (e.newValue as { fleetId?: unknown }).fleetId : null))
+        .filter((id): id is string => typeof id === 'string'),
+    ),
+  ];
+  const [userRows, versionRows, fleetRows] = await Promise.all([
     userIds.length > 0 ? db.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, userIds)) : Promise.resolve([]),
     mapIds.length > 0
       ? db.select({ id: versions.id, name: versions.name }).from(versions).where(inArray(versions.mapId, mapIds))
       : Promise.resolve([]),
+    fleetIds.length > 0 ? db.select({ id: fleets.id, name: fleets.name }).from(fleets).where(inArray(fleets.id, fleetIds)) : Promise.resolve([]),
   ]);
 
   return buildFleetJournal({
@@ -205,6 +214,7 @@ export async function loadFleetJournal(scope: JournalScope, from: Date, to: Date
     nodes: allNodes.map((n) => toNodeRow(n, tag)),
     versions: versionRows,
     users: userRows,
+    fleets: fleetRows,
     truncated: { events: windowEvents.length >= EVENT_LIMIT, ticks: tickRows.length >= TICK_LIMIT },
   });
 }

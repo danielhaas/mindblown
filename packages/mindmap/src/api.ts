@@ -1017,6 +1017,29 @@ export function createFleet(name: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>('/api/fleets', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
+/** One API key of a fleet's service user (#481) — prefix only after creation. */
+export interface FleetCredential {
+  id: string;
+  name: string;
+  prefix: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+}
+
+export function listFleetCredentials(fleetId: string): Promise<{ credentials: FleetCredential[] }> {
+  return request(`/api/fleets/${fleetId}/credentials`);
+}
+
+/** Issue a key for the fleet; `key` is the plaintext, shown once. */
+export function issueFleetCredential(fleetId: string, name: string): Promise<{ id: string; name: string; key: string; prefix: string }> {
+  return request(`/api/fleets/${fleetId}/credentials`, { method: 'POST', body: JSON.stringify({ name }) });
+}
+
+export function revokeFleetCredential(fleetId: string, keyId: string): Promise<void> {
+  return request(`/api/fleets/${fleetId}/credentials/${keyId}`, { method: 'DELETE' });
+}
+
 // ── Leidang fleet telemetry ──────────────────────────────────────
 
 export interface FleetResponse {
