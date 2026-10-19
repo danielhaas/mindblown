@@ -68,6 +68,20 @@ interface Props {
 // (not loading/input/listening — those are session-local UI state).
 const STORAGE_KEY_PREFIX = 'mindblown:aichat:';
 
+// Auto-continue past the server's per-request tool-step cap. On by default;
+// capped so a looping model can't run forever — after the cap the usual
+// Continue button comes back. Stop aborts at any point.
+const AUTO_CONTINUE_KEY = 'mindblown:aichat:autoContinue';
+const MAX_AUTO_CONTINUES = 10;
+
+function loadAutoContinue(): boolean {
+  try {
+    return window.localStorage.getItem(AUTO_CONTINUE_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
 /**
  * Two-note Web-Audio chime played when a chat turn finishes — pulls the
  * user back when they've alt-tabbed away during a long restructure. No
@@ -161,6 +175,25 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
   // ref rather than state so the Stop click reads the current controller
   // without dragging it through React's render loop.
   const abortRef = useRef<AbortController | null>(null);
+  const [autoContinue, setAutoContinue] = useState(loadAutoContinue);
+  // Auto-continues spent on the current user request; reset by any manual send.
+  const autoContinueCountRef = useRef(0);
+  // Set when a turn hits the step limit and should resume on its own. The
+  // effect below fires the follow-up once the render with loading=false and
+  // the finished messages has landed — sendMessage's closure needs both.
+  const [pendingAutoContinue, setPendingAutoContinue] = useState(false);
+
+  const toggleAutoContinue = useCallback(() => {
+    setAutoContinue((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(AUTO_CONTINUE_KEY, next ? 'on' : 'off');
+      } catch {
+        /* storage disabled — the toggle still holds for this session */
+      }
+      return next;
+    });
+  }, []);
 
   // Persist on every change. localStorage writes are cheap for small payloads
   // and the chat history is bounded by what a human will type/read in a session.
@@ -287,9 +320,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     rec.start();
   }, [listening, input]);
 
-  const sendMessage = useCallback(async (overrideText?: string) => {
+  const sendMessage = useCallback(async (overrideText?: string, opts?: { auto?: boolean }) => {
     const text = (overrideText ?? input).trim();
     if (!text || loading) return;
+    if (!opts?.auto) autoContinueCountRef.current = 0;
 
     const userMsg: ChatMessage = { role: 'user', content: text };
     const updatedMessages = [...messages, userMsg];
@@ -317,6 +351,7 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
     // (natural completion or step_limit). Stays false on abort/error so we
     // don't chime a misleading "success" for a failure.
     let shouldChime = false;
+    let resumeAutomatically = false;
     const flush = () => {
       setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -373,15 +408,28 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
             break;
           }
 
-          case 'step_limit':
-            banner = {
-              kind: 'info',
-              text: `Stopped after ${event.maxSteps ?? 12} tool steps.`,
-              action: { label: 'Continue', payload: 'continue' },
-            };
-            shouldChime = true;
+          case 'step_limit': {
+            const steps = event.maxSteps ?? 12;
+            if (autoContinue && autoContinueCountRef.current < MAX_AUTO_CONTINUES) {
+              autoContinueCountRef.current += 1;
+              resumeAutomatically = true;
+              banner = {
+                kind: 'info',
+                text: `${steps} tool steps done — continuing automatically (${autoContinueCountRef.current}/${MAX_AUTO_CONTINUES}).`,
+              };
+            } else {
+              banner = {
+                kind: 'info',
+                text: autoContinue
+                  ? `Stopped after ${MAX_AUTO_CONTINUES} automatic continues.`
+                  : `Stopped after ${steps} tool steps.`,
+                action: { label: 'Continue', payload: 'continue' },
+              };
+              shouldChime = true;
+            }
             flush();
             break;
+          }
 
           case 'error':
             banner = {
@@ -406,7 +454,10 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       // Natural end of the SSE stream (no abort, no error) — treat as
       // success for chime purposes even if no explicit `done` event was
       // surfaced. step_limit also flips this above.
-      if (!controller.signal.aborted) shouldChime = true;
+      if (!controller.signal.aborted) {
+        if (resumeAutomatically) setPendingAutoContinue(true);
+        else shouldChime = true;
+      }
     } catch (err: any) {
       if (controller.signal.aborted) {
         banner = { kind: 'info', text: 'Stopped.' };
@@ -431,7 +482,13 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
       setLoading(false);
       if (shouldChime) playBell();
     }
-  }, [input, messages, loading, mapId, loadMap, selectedNodeId]);
+  }, [input, messages, loading, mapId, loadMap, selectedNodeId, autoContinue]);
+
+  useEffect(() => {
+    if (!pendingAutoContinue || loading) return;
+    setPendingAutoContinue(false);
+    sendMessage('continue', { auto: true });
+  }, [pendingAutoContinue, loading, sendMessage]);
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -467,6 +524,13 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
             {config.active.model}
           </span>
         )}
+        <label
+          style={autoContinueLabelStyle}
+          title={`Keep going past the tool-step limit, up to ${MAX_AUTO_CONTINUES} times per request. Stop works at any time.`}
+        >
+          <input type="checkbox" checked={autoContinue} onChange={toggleAutoContinue} />
+          Auto-continue
+        </label>
         {messages.length > 0 && (
           <button
             onClick={clearMessages}
@@ -720,6 +784,17 @@ const closeBtnStyle: React.CSSProperties = {
   cursor: 'pointer',
   padding: '0 4px',
   lineHeight: 1,
+};
+
+const autoContinueLabelStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  fontSize: 11,
+  color: '#64748b',
+  cursor: 'pointer',
+  marginRight: 6,
+  whiteSpace: 'nowrap',
 };
 
 const clearBtnStyle: React.CSSProperties = {
