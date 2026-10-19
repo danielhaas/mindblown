@@ -5,6 +5,7 @@ import { maps, mapPermissions, nodes } from './schema.js';
 import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
+import { FLEET_RETIRED, FleetUserForbiddenError, isFleetUser } from './fleets.js';
 import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
 import { clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
@@ -21,6 +22,10 @@ export interface CreateMapInput {
 }
 
 export async function createMap(input: CreateMapInput): Promise<{ map: MindMap; rootNode: CoreNode }> {
+  // A fleet key reaches only its connected maps (#481); a map it created
+  // would make it admin of something outside that. Here, so REST, MCP and
+  // the in-app chat all hit it.
+  if (await isFleetUser(input.createdBy)) throw new FleetUserForbiddenError('maps');
   const now = new Date();
 
   // Create the map first (without rootNodeId)
@@ -253,7 +258,7 @@ export async function updateMap(
   if (updated.fleetId && updated.fleetId !== before.fleetId) await moveMapAsks(mapId, updated.fleetId);
   // The fleet's service user (#481) has edit on exactly the maps its fleet
   // is connected to: connecting is the one step that gives a fleet access.
-  if (updated.fleetId !== before.fleetId) await moveFleetGrant(mapId, before.fleetId ?? null, updated.fleetId ?? null);
+  if (updated.fleetId !== before.fleetId) await syncFleetGrant(mapId);
   await recordMapFieldChanges(
     mapId,
     userId,
@@ -281,22 +286,27 @@ async function moveMapAsks(mapId: string, fleetId: string): Promise<void> {
 }
 
 /**
- * Revoke the old fleet's service user on this map and grant the new one
- * `edit` — set, not merged, so a fleet user never holds more than edit.
+ * Make the fleet grants on this map match its fleet as it is now: no fleet
+ * user but the current fleet's holds a grant here, and that one holds
+ * `edit` — set, not merged, so a fleet user never holds more. Derived from
+ * maps.fleet_id under a row lock rather than from the before/after of one
+ * update, so two moves racing each other (A→B, A→C) still end with the
+ * grant of whichever fleet the map is connected to.
  */
-async function moveFleetGrant(mapId: string, oldFleetId: string | null, newFleetId: string | null): Promise<void> {
+async function syncFleetGrant(mapId: string): Promise<void> {
   await db.transaction(async (tx) => {
-    if (oldFleetId) {
-      await tx.execute(sql`
-        DELETE FROM map_permissions p USING fleets f
-        WHERE f.id = ${oldFleetId} AND p.user_id = f.service_user_id AND p.map_id = ${mapId}
-      `);
-    }
-    if (newFleetId) {
+    const locked = await tx.execute(sql`SELECT fleet_id FROM maps WHERE id = ${mapId} FOR UPDATE`);
+    const fleetId = (locked.rows[0] as { fleet_id: string | null } | undefined)?.fleet_id ?? null;
+    await tx.execute(sql`
+      DELETE FROM map_permissions p USING users u
+      WHERE p.map_id = ${mapId} AND p.user_id = u.id AND u.kind IN ('fleet', ${FLEET_RETIRED})
+        AND NOT EXISTS (SELECT 1 FROM fleets f WHERE f.id = ${fleetId} AND f.service_user_id = u.id)
+    `);
+    if (fleetId) {
       await tx.execute(sql`
         INSERT INTO map_permissions (map_id, user_id, permission)
         SELECT ${mapId}, f.service_user_id, 'edit' FROM fleets f
-        WHERE f.id = ${newFleetId} AND f.service_user_id IS NOT NULL
+        WHERE f.id = ${fleetId} AND f.service_user_id IS NOT NULL
         ON CONFLICT (map_id, user_id) DO UPDATE SET permission = 'edit'
       `);
     }

@@ -4,10 +4,11 @@
  *
  * (db/fleet.ts, singular, is the telemetry store: rollups and ticks.)
  */
-import { asc, eq, inArray, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
 import type { Fleet } from '@mindblown/core';
 import { db } from './connection.js';
-import { fleets, maps, users } from './schema.js';
+import { apiKeys, fleets, mapPermissions, maps, users } from './schema.js';
+import { invalidateApiKeyCache } from '../lib/apiKeys.js';
 import { dbFleetToCore } from './helpers.js';
 
 /** Postgres rejects a malformed uuid with an error; callers get "not found" instead. */
@@ -63,6 +64,8 @@ export async function listFleetMaps(fleetId: string): Promise<FleetMapRow[]> {
  * claim. The fleet's API keys act as this user.
  */
 export async function createFleet(input: { name: string; ownerId: string; maxActiveClaims?: number }): Promise<Fleet> {
+  // The owner is a person: a fleet key must not own fleets (REST and chat alike).
+  if (await isFleetUser(input.ownerId)) throw new FleetUserForbiddenError('fleets');
   return db.transaction(async (tx) => {
     const [row] = await tx
       .insert(fleets)
@@ -88,10 +91,21 @@ export async function getServiceUserId(fleetId: string): Promise<string | null> 
   return row?.id ?? null;
 }
 
-/** True for a fleet's service user (users.kind = 'fleet', #481). */
+/** A deleted fleet's service user: kept for the history it wrote, never usable again. */
+export const FLEET_RETIRED = 'fleet_retired';
+
+/** True for a fleet's service user, active or retired (#481). */
 export async function isFleetUser(userId: string): Promise<boolean> {
   const [row] = await db.select({ kind: users.kind }).from(users).where(eq(users.id, userId));
-  return row?.kind === 'fleet';
+  return row?.kind === 'fleet' || row?.kind === FLEET_RETIRED;
+}
+
+/** Thrown by a create on behalf of a fleet's service user — every path, REST or chat (#481). */
+export class FleetUserForbiddenError extends Error {
+  constructor(what: string) {
+    super(`A fleet key cannot create ${what}`);
+    this.name = 'FleetUserForbiddenError';
+  }
 }
 
 /** Which fleet this user is the service identity of — null for a person. */
@@ -111,11 +125,30 @@ export async function updateFleet(id: string, input: { name?: string; maxActiveC
 
 /**
  * Connected maps fall back to no fleet (FK ON DELETE SET NULL). The service
- * user goes with the fleet — its keys and grants cascade with it.
+ * user is retired with the fleet, in the same transaction: every key
+ * revoked, every grant gone, kind 'fleet_retired'. Not deleted — nodes,
+ * comments and acceptances it wrote reference it (no cascade), and the
+ * history keeps its name.
  */
 export async function deleteFleet(id: string): Promise<boolean> {
   if (!isFleetId(id)) return false;
-  const rows = await db.delete(fleets).where(eq(fleets.id, id)).returning({ id: fleets.id, serviceUserId: fleets.serviceUserId });
-  if (rows[0]?.serviceUserId) await db.delete(users).where(eq(users.id, rows[0].serviceUserId));
-  return rows.length > 0;
+  const revokedKeyIds: string[] = [];
+  const deleted = await db.transaction(async (tx) => {
+    const rows = await tx.delete(fleets).where(eq(fleets.id, id)).returning({ id: fleets.id, serviceUserId: fleets.serviceUserId });
+    const userId = rows[0]?.serviceUserId;
+    if (userId) {
+      const keys = await tx
+        .update(apiKeys)
+        .set({ revokedAt: new Date() })
+        .where(and(eq(apiKeys.userId, userId), isNull(apiKeys.revokedAt)))
+        .returning({ id: apiKeys.id });
+      revokedKeyIds.push(...keys.map((k) => k.id));
+      await tx.delete(mapPermissions).where(eq(mapPermissions.userId, userId));
+      await tx.update(users).set({ kind: FLEET_RETIRED }).where(eq(users.id, userId));
+    }
+    return rows.length > 0;
+  });
+  // After commit: a validated key sits in the auth cache for up to a minute.
+  for (const keyId of revokedKeyIds) invalidateApiKeyCache(keyId);
+  return deleted;
 }

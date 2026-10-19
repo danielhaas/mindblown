@@ -241,7 +241,8 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
           )}
 
       {/* The fleet's own keys (#481) — its owner manages them, in the settings only. */}
-      {variant === 'settings' && !readOnly && fleetId && current?.isOwner && <FleetKeysSection fleetId={fleetId} fleetName={currentName} />}
+      {/* key: a fresh plaintext key must not survive a switch to another fleet. */}
+      {variant === 'settings' && !readOnly && fleetId && current?.isOwner && <FleetKeysSection key={fleetId} fleetId={fleetId} fleetName={currentName} />}
 
       {error && <div style={warnBox}>{error}</div>}
       {loadError && <div style={{ fontSize: 11, color: '#b45309', marginTop: 8 }}>Fleet list unavailable ({loadError}).</div>}
