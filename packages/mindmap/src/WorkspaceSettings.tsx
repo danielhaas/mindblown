@@ -22,6 +22,7 @@ import { forgeLabel } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
 import { MapArchivePanel } from './MapArchivePanel.js';
+import { MapFleetPanel } from './MapFleetPanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -435,6 +436,9 @@ export function WorkspaceSettings({
 
           {/* AI chat provider — shown only in workspace-wide view */}
           {!mapId && <AiProviderPanel />}
+
+          {/* Fleet connection (#480) — shown only for a map */}
+          {mapId && <MapFleetPanel />}
 
           {/* Per-map AI policy (#375) — shown only for a map */}
           {mapId && <MapAiPolicyPanel />}

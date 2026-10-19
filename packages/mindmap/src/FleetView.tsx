@@ -20,15 +20,20 @@ import { Shell, Muted } from './DigestView.js';
 import { LeidangCards } from './DispatchCards.js';
 import { FleetJournalSection } from './FleetJournal.js';
 import { AsksSection } from './AsksView.js';
+import { MapFleetPanel } from './MapFleetPanel.js';
 
 export function FleetView() {
   const currentMap = useMindmapStore((s) => s.currentMap);
   const viewRole = useMindmapStore((s) => s.viewRole);
 
   if (!currentMap) return <Shell><Muted>Loading…</Muted></Shell>;
+  const readOnly = viewRole !== 'pm' && viewRole !== 'all';
 
   return (
     <Shell>
+      {/* Which fleet works this map (#480) — and, without one, the way to
+          connect it, before any card explains an empty rollup. */}
+      <MapFleetPanel variant="tab" readOnly={readOnly} />
       {/* The pull queue needs a status workflow; Questions do not (the push
           route never checks it), so only the cards sit behind the gate. */}
       {currentMap.statusWorkflow ? (
@@ -36,7 +41,7 @@ export function FleetView() {
           {/* Only PM and All steer. Anyone else who lands here (developer
               tab, or a stakeholder following a shared ?view=fleet link)
               observes — the lens is a filter, so this is UX, not security. */}
-          <LeidangCards readOnly={viewRole !== 'pm' && viewRole !== 'all'} />
+          <LeidangCards readOnly={readOnly} />
         </div>
       ) : (
         <Muted>This map has no status workflow — there is no pull queue to dispatch or observe.</Muted>

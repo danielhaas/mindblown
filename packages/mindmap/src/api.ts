@@ -16,6 +16,7 @@ import type {
   AskWritePlan,
   AskStatus,
   FleetJournal,
+  FleetWithMaps,
   StalledLeaf,
 } from '@mindblown/core';
 
@@ -1002,6 +1003,18 @@ export function unblockNode(mapId: string, nodeId: string): Promise<{ node: Node
     method: 'POST',
     body: JSON.stringify({}),
   });
+}
+
+// ── Fleets (#477) ────────────────────────────────────────────────
+
+/** Fleets the caller owns or whose maps the caller can view. */
+export function listFleets(): Promise<FleetWithMaps[]> {
+  return request<FleetWithMaps[]>('/api/fleets');
+}
+
+/** Create a fleet; the caller becomes its owner. Connect maps via updateMap({ fleetId }). */
+export function createFleet(name: string): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>('/api/fleets', { method: 'POST', body: JSON.stringify({ name }) });
 }
 
 // ── Leidang fleet telemetry ──────────────────────────────────────
