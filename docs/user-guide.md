@@ -316,6 +316,16 @@ MindBlown is real-time. Multiple users can edit the same map at the same time, a
 - **Sharing** -- open the **Share dialog** from the toolbar. Invite people by email with one of three permission levels: **view**, **edit**, or **admin**. You can also generate a **public read-only link** for sharing with non-members -- handy for showing a plan to a client without setting up accounts.
 - **Presence** -- cursors and selections from other users are visible as long as they are on the same map.
 
+### Fleets: workers on your map
+
+A **fleet** is a group of worker hosts (AI coding agents) that pulls ready tickets from your maps and works on them. One fleet can serve several projects; a map is connected to at most one fleet. Without a fleet, no worker takes tickets from the map.
+
+- **Connect a map** -- open the **Fleet** tab (or the map's **Settings**), pick a fleet in the **Fleet** picker and click **Connect**. **Create fleet…** makes a new one, owned by you, and connects the map in one step. Choose **No fleet** to disconnect; if workers hold claims on the map right now, you are asked first. Their claims stay on the tickets; the fleet just takes no new ones from this map.
+- **Shares** -- when a fleet serves more than one map, each map has a **share**: how often the fleet picks it relative to the others. 1 is an equal turn; 2 means twice as often as a map with 1.
+- **Who may do what** -- connecting and disconnecting needs admin on the map, and connecting needs ownership of the fleet. Only the fleet's owner sets the share. Everyone else, and the Developer and Stakeholder lenses, see which fleet a map is on but get no controls.
+
+The map's own pull-queue knobs on the Fleet tab -- its cap, gate and policy -- still decide which tickets are handed out and how many at once. A cap of 0 holds the map even when it is connected.
+
 ---
 
 ## 12. GitHub integration
