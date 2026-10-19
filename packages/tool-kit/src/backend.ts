@@ -66,6 +66,8 @@ export interface AskListResult {
   /** When the collector last pushed — null until the first push. */
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
+  /** #479: which map's push `meta` is from (its counts are that project's); null = fleet-wide push. */
+  pushedFor?: string | null;
   now: string;
   /** Fleet read (#479): the maps covered — rows name theirs by `mapId` (null = fleet-level). */
   maps?: { id: string; name: string }[];

@@ -22,6 +22,8 @@ export interface AskInbox {
   counts: ReturnType<typeof countAsks>;
   pushedAt: string | null;
   meta: AskDocumentMeta | null;
+  /** Which map's push `meta` is from — its counts are that project's; null = a fleet-wide push. */
+  pushedFor?: string | null;
   now: string;
   /** Fleet reads: the maps covered — rows name theirs by `mapId`. */
   maps?: { id: string; name: string }[];
@@ -35,7 +37,7 @@ async function inbox(scope: asksDb.AskScope, filters: asksDb.AskListFilters, ful
       ? { generated_at: push.meta.generated_at, tick: push.meta.tick }
       : push.meta
     : null;
-  return { items, counts: countAsks(items), pushedAt: push?.pushedAt ?? null, meta, now: new Date().toISOString() };
+  return { items, counts: countAsks(items), pushedAt: push?.pushedAt ?? null, meta, pushedFor: push ? push.mapId : null, now: new Date().toISOString() };
 }
 
 /** The map's asks (the caller checked view on the map). A map without a fleet has none. */

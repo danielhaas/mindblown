@@ -60,6 +60,8 @@ export interface AskPushMeta {
   meta: AskDocumentMeta;
   /** Pushed to the fleet route — its meta counts every project's questions. */
   fleetWide: boolean;
+  /** The map route it came through (its counts are that project's); null = fleet-wide. */
+  mapId: string | null;
 }
 
 // `map|ask` — a uuid never contains `|`, so the first one splits the pair
@@ -132,17 +134,23 @@ export async function replaceAsks(
 }
 
 /**
- * The newest push that covers the scope: for a map, its own push or a
- * fleet-wide one; for the fleet, any of its pushes.
+ * The newest push the scope may see: for a map, its own push or a
+ * fleet-wide one; for the fleet, a fleet-wide push or one of a map the
+ * reader can view — never another project's map-route push, whose meta
+ * names its repo and counts its questions. A fleet-wide push's meta is
+ * cut further by the caller for a reader who can't view every map.
  */
 export async function getPushMeta(scope: AskScope): Promise<AskPushMeta | null> {
-  const where =
-    'mapId' in scope
-      ? and(eq(asksPushes.fleetId, scope.fleetId), or(eq(asksPushes.mapId, scope.mapId), isNull(asksPushes.mapId)))
-      : eq(asksPushes.fleetId, scope.fleetId);
-  const [row] = await db.select().from(asksPushes).where(where).orderBy(sql`${asksPushes.pushedAt} desc`).limit(1);
+  const mine = 'mapId' in scope ? [scope.mapId] : scope.visibleMapIds;
+  const maps = mine.length > 0 ? or(isNull(asksPushes.mapId), inArray(asksPushes.mapId, mine)) : isNull(asksPushes.mapId);
+  const [row] = await db
+    .select()
+    .from(asksPushes)
+    .where(and(eq(asksPushes.fleetId, scope.fleetId), maps))
+    .orderBy(sql`${asksPushes.pushedAt} desc`)
+    .limit(1);
   if (!row) return null;
-  return { pushedAt: row.pushedAt.toISOString(), meta: row.meta as AskDocumentMeta, fleetWide: row.mapId === null };
+  return { pushedAt: row.pushedAt.toISOString(), meta: row.meta as AskDocumentMeta, fleetWide: row.mapId === null, mapId: row.mapId };
 }
 
 export async function listAsks(scope: AskScope, f: AskListFilters = {}): Promise<AskRow[]> {
