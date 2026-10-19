@@ -4,12 +4,25 @@
  *
  * (db/fleet.ts, singular, is the telemetry store: rollups and ticks.)
  */
-import { and, asc, eq, inArray, isNull, or } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, or, sql } from 'drizzle-orm';
 import type { Fleet } from '@mindblown/core';
 import { db } from './connection.js';
-import { apiKeys, fleets, mapPermissions, maps, users } from './schema.js';
+import { apiKeys, fleets, mapPermissions, maps, nodes, users } from './schema.js';
 import { invalidateApiKeyCache } from '../lib/apiKeys.js';
 import { dbFleetToCore } from './helpers.js';
+
+/**
+ * Claims held right now on every map of the fleet — what its cap is
+ * measured against (the pull counts the same way, services/orchestration).
+ */
+export async function countActiveClaims(fleetId: string): Promise<number> {
+  const [row] = await db
+    .select({ n: sql<number>`count(*)::int` })
+    .from(nodes)
+    .innerJoin(maps, eq(nodes.mapId, maps.id))
+    .where(and(eq(maps.fleetId, fleetId), isNull(nodes.deletedAt), isNotNull(nodes.claimedBySession)));
+  return Number(row?.n ?? 0);
+}
 
 /** Postgres rejects a malformed uuid with an error; callers get "not found" instead. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

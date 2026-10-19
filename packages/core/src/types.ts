@@ -593,6 +593,8 @@ export interface FleetWithMaps extends Fleet {
   hiddenMapCount: number;
   /** The reader owns the fleet: may rename it, set its cap, connect maps. */
   isOwner: boolean;
+  /** Claims held now across every connected map (#480) — set against `maxActiveClaims`. */
+  activeClaims?: number;
 }
 
 export interface MindMap {

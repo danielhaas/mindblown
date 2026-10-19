@@ -3,6 +3,7 @@ import { useMindmapStore } from '../store.js';
 import { AuthScreen } from '../AuthScreen.js';
 import { MobileMapList } from './MobileMapList.js';
 import { MobileViewer } from './MobileViewer.js';
+import { FleetPage } from '../FleetView.js';
 import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
@@ -109,6 +110,13 @@ export function MobileApp() {
         <AuthScreen />
       </div>
     );
+  }
+
+  // The fleet page (?fleet=, #480) — the same view as on desktop; its
+  // sections are plain cards that read fine on a narrow screen.
+  const fleetPageId = !selectedMap ? new URLSearchParams(window.location.search).get('fleet') : null;
+  if (fleetPageId) {
+    return <FleetPage fleetId={fleetPageId} />;
   }
 
   if (!selectedMap) {

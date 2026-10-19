@@ -20,6 +20,17 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
 import { Card, Muted } from './DigestView.js';
+import { answerRoute, projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import type { FleetScope } from './fleetScope.js';
+import { projectTag } from './FleetTelemetry.js';
+
+/** A row's key: two projects of one fleet may carry the same ask id (#480). */
+const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
+
+function ProjectTag({ scope, mapId }: { scope: FleetScope | null; mapId: string | null | undefined }) {
+  const label = projectLabel(scope, mapId);
+  return label ? <span style={projectTag}>{label}</span> : null;
+}
 
 const POLL_MS = 60_000;
 
@@ -68,6 +79,10 @@ export function AsksSection() {
   const asksRev = useMindmapStore((s) => s.asksRev);
   const viewRole = useMindmapStore((s) => s.viewRole);
   const user = useMindmapStore((s) => s.user);
+  // This project or the whole fleet (#480); without a provider, this map.
+  const scope = useFleetScope();
+  const target = scopeTarget(scope, currentMapId);
+  const targetKey = target ? JSON.stringify(target) : '';
   const [data, setData] = useState<AsksResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [poll, setPoll] = useState(0);
@@ -92,13 +107,13 @@ export function AsksSection() {
   }, []);
 
   useEffect(() => {
-    if (!currentMapId) return;
+    if (!target) return;
     let cancelled = false;
     api
-      .fetchAsks(currentMapId, { status: 'all' })
+      .fetchAsks(target, { status: 'all' })
       .then((r) => {
         if (cancelled) return;
-        const now = new Map(r.items.map((x) => [x.ask.id, x.ask] as const));
+        const now = new Map(r.items.map((x) => [rowKey(x), x.ask] as const));
         const prev = lastOpen.current;
         if (prev && prev.size > 0) {
           const missing = [...prev].filter(([id]) => !now.has(id));
@@ -107,7 +122,7 @@ export function AsksSection() {
             setGone((g) => ({ ...g, ...Object.fromEntries(missing.map(([id, ask]) => [id, { ask, at }])) }));
           }
         }
-        lastOpen.current = new Map(r.items.filter((x) => x.status === 'open').map((x) => [x.ask.id, x.ask] as const));
+        lastOpen.current = new Map(r.items.filter((x) => x.status === 'open').map((x) => [rowKey(x), x.ask] as const));
         setData(r);
         setError(null);
       })
@@ -115,7 +130,15 @@ export function AsksSection() {
     return () => {
       cancelled = true;
     };
-  }, [currentMapId, asksRev, poll]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
+  }, [targetKey, asksRev, poll]);
+  // A different scope is a different list: what vanished from the old one did not "go away".
+  // Nor does the old list stay on screen under the new switch position until the fetch lands.
+  useEffect(() => {
+    lastOpen.current = null;
+    setGone({});
+    setData(null);
+  }, [targetKey]);
 
   // Only the stakeholder lens is read-only; PM, developer and All answer.
   const readOnly = viewRole === 'stakeholder';
@@ -128,8 +151,8 @@ export function AsksSection() {
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
-    const open = rows.filter((r) => r.status === 'open' || results[r.ask.id]);
-    const done = rows.filter((r) => r.status !== 'open' && !results[r.ask.id]);
+    const open = rows.filter((r) => r.status === 'open' || results[rowKey(r)]);
+    const done = rows.filter((r) => r.status !== 'open' && !results[rowKey(r)]);
     const questions = open.filter((r) => !isNoQuestion(r.ask) && !isVersionOnly(r.ask));
     const noQuestion = open.filter((r) => isNoQuestion(r.ask));
     const versionOnly = open.filter((r) => isVersionOnly(r.ask) && !isNoQuestion(r.ask));
@@ -149,7 +172,7 @@ export function AsksSection() {
 
   const cardTitle = `Questions — what the fleet needs decided${data?.pushedAt ? ` (${groups.questions.length})` : ''}`;
 
-  if (!currentMapId) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
+  if (!target) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
   if (error) return <Card title={cardTitle}><Muted>Questions unavailable: {error}</Muted></Card>;
   if (!data) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
 
@@ -200,7 +223,7 @@ export function AsksSection() {
       {groups.visible.length === 0 && <Muted>No open question{filter.answerer || filter.hint ? ' in this filter' : ''}. 🎉</Muted>}
 
       {groups.visible.map((r) => (
-        <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
+        <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
       ))}
 
       {groups.versionOnly.length > 0 && (
@@ -210,7 +233,7 @@ export function AsksSection() {
           onToggle={() => setShowVersionOnly((v) => !v)}
         >
           {groups.versionOnly.map((r) => (
-            <AskCard key={r.ask.id} row={r} mapId={currentMapId} by={by} readOnly={readOnly} result={results[r.ask.id] ?? null} onResult={onResult} />
+            <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
           ))}
         </Fold>
       )}
@@ -222,7 +245,8 @@ export function AsksSection() {
           onToggle={() => setShowNoQuestion((v) => !v)}
         >
           {groups.noQuestion.map((r) => (
-            <div key={r.ask.id} style={{ fontSize: 13, padding: '4px 0', color: '#475569' }}>
+            <div key={rowKey(r)} style={{ fontSize: 13, padding: '4px 0', color: '#475569' }}>
+              <ProjectTag scope={scope} mapId={r.mapId} />
               <b>{ref(r.ask)}</b> [{HINT_LABEL[r.ask.hint] ?? r.ask.hint}] {title(r.ask)}
               {r.ask.idle_hours != null ? ` · idle ${r.ask.idle_hours}h` : ''}
             </div>
@@ -233,7 +257,7 @@ export function AsksSection() {
       {groups.done.length > 0 && (
         <Fold label={`Answered / deferred / delegated (${groups.done.length})`} open={showDone} onToggle={() => setShowDone((v) => !v)}>
           {groups.done.map((r) => (
-            <DoneRow key={r.ask.id} row={r} />
+            <DoneRow key={rowKey(r)} row={r} scope={scope} />
           ))}
         </Fold>
       )}
@@ -274,11 +298,12 @@ function Fold({ label, open, onToggle, children }: { label: string; open: boolea
   );
 }
 
-function DoneRow({ row }: { row: AskRow }) {
+function DoneRow({ row, scope }: { row: AskRow; scope: FleetScope | null }) {
   const a = row.ask;
   const failed = row.writes.filter((w) => w.error);
   return (
     <div style={{ fontSize: 13, padding: '6px 0', borderBottom: '1px solid #f1f5f9', color: '#475569' }}>
+      <ProjectTag scope={scope} mapId={row.mapId} />
       <b>{ref(a)}</b> {title(a)} · {STATUS_LABEL[row.status] ?? row.status}
       {row.answeredBy ? ` (${row.answeredBy}, ${fmtTime(row.answeredAt)})` : ''}
       {row.answer?.decision ? <div style={{ color: '#0f172a' }}>Decision: {row.answer.decision}</div> : null}
@@ -307,13 +332,16 @@ const btn = (kind: 'primary' | 'plain', disabled: boolean): React.CSSProperties 
 function AskCard({
   row,
   mapId,
+  scope,
   by,
   readOnly,
   result,
   onResult,
 }: {
   row: AskRow;
-  mapId: string;
+  /** The map the tab is on; null on the fleet page. */
+  mapId: string | null;
+  scope: FleetScope | null;
   by: string;
   readOnly: boolean;
   result: AnswerResult | null;
@@ -327,19 +355,23 @@ function AskCard({
   const [noRequeue, setNoRequeue] = useState(false);
   const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
   const [busy, setBusy] = useState(false);
-  const setResult = (r: AnswerResult) => onResult(a.id, r);
+  const setResult = (r: AnswerResult) => onResult(rowKey(row), r);
+  // The ask's own map (#480): its node lives there, and an answer for another
+  // project — or a fleet-level one — goes through the fleet.
+  const askMapId = row.mapId === undefined ? mapId : row.mapId;
+  const route = answerRoute(scope, mapId, row.mapId);
   // "More": everything the collector folded into this record plus the node
   // itself (blockedReason, description) — fetched on first open only.
   const [more, setMore] = useState(false);
   const [node, setNode] = useState<Node | null | 'loading' | 'error'>(null);
   useEffect(() => {
-    if (!more || node !== null || !a.unblocks.node_id) return;
+    if (!more || node !== null || !a.unblocks.node_id || !askMapId) return;
     setNode('loading');
     api
-      .fetchNode(mapId, a.unblocks.node_id)
+      .fetchNode(askMapId, a.unblocks.node_id)
       .then((n) => setNode(n))
       .catch(() => setNode('error'));
-  }, [more, node, a.unblocks.node_id, mapId]);
+  }, [more, node, a.unblocks.node_id, askMapId]);
 
   const options = a.options.length > 0 ? a.options : ['Yes', 'No'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
@@ -355,7 +387,8 @@ function AskCard({
   async function submit(input: AskAnswerInput) {
     setBusy(true);
     try {
-      const r = await api.answerAsk(mapId, a.id, input);
+      if (!route) throw new Error('This question names no map and no fleet to answer through.');
+      const r = route.kind === 'fleet' ? await api.answerFleetAsk(route.fleetId, a.id, input, route.askMapId) : await api.answerAsk(route.mapId, a.id, input);
       const head = `${STATUS_LABEL[r.ask.status] ?? r.ask.status}${r.ask.answeredBy ? ` (${r.ask.answeredBy})` : ''}`;
       setResult({
         ok: r.ok,
@@ -380,7 +413,23 @@ function AskCard({
 
   const dim = a.moot || a.stale;
   const unb: React.ReactNode[] = [];
-  if (a.unblocks.node_id) {
+  if (a.unblocks.node_id && askMapId && askMapId !== mapId) {
+    // Another project's node (#480): open that map at the node.
+    const nid = a.unblocks.node_id;
+    unb.push(
+      <a key="node" href={`/?map=${encodeURIComponent(askMapId)}&node=${encodeURIComponent(nid)}`} style={{ color: '#2563eb', fontSize: 12 }}>
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : nid.slice(0, 8)}
+        {a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}
+      </a>,
+    );
+  } else if (a.unblocks.node_id && !askMapId) {
+    // A fleet-level ask names a node but no map: nowhere to select it — show it, unlinked.
+    unb.push(
+      <span key="node" style={{ fontSize: 12, color: '#64748b' }}>
+        Node {a.unblocks.node_title ? `“${a.unblocks.node_title.slice(0, 40)}”` : a.unblocks.node_id.slice(0, 8)}
+      </span>,
+    );
+  } else if (a.unblocks.node_id) {
     const nid = a.unblocks.node_id;
     unb.push(
       <button
@@ -412,6 +461,7 @@ function AskCard({
       }}
     >
       <div style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap', fontSize: 13 }}>
+        <ProjectTag scope={scope} mapId={row.mapId} />
         {a.url ? (
           <a href={a.url} target="_blank" rel="noreferrer" style={{ fontWeight: 700, color: '#1d4ed8' }}>{ref(a)}</a>
         ) : (

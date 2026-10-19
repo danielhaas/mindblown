@@ -37,6 +37,7 @@ import type { MindMap, Node, Version } from '@mindblown/core';
 import { dispatchQueueSnapshot } from '@mindblown/core';
 import type { ChangeEvent, MapMember } from '../api.js';
 import * as api from '../api.js';
+import { MobileFleetSection } from './MobileFleetSection.js';
 import {
   AUDIT_LIMIT,
   STATE_WORD,
@@ -352,6 +353,8 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
           <span className="mb-status-pill mb-status-pill-empty">Policy: {formatKnobValue('dispatchPolicy', map.dispatchPolicy, versions)}</span>
         </div>
       </div>
+      {/* The fleet behind the cap (#480): its own cap, the shares, the workers. */}
+      {map.fleetId && <MobileFleetSection mapId={mapId} fleetId={map.fleetId} />}
     </div>
   );
 }
