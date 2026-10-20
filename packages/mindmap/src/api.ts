@@ -18,6 +18,7 @@ import type {
   FleetJournal,
   FleetWithMaps,
   StalledLeaf,
+  TrustPolicy,
 } from '@mindblown/core';
 
 // Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
@@ -743,6 +744,20 @@ export function updateMap(id: string, fields: Record<string, unknown>): Promise<
     method: 'PUT',
     body: JSON.stringify(fields),
   });
+}
+
+/** Who may run the fleet on a map (#491). Admin only. */
+export function getTrustPolicy(mapId: string): Promise<{ policy: TrustPolicy; isDefault: boolean }> {
+  return request(`/api/maps/${mapId}/trust-policy`);
+}
+
+/** Save the map's trust policy; null goes back to the defaults. Returns the policy now in force. */
+export async function saveTrustPolicy(mapId: string, policy: TrustPolicy | null): Promise<TrustPolicy> {
+  const res = await request<MindMap & { trustPolicy: TrustPolicy }>(`/api/maps/${mapId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ trustPolicy: policy }),
+  });
+  return res.trustPolicy;
 }
 
 /**

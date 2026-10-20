@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
+import type { TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
+
+/** One untrusted level's knobs in a trust policy (#491). */
+const trustLevelSchema = z
+  .object({
+    dispatch: z.enum(['auto', 'approval']).describe('"auto" = the queue hands the ticket out; "approval" = a person approves it first.'),
+    merge: z.enum(['auto', 'pr-only']).describe('"auto" = the worker may merge; "pr-only" = it stops at the pull request.'),
+  })
+  .strict();
 
 export const listMapsTool = defineTool({
   name: 'list_maps',
@@ -82,7 +91,7 @@ export const createMapTool = defineTool({
 export const updateMapTool = defineTool({
   name: 'update_map',
   description:
-    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps this map's concurrently claimed nodes (0 = hold, grants nothing — the default; on a map in a fleet it is the map's ceiling, and the fleet's own cap from update_fleet limits all its maps together); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. fleetId connects the map to a worker fleet (null disconnects), fleetShare is its weight there. Pass nullable fields as null to clear.",
+    "Update a map's name, description, WIP limit, Gantt scheduling anchors, worker count, focus factor, phases, public-holiday calendar (holidayJurisdiction / holidayOverrides), or issue auto-import setting. phases is the map's project-phase definition list ({id, name, position} — statusWorkflow idiom); pass the COMPLETE new array to add, rename, or reorder phases. Keep existing ids stable when renaming/reordering — nodes reference phases by id (node.phaseId), so a changed id orphans them. Omit id on a NEW entry and one is generated. wipLimit is a soft cap on how many nodes may sit in an in_progress status. projectStartDate anchors day 0 of the computed schedule (Gantt view). hoursPerDay sets the hours→days conversion when effortUnit is \"hours\" (default 8). workerCount is the parallel-track count the schedule projects onto (view knob, default 1 = strict serial). focusFactor (0.05–1.0, default 1) is the fraction of calendar time that actually reaches planned-ticket work — set it below 1 to stretch the velocity-adjusted completion forecast for meetings/support/firefighting/unplanned work (e.g. 0.5 = half of each day reaches planned work, so forecasts take twice as long). autoImportNewIssues toggles whether new issues on the bound repo (GitHub or Gitea) auto-create nodes under the map's inbox node. maxActiveClaims / dispatchGate / dispatchPolicy configure the get_next_ticket pull queue: maxActiveClaims caps this map's concurrently claimed nodes (0 = hold, grants nothing — the default; on a map in a fleet it is the map's ceiling, and the fleet's own cap from update_fleet limits all its maps together); dispatchGate is an AND-filter fencing what the queue hands out (entries \"version:<versionId>\" or \"type:bug\", or several joined by \"|\" inside one entry to accept ANY of them, e.g. \"type:bug|version:<id>\" = bugs first, the release as fallback; empty = no fence; a ticket outside the gate is invisible, not deprioritized); dispatchPolicy is the ordered ranking of the gated ready set (keys bugs/priority/size/age; empty = default [\"bugs\",\"priority\",\"age\"]; optionally ONE parametric entry \"mix:bugs=<0-100>\" that deterministically interleaves bugs and non-bugs at that percentage — each class sorted by the remaining keys, 0 = inert, 100 = all bugs first, a drained class is back-filled by the other); profilePolicy activates profile routing for get_next_ticket (heavy = first refusal on P0-or-big tickets, light = only small P2/P3 tickets, standard/unknown = everything else; unestimated tickets go to everyone) — thresholds in hours ({heavyMinHours, lightMaxHours}, defaults: one day / 2h), estimates normalized from the map's effortUnit via hoursPerDay; null (the default) keeps the queue profile-blind. fleetId connects the map to a worker fleet (null disconnects), fleetShare is its weight there. trustPolicy (admin only) sets who may run the fleet on this map. Pass nullable fields as null to clear.",
   schema: {
     mapId: z.string().describe('The map ID'),
     name: z.string().optional().describe('New map name'),
@@ -232,8 +241,23 @@ export const updateMapTool = defineTool({
       .describe(
         'Project phase definitions (REPLACE mode — the full new array). Send the complete list to add, rename, or reorder; keep ids of existing phases stable so node.phaseId references stay valid.',
       ),
+    trustPolicy: z
+      .object({
+        trustedUserIds: z.array(z.string()).describe('MindBlown user ids whose tickets run fully automatic. Default: the map creator.'),
+        trustedForgeLogins: z.array(z.string()).describe('Forge (GitHub/Gitea) logins whose issues run fully automatic, case-insensitive. Default: the login the map\'s forge binding syncs as.'),
+        levels: z
+          .object({
+            known: trustLevelSchema.describe('Map members not on the trusted lists.'),
+            external: trustLevelSchema.describe('Everyone else, incl. forge authors not linked to a map member.'),
+          })
+          .strict(),
+      })
+      .strict()
+      .nullable()
+      .optional()
+      .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -255,6 +279,7 @@ export const updateMapTool = defineTool({
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
       archived?: boolean;
+      trustPolicy?: TrustPolicy | null;
     } = {};
     if (name !== undefined) fields.name = name;
     if (description !== undefined) fields.description = description;
@@ -275,6 +300,7 @@ export const updateMapTool = defineTool({
     if (holidayJurisdiction !== undefined) fields.holidayJurisdiction = holidayJurisdiction;
     if (holidayOverrides !== undefined) fields.holidayOverrides = holidayOverrides;
     if (archived !== undefined) fields.archived = archived;
+    if (trustPolicy !== undefined) fields.trustPolicy = trustPolicy;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
       // array index — callers reordering can just send the array in the
@@ -295,7 +321,19 @@ export const updateMapTool = defineTool({
     }
     if (Object.keys(fields).length === 0) return 'No fields to update.';
     const updated = await backend.updateMap(mapId, fields);
-    return `Updated map "${updated.name}" (id: ${updated.id})`;
+    const done = `Updated map "${updated.name}" (id: ${updated.id})`;
+    const t = updated.trustPolicy;
+    if (!t) return done;
+    const lists = (xs: string[]) => (xs.length ? xs.join(', ') : '(none)');
+    const level = (l: TrustLevelPolicy) => `dispatch ${l.dispatch}, merge ${l.merge}`;
+    return [
+      done,
+      `Trust policy${trustPolicy === null ? ' (defaults)' : ''}:`,
+      `  trusted users: ${lists(t.trustedUserIds)}`,
+      `  trusted forge logins: ${lists(t.trustedForgeLogins)}`,
+      `  known: ${level(t.levels.known)}`,
+      `  external: ${level(t.levels.external)}`,
+    ].join('\n');
   },
 });
 

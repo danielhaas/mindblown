@@ -19,6 +19,7 @@ import { unblockNode as unblockNodeService } from '../services/unblock.js';
 import * as fleetTelemetry from '../services/fleetTelemetry.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as fleetService from '../services/fleets.js';
+import * as trustService from '../services/trustPolicy.js';
 import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
@@ -184,9 +185,18 @@ export function createChatBackend(userId: string): ToolBackend {
       // The edit-level guard already ran; connecting a fleet asks for more.
       const fleetDenied = await fleetService.authorizeMapFleetChange(userId, mapId, fields);
       if (fleetDenied) throw new Error(fleetDenied.message);
+      // Trust policy (#491): admin only, checked before anything is written.
+      const trust = fields.trustPolicy !== undefined
+        ? await trustService.checkTrustPolicyInput(userId, mapId, fields.trustPolicy)
+        : undefined;
+      if (trust && !('policy' in trust)) throw new Error(trust.message);
       const updated = await mapDb.updateMap(mapId, fields, userId);
       if (!updated) throw new Error(`Map ${mapId} not found`);
       broadcast(mapId, { type: 'map:updated', map: updated });
+      if (trust) {
+        const saved = await trustService.setTrustPolicy(mapId, trust.policy, userId);
+        return { ...toMapSummary(updated), trustPolicy: saved?.policy };
+      }
       return toMapSummary(updated);
     },
 

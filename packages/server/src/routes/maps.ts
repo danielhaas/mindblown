@@ -3,10 +3,11 @@ import { and, eq, lte, desc } from 'drizzle-orm';
 import { computeTree, schedule, criticalPath, capacityCriticalPath, clampFocusFactor, scopedCapacityDays, assessCalibration, assessForecastConfidence, calibrationSamplesFromNodes, effectiveVersionId, nodesInVersion, ownCompletionStats, assessForecastEvidence, chooseTicketRate, forecastHeadline } from '@mindblown/core';
 import { buildRegisterData, renderMarkdown, renderDocx } from '../export/requirementsDoc.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
-import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
+import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap, TrustPolicy } from '@mindblown/core';
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as fleetService from '../services/fleets.js';
+import * as trustService from '../services/trustPolicy.js';
 import { isFleetUser } from '../db/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
@@ -429,6 +430,15 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     if (fleetDenied) {
       return reply.status(fleetDenied.status).send({ error: { code: fleetDenied.code, message: fleetDenied.message } });
     }
+    // Trust policy (#491): admin only, checked before anything is written.
+    let trust: { policy: TrustPolicy | null } | undefined;
+    if (body.trustPolicy !== undefined) {
+      const checked = await trustService.checkTrustPolicyInput(userId, req.params.id, body.trustPolicy);
+      if (!('policy' in checked)) {
+        return reply.status(checked.status).send({ error: { code: checked.code, message: checked.message } });
+      }
+      trust = checked;
+    }
     const updated = await mapDb.updateMap(req.params.id, body, userId);
     if (!updated) {
       return reply.status(404).send({
@@ -439,7 +449,30 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // cap from a cron while a PM has the cockpit open, and the cockpit must
     // not keep showing the pre-write value. Map row only — no nodes.
     broadcast(req.params.id, { type: 'map:updated', map: updated });
+    if (trust) {
+      // Echoed to the admin who sent it; never on the broadcast.
+      const saved = await trustService.setTrustPolicy(req.params.id, trust.policy, userId);
+      return reply.send({ ...updated, trustPolicy: saved?.policy });
+    }
     return reply.send(updated);
+  });
+
+  // ── GET /api/maps/:id/trust-policy — Who may run the fleet (#491) ──
+  // Admin only. `isDefault`: nothing saved yet, the policy is computed.
+  app.get<{ Params: { id: string } }>('/api/maps/:id/trust-policy', async (req, reply) => {
+    const perm = await permDb.getPermission(req.params.id, req.userId!);
+    if (!permDb.hasPermission(perm, 'admin')) {
+      return reply.status(403).send({
+        error: { code: 'FORBIDDEN', message: 'Only map admins can see who may run the fleet' },
+      });
+    }
+    const result = await trustService.getTrustPolicy(req.params.id);
+    if (!result) {
+      return reply.status(404).send({
+        error: { code: 'MAP_NOT_FOUND', message: `Map ${req.params.id} not found` },
+      });
+    }
+    return reply.send(result);
   });
 
   // ── DELETE /api/maps/:id — Delete map ─────────────────────────

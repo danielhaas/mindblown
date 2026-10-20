@@ -1,0 +1,114 @@
+/**
+ * A map's trust policy (#491): who may run the fleet on it.
+ *
+ * Stored in `maps.trust_policy`; NULL until an admin saves one. Until then
+ * the map runs on the defaults: the creator is the trusted user, the
+ * login the map's forge binding syncs as (an OAuth-bound row's identity)
+ * plus the creator's own linked forge logins are the trusted logins, and
+ * both untrusted levels are on the safe knobs (approval + pr-only).
+ *
+ * Kept off `MindMap` on purpose: read and write are admin-only, while the
+ * map row goes to every viewer (GET /api/maps/:id, map:updated broadcast).
+ */
+import { eq } from 'drizzle-orm';
+import { defaultTrustPolicy, parseTrustPolicy, type TrustPolicy } from '@mindblown/core';
+import { db } from '../db/connection.js';
+import { maps, userGithubIdentities } from '../db/schema.js';
+import { recordEvent } from '../db/events.js';
+import * as permDb from '../db/permissions.js';
+import { getForgeIntegration } from '../lib/githubContext.js';
+
+export interface MapTrustPolicy {
+  policy: TrustPolicy;
+  /** No policy saved yet — `policy` is the computed default. */
+  isDefault: boolean;
+}
+
+/**
+ * Gate a `trustPolicy` sent with a map update (REST PUT, chat backend):
+ * admin on the map, and a valid policy or null (back to the defaults).
+ * Returns the policy to save, or the refusal. Callers check before writing
+ * anything, so a refused policy leaves the rest of the update unapplied too.
+ */
+export async function checkTrustPolicyInput(
+  userId: string,
+  mapId: string,
+  raw: unknown,
+): Promise<{ policy: TrustPolicy | null } | { status: 400 | 403; code: string; message: string }> {
+  if (!permDb.hasPermission(await permDb.getPermission(mapId, userId), 'admin')) {
+    return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can change who may run the fleet' };
+  }
+  if (raw === null) return { policy: null };
+  const parsed = parseTrustPolicy(raw);
+  if (typeof parsed === 'string') return { status: 400, code: 'VALIDATION_ERROR', message: parsed };
+  return { policy: parsed };
+}
+
+/** The forge logins a map trusts by default. */
+async function defaultForgeLogins(map: {
+  workspaceId: string;
+  createdBy: string;
+  githubRepoOwner: string | null;
+  githubRepoName: string | null;
+}): Promise<string[]> {
+  const logins: string[] = [];
+  if (map.githubRepoOwner && map.githubRepoName) {
+    const row = await getForgeIntegration(map.workspaceId, map.githubRepoOwner, map.githubRepoName);
+    const identityId = row?.config.oauthIdentityId;
+    if (identityId) {
+      const [identity] = await db
+        .select({ login: userGithubIdentities.githubLogin })
+        .from(userGithubIdentities)
+        .where(eq(userGithubIdentities.id, identityId));
+      if (identity) logins.push(identity.login);
+    }
+  }
+  const own = await db
+    .select({ login: userGithubIdentities.githubLogin })
+    .from(userGithubIdentities)
+    .where(eq(userGithubIdentities.userId, map.createdBy));
+  for (const { login } of own) if (!logins.includes(login)) logins.push(login);
+  return logins;
+}
+
+/** The map's policy — saved, or the default. null when the map does not exist. */
+export async function getTrustPolicy(mapId: string): Promise<MapTrustPolicy | null> {
+  const [map] = await db
+    .select({
+      trustPolicy: maps.trustPolicy,
+      workspaceId: maps.workspaceId,
+      createdBy: maps.createdBy,
+      githubRepoOwner: maps.githubRepoOwner,
+      githubRepoName: maps.githubRepoName,
+    })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  if (!map) return null;
+  if (map.trustPolicy) return { policy: map.trustPolicy as TrustPolicy, isDefault: false };
+  return { policy: defaultTrustPolicy(map.createdBy, await defaultForgeLogins(map)), isDefault: true };
+}
+
+/**
+ * Save the policy (already validated by `parseTrustPolicy`), or `null` to
+ * go back to the defaults. Journals the change like the dispatch knobs.
+ */
+export async function setTrustPolicy(
+  mapId: string,
+  policy: TrustPolicy | null,
+  userId: string | null,
+): Promise<MapTrustPolicy | null> {
+  const before = await getTrustPolicy(mapId);
+  if (!before) return null;
+  await db.update(maps).set({ trustPolicy: policy, updatedAt: new Date() }).where(eq(maps.id, mapId));
+  const after = await getTrustPolicy(mapId);
+  await recordEvent({
+    mapId,
+    nodeId: null,
+    userId,
+    eventType: 'map.field_changed',
+    fieldName: 'trustPolicy',
+    oldValue: before.isDefault ? null : before.policy,
+    newValue: policy,
+  });
+  return after;
+}

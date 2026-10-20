@@ -6,7 +6,7 @@ import { dbMapToCore, dbNodeToCore } from './helpers.js';
 import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
 import { FLEET_RETIRED, FleetUserForbiddenError, isFleetUser } from './fleets.js';
-import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
+import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy, TrustPolicy } from '@mindblown/core';
 import { capOnFleetConnect, clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
@@ -186,6 +186,12 @@ export interface UpdateMapInput {
    * isMapArchived(). Humans can still open, edit and unarchive it.
    */
   archived?: boolean;
+  /**
+   * Trust policy (#491); null = back to the defaults. Admin-only, so
+   * updateMap ignores it: the callers gate it and write it through
+   * services/trustPolicy.ts.
+   */
+  trustPolicy?: TrustPolicy | null;
 }
 
 // The archive check lives in ./archived.ts (kept out of this module's
