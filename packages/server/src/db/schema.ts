@@ -723,3 +723,15 @@ export const asksPushes = pgTable(
   },
   (t) => [unique('asks_pushes_fleet_map_uq').on(t.fleetId, t.mapId).nullsNotDistinct()],
 );
+
+// ── Repo credential handouts (#507) ────────────────────────────────
+// A fleet key fetched a project's repo credentials: which fleet, which
+// map, which repo, when — never the token. The owner reads it on the
+// fleet page. Kept 30 days.
+export const fleetRepoHandouts = pgTable('fleet_repo_handouts', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  fleetId: uuid('fleet_id').notNull().references(() => fleets.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  repo: text('repo').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});

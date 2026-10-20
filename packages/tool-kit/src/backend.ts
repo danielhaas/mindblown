@@ -345,6 +345,24 @@ export interface GetNextTicketResult {
   fleet?: { id: string; name: string; active: number; cap: number };
   /** Fleet pulls only: maps that gave nothing, and why. */
   maps?: FleetPullMapOutcome[];
+  /**
+   * Granted: where the ticket's code lives — the map's forge binding (#507).
+   * null = the map has no repo connected. No credential here; a fleet key
+   * fetches those per ticket (POST /api/fleets/:id/repo-credentials).
+   */
+  repo?: TicketRepo | null;
+}
+
+/** A map's repo, without credentials (#507). */
+export interface TicketRepo {
+  forge: 'github' | 'gitea';
+  owner: string;
+  name: string;
+  /** The repo's page, e.g. https://gitea.example/dan/crm2. */
+  webUrl: string;
+  /** HTTPS clone URL. */
+  cloneUrl: string;
+  apiBaseUrl: string;
 }
 
 export interface ConflictScanResult {

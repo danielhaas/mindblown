@@ -122,6 +122,7 @@ export {
   isGitHubAppConfigured,
   mintAppJwt,
   mintInstallationToken,
+  mintScopedRepoToken,
   listInstallationRepositories,
   exchangeUserAuthorizationCode,
   refreshUserAccessToken,

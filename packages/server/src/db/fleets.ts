@@ -55,6 +55,18 @@ export async function getMapFleetId(mapId: string): Promise<string | null> {
   return row?.fleetId ?? null;
 }
 
+/** A map's fleet and archive state, without its nodes; null when no such map. */
+export async function getMapFleetState(
+  mapId: string,
+): Promise<{ fleetId: string | null; archivedAt: Date | null; createdBy: string } | null> {
+  if (!isFleetId(mapId)) return null;
+  const [row] = await db
+    .select({ fleetId: maps.fleetId, archivedAt: maps.archivedAt, createdBy: maps.createdBy })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  return row ?? null;
+}
+
 /** Every map connected to the fleet, oldest first. */
 export async function listFleetMaps(fleetId: string): Promise<FleetMapRow[]> {
   const rows = await db

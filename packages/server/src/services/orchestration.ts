@@ -19,6 +19,7 @@ import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
+import { getForgeRepoForMap } from '../lib/githubContext.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
@@ -744,7 +745,7 @@ export async function getNextTicket(
   });
 
   announcePull(outcome, sessionId);
-  return outcome.result;
+  return withRepo(outcome.result);
 }
 
 /**
@@ -853,7 +854,22 @@ export async function pullFleetTicket(
   });
 
   announcePull(outcome, sessionId);
-  return outcome.result;
+  return withRepo(outcome.result);
+}
+
+/**
+ * A granted ticket carries where its code lives (#507), so a worker needs
+ * no per-project config. After the claim's transaction: a forge lookup
+ * failing never costs the claim — the worker then sees `repo: null`.
+ */
+async function withRepo(result: GetNextTicketResult): Promise<GetNextTicketResult> {
+  if (!result.granted || !result.mapId) return result;
+  try {
+    return { ...result, repo: await getForgeRepoForMap(result.mapId) };
+  } catch (err) {
+    console.warn(`[pull] repo lookup for map ${result.mapId} failed:`, err instanceof Error ? err.message : err);
+    return { ...result, repo: null };
+  }
 }
 
 // ── Pull internals ──────────────────────────────────────────────

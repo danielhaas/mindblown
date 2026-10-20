@@ -200,6 +200,13 @@ export const getNextTicketTool = defineTool({
       if (t.tags.length > 0) lines.push(`  tags: [${t.tags.join(', ')}]`);
       if (t.scopes.length > 0) lines.push(`  scopes: [${t.scopes.join(', ')}]`);
       for (const l of t.githubLinks) lines.push(`  github: ${l.externalId} — ${l.url}`);
+      if (result.repo !== undefined) {
+        lines.push(
+          result.repo
+            ? `  repo: ${result.repo.owner}/${result.repo.name} on ${result.repo.forge} — clone ${result.repo.cloneUrl}`
+            : '  repo: none connected to this map',
+        );
+      }
       lines.push('');
       lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked issue)');
     } else {

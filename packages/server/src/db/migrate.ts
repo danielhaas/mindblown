@@ -1426,5 +1426,21 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── Repo credential handouts (#507) ────────────────────────────
+  // Every time a fleet key fetched a project's repo credentials — which
+  // fleet, which map, which repo, when. No token. Kept 30 days.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_repo_handouts (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      fleet_id UUID NOT NULL REFERENCES fleets(id) ON DELETE CASCADE,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      repo TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS fleet_repo_handouts_fleet_idx ON fleet_repo_handouts (fleet_id, created_at DESC)
+  `);
+
   console.log('[db] Migrations complete.');
 }
