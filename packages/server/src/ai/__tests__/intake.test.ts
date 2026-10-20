@@ -19,6 +19,7 @@ import {
   buildIntakeSystemPrompt,
   INTAKE_MAX_STEPS,
   parseJsonObject,
+  detectLanguage,
   type IntakeContext,
   type IntakeIo,
 } from '../intake.js';
@@ -301,12 +302,59 @@ describe('runIntakeTurn in JSON mode', () => {
     expect(session.messages.map((m) => m.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
   });
 
+  it('pins the language of the first message, so a German map and note cannot flip a refine turn', async () => {
+    const reply = JSON.stringify({ text: 'ok', draft: goodDraft, questions: [] });
+    const provider = jsonProvider([reply, reply]);
+    const germanIo = io({
+      semanticSearch: async () => [{ nodeId: 'l1', text: 'Issue schliessen, wenn der PR gemergt ist', score: 0.8 }],
+    });
+    const session = createIntakeSession('m1', 'u1');
+    await runIntakeTurn({
+      provider,
+      session,
+      ctx: ctx(),
+      message: 'The issue should not close when a PR is still open on it',
+      io: germanIo,
+    });
+    // Refine turn: only clicked answers, nothing to detect from.
+    await runIntakeTurn({ provider, session, ctx: ctx(), message: '1. Which version?\n   → V1', io: germanIo });
+
+    expect(session.language).toBe('English');
+    for (const i of [0, 1]) {
+      expect(provider.prompts[i]).toContain('in English. The map tree, server notes and existing tickets');
+      expect(provider.parts[i][1]).toBe('Return the JSON object now, written in English.');
+    }
+  });
+
+  it('a German first message pins German', async () => {
+    const provider = jsonProvider([JSON.stringify({ text: 'ok', draft: goodDraft, questions: [] })]);
+    const session = createIntakeSession('m1', 'u1');
+    await runIntakeTurn({
+      provider,
+      session,
+      ctx: ctx(),
+      message: 'Das Issue soll nicht zugehen, wenn noch ein PR offen ist',
+      io: io(),
+    });
+    expect(session.language).toBe('German');
+    expect(provider.parts[0][1]).toBe('Return the JSON object now, written in German.');
+  });
+
   it('throws AiBadResponseError on unusable output', async () => {
     const provider = jsonProvider(['no json here']);
     const session = createIntakeSession('m1', 'u1');
     await expect(
       runIntakeTurn({ provider, session, ctx: ctx(), message: 'x', io: io() }),
     ).rejects.toThrow(/usable JSON/);
+  });
+});
+
+describe('detectLanguage', () => {
+  it('tells English from German and gives up on too little text', () => {
+    expect(detectLanguage('Close the issue when the PR is merged')).toBe('English');
+    expect(detectLanguage('Das Ticket soll erst zugehen, wenn der PR gemergt ist')).toBe('German');
+    expect(detectLanguage('V1')).toBeNull();
+    expect(detectLanguage('1. Which version?\n   → V1')).toBeNull();
   });
 });
 

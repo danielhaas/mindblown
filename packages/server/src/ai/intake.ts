@@ -64,6 +64,8 @@ export interface IntakeSession {
   accepted: Array<{ nodeId: string; title: string }>;
   /** Forge-only issues the pre-search surfaced, by number — so a draft can refer to them. */
   forgeHits: Map<number, ForgeIssueHit>;
+  /** Pinned from the user's own words on the first turn that reveals it — see detectLanguage. */
+  language: string | null;
   touchedAt: number;
 }
 
@@ -85,6 +87,7 @@ export function createIntakeSession(mapId: string, userId: string): IntakeSessio
     messages: [],
     accepted: [],
     forgeHits: new Map(),
+    language: null,
     touchedAt: Date.now(),
   };
   sessions.set(s.id, s);
@@ -245,9 +248,38 @@ export interface IntakeContext {
   accepted: IntakeSession['accepted'];
   /** Forge-only hits the session has seen, so `existing[].issueNumber` resolves. */
   forgeHits?: Map<number, ForgeIssueHit>;
+  /** The session's pinned language; null = the model goes by the user's own words. */
+  language?: string | null;
 }
 
 const TREE_CAP = 400;
+
+const STOPWORDS: Record<string, string[]> = {
+  English: ['the', 'and', 'is', 'are', 'to', 'of', 'it', 'when', 'should', 'with', 'not', 'this', 'that', 'on', 'for', 'be', 'can', 'in', 'a', 'we', 'i'],
+  German: ['der', 'die', 'das', 'und', 'ist', 'sind', 'nicht', 'wenn', 'soll', 'mit', 'auf', 'für', 'ein', 'eine', 'dass', 'wir', 'ich', 'es', 'zu', 'bei', 'auch', 'noch', 'im'],
+};
+
+/**
+ * The language of the user's own words, by stopword count, or null when
+ * the text is too short to tell. Pinned on the session: on a refine turn
+ * the user's words are a few clicked answers while the map tree and the
+ * server note can be in another language, and a local model follows the
+ * bulk of the prompt.
+ */
+export function detectLanguage(text: string): string | null {
+  const words = text.toLowerCase().match(/[a-zäöüß]+/g) ?? [];
+  const scores = Object.entries(STOPWORDS).map(
+    ([lang, list]) => [lang, words.filter((w) => list.includes(w)).length] as const,
+  );
+  scores.sort((a, b) => b[1] - a[1]);
+  const [[best, top], [, next]] = scores;
+  return top >= 2 && top > next ? best : null;
+}
+
+function languageRule(language: string | null | undefined): string {
+  const target = language ?? 'the language of the user\'s own words';
+  return `Write the text, the title, the description and the questions in ${target}. The map tree, server notes and existing tickets may be in another language; that never changes your language.`;
+}
 
 /**
  * How the model hands the draft back. `tools`: Claude calls propose_ticket /
@@ -323,13 +355,13 @@ export function buildIntakeSystemPrompt(ctx: IntakeContext, mode: IntakeMode = '
       ? ctx.accepted.map((a) => `- "${a.title}" [${a.nodeId}]`).join('\n')
       : '(none yet)';
 
-  return `You are the ticket-intake assistant for the project mindmap "${ctx.map.name}". The user describes a piece of work in rough prose; you turn it into a well-formed ticket that fits THIS plan and hand it back for review. You never create nodes yourself — the user accepts the draft in the UI. Reply in the language the user writes in.
+  return `You are the ticket-intake assistant for the project mindmap "${ctx.map.name}". The user describes a piece of work in rough prose; you turn it into a well-formed ticket that fits THIS plan and hand it back for review. You never create nodes yourself — the user accepts the draft in the UI. ${languageRule(ctx.language)}
 
 Effort unit of this map: ${effortUnit}. Estimation is done by the server after you draft — do not estimate.
 
 ${mode === 'tools' ? TURN_RULES_TOOLS : TURN_RULES_JSON}
 
-Ticket template for description (markdown, exactly these headings, in the user's language):
+Ticket template for description (markdown, exactly these headings, in that language):
 ## Why — one short paragraph: the problem or motivation
 ## What — the change, concrete
 ## Acceptance criteria — 2 to 5 checkable bullets
@@ -612,6 +644,9 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
       `]`;
   }
   session.messages.push({ role: 'user', content: userContent });
+  // From the user's own words only, never the server note.
+  session.language ??= detectLanguage(opts.message);
+  ctx.language = session.language;
 
   const mode = intakeModeFor(provider);
   const systemPrompt = buildIntakeSystemPrompt(ctx, mode);
@@ -638,7 +673,10 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
       .join('\n\n');
     const raw = await provider.complete({
       systemPrompt,
-      parts: [{ text: rendered }, { text: 'Return the JSON object now.' }],
+      parts: [
+        { text: rendered },
+        { text: `Return the JSON object now, written in ${session.language ?? "the user's language"}.` },
+      ],
       format: 'json',
       temperature: 0,
       maxTokens: 2048,
