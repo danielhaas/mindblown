@@ -255,16 +255,20 @@ export interface IntakeContext {
 const TREE_CAP = 400;
 
 const STOPWORDS: Record<string, string[]> = {
-  English: ['the', 'and', 'is', 'are', 'to', 'of', 'it', 'when', 'should', 'with', 'not', 'this', 'that', 'on', 'for', 'be', 'can', 'in', 'a', 'we', 'i'],
-  German: ['der', 'die', 'das', 'und', 'ist', 'sind', 'nicht', 'wenn', 'soll', 'mit', 'auf', 'für', 'ein', 'eine', 'dass', 'wir', 'ich', 'es', 'zu', 'bei', 'auch', 'noch', 'im'],
+  English: ['the', 'and', 'is', 'are', 'to', 'of', 'it', 'when', 'should', 'with', 'not', 'this', 'that', 'on', 'for', 'be', 'can', 'in', 'a', 'we', 'i', 'after', 'before', 'from', 'add', 'fix', 'make', 'show', 'only'],
+  German: ['der', 'die', 'das', 'und', 'ist', 'sind', 'nicht', 'wenn', 'soll', 'mit', 'auf', 'für', 'ein', 'eine', 'dass', 'wir', 'ich', 'es', 'zu', 'bei', 'auch', 'noch', 'im', 'nach', 'vor', 'beim', 'wird', 'werden', 'oder', 'den', 'dem', 'nur'],
 };
+
+/** What the model writes in while the user's words have not revealed a language — the app's own. */
+const DEFAULT_LANGUAGE = 'English';
 
 /**
  * The language of the user's own words, by stopword count, or null when
- * the text is too short to tell. Pinned on the session: on a refine turn
- * the user's words are a few clicked answers while the map tree and the
- * server note can be in another language, and a local model follows the
- * bulk of the prompt.
+ * nothing tells. Pinned on the session: on a refine turn the user's words
+ * are a few clicked answers while the map tree and the server note can be
+ * in another language, and a local model follows the bulk of the prompt.
+ * One word is enough — tickets are terse ("After 987 update the Code
+ * Walkthrough"), and Qwen answered that in German when left to guess.
  */
 export function detectLanguage(text: string): string | null {
   const words = text.toLowerCase().match(/[a-zäöüß]+/g) ?? [];
@@ -273,12 +277,11 @@ export function detectLanguage(text: string): string | null {
   );
   scores.sort((a, b) => b[1] - a[1]);
   const [[best, top], [, next]] = scores;
-  return top >= 2 && top > next ? best : null;
+  return top > next ? best : null;
 }
 
 function languageRule(language: string | null | undefined): string {
-  const target = language ?? 'the language of the user\'s own words';
-  return `Write the text, the title, the description and the questions in ${target}. The map tree, server notes and existing tickets may be in another language; that never changes your language.`;
+  return `Write the text, the title, the description and the questions in ${language ?? DEFAULT_LANGUAGE}. The map tree, server notes and existing tickets may be in another language; that never changes your language.`;
 }
 
 /**
@@ -675,7 +678,7 @@ export async function runIntakeTurn(opts: RunIntakeTurnOptions): Promise<IntakeT
       systemPrompt,
       parts: [
         { text: rendered },
-        { text: `Return the JSON object now, written in ${session.language ?? "the user's language"}.` },
+        { text: `Return the JSON object now, written in ${session.language ?? DEFAULT_LANGUAGE}.` },
       ],
       format: 'json',
       temperature: 0,

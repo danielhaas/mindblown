@@ -326,6 +326,15 @@ describe('runIntakeTurn in JSON mode', () => {
     }
   });
 
+  it('an undetectable message asks for English and pins nothing', async () => {
+    const provider = jsonProvider([JSON.stringify({ text: 'ok', draft: goodDraft, questions: [] })]);
+    const session = createIntakeSession('m1', 'u1');
+    await runIntakeTurn({ provider, session, ctx: ctx(), message: 'Code Walkthrough #987', io: io() });
+    expect(session.language).toBeNull();
+    expect(provider.prompts[0]).toContain('in English. The map tree');
+    expect(provider.parts[0][1]).toBe('Return the JSON object now, written in English.');
+  });
+
   it('a German first message pins German', async () => {
     const provider = jsonProvider([JSON.stringify({ text: 'ok', draft: goodDraft, questions: [] })]);
     const session = createIntakeSession('m1', 'u1');
@@ -353,8 +362,11 @@ describe('detectLanguage', () => {
   it('tells English from German and gives up on too little text', () => {
     expect(detectLanguage('Close the issue when the PR is merged')).toBe('English');
     expect(detectLanguage('Das Ticket soll erst zugehen, wenn der PR gemergt ist')).toBe('German');
+    // Terse tickets: one word decides (Qwen drafted this one in German when left to guess).
+    expect(detectLanguage('After 987 update the Code Walkthrough')).toBe('English');
+    expect(detectLanguage('Nach 987 Code Walkthrough aktualisieren')).toBe('German');
     expect(detectLanguage('V1')).toBeNull();
-    expect(detectLanguage('1. Which version?\n   → V1')).toBeNull();
+    expect(detectLanguage('Code Walkthrough')).toBeNull();
   });
 });
 
