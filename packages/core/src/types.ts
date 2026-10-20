@@ -65,6 +65,20 @@ export function isForgeLink(link: { provider: string }): boolean {
 export type ForgeKindName = 'github' | 'gitea';
 
 /**
+ * A map that names a repo but cannot reach it (#513): no connection binds
+ * the repo (`unbound`), or the forge refuses the binding's token
+ * (`refused`, 401/403 in catch-up). Every forge path for the map stops
+ * silently in both cases, so the plan linter, the forge settings and the
+ * Fleet tab say it out loud. `message` is the sentence all three show.
+ */
+export interface ForgeProblem {
+  kind: 'unbound' | 'refused';
+  /** `owner/repo` the map names. */
+  repo: string;
+  message: string;
+}
+
+/**
  * Human name of a forge for labels, tooltips and notices: 'Gitea' for a
  * Gitea/Forgejo link or map, 'GitHub' otherwise (also the fallback while
  * the kind is unknown). Pass a link's `provider` or a map's `forgeKind`.
@@ -773,6 +787,11 @@ export interface MindMap {
    * The UI labels links, the inbox and the settings with it (`forgeLabel`).
    */
   forgeKind?: ForgeKindName | null;
+  /**
+   * Derived at read time like `forgeKind`: set when the map names a repo
+   * it cannot reach (#513). null = fine, or no repo named.
+   */
+  forgeProblem?: ForgeProblem | null;
   /**
    * Per-map opt-in for the AI triage pipeline. When true, new GitHub
    * issues bound to this map go through the LLM triage classifier

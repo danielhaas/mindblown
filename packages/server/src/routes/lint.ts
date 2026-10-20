@@ -22,6 +22,7 @@ import * as lintDb from '../db/lint.js';
 import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
 import { stalledForMap } from '../lib/stalled.js';
+import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { applyLintFix, LintFixError } from '../lint/fix.js';
 import {
   buildDonePredicate,
@@ -259,7 +260,7 @@ export async function lintRoutes(app: FastifyInstance) {
     }
     const wantsForge = rule == null || rule === 'done-without-pr';
 
-    const [history, dismissalRows, acceptances, forge, sprints, stalled] = await Promise.all([
+    const [history, dismissalRows, acceptances, forge, sprints, stalled, forgeProblem] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
       // Best-effort: a failed acceptance load skips stale-acceptance
@@ -278,6 +279,8 @@ export async function lintRoutes(app: FastifyInstance) {
       cycleDb.listCycles(req.params.id).catch(() => undefined),
       // The same stalled list the map payload carries (blocked_digest, panels).
       stalledForMap(data.map, data.nodes, now).catch(() => undefined),
+      // Same contract: a failed check skips broken-repo-connection.
+      forgeProblemForMap(data.map).catch(() => undefined),
     ]);
 
     // Rolled-up progress so requirement rules work on parent nodes too.
@@ -297,6 +300,7 @@ export async function lintRoutes(app: FastifyInstance) {
       forgePrsCap: forge?.capped ? FORGE_PR_CHECK_CAP : undefined,
       sprints,
       stalled,
+      forgeProblem,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,

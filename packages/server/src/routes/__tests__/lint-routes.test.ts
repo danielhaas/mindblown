@@ -23,6 +23,8 @@ const mapData = {
     effortUnit: 'days',
     hoursPerDay: 8,
     statusWorkflow: [{ id: 'wip', category: 'in_progress' }],
+    githubRepoOwner: null as string | null,
+    githubRepoName: null as string | null,
   },
   nodes: [
     {
@@ -123,8 +125,12 @@ let forgeContext: {
   token: string;
   forge: { listCrossReferencingPullRequests: (o: string, r: string, n: number) => Promise<number[]> };
 } | null = null;
+// broken-repo-connection (#513): what the real lib/forgeProblem.ts sees
+// when it asks which repo binds the map. Default: none.
+let forgeBinding: { repo: { forge: 'github' | 'gitea'; owner: string; name: string }; bindingKey: string } | null = null;
 vi.mock('../../lib/githubContext.js', () => ({
   getForgeContextForMap: vi.fn(async () => forgeContext),
+  getForgeBindingForMap: vi.fn(async () => forgeBinding),
 }));
 
 const applyLintFix = vi.fn(async (_mapId: string, nodeId: string, action: string) => ({
@@ -148,6 +154,7 @@ vi.mock('../../lint/fix.js', () => ({
 
 import { lintRoutes, resetForgePrCache } from '../lint.js';
 import { LintFixError } from '../../lint/fix.js';
+import { clearForgeRefusal, noteForgeRefusal, resetForgeRefusals } from '../../sync/forgeRefusals.js';
 
 async function buildApp(userId: string | null = 'user-1'): Promise<FastifyInstance> {
   const app = Fastify();
@@ -163,6 +170,10 @@ beforeEach(() => {
   dismissals.length = 0;
   versionRows.length = 0;
   forgeContext = null;
+  forgeBinding = null;
+  mapData.map.githubRepoOwner = null;
+  mapData.map.githubRepoName = null;
+  resetForgeRefusals();
   mapData.nodes.splice(2);
   mapData.map.statusWorkflow = [{ id: 'wip', category: 'in_progress' }];
   resetForgePrCache();
@@ -201,6 +212,52 @@ describe('GET /api/maps/:id/lint', () => {
     await app.close();
     expect(down.skipped).toBe('change history unavailable');
     expect(down.findings).toEqual([]);
+  });
+
+  it('broken-repo-connection: a named repo nothing binds, a refused token, and silence for a map without a repo', async () => {
+    const app = await buildApp();
+    const run = async () =>
+      (await app.inject({ method: 'GET', url: '/api/maps/map-1/lint?rule=broken-repo-connection' })).json().rules[0];
+
+    // No repo named: nothing to warn about, and not "skipped" either.
+    const none = await run();
+    expect(none.findings).toEqual([]);
+    expect(none.skipped).toBeUndefined();
+
+    // Named, but no connection binds it — the 19.10 Sonarpipe case.
+    mapData.map.githubRepoOwner = 'dan';
+    mapData.map.githubRepoName = 'Sonarpipe';
+    const unbound = await run();
+    expect(unbound.findings).toHaveLength(1);
+    expect(unbound.findings[0].nodeId).toBeNull();
+    expect(unbound.findings[0].detail).toBe(
+      'Map names dan/Sonarpipe, but no forge connection binds it — sync, triage and the fleet are off for this map.',
+    );
+
+    // Bound, and the forge answers: fine.
+    forgeBinding = { repo: { forge: 'gitea', owner: 'dan', name: 'Sonarpipe' }, bindingKey: 'row:r1:100' };
+    expect((await run()).findings).toEqual([]);
+
+    // A refusal recorded for ANOTHER binding of the same repo is not ours.
+    noteForgeRefusal('row:r2:100', 401);
+    expect((await run()).findings).toEqual([]);
+
+    // Our binding was refused.
+    noteForgeRefusal('row:r1:100', 401, new Date('2026-10-20T08:00:00Z'));
+    const refused = await run();
+    expect(refused.findings).toHaveLength(1);
+    expect(refused.findings[0].detail).toContain('Gitea refuses the token for dan/Sonarpipe (HTTP 401 since 2026-10-20 08:00 UTC)');
+
+    // A reconnect bumps the row's timestamp, so the old refusal no longer applies.
+    forgeBinding = { ...forgeBinding, bindingKey: 'row:r1:200' };
+    expect((await run()).findings).toEqual([]);
+
+    // A 404 reads as "cannot find", not "refuses the token"; a good fetch clears it.
+    noteForgeRefusal('row:r1:200', 404);
+    expect((await run()).findings[0].detail).toContain('Gitea cannot find dan/Sonarpipe with this connection');
+    clearForgeRefusal('row:r1:200');
+    expect((await run()).findings).toEqual([]);
+    await app.close();
   });
 
   it('403 without view permission', async () => {

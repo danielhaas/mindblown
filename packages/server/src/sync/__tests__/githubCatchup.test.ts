@@ -161,6 +161,7 @@ import {
   _getAuthFailureCountForTests,
   type ReconcileResult,
 } from '../githubCatchup.js';
+import { forgeRefusalFor, resetForgeRefusals } from '../forgeRefusals.js';
 import { fetchChangedIssues, getGitHubIssue, GitHubApiError, updateGitHubIssue, probeIssueLanded, reopenGitHubIssue, type ForgeClient } from '@mindblown/integrations';
 import { handlePrClosed } from '../prSync.js';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
@@ -467,6 +468,22 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     expect(result.authFailure).toBe(true);
     expect(pushKumaMock).not.toHaveBeenCalled();
     expect(_getAuthFailureCountForTests('o/r')).toBe(1);
+  });
+
+  it('records a refused fetch for Plan health (#513) and clears it on the next good fetch', async () => {
+    resetForgeRefusals();
+    const target = (repo: string, bindingKey: string) => ({ ...makeTarget('o', repo), bindingKey });
+    fetchChangedIssuesMock.mockRejectedValueOnce(new MockGitHubApiError(403, 'insufficient scope'));
+    await reconcileRepo(target('r', 'row:a:1'));
+    expect(forgeRefusalFor('row:a:1')?.status).toBe(403);
+
+    fetchChangedIssuesMock.mockRejectedValueOnce(new MockGitHubApiError(403, 'API rate limit exceeded'));
+    await reconcileRepo(target('r2', 'row:b:1'));
+    expect(forgeRefusalFor('row:b:1')).toBeNull();
+
+    fetchChangedIssuesMock.mockResolvedValueOnce({ issues: [], truncated: false });
+    await reconcileRepo(target('r', 'row:a:1'));
+    expect(forgeRefusalFor('row:a:1')).toBeNull();
   });
 
   it('does NOT push on the second consecutive 401', async () => {

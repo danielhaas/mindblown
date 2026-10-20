@@ -22,6 +22,7 @@ import {
   describeStalled,
   STALLED_AFTER_HOURS,
   type StalledLeaf,
+  type ForgeProblem,
 } from '@mindblown/core';
 
 // The vocabulary lives in core so the MCP tool and the panel share it.
@@ -159,6 +160,11 @@ export interface LintOptions {
    * the change log by lib/stalled.ts). Omit to skip the stalled-unclaimed rule.
    */
   stalled?: StalledLeaf[];
+  /**
+   * Whether the map reaches the repo it names (lib/forgeProblem.ts):
+   * null = fine or no repo named. Omit to skip broken-repo-connection.
+   */
+  forgeProblem?: ForgeProblem | null;
   nodeId?: string;
   versionId?: string;
   cycleId?: string;
@@ -764,6 +770,18 @@ export function computePlanLint(opts: LintOptions): LintReport | { error: string
     why: 'A copy counts the issue\'s work twice, shows it twice in every list and splits its progress between two places.',
     fix: 'Delete the copy (it lands in the trash), or unlink the issue from it if it is really separate work.',
     findings: duplicateFindings,
+  });
+
+  // 19. broken-repo-connection (map-level, #513) — the map names a repo it
+  // cannot reach, so every forge path for it has stopped without a word.
+  rules.push({
+    ruleId: 'broken-repo-connection',
+    severity: 'warn',
+    title: 'The map cannot reach its repo (map-level)',
+    why: 'Issue sync, catch-up, webhooks, triage and the fleet all stop silently for a map whose repo connection is gone or refused — the map keeps looking fine while nothing reaches it.',
+    fix: 'Reconnect the repo in the map\'s issue-tracker settings. If the map is done with that repo, dismiss the finding.',
+    findings: opts.forgeProblem ? [mapFinding(opts.forgeProblem.message)] : [],
+    skipped: opts.forgeProblem === undefined ? 'repo connection not checked' : undefined,
   });
 
   // ── Apply dismissals ──

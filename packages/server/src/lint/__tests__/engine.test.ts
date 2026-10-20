@@ -704,3 +704,29 @@ describe('computePlanLint — sprint-state (#324)', () => {
     expect(rule(done, 'sprint-state').findings).toEqual([]);
   });
 });
+
+describe('computePlanLint — broken-repo-connection (#513)', () => {
+  const run = (forgeProblem?: Parameters<typeof computePlanLint>[0]['forgeProblem']) =>
+    computePlanLint({ map: {}, nodes: [makeNode({ id: 'root' })], unitsPerDay: 1, history: emptyHistory(), dismissals: [], forgeProblem, now: NOW });
+
+  it('one map-level warning carrying the problem sentence, scope-independent', () => {
+    const r = run({ kind: 'unbound', repo: 'dan/Sonarpipe', message: 'Map names dan/Sonarpipe, but no forge connection binds it' });
+    if ('error' in r) throw new Error(r.error);
+    const b = rule(r, 'broken-repo-connection');
+    expect(b.severity).toBe('warn');
+    expect(b.findings).toEqual([expect.objectContaining({ nodeId: null, detail: 'Map names dan/Sonarpipe, but no forge connection binds it' })]);
+    const fine = run(null);
+    if ('error' in fine) throw new Error(fine.error);
+    expect(r.warnCount).toBe(fine.warnCount + 1);
+  });
+
+  it('nothing when the map reaches its repo or names none; skipped when not checked', () => {
+    const fine = run(null);
+    if ('error' in fine) throw new Error(fine.error);
+    expect(rule(fine, 'broken-repo-connection').findings).toEqual([]);
+    expect(rule(fine, 'broken-repo-connection').skipped).toBeUndefined();
+    const unchecked = run();
+    if ('error' in unchecked) throw new Error(unchecked.error);
+    expect(rule(unchecked, 'broken-repo-connection').skipped).toBe('repo connection not checked');
+  });
+});

@@ -800,6 +800,26 @@ export function GitHubSettingsDialog({
           </button>
         </div>
 
+        {/* The map names a repo it cannot reach (#513): name the repo it lost,
+            so "not connected" is not mistaken for "never was". */}
+        {currentMap?.forgeProblem && (
+          <div
+            data-testid="forge-problem-banner"
+            style={{
+              marginBottom: 12,
+              padding: '10px 12px',
+              borderRadius: 6,
+              background: '#fef2f2',
+              border: '1px solid #fecaca',
+              color: '#991b1b',
+              fontSize: 12,
+              fontWeight: 600,
+            }}
+          >
+            ⚠ {currentMap.forgeProblem.message}
+          </div>
+        )}
+
         {error && (
           <div
             style={{
