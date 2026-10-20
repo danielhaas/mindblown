@@ -232,6 +232,24 @@ export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
   return node.tags.find((t) => skip.has(t.toLowerCase())) ?? null;
 }
 
+/** The tag an epic leaf is held under (it shows where a skip tag would). */
+export const EPIC_HOLD_TAG = 'epic';
+
+const EPIC_TAGS = new Set(['epic', 'type:epic']);
+// "#482 Epic: …", "Epic – …", "[EPIC] Source & Ingestion". Needs the colon,
+// dash or brackets: "epic (danielhaas/epic)" is a repo name, not an epic.
+const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic\s*[:\-–—])/i;
+
+/**
+ * An epic sitting in the map as a leaf: its work lives in other issues or
+ * sub-issues, not in the node. The pull handed #482 to an agent as if it
+ * were a ticket (20.10.2026). Tag `epic` / `type:epic`, or a title that
+ * starts with "Epic:" or "[EPIC]".
+ */
+export function isEpicLeaf(node: Pick<Node, 'tags' | 'text'>): boolean {
+  return node.tags.some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');
+}
+
 /** Why a ticket waits for a person: a skip tag, a manual blocker, or both. */
 export interface DispatchHold {
   tag: string | null;
@@ -258,12 +276,16 @@ function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold,
  * ancestor's leftover reason does not count — it would silently freeze
  * every ticket added under it later (plan-lint flags that text instead).
  * The nearest holding ancestor wins.
+ *
+ * An epic leaf (`isEpicLeaf`) is held too, under the tag `epic`, but only
+ * on the ticket itself: an epic ancestor with children is the normal tree
+ * shape, and its sub-tickets are the work.
  */
 export function dispatchHold(
-  node: Pick<Node, 'tags' | 'blockedReason'> & { parentId?: string | null },
+  node: Pick<Node, 'tags' | 'blockedReason'> & { parentId?: string | null; text?: string },
   ancestors?: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
 ): DispatchHold | null {
-  const own = ownHold(node);
+  const own = ownHold(node) ?? (isEpicLeaf({ tags: node.tags, text: node.text ?? '' }) ? { tag: EPIC_HOLD_TAG, blockedReason: null } : null);
   if (own) return { ...own, heldBy: null };
   if (!ancestors) return null;
   const seen = new Set<string>();

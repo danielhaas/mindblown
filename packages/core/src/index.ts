@@ -137,6 +137,8 @@ export {
   dispatchQueueSnapshot,
   dispatchSkipTag,
   dispatchHold,
+  isEpicLeaf,
+  EPIC_HOLD_TAG,
   DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
   planUnblock,

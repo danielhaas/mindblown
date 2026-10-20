@@ -356,4 +356,30 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect(dispatchHold(nodes[3] as never, { nodeMap, isDone })).toEqual({ tag: null, blockedReason: 'Waiting on Dan', heldBy: { id: 'epic', text: 'epic' } });
     expect(dispatchHold(nodes[3] as never)).toBeNull(); // without ancestors only the ticket itself counts
   });
+
+  it('an epic leaf is held under `epic`; an epic parent does not hold its sub-tickets', async () => {
+    const { dispatchQueueSnapshot, dispatchHold, isEpicLeaf } = await import('../dispatch.js');
+    const n = (id: string, text: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
+      ({ id, text, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+    const nodes = [
+      n('root', 'root', null, { childrenIds: ['e1', 'e2', 'e3', 'e4', 'big', 'repo'] }),
+      n('e1', '#482 Epic: fleets as their own entity', 'root'),
+      n('e2', '[EPIC] Source & Ingestion', 'root'),
+      n('e3', 'Epic – billing', 'root'),
+      n('e4', 'Rework sync', 'root', { tags: ['type:epic'] }),
+      n('big', 'Epic: sprint automation', 'root', { childrenIds: ['sub'] }),
+      n('sub', 'Rollover job', 'big'),
+      n('repo', 'epic (danielhaas/epic) — Universal Triage Inbox', 'root'),
+    ];
+    const snap = dispatchQueueSnapshot(nodes, { workflow: [], cap: 5, gate: [] });
+    expect([...snap.inGateIds].sort()).toEqual(['repo', 'sub']);
+    // e1–e4, plus `big`: the snapshot counts a status-less parent as pullable
+    // (see the fixture note above); held is right for it, and `sub` stays free.
+    expect(snap.humanOnly).toBe(5);
+    expect(dispatchHold(nodes[1] as never)).toEqual({ tag: 'epic', blockedReason: null, heldBy: null });
+    const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
+    expect(dispatchHold(nodes[6] as never, { nodeMap, isDone: () => false })).toBeNull();
+    expect(isEpicLeaf({ text: 'Epics are fun', tags: [] })).toBe(false);
+    expect(isEpicLeaf({ text: 'Fix the epic import', tags: ['EPIC'] })).toBe(true);
+  });
 });
