@@ -31,6 +31,7 @@ export const LINT_RULE_IDS = [
   'claim-churn',
   'duplicate-issue-link',
   'stalled-unclaimed',
+  'broken-repo-connection',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 

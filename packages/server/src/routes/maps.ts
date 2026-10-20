@@ -14,6 +14,7 @@ import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
+import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { stalledOrEmpty } from '../lib/stalled.js';
 import { snapshotReleaseForecastForMap } from '../lib/releaseSnapshots.js';
 import { measureMapVelocity } from '../lib/velocityMeasure.js';
@@ -262,14 +263,17 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     // "Gitea" where it used to say "GitHub" (labels, inbox, settings).
     // Also derived: in-progress leaves nobody is working on (core findStalled),
     // for the Blocked panel, the Cockpit and blocked_digest.
-    const [forgeKind, fleetName, stalled] = await Promise.all([
+    // And whether the repo the map names is reachable (#513) — a failed
+    // check must not fail the map load, so it reads as "no problem known".
+    const [forgeKind, fleetName, stalled, forgeProblem] = await Promise.all([
       getMapForgeKind(req.params.id),
       fleetService.fleetNameOf(data.map.fleetId),
       stalledOrEmpty(data.map, data.nodes),
+      forgeProblemForMap(data.map).catch(() => null),
     ]);
 
     return reply.send({
-      map: { ...data.map, forgeKind, fleetName },
+      map: { ...data.map, forgeKind, fleetName, forgeProblem },
       nodes: nodesWithComputed,
       stalled,
     });

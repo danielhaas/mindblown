@@ -192,6 +192,12 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
         </div>
       )}
       <div style={{ fontSize: 13, color: '#334155', marginBottom: readOnly ? 0 : 10 }} data-testid="map-fleet-status">{status}</div>
+      {/* A worker gets no repo for a map that cannot reach its own (#513). */}
+      {fleetId && map.forgeProblem && (
+        <div style={{ ...warnBox, marginBottom: 10 }} data-testid="map-fleet-forge-problem">
+          The fleet can&apos;t work this project: {map.forgeProblem.message}
+        </div>
+      )}
 
       {readOnly || !isMapAdmin ? (
         (variant === 'tab' ? !fleetId : true) && (

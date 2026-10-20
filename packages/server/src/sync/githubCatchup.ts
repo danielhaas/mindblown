@@ -49,6 +49,7 @@ import { markWorkStarted } from './workStartSync.js';
 import { handlePrClosed, type GhPrPayload } from './prSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
+import { clearForgeRefusal, noteForgeRefusal, refusalStatus } from './forgeRefusals.js';
 
 // ── Per-repo auth-failure tracking (#75) ─────────────────────────
 //
@@ -743,6 +744,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         await pushAuthFailureAlarm(repoLabel);
       }
     }
+    const refused = refusalStatus(err);
+    if (refused) noteForgeRefusal(target.owner, target.repo, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -785,6 +788,8 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
         await pushAuthFailureAlarm(repoLabel);
       }
     }
+    const refused = refusalStatus(err);
+    if (refused) noteForgeRefusal(target.owner, target.repo, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -801,6 +806,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // is specifically about the GitHub credential, not about downstream
   // node-write errors.
   consecutiveAuthFailures.delete(repoLabel);
+  clearForgeRefusal(target.owner, target.repo);
 
   const externalIds = issues.map((i) => `${target.owner}/${target.repo}#${i.number}`);
   const linkIndex = await findNodesByExternalIds(externalIds);
