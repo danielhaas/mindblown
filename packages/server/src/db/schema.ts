@@ -339,6 +339,10 @@ export const nodes = pgTable('nodes', {
   // Cleared on `pull_request.closed`. Null when no PR currently
   // references this issue.
   linkedPr: jsonb('linked_pr'),
+  // reported_by: who asked for this node (#490) — NodeReporter JSON
+  // ({kind:'user',userId} | {kind:'forge',provider,login}). Written once
+  // on insert, never updated. Null = unknown (pre-#490 rows).
+  reportedBy: jsonb('reported_by'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────

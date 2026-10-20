@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
-import { formatClaim } from '../formatters.js';
+import { formatClaim, formatReporter } from '../formatters.js';
 
 export const createNodeTool = defineTool({
   name: 'create_node',
@@ -548,12 +548,14 @@ export const searchNodesTool = defineTool({
         ? ' ' + n.externalLinks.map((l) => `[${l.externalId}]`).join(' ')
         : '';
       const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
+      const reporter = formatReporter(n.reportedBy);
+      const reported = reporter ? ` reported: ${reporter}` : '';
       const kids = n.childrenIds?.length ?? 0;
       const kidsStr = kids > 0 ? ` (${kids} child${kids === 1 ? '' : 'ren'})` : '';
       const phase = n.phaseId
         ? ` (phase: ${phaseNameById.get(n.phaseId) ?? n.phaseId})`
         : '';
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}`;
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}${reported}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;

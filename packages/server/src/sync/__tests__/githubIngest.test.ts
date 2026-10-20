@@ -781,6 +781,23 @@ describe('ensureNodeForIssue', () => {
     expect(advisoryLocksTaken.length).toBeGreaterThan(0);
   });
 
+  it('records the issue author as reporter, not the map owner (#490)', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1' });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+
+    await ensureNodeForIssue('m1', 'inbox-1', issue(43, { user: { login: 'octocat' } }), {
+      owner: 'owner', repo: 'repo', createdBy: 'u1',
+    });
+    await ensureNodeForIssue('m1', 'inbox-1', issue(44), { owner: 'owner', repo: 'repo', createdBy: 'u1' });
+
+    expect(createNodeCalls[0]).toMatchObject({
+      createdBy: 'u1',
+      reportedBy: { kind: 'forge', provider: 'github', login: 'octocat' },
+    });
+    // No author on the payload → unknown, never the map owner.
+    expect(createNodeCalls[1].reportedBy).toBeNull();
+  });
+
   // Release-lane routing: a freshly ingested node defaults into the
   // map's active lane (highest sortOrder among status='active') so it
   // is visible to the dispatch queue instead of landing in the
@@ -1186,6 +1203,19 @@ describe('ensureNodeForIssue — triage fork', () => {
     // Same column the Override modal later pre-selects from on
     // low-confidence places.
     expect(rows[0].suggestedParentNodeId).toBe('epic-1');
+  });
+
+  it('triage placement records the issue author as reporter (#490)', async () => {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1', triageEnabled: true });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    triageMockResponse = { decision: 'place', parentNodeId: 'epic-1', reason: 'r', confidence: 90 };
+
+    await ensureNodeForIssue('m1', 'inbox-1', issue(102, { user: { login: 'octocat' } }), ctx);
+
+    expect(createNodeCalls[0]).toMatchObject({
+      createdBy: 'u1',
+      reportedBy: { kind: 'forge', provider: 'github', login: 'octocat' },
+    });
   });
 
   it('triage_enabled=true + place LOW-confidence → row persisted, node PARKED under the Inbox', async () => {

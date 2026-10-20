@@ -47,7 +47,7 @@ import { semanticSearch, backfillMapEmbeddings, scheduleEmbedNode } from '../ai/
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
-import { computeTree, type Node as CoreNode } from '@mindblown/core';
+import { computeTree, userReporter, type Node as CoreNode } from '@mindblown/core';
 import { buildMcpInjector } from './mcp.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -425,6 +425,7 @@ Node to break down: "${targetNode.text}"`;
           parentId,
           text: item.text,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
           effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
         });
         created.push(node);
@@ -1217,6 +1218,8 @@ Parent node: "${parentNode.text}"`;
         parentId: d.parentId,
         text: d.title.trim(),
         createdBy: userId,
+        // The user who accepted the intake draft (#490).
+        reportedBy: userReporter((req as any).userId),
         description: description || undefined,
         priority: d.priority ?? undefined,
         versionId: d.versionId ?? undefined,
@@ -1315,6 +1318,7 @@ Parent node: "${parentNode.text}"`;
           parentId,
           text: item.text,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
           // Only set estimate on leaves — parents auto-compute from children
           effortEstimate: hasChildren ? undefined : (item.estimate ?? undefined),
         });
@@ -1570,6 +1574,7 @@ Review the children and propose groupings.`;
           parentId: body.parentId,
           text: proposal.suggestedLabel,
           createdBy: userId,
+          reportedBy: userReporter((req as any).userId),
         });
         createdCount++;
         broadcast(body.mapId, { type: 'node:created', node: category });

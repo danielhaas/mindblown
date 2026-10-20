@@ -49,6 +49,11 @@ export interface NodeWithComputed {
   }>;
   /** Forge PR mirror (webhook-maintained); absent/null when none. */
   linkedPr?: { number: number; repo: string; state: 'open' | 'closed' | 'merged'; draft?: boolean } | null;
+  /** Who asked for the node (#490); server-set, read-only. null = unknown. */
+  reportedBy?:
+    | { kind: 'user'; userId: string }
+    | { kind: 'forge'; provider: string; login: string }
+    | null;
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;

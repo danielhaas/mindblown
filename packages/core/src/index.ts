@@ -43,8 +43,8 @@ export type {
   NodeMap,
 } from './types.js';
 
-export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel } from './types.js';
-export type { ForgeKindName, ForgeProblem } from './types.js';
+export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter } from './types.js';
+export type { ForgeKindName, ForgeProblem, NodeReporter } from './types.js';
 
 // Computation engine
 export {
