@@ -21,6 +21,8 @@ import type { Node as CoreNode } from '@mindblown/core';
 import { createChatBackend } from './backend.js';
 import { semanticSearch } from './embeddings.js';
 import type { ChatProvider, ProviderName } from './providers/types.js';
+import { getMiChatTools } from './miTools.js';
+import type { Injector } from '@mindblown/mcp';
 
 /** What tool exposure is decided on: backend name + model label. */
 export type ToolAudience = Pick<ChatProvider, 'name' | 'model'>;
@@ -76,6 +78,8 @@ const sharedChatSpecs = sharedTools.filter((s) =>
 interface ChatExtraContext {
   userId: string;
   mapId: string;
+  /** In-process `app.inject` for extras that call the REST API (the MI tools). */
+  injector?: Injector;
 }
 
 interface ChatExtraSpec {
@@ -131,6 +135,22 @@ const chatExtras: ChatExtraSpec[] = [
   },
 ];
 
+// Management information — completion forecast, remaining work, risk,
+// digests, burnup … — the read-only MI suite from the MCP server. Small local
+// models drift with this many options, so they keep the editing set only.
+export function hasMiTools(audience: ToolAudience): boolean {
+  return !isSmallLocalModel(audience);
+}
+for (const mi of getMiChatTools()) {
+  chatExtras.push({
+    name: mi.name,
+    description: mi.description,
+    schema: mi.schema,
+    audience: hasMiTools,
+    handler: (args, ctx) => mi.run(args, ctx),
+  });
+}
+
 const extraByName = new Map<string, ChatExtraSpec>(
   chatExtras.map((x) => [x.name, x]),
 );
@@ -175,6 +195,7 @@ const sharedSpecByName = new Map<string, ToolSpec>(
 interface ToolContext {
   userId: string;
   mapId: string;
+  injector?: Injector;
 }
 
 /**

@@ -8,6 +8,7 @@ import { aiConfig } from '../ai/client.js';
 import {
   getChatToolSpecs,
   executeTool,
+  hasMiTools,
   renderTreeForPrompt,
   renderFocusContext,
 } from '../ai/tools.js';
@@ -47,6 +48,7 @@ import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { broadcast } from '../ws.js';
 import { computeTree, type Node as CoreNode } from '@mindblown/core';
+import { buildMcpInjector } from './mcp.js';
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -609,6 +611,12 @@ Node to break down: "${targetNode.text}"`;
           ? `\n\nIMPORTANT: Earlier turns in this conversation followed a one-step-then-confirm pattern. That constraint has been lifted — do not imitate it. Chain all needed tool calls in this turn and only summarize once at the very end.`
           : '';
 
+      // Management questions are answered by the MI tools, not by eyeballing
+      // the tree dump above — the tree carries no dates, velocity or history.
+      const miRule = hasMiTools(provider)
+        ? `\n5. For management questions — "when will V1 / this milestone be done?", "how much is left?", "what is at risk / blocked / slipping?", "what changed?" — call the matching read-only tool (completion_forecast, remaining_work, risk_scan, blocked_digest, status_digest, burnup, change_history, …) and answer from its output. Use scope_simulate for "what if we cut / add X?".`
+        : '';
+
       const systemPrompt = `You manage a project mindmap. Reply ONLY in English.
 
 ${pacingRules}${historyOverride}
@@ -625,7 +633,7 @@ Rules:
 1. Only use IDs shown in [id:...] above. Never invent an ID.
 2. For move_node: "source" is the node being moved, "destination" is where it goes.
 3. You cannot delete nodes.
-4. ${typoRecoveryHint}`;
+4. ${typoRecoveryHint}${miRule}`;
 
       // Round-trip prior turns' tool calls + results so the model can see
       // what it actually did — without these blocks it second-guesses its
@@ -728,6 +736,7 @@ Rules:
           result = await executeTool(firstToolCall.name, firstToolCall.args, {
             userId,
             mapId: body.mapId,
+            injector: buildMcpInjector(app),
           });
         } catch (err: any) {
       if (policyDenied(reply, err)) return;

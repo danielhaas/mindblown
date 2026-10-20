@@ -12,6 +12,7 @@ vi.mock('../backend.js', () => ({ createChatBackend: vi.fn() }));
 vi.mock('../embeddings.js', () => ({ semanticSearch: vi.fn(async () => []) }));
 
 import { getChatToolSpecs, isSmallLocalModel } from '../tools.js';
+import { MI_CHAT_TOOL_NAMES } from '../miTools.js';
 
 const has = (audience: { name: 'ollama' | 'anthropic'; model: string }, tool: string) =>
   getChatToolSpecs(audience).some((s) => s.name === tool);
@@ -44,6 +45,14 @@ describe('getChatToolSpecs', () => {
     const claude = getChatToolSpecs({ name: 'anthropic', model: 'claude-opus-4-7' }).map((s) => s.name);
     expect(small.length).toBeGreaterThan(3);
     expect(claude).toEqual(expect.arrayContaining(small));
-    expect(claude.length - small.length).toBe(1);
+    expect(claude.length - small.length).toBe(1 + MI_CHAT_TOOL_NAMES.length);
+  });
+
+  it('offers the management-information tools to Claude and large local models only', () => {
+    for (const tool of MI_CHAT_TOOL_NAMES) {
+      expect(has({ name: 'anthropic', model: 'claude-opus-4-7' }, tool), tool).toBe(true);
+      expect(has({ name: 'ollama', model: 'qwen2.5:32b' }, tool), tool).toBe(true);
+      expect(has({ name: 'ollama', model: 'qwen2.5:14b' }, tool), tool).toBe(false);
+    }
   });
 });
