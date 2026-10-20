@@ -1584,7 +1584,7 @@ export function App() {
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
-  const blockedCount = useBlockedLeaves().total;
+  const blocked = useBlockedLeaves();
   const [triagePanelOpen, setTriagePanelOpen] = useState(false);
   const [planHealthPanelOpen, setPlanHealthPanelOpen] = useState(false);
   const [triagePendingCount, setTriagePendingCount] = useState(0);
@@ -2108,7 +2108,7 @@ export function App() {
           {/* Blocked indicator */}
           {showPanel('blocked') && (<>
           <BlockedIndicator
-            count={blockedCount}
+            count={blocked.total}
             panelOpen={blockedPanelOpen}
             onOpenPanel={() => {
               setBlockedPanelOpen(!blockedPanelOpen);
@@ -2430,7 +2430,7 @@ export function App() {
             Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
             offen ist. */}
         {blockedPanelOpen && showPanel('blocked') ? (
-          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
+          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} blocked={blocked} />
         ) : sprintPanelOpen && showPanel('sprint') ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
         ) : triagePanelOpen && currentMapId && showPanel('triage') ? (

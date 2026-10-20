@@ -64,14 +64,15 @@ export function useBlockedLeaves() {
   return { manual, depWaiting, stalled, total: manual.length + depWaiting.length + stalled.length };
 }
 
-export function BlockedPanel({ onClose }: { onClose: () => void }) {
+/** `blocked` comes from the header's useBlockedLeaves(), so the panel opens with the button's count. */
+export function BlockedPanel({ onClose, blocked }: { onClose: () => void; blocked: ReturnType<typeof useBlockedLeaves> }) {
   const nodes = useMindmapStore((s) => s.nodes);
   const computed = useMindmapStore((s) => s.computed);
   const selectNode = useMindmapStore((s) => s.selectNode);
   const setFocusNode = useMindmapStore((s) => s.setFocusNode);
   const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
   const [mode, setMode] = useState<PanelMode>('cause');
-  const { manual, depWaiting, stalled, total } = useBlockedLeaves();
+  const { manual, depWaiting, stalled, total } = blocked;
 
   // By cause and unblocker (#322) — the PM Cockpit's grouping (core
   // groupBlockers): one action for one person, not N free-text reasons.
