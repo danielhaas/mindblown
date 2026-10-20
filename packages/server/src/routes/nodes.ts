@@ -222,6 +222,7 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       priority?: 'P0' | 'P1' | 'P2' | 'P3';
       startDate?: string;
       dueDate?: string;
+      expectedDoneAt?: string | null;
       autoProgress?: 'off' | 'children';
       priorityRank?: number | null;
       requirementId?: string | null;
@@ -252,6 +253,10 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'parentId and text are required' },
       });
+    }
+
+    if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
+      return reply.status(400).send({ error: EXPECTED_DONE_AT_ERROR });
     }
 
     // `skipAutoLink` is not a column on the nodes table — strip it before
@@ -940,6 +945,26 @@ type NodeUpdateResult =
   | { ok: false; status: number; error: { code: string; message: string; current?: unknown } };
 
 /**
+ * expectedDoneAt is an ETA: omitted, null (clear) or an ISO 8601 date-time
+ * with Z or an offset — the shape the MCP tools' zod datetime() accepts.
+ * The round trip through Date rejects calendar rollovers (Feb 30).
+ */
+const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
+function isValidExpectedDoneAt(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v !== 'string') return false;
+  const m = ISO_DATETIME.exec(v);
+  if (!m) return false;
+  const day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return day.getUTCMonth() === +m[2] - 1 && day.getUTCDate() === +m[3];
+}
+
+const EXPECTED_DONE_AT_ERROR = {
+  code: 'VALIDATION_ERROR',
+  message: 'expectedDoneAt must be an ISO 8601 timestamp or null',
+};
+
+/**
  * One node update with everything the PUT route does around the write:
  * optimistic lock, root-text → map name, broadcast, re-embed, outbound
  * forge sync, title auto-link, change history and claim trail. Shared by
@@ -952,6 +977,10 @@ async function applyNodeUpdate(
   expectedRevision: number | undefined,
   userId: string | null,
 ): Promise<NodeUpdateResult> {
+  if (!isValidExpectedDoneAt(body.expectedDoneAt)) {
+    return { ok: false, status: 400, error: EXPECTED_DONE_AT_ERROR };
+  }
+
   // Snapshot current values of tracked fields before mutating so we can
   // diff them into the change log.
   const before = await nodeDb.getNode(nodeId);

@@ -20,7 +20,7 @@ const workflow: StatusDef[] = [
 
 async function setFor(
   input: UpdateNodeInput,
-  current: { status: string | null; startedAt: Date | null },
+  current: { status: string | null; startedAt: Date | null; completedAt?: Date | null },
 ): Promise<Record<string, unknown>> {
   let set: Record<string, unknown> = {};
   const row = { mapId: 'm1', statusWorkflow: workflow, ...current };
@@ -76,6 +76,36 @@ describe('updateNode startedAt', () => {
   });
 });
 
+describe('updateNode expectedDoneAt (the worker\'s ETA)', () => {
+  const started = new Date('2026-10-01T08:00:00Z');
+
+  it('is caller-set, as a Date; null clears it', async () => {
+    const set = await setFor({ percentComplete: 20, expectedDoneAt: '2026-10-20T15:40:00+02:00' }, { status: 'todo', startedAt: null });
+    expect(set.expectedDoneAt).toEqual(new Date('2026-10-20T13:40:00Z'));
+    expect((await setFor({ expectedDoneAt: null }, { status: 'wip', startedAt: started })).expectedDoneAt).toBeNull();
+  });
+
+  it('is cleared with startedAt when the node goes back to todo; kept on ticks and done', async () => {
+    expect((await setFor({ status: 'todo' }, { status: 'wip', startedAt: started })).expectedDoneAt).toBeNull();
+    expect((await setFor({ percentComplete: 0 }, { status: 'wip', startedAt: started })).expectedDoneAt).toBeNull();
+    expect(await setFor({ percentComplete: 60 }, { status: 'wip', startedAt: started })).not.toHaveProperty('expectedDoneAt');
+    expect(await setFor({ status: 'done' }, { status: 'wip', startedAt: started })).not.toHaveProperty('expectedDoneAt');
+  });
+
+  it('is cleared when a done node is reopened, unless the reopen sets a new one', async () => {
+    const done = { status: 'done', startedAt: started, completedAt: new Date('2026-10-02T08:00:00Z') };
+    expect((await setFor({ status: 'wip' }, done)).expectedDoneAt).toBeNull();
+    expect((await setFor({ percentComplete: 50 }, done)).expectedDoneAt).toBeNull();
+    const set = await setFor({ status: 'wip', expectedDoneAt: '2026-10-21T08:00:00Z' }, done);
+    expect(set.expectedDoneAt).toEqual(new Date('2026-10-21T08:00:00Z'));
+  });
+
+  it('a new ETA in the same call as the move to todo wins', async () => {
+    const set = await setFor({ status: 'todo', expectedDoneAt: '2026-10-21T08:00:00Z' }, { status: 'wip', startedAt: started });
+    expect(set.expectedDoneAt).toEqual(new Date('2026-10-21T08:00:00Z'));
+  });
+});
+
 describe('createNode startedAt', () => {
   async function insertedFor(input: Partial<CreateNodeInput>): Promise<Record<string, unknown>> {
     let inserted: Record<string, unknown> = {};
@@ -101,5 +131,10 @@ describe('createNode startedAt', () => {
     expect((await insertedFor({ status: 'todo' })).startedAt).toBeNull();
     expect((await insertedFor({ status: 'done', percentComplete: 100 })).startedAt).toBeNull();
     expect((await insertedFor({})).startedAt).toBeNull();
+  });
+
+  it('carries a caller-set ETA', async () => {
+    expect((await insertedFor({ expectedDoneAt: '2026-10-20T13:40:00Z' })).expectedDoneAt).toEqual(new Date('2026-10-20T13:40:00Z'));
+    expect((await insertedFor({})).expectedDoneAt).toBeNull();
   });
 });

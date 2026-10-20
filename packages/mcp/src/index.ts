@@ -122,7 +122,7 @@ const server = new McpServer(
 **Updating progress:** set_progress on leaf nodes you've worked on. Parents update automatically.
 
 **Working on a task — always update progress as you go:**
-When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started"). When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
+When you start working on a leaf node (writing code, drafting content, investigating a bug — anything the node represents), call set_progress with a non-zero value (10–25% is a reasonable "just started") and etaMinutes — your honest guess of when you will be done. When you finish the work, call set_progress(100). The node's status is auto-derived from progress: 0 → todo, 1–99 → in_progress, 100 → done. This keeps the Kanban and sprint board accurate without you having to call set_status separately. If a node is blocked or in a special state, call set_status explicitly — that override is preserved.
 
 **Release planning (versions):**
 1. create_version to define a release (e.g. "V1", "V2")
@@ -2508,18 +2508,32 @@ server.tool(
 
 server.tool(
   'set_progress',
-  'Set percent complete on a leaf node',
+  'Set percent complete on a leaf node. When you start a ticket, pass etaMinutes too — your ETA, shown on the Kanban card.',
   {
     mapId: z.string().describe('The map ID'),
     nodeId: z.string().describe('The node ID'),
     percent: z.number().min(0).max(100).describe('Percent complete (0-100)'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA: minutes from now until you expect to be done. Pass it when you start and again whenever the estimate changes; stored as the node\'s expectedDoneAt.'),
   },
-  async ({ mapId, nodeId, percent }) => {
+  async ({ mapId, nodeId, percent, etaMinutes }) => {
     try {
       const err = await assertLeafNode(mapId, nodeId, 'set progress');
       if (err) return toolResult(err);
-      await api.updateNode(mapId, nodeId, { percentComplete: percent });
-      return toolResult(`Set progress on ${nodeId} to ${percent}%.`);
+      const expectedDoneAt =
+        etaMinutes !== undefined ? new Date(Date.now() + etaMinutes * 60_000).toISOString() : undefined;
+      await api.updateNode(mapId, nodeId, {
+        percentComplete: percent,
+        ...(expectedDoneAt !== undefined && { expectedDoneAt }),
+      });
+      return toolResult(
+        `Set progress on ${nodeId} to ${percent}%.${expectedDoneAt ? ` ETA ${expectedDoneAt}.` : ''}`,
+      );
     } catch (err) {
       return toolError(err);
     }

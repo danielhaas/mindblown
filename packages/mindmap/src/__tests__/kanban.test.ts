@@ -1,6 +1,31 @@
 import { describe, it, expect } from 'vitest';
 import type { StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel } from '../kanban.js';
+
+describe('etaLabel', () => {
+  const now = new Date(2026, 9, 20, 12, 0); // local time — the label is local
+  const at = (y: number, mo: number, d: number, h: number, mi: number) => new Date(y, mo, d, h, mi).toISOString();
+
+  it('is the clock time today, with the date on another day', () => {
+    expect(etaLabel(at(2026, 9, 20, 15, 40), now)).toMatchObject({ short: 'ETA 15:40', overdue: false });
+    expect(etaLabel(at(2026, 9, 22, 9, 5), now)?.short).toBe('ETA Oct 22, 09:05');
+  });
+
+  it('reads overdue once past, by how much', () => {
+    expect(etaLabel(at(2026, 9, 20, 11, 50), now)).toMatchObject({ short: 'overdue 10m', overdue: true });
+    expect(etaLabel(at(2026, 9, 20, 9, 30), now)?.short).toBe('overdue 2h');
+    expect(etaLabel(at(2026, 9, 17, 12, 0), now)?.short).toBe('overdue 3d');
+  });
+
+  it('carries the exact time for the hover title', () => {
+    expect(etaLabel(at(2026, 9, 20, 15, 40), now)?.full).toMatch(/^ETA Oct 20, 2026/);
+  });
+
+  it('is null without an ETA', () => {
+    expect(etaLabel(null, now)).toBeNull();
+    expect(etaLabel('garbage', now)).toBeNull();
+  });
+});
 
 describe('startedLabel', () => {
   const now = new Date('2026-10-18T12:00:00Z');

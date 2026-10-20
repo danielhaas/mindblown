@@ -259,6 +259,8 @@ export interface CreateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -334,6 +336,7 @@ export async function createNode(
       priorityRank: input.priorityRank ?? null,
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
       startedAt,
+      expectedDoneAt: input.expectedDoneAt ? new Date(input.expectedDoneAt) : null,
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
@@ -493,6 +496,8 @@ export interface UpdateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -632,6 +637,8 @@ export async function updateNode(
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
   if (input.scopes !== undefined) updates.scopes = input.scopes;
+  if (input.expectedDoneAt !== undefined)
+    updates.expectedDoneAt = input.expectedDoneAt ? new Date(input.expectedDoneAt) : null;
   if (input.linkedPr !== undefined) updates.linkedPr = input.linkedPr;
 
   // Auto-release claim when status transitions to a 'done' category (#111)
@@ -652,12 +659,18 @@ export async function updateNode(
     // update hot path from 3 queries to 2 (the original UPDATE still
     // fires below).
     const [row] = await handle
-      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow, startedAt: nodes.startedAt })
+      .select({
+        mapId: nodes.mapId,
+        statusWorkflow: maps.statusWorkflow,
+        startedAt: nodes.startedAt,
+        completedAt: nodes.completedAt,
+      })
       .from(nodes)
       .innerJoin(maps, eq(maps.id, nodes.mapId))
       .where(and(eq(nodes.id, nodeId), notDeleted));
     if (row) {
       const workflow = ((row.statusWorkflow as StatusDef[]) ?? []);
+      const completedAtWasSet = row.completedAt != null;
 
       // Resolve whether the post-update node is "done":
       //   - status (if changing) → check its category in the workflow
@@ -695,6 +708,9 @@ export async function updateNode(
         updates.startedAt = new Date();
       } else if (movingToTodo && !movingToStarted && !movingToDone) {
         updates.startedAt = null;
+        // Back in the queue: the last worker's ETA no longer holds —
+        // unless this same call sets a new one.
+        if (input.expectedDoneAt === undefined) updates.expectedDoneAt = null;
       }
 
       if (movingToDone && !claimTouched) {
@@ -707,6 +723,12 @@ export async function updateNode(
         // Transitioning OUT of done with no overriding move-to-done in
         // the same call → clear the timestamp.
         updates.completedAt = null;
+      }
+      // A reopened node needs a fresh ETA — the old one would read
+      // "overdue" the moment the card lands back in progress. Only out of
+      // done: completedAt is the stamp that says the node was done.
+      if (movingFromDone && !movingToDone && completedAtWasSet && input.expectedDoneAt === undefined) {
+        updates.expectedDoneAt = null;
       }
     }
   }
