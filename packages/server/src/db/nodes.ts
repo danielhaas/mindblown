@@ -659,12 +659,18 @@ export async function updateNode(
     // update hot path from 3 queries to 2 (the original UPDATE still
     // fires below).
     const [row] = await handle
-      .select({ mapId: nodes.mapId, statusWorkflow: maps.statusWorkflow, startedAt: nodes.startedAt })
+      .select({
+        mapId: nodes.mapId,
+        statusWorkflow: maps.statusWorkflow,
+        startedAt: nodes.startedAt,
+        completedAt: nodes.completedAt,
+      })
       .from(nodes)
       .innerJoin(maps, eq(maps.id, nodes.mapId))
       .where(and(eq(nodes.id, nodeId), notDeleted));
     if (row) {
       const workflow = ((row.statusWorkflow as StatusDef[]) ?? []);
+      const completedAtWasSet = row.completedAt != null;
 
       // Resolve whether the post-update node is "done":
       //   - status (if changing) → check its category in the workflow
@@ -717,6 +723,12 @@ export async function updateNode(
         // Transitioning OUT of done with no overriding move-to-done in
         // the same call → clear the timestamp.
         updates.completedAt = null;
+      }
+      // A reopened node needs a fresh ETA — the old one would read
+      // "overdue" the moment the card lands back in progress. Only out of
+      // done: completedAt is the stamp that says the node was done.
+      if (movingFromDone && !movingToDone && completedAtWasSet && input.expectedDoneAt === undefined) {
+        updates.expectedDoneAt = null;
       }
     }
   }

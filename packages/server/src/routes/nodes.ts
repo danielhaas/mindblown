@@ -944,9 +944,19 @@ type NodeUpdateResult =
   | { ok: true; node: CoreNode }
   | { ok: false; status: number; error: { code: string; message: string; current?: unknown } };
 
-/** expectedDoneAt is an ETA: omitted, null (clear) or a parseable ISO 8601 timestamp. */
+/**
+ * expectedDoneAt is an ETA: omitted, null (clear) or an ISO 8601 date-time
+ * with Z or an offset — the shape the MCP tools' zod datetime() accepts.
+ * The round trip through Date rejects calendar rollovers (Feb 30).
+ */
+const ISO_DATETIME = /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/;
 function isValidExpectedDoneAt(v: unknown): boolean {
-  return v === undefined || v === null || (typeof v === 'string' && !Number.isNaN(Date.parse(v)));
+  if (v === undefined || v === null) return true;
+  if (typeof v !== 'string') return false;
+  const m = ISO_DATETIME.exec(v);
+  if (!m) return false;
+  const day = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return day.getUTCMonth() === +m[2] - 1 && day.getUTCDate() === +m[3];
 }
 
 const EXPECTED_DONE_AT_ERROR = {

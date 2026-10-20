@@ -37,7 +37,7 @@ export const createNodeTool = defineTool({
       .min(1)
       .max(60 * 24 * 30)
       .optional()
-      .describe('Your ETA as minutes from now (stored as expectedDoneAt). Cannot be combined with expectedDoneAt.'),
+      .describe('Your ETA as minutes from now (stored as expectedDoneAt, computed on the clock of the machine running the tool). Cannot be combined with expectedDoneAt.'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
     tags: z.array(z.string()).optional().describe('Tags to set on the new node'),
     scopes: z
@@ -166,7 +166,7 @@ export const updateNodeTool = defineTool({
       .min(1)
       .max(60 * 24 * 30)
       .optional()
-      .describe('Your ETA as minutes from now — the server turns it into expectedDoneAt. Set it when you start a ticket and again when your estimate changes. Cannot be combined with expectedDoneAt.'),
+      .describe('Your ETA as minutes from now (stored as expectedDoneAt, computed on the clock of the machine running the tool). Set it when you start a ticket and again when your estimate changes. Cannot be combined with expectedDoneAt.'),
     tags: z
       .array(z.string())
       .optional()
