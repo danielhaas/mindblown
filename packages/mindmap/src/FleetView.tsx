@@ -270,6 +270,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
             <Card title="Workers">
               <FleetTelemetry />
             </Card>
+            {fleet.isOwner && <RepoHandouts fleetId={fleet.id} />}
             <div style={{ marginTop: 16 }}>
               <AsksSection />
             </div>
@@ -299,6 +300,44 @@ function RepairMachine({ fleetId }: { fleetId: string }) {
       ) : (
         <button style={linkBtn} onClick={() => setOpen(true)} data-testid="repair-open">Pair a machine with this fleet…</button>
       )}
+    </div>
+  );
+}
+
+/**
+ * Repo access (#507): which projects' repo credentials this fleet fetched
+ * in the last 7 days — one per ticket it worked. Owner only; never a token.
+ */
+function RepoHandouts({ fleetId }: { fleetId: string }) {
+  const fleetRev = useMindmapStore((s) => s.fleetRev);
+  const [rows, setRows] = useState<api.RepoHandout[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .listRepoHandouts(fleetId)
+      .then((r) => !cancelled && (setRows(r.handouts), setError(null)))
+      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : 'unavailable'));
+    return () => {
+      cancelled = true;
+    };
+  }, [fleetId, fleetRev]);
+  return (
+    <div style={{ marginTop: 16 }} data-testid="repo-handouts">
+      <Card title="Repo access — last 7 days">
+        {error && <Muted>Unavailable: {error}</Muted>}
+        {rows && rows.length === 0 && <Muted>The fleet has fetched no repo credentials yet. It gets them per ticket, only for projects connected to it.</Muted>}
+        {rows && rows.length > 0 && (
+          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.8 }}>
+            {rows.map((r) => (
+              <li key={`${r.mapId}|${r.repo}`}>
+                <strong>{r.mapName}</strong> · <code>{r.repo}</code>
+                <span style={{ color: '#64748b' }}> · {r.count}× · last {new Date(r.lastAt).toLocaleString()}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
     </div>
   );
 }

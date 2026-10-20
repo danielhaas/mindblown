@@ -1063,6 +1063,19 @@ export function confirmPairing(
   return request('/api/fleet-pairings/confirm', { method: 'POST', body: JSON.stringify({ code, ...target }) });
 }
 
+/** Which projects' repo credentials the fleet fetched (#507) — per map and repo, owner only. */
+export interface RepoHandout {
+  mapId: string;
+  mapName: string;
+  repo: string;
+  count: number;
+  lastAt: string;
+}
+
+export function listRepoHandouts(fleetId: string): Promise<{ since: string; handouts: RepoHandout[] }> {
+  return request(`/api/fleets/${fleetId}/repo-handouts`);
+}
+
 /** Rename a fleet (owner only). */
 export function renameFleet(fleetId: string, name: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ name }) });

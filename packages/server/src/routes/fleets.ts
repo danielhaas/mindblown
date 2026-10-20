@@ -10,6 +10,8 @@
  *   POST   /api/fleets/:id/credentials        — issue an API key for the fleet's service user (owner, web session)
  *   GET    /api/fleets/:id/credentials        — the fleet's keys (prefix only)
  *   DELETE /api/fleets/:id/credentials/:keyId — revoke one
+ *   POST   /api/fleets/:id/repo-credentials   — a connected project's repo + token (the fleet's own key, #507)
+ *   GET    /api/fleets/:id/repo-handouts      — which projects' credentials it fetched, last 7 days (owner)
  *
  * A map connects through PUT /api/maps/:id { fleetId } — see routes/maps.ts;
  * connecting grants the fleet's service user edit there (#481).
@@ -22,6 +24,8 @@ import { createApiKey, listApiKeysForUser, revokeApiKey } from '../lib/apiKeys.j
 import { isAgentRequest } from '../auth.js';
 import { broadcast } from '../ws.js';
 import { pullFleetTicket, OrchestrationNotFoundError } from '../services/orchestration.js';
+import { issueRepoCredentials } from '../services/fleetRepoAccess.js';
+import { summarizeHandouts } from '../db/fleetRepoHandouts.js';
 
 const unauthorized = (reply: FastifyReply) =>
   reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
@@ -112,6 +116,25 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
       }
       throw err;
     }
+  });
+
+  // ── Repo credentials (#507) ───────────────────────────────────
+  // The fleet's own key fetches a connected project's repo and token, per
+  // ticket. POST so nothing caches it; the token is in the body only —
+  // never logged, never in status or the journal.
+  app.post<{ Params: { id: string }; Body: { mapId?: unknown } }>('/api/fleets/:id/repo-credentials', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    const result = await issueRepoCredentials(req.userId, req.params.id, req.body?.mapId);
+    if ('status' in result) return reply.status(result.status).send({ error: { code: result.code, message: result.message } });
+    return reply.header('Cache-Control', 'no-store').send(result);
+  });
+
+  app.get<{ Params: { id: string } }>('/api/fleets/:id/repo-handouts', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    const owned = await fleetService.requireFleetOwner(req.userId, req.params.id);
+    if (isAccessError(owned)) return sendAccessError(reply, owned);
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    return reply.send({ since: since.toISOString(), handouts: await summarizeHandouts(req.params.id, since) });
   });
 
   app.delete<{ Params: { id: string } }>('/api/fleets/:id', async (req, reply) => {

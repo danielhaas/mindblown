@@ -28,6 +28,7 @@ import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { integrations, maps } from '../db/schema.js';
 import { GITHUB_ENDPOINT, type ForgeClient, type ForgeEndpoint } from '@mindblown/integrations';
+import type { TicketRepo } from '@mindblown/tool-kit';
 import {
   FORGE_PROVIDERS,
   cachedForgeEndpointForMap,
@@ -170,6 +171,36 @@ export async function getGitHubContextForMap(
 
 /** Forge-neutral name for `getGitHubContextForMap` — same function. */
 export const getForgeContextForMap = getGitHubContextForMap;
+
+/** Where a map's code lives, from its endpoint — no token. */
+export function ticketRepo(endpoint: ForgeEndpoint, owner: string, name: string): TicketRepo {
+  const web = endpoint.webBaseUrl.replace(/\/+$/, '');
+  return {
+    forge: endpoint.kind === 'gitea' ? 'gitea' : 'github',
+    owner,
+    name,
+    webUrl: `${web}/${owner}/${name}`,
+    cloneUrl: `${web}/${owner}/${name}.git`,
+    apiBaseUrl: endpoint.apiBaseUrl,
+  };
+}
+
+/**
+ * The map's repo for a worker (#507), resolved like `getForgeContextForMap`
+ * but without minting a token: the App binding first, else the workspace
+ * row that binds this map. null = no repo connected.
+ */
+export async function getForgeRepoForMap(mapId: string): Promise<TicketRepo | null> {
+  const map = await loadMapBinding(mapId);
+  if (!map) return null;
+  if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
+    return ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName);
+  }
+  const integration = await patIntegrationForMap(map);
+  if (!integration) return null;
+  const endpoint = forgeEndpointFromIntegration(integration);
+  return endpoint ? ticketRepo(endpoint, integration.config.owner, integration.config.repo) : null;
+}
 
 /**
  * The forge endpoint a map's binding points at, WITHOUT minting a token —
