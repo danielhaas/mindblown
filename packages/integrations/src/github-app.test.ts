@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { listInstallationRepositories } from './github-app.js';
+import { listInstallationRepositories, mintScopedRepoToken } from './github-app.js';
 import { GitHubCrossOriginPaginationError } from './github.js';
 
 const { privateKey } = generateKeyPairSync('rsa', {
@@ -163,5 +163,50 @@ describe('listInstallationRepositories', () => {
     );
 
     expect(calls.some((c) => c.includes('evil.example'))).toBe(false);
+  });
+});
+
+describe('mintScopedRepoToken (fleet worker, #507)', () => {
+  /** Answers the token endpoint with `statusFor(permissions)`; records each request's permissions. */
+  function stubMint(statusFor: (perms: Record<string, string>) => number) {
+    const asked: Array<Record<string, string>> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_url: string, init: { body: string }) => {
+        const { permissions } = JSON.parse(init.body) as { permissions: Record<string, string> };
+        asked.push(permissions);
+        const status = statusFor(permissions);
+        return {
+          ok: status < 300,
+          status,
+          headers: new Headers(),
+          text: async () => '{"message":"The permissions requested are not granted to this installation."}',
+          json: async () => ({ token: 'ghs_scoped', expires_at: '2026-10-20T15:00:00Z' }),
+        };
+      }),
+    );
+    return asked;
+  }
+
+  it('asks for push + PR + CI read, scoped to the one repo', async () => {
+    const asked = stubMint(() => 201);
+    const t = await mintScopedRepoToken('inst-1', 'navy-app');
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([{ contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' }]);
+  });
+
+  it('an App without CI read (422) still gets a push + PR token', async () => {
+    const asked = stubMint((p) => (p.checks ? 422 : 201));
+    const t = await mintScopedRepoToken('inst-1', 'navy-app');
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' },
+      { contents: 'write', pull_requests: 'write' },
+    ]);
+  });
+
+  it('an App without push rights fails clearly (422 on both)', async () => {
+    stubMint(() => 422);
+    await expect(mintScopedRepoToken('inst-1', 'navy-app')).rejects.toMatchObject({ status: 422 });
   });
 });
