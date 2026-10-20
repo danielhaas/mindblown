@@ -68,6 +68,37 @@ export function isServableIntegrationConfig(cfg: Partial<ForgeIntegrationConfig>
   return !!cfg && !!cfg.owner && !!cfg.repo && (!!cfg.token || !!cfg.oauthIdentityId);
 }
 
+interface ForgeRowLike {
+  enabled: boolean;
+  updatedAt?: Date | null;
+  config: unknown;
+}
+
+/**
+ * Pick a workspace's forge row. A workspace holds one row per repo: a
+ * connect for a second repo adds a row and never overwrites the first.
+ * Overwriting is how crm2 took Sonarpipe's binding on 20.10.2026: ingest,
+ * catch-up, triage and the fleet all went dark for Sonarpipe.
+ * With `repo`, only that repo's row counts. Enabled rows win over disabled
+ * leftovers (a disabled July PAT hid the live Gitea row on 2026-09-24),
+ * newest first. `includeDisabled` is for the connect upsert, which re-uses
+ * and re-enables a repo's old row.
+ */
+export function pickForgeRow<R extends ForgeRowLike>(
+  rows: R[],
+  opts: { owner?: string | null; repo?: string | null; includeDisabled?: boolean } = {},
+): R | undefined {
+  const time = (r: R) => r.updatedAt?.getTime?.() ?? 0;
+  return rows
+    .filter((r) => opts.includeDisabled || r.enabled)
+    .filter((r) => {
+      if (opts.owner == null && opts.repo == null) return true;
+      const cfg = r.config as { owner?: string; repo?: string } | null;
+      return cfg?.owner === opts.owner && cfg?.repo === opts.repo;
+    })
+    .sort((a, b) => Number(b.enabled) - Number(a.enabled) || time(b) - time(a))[0];
+}
+
 /**
  * Build a client for a PAT integration row, or `null` when the row's kind
  * cannot be served by this build (a `gitea` row before #368 lands, or a

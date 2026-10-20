@@ -63,27 +63,26 @@ import {
   forgeFromIntegration,
   isServableIntegrationConfig,
   mapBindableToWorkspaceForge,
+  pickForgeRow,
   FORGE_PROVIDERS,
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 
-// ── Helper: find integration config for a workspace (PAT) ─────────
+// ── Helper: a workspace's row for one repo (PAT) ──────────────────
 
-async function getForgeIntegration(
+/** The row a connect for `owner/repo` re-uses — disabled ones too; another repo's row is never touched. */
+async function getForgeIntegrationForRepo(
   workspaceId: string,
+  owner: string,
+  repo: string,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const rows = await db
     .select()
     .from(integrations)
     .where(and(eq(integrations.workspaceId, workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)));
-
-  // Same rule as lib/githubContext.ts: the ENABLED row, newest first — a
-  // disabled leftover must never shadow the live connection (2026-09-24).
-  const row = rows
-    .filter((r) => r.enabled)
-    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  const row = pickForgeRow(rows, { owner, repo, includeDisabled: true });
   if (!row) return null;
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
@@ -478,8 +477,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    // Upsert: check if integration already exists
-    const existing = await getForgeIntegration(body.workspaceId);
+    // Upsert this repo's row; a second repo gets its own row.
+    const existing = await getForgeIntegrationForRepo(body.workspaceId, body.owner, body.repo);
 
     const config: ForgeIntegrationConfig = {
       owner: body.owner,

@@ -528,14 +528,16 @@ export type ForgeWebhookSetupResult =
   | { status: 'created' | 'updated'; hookId: number; url: string; events: string[] }
   | { status: 'failed'; reason: string; hint?: string };
 
-export function getForgeWebhook(workspaceId: string): Promise<ForgeWebhookState> {
-  return request(`/api/integrations/forge/webhook?workspaceId=${encodeURIComponent(workspaceId)}`);
+/** `repo` ("owner/name") picks the map's connection; a workspace holds one per repo. */
+export function getForgeWebhook(workspaceId: string, repo?: string): Promise<ForgeWebhookState> {
+  const q = `workspaceId=${encodeURIComponent(workspaceId)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`;
+  return request(`/api/integrations/forge/webhook?${q}`);
 }
 
-export function setUpForgeWebhook(workspaceId: string): Promise<ForgeWebhookSetupResult> {
+export function setUpForgeWebhook(workspaceId: string, repo?: string): Promise<ForgeWebhookSetupResult> {
   return request(`/api/integrations/forge/webhook`, {
     method: 'POST',
-    body: JSON.stringify({ workspaceId }),
+    body: JSON.stringify({ workspaceId, ...(repo ? { repo } : {}) }),
   });
 }
 
