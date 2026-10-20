@@ -7,7 +7,7 @@ import { notDeleted } from './nodes.js';
 import { recordMapFieldChanges } from './events.js';
 import { FLEET_RETIRED, FleetUserForbiddenError, isFleetUser } from './fleets.js';
 import type { MindMap, Node as CoreNode, StatusDef, PhaseDef, CustomFieldDef, LayoutMode, EffortUnit, Baseline, ProfilePolicy, AiPolicy } from '@mindblown/core';
-import { clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
+import { capOnFleetConnect, clampFleetShare, clampFocusFactor, isAiPolicy } from '@mindblown/core';
 
 // ── Create ─────────────────────────────────────────────────────────
 
@@ -228,6 +228,8 @@ export async function updateMap(
   if (input.dispatchPolicy !== undefined) updates.dispatchPolicy = input.dispatchPolicy;
   if (input.profilePolicy !== undefined) updates.profilePolicy = input.profilePolicy;
   if (input.fleetId !== undefined) updates.fleetId = input.fleetId;
+  const connectCap = capOnFleetConnect(before, input);
+  if (connectCap !== undefined) updates.maxActiveClaims = connectCap;
   if (input.fleetShare !== undefined) updates.fleetShare = clampFleetShare(input.fleetShare);
   if (input.githubInstallationId !== undefined) updates.githubInstallationId = input.githubInstallationId;
   if (input.githubRepoOwner !== undefined) updates.githubRepoOwner = input.githubRepoOwner;

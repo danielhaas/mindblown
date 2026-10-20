@@ -22,6 +22,21 @@ export function clampFleetShare(value: number | null | undefined): number {
   return Math.min(FLEET_SHARE_MAX, Math.max(FLEET_SHARE_MIN, value));
 }
 
+/**
+ * The map cap a connect leaves behind (#482). Picking a fleet means "take
+ * care of this project", so a map still on hold (cap 0) opens to one
+ * ticket at a time. A cap the caller sends in the same update wins, and a
+ * map that already had a cap keeps it. Undefined = leave the cap alone.
+ */
+export function capOnFleetConnect(
+  before: { fleetId: string | null | undefined; maxActiveClaims: number | null | undefined },
+  input: { fleetId?: string | null; maxActiveClaims?: number },
+): number | undefined {
+  if (!input.fleetId || input.fleetId === before.fleetId) return undefined;
+  if (input.maxActiveClaims !== undefined) return undefined;
+  return (before.maxActiveClaims ?? 0) === 0 ? 1 : undefined;
+}
+
 // ── Fleet pull: which project's ticket wins (#478) ─────────────
 //
 // Smooth weighted round-robin (the nginx upstream scheme). Each grant,

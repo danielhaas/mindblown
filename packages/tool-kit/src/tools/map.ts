@@ -179,7 +179,7 @@ export const updateMapTool = defineTool({
       .uuid()
       .nullable()
       .optional()
-      .describe('Connect the map to a worker fleet (id from list_fleets / create_fleet); null disconnects it. A map has at most one fleet, a fleet serves many maps. Needs admin on the map, and connecting needs ownership of the fleet. The map keeps its own maxActiveClaims (its ceiling inside the fleet), gate and policy.'),
+      .describe('Connect the map to a worker fleet (id from list_fleets / create_fleet); null disconnects it. A map has at most one fleet, a fleet serves many maps. Needs admin on the map, and connecting needs ownership of the fleet. The map keeps its own maxActiveClaims (its ceiling inside the fleet), gate and policy — except that a map still on hold (0) opens to 1 when it joins a fleet, unless maxActiveClaims is sent in the same call.'),
     fleetShare: z
       .number()
       .min(0.1)

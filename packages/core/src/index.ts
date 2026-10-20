@@ -168,6 +168,7 @@ export {
   FLEET_SHARE_MAX,
   DEFAULT_FLEET_SHARE,
   clampFleetShare,
+  capOnFleetConnect,
   orderFleetPull,
   advanceFleetPull,
 } from './fleet.js';
