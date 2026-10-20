@@ -1,8 +1,14 @@
 /**
- * Repos whose forge refuses the binding's token (#513), as catch-up last
- * saw them: a 401, or a 403 that is not a rate limit. Cleared by the next
+ * Bindings whose forge refused catch-up's last fetch (#513): a 401, a 403
+ * that is not a rate limit, or a 404 (a still-valid token that lost access
+ * to a private repo, or a repo renamed/deleted). Cleared by the next
  * successful fetch. In memory like the 401 counter in githubCatchup.ts —
  * after a restart the first tick fills it again.
+ *
+ * Keyed by binding, not by repo: the credential is what fails. A row's key
+ * carries its updatedAt, which every connect/bind bumps, so reconnecting
+ * with a fresh token retires the old refusal at once instead of after the
+ * next tick.
  *
  * Read by lib/forgeProblem.ts, so a map whose token went bad says so in
  * Plan health, the forge settings and the Fleet tab instead of only in
@@ -20,30 +26,34 @@ export interface ForgeRefusal {
 
 const refusals = new Map<string, ForgeRefusal>();
 
-// GitHub full names are case-insensitive; a binding may be user-typed.
-const key = (owner: string, repo: string) => `${owner}/${repo}`.toLowerCase();
+export function appBindingKey(installationId: string): string {
+  return `app:${installationId}`;
+}
 
-/** The HTTP status when `err` is the forge refusing the credential, else null. */
+export function rowBindingKey(row: { id: string; updatedAt?: Date | null }): string {
+  return `row:${row.id}:${row.updatedAt?.getTime?.() ?? 0}`;
+}
+
+/** The HTTP status when `err` is the forge refusing this binding, else null. */
 export function refusalStatus(err: unknown): number | null {
   if (!(err instanceof GitHubApiError)) return null;
-  if (err.status === 401) return 401;
+  if (err.status === 401 || err.status === 404) return err.status;
   // GitHub answers a rate limit with 403 too; that is not a bad token.
   if (err.status === 403 && !/rate limit/i.test(err.body)) return 403;
   return null;
 }
 
-export function noteForgeRefusal(owner: string, repo: string, status: number, at: Date = new Date()): void {
-  const k = key(owner, repo);
-  const prev = refusals.get(k);
-  refusals.set(k, { status, since: prev?.since ?? at.toISOString() });
+export function noteForgeRefusal(bindingKey: string, status: number, at: Date = new Date()): void {
+  const prev = refusals.get(bindingKey);
+  refusals.set(bindingKey, { status, since: prev?.since ?? at.toISOString() });
 }
 
-export function clearForgeRefusal(owner: string, repo: string): void {
-  refusals.delete(key(owner, repo));
+export function clearForgeRefusal(bindingKey: string): void {
+  refusals.delete(bindingKey);
 }
 
-export function forgeRefusalFor(owner: string, repo: string): ForgeRefusal | null {
-  return refusals.get(key(owner, repo)) ?? null;
+export function forgeRefusalFor(bindingKey: string): ForgeRefusal | null {
+  return refusals.get(bindingKey) ?? null;
 }
 
 /** Test seam. */

@@ -127,10 +127,10 @@ let forgeContext: {
 } | null = null;
 // broken-repo-connection (#513): what the real lib/forgeProblem.ts sees
 // when it asks which repo binds the map. Default: none.
-let forgeRepo: { forge: 'github' | 'gitea'; owner: string; name: string } | null = null;
+let forgeBinding: { repo: { forge: 'github' | 'gitea'; owner: string; name: string }; bindingKey: string } | null = null;
 vi.mock('../../lib/githubContext.js', () => ({
   getForgeContextForMap: vi.fn(async () => forgeContext),
-  getForgeRepoForMap: vi.fn(async () => forgeRepo),
+  getForgeBindingForMap: vi.fn(async () => forgeBinding),
 }));
 
 const applyLintFix = vi.fn(async (_mapId: string, nodeId: string, action: string) => ({
@@ -170,7 +170,7 @@ beforeEach(() => {
   dismissals.length = 0;
   versionRows.length = 0;
   forgeContext = null;
-  forgeRepo = null;
+  forgeBinding = null;
   mapData.map.githubRepoOwner = null;
   mapData.map.githubRepoName = null;
   resetForgeRefusals();
@@ -235,17 +235,27 @@ describe('GET /api/maps/:id/lint', () => {
     );
 
     // Bound, and the forge answers: fine.
-    forgeRepo = { forge: 'gitea', owner: 'dan', name: 'Sonarpipe' };
+    forgeBinding = { repo: { forge: 'gitea', owner: 'dan', name: 'Sonarpipe' }, bindingKey: 'row:r1:100' };
     expect((await run()).findings).toEqual([]);
 
-    // Bound, but catch-up's last fetch was refused (case-insensitive repo match).
-    noteForgeRefusal('Dan', 'sonarpipe', 401, new Date('2026-10-20T08:00:00Z'));
+    // A refusal recorded for ANOTHER binding of the same repo is not ours.
+    noteForgeRefusal('row:r2:100', 401);
+    expect((await run()).findings).toEqual([]);
+
+    // Our binding was refused.
+    noteForgeRefusal('row:r1:100', 401, new Date('2026-10-20T08:00:00Z'));
     const refused = await run();
     expect(refused.findings).toHaveLength(1);
     expect(refused.findings[0].detail).toContain('Gitea refuses the token for dan/Sonarpipe (HTTP 401 since 2026-10-20 08:00 UTC)');
 
-    // The next good fetch clears it.
-    clearForgeRefusal('dan', 'Sonarpipe');
+    // A reconnect bumps the row's timestamp, so the old refusal no longer applies.
+    forgeBinding = { ...forgeBinding, bindingKey: 'row:r1:200' };
+    expect((await run()).findings).toEqual([]);
+
+    // A 404 reads as "cannot find", not "refuses the token"; a good fetch clears it.
+    noteForgeRefusal('row:r1:200', 404);
+    expect((await run()).findings[0].detail).toContain('Gitea cannot find dan/Sonarpipe with this connection');
+    clearForgeRefusal('row:r1:200');
     expect((await run()).findings).toEqual([]);
     await app.close();
   });

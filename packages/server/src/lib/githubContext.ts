@@ -40,6 +40,7 @@ import {
   rememberForgeEndpointForMap,
   type ForgeIntegrationConfig,
 } from './forge.js';
+import { appBindingKey, rowBindingKey } from '../sync/forgeRefusals.js';
 
 export interface ForgeMapContext {
   owner: string;
@@ -61,7 +62,7 @@ export async function getForgeIntegration(
   workspaceId: string,
   owner?: string | null,
   repo?: string | null,
-): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig; updatedAt: Date | null } | null> {
   const rows = await db
     .select()
     .from(integrations)
@@ -73,7 +74,12 @@ export async function getForgeIntegration(
     );
   const row = pickForgeRow(rows, owner || repo ? { owner, repo } : {});
   if (!row) return null;
-  return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
+  return {
+    id: row.id,
+    provider: row.provider,
+    config: row.config as unknown as ForgeIntegrationConfig,
+    updatedAt: row.updatedAt ?? null,
+  };
 }
 
 interface MapBindingRow {
@@ -102,7 +108,7 @@ async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined>
  */
 async function patIntegrationForMap(
   map: MapBindingRow,
-): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
+): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig; updatedAt: Date | null } | null> {
   if (!map.githubRepoOwner || !map.githubRepoName) return null;
   return getForgeIntegration(map.workspaceId, map.githubRepoOwner, map.githubRepoName);
 }
@@ -189,15 +195,31 @@ export function ticketRepo(endpoint: ForgeEndpoint, owner: string, name: string)
  * row that binds this map. null = no repo connected.
  */
 export async function getForgeRepoForMap(mapId: string): Promise<TicketRepo | null> {
+  return (await getForgeBindingForMap(mapId))?.repo ?? null;
+}
+
+/**
+ * `getForgeRepoForMap` plus which credential serves the repo (#513) —
+ * the key catch-up records a refused fetch under, so Plan health blames
+ * the binding that failed, and a reconnect (new row timestamp) clears it.
+ */
+export async function getForgeBindingForMap(mapId: string): Promise<{ repo: TicketRepo; bindingKey: string } | null> {
   const map = await loadMapBinding(mapId);
   if (!map) return null;
   if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
-    return ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName);
+    return {
+      repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName),
+      bindingKey: appBindingKey(map.githubInstallationId),
+    };
   }
   const integration = await patIntegrationForMap(map);
   if (!integration || !isServableIntegrationConfig(integration.config)) return null;
   const endpoint = forgeEndpointFromIntegration(integration);
-  return endpoint ? ticketRepo(endpoint, integration.config.owner, integration.config.repo) : null;
+  if (!endpoint) return null;
+  return {
+    repo: ticketRepo(endpoint, integration.config.owner, integration.config.repo),
+    bindingKey: rowBindingKey(integration),
+  };
 }
 
 /**

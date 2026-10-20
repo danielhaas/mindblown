@@ -49,7 +49,7 @@ import { markWorkStarted } from './workStartSync.js';
 import { handlePrClosed, type GhPrPayload } from './prSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
-import { clearForgeRefusal, noteForgeRefusal, refusalStatus } from './forgeRefusals.js';
+import { appBindingKey, clearForgeRefusal, noteForgeRefusal, refusalStatus, rowBindingKey } from './forgeRefusals.js';
 
 // ── Per-repo auth-failure tracking (#75) ─────────────────────────
 //
@@ -118,6 +118,8 @@ interface RepoTarget {
   repo: string;
   /** Resolves an authenticated client at fetch time (App tokens are short-lived). */
   resolveForge: () => Promise<ForgeClient>;
+  /** Which credential this is (sync/forgeRefusals.ts) — a refused fetch is recorded under it (#513). */
+  bindingKey?: string;
 }
 
 export interface ReconcileResult {
@@ -745,7 +747,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       }
     }
     const refused = refusalStatus(err);
-    if (refused) noteForgeRefusal(target.owner, target.repo, refused);
+    if (refused && target.bindingKey) noteForgeRefusal(target.bindingKey, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -789,7 +791,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       }
     }
     const refused = refusalStatus(err);
-    if (refused) noteForgeRefusal(target.owner, target.repo, refused);
+    if (refused && target.bindingKey) noteForgeRefusal(target.bindingKey, refused);
     return {
       repo: repoLabel,
       fetched: 0, applied: 0, skipped: 0, noTransition: 0, mirrorRepaired: 0, directResolved: 0, heldClosesResolved: 0, prematureClosesHealed: 0, stateSyncErrored: 0, ingested: 0, ingestErrored: 0,
@@ -806,7 +808,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
   // is specifically about the GitHub credential, not about downstream
   // node-write errors.
   consecutiveAuthFailures.delete(repoLabel);
-  clearForgeRefusal(target.owner, target.repo);
+  if (target.bindingKey) clearForgeRefusal(target.bindingKey);
 
   const externalIds = issues.map((i) => `${target.owner}/${target.repo}#${i.number}`);
   const linkIndex = await findNodesByExternalIds(externalIds);
@@ -1134,6 +1136,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
       owner: m.owner,
       repo: m.repo,
       resolveForge: () => forgeFromInstallation(installationId),
+      bindingKey: appBindingKey(installationId),
     });
   }
 
@@ -1159,6 +1162,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
         if (!forge) throw new Error(`integration ${integ.id} (${integ.provider}) cannot be served`);
         return forge;
       },
+      bindingKey: rowBindingKey(integ),
     });
   }
 
