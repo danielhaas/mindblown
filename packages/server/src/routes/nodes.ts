@@ -9,7 +9,7 @@ import { scheduleEmbedNode } from '../ai/embeddings.js';
 import { updateGitHubIssue, getGitHubIssue } from '@mindblown/integrations';
 import { getGitHubContextForMap } from './integrations.js';
 import type { ExternalLink, DependencyType, Node as CoreNode } from '@mindblown/core';
-import { isForgeLink } from '@mindblown/core';
+import { isForgeLink, userReporter } from '@mindblown/core';
 
 // ── Auto-link helper (#58) ──────────────────────────────────────
 // Titles that begin with `#NNNN` are almost always referencing an existing
@@ -263,6 +263,9 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
         ...nodeFields,
         mapId: req.params.id,
         createdBy: userId,
+        // The authenticated caller, never the body (#490) — the spread
+        // above would otherwise forward a client-supplied reportedBy.
+        reportedBy: userReporter(req.userId),
       });
     } catch (err) {
       if (err instanceof RequirementIdConflictError) {

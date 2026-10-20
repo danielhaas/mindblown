@@ -44,7 +44,7 @@ import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, pickForgeRow, FORGE_PROVIDERS } from '../lib/forge.js';
-import type { ExternalLink } from '@mindblown/core';
+import type { ExternalLink, NodeReporter } from '@mindblown/core';
 import { isForgeLink, forgeLabel } from '@mindblown/core';
 import { getMapForgeKind } from '../lib/githubContext.js';
 
@@ -354,6 +354,17 @@ export interface EnsureNodeOpts {
 // ── Triage-mode ingest helper ────────────────────────────────────
 
 /**
+ * The issue author as the node's reporter (#490) — `createdBy` is the
+ * map owner for every ingested node, so this is the only record of who
+ * actually asked. null when the payload carries no author.
+ */
+function issueReporter(issue: GitHubIssue, ctx: IngestContext): NodeReporter | null {
+  const login = issue.user?.login;
+  if (!login) return null;
+  return { kind: 'forge', provider: forgeKindForRepoCached(ctx.owner, ctx.repo), login };
+}
+
+/**
  * Build the create-input for a triaged node. Same defaults as the
  * non-triage path (status from open/closed, percentComplete 0/100,
  * `#NNNN <title>` text so existing webhook handlers still find it via
@@ -372,6 +383,7 @@ function buildTriagedCreateInput(
     parentId,
     text: `#${issue.number} ${issue.title}`,
     createdBy: ctx.createdBy,
+    reportedBy: issueReporter(issue, ctx),
     percentComplete: isClosed ? 100 : 0,
     status: isClosed ? 'done' : 'todo',
   };
@@ -1649,6 +1661,7 @@ export async function ensureNodeForIssue(
         parentId: inboxNodeId,
         text,
         createdBy: ctx.createdBy,
+        reportedBy: issueReporter(issue, ctx),
         percentComplete: isClosed ? 100 : 0,
         status: isClosed ? 'done' : 'todo',
       },

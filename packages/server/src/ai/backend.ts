@@ -234,6 +234,8 @@ export function createChatBackend(userId: string): ToolBackend {
         text,
         createdBy: userId,
         ...(fields ?? {}),
+        // After the spread: a tool-supplied reportedBy never wins (#490).
+        reportedBy: { kind: 'user', userId },
       });
       broadcast(mapId, { type: 'node:created', node });
       scheduleEmbedNode(node.id);

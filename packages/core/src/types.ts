@@ -71,6 +71,19 @@ export type ForgeKindName = 'github' | 'gitea';
  * silently in both cases, so the plan linter, the forge settings and the
  * Fleet tab say it out loud. `message` is the sentence all three show.
  */
+/**
+ * Who reported a node (#490): a MindBlown user (UI, REST, MCP key, intake)
+ * or the author of the forge issue it was ingested from.
+ */
+export type NodeReporter =
+  | { kind: 'user'; userId: string }
+  | { kind: 'forge'; provider: ForgeKindName; login: string };
+
+/** The authenticated user as reporter; null when there is none. */
+export function userReporter(userId: string | null | undefined): NodeReporter | null {
+  return userId ? { kind: 'user', userId } : null;
+}
+
 export interface ForgeProblem {
   kind: 'unbound' | 'refused';
   /** `owner/repo` the map names. */
@@ -454,6 +467,12 @@ export interface Node {
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   createdBy: UserId;
+  /**
+   * Who asked for this node (#490). Set once at creation, never changed by
+   * later edits, never accepted from callers. null = unknown (created
+   * before the column existed).
+   */
+  reportedBy: NodeReporter | null;
   // Bumps on every successful update. Clients send their last-seen value
   // as expectedRevision so concurrent edits don't silently clobber.
   revision: number;

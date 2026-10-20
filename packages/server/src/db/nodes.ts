@@ -5,7 +5,7 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents, mediaOwners } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
@@ -239,6 +239,12 @@ export interface CreateNodeInput {
   parentId: string;
   text: string;
   createdBy: string;
+  /**
+   * Who asked for the node (#490). Set by the server from the
+   * authenticated user or the forge issue author — never from a request
+   * body. Omit = unknown (null).
+   */
+  reportedBy?: NodeReporter | null;
   position?: number; // index in parent's children_order; omit = append
   x?: number; // explicit canvas position; omit = auto-layout
   y?: number;
@@ -352,6 +358,7 @@ export async function createNode(
       createdAt: now,
       updatedAt: now,
       createdBy: input.createdBy,
+      reportedBy: input.reportedBy ?? null,
     }).returning();
   } catch (err) {
     if (isRequirementIdUniqueViolation(err)) {

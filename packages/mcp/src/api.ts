@@ -172,6 +172,11 @@ export interface NodeWithComputed {
   // Orchestration substrate (#111) — surfaced for slot accounting (#153).
   claimedBySession: string | null;
   claimedAt: string | null;
+  /** Who asked for the node (#490); server-set, read-only. null = unknown. */
+  reportedBy?:
+    | { kind: 'user'; userId: string }
+    | { kind: 'forge'; provider: string; login: string }
+    | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;

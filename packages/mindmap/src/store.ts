@@ -1098,6 +1098,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       createdAt: now,
       updatedAt: now,
       createdBy: state.user?.id ?? 'user-001',
+      // Optimistic stub only — the server sets the real reporter (#490).
+      reportedBy: state.user?.id ? { kind: 'user', userId: state.user.id } : null,
       revision: 1,
       deletedAt: null,
       ...(fields ?? {}),

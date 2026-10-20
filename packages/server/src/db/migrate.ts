@@ -836,6 +836,13 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS linked_pr JSONB
   `);
 
+  // reported_by (#490): who asked for the node — a MindBlown user or the
+  // forge issue author. Set once on insert. No backfill: the issue
+  // author was never stored, so existing rows stay NULL (unknown).
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS reported_by JSONB
+  `);
+
   // ── Requirements register ──────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01');
   // non-null marks the node as a requirement. requirement_priority:

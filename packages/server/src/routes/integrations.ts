@@ -47,7 +47,7 @@ import { recordTriageHistory } from '../sync/triageHistory.js';
 import { applyTriageLabel } from '../sync/triageLabelWriteback.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import type { ExternalLink } from '@mindblown/core';
-import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink, forgeLabel } from '@mindblown/core';
+import { prBlocksNodeReopen, hasCloseSnapshot, isForgeLink, forgeLabel, userReporter } from '@mindblown/core';
 import { extractAutoLinkIssueNumber } from '../lib/autoLink.js';
 import { isMirrorDescription, stampMirrorHash } from '../lib/descriptionMirror.js';
 import { createForgeIssueForNode, NoForgeIntegrationError, NO_FORGE_MESSAGE } from '../services/forgeIssue.js';
@@ -1068,6 +1068,10 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId,
           text: item.issue.title,
           createdBy,
+          // The issue author, not the importing user (#490).
+          reportedBy: item.issue.user?.login
+            ? { kind: 'forge', provider: forge.endpoint.kind, login: item.issue.user.login }
+            : null,
         });
 
         const priority = item.issue.labels
@@ -1108,6 +1112,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId: parentNodeId,
           text: label,
           createdBy,
+          reportedBy: userReporter(req.userId),
         });
         branchIds.set(label, branchNode.id);
         return branchNode.id;
@@ -1120,6 +1125,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           parentId: parentNodeId,
           text: 'Backlog',
           createdBy,
+          reportedBy: userReporter(req.userId),
         });
         backlogId = backlogNode.id;
         return backlogId;

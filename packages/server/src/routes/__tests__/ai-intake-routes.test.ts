@@ -192,6 +192,8 @@ describe('POST /api/ai/intake/accept', () => {
       parentId: 'p1',
       text: 'Close issue only when no PR is open',
       createdBy: 'user-1',
+      // The accepting user is the reporter (#490).
+      reportedBy: { kind: 'user', userId: 'user-1' },
       description: '## Why\nbecause',
       priority: 'P1',
       versionId: 'v1',
