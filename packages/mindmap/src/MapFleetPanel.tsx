@@ -4,7 +4,8 @@
  *
  * A map has at most one fleet; a fleet serves many maps and splits its
  * capacity between them by each map's share. The picker offers the fleets
- * the user owns plus "Create fleet…"; Apply writes `fleetId` through the
+ * the user owns plus "Pair a machine…" (#506: a new fleet from the code a
+ * worker shows, connected here at once) and "Create fleet…"; Apply writes `fleetId` through the
  * store's map-settings action (optimistic, reverts on failure). Leaving a
  * fleet while workers hold claims on this map asks first.
  *
@@ -22,9 +23,11 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import { claimRows } from './dispatch.js';
 import { fleetOptions, leaveFleetWarning, shareApplies } from './fleetConnect.js';
+import { PairMachine, type Paired } from './PairMachine.js';
 
 const NONE = '';
 const CREATE = '__create__';
+const PAIR = '__pair__';
 
 export function MapFleetPanel({ variant = 'settings', readOnly = false }: { variant?: 'settings' | 'tab'; readOnly?: boolean }) {
   const map = useMindmapStore((s) => s.currentMap);
@@ -130,6 +133,19 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
     }
   };
 
+  // Pairing (#506) makes a new fleet; connect this map to it right away.
+  const pairWarning = (targetName: string) => {
+    const warning = fleetId ? leaveFleetWarning(currentName, liveClaims, targetName) : null;
+    return !warning || window.confirm(warning);
+  };
+  const connectPaired = async (p: Paired) => {
+    setError(null);
+    setDraft(p.fleetId);
+    if (await updateMapSettings({ fleetId: p.fleetId })) setConnected({ id: p.fleetId, name: p.fleetName });
+    else failed(`Fleet "${p.fleetName}" was paired but not connected`);
+    reload();
+  };
+
   const shareNumber = Number(shareDraft);
   const shareValid = shareDraft.trim() !== '' && Number.isFinite(shareNumber) && shareNumber >= FLEET_SHARE_MIN && shareNumber <= FLEET_SHARE_MAX;
   const shareDirty = shareValid && shareNumber !== share;
@@ -143,7 +159,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
     else failed('Saving the share failed');
   };
 
-  const dirty = draft === CREATE ? newName.trim() !== '' : draft !== (fleetId ?? NONE);
+  const dirty = draft === CREATE ? newName.trim() !== '' : draft !== PAIR && draft !== (fleetId ?? NONE);
   const showShare = fleetId !== null && canEditMap && current?.isOwner === true && shareApplies(current, map.id);
   const otherMaps = current ? current.maps.filter((m) => m.id !== map.id) : [];
 
@@ -197,6 +213,7 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
             {options.map((o) => (
               <option key={o.id} value={o.id} disabled={o.disabled}>{o.label}</option>
             ))}
+            <option value={PAIR}>Pair a machine…</option>
             <option value={CREATE}>Create fleet…</option>
           </select>
           {draft === CREATE && (
@@ -211,11 +228,14 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
               data-testid="map-fleet-new-name"
             />
           )}
-          <button style={{ ...btn, ...(dirty ? btnPrimary : {}) }} disabled={!dirty || busy} onClick={() => void apply()} data-testid="map-fleet-apply">
-            {busy ? 'Saving…' : draft === CREATE ? 'Create and connect' : draft === NONE && fleetId ? 'Disconnect' : 'Connect'}
-          </button>
+          {draft !== PAIR && (
+            <button style={{ ...btn, ...(dirty ? btnPrimary : {}) }} disabled={!dirty || busy} onClick={() => void apply()} data-testid="map-fleet-apply">
+              {busy ? 'Saving…' : draft === CREATE ? 'Create and connect' : draft === NONE && fleetId ? 'Disconnect' : 'Connect'}
+            </button>
+          )}
         </div>
       )}
+      {!readOnly && isMapAdmin && draft === PAIR && <PairMachine beforeConfirm={pairWarning} onPaired={connectPaired} />}
 
       {/* The share is the fleet owner's call, even with only edit on the map. */}
       {!readOnly && showShare && (

@@ -1359,6 +1359,28 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── Fleet pairings (#506) ──────────────────────────────────────
+  // A machine pairs itself with a short code its owner confirms; see
+  // services/fleetPairing.ts. Hashes only; rows are short-lived.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS fleet_pairings (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      code_hash TEXT NOT NULL UNIQUE,
+      secret_hash TEXT NOT NULL,
+      hostname TEXT NOT NULL,
+      agent TEXT,
+      model TEXT,
+      slots INTEGER NOT NULL DEFAULT 1,
+      expires_at TIMESTAMPTZ NOT NULL,
+      confirmed_at TIMESTAMPTZ,
+      confirmed_by UUID REFERENCES users(id) ON DELETE CASCADE,
+      fleet_id UUID REFERENCES fleets(id) ON DELETE CASCADE,
+      replace_keys BOOLEAN NOT NULL DEFAULT FALSE,
+      collected_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // ── nodes.started_at ───────────────────────────────────────────
   // When work on a node started — stamped by updateNode on the first move
   // into an 'in_progress' category or percentComplete > 0. Kanban shows it

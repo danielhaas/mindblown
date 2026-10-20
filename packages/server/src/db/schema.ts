@@ -207,6 +207,29 @@ export const fleets = pgTable('fleets', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Fleet pairings (#506) ──────────────────────────────────────────
+// A machine registers itself without a credential and shows a short code;
+// its owner types the code into MindBlown, and the machine collects its
+// fleet key once with the secret it kept. Only hashes of code and secret
+// are stored. Unconfirmed rows live 10 minutes, every row at most a day.
+export const fleetPairings = pgTable('fleet_pairings', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  codeHash: text('code_hash').notNull().unique(),
+  secretHash: text('secret_hash').notNull(),
+  hostname: text('hostname').notNull(),
+  agent: text('agent'),
+  model: text('model'),
+  slots: integer('slots').notNull().default(1),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  confirmedAt: timestamp('confirmed_at', { withTimezone: true }),
+  confirmedBy: uuid('confirmed_by').references(() => users.id, { onDelete: 'cascade' }),
+  fleetId: uuid('fleet_id').references(() => fleets.id, { onDelete: 'cascade' }),
+  /** Re-pair into an existing fleet: its other keys are revoked when the machine collects. */
+  replaceKeys: boolean('replace_keys').notNull().default(false),
+  collectedAt: timestamp('collected_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 // ── Nodes ──────────────────────────────────────────────────────────
 
 export const nodes = pgTable('nodes', {

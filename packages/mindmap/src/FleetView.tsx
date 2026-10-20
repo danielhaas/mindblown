@@ -32,6 +32,7 @@ import { AsksSection } from './AsksView.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
+import { PairMachine } from './PairMachine.js';
 import type { FleetScope } from './fleetScope.js';
 
 /** Claims move without a telemetry push, and the fleet page has no socket room — poll. */
@@ -265,6 +266,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         {fleet && (
           <>
             <FleetOverview fleet={fleet} mapId={null} all onRenamed={renamed} />
+            {fleet.isOwner && <RepairMachine fleetId={fleet.id} />}
             <Card title="Workers">
               <FleetTelemetry />
             </Card>
@@ -278,6 +280,26 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         )}
       </Shell>
     </FleetScopeContext.Provider>
+  );
+}
+
+/**
+ * Pair a machine into this fleet (#506): another machine, or — with
+ * "Reinstall" ticked — one whose key replaces every key the fleet has.
+ */
+function RepairMachine({ fleetId }: { fleetId: string }) {
+  const [open, setOpen] = useState(false);
+  const [done, setDone] = useState(false);
+  return (
+    <div style={{ marginBottom: 16, fontSize: 12 }}>
+      {done ? (
+        <span style={{ color: '#166534' }} data-testid="repair-done">Paired. The machine picks up its key within a few seconds.</span>
+      ) : open ? (
+        <PairMachine fleetId={fleetId} onPaired={() => setDone(true)} />
+      ) : (
+        <button style={linkBtn} onClick={() => setOpen(true)} data-testid="repair-open">Pair a machine with this fleet…</button>
+      )}
+    </div>
   );
 }
 
