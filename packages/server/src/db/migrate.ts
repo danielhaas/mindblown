@@ -1449,5 +1449,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     CREATE INDEX IF NOT EXISTS fleet_repo_handouts_fleet_idx ON fleet_repo_handouts (fleet_id, created_at DESC)
   `);
 
+  // ── Trust policy (#491) ─────────────────────────────────────────
+  // NULL = the map runs on the defaults (creator + binding login trusted,
+  // approval + pr-only for everyone else), computed on read.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS trust_policy JSONB
+  `);
+
   console.log('[db] Migrations complete.');
 }

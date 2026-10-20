@@ -23,6 +23,7 @@ import { ForgeIcon } from './icons/ForgeIcon.js';
 import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
 import { MapArchivePanel } from './MapArchivePanel.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
+import { MapTrustPolicyPanel } from './MapTrustPolicyPanel.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -439,6 +440,9 @@ export function WorkspaceSettings({
 
           {/* Fleet connection (#480) — shown only for a map */}
           {mapId && <MapFleetPanel />}
+
+          {/* Who may run the fleet (#491) — shown only for a map, to its admins */}
+          {mapId && <MapTrustPolicyPanel />}
 
           {/* Per-map AI policy (#375) — shown only for a map */}
           {mapId && <MapAiPolicyPanel />}

@@ -187,6 +187,11 @@ export const maps = pgTable('maps', {
   fleetId: uuid('fleet_id').references(() => fleets.id, { onDelete: 'set null' }),
   // Weight when the fleet picks between its maps (#478); 0.1–100.
   fleetShare: real('fleet_share').notNull().default(1),
+
+  // ── Trust (#491) ────────────────────────────────────────────────
+  // TrustPolicy | null — who may run the fleet on this map. NULL = the
+  // defaults (services/trustPolicy.ts), computed on read.
+  trustPolicy: jsonb('trust_policy'),
 });
 
 // ── Fleets (#477) ──────────────────────────────────────────────────

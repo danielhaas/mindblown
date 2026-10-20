@@ -2,6 +2,7 @@
  * Data shapes returned by backend operations.
  * Mirror the server's API response envelopes (also used by packages/mcp/src/api.ts).
  */
+import type { TrustPolicy } from '@mindblown/core';
 
 export interface MapSummary {
   id: string;
@@ -17,6 +18,8 @@ export interface MapSummary {
   updatedAt: string;
   /** ISO timestamp when the map was archived; null/absent = active. */
   archivedAt?: string | null;
+  /** #491 — only on the reply to an update that set it (admin-only, never broadcast). */
+  trustPolicy?: TrustPolicy;
 }
 
 export interface NodeWithComputed {

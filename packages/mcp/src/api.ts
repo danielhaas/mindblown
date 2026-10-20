@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, FleetWithMaps, StalledLeaf } from '@mindblown/core';
+import type { AskAnswerInput, FleetWithMaps, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -108,6 +108,8 @@ export interface MapSummary {
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
+  /** #491 — only on the reply to an update that set it. */
+  trustPolicy?: TrustPolicy;
 }
 
 export interface NodeWithComputed {
@@ -517,6 +519,7 @@ export function updateMap(
     holidayOverrides?: { add: string[]; remove: string[] };
     phases?: PhaseDef[];
     archived?: boolean;
+    trustPolicy?: TrustPolicy | null;
   },
 ): Promise<MapSummary> {
   return request<MapSummary>(`/api/maps/${mapId}`, {

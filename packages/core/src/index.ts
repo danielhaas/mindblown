@@ -361,3 +361,7 @@ export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity } fr
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
+
+// Trust policy: who may run the fleet on a map (#491)
+export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, parseTrustPolicy } from './trust.js';
+export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';

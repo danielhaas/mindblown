@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, TrustPolicy } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -419,6 +419,8 @@ export interface ToolBackend {
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: PhaseDef[];
       archived?: boolean;
+      /** #491 — admin only; null = back to the defaults. */
+      trustPolicy?: TrustPolicy | null;
     },
   ): Promise<MapSummary>;
   deleteMap(mapId: string): Promise<void>;
