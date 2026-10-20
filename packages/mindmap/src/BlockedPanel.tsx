@@ -21,14 +21,10 @@ function StalledDetail({ s }: { s: StalledLeaf }) {
   return <span style={{ color: '#92400e' }}>{describeStalled(s)}</span>;
 }
 
-export function BlockedPanel({ onClose }: { onClose: () => void }) {
+/** What the Blocked panel lists — also the header button's count, so the two always agree. */
+export function useBlockedLeaves() {
   const nodes = useMindmapStore((s) => s.nodes);
   const computed = useMindmapStore((s) => s.computed);
-  const selectNode = useMindmapStore((s) => s.selectNode);
-  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
-  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
-  const [mode, setMode] = useState<PanelMode>('cause');
-
   const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow);
   const { manual, depWaiting } = useMemo(() => {
     const manual: BlockedLeaf[] = [];
@@ -65,7 +61,17 @@ export function BlockedPanel({ onClose }: { onClose: () => void }) {
     return out;
   }, [stalledLeaves, manual, depWaiting, nodes, computed]);
 
-  const total = manual.length + depWaiting.length + stalled.length;
+  return { manual, depWaiting, stalled, total: manual.length + depWaiting.length + stalled.length };
+}
+
+export function BlockedPanel({ onClose }: { onClose: () => void }) {
+  const nodes = useMindmapStore((s) => s.nodes);
+  const computed = useMindmapStore((s) => s.computed);
+  const selectNode = useMindmapStore((s) => s.selectNode);
+  const setFocusNode = useMindmapStore((s) => s.setFocusNode);
+  const selectedNodeId = useMindmapStore((s) => s.selectedNodeId);
+  const [mode, setMode] = useState<PanelMode>('cause');
+  const { manual, depWaiting, stalled, total } = useBlockedLeaves();
 
   // By cause and unblocker (#322) — the PM Cockpit's grouping (core
   // groupBlockers): one action for one person, not N free-text reasons.

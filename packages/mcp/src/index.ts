@@ -29,6 +29,7 @@ import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindbl
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
 import { stalledSectionLines, wipClaimMarker } from './stalled.js';
+import { blockedBelowCounts } from './blockedSubtrees.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
 import { httpBackend } from './backend.js';
@@ -2036,12 +2037,11 @@ server.tool(
         return bits.join(' ');
       };
 
-      // Parents with blocked descendants (scoped the same way as leaves)
+      // Parents with blocked descendants, counted from `blocked` so done leaves stay out
+      const blockedBelow = blockedBelowCounts(blocked, data.nodes);
       const blockedSubtrees = data.nodes.filter((n) => {
-        if ((n.childrenIds?.length ?? 0) === 0) return false;
         if (scopeNodeId && !allowedIds.has(n.id)) return false;
-        const count = n.blockedBy?.blockedDescendantCount ?? 0;
-        return count > 0;
+        return blockedBelow.has(n.id);
       });
 
       const lines: string[] = [];
@@ -2114,7 +2114,7 @@ server.tool(
       if (blockedSubtrees.length > 0) {
         lines.push(`## Blocked subtrees (${blockedSubtrees.length})`);
         for (const n of blockedSubtrees.slice(0, 15)) {
-          lines.push(`- 📁 **${n.text}** — ${n.blockedBy?.blockedDescendantCount ?? 0} blocked leaf(s) below`);
+          lines.push(`- 📁 **${n.text}** — ${blockedBelow.get(n.id)} blocked leaf(s) below`);
         }
         if (blockedSubtrees.length > 15) lines.push(`- _… and ${blockedSubtrees.length - 15} more_`);
       }
