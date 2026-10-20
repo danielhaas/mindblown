@@ -41,12 +41,9 @@ export async function countPendingPairings(now: Date): Promise<number> {
   return Number(row?.n ?? 0);
 }
 
-/** A code that can still be confirmed. */
-export async function findOpenPairingByCode(codeHash: string, now: Date): Promise<PairingRow | null> {
-  const [row] = await db
-    .select()
-    .from(fleetPairings)
-    .where(and(eq(fleetPairings.codeHash, codeHash), isNull(fleetPairings.confirmedAt), gt(fleetPairings.expiresAt, now)));
+/** The row behind a code, in any state — the caller tells open from confirmed. */
+export async function findPairingByCode(codeHash: string): Promise<PairingRow | null> {
+  const [row] = await db.select().from(fleetPairings).where(eq(fleetPairings.codeHash, codeHash));
   return row ?? null;
 }
 
@@ -101,4 +98,9 @@ export async function markCollected(id: string, now: Date): Promise<boolean> {
     .where(and(eq(fleetPairings.id, id), isNull(fleetPairings.collectedAt)))
     .returning({ id: fleetPairings.id });
   return rows.length > 0;
+}
+
+/** Handing out the key failed after the row was taken: the machine may try again. */
+export async function unmarkCollected(id: string): Promise<void> {
+  await db.update(fleetPairings).set({ collectedAt: null }).where(eq(fleetPairings.id, id));
 }

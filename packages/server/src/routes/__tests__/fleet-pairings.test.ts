@@ -44,7 +44,10 @@ vi.mock('../../db/fleetPairings.js', () => {
       store.rows = store.rows.filter((r) => r.confirmedAt || r.expiresAt >= now);
     },
     countPendingPairings: async (now: Date) => store.rows.filter((r) => open(r, now)).length,
-    findOpenPairingByCode: async (h: string, now: Date) => store.rows.find((r) => r.codeHash === h && open(r, now)) ?? null,
+    findPairingByCode: async (h: string) => store.rows.find((r) => r.codeHash === h) ?? null,
+    unmarkCollected: async (id: string) => {
+      store.rows.find((r) => r.id === id)!.collectedAt = null;
+    },
     getPairing: async (id: string) => store.rows.find((r) => r.id === id) ?? null,
     claimPairing: async (h: string, userId: string, fleetId: string | null, replaceKeys: boolean, now: Date) => {
       const r = store.rows.find((x) => x.codeHash === h && open(x, now));
@@ -85,8 +88,13 @@ vi.mock('../../services/fleets.js', () => ({
         ? { status: 403, code: 'FORBIDDEN', message: "Only the fleet's owner can change it" }
         : { status: 404, code: 'FLEET_NOT_FOUND', message: 'Fleet not found' },
 }));
+const failNextKey = vi.hoisted(() => ({ on: false }));
 vi.mock('../../lib/apiKeys.js', () => ({
   createApiKey: async (userId: string) => {
+    if (failNextKey.on) {
+      failNextKey.on = false;
+      throw new Error('db down');
+    }
     const id = `key-${fleets.keys.length + 1}`;
     fleets.keys.push({ id, userId, revokedAt: null });
     return { id, name: 'k', key: `mb_secret_${id}`, prefix: `mb_${id}`, createdAt: new Date(), expiresAt: null };
@@ -189,10 +197,20 @@ describe('fleet pairing (#506)', () => {
     expect((await call(OWNER, '/api/fleet-pairings/lookup', { code: m.code }, 'api-key')).status).toBe(403);
   });
 
-  it('a code works once', async () => {
+  it('a code works once — and a second person is told it was taken, not "wrong code"', async () => {
     const m = await register();
     expect((await call(OWNER, '/api/fleet-pairings/confirm', { code: m.code })).status).toBe(200);
-    expect((await call(OTHER, '/api/fleet-pairings/confirm', { code: m.code })).status).toBe(404);
+    const again = await call(OTHER, '/api/fleet-pairings/confirm', { code: m.code });
+    expect(again.status).toBe(409);
+    expect(again.body.error.code).toBe('PAIRING_ALREADY_CONFIRMED');
+  });
+
+  it('a failed key handout leaves the pairing collectable', async () => {
+    const m = await register();
+    await call(OWNER, '/api/fleet-pairings/confirm', { code: m.code });
+    failNextKey.on = true;
+    expect((await call(null, `/api/fleet-pairings/${m.id}/collect`, { secret: m.secret })).status).toBe(500);
+    expect((await call(null, `/api/fleet-pairings/${m.id}/collect`, { secret: m.secret })).status).toBe(200);
   });
 
   it('an expired code is refused', async () => {
@@ -212,10 +230,18 @@ describe('fleet pairing (#506)', () => {
     expect((await call(OWNER, '/api/fleet-pairings/lookup', { code: m.code })).status).toBe(200);
   });
 
-  it('re-pair into a fleet you own: the old keys go when the machine collects', async () => {
+  it('pairing into a fleet you own adds a key by default', async () => {
     fleets.keys.push({ id: 'old-key', userId: `svc-${FLEET_ID}`, revokedAt: null });
     const m = await register();
-    const ok = await call(OWNER, '/api/fleet-pairings/confirm', { code: m.code, fleetId: FLEET_ID });
+    expect((await call(OWNER, '/api/fleet-pairings/confirm', { code: m.code, fleetId: FLEET_ID })).status).toBe(200);
+    expect((await call(null, `/api/fleet-pairings/${m.id}/collect`, { secret: m.secret })).status).toBe(200);
+    expect(fleets.keys.filter((k) => !k.revokedAt)).toHaveLength(2);
+  });
+
+  it('re-pair with replaceKeys: the old keys go when the machine collects', async () => {
+    fleets.keys.push({ id: 'old-key', userId: `svc-${FLEET_ID}`, revokedAt: null });
+    const m = await register();
+    const ok = await call(OWNER, '/api/fleet-pairings/confirm', { code: m.code, fleetId: FLEET_ID, replaceKeys: true });
     expect(ok.body).toMatchObject({ fleetId: FLEET_ID, created: false });
     expect(fleets.created).toHaveLength(0);
     expect(fleets.keys[0].revokedAt).toBeNull();

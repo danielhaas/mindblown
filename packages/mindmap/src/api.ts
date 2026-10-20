@@ -1055,10 +1055,10 @@ export function lookupPairing(code: string): Promise<PairingMachine> {
   return request<PairingMachine>('/api/fleet-pairings/lookup', { method: 'POST', body: JSON.stringify({ code }) });
 }
 
-/** Pair the machine: a new fleet (`name`, default its hostname) or `fleetId`, one you own (replaces its keys). */
+/** Pair the machine: a new fleet (`name`, default its hostname) or `fleetId`, one you own (`replaceKeys`: its other keys go). */
 export function confirmPairing(
   code: string,
-  target: { name?: string; fleetId?: string },
+  target: { name?: string; fleetId?: string; replaceKeys?: boolean },
 ): Promise<{ fleetId: string; fleetName: string; created: boolean; machine: PairingMachine }> {
   return request('/api/fleet-pairings/confirm', { method: 'POST', body: JSON.stringify({ code, ...target }) });
 }

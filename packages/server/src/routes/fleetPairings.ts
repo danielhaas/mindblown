@@ -51,7 +51,7 @@ export async function fleetPairingRoutes(app: FastifyInstance): Promise<void> {
     return pairing.isPairingError(result) ? send(reply, result) : reply.send(result);
   });
 
-  app.post<{ Body: { code?: unknown; fleetId?: unknown; name?: unknown } }>('/api/fleet-pairings/confirm', async (req, reply) => {
+  app.post<{ Body: { code?: unknown; fleetId?: unknown; name?: unknown; replaceKeys?: unknown } }>('/api/fleet-pairings/confirm', async (req, reply) => {
     const userId = personOnly(req, reply);
     if (!userId) return reply;
     const result = await pairing.confirmPairing(userId, req.body ?? {});

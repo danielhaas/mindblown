@@ -284,8 +284,8 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
 }
 
 /**
- * Re-pair (#506): a reinstalled machine, or a new one taking over this
- * fleet. Its key replaces every key the fleet has, once it collects it.
+ * Pair a machine into this fleet (#506): another machine, or — with
+ * "Reinstall" ticked — one whose key replaces every key the fleet has.
  */
 function RepairMachine({ fleetId }: { fleetId: string }) {
   const [open, setOpen] = useState(false);
@@ -293,7 +293,7 @@ function RepairMachine({ fleetId }: { fleetId: string }) {
   return (
     <div style={{ marginBottom: 16, fontSize: 12 }}>
       {done ? (
-        <span style={{ color: '#166534' }} data-testid="repair-done">Paired. The machine picks up its new key within a few seconds; the old keys stop working then.</span>
+        <span style={{ color: '#166534' }} data-testid="repair-done">Paired. The machine picks up its key within a few seconds.</span>
       ) : open ? (
         <PairMachine fleetId={fleetId} onPaired={() => setDone(true)} />
       ) : (

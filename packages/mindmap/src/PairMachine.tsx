@@ -2,8 +2,9 @@
  * Pair a machine (#506): the worker on the machine shows a code, the
  * owner types it here, checks which machine it is, and pairs it — as a
  * new fleet named after the host (map settings / Fleet tab), or into a
- * fleet they own (fleet page; the machine's new key replaces the fleet's
- * old ones). The machine collects its key by itself a few seconds later.
+ * fleet they own (fleet page; the machine's key joins the fleet's keys,
+ * or for a reinstall replaces them). The machine collects its key by
+ * itself a few seconds later.
  *
  * The server decides (services/fleetPairing.ts): a signed-in person only,
  * a code works once and for 10 minutes, wrong codes are limited.
@@ -31,6 +32,7 @@ export function PairMachine({
   const [code, setCode] = useState('');
   const [machine, setMachine] = useState<api.PairingMachine | null>(null);
   const [name, setName] = useState('');
+  const [replaceKeys, setReplaceKeys] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -55,7 +57,7 @@ export function PairMachine({
     setBusy(true);
     setError(null);
     try {
-      const r = await api.confirmPairing(code, fleetId ? { fleetId } : { name: name.trim() || machine.hostname });
+      const r = await api.confirmPairing(code, fleetId ? { fleetId, replaceKeys } : { name: name.trim() || machine.hostname });
       await onPaired({ fleetId: r.fleetId, fleetName: r.fleetName, created: r.created });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Pairing failed');
@@ -68,7 +70,6 @@ export function PairMachine({
     <div style={box} data-testid="pair-machine">
       <div style={{ fontSize: 12, color: '#64748b', marginBottom: 8 }}>
         On the machine, run <code>fleet-worker pair</code>. Type the code it shows.
-        {fleetId && ' The machine’s new key replaces every key this fleet has now.'}
       </div>
       {!machine ? (
         <div style={row}>
@@ -96,6 +97,12 @@ export function PairMachine({
               {machine.model && ` (${machine.model})`} · {machine.slots} slot{machine.slots === 1 ? '' : 's'}
             </span>
           </div>
+          {fleetId && (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#334155', marginBottom: 8 }}>
+              <input type="checkbox" checked={replaceKeys} onChange={(e) => setReplaceKeys(e.target.checked)} data-testid="pair-replace-keys" />
+              Reinstall: revoke the fleet&apos;s other keys once this machine has its key
+            </label>
+          )}
           <div style={row}>
             {!fleetId && (
               <input
