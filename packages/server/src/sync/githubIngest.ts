@@ -43,7 +43,7 @@ import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import { linksAnyExternalId } from '../db/externalLinkFilter.js';
 import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
-import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, FORGE_PROVIDERS } from '../lib/forge.js';
+import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, pickForgeRow, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink } from '@mindblown/core';
 import { isForgeLink, forgeLabel } from '@mindblown/core';
 import { getMapForgeKind } from '../lib/githubContext.js';
@@ -1920,7 +1920,7 @@ export async function backfillMap(
   }
 
   if (!forge) {
-    const [integ] = await db
+    const rows = await db
       .select()
       .from(integrations)
       .where(
@@ -1930,11 +1930,11 @@ export async function backfillMap(
           eq(integrations.enabled, true),
         ),
       );
+    // Only the row for this map's own repo (#421); a workspace holds one per repo.
+    const integ = pickForgeRow(rows, { owner: mapRow.githubRepoOwner, repo: mapRow.githubRepoName });
     if (integ) {
       const cfg = integ.config as { owner?: string; repo?: string; token?: string; oauthIdentityId?: string } | null;
-      // Only when the row's repo is this map's own repo (#421).
-      const bindsThisMap = cfg?.owner === mapRow.githubRepoOwner && cfg?.repo === mapRow.githubRepoName;
-      if (bindsThisMap && isServableIntegrationConfig(cfg)) {
+      if (isServableIntegrationConfig(cfg)) {
         owner = cfg!.owner!;
         repo = cfg!.repo!;
         forge = await forgeFromIntegration(integ);

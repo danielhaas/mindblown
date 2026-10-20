@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   bindMap: vi.fn(),
   mapAccess: vi.fn(),
   setUpWebhook: vi.fn(),
+  /** The workspace's existing forge rows. */
+  rows: [] as Array<{ id: string; provider: string; enabled: boolean; updatedAt: Date; config: Record<string, unknown> }>,
 }));
 
 vi.mock('@mindblown/integrations', async () => {
@@ -25,7 +27,7 @@ vi.mock('@mindblown/integrations', async () => {
 
 vi.mock('../../db/connection.js', () => ({
   db: {
-    select: () => ({ from: () => ({ where: async () => [] }) }),
+    select: () => ({ from: () => ({ where: async () => mocks.rows }) }),
     update: () => ({
       set: () => ({
         where: async () => {
@@ -123,6 +125,7 @@ const BODY = { workspaceId: 'ws', token: 't', owner: 'dan', repo: 'product', kin
 
 beforeEach(() => {
   mocks.dbWrites.length = 0;
+  mocks.rows = [];
   vi.clearAllMocks();
   mocks.mapAccess.mockResolvedValue(true);
   mocks.bindable.mockResolvedValue({ ok: true });
@@ -153,6 +156,24 @@ describe('connect with mapId (#421)', () => {
     expect(res.json().error.message).toMatch(/GitHub App/);
     expect(mocks.dbWrites).toEqual([]);
     expect(mocks.bindMap).not.toHaveBeenCalled();
+  });
+
+  it("a second repo gets its own row — another repo's row is never overwritten", async () => {
+    mocks.rows = [{ id: 'int-sonar', provider: 'gitea', enabled: true, updatedAt: new Date(), config: { owner: 'dan', repo: 'Sonarpipe', token: 'x' } }];
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/integrations/github/connect', payload: BODY });
+    expect(res.statusCode).toBe(201);
+    expect(mocks.dbWrites).toEqual(['insert']);
+  });
+
+  it("a re-connect of the same repo updates that repo's row", async () => {
+    mocks.rows = [
+      { id: 'int-sonar', provider: 'gitea', enabled: true, updatedAt: new Date(), config: { owner: 'dan', repo: 'Sonarpipe', token: 'x' } },
+      { id: 'int-product', provider: 'gitea', enabled: false, updatedAt: new Date(0), config: { owner: 'dan', repo: 'product', token: 'old' } },
+    ];
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/integrations/github/connect', payload: BODY });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ id: 'int-product' });
+    expect(mocks.dbWrites).toEqual(['update']);
   });
 
   it('without mapId the connection is stored and no map is bound', async () => {

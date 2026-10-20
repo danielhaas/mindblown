@@ -32,7 +32,7 @@ import { db } from '../db/connection.js';
 import { integrations, mapPermissions, maps, userGithubIdentities, workspaces } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
 import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
-import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, type ForgeIntegrationConfig } from '../lib/forge.js';
+import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, pickForgeRow, type ForgeIntegrationConfig } from '../lib/forge.js';
 import { requireMapAccess } from '../lib/mapAccess.js';
 import { setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import {
@@ -278,11 +278,14 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const [existing] = await db
-      .select({ id: integrations.id, config: integrations.config })
-      .from(integrations)
-      .where(and(eq(integrations.workspaceId, body.workspaceId), inArray(integrations.provider, FORGE_PROVIDERS)))
-      .limit(1);
+    // This repo's row only: a second repo gets its own row (pickForgeRow).
+    const existing = pickForgeRow(
+      await db
+        .select({ id: integrations.id, config: integrations.config, enabled: integrations.enabled, updatedAt: integrations.updatedAt })
+        .from(integrations)
+        .where(and(eq(integrations.workspaceId, body.workspaceId), inArray(integrations.provider, FORGE_PROVIDERS))),
+      { owner: body.owner, repo: body.repo, includeDisabled: true },
+    );
     // A re-bind without a secret keeps the stored one (the repo's webhook signs with it).
     const webhookSecret = body.webhookSecret || (existing?.config as ForgeIntegrationConfig | undefined)?.webhookSecret;
     const endpoint = giteaEndpoint(oauth.instanceUrl);

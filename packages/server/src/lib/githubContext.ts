@@ -36,6 +36,7 @@ import {
   forgeFromInstallation,
   forgeFromIntegration,
   isServableIntegrationConfig,
+  pickForgeRow,
   rememberForgeEndpointForMap,
   type ForgeIntegrationConfig,
 } from './forge.js';
@@ -52,8 +53,14 @@ export interface ForgeMapContext {
 /** @deprecated use `ForgeMapContext` */
 export type GitHubMapContext = ForgeMapContext;
 
+/**
+ * A workspace's forge row: the one for `owner/repo` when given, else the
+ * newest enabled one. Rule in `pickForgeRow` (one row per repo).
+ */
 export async function getForgeIntegration(
   workspaceId: string,
+  owner?: string | null,
+  repo?: string | null,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   const rows = await db
     .select()
@@ -64,14 +71,7 @@ export async function getForgeIntegration(
         inArray(integrations.provider, FORGE_PROVIDERS),
       ),
     );
-  // A workspace can hold a disabled leftover next to the live row (a
-  // disconnected GitHub PAT from July sat beside the new Gitea row on
-  // 2026-09-24 and, being first, hid it — "GitHub not configured"). Pick
-  // the ENABLED row, newest first; never the first row the DB happens to
-  // return.
-  const row = rows
-    .filter((r) => r.enabled)
-    .sort((a, b) => (b.updatedAt?.getTime?.() ?? 0) - (a.updatedAt?.getTime?.() ?? 0))[0];
+  const row = pickForgeRow(rows, owner || repo ? { owner, repo } : {});
   if (!row) return null;
   return { id: row.id, provider: row.provider, config: row.config as unknown as ForgeIntegrationConfig };
 }
@@ -97,17 +97,14 @@ async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined>
 }
 
 /**
- * The workspace's forge row, if it binds THIS map: the map names the
- * row's repo. A map without a repo of its own is unbound (#421).
+ * The workspace's forge row for THIS map's repo. A map without a repo of
+ * its own is unbound (#421).
  */
 async function patIntegrationForMap(
   map: MapBindingRow,
 ): Promise<{ id: string; provider: string; config: ForgeIntegrationConfig } | null> {
   if (!map.githubRepoOwner || !map.githubRepoName) return null;
-  const integration = await getForgeIntegration(map.workspaceId);
-  if (!integration) return null;
-  const cfg = integration.config;
-  return cfg.owner === map.githubRepoOwner && cfg.repo === map.githubRepoName ? integration : null;
+  return getForgeIntegration(map.workspaceId, map.githubRepoOwner, map.githubRepoName);
 }
 
 /**

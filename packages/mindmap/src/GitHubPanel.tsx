@@ -1169,7 +1169,12 @@ export function GitHubSettingsDialog({
         )}
 
         {currentMap?.forgeKind === 'gitea' && (
-          <ForgeWebhookSection workspaceId={workspaceId} forge={forge} refreshKey={`${connected}:${giteaBound ?? ''}`} />
+          <ForgeWebhookSection
+            workspaceId={workspaceId}
+            repo={currentMap.githubRepoOwner && currentMap.githubRepoName ? `${currentMap.githubRepoOwner}/${currentMap.githubRepoName}` : undefined}
+            forge={forge}
+            refreshKey={`${connected}:${giteaBound ?? ''}`}
+          />
         )}
 
         {/* Gitea sign-in + repo picker (#369): parity with the App install flow. */}
@@ -1555,7 +1560,7 @@ export function GitHubSettingsDialog({
 // section says whether the repo has it, sets it up with the stored
 // connection, and spells out the manual steps for when it can't.
 
-function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: string; forge: string; refreshKey: string }) {
+function ForgeWebhookSection({ workspaceId, repo, forge, refreshKey }: { workspaceId: string; repo?: string; forge: string; refreshKey: string }) {
   const [state, setState] = useState<api.ForgeWebhookState | null>(null);
   const [forbidden, setForbidden] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1563,7 +1568,7 @@ function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: 
 
   const load = useCallback(async () => {
     try {
-      setState(await api.getForgeWebhook(workspaceId));
+      setState(await api.getForgeWebhook(workspaceId, repo));
       setForbidden(false);
     } catch (e) {
       // 404 = nothing connected yet; 403 = not a workspace admin — the
@@ -1571,7 +1576,7 @@ function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: 
       setState(null);
       setForbidden(e instanceof api.ApiError && e.status === 403);
     }
-  }, [workspaceId]);
+  }, [workspaceId, repo]);
   useEffect(() => {
     load();
   }, [load, refreshKey]);
@@ -1580,7 +1585,7 @@ function ForgeWebhookSection({ workspaceId, forge, refreshKey }: { workspaceId: 
     setBusy(true);
     setResult(null);
     try {
-      setResult(await api.setUpForgeWebhook(workspaceId));
+      setResult(await api.setUpForgeWebhook(workspaceId, repo));
       await load();
     } catch (e: any) {
       setResult({ status: 'failed', reason: e.message ?? 'Webhook setup failed' });
