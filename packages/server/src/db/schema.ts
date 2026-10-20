@@ -303,6 +303,10 @@ export const nodes = pgTable('nodes', {
   // cleared when the node goes back to todo. Kanban In-Progress cards.
   startedAt: timestamp('started_at', { withTimezone: true }),
 
+  // The worker's own ETA for this node. Caller-set; kept through done,
+  // cleared with started_at when the node goes back to todo.
+  expectedDoneAt: timestamp('expected_done_at', { withTimezone: true }),
+
   // ── Requirements register ─────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01').
   //   Non-null marks the node as a requirement. Unique per map,

@@ -41,6 +41,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     priorityRank: null,
     completedAt: null,
     startedAt: null,
+    expectedDoneAt: null,
     requirementId: null,
     requirementPriority: null,
     requirementText: null,

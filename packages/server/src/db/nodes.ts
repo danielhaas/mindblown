@@ -259,6 +259,8 @@ export interface CreateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -334,6 +336,7 @@ export async function createNode(
       priorityRank: input.priorityRank ?? null,
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
       startedAt,
+      expectedDoneAt: input.expectedDoneAt ? new Date(input.expectedDoneAt) : null,
       requirementId: input.requirementId ?? null,
       requirementPriority: input.requirementPriority ?? null,
       requirementText: input.requirementText ?? null,
@@ -493,6 +496,8 @@ export interface UpdateNodeInput {
   autoProgress?: 'off' | 'children';
   priorityRank?: number | null;
   completedAt?: string | null;
+  /** The worker's own ETA (ISO 8601); null clears it. */
+  expectedDoneAt?: string | null;
   requirementId?: string | null;
   requirementPriority?: 'must' | 'should' | 'could' | null;
   requirementText?: string | null;
@@ -632,6 +637,8 @@ export async function updateNode(
   if (input.claimedBySession !== undefined) updates.claimedBySession = input.claimedBySession;
   if (input.claimedAt !== undefined) updates.claimedAt = input.claimedAt ? new Date(input.claimedAt) : null;
   if (input.scopes !== undefined) updates.scopes = input.scopes;
+  if (input.expectedDoneAt !== undefined)
+    updates.expectedDoneAt = input.expectedDoneAt ? new Date(input.expectedDoneAt) : null;
   if (input.linkedPr !== undefined) updates.linkedPr = input.linkedPr;
 
   // Auto-release claim when status transitions to a 'done' category (#111)
@@ -695,6 +702,9 @@ export async function updateNode(
         updates.startedAt = new Date();
       } else if (movingToTodo && !movingToStarted && !movingToDone) {
         updates.startedAt = null;
+        // Back in the queue: the last worker's ETA no longer holds —
+        // unless this same call sets a new one.
+        if (input.expectedDoneAt === undefined) updates.expectedDoneAt = null;
       }
 
       if (movingToDone && !claimTouched) {

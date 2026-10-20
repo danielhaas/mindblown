@@ -1456,5 +1456,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS trust_policy JSONB
   `);
 
+  // ── nodes.expected_done_at ─────────────────────────────────────
+  // The worker's own ETA (set_progress etaMinutes / update_node
+  // expectedDoneAt). Kanban shows it on In-Progress cards.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS expected_done_at TIMESTAMPTZ
+  `);
+
   console.log('[db] Migrations complete.');
 }

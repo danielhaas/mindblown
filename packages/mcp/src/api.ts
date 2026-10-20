@@ -142,6 +142,8 @@ export interface NodeWithComputed {
   completedAt: string | null;
   /** Set when work on the node started (core Node field). */
   startedAt: string | null;
+  /** The worker's own ETA (core Node field). */
+  expectedDoneAt: string | null;
   revision: number;
   // Requirements register — non-null requirementId marks a requirement.
   requirementId: string | null;

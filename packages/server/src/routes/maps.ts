@@ -648,6 +648,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           priorityRank: null,
           completedAt: null,
           startedAt: null,
+          expectedDoneAt: null,
           requirementId: null,
           requirementPriority: null,
           requirementText: null,

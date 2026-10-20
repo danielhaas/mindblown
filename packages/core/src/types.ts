@@ -344,6 +344,15 @@ export interface Node {
    */
   startedAt: string | null;
 
+  /**
+   * ISO 8601 timestamp of when the worker on this node expects to be done —
+   * its own ETA, set when it starts (set_progress etaMinutes, or update_node
+   * expectedDoneAt). Kept through done so the promise can be compared with
+   * completedAt; cleared together with startedAt when the node goes back to
+   * todo. Shown on In-Progress Kanban cards ("overdue" once past).
+   */
+  expectedDoneAt: string | null;
+
   // ── Orchestration substrate (#111) ────────────────────────────
 
   /**

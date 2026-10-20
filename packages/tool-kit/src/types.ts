@@ -72,6 +72,8 @@ export interface NodeWithComputed {
   claimedAt: string | null;
   /** When work started (core Node field); optional — older servers omit it. */
   startedAt?: string | null;
+  /** The worker's own ETA (core Node field); optional — older servers omit it. */
+  expectedDoneAt?: string | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;

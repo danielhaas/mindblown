@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool, etaFromMinutes } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
 import type { MapDetail, NodeWithComputed } from '../../types.js';
 
@@ -1403,5 +1403,45 @@ describe('estimateSource round trip (#318)', () => {
     expect(recorder.lastCreate?.fields).toMatchObject({ effortEstimate: 2, estimateSource: 'ai' });
     await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', estimateSource: null } as never);
     expect(recorder.lastUpdate?.fields).toEqual({ estimateSource: null });
+  });
+});
+
+describe('expectedDoneAt / etaMinutes — the worker\'s ETA', () => {
+  it('create_node and update_node accept an ISO timestamp with offset and forward it', async () => {
+    for (const tool of [createNodeTool, updateNodeTool]) {
+      const schema = z.object(tool.schema);
+      const base = { mapId: 'm', nodeId: 'n', parentId: 'p', text: 't' };
+      expect(schema.parse({ ...base, expectedDoneAt: '2026-10-20T15:40:00+02:00' }).expectedDoneAt).toBe('2026-10-20T15:40:00+02:00');
+      expect(() => schema.parse({ ...base, expectedDoneAt: 'in an hour' })).toThrow();
+    }
+    expect(z.object(updateNodeTool.schema).parse({ mapId: 'm', nodeId: 'n', expectedDoneAt: null }).expectedDoneAt).toBeNull();
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'x', expectedDoneAt: '2026-10-20T13:40:00Z' } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ expectedDoneAt: '2026-10-20T13:40:00Z' });
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', expectedDoneAt: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ expectedDoneAt: null });
+  });
+
+  it('update_node etaMinutes becomes expectedDoneAt, minutes from now', async () => {
+    const recorder = makeRecordingBackend();
+    const before = Date.now();
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', etaMinutes: 45 } as never);
+    const eta = Date.parse(recorder.lastUpdate?.fields.expectedDoneAt as string);
+    expect(eta).toBeGreaterThanOrEqual(before + 45 * 60_000);
+    expect(eta).toBeLessThanOrEqual(Date.now() + 45 * 60_000);
+    expect(recorder.lastUpdate?.fields).not.toHaveProperty('etaMinutes');
+  });
+
+  it('update_node rejects etaMinutes together with expectedDoneAt, and non-positive minutes', async () => {
+    const recorder = makeRecordingBackend();
+    await expect(
+      updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', etaMinutes: 30, expectedDoneAt: null } as never),
+    ).rejects.toThrow(/either/);
+    expect(recorder.lastUpdate).toBeNull();
+    expect(() => z.object(updateNodeTool.schema).parse({ mapId: 'm', nodeId: 'n', etaMinutes: 0 })).toThrow();
+  });
+
+  it('etaFromMinutes adds the minutes to now', () => {
+    expect(etaFromMinutes(90, new Date('2026-10-20T12:00:00Z'))).toBe('2026-10-20T13:30:00.000Z');
   });
 });

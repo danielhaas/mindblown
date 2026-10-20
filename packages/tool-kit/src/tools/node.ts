@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { defineTool } from '../spec.js';
 import { formatClaim, formatReporter } from '../formatters.js';
 
+/** An ETA given as minutes from now, as the ISO timestamp the server stores. */
+export function etaFromMinutes(minutes: number, now: Date = new Date()): string {
+  return new Date(now.getTime() + minutes * 60_000).toISOString();
+}
+
 export const createNodeTool = defineTool({
   name: 'create_node',
   description: 'Create a new node (task/idea) in a map under a parent node',
@@ -21,6 +26,18 @@ export const createNodeTool = defineTool({
     status: z.string().optional().describe("Status (must match map's status workflow)"),
     dueDate: z.string().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().optional().describe('Start date (ISO 8601)'),
+    expectedDoneAt: z
+      .string()
+      .datetime({ offset: true })
+      .optional()
+      .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Cannot be combined with etaMinutes.'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA as minutes from now (stored as expectedDoneAt). Cannot be combined with expectedDoneAt.'),
     versionId: z.string().optional().describe('Version ID to assign this node to'),
     tags: z.array(z.string()).optional().describe('Tags to set on the new node'),
     scopes: z
@@ -93,11 +110,15 @@ export const createNodeTool = defineTool({
       .optional()
       .describe('Still image shown in the video player before playback starts (the <video> poster). Only used when verificationVideoUrl is also set. Without it the player shows the recording\'s own first frame, which for a screen capture is usually a blank page.'),
   },
-  handler: async (backend, { mapId, parentId, text, ...fields }) => {
+  handler: async (backend, { mapId, parentId, text, etaMinutes, ...fields }) => {
+    if (etaMinutes !== undefined && fields.expectedDoneAt !== undefined) {
+      throw new Error('Pass either etaMinutes or expectedDoneAt, not both');
+    }
     const cleanFields: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) cleanFields[k] = v;
     }
+    if (etaMinutes !== undefined) cleanFields.expectedDoneAt = etaFromMinutes(etaMinutes);
     const node = await backend.createNode(mapId, parentId, text, cleanFields);
     const base = `Created node "${text}" (id: ${node.id}) under parent ${parentId}`;
     // Flag missing estimate so agents/users don't forget to size new work —
@@ -133,6 +154,19 @@ export const updateNodeTool = defineTool({
     priority: z.enum(['P0', 'P1', 'P2', 'P3']).nullable().optional().describe('Priority'),
     dueDate: z.string().nullable().optional().describe('Due date (ISO 8601)'),
     startDate: z.string().nullable().optional().describe('Start date (ISO 8601)'),
+    expectedDoneAt: z
+      .string()
+      .datetime({ offset: true })
+      .nullable()
+      .optional()
+      .describe('Your ETA for this node (ISO 8601 with offset): when you expect to be done. Shown on the Kanban card, "overdue" once past. null clears it. Cannot be combined with etaMinutes.'),
+    etaMinutes: z
+      .number()
+      .int()
+      .min(1)
+      .max(60 * 24 * 30)
+      .optional()
+      .describe('Your ETA as minutes from now — the server turns it into expectedDoneAt. Set it when you start a ticket and again when your estimate changes. Cannot be combined with expectedDoneAt.'),
     tags: z
       .array(z.string())
       .optional()
@@ -229,12 +263,16 @@ export const updateNodeTool = defineTool({
         "Free-form scope tags declaring what work this node touches. Used by conflict_scan to surface in-flight nodes that might conflict with this node when it's dispatched. Examples: 'apps/workflows', 'model:Mandate', 'migration:workflows', 'frontend:contacts'. Empty array clears all scopes.",
       ),
   },
-  handler: async (backend, { mapId, nodeId, clearLinkedPr, ...fields }) => {
+  handler: async (backend, { mapId, nodeId, clearLinkedPr, etaMinutes, ...fields }) => {
+    if (etaMinutes !== undefined && fields.expectedDoneAt !== undefined) {
+      throw new Error('Pass either etaMinutes or expectedDoneAt, not both');
+    }
     const cleanFields: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fields)) {
       if (v !== undefined) cleanFields[k] = v;
     }
     if (clearLinkedPr) cleanFields.linkedPr = null;
+    if (etaMinutes !== undefined) cleanFields.expectedDoneAt = etaFromMinutes(etaMinutes);
     if (Object.keys(cleanFields).length === 0) return 'No fields to update.';
     await backend.updateNode(mapId, nodeId, cleanFields);
     return `Updated node ${nodeId}: ${Object.keys(cleanFields).join(', ')}`;

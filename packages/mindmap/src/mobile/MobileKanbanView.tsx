@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -138,8 +138,9 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 col.status?.category === 'done',
                 (id) => nodeMap.get(id)?.text ?? id,
               );
-              const started =
-                col.status?.category === 'in_progress' ? startedLabel(n.startedAt) : null;
+              const inProgress = col.status?.category === 'in_progress';
+              const started = inProgress ? startedLabel(n.startedAt) : null;
+              const eta = inProgress ? etaLabel(n.expectedDoneAt) : null;
               return (
                 <button
                   key={n.id}
@@ -170,6 +171,11 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color: '#64748b' }}>
                     <span>{pct}%</span>
                     {started && <span title={started.full}>· {started.short}</span>}
+                    {eta && (
+                      <span title={eta.full} style={eta.overdue ? { color: '#dc2626', fontWeight: 600 } : undefined}>
+                        · {eta.short}
+                      </span>
+                    )}
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}

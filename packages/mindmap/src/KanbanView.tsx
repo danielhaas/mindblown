@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -95,6 +95,7 @@ function Card({
   const progress = node.percentComplete ?? computedProgress;
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
   const started = showStarted ? startedLabel(node.startedAt) : null;
+  const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
 
   return (
     <div
@@ -276,6 +277,17 @@ function Card({
             style={{ fontSize: 10, color: '#64748b' }}
           >
             {started.short}
+          </span>
+        )}
+
+        {/* The worker's ETA */}
+        {eta && (
+          <span
+            data-testid="kanban-card-eta"
+            title={eta.full}
+            style={{ fontSize: 10, color: eta.overdue ? '#dc2626' : '#64748b', fontWeight: eta.overdue ? 600 : undefined }}
+          >
+            {eta.short}
           </span>
         )}
 
@@ -742,7 +754,7 @@ export function KanbanView() {
           (s) => s.id === node.status || s.name.toLowerCase() === (node.status ?? '').toLowerCase(),
         )?.category === 'done';
         const stampStart = toCategory === 'in_progress' && !node.startedAt;
-        const clearStart = toCategory === 'todo' && node.startedAt != null;
+        const clearStart = toCategory === 'todo' && (node.startedAt != null || node.expectedDoneAt != null);
         if (toDone !== fromDone || stampStart || clearStart) {
           const current = useMindmapStore.getState().nodes[nodeId];
           if (current) {
@@ -750,7 +762,7 @@ export function KanbanView() {
               ...current,
               ...(toDone !== fromDone && { completedAt: toDone ? new Date().toISOString() : null }),
               ...(stampStart && { startedAt: new Date().toISOString() }),
-              ...(clearStart && { startedAt: null }),
+              ...(clearStart && { startedAt: null, expectedDoneAt: null }),
             });
           }
         }

@@ -1083,6 +1083,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       priorityRank: null,
     completedAt: null,
       startedAt: null,
+      expectedDoneAt: null,
       requirementId: null,
       requirementPriority: null,
       requirementText: null,

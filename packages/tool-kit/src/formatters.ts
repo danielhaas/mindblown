@@ -79,6 +79,10 @@ function renderTreeNode(
   }
   if (node.status) parts.push(`status: ${node.status}`);
   if (node.startedAt && node.computedProgress < 100) parts.push(`started: ${node.startedAt}`);
+  if (node.expectedDoneAt && node.computedProgress < 100) {
+    const overdue = Date.parse(node.expectedDoneAt) < Date.now() ? ' (overdue)' : '';
+    parts.push(`eta: ${node.expectedDoneAt}${overdue}`);
+  }
   if (node.priority) parts.push(node.priority);
   if (node.phaseId) parts.push(`phase: ${phaseNameById?.get(node.phaseId) ?? node.phaseId}`);
   if (node.dueDate) parts.push(`due: ${node.dueDate}`);
