@@ -124,6 +124,10 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
   // never logged, never in status or the journal.
   app.post<{ Params: { id: string }; Body: { mapId?: unknown } }>('/api/fleets/:id/repo-credentials', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
+    // An API key only: the loopback /mcp JWT carries a user id too.
+    if (req.authSource !== 'api-key') {
+      return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'Repo credentials need the fleet key' } });
+    }
     const result = await issueRepoCredentials(req.userId, req.params.id, req.body?.mapId);
     if ('status' in result) return reply.status(result.status).send({ error: { code: result.code, message: result.message } });
     return reply.header('Cache-Control', 'no-store').send(result);

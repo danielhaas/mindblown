@@ -6,16 +6,19 @@
  *
  * Handed out only while the project is connected to THIS fleet, isn't
  * archived and has a forge connection — unpicking ends it at the next
- * request. Credentials belong to the project, never to the fleet: when a
- * fleet is shared (phase 2), it still gets each project's own access only.
+ * request. And only to a fleet owned by the map's creator: the token is
+ * the creator's (their PAT, Gitea sign-in or GitHub App), and a map admin
+ * who connects someone's map to their own fleet must not walk away with
+ * it. Phase 2 (sharing) revisits this with project-scoped bot tokens.
  *
- * Phase 1 hands out the project's existing forge token (the owner's), so
- * the fleet's commits and PRs appear as the owner; a forge bot account can
- * replace it later without changing this flow.
+ * Credentials belong to the project, never to the fleet. An App-bound map
+ * gets a fresh token for just its repo; a PAT/OAuth token can't be
+ * narrowed and goes out as is, so the fleet's commits and PRs appear as
+ * the token's owner — a forge bot account can replace it later.
  */
 import * as fleetDb from '../db/fleets.js';
 import * as handouts from '../db/fleetRepoHandouts.js';
-import { getForgeContextForMap, ticketRepo } from '../lib/githubContext.js';
+import { getFleetRepoCredentials } from '../lib/githubContext.js';
 import type { TicketRepo } from '@mindblown/tool-kit';
 
 export type RepoAccessError = { status: number; code: string; message: string };
@@ -43,13 +46,21 @@ export async function issueRepoCredentials(userId: string, fleetId: string, mapI
   if (!map || map.fleetId !== fleetId) {
     return { status: 403, code: 'NOT_CONNECTED', message: 'This project is not connected to this fleet' };
   }
+  const fleet = await fleetDb.getFleet(fleetId);
+  if (!fleet || fleet.ownerId !== map.createdBy) {
+    return {
+      status: 403,
+      code: 'NOT_PROJECT_OWNER',
+      message: "Repo credentials go only to a fleet owned by the project's creator — the forge token is theirs",
+    };
+  }
   if (map.archivedAt) {
     return { status: 409, code: 'MAP_ARCHIVED', message: 'This project is archived; the fleet skips it until it is unarchived' };
   }
-  const ctx = await getForgeContextForMap(mapId);
-  if (!ctx) {
+  const found = await getFleetRepoCredentials(mapId);
+  if (!found) {
     return { status: 404, code: 'NO_REPO', message: 'This project has no repo connected (or its forge connection is broken)' };
   }
-  await handouts.recordHandout(fleetId, mapId, `${ctx.owner}/${ctx.repo}`);
-  return { ...ticketRepo(ctx.forge.endpoint, ctx.owner, ctx.repo), token: ctx.token, gitUsername: 'x-access-token' };
+  await handouts.recordHandout(fleetId, mapId, `${found.repo.owner}/${found.repo.name}`);
+  return { ...found.repo, token: found.token, gitUsername: 'x-access-token' };
 }

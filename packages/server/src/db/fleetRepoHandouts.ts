@@ -10,7 +10,10 @@ const KEEP_MS = 30 * 24 * 60 * 60 * 1000;
 
 export async function recordHandout(fleetId: string, mapId: string, repo: string, now = new Date()): Promise<void> {
   await db.insert(fleetRepoHandouts).values({ fleetId, mapId, repo, createdAt: now });
-  await db.delete(fleetRepoHandouts).where(lt(fleetRepoHandouts.createdAt, new Date(now.getTime() - KEEP_MS)));
+  // This fleet's old rows only — the index leads with fleet_id.
+  await db
+    .delete(fleetRepoHandouts)
+    .where(and(eq(fleetRepoHandouts.fleetId, fleetId), lt(fleetRepoHandouts.createdAt, new Date(now.getTime() - KEEP_MS))));
 }
 
 export interface HandoutSummary {

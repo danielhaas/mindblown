@@ -196,6 +196,33 @@ export async function mintInstallationToken(installationId: string): Promise<str
   return installationToken.token;
 }
 
+/**
+ * A token narrowed to one repo and the two permissions a fleet worker
+ * needs (push a branch, open a PR) — minted fresh, never cached, never
+ * the server's own token (mindblown#507). It expires on its own within an
+ * hour; GitHub can't revoke it early on unpick.
+ */
+export async function mintScopedRepoToken(installationId: string, repo: string): Promise<{ token: string; expiresAt: string }> {
+  const appJwt = await mintAppJwt();
+  const res = await fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/vnd.github+json',
+      Authorization: `Bearer ${appJwt}`,
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ repositories: [repo], permissions: { contents: 'write', pull_requests: 'write' } }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    if (res.status === 401 || res.status === 404 || res.status === 422) throw new GitHubApiError(res.status, body, 'github');
+    throw new Error(`Failed to mint a scoped installation token: ${res.status} ${body}`);
+  }
+  const data = (await res.json()) as { token: string; expires_at: string };
+  return { token: data.token, expiresAt: data.expires_at };
+}
+
 // ── Repository Listing ───────────────────────────────────────────
 
 /**
