@@ -9,7 +9,7 @@ import { GanttView } from './GanttView.js';
 import { ListView } from './ListView.js';
 import { CalendarView } from './CalendarView.js';
 import { SprintPanel } from './SprintPanel.js';
-import { BlockedPanel } from './BlockedPanel.js';
+import { BlockedPanel, useBlockedLeaves } from './BlockedPanel.js';
 import { TriagePanel } from './TriagePanel.js';
 import { PlanHealthPanel } from './PlanHealthPanel.js';
 import { listTriageDecisions } from './api.js';
@@ -1351,7 +1351,7 @@ function BlockedIndicator({
   return (
     <button
       onClick={onOpenPanel}
-      title={hasBlocked ? `${count} blocked node(s)` : 'No blocked nodes'}
+      title={hasBlocked ? `${count} blocked or stalled node(s)` : 'No blocked nodes'}
       style={{
         padding: '3px 10px',
         borderRadius: 4,
@@ -1584,6 +1584,7 @@ export function App() {
 
   const [sprintPanelOpen, setSprintPanelOpen] = useState(false);
   const [blockedPanelOpen, setBlockedPanelOpen] = useState(false);
+  const blocked = useBlockedLeaves();
   const [triagePanelOpen, setTriagePanelOpen] = useState(false);
   const [planHealthPanelOpen, setPlanHealthPanelOpen] = useState(false);
   const [triagePendingCount, setTriagePendingCount] = useState(0);
@@ -1854,11 +1855,6 @@ export function App() {
   const effort = rootComputed?.computedEffort ?? 0;
   const health = rootComputed?.healthSignal ?? 'on_track';
   const nodeCount = Object.keys(nodes).length;
-  let blockedLeafCount = 0;
-  for (const n of Object.values(nodes)) {
-    if (n.childrenIds.length > 0) continue;
-    if (computed.get(n.id)?.isBlocked) blockedLeafCount += 1;
-  }
 
   // Loading overlay for map load
   if (loading && nodeCount === 0) {
@@ -2112,7 +2108,7 @@ export function App() {
           {/* Blocked indicator */}
           {showPanel('blocked') && (<>
           <BlockedIndicator
-            count={blockedLeafCount}
+            count={blocked.total}
             panelOpen={blockedPanelOpen}
             onOpenPanel={() => {
               setBlockedPanelOpen(!blockedPanelOpen);
@@ -2434,7 +2430,7 @@ export function App() {
             Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
             offen ist. */}
         {blockedPanelOpen && showPanel('blocked') ? (
-          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} />
+          <BlockedPanel onClose={() => setBlockedPanelOpen(false)} blocked={blocked} />
         ) : sprintPanelOpen && showPanel('sprint') ? (
           <SprintPanel onClose={() => setSprintPanelOpen(false)} />
         ) : triagePanelOpen && currentMapId && showPanel('triage') ? (
