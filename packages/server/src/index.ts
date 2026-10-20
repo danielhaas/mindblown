@@ -45,6 +45,7 @@ import { mediaRoutes } from './routes/media.js';
 import { orchestrationRoutes } from './routes/orchestration.js';
 import { fleetRoutes, fleetTelemetryRoutes } from './routes/fleet.js';
 import { fleetEntityRoutes } from './routes/fleets.js';
+import { fleetPairingRoutes } from './routes/fleetPairings.js';
 import { asksRoutes } from './routes/asks.js';
 import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
 import { prRoutes } from './routes/prs.js';
@@ -132,6 +133,7 @@ async function main(): Promise<void> {
   await app.register(fleetRoutes);
   await app.register(fleetTelemetryRoutes);
   await app.register(fleetEntityRoutes);
+  await app.register(fleetPairingRoutes);
   await app.register(asksRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(fleetJournalByFleetRoutes);

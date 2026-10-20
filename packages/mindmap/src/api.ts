@@ -1040,12 +1040,35 @@ export function revokeFleetCredential(fleetId: string, keyId: string): Promise<v
   return request(`/api/fleets/${fleetId}/credentials/${keyId}`, { method: 'DELETE' });
 }
 
-/** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
+/** A machine waiting to be paired (#506) — what it reported when it registered. */
+export interface PairingMachine {
+  hostname: string;
+  agent: string | null;
+  model: string | null;
+  slots: number;
+  registeredAt: string;
+  expiresAt: string;
+}
+
+/** Which machine shows this code. A wrong code counts against a per-user limit. */
+export function lookupPairing(code: string): Promise<PairingMachine> {
+  return request<PairingMachine>('/api/fleet-pairings/lookup', { method: 'POST', body: JSON.stringify({ code }) });
+}
+
+/** Pair the machine: a new fleet (`name`, default its hostname) or `fleetId`, one you own (replaces its keys). */
+export function confirmPairing(
+  code: string,
+  target: { name?: string; fleetId?: string },
+): Promise<{ fleetId: string; fleetName: string; created: boolean; machine: PairingMachine }> {
+  return request('/api/fleet-pairings/confirm', { method: 'POST', body: JSON.stringify({ code, ...target }) });
+}
+
 /** Rename a fleet (owner only). */
 export function renameFleet(fleetId: string, name: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
 }
 
+/** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
 export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`);
 }
