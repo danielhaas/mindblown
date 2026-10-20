@@ -196,24 +196,34 @@ export async function mintInstallationToken(installationId: string): Promise<str
   return installationToken.token;
 }
 
+/** What a fleet worker does with the repo: push a branch, open and merge the PR. */
+const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;
+/** And what it reads to merge on green CI (claude-fleet#74). Optional: an App without them still works. */
+const FLEET_TOKEN_CI_PERMISSIONS = { checks: 'read', statuses: 'read' } as const;
+
 /**
- * A token narrowed to one repo and the two permissions a fleet worker
- * needs (push a branch, open a PR) — minted fresh, never cached, never
- * the server's own token (mindblown#507). It expires on its own within an
- * hour; GitHub can't revoke it early on unpick.
+ * A token narrowed to one repo and the permissions a fleet worker needs —
+ * minted fresh, never cached, never the server's own token (mindblown#507).
+ * It expires on its own within an hour; GitHub can't revoke it early on
+ * unpick. CI read access is asked for first; an App that lacks it (GitHub
+ * answers 422) gets a token without it, and the worker then reports "no
+ * CI" instead of merging.
  */
 export async function mintScopedRepoToken(installationId: string, repo: string): Promise<{ token: string; expiresAt: string }> {
   const appJwt = await mintAppJwt();
-  const res = await fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${appJwt}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ repositories: [repo], permissions: { contents: 'write', pull_requests: 'write' } }),
-  });
+  const mint = (permissions: Record<string, string>) =>
+    fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${appJwt}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ repositories: [repo], permissions }),
+    });
+  let res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  if (res.status === 422) res = await mint(FLEET_TOKEN_PERMISSIONS);
   if (!res.ok) {
     const body = await res.text();
     if (res.status === 401 || res.status === 404 || res.status === 422) throw new GitHubApiError(res.status, body, 'github');
