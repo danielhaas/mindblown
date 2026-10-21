@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -69,10 +69,12 @@ function formatDate(iso: string): string {
 
 // ── Card Component ───────────────────────────────────────────────
 
-/** Card + badge colours per block kind: grey in the way, amber yours, indigo a later version. */
+/** Card + badge colours per block kind: grey in the way, amber yours (a brief is too), indigo a later version. */
 function blockLook(block: CardBlock) {
   if (!block) return null;
-  if (block.kind === 'human') return { label: 'Needs you', card: '#fffbeb', border: '#f59e0b', badge: '#fde68a', text: '#92400e' };
+  if (block.kind === 'human' || block.kind === 'brief') {
+    return { label: block.kind === 'brief' ? 'Needs brief' : 'Needs you', card: '#fffbeb', border: '#f59e0b', badge: '#fde68a', text: '#92400e' };
+  }
   if (block.kind === 'later') return { label: 'Later', card: '#eef2ff', border: '#a5b4fc', badge: '#e0e7ff', text: '#3730a3' };
   return { label: block.kind === 'blocked' ? 'Blocked' : 'Waiting', card: '#e2e8f0', border: '#94a3b8', badge: '#cbd5e1', text: '#475569' };
 }
@@ -107,7 +109,7 @@ function Card({
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
   const started = showStarted ? startedLabel(node.startedAt) : null;
   const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
-  const human = block?.kind === 'human';
+  const human = block?.kind === 'human' || block?.kind === 'brief';
   const later = block?.kind === 'later';
   const greyed = block !== null && !human && !later;
   const look = blockLook(block);
@@ -406,7 +408,7 @@ function Column({
   const blocks = new Map(
     column.cards.map((c) => [
       c.node.id,
-      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null, later.get(c.node.id) ?? null),
+      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null, later.get(c.node.id) ?? null, needsBriefOnBoard(c.node, column.category)),
     ]),
   );
   // Ready = nothing in its way: not blocked, not waiting on a dependency, not held for a person, not fenced out by the gate.
@@ -538,7 +540,7 @@ function Column({
               padding: '1px 7px',
               borderRadius: 10,
             }}
-            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person, not outside the fleet's gate`}
+            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person, not outside the fleet's gate, not missing a brief`}
           >
             {readyCount} ready
           </span>

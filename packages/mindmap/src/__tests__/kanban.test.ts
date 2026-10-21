@@ -1,6 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+
+describe('needsBriefOnBoard — the pull queue\'s empty-brief guard', () => {
+  const issue = { id: 'l', provider: 'github', url: 'https://github.com/o/r/issues/1', externalId: 'o/r#1', isPullRequest: false, syncEnabled: true };
+  it('open cards with no description and no issue; a description or an issue is a brief; running work is not checked', () => {
+    expect(needsBriefOnBoard({ description: null, externalLinks: [] }, 'todo')).toBe(true);
+    expect(needsBriefOnBoard({ description: '  ', externalLinks: [] }, null)).toBe(true);
+    expect(needsBriefOnBoard({ description: 'Add a locations table', externalLinks: [] }, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ description: null, externalLinks: [issue] } as never, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ description: null, externalLinks: [] }, 'in_progress')).toBe(false);
+  });
+
+  it('is the weakest state: Later, Waiting and Needs you win', () => {
+    const n = { status: 'todo', tags: [], blockedReason: null };
+    expect(cardBlockState(n, null, false, (id) => id, null, null, true)?.kind).toBe('brief');
+    expect(cardBlockState(n, null, false, (id) => id, null, 'Later', true)?.kind).toBe('later');
+    expect(cardBlockState(n, null, false, (id) => id, 'Needs a person', null, true)?.kind).toBe('human');
+  });
+});
 
 describe('hiddenFromBoard', () => {
   const todo: StatusDef = { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 };

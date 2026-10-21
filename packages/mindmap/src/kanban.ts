@@ -18,6 +18,7 @@ import {
   dispatchHold,
   effectiveVersionId,
   EPIC_HOLD_TAG,
+  hasBrief,
   matchesDispatchGate,
   parseGateEntry,
   type BlockedBy,
@@ -170,7 +171,7 @@ export function etaLabel(
  * What a card shows: a manual block, a hold for a person, a dependency
  * wait, or nothing.
  */
-export type CardBlock = { kind: 'blocked' | 'human' | 'waiting' | 'later'; detail: string } | null;
+export type CardBlock = { kind: 'blocked' | 'human' | 'waiting' | 'later' | 'brief'; detail: string } | null;
 
 interface BlockableNode {
   status: string | null;
@@ -209,7 +210,8 @@ export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, s
  *     "blocked";
  *   - human: held for a person (`personHolds`), passed in as its hover text;
  *   - waiting: a finish-to-start predecessor that is not 100% done;
- *   - later: outside the dispatch gate (`outsideGate`), passed in as its hover text.
+ *   - later: outside the dispatch gate (`outsideGate`), passed in as its hover text;
+ *   - brief: no description and no linked issue (`needsBriefOnBoard`).
  * Done work is never shown as blocked.
  */
 export function cardBlockState(
@@ -219,6 +221,7 @@ export function cardBlockState(
   titleOf: (id: string) => string,
   personHold: string | null = null,
   laterNote: string | null = null,
+  needsBrief = false,
 ): CardBlock {
   if (isDone) return null;
   const manual =
@@ -236,7 +239,24 @@ export function cardBlockState(
     return { kind: 'waiting', detail: `Waiting on: ${preds.map(titleOf).join(', ')}` };
   }
   if (laterNote) return { kind: 'later', detail: laterNote };
+  if (needsBrief) return { kind: 'brief', detail: NEEDS_BRIEF_NOTE };
   return null;
+}
+
+const NEEDS_BRIEF_NOTE = 'Needs a brief — no description and no linked issue, so the fleet will not take it';
+
+/**
+ * An open ticket the pull queue refuses for want of a brief (core
+ * `hasBrief`): no description, no linked issue. Only in a todo-category or
+ * the no-status column — running work already has its worker. Needs the
+ * full node: a board loaded with `?omit=description` (mobile) cannot tell.
+ */
+export function needsBriefOnBoard(
+  node: Pick<Node, 'description' | 'externalLinks'>,
+  columnCategory: string | null,
+): boolean {
+  if (columnCategory !== null && columnCategory !== 'todo') return false;
+  return !hasBrief(node);
 }
 
 /**
