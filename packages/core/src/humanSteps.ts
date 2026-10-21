@@ -11,7 +11,7 @@
  * Like stalled asks (stalled.ts) they are derived on read, never stored
  * while open: the tag is the truth, and answering changes the tag.
  */
-import type { Ask } from './asks.js';
+import { questionParts, type Ask, type QuestionParts } from './asks.js';
 import { dispatchSkipTag } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
@@ -46,6 +46,90 @@ export function nextStepOf(description: unknown): string | null {
   return m ? m[1].trim() : null;
 }
 
+const SUMMARY_MAX = 1000;
+
+/**
+ * What the step row says when no "Next step (a person):" line is there: the
+ * description's first paragraph, headings skipped. Most needs-human nodes
+ * (audit findings, ops tickets) say what is left in it, and the bare
+ * "Tagged needs-human" sent the reader into the node for every row.
+ */
+export function stepSummaryOf(description: unknown): string | null {
+  const text = typeof description === 'string' ? description : description ? proseMirrorToPlainText(description) : '';
+  for (const para of (text ?? '').split(/\n\s*\n/)) {
+    const body = para
+      .split('\n')
+      .filter((l) => !/^\s*#/.test(l))
+      .join(' ')
+      .replace(/\*\*/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (body) return body.length > SUMMARY_MAX ? `${body.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : body;
+  }
+  return null;
+}
+
+/** A step split for reading — `ordered` false when the items are separate points, not a sequence. */
+export interface StepParts extends QuestionParts {
+  ordered: boolean;
+}
+
+// An audit finding opens with its severity: "MEDIUM (needs prior RCE …)." or "LOW / policy.".
+const SEVERITY = /^((?:CRITICAL|HIGH|MEDIUM|LOW)\b(?:[^.(]|\([^)]*\))*\.)\s+/;
+const ABBREV = /\b(?:e\.g|i\.e|etc|vs|ca|approx)\.$/i;
+
+function sentences(text: string): string[] {
+  const out: string[] = [];
+  for (const piece of text.split(/(?<=\.)\s+(?=\S)/)) {
+    if (out.length > 0 && ABBREV.test(out[out.length - 1])) out[out.length - 1] += ` ${piece}`;
+    else out.push(piece);
+  }
+  return out;
+}
+
+/**
+ * A run of ≥3 items joined by `sep` — "Left: a; b; c" or "needs: a → b → c" —
+ * as lead (up to the colon, or the sentence start), items and what follows.
+ */
+function runOf(t: string, sep: string): QuestionParts | null {
+  const first = t.indexOf(sep);
+  const last = t.lastIndexOf(sep);
+  if (first < 0 || t.split(sep).length < 3) return null;
+  const sentenceStart = Math.max(0, t.lastIndexOf('. ', first) + 2);
+  const colon = t.lastIndexOf(': ', first);
+  const start = colon >= sentenceStart ? colon + 2 : sentenceStart;
+  const endMatch = /\.\s+(?=[A-Z])/.exec(t.slice(last));
+  const end = endMatch ? last + endMatch.index + 1 : t.length;
+  const items = t
+    .slice(start, end)
+    .split(sep)
+    .map((s) => s.trim().replace(/\.$/, ''))
+    .filter(Boolean);
+  return { lead: t.slice(0, start).trim(), items, tail: t.slice(end).trim() };
+}
+
+/**
+ * Steps are written as one paragraph like questions, but list differently:
+ * "Left: a; b; c" and "a → b → c" are a sequence (numbered); an audit
+ * finding — "LOW. Sentence. Sentence." — is separate points under its
+ * severity (bullets). Numbered lines go through questionParts.
+ */
+export function stepParts(text: string): StepParts {
+  const t = (text ?? '').trim();
+  const q = questionParts(t);
+  if (q.items.length > 0) return { ...q, ordered: true };
+  const sev = SEVERITY.exec(t);
+  if (sev) {
+    const points = sentences(t.slice(sev[0].length));
+    if (points.length >= 2) return { lead: sev[1], items: points, tail: '', ordered: false };
+  }
+  for (const sep of ['; ', ' → ']) {
+    const run = runOf(t, sep);
+    if (run) return { ...run, ordered: true };
+  }
+  return { lead: t, items: [], tail: '', ordered: false };
+}
+
 export function buildStepAsk(
   node: { id: string; text: string; tags: string[]; description?: unknown; priority?: string | null; externalLinks?: ExternalLink[]; percentComplete?: number | null },
   mapId: string,
@@ -53,6 +137,7 @@ export function buildStepAsk(
   const issue = (node.externalLinks ?? []).find((l) => isForgeLink(l) && !l.isPullRequest);
   const tag = dispatchSkipTag(node) ?? 'needs-human';
   const step = nextStepOf(node.description);
+  const summary = step ? null : stepSummaryOf(node.description);
   return {
     id: stepAskId(node.id),
     map_id: mapId,
@@ -63,7 +148,9 @@ export function buildStepAsk(
     sources: ['mindblown-step'],
     question: step
       ? `Next step: ${step}`
-      : `Tagged ${tag} — the fleet leaves it to a person. Open the node for what is left.`,
+      : summary
+        ? summary
+        : `Tagged ${tag} — the fleet leaves it to a person. Open the node for what is left.`,
     question_author: 'MindBlown',
     options: [...STEP_ASK_OPTIONS],
     answerer: 'Dan',
