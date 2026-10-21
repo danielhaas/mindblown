@@ -209,6 +209,31 @@ export async function setAnswer(k: AskKey, patch: AskAnswerPatch): Promise<AskRo
 }
 
 /**
+ * Record the answer to a question MindBlown derived itself (a stalled
+ * ask, services/stalledAsks.ts): the row did not exist while it was open.
+ * Same retention as a pushed row's answer; a fleet push never sends it,
+ * so it is pruned ANSWER_RETENTION_DAYS after the answer.
+ */
+export async function recordAnswer(k: AskKey, ask: Ask, patch: AskAnswerPatch): Promise<AskRow> {
+  const values = {
+    status: patch.status,
+    answer: patch.answer,
+    answeredBy: patch.answeredBy,
+    answeredAt: patch.answeredAt,
+    writes: patch.writes,
+    workerPending: patch.workerPending,
+    payload: ask,
+    pushedAt: patch.answeredAt,
+  };
+  const [row] = await db
+    .insert(asks)
+    .values({ fleetId: k.fleetId, mapId: k.mapId, askId: k.askId, firstSeenAt: patch.answeredAt, ...values })
+    .onConflictDoUpdate({ target: [asks.fleetId, asks.askId, asks.mapId], set: values })
+    .returning();
+  return toRow(row);
+}
+
+/**
  * The fleet acknowledges it delivered the worker notes (claudia-side
  * apply). `mapId` = only that map's rows (the map route); null = every row
  * of the fleet with these ids.

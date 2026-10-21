@@ -149,6 +149,37 @@ describe('applyLintFix — node-side actions', () => {
     expect(updateNode).toHaveBeenLastCalledWith('b', expect.objectContaining({ blockedReason: 'waiting on Dan' }));
   });
 
+  it('requeue puts it back in the queue as it stands: todo, progress kept, claim released', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 85 });
+    const r = await applyLintFix('m1', 'a', 'requeue', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { status: 'todo', claimedBySession: null });
+    expect(r.node.percentComplete).toBe(85);
+  });
+
+  it('needs-human: tag on, the blocker text becomes the next step at the top, blocker and a blocked status go', async () => {
+    seed({ id: 'a', status: 'blocked', percentComplete: 85, blockedReason: 'check on a real phone', tags: ['blocked', 'app'], description: 'Inter everywhere.' });
+    const r = await applyLintFix('m1', 'a', 'needs-human', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', {
+      tagsAppend: ['needs-human'],
+      claimedBySession: null,
+      description: '**Next step (a person): check on a real phone**\n\nInter everywhere.',
+      blockedReason: null,
+      tagsRemove: ['blocked'],
+      status: 'wip',
+    });
+    expect(r.changedFields).toEqual(['tags', 'claimedBySession', 'description', 'blockedReason', 'status']);
+  });
+
+  it('needs-human from a stalled answer keeps the free text as the step and leaves the status alone', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 90 });
+    await applyLintFix('m1', 'a', 'needs-human', 'u1', { note: 'run the import on prod' });
+    expect(updateNode).toHaveBeenCalledWith('a', {
+      tagsAppend: ['needs-human'],
+      claimedBySession: null,
+      description: '**Next step (a person): run the import on prod**',
+    });
+  });
+
   it('clear-blocker delegates to the unblock service and fans out its changed fields', async () => {
     seed({ id: 'a', status: 'shipped', blockedReason: 'swept', tags: ['blocked'] });
     const r = await applyLintFix('m1', 'a', 'clear-blocker', 'u1');

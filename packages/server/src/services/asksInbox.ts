@@ -9,13 +9,15 @@
  * project, like a tick's prose. A fleet-wide push's meta (counts across
  * projects) is cut the same way.
  */
-import { countAsks, sortAsks } from '@mindblown/core';
+import { countAsks, sortAsks, stalledAskNodeId } from '@mindblown/core';
 import type { AskDocumentMeta, AskRow } from '@mindblown/core';
 import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { getFleetForUser } from './fleets.js';
 import { authorizeTickPush, type TelemetryError } from './fleetTelemetry.js';
+import { openStalledAsks } from './stalledAsks.js';
+import * as nodeDb from '../db/nodes.js';
 
 export interface AskInbox {
   items: AskRow[];
@@ -29,9 +31,34 @@ export interface AskInbox {
   maps?: { id: string; name: string }[];
 }
 
+/**
+ * The stalled asks MindBlown adds to the collector's rows (services/stalledAsks.ts) —
+ * open by construction, so only for an open/all read, through the same filters.
+ */
+async function derivedRows(scope: asksDb.AskScope, mapIds: string[], f: asksDb.AskListFilters): Promise<AskRow[]> {
+  const status = f.status ?? 'open';
+  if ((status !== 'open' && status !== 'all') || f.since) return [];
+  if (f.hint && f.hint !== 'decision') return [];
+  if (f.answerer && f.answerer.toLowerCase() !== 'dan') return [];
+  // A side signal: a failed read leaves the collector's questions standing.
+  return openStalledAsks(scope, mapIds).catch((err) => {
+    console.error('[asks] stalled asks unavailable', err);
+    return [];
+  });
+}
+
 async function inbox(scope: asksDb.AskScope, filters: asksDb.AskListFilters, full: boolean): Promise<AskInbox> {
-  const [rows, push] = await Promise.all([asksDb.listAsks(scope, filters), asksDb.getPushMeta(scope)]);
-  const items = sortAsks(rows);
+  const mapIds = 'mapId' in scope ? [scope.mapId] : scope.visibleMapIds;
+  const [rows, push, derived] = await Promise.all([
+    asksDb.listAsks(scope, filters),
+    asksDb.getPushMeta(scope),
+    derivedRows(scope, mapIds, filters),
+  ]);
+  // A stalled ask answered once and stalled again shows its open question, not the old answer's row.
+  const open = new Set(derived.map((r) => `${r.mapId ?? ''}|${r.ask.id}`));
+  const merged = [...rows.filter((r) => r.status !== 'open' || !open.has(`${r.mapId ?? ''}|${r.ask.id}`)), ...derived];
+  const sorted = sortAsks(merged);
+  const items = filters.limit && filters.limit > 0 ? sorted.slice(0, filters.limit) : sorted;
   const meta: AskDocumentMeta | null = push
     ? push.fleetWide && !full
       ? { generated_at: push.meta.generated_at, tick: push.meta.tick }
@@ -68,7 +95,13 @@ export async function resolveFleetAnswer(userId: string, fleetId: string, askId:
   const view = await getFleetForUser(userId, fleetId);
   if ('status' in view) return view;
   const full = view.isOwner || view.hiddenMapCount === 0;
-  let rows = await asksDb.findAsks({ fleetId: view.id, visibleMapIds: view.maps.map((m) => m.id), fleetLevel: full }, askId);
+  let rows: Array<{ mapId?: string | null }> = await asksDb.findAsks({ fleetId: view.id, visibleMapIds: view.maps.map((m) => m.id), fleetLevel: full }, askId);
+  // A stalled ask is not stored while open (services/stalledAsks.ts): its node names the map.
+  const stalledNode = stalledAskNodeId(askId);
+  if (stalledNode && rows.length === 0) {
+    const nodeMap = await nodeDb.getNodeMapId(stalledNode);
+    if (nodeMap && view.maps.some((m) => m.id === nodeMap)) rows = [{ mapId: nodeMap }];
+  }
   if (mapId !== undefined) rows = rows.filter((r) => (r.mapId ?? '') === mapId);
   if (rows.length === 0) return { status: 404, code: 'ASK_NOT_FOUND', message: `Ask ${askId} not found` };
   if (rows.length > 1) {

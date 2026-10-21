@@ -229,7 +229,8 @@ export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-inp
 /** The skip tag a node carries, or null — the first match, as written on the node. */
 export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
   const skip = new Set<string>(DISPATCH_SKIP_TAGS);
-  return node.tags.find((t) => skip.has(t.toLowerCase())) ?? null;
+  // `?? []`: lint and test fixtures build nodes without tags.
+  return (node.tags ?? []).find((t) => skip.has(t.toLowerCase())) ?? null;
 }
 
 /** The tag an epic leaf is held under (it shows where a skip tag would). */
@@ -247,7 +248,7 @@ const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic\s*[:\-–—])/i;
  * starts with "Epic:" or "[EPIC]".
  */
 export function isEpicLeaf(node: Pick<Node, 'tags' | 'text'>): boolean {
-  return node.tags.some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');
+  return (node.tags ?? []).some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');
 }
 
 /** Why a ticket waits for a person: a skip tag, a manual blocker, or both. */
@@ -302,6 +303,39 @@ export function dispatchHold(
   return null;
 }
 
+/** An open parent whose skip tag or blocker holds tickets below it. */
+export interface ParentHold {
+  id: string;
+  text: string;
+  tag: string | null;
+  blockedReason: string | null;
+  /** Tickets below it that would otherwise be pullable. */
+  count: number;
+}
+
+/**
+ * The parents holding tickets, most first. A hold on a parent holds its
+ * whole subtree (dispatchHold) — meant for "this epic waits on a
+ * decision", but nothing shows how much it takes out of the queue: a
+ * needs-human tag on the Navy security-audit umbrella silently held all
+ * 18 of its findings (21.10.2026). Shared by the Dispatch card and the
+ * hold-on-parent lint rule.
+ */
+export function parentHolds(
+  tickets: Array<Pick<Node, 'tags' | 'blockedReason' | 'parentId' | 'text'>>,
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): ParentHold[] {
+  const byParent = new Map<string, ParentHold>();
+  for (const t of tickets) {
+    const hold = dispatchHold(t, ancestors);
+    if (!hold?.heldBy) continue;
+    const prev = byParent.get(hold.heldBy.id);
+    if (prev) prev.count++;
+    else byParent.set(hold.heldBy.id, { id: hold.heldBy.id, text: hold.heldBy.text, tag: hold.tag, blockedReason: hold.blockedReason, count: 1 });
+  }
+  return [...byParent.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
+}
+
 export type DispatchState = 'hold' | 'full' | 'empty' | 'running';
 
 export interface DispatchQueueSnapshot {
@@ -322,6 +356,8 @@ export interface DispatchQueueSnapshot {
   unestimated: number;
   /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, on it or an open ancestor — `dispatchHold`) — never granted. */
   humanOnly: number;
+  /** The open parents behind `humanOnly` that hold tickets through their subtree, most first. */
+  heldByParents: ParentHold[];
   /**
    * Pullable tickets with NO effective version while the gate fences on a
    * version — invisible to the fleet until someone versions them. The
@@ -384,6 +420,7 @@ export function dispatchQueueSnapshot(
     needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
     humanOnly: gatedAll.length - gated.length,
+    heldByParents: parentHolds(gatedAll, ancestors),
     unversionedOutsideGate,
     unknownGateEntries,
     inGateIds: inGate.map((n) => n.id),

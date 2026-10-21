@@ -498,7 +498,7 @@ describe('POST /api/maps/:id/lint/fix', () => {
     const leaf = mapData.nodes[1] as { status: string | null; percentComplete: number | null; claimedBySession?: string | null };
     const app = await buildApp();
     const fix = () =>
-      app.inject({ method: 'POST', url: '/api/maps/map-1/lint/fix', payload: { ruleId: 'stalled-unclaimed', nodeId: 'leaf-1', action: 'reopen' } });
+      app.inject({ method: 'POST', url: '/api/maps/map-1/lint/fix', payload: { ruleId: 'stalled-unclaimed', nodeId: 'leaf-1', action: 'requeue' } });
 
     leaf.status = 'wip';
     leaf.percentComplete = 25;
@@ -511,7 +511,7 @@ describe('POST /api/maps/:id/lint/fix', () => {
     leaf.claimedBySession = null;
     const live = await fix();
     expect(live.statusCode).toBe(200);
-    expect(applyLintFix).toHaveBeenCalledWith('map-1', 'leaf-1', 'reopen', 'user-1', { note: undefined });
+    expect(applyLintFix).toHaveBeenCalledWith('map-1', 'leaf-1', 'requeue', 'user-1', { note: undefined });
 
     leaf.status = null;
     leaf.percentComplete = 0;

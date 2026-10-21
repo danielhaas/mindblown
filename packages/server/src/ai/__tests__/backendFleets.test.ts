@@ -34,6 +34,7 @@ const pullFleetTicket = vi.hoisted(() => vi.fn(async () => ({ granted: false, re
 vi.mock('../../services/orchestration.js', () => ({ pullFleetTicket }));
 vi.mock('../../services/unblock.js', () => ({}));
 vi.mock('../../services/asks.js', () => ({}));
+vi.mock('../../services/stalledAsks.js', () => ({ openStalledAsks: async () => [] }));
 vi.mock('../../services/fleetJournal.js', () => ({}));
 vi.mock('../../sync/closedIssueAudit.js', () => ({}));
 vi.mock('../../lib/githubContext.js', () => ({}));

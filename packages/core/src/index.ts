@@ -137,13 +137,14 @@ export {
   dispatchQueueSnapshot,
   dispatchSkipTag,
   dispatchHold,
+  parentHolds,
   isEpicLeaf,
   EPIC_HOLD_TAG,
   DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
   planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, UnblockPlan } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
 
 // Leidang fleet telemetry — rollup/tick shapes + the reading the Fleet card shows
 export {
@@ -358,8 +359,23 @@ export { classifyBlocker, groupBlockers, STALLED_GROUP_LABEL } from './blockers.
 export type { BlockerKind, BlockerGroup, BlockedItem } from './blockers.js';
 
 // Stalled — in progress, unclaimed, no change for hours
-export { STALLED_AFTER_HOURS, isStalledCandidate, findStalled, formatIdle, describeStalled } from './stalled.js';
-export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity } from './stalled.js';
+export {
+  STALLED_AFTER_HOURS,
+  isStalledCandidate,
+  findStalled,
+  formatIdle,
+  describeStalled,
+  STALLED_ASK_AFTER_HOURS,
+  STALLED_ASK_PREFIX,
+  STALLED_ASK_OPTIONS,
+  stalledAskId,
+  stalledAskNodeId,
+  isStalledAskDue,
+  buildStalledAsk,
+  stalledAnswerAction,
+  stalledAnswerNote,
+} from './stalled.js';
+export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity, StalledAnswer } from './stalled.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

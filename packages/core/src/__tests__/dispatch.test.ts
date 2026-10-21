@@ -382,4 +382,27 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect(isEpicLeaf({ text: 'Epics are fun', tags: [] })).toBe(false);
     expect(isEpicLeaf({ text: 'Fix the epic import', tags: ['EPIC'] })).toBe(true);
   });
+
+  it('names the parents that hold tickets through their subtree, most first (the Navy audit umbrella)', async () => {
+    const { dispatchQueueSnapshot, parentHolds } = await import('../dispatch.js');
+    const n = (id: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
+      ({ id, text: id, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+    const nodes = [
+      n('root', null, { childrenIds: ['audit', 'epic', 'own'] }),
+      n('audit', 'root', { tags: ['needs-human'], status: 'in_progress', childrenIds: ['f1', 'f2', 'f3'] }),
+      n('f1', 'audit'),
+      n('f2', 'audit'),
+      n('f3', 'audit'),
+      n('epic', 'root', { blockedReason: 'Waiting on Dan', status: 'in_progress', childrenIds: ['s1'] }),
+      n('s1', 'epic'),
+      n('own', 'root', { tags: ['needs-human'] }), // held by its own tag, not a parent
+    ];
+    const snap = dispatchQueueSnapshot(nodes, { workflow: [], cap: 3, gate: [] });
+    expect(snap.heldByParents).toEqual([
+      { id: 'audit', text: 'audit', tag: 'needs-human', blockedReason: null, count: 3 },
+      { id: 'epic', text: 'epic', tag: null, blockedReason: 'Waiting on Dan', count: 1 },
+    ]);
+    const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
+    expect(parentHolds([nodes[2], nodes[7]] as never, { nodeMap, isDone: () => false }).map((h) => [h.id, h.count])).toEqual([['audit', 1]]);
+  });
 });

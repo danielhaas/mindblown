@@ -26,6 +26,7 @@ const clearWorkerPendingMock = vi.fn(async () => 1);
 const answerAskMock = vi.fn();
 const syncMock = vi.fn(async () => {});
 const broadcastMock = vi.fn();
+const openStalledAsksMock = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const state = vi.hoisted(() => ({
   perm: {} as Record<string, string | null>,
   view: null as unknown,
@@ -55,6 +56,8 @@ vi.mock('../../services/asks.js', async () => {
   const real = await vi.importActual<typeof import('../../services/asks.js')>('../../services/asks.js');
   return { ...real, answerAsk: (...a: unknown[]) => answerAskMock(...a) };
 });
+vi.mock('../../services/stalledAsks.js', () => ({ openStalledAsks: (...a: unknown[]) => openStalledAsksMock(...a) }));
+vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async (id: string) => (id === 'stuck-node' ? OTHER : null) }));
 vi.mock('../nodes.js', () => ({ syncNodeToGitHub: (...a: unknown[]) => syncMock(...(a as [])) }));
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
 
@@ -281,6 +284,31 @@ describe('fleet routes (#479)', () => {
     expect(answerAskMock).toHaveBeenCalledWith({ fleetId: FLEET, mapId: OTHER, askId: '#1' }, { action: 'later' }, 'u1');
     expect(broadcastMock).toHaveBeenCalledWith(OTHER, expect.objectContaining({ type: 'asks:updated', kind: 'answer' }));
     expect(denied.statusCode).toBe(403);
+  });
+
+  it('adds MindBlown\'s stalled asks to an open read of the viewable maps, counted like any other', async () => {
+    const stalledRow = { ask: { id: 'stalled-stuck-node', question: 'done?', answerer: 'Dan', hint: 'decision', options: ['Done'], unblocks: { node_id: 'stuck-node' } }, mapId: OTHER, status: 'open', pushedAt: 'p', firstSeenAt: 'f' };
+    openStalledAsksMock.mockResolvedValueOnce([stalledRow]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/asks` });
+    const answered = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/asks?status=answered` });
+    await app.close();
+    expect(openStalledAsksMock).toHaveBeenCalledTimes(1); // not for the answered read
+    expect(openStalledAsksMock.mock.calls[0][1]).toEqual([MAP_ID, OTHER]);
+    expect(res.json().items.map((r: { ask: { id: string } }) => r.ask.id)).toEqual(['stalled-stuck-node']);
+    expect(res.json().counts.total).toBe(1);
+    expect(answered.json().items).toEqual([]);
+  });
+
+  it('an answer to a stalled ask (not stored while open) resolves to its node\'s map', async () => {
+    answerAskMock.mockResolvedValue({ row: { status: 'answered' }, plan: {}, ok: true, node: null, changedFields: [] });
+    const app = await buildApp();
+    const ok = await app.inject({ method: 'POST', url: `/api/fleets/${FLEET}/asks/stalled-stuck-node/answer`, payload: { action: 'answered', decision: 'Done' } });
+    const gone = await app.inject({ method: 'POST', url: `/api/fleets/${FLEET}/asks/stalled-elsewhere/answer`, payload: { action: 'answered', decision: 'Done' } });
+    await app.close();
+    expect(ok.statusCode).toBe(200);
+    expect(answerAskMock).toHaveBeenCalledWith({ fleetId: FLEET, mapId: OTHER, askId: 'stalled-stuck-node' }, { action: 'answered', decision: 'Done' }, 'u1');
+    expect(gone.statusCode).toBe(404);
   });
 
   it('a fleet-level answer needs edit on every map and tells every map', async () => {

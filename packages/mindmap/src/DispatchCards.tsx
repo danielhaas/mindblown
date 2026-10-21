@@ -239,6 +239,21 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
     </div>
   );
 
+  // A tag or blocker on an open parent holds its whole subtree — say which
+  // parent and how many, or nobody finds it from the tickets themselves.
+  const holds = snapshot.heldByParents ?? [];
+  const parentHoldNote = holds.length > 0 && (
+    <div style={{ ...warnBox, background: '#fffbeb', borderColor: '#fde68a', color: '#92400e' }} data-testid="dispatch-parent-holds">
+      {holds.slice(0, 3).map((h) => (
+        <div key={h.id}>
+          <strong>{h.text}</strong> holds {h.count} ticket{h.count === 1 ? '' : 's'} below it ({h.tag ? `tag ${h.tag}` : 'a blocker'}).
+        </div>
+      ))}
+      {holds.length > 3 && <div>…and {holds.length - 3} more parents.</div>}
+      <div>Move the tag or blocker to the tickets that really wait, or the fleet never sees the rest.</div>
+    </div>
+  );
+
   // Developer lens: the same facts, none of the levers. Saved values only —
   // no drafts, no Apply, no presets. Steering stays a PM/operator action.
   if (readOnly) {
@@ -246,6 +261,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
       <Card title="Dispatch — Leidang pull queue" accent={accent}>
         {header}
         {emptyDiagnosis}
+        {parentHoldNote}
         <KnobRow field="maxActiveClaims" write={writes.maxActiveClaims} versions={versions} hint={KNOB_HINT.maxActiveClaims}>
           <div style={row}>
             <span style={{ fontSize: 13, color: '#334155' }}>
@@ -314,6 +330,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
       {/* Header: state word + the cap ratio, both from SAVED values */}
       {header}
       {emptyDiagnosis}
+      {parentHoldNote}
       {saveError && <div style={{ ...warnBox, marginBottom: 8 }}>{saveError}</div>}
 
       {/* ── Cap ── */}
