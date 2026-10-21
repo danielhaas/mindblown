@@ -25,6 +25,7 @@ import {
   questionParts,
   sortAsks,
   stepAskNodeId,
+  stepParts,
 } from '@mindblown/core';
 import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
@@ -622,24 +623,39 @@ function AskCard({
   );
 }
 
-/** The question as lead + numbered sub-questions + tail (core questionParts), not one block. */
+/** The step's own label: its "Next step" line, the description's gist, or none for the bare tag note. */
+function stepLabel(question: string): { label: string | null; text: string } {
+  if (question.startsWith(NEXT_STEP)) return { label: 'Next step', text: question.slice(NEXT_STEP.length) };
+  if (question.startsWith('Tagged ')) return { label: null, text: question };
+  return { label: "What's left", text: question };
+}
+const NEXT_STEP = 'Next step: ';
+
+/**
+ * The question as lead + numbered sub-questions + tail (core questionParts), not one block.
+ * A person's step splits by core stepParts — runs numbered, a finding's points bulleted.
+ */
 function QuestionText({ ask: a }: { ask: Ask }) {
-  const { lead, items, tail } = questionParts(a.question);
-  const label = <span style={{ color: '#64748b', fontSize: 12 }}>Question ({a.question_author ?? '?'}): </span>;
+  const step = stepAskNodeId(a.id) !== null;
+  const s = step ? stepLabel(a.question) : null;
+  const { lead, items, tail, ordered } = s ? stepParts(s.text) : { ...questionParts(a.question), ordered: true };
+  const labelText = s ? (s.label ? `${s.label}: ` : '') : `Question (${a.question_author ?? '?'}): `;
+  const label = labelText && <span style={{ color: '#64748b', fontSize: 12 }}>{labelText}</span>;
+  const List = ordered ? 'ol' : 'ul';
   return (
-    <div style={{ marginTop: 6, fontSize: 14, lineHeight: 1.45 }} data-testid="ask-question">
+    <div style={{ marginTop: 6, fontSize: 14, lineHeight: 1.45 }} data-testid={step ? 'step-text' : 'ask-question'}>
       <div style={{ whiteSpace: 'pre-wrap' }}>
         {label}
         {lead}
       </div>
       {items.length > 0 && (
-        <ol style={{ margin: '6px 0 0', paddingLeft: 22 }}>
+        <List style={{ margin: '6px 0 0', paddingLeft: 22 }}>
           {items.map((it, i) => (
             <li key={i} style={{ marginBottom: 4, whiteSpace: 'pre-wrap' }}>
               {it}
             </li>
           ))}
-        </ol>
+        </List>
       )}
       {tail && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{tail}</div>}
     </div>
