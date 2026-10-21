@@ -26,7 +26,7 @@ const clearWorkerPendingMock = vi.fn(async () => 1);
 const answerAskMock = vi.fn();
 const syncMock = vi.fn(async () => {});
 const broadcastMock = vi.fn();
-const openStalledAsksMock = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const openDerivedAsksMock = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const state = vi.hoisted(() => ({
   perm: {} as Record<string, string | null>,
   view: null as unknown,
@@ -56,7 +56,7 @@ vi.mock('../../services/asks.js', async () => {
   const real = await vi.importActual<typeof import('../../services/asks.js')>('../../services/asks.js');
   return { ...real, answerAsk: (...a: unknown[]) => answerAskMock(...a) };
 });
-vi.mock('../../services/stalledAsks.js', () => ({ openStalledAsks: (...a: unknown[]) => openStalledAsksMock(...a) }));
+vi.mock('../../services/derivedAsks.js', () => ({ openDerivedAsks: (...a: unknown[]) => openDerivedAsksMock(...a) }));
 vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async (id: string) => (id === 'stuck-node' ? OTHER : null) }));
 vi.mock('../nodes.js', () => ({ syncNodeToGitHub: (...a: unknown[]) => syncMock(...(a as [])) }));
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
@@ -286,28 +286,37 @@ describe('fleet routes (#479)', () => {
     expect(denied.statusCode).toBe(403);
   });
 
-  it('adds MindBlown\'s stalled asks to an open read of the viewable maps, counted like any other', async () => {
-    const stalledRow = { ask: { id: 'stalled-stuck-node', question: 'done?', answerer: 'Dan', hint: 'decision', options: ['Done'], unblocks: { node_id: 'stuck-node' } }, mapId: OTHER, status: 'open', pushedAt: 'p', firstSeenAt: 'f' };
-    openStalledAsksMock.mockResolvedValueOnce([stalledRow]);
+  it('adds MindBlown\'s own rows (stalled, steps) to an open read of the viewable maps, through the hint filter', async () => {
+    const derived = [
+      { ask: { id: 'stalled-stuck-node', question: 'done?', answerer: 'Dan', hint: 'decision', options: ['Done'], unblocks: { node_id: 'stuck-node' } }, mapId: OTHER, status: 'open', pushedAt: 'p', firstSeenAt: 'f' },
+      { ask: { id: 'step-phone', question: 'Next step: check on a phone', answerer: 'Dan', hint: 'ops-task', options: ['Done'], unblocks: { node_id: 'phone' } }, mapId: MAP_ID, status: 'open', pushedAt: 'p', firstSeenAt: 'f' },
+    ];
+    openDerivedAsksMock.mockResolvedValue(derived);
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/asks` });
+    const steps = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/asks?hint=ops-task` });
     const answered = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/asks?status=answered` });
     await app.close();
-    expect(openStalledAsksMock).toHaveBeenCalledTimes(1); // not for the answered read
-    expect(openStalledAsksMock.mock.calls[0][1]).toEqual([MAP_ID, OTHER]);
-    expect(res.json().items.map((r: { ask: { id: string } }) => r.ask.id)).toEqual(['stalled-stuck-node']);
-    expect(res.json().counts.total).toBe(1);
+    expect(openDerivedAsksMock).toHaveBeenCalledTimes(2); // not for the answered read
+    expect(openDerivedAsksMock.mock.calls[0][1]).toEqual([MAP_ID, OTHER]);
+    expect(res.json().items.map((r: { ask: { id: string } }) => r.ask.id).sort()).toEqual(['stalled-stuck-node', 'step-phone']);
+    expect(res.json().counts.total).toBe(2);
+    expect(steps.json().items.map((r: { ask: { id: string } }) => r.ask.id)).toEqual(['step-phone']);
     expect(answered.json().items).toEqual([]);
+    openDerivedAsksMock.mockResolvedValue([]);
   });
 
-  it('an answer to a stalled ask (not stored while open) resolves to its node\'s map', async () => {
+  it('an answer to a derived row (not stored while open) resolves to its node\'s map', async () => {
     answerAskMock.mockResolvedValue({ row: { status: 'answered' }, plan: {}, ok: true, node: null, changedFields: [] });
     const app = await buildApp();
     const ok = await app.inject({ method: 'POST', url: `/api/fleets/${FLEET}/asks/stalled-stuck-node/answer`, payload: { action: 'answered', decision: 'Done' } });
+    const step = await app.inject({ method: 'POST', url: `/api/fleets/${FLEET}/asks/step-stuck-node/answer`, payload: { action: 'answered', decision: 'Fleet can do it' } });
     const gone = await app.inject({ method: 'POST', url: `/api/fleets/${FLEET}/asks/stalled-elsewhere/answer`, payload: { action: 'answered', decision: 'Done' } });
     await app.close();
     expect(ok.statusCode).toBe(200);
     expect(answerAskMock).toHaveBeenCalledWith({ fleetId: FLEET, mapId: OTHER, askId: 'stalled-stuck-node' }, { action: 'answered', decision: 'Done' }, 'u1');
+    expect(step.statusCode).toBe(200);
+    expect(answerAskMock).toHaveBeenCalledWith({ fleetId: FLEET, mapId: OTHER, askId: 'step-stuck-node' }, { action: 'answered', decision: 'Fleet can do it' }, 'u1');
     expect(gone.statusCode).toBe(404);
   });
 

@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -211,6 +211,15 @@ export async function applyLintFix(
         input.status = workflow.find((s) => s.category === category)?.id ?? category;
         changedFields.push('status');
       }
+      break;
+    }
+    case 'to-fleet': {
+      // "Fleet can do it": every skip tag off and back to the queue as it
+      // stands (todo, progress kept), so the next pull may take it.
+      const skips = before.tags.filter((t) => (DISPATCH_SKIP_TAGS as readonly string[]).includes(t.toLowerCase()));
+      const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
+      input = { tagsRemove: skips, status: todoId, claimedBySession: null };
+      changedFields = ['tags', 'status', 'claimedBySession'];
       break;
     }
     default:

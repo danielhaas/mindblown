@@ -377,6 +377,20 @@ export {
 } from './stalled.js';
 export type { StalledNodeLike, StalledLeaf, StalledRelease, StalledActivity, StalledAnswer } from './stalled.js';
 
+// "Your steps" — a person's needs-human tickets on the Questions card
+export {
+  STEP_ASK_PREFIX,
+  STEP_ASK_OPTIONS,
+  stepAskId,
+  stepAskNodeId,
+  isDerivedAsk,
+  nextStepOf,
+  buildStepAsk,
+  stepAnswerAction,
+  derivedAnswerPreview,
+} from './humanSteps.js';
+export type { StepAnswer } from './humanSteps.js';
+
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
 

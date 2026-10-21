@@ -209,8 +209,8 @@ export async function setAnswer(k: AskKey, patch: AskAnswerPatch): Promise<AskRo
 }
 
 /**
- * Record the answer to a question MindBlown derived itself (a stalled
- * ask, services/stalledAsks.ts): the row did not exist while it was open.
+ * Record the answer to a row MindBlown derived itself (a stalled question
+ * or a step, services/derivedAsks.ts): the row did not exist while it was open.
  * Same retention as a pushed row's answer; a fleet push never sends it,
  * so it is pruned ANSWER_RETENTION_DAYS after the answer.
  */
