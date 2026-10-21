@@ -204,6 +204,7 @@ export {
   sortAsks,
   isNoQuestion,
   isVersionOnly,
+  questionParts,
   countAsks,
   digestAsks,
   formatAskDigest,
@@ -223,6 +224,7 @@ export type {
   AskWritePlan,
   AskCounts,
   AskDigest,
+  QuestionParts,
 } from './asks.js';
 
 // Rich-text rendering

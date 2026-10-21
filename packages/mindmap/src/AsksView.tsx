@@ -22,6 +22,7 @@ import {
   isVersionOnly,
   planAskWrites,
   proseMirrorToPlainText,
+  questionParts,
   sortAsks,
   stepAskNodeId,
 } from '@mindblown/core';
@@ -515,10 +516,7 @@ function AskCard({
         {a.stale && <Tag color="#64748b">ticket closed</Tag>}
         {a.needs_version && <Tag color="#b45309">NEEDS-VERSION</Tag>}
       </div>
-      <div style={{ marginTop: 6, fontSize: 14, whiteSpace: 'pre-wrap' }}>
-        <span style={{ color: '#64748b', fontSize: 12 }}>Question ({a.question_author ?? '?'}): </span>
-        {a.question}
-      </div>
+      <QuestionText ask={a} />
       <div style={{ marginTop: 4, fontSize: 12, color: '#64748b', display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'baseline' }}>
         {unb.length > 0 && <span>holds up:</span>}
         {unb}
@@ -621,6 +619,30 @@ function AskCard({
         </div>
       )}
     </section>
+  );
+}
+
+/** The question as lead + numbered sub-questions + tail (core questionParts), not one block. */
+function QuestionText({ ask: a }: { ask: Ask }) {
+  const { lead, items, tail } = questionParts(a.question);
+  const label = <span style={{ color: '#64748b', fontSize: 12 }}>Question ({a.question_author ?? '?'}): </span>;
+  return (
+    <div style={{ marginTop: 6, fontSize: 14, lineHeight: 1.45 }} data-testid="ask-question">
+      <div style={{ whiteSpace: 'pre-wrap' }}>
+        {label}
+        {lead}
+      </div>
+      {items.length > 0 && (
+        <ol style={{ margin: '6px 0 0', paddingLeft: 22 }}>
+          {items.map((it, i) => (
+            <li key={i} style={{ marginBottom: 4, whiteSpace: 'pre-wrap' }}>
+              {it}
+            </li>
+          ))}
+        </ol>
+      )}
+      {tail && <div style={{ marginTop: 4, whiteSpace: 'pre-wrap' }}>{tail}</div>}
+    </div>
   );
 }
 
