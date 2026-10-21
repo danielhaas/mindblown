@@ -1,6 +1,47 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, personHolds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+
+describe('outsideGate — open tickets the fleet will not take', () => {
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'doing', name: 'Doing', category: 'in_progress', color: '#000', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 2 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], versionId: null, ...extra }) as unknown as Node;
+  const nodes = [
+    node('root', { parentId: null, childrenIds: ['v1', 'v3', 'none', 'bug', 'epic', 'running', 'unset'] }),
+    node('v1', { versionId: 'V1' }),
+    node('v3', { versionId: 'V3' }),
+    node('none'),
+    node('bug', { tags: ['bug'] }),
+    node('epic', { versionId: 'V3', childrenIds: ['underEpic'] }),
+    node('underEpic', { parentId: 'epic' }),
+    node('running', { versionId: 'V3', status: 'doing' }),
+    node('unset', { versionId: 'V3', status: null }),
+  ];
+  const name = (id: string) => ({ V1: 'V1', V3: 'V3' })[id] ?? null;
+
+  it('marks todo and no-status leaves outside the gate, with the version they are in', () => {
+    const later = outsideGate(nodes, ['type:bug|version:V1'], workflow, name);
+    expect(Object.fromEntries(later)).toEqual({
+      v3: 'Later — the fleet takes bugs, V1; this ticket is V3',
+      none: 'Later — the fleet takes bugs, V1; this ticket is in no version',
+      underEpic: 'Later — the fleet takes bugs, V1; this ticket is V3',
+      unset: 'Later — the fleet takes bugs, V1; this ticket is V3',
+    });
+  });
+
+  it('an empty gate fences nothing; Later is the weakest state on a card', () => {
+    expect(outsideGate(nodes, [], workflow).size).toBe(0);
+    const n = node('x');
+    expect(cardBlockState(n, null, false, (id) => id, null, 'Later')).toEqual({ kind: 'later', detail: 'Later' });
+    expect(cardBlockState(n, null, false, (id) => id, 'Needs a person', 'Later')?.kind).toBe('human');
+    expect(cardBlockState(n, { manual: false, predecessorIds: ['a'] }, false, (id) => id, null, 'Later')?.kind).toBe('waiting');
+    expect(cardBlockState(n, null, true, (id) => id, null, 'Later')).toBeNull();
+  });
+});
 
 describe('etaLabel', () => {
   const now = new Date(2026, 9, 20, 12, 0); // local time — the label is local
