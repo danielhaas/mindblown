@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import type { StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel } from '../kanban.js';
+import type { Node, StatusDef } from '@mindblown/core';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds } from '../kanban.js';
 
 describe('etaLabel', () => {
   const now = new Date(2026, 9, 20, 12, 0); // local time — the label is local
@@ -134,5 +134,38 @@ describe('cardBlockState — the Blocked panel\'s rule', () => {
   it('nothing otherwise; done work never', () => {
     expect(cardBlockState(n({}), none, false, title)).toBeNull();
     expect(cardBlockState(n({ blockedReason: 'stale' }), { manual: true, predecessorIds: ['a1'] }, true, title)).toBeNull();
+  });
+});
+
+describe('readyNodeIds', () => {
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'doing', name: 'Doing', category: 'in_progress', color: '#000', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 2 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({
+      id, text: id, parentId: 'root', childrenIds: [], status: 'todo', claimedBySession: null,
+      dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], ...extra,
+    }) as unknown as Node;
+
+  it('counts only what an agent could pick up now', () => {
+    const nodes = [
+      node('root', { parentId: null, childrenIds: ['ok', 'nostatus'] }),
+      node('ok'),
+      node('nostatus', { status: null }),
+      node('started', { status: 'doing' }),
+      node('finished', { status: 'done' }),
+      node('claimed', { claimedBySession: 'w1' }),
+      node('waits', { dependencies: [{ targetNodeId: 'started', type: 'FS' }] }),
+      node('afterDone', { dependencies: [{ targetNodeId: 'finished', type: 'FS' }] }),
+      node('nobrief', { description: null }),
+      node('blocker', { blockedReason: 'waiting on Dan' }),
+      node('human', { tags: ['needs-human'] }),
+      node('epic', { text: 'Epic: billing' }),
+      node('heldParent', { status: null, blockedReason: 'decision', childrenIds: ['underHeld'] }),
+      node('underHeld', { parentId: 'heldParent' }),
+    ];
+    expect([...readyNodeIds(nodes, workflow)].sort()).toEqual(['afterDone', 'nostatus', 'ok']);
   });
 });

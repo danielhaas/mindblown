@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -32,6 +32,8 @@ interface KanbanColumn {
   /** The status category; 'done' columns are grouped by completion time. */
   category: string | null;
   cards: KanbanCard[];
+  /** Cards that can be picked up right now (`readyNodeIds`); null on started/done columns. */
+  readyCount: number | null;
 }
 
 interface KanbanCard {
@@ -495,6 +497,22 @@ function Column({
         >
           {column.cards.length}
         </span>
+        {column.readyCount !== null && column.readyCount > 0 && (
+          <span
+            data-testid={`kanban-ready-${column.id}`}
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#047857',
+              background: '#d1fae5',
+              padding: '1px 7px',
+              borderRadius: 10,
+            }}
+            title={`${column.readyCount} can be picked up now: unclaimed, dependencies done, has a brief, and nothing waits for a person (no blocker, no needs-human / kira-skip tag, not an epic)`}
+          >
+            {column.readyCount} ready
+          </span>
+        )}
         {totalEffort > 0 && (
           <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 500 }}>
             {formatEffort(Math.round(totalEffort * 10) / 10, effortUnit)}
@@ -630,6 +648,10 @@ export function KanbanView() {
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
+  // Ready is read against the map's own workflow, as the pull queue reads it.
+  const workflow = currentMap?.statusWorkflow;
+  const ready = useMemo(() => readyNodeIds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
     // Kanban shows ALL leaves regardless of the mindmap's collapse state or
@@ -677,6 +699,8 @@ export function KanbanView() {
 
     const result: KanbanColumn[] = [];
 
+    const readyCount = (cards: KanbanCard[]) => cards.filter((c) => ready.has(c.node.id)).length;
+
     // Add "Unset" column first if there are unset cards
     if (unset.length > 0) {
       result.push({
@@ -685,6 +709,7 @@ export function KanbanView() {
         color: '#cbd5e1',
         category: null,
         cards: unset,
+        readyCount: readyCount(unset),
       });
     }
 
@@ -695,11 +720,12 @@ export function KanbanView() {
         color: s.color,
         category: s.category,
         cards: buckets[s.id],
+        readyCount: s.category === 'todo' ? readyCount(buckets[s.id]) : null,
       });
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId, ready]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {

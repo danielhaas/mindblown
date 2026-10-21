@@ -11,7 +11,35 @@
  * Within a group the most recently finished card comes first.
  */
 
-import { BLOCKED_TAG, type BlockedBy, type StatusDef } from '@mindblown/core';
+import {
+  BLOCKED_TAG,
+  buildIsDonePredicate,
+  dispatchHold,
+  hasBrief,
+  pullableNodes,
+  type BlockedBy,
+  type Node,
+  type StatusDef,
+} from '@mindblown/core';
+
+/**
+ * Tickets that can be picked up right now: not started (todo or no status),
+ * unclaimed, every dependency done, a brief to work from, and nothing that
+ * waits for a person — no blocker, no needs-human / kira-skip … tag, on the
+ * ticket or an open parent, and not an epic sitting as a leaf. The same
+ * predicates the pull queue grants by (core `dispatch.ts`), minus the map's
+ * dispatch gate: that fences what the fleet takes, not what is ready.
+ *
+ * Needs the full nodes (description, externalLinks) — not the mobile
+ * board's `?omit=` payload.
+ */
+export function readyNodeIds(nodes: Node[], workflow: StatusDef[]): Set<string> {
+  const { pullable, nodeMap } = pullableNodes(nodes, workflow);
+  const ancestors = { nodeMap, isDone: buildIsDonePredicate(workflow) };
+  return new Set(
+    pullable.filter((n) => hasBrief(n) && dispatchHold(n, ancestors) === null).map((n) => n.id),
+  );
+}
 
 /**
  * Which column a leaf's card sits in: the workflow step its status names
