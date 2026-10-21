@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -32,8 +32,6 @@ interface KanbanColumn {
   /** The status category; 'done' columns are grouped by completion time. */
   category: string | null;
   cards: KanbanCard[];
-  /** Cards that can be picked up right now (`readyNodeIds`); null on started/done columns. */
-  readyCount: number | null;
 }
 
 interface KanbanCard {
@@ -391,13 +389,23 @@ function Column({
     return groups;
   };
 
+  // One block state per card: drives the card badge and the column's ready count.
+  const blocks = new Map(
+    column.cards.map((c) => [
+      c.node.id,
+      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null),
+    ]),
+  );
+  // Ready = nothing in its way: not blocked, not waiting on a dependency, not held for a person.
+  const readyCount = isDone ? 0 : column.cards.filter((c) => blocks.get(c.node.id) === null).length;
+
   const renderCard = (card: KanbanCard) => (
     <Card
       key={card.node.id}
       card={card}
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
-      block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(card.node.id) ?? null)}
+      block={blocks.get(card.node.id) ?? null}
       showStarted={column.category === 'in_progress'}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
@@ -506,7 +514,7 @@ function Column({
         >
           {column.cards.length}
         </span>
-        {column.readyCount !== null && column.readyCount > 0 && (
+        {readyCount > 0 && (
           <span
             data-testid={`kanban-ready-${column.id}`}
             style={{
@@ -517,9 +525,9 @@ function Column({
               padding: '1px 7px',
               borderRadius: 10,
             }}
-            title={`${column.readyCount} can be picked up now: unclaimed, dependencies done, has a brief, and nothing waits for a person (no blocker, no needs-human / kira-skip tag, not an epic)`}
+            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person`}
           >
-            {column.readyCount} ready
+            {readyCount} ready
           </span>
         )}
         {totalEffort > 0 && (
@@ -657,9 +665,7 @@ export function KanbanView() {
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
-  // Ready is read against the map's own workflow, as the pull queue reads it.
   const workflow = currentMap?.statusWorkflow;
-  const ready = useMemo(() => readyNodeIds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
   const holds = useMemo(() => personHolds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
 
   // Build columns with cards
@@ -709,8 +715,6 @@ export function KanbanView() {
 
     const result: KanbanColumn[] = [];
 
-    const readyCount = (cards: KanbanCard[]) => cards.filter((c) => ready.has(c.node.id)).length;
-
     // Add "Unset" column first if there are unset cards
     if (unset.length > 0) {
       result.push({
@@ -719,7 +723,6 @@ export function KanbanView() {
         color: '#cbd5e1',
         category: null,
         cards: unset,
-        readyCount: readyCount(unset),
       });
     }
 
@@ -730,12 +733,11 @@ export function KanbanView() {
         color: s.color,
         category: s.category,
         cards: buckets[s.id],
-        readyCount: s.category === 'todo' ? readyCount(buckets[s.id]) : null,
       });
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId, ready]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {
