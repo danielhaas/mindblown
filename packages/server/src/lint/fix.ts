@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { buildTodoIds, isForgeLink, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -43,6 +43,7 @@ export interface LintFixOutcome {
 }
 
 const PARK_REASON = 'Parked from Plan health';
+const NEEDS_HUMAN_TAG = 'needs-human';
 
 /**
  * The link a finding is about — the same choice the engine's forgeLinkOf
@@ -175,6 +176,41 @@ export async function applyLintFix(
       input = { status: 'blocked', blockedReason: reason, tagsAppend: ['blocked'], claimedBySession: null };
       changedFields = ['status', 'blockedReason', 'tags', 'claimedBySession'];
       claimReason = 'blocked';
+      break;
+    }
+    case 'requeue': {
+      // Back to the pull queue as it stands: todo, progress kept — unlike
+      // reopen, which says "start over".
+      const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
+      input = { status: todoId, claimedBySession: null };
+      changedFields = ['status', 'claimedBySession'];
+      break;
+    }
+    case 'needs-human': {
+      // A person's next step, not a wait: the queue skips needs-human, the
+      // blocker text (and a note) becomes the step at the top of the
+      // description, and the blocker goes — "blocked" means waiting on an
+      // answer or another ticket. A status named "blocked" goes with it.
+      input = { tagsAppend: [NEEDS_HUMAN_TAG], claimedBySession: null };
+      changedFields = ['tags', 'claimedBySession'];
+      let description: unknown = before.description;
+      const reason = before.blockedReason?.trim();
+      if (reason) description = prependDecision(description, `Next step (a person): ${reason}`);
+      if (opts.note?.trim()) description = prependDecision(description, `Next step (a person): ${opts.note.trim()}`);
+      if (description !== before.description) {
+        input.description = description as nodeDb.UpdateNodeInput['description'];
+        changedFields.push('description');
+      }
+      if (reason) {
+        input.blockedReason = null;
+        input.tagsRemove = [BLOCKED_TAG];
+        changedFields.push('blockedReason');
+      }
+      if ((before.status ?? '').toLowerCase() === BLOCKED_TAG) {
+        const category = (before.percentComplete ?? 0) > 0 ? 'in_progress' : 'todo';
+        input.status = workflow.find((s) => s.category === category)?.id ?? category;
+        changedFields.push('status');
+      }
       break;
     }
     default:

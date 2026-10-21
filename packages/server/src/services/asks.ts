@@ -16,7 +16,7 @@
  * worker's dialog is merged/closed) writes nothing, exactly like apply.
  * Every write is recorded on the row (`writes`) — the ledger.
  */
-import { decisionLine, planAskWrites, planUnblock, prependDecision } from '@mindblown/core';
+import { decisionLine, planAskWrites, planUnblock, prependDecision, stalledAskNodeId } from '@mindblown/core';
 import type { AskAnswerInput, AskNodeState, AskRow, AskWrite, AskWritePlan, Node as CoreNode } from '@mindblown/core';
 import { commentOnGitHubIssue, setGitHubIssueMilestone } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
@@ -24,6 +24,7 @@ import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { answerStalledAsk } from './stalledAsks.js';
 
 export class AskNotFoundError extends Error {
   constructor(askId: string) {
@@ -85,6 +86,8 @@ async function nodeState(mapId: string | null, nodeId: string | null): Promise<{
 export async function answerAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
   validateAnswer(input);
   const { mapId, askId } = key;
+  // MindBlown's own stalled asks write through the lint fixes, not the collector's plan.
+  if (stalledAskNodeId(askId)) return answerStalledAsk(key, input, userId);
   const row = await asksDb.getAsk(key);
   if (!row) throw new AskNotFoundError(askId);
   const ask = row.ask;

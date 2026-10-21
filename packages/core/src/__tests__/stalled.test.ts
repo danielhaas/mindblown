@@ -1,5 +1,18 @@
 import { describe, it, expect } from 'vitest';
-import { findStalled, isStalledCandidate, describeStalled, STALLED_AFTER_HOURS, type StalledNodeLike, type StalledActivity } from '../stalled.js';
+import {
+  findStalled,
+  isStalledCandidate,
+  describeStalled,
+  STALLED_AFTER_HOURS,
+  STALLED_ASK_AFTER_HOURS,
+  isStalledAskDue,
+  buildStalledAsk,
+  stalledAskNodeId,
+  stalledAnswerAction,
+  stalledAnswerNote,
+  type StalledNodeLike,
+  type StalledActivity,
+} from '../stalled.js';
 import type { StatusDef } from '../types.js';
 
 const workflow: StatusDef[] = [
@@ -61,6 +74,11 @@ describe('findStalled', () => {
     expect(findStalled(nodes, workflow, old, now)).toEqual([]);
   });
 
+  it('a node tagged for a person (needs-human, kira-skip …) is not stalled — someone already decided', () => {
+    const old = activity({ a: hoursAgo(30), b: hoursAgo(30) });
+    expect(findStalled([node('a', { tags: ['needs-human'] }), node('b', { tags: ['Kira-Skip'] })], workflow, old, now)).toEqual([]);
+  });
+
   it('a done node is not stalled — done status or 100 %', () => {
     const old = activity({ a: hoursAgo(30), b: hoursAgo(30) });
     expect(findStalled([node('a', { status: 'done' }), node('b', { status: 'wip', percentComplete: 100 })], workflow, old, now)).toEqual([]);
@@ -82,6 +100,47 @@ describe('findStalled', () => {
   it('longest idle first', () => {
     const out = findStalled([node('a'), node('b')], workflow, activity({ a: hoursAgo(3), b: hoursAgo(20) }), now);
     expect(out.map((s) => s.nodeId)).toEqual(['b', 'a']);
+  });
+});
+
+describe('stalled asks', () => {
+  const [s] = findStalled([node('dead')], workflow, activity({ dead: hoursAgo(30) }, { dead: released }), now);
+
+  it('are due after a day without a change, not before', () => {
+    expect(isStalledAskDue(s, now)).toBe(true);
+    const [fresh] = findStalled([node('f')], workflow, activity({ f: hoursAgo(STALLED_ASK_AFTER_HOURS - 1) }), now);
+    expect(isStalledAskDue(fresh, now)).toBe(false);
+  });
+
+  it('ask about the node with three answers, the issue link and the last holder', () => {
+    const link = { provider: 'github', externalId: 'o/r#5', url: 'https://github.com/o/r/issues/5', syncEnabled: true, lastSyncedAt: null };
+    const ask = buildStalledAsk({ id: 'dead', text: 'Nicknames', priority: 'P3', externalLinks: [link] }, s, 'map-1', now);
+    expect(ask.id).toBe('stalled-dead');
+    expect(stalledAskNodeId(ask.id)).toBe('dead');
+    expect(ask).toMatchObject({
+      map_id: 'map-1',
+      ticket: null,
+      title: 'Nicknames',
+      url: 'https://github.com/o/r/issues/5',
+      options: ['Done', 'Back to the queue', 'For a person'],
+      answerer: 'Dan',
+      hint: 'decision',
+      priority: 'P3',
+      idle_hours: 30,
+      unblocks: { node_id: 'dead', node_status: 'stalled', worker: 'host-a/worker-3' },
+    });
+    expect(ask.question).toContain('25 %, no change for 30 h');
+  });
+
+  it('map an answer to its fix; free text is a person\'s next step and kept as the note', () => {
+    expect(stalledAnswerAction('Done')).toBe('mark-done');
+    expect(stalledAnswerAction('back to the queue')).toBe('requeue');
+    expect(stalledAnswerAction('For a person')).toBe('needs-human');
+    expect(stalledAnswerAction('run the import on prod first')).toBe('needs-human');
+    expect(stalledAnswerNote('For a person')).toBeNull();
+    expect(stalledAnswerNote('run the import on prod first')).toBe('run the import on prod first');
+    expect(stalledAskNodeId('#6823')).toBeNull();
+    expect(stalledAskNodeId('stalled-')).toBeNull();
   });
 });
 

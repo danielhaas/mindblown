@@ -23,6 +23,8 @@ import { listActiveAcceptances } from '../db/acceptances.js';
 import { listEvents } from '../db/events.js';
 import { stalledForMap } from '../lib/stalled.js';
 import { forgeProblemForMap } from '../lib/forgeProblem.js';
+import * as asksDb from '../db/asks.js';
+import * as fleetEntityDb from '../db/fleets.js';
 import { applyLintFix, LintFixError } from '../lint/fix.js';
 import {
   buildDonePredicate,
@@ -184,6 +186,14 @@ async function loadForgePrs(
   return { forgePrs, capped: candidates.length > checked.length };
 }
 
+/** The nodes an open ask on the map's Questions card is about; undefined = the map has no card (no fleet). */
+async function openAskNodeIdsForMap(mapId: string): Promise<Set<string> | undefined> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return undefined;
+  const rows = await asksDb.listAsks({ fleetId, mapId }, { status: 'open' });
+  return new Set(rows.map((r) => r.ask.unblocks?.node_id).filter((id): id is string => !!id));
+}
+
 export async function lintRoutes(app: FastifyInstance) {
   // ── GET /api/maps/:id/lint ─────────────────────────────────────
   app.get<{
@@ -260,7 +270,7 @@ export async function lintRoutes(app: FastifyInstance) {
     }
     const wantsForge = rule == null || rule === 'done-without-pr';
 
-    const [history, dismissalRows, acceptances, forge, sprints, stalled, forgeProblem] = await Promise.all([
+    const [history, dismissalRows, acceptances, forge, sprints, stalled, forgeProblem, openAskNodeIds] = await Promise.all([
       loadHistory(req.params.id, now),
       lintDb.listDismissals(req.params.id),
       // Best-effort: a failed acceptance load skips stale-acceptance
@@ -281,6 +291,8 @@ export async function lintRoutes(app: FastifyInstance) {
       stalledForMap(data.map, data.nodes, now).catch(() => undefined),
       // Same contract: a failed check skips broken-repo-connection.
       forgeProblemForMap(data.map).catch(() => undefined),
+      // Same contract: no fleet (no Questions card) or a failed read skips blocker-without-question.
+      openAskNodeIdsForMap(req.params.id).catch(() => undefined),
     ]);
 
     // Rolled-up progress so requirement rules work on parent nodes too.
@@ -301,6 +313,7 @@ export async function lintRoutes(app: FastifyInstance) {
       sprints,
       stalled,
       forgeProblem,
+      openAskNodeIds,
       nodeId: req.query.nodeId,
       versionId: effectiveVersionId,
       cycleId: req.query.cycleId,
@@ -438,8 +451,8 @@ export async function lintRoutes(app: FastifyInstance) {
       }
     }
     // stalled-unclaimed needs the change log, so it is re-checked through
-    // the same stalledForMap: park would drop a claim taken since, reopen
-    // would zero a node finished since.
+    // the same stalledForMap: every fix drops a claim taken since, and
+    // mark-done would close a node somebody picked up again.
     if (ruleId === 'stalled-unclaimed') {
       const data = await mapDb.getMap(req.params.id);
       if (!data) {

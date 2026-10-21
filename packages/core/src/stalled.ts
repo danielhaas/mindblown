@@ -15,8 +15,10 @@
  * when the claim was dropped.
  */
 
-import { BLOCKED_TAG } from './dispatch.js';
+import type { Ask } from './asks.js';
+import { BLOCKED_TAG, dispatchSkipTag } from './dispatch.js';
 import { resolveStatusDef } from './statusWorkflow.js';
+import { isForgeLink, type ExternalLink } from './types.js';
 import type { StatusDef } from './types.js';
 
 /** Hours without a change before unclaimed in-progress work counts as stalled. */
@@ -61,7 +63,9 @@ export interface StalledActivity {
  * The state half of the rule, no clock: an open leaf that is in progress
  * (an in_progress status, or 1–99 % without a todo status), holds no claim
  * and carries no manual blocker (reason, `blocked` tag or a status named
- * "blocked" — those are already a decision and show in the Blocked panel).
+ * "blocked" — those are already a decision and show in the Blocked panel)
+ * and no skip tag (`needs-human` …): someone already said a person does
+ * the rest, so it is not "nobody decided".
  * A todo status is a queued ticket, whatever its % says: the pull queue
  * hands it out, so it is not "nobody on it" — that is also what releasing
  * a stalled node back to the queue leaves behind. Unfinished predecessors
@@ -73,6 +77,7 @@ export function isStalledCandidate(node: StalledNodeLike, workflow: readonly Sta
   if ((node.blockedReason ?? '').trim() !== '') return false;
   if ((node.tags ?? []).includes(BLOCKED_TAG)) return false;
   if ((node.status ?? '').toLowerCase() === BLOCKED_TAG) return false;
+  if (dispatchSkipTag({ tags: node.tags ?? [] }) !== null) return false;
   const pct = node.percentComplete ?? 0;
   const category = resolveStatusDef([...workflow], node.status)?.category;
   if (category === 'done' || category === 'todo' || pct >= 100) return false;
@@ -122,4 +127,89 @@ export function describeStalled(s: StalledLeaf, now: Date = new Date()): string 
     parts.push('never claimed');
   }
   return parts.join(', ');
+}
+
+// ── Stalled → a question on the Questions card ──────────────────────
+//
+// The Blocked panel shows stalled work, but nobody is asked: five Navy
+// tickets sat at 85–90 % for up to 11 days (21.10.2026), all of them
+// shipped. After a day the stall becomes an ask with three answers.
+// No collector ever sees these (no worker holds the ticket), so MindBlown
+// derives them on read — the one exception to "the collector is the
+// truth for what is open" (asks.ts). Answering one writes the node, which
+// ends the stall, so the question is gone on the next read.
+
+/** A stalled leaf turns into an ask after this long without a change. */
+export const STALLED_ASK_AFTER_HOURS = 24;
+export const STALLED_ASK_PREFIX = 'stalled-';
+export const STALLED_ASK_OPTIONS = ['Done', 'Back to the queue', 'For a person'] as const;
+/** What an answer does — the lint fix of the same name (core LINT_ACTIONS). */
+export type StalledAnswer = 'mark-done' | 'requeue' | 'needs-human';
+
+export function stalledAskId(nodeId: string): string {
+  return STALLED_ASK_PREFIX + nodeId;
+}
+
+/** The node a stalled ask is about, or null for any other ask id. */
+export function stalledAskNodeId(askId: string): string | null {
+  return askId.startsWith(STALLED_ASK_PREFIX) && askId.length > STALLED_ASK_PREFIX.length
+    ? askId.slice(STALLED_ASK_PREFIX.length)
+    : null;
+}
+
+export function isStalledAskDue(s: StalledLeaf, now: Date = new Date()): boolean {
+  return now.getTime() - Date.parse(s.lastChangeAt) >= STALLED_ASK_AFTER_HOURS * 3_600_000;
+}
+
+export function buildStalledAsk(
+  node: { id: string; text: string; priority?: string | null; externalLinks?: ExternalLink[] },
+  s: StalledLeaf,
+  mapId: string,
+  now: Date = new Date(),
+): Ask {
+  const issue = (node.externalLinks ?? []).find((l) => isForgeLink(l) && !l.isPullRequest);
+  return {
+    id: stalledAskId(node.id),
+    map_id: mapId,
+    ticket: null,
+    requirement: null,
+    title: node.text,
+    url: issue?.url ?? null,
+    sources: ['mindblown-stalled'],
+    question:
+      `In progress (${describeStalled(s, now)}) and nobody is working on it. Is it done, should it go back to the queue, ` +
+      `or is the rest a person's step? Any other answer is kept as that next step.`,
+    question_author: 'MindBlown',
+    options: [...STALLED_ASK_OPTIONS],
+    answerer: 'Dan',
+    hint: 'decision',
+    priority: node.priority ?? null,
+    milestone: null,
+    needs_version: false,
+    idle_hours: Math.floor((now.getTime() - Date.parse(s.lastChangeAt)) / 3_600_000),
+    unblocks: {
+      node_id: node.id,
+      node_title: node.text,
+      node_status: 'stalled',
+      claimed_by: null,
+      worker: s.lastRelease?.session ?? null,
+      pr: null,
+      pr_state: null,
+    },
+    moot: false,
+  };
+}
+
+/** Which fix an answer means: one of the three options, else free text = a person's next step. */
+export function stalledAnswerAction(decision: string): StalledAnswer {
+  const d = decision.trim().toLowerCase();
+  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
+  if (d === 'back to the queue' || d === 'requeue' || d === 'queue') return 'requeue';
+  return 'needs-human';
+}
+
+/** The note a free-text answer leaves; the options themselves carry none. */
+export function stalledAnswerNote(decision: string): string | null {
+  const d = decision.trim();
+  return STALLED_ASK_OPTIONS.some((o) => o.toLowerCase() === d.toLowerCase()) ? null : d || null;
 }

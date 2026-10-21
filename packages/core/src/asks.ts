@@ -6,7 +6,8 @@
  * the same question into one record keyed on its ticket, and pushes the
  * whole open set here every tick. MindBlown does NOT re-derive the list
  * from its own blocked nodes — that would be a second list that disagrees
- * with the terminal round. What this module owns is the reading (counts,
+ * with the terminal round. One exception: stalled work (core stalled.ts,
+ * `buildStalledAsk`) — no worker holds it, so no collector can ask. What this module owns is the reading (counts,
  * ordering, the "keine Frage" folds) and the write plan of an answer,
  * which mirrors `bin/leidang-asks-apply` line for line.
  */

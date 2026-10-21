@@ -32,6 +32,9 @@ export const LINT_RULE_IDS = [
   'duplicate-issue-link',
   'stalled-unclaimed',
   'broken-repo-connection',
+  // Stuck-work pack — work that waits without anyone being asked.
+  'blocker-without-question',
+  'hold-on-parent',
 ] as const;
 export type LintRuleId = (typeof LINT_RULE_IDS)[number];
 
@@ -47,6 +50,8 @@ export const LINT_ACTIONS = {
   'reopen-issue': { label: 'Reopen the issue', bulk: false },
   'clear-blocker': { label: 'Clear the blocker text', bulk: true },
   park: { label: 'Park it (status blocked)', bulk: true },
+  requeue: { label: 'Back to the queue (todo, progress kept)', bulk: false },
+  'needs-human': { label: 'For a person (needs-human; blocker text into the description)', bulk: false },
 } as const;
 export type LintActionId = keyof typeof LINT_ACTIONS;
 export const LINT_ACTION_IDS = Object.keys(LINT_ACTIONS) as [LintActionId, ...LintActionId[]];
@@ -59,6 +64,9 @@ export const LINT_FIX_ACTIONS: Partial<Record<LintRuleId, LintActionId[]>> = {
   'done-without-pr': ['reopen'],
   'stale-blocked-reason': ['clear-blocker'],
   'claim-churn': ['park'],
-  // Park it for a person, or reopen to put it back in the pull queue.
-  'stalled-unclaimed': ['park', 'reopen'],
+  // Finished, back to the queue, or a person's next step — the same three
+  // answers the stalled ask on the Questions card offers.
+  'stalled-unclaimed': ['mark-done', 'requeue', 'needs-human'],
+  // A person's step, not a wait: tag it, keep the text as the next step.
+  'blocker-without-question': ['needs-human'],
 };

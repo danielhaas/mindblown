@@ -1574,13 +1574,13 @@ server.tool(
 
 server.tool(
   'plan_fix',
-  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
+  'Apply one of the fixes a plan_lint finding offers (the [fix: …] ids in its output). The write goes through the normal node path — change history, live update, outbound issue sync — exactly like an edit by hand; issue-side fixes write to the forge and stamp the link state. Actions: mark-done (status to the done state + 100 %), reopen (status to todo, 0 %, the linked issue reopens via sync), close-issue / reopen-issue (on the forge directly), clear-blocker (blockedReason + blocked tag, status back to todo if it was blocked), park (status blocked + tag, claim released — for a ticket a broken worker keeps bouncing), requeue (back to the pull queue: todo, progress kept, claim released), needs-human (the next step is for a person: needs-human tag, the blocker text — and the note — go to the top of the description as "Next step (a person)", blocker cleared). The server refuses an action the rule does not offer. Nothing is applied without this explicit call; run plan_lint first and pick per finding.',
   {
     mapId: z.string().describe('The map ID'),
     ruleId: z.enum(LINT_RULES).describe('The rule the finding belongs to (validates that the action fits)'),
     nodeId: z.string().describe('The node the finding points at'),
     action: z.enum(LINT_ACTION_IDS).describe("One of the ids listed in the finding's [fix: …]"),
-    note: z.string().optional().describe('For park: appended to the blocker reason when the node has none yet'),
+    note: z.string().optional().describe('For park: appended to the blocker reason when the node has none yet. For needs-human: the person\'s next step, written at the top of the description'),
   },
   async ({ mapId, ruleId, nodeId, action, note }) => {
     try {
