@@ -329,6 +329,49 @@ export function sortAsks<T extends { ask: Ask }>(rows: T[]): T[] {
   );
 }
 
+/** A question split for reading: the lead, the numbered sub-questions, and what follows them. */
+export interface QuestionParts {
+  lead: string;
+  items: string[];
+  tail: string;
+}
+
+const ITEM_LINE = /^(?:\(\d{1,2}\)|\d{1,2}[.)]|[-*•])\s+/;
+const INLINE_MARKER = /\((\d{1,2})\)\s+/g;
+
+/**
+ * Agents write several sub-questions into one paragraph — "…needs your call
+ * on four things. (1) The path … (2) Android … (3) iOS … (4) Keycloak …" —
+ * which the card printed as one block (21.10.2026). Numbered or bulleted
+ * lines, or inline "(1) … (2) …" counting up from 1, become items; anything
+ * else stays one paragraph.
+ */
+export function questionParts(text: string): QuestionParts {
+  const t = (text ?? '').trim();
+  const lines = t.split(/\n+/).map((l) => l.trim()).filter(Boolean);
+  const itemIdx = lines.flatMap((l, i) => (ITEM_LINE.test(l) ? [i] : []));
+  if (itemIdx.length >= 2) {
+    const first = itemIdx[0];
+    const last = itemIdx[itemIdx.length - 1];
+    const items: string[] = [];
+    for (let i = first; i <= last; i++) {
+      if (ITEM_LINE.test(lines[i])) items.push(lines[i].replace(ITEM_LINE, ''));
+      else items[items.length - 1] += ` ${lines[i]}`; // a wrapped item line
+    }
+    return { lead: lines.slice(0, first).join('\n'), items, tail: lines.slice(last + 1).join('\n') };
+  }
+  // Inline "(1) … (2) …": only markers counting up from 1, so "(3 tickets)" or a stray "(2)" stay text.
+  const seq: RegExpExecArray[] = [];
+  for (const m of t.matchAll(INLINE_MARKER)) {
+    if (Number(m[1]) === seq.length + 1) seq.push(m as RegExpExecArray);
+  }
+  if (seq.length >= 2) {
+    const items = seq.map((m, i) => t.slice(m.index! + m[0].length, i + 1 < seq.length ? seq[i + 1].index : undefined).trim());
+    return { lead: t.slice(0, seq[0].index).trim(), items, tail: '' };
+  }
+  return { lead: t, items: [], tail: '' };
+}
+
 /** Not a question for the answerer: the text already is the decision, or Dan parked it himself. */
 export function isNoQuestion(ask: Ask): boolean {
   return (ASK_NO_QUESTION_HINTS as readonly string[]).includes(ask.hint);
