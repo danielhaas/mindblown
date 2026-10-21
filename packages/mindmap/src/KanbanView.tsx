@@ -648,6 +648,10 @@ export function KanbanView() {
 
   const effortUnit = currentMap?.effortUnit ?? 'days';
 
+  // Ready is read against the map's own workflow, as the pull queue reads it.
+  const workflow = currentMap?.statusWorkflow;
+  const ready = useMemo(() => readyNodeIds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
     // Kanban shows ALL leaves regardless of the mindmap's collapse state or
@@ -695,8 +699,6 @@ export function KanbanView() {
 
     const result: KanbanColumn[] = [];
 
-    // Ready is read against the map's own workflow, as the pull queue reads it.
-    const ready = readyNodeIds(Object.values(nodes), currentMap?.statusWorkflow ?? []);
     const readyCount = (cards: KanbanCard[]) => cards.filter((c) => ready.has(c.node.id)).length;
 
     // Add "Unset" column first if there are unset cards
@@ -723,7 +725,7 @@ export function KanbanView() {
     }
 
     return result;
-  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId, currentMap]);
+  }, [statusColumns, getLeafNodes, getNodeBreadcrumb, computed, activeCycleFilter, activeVersionFilter, activePhaseFilter, nodes, rootNodeId, ready]);
 
   // Drag and drop handlers
   const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {
