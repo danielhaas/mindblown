@@ -14,10 +14,15 @@
 import {
   BLOCKED_TAG,
   buildIsDonePredicate,
+  buildTodoIds,
   dispatchHold,
+  effectiveVersionId,
   EPIC_HOLD_TAG,
+  matchesDispatchGate,
+  parseGateEntry,
   type BlockedBy,
   type Node,
+  type NodeMap,
   type StatusDef,
 } from '@mindblown/core';
 
@@ -154,7 +159,7 @@ export function etaLabel(
  * What a card shows: a manual block, a hold for a person, a dependency
  * wait, or nothing.
  */
-export type CardBlock = { kind: 'blocked' | 'human' | 'waiting'; detail: string } | null;
+export type CardBlock = { kind: 'blocked' | 'human' | 'waiting' | 'later'; detail: string } | null;
 
 interface BlockableNode {
   status: string | null;
@@ -192,7 +197,8 @@ export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, s
  *     fleet's park path writes — the `blocked` tag and a status named
  *     "blocked";
  *   - human: held for a person (`personHolds`), passed in as its hover text;
- *   - waiting: a finish-to-start predecessor that is not 100% done.
+ *   - waiting: a finish-to-start predecessor that is not 100% done;
+ *   - later: outside the dispatch gate (`outsideGate`), passed in as its hover text.
  * Done work is never shown as blocked.
  */
 export function cardBlockState(
@@ -201,6 +207,7 @@ export function cardBlockState(
   isDone: boolean,
   titleOf: (id: string) => string,
   personHold: string | null = null,
+  laterNote: string | null = null,
 ): CardBlock {
   if (isDone) return null;
   const manual =
@@ -217,5 +224,45 @@ export function cardBlockState(
   if (preds.length > 0) {
     return { kind: 'waiting', detail: `Waiting on: ${preds.map(titleOf).join(', ')}` };
   }
+  if (laterNote) return { kind: 'later', detail: laterNote };
   return null;
+}
+
+/**
+ * Open tickets the fleet will not take because the map's dispatch gate
+ * fences them out — a later version, or no version while the gate names
+ * one (21.10.2026: Navy's Unset and V3/V4 cards looked ready, the fleet sat
+ * idle). Keyed by id, with the hover text. Only todo-category or no-status
+ * tickets: the gate decides what is pulled, not what is already running.
+ * An empty gate fences nothing.
+ */
+export function outsideGate(
+  nodes: Node[],
+  gate: readonly string[],
+  workflow: StatusDef[],
+  versionName: (id: string) => string | null = () => null,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  if (gate.length === 0) return out;
+  const nodeMap = new Map(nodes.map((n) => [n.id, n])) as NodeMap;
+  const todoIds = buildTodoIds(workflow);
+  const term = (t: string): string => {
+    const p = parseGateEntry(t);
+    return p.kind === 'bugs' ? 'bugs' : p.kind === 'version' ? (versionName(p.versionId) ?? 'a version') : t;
+  };
+  const takes = gate
+    .map((g) => {
+      const p = parseGateEntry(g);
+      return p.kind === 'any' ? p.options.map((o) => term(o.raw)).join(', ') : term(g);
+    })
+    .join(' and ');
+  for (const n of nodes) {
+    if (n.parentId === null || n.childrenIds.length > 0) continue;
+    if (n.status !== null && !todoIds.has(n.status)) continue;
+    if (matchesDispatchGate(n, [...gate], nodeMap)) continue;
+    const v = effectiveVersionId(n.id, nodeMap);
+    const is = v ? (versionName(v) ?? 'another version') : 'in no version';
+    out.set(n.id, `Later — the fleet takes ${takes}; this ticket is ${is}`);
+  }
+  return out;
 }

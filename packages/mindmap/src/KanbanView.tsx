@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -69,6 +69,14 @@ function formatDate(iso: string): string {
 
 // ── Card Component ───────────────────────────────────────────────
 
+/** Card + badge colours per block kind: grey in the way, amber yours, indigo a later version. */
+function blockLook(block: CardBlock) {
+  if (!block) return null;
+  if (block.kind === 'human') return { label: 'Needs you', card: '#fffbeb', border: '#f59e0b', badge: '#fde68a', text: '#92400e' };
+  if (block.kind === 'later') return { label: 'Later', card: '#eef2ff', border: '#a5b4fc', badge: '#e0e7ff', text: '#3730a3' };
+  return { label: block.kind === 'blocked' ? 'Blocked' : 'Waiting', card: '#e2e8f0', border: '#94a3b8', badge: '#cbd5e1', text: '#475569' };
+}
+
 function Card({
   card,
   effortUnit,
@@ -100,7 +108,9 @@ function Card({
   const started = showStarted ? startedLabel(node.startedAt) : null;
   const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
   const human = block?.kind === 'human';
-  const greyed = block !== null && !human;
+  const later = block?.kind === 'later';
+  const greyed = block !== null && !human && !later;
+  const look = blockLook(block);
 
   return (
     <div
@@ -109,13 +119,13 @@ function Card({
       onClick={onClick}
       title={block?.detail}
       style={{
-        background: human ? '#fffbeb' : greyed ? '#e2e8f0' : '#ffffff',
-        opacity: greyed ? 0.7 : 1,
+        background: look?.card ?? '#ffffff',
+        opacity: greyed ? 0.7 : later ? 0.85 : 1,
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${human ? '#f59e0b' : greyed ? '#94a3b8' : borderColor}`,
+        borderLeft: `3px solid ${look?.border ?? borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -179,8 +189,8 @@ function Card({
             style={{
               fontSize: 9,
               fontWeight: 700,
-              color: human ? '#92400e' : '#475569',
-              background: human ? '#fde68a' : '#cbd5e1',
+              color: look?.text,
+              background: look?.badge,
               padding: '1px 6px',
               borderRadius: 4,
               flexShrink: 0,
@@ -189,7 +199,7 @@ function Card({
               letterSpacing: '0.04em',
             }}
           >
-            {block.kind === 'blocked' ? 'Blocked' : human ? 'Needs you' : 'Waiting'}
+            {look?.label}
           </span>
         )}
         {githubLink && (
@@ -338,6 +348,7 @@ function Column({
   swimlanes,
   nodes,
   holds,
+  later,
   onSelectNode,
   onDragStart,
   onDragOver,
@@ -350,6 +361,8 @@ function Column({
   nodes: Record<string, Node>;
   /** Tickets held for a person (`personHolds`) → hover text. */
   holds: Map<string, string>;
+  /** Tickets outside the dispatch gate (`outsideGate`) → hover text. */
+  later: Map<string, string>;
   onSelectNode: (id: string) => void;
   onDragStart: (e: React.DragEvent, nodeId: string) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -393,10 +406,10 @@ function Column({
   const blocks = new Map(
     column.cards.map((c) => [
       c.node.id,
-      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null),
+      cardBlockState(c.node, c.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(c.node.id) ?? null, later.get(c.node.id) ?? null),
     ]),
   );
-  // Ready = nothing in its way: not blocked, not waiting on a dependency, not held for a person.
+  // Ready = nothing in its way: not blocked, not waiting on a dependency, not held for a person, not fenced out by the gate.
   const readyCount = isDone ? 0 : column.cards.filter((c) => blocks.get(c.node.id) === null).length;
 
   const renderCard = (card: KanbanCard) => (
@@ -525,7 +538,7 @@ function Column({
               padding: '1px 7px',
               borderRadius: 10,
             }}
-            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person`}
+            title={`${readyCount} of ${column.cards.length} have nothing in their way: not blocked, not waiting on a dependency, not waiting for a person, not outside the fleet's gate`}
           >
             {readyCount} ready
           </span>
@@ -667,6 +680,12 @@ export function KanbanView() {
 
   const workflow = currentMap?.statusWorkflow;
   const holds = useMemo(() => personHolds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+  const versions = useMindmapStore((s) => s.versions);
+  const gate = currentMap?.dispatchGate;
+  const later = useMemo(
+    () => outsideGate(Object.values(nodes), gate ?? [], statusColumns, (id) => versions.find((v) => v.id === id)?.name ?? null),
+    [nodes, gate, statusColumns, versions],
+  );
 
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
@@ -874,6 +893,7 @@ export function KanbanView() {
             swimlanes={swimlanes}
             nodes={nodes}
             holds={holds}
+            later={later}
             onSelectNode={selectNode}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
