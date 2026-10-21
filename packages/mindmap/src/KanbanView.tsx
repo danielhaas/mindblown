@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -715,6 +715,7 @@ export function KanbanView() {
     }
 
     for (const node of leafNodes) {
+      if (hiddenFromBoard(node, statusColumns)) continue;
       const cv = computed.get(node.id as NodeId);
       const card: KanbanCard = {
         node,
