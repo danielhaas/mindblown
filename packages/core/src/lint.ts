@@ -51,6 +51,7 @@ export const LINT_ACTIONS = {
   'clear-blocker': { label: 'Clear the blocker text', bulk: true },
   park: { label: 'Park it (status blocked)', bulk: true },
   requeue: { label: 'Back to the queue (todo, progress kept)', bulk: false },
+  'to-fleet': { label: 'Fleet can do it (skip tags off, back to the queue)', bulk: false },
   'needs-human': { label: 'For a person (needs-human; blocker text into the description)', bulk: false },
 } as const;
 export type LintActionId = keyof typeof LINT_ACTIONS;

@@ -180,6 +180,13 @@ describe('applyLintFix — node-side actions', () => {
     });
   });
 
+  it('to-fleet ("Fleet can do it") takes every skip tag off and puts it back in the queue, progress kept', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 95, tags: ['android', 'needs-human', 'Kira-Skip'] });
+    const r = await applyLintFix('m1', 'a', 'to-fleet', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { tagsRemove: ['needs-human', 'Kira-Skip'], status: 'todo', claimedBySession: null });
+    expect(r.changedFields).toEqual(['tags', 'status', 'claimedBySession']);
+  });
+
   it('clear-blocker delegates to the unblock service and fans out its changed fields', async () => {
     seed({ id: 'a', status: 'shipped', blockedReason: 'swept', tags: ['blocked'] });
     const r = await applyLintFix('m1', 'a', 'clear-blocker', 'u1');

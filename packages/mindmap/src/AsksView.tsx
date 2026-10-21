@@ -14,7 +14,17 @@
  * contract — the collector recognises «Entscheid (…)» as a taken decision.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ASK_ANSWERERS, isNoQuestion, isVersionOnly, planAskWrites, proseMirrorToPlainText, sortAsks } from '@mindblown/core';
+import {
+  ASK_ANSWERERS,
+  derivedAnswerPreview,
+  isDerivedAsk,
+  isNoQuestion,
+  isVersionOnly,
+  planAskWrites,
+  proseMirrorToPlainText,
+  sortAsks,
+  stepAskNodeId,
+} from '@mindblown/core';
 import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
@@ -49,6 +59,8 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function ref(a: Ask): string {
+  // MindBlown's own rows (stalled-<uuid>, step-<uuid>) have no reference worth printing.
+  if (a.ticket == null && !a.requirement && isDerivedAsk(a)) return '';
   return a.ticket != null ? `#${a.ticket}` : (a.requirement ?? a.id);
 }
 
@@ -56,7 +68,7 @@ function title(a: Ask): string {
   const t = (a.title ?? '').trim();
   const r = ref(a);
   // The ref is shown in front of the title; don't print it twice.
-  return t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
+  return r && t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
 }
 
 type AnswerResult = { ok: boolean; lines: string[] };
@@ -151,8 +163,11 @@ export function AsksSection() {
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
-    const open = rows.filter((r) => r.status === 'open' || results[rowKey(r)]);
+    const allOpen = rows.filter((r) => r.status === 'open' || results[rowKey(r)]);
     const done = rows.filter((r) => r.status !== 'open' && !results[rowKey(r)]);
+    // A person's steps (needs-human tickets) get their own card below.
+    const steps = allOpen.filter((r) => stepAskNodeId(r.ask.id) !== null);
+    const open = allOpen.filter((r) => stepAskNodeId(r.ask.id) === null);
     const questions = open.filter((r) => !isNoQuestion(r.ask) && !isVersionOnly(r.ask));
     const noQuestion = open.filter((r) => isNoQuestion(r.ask));
     const versionOnly = open.filter((r) => isVersionOnly(r.ask) && !isNoQuestion(r.ask));
@@ -165,18 +180,19 @@ export function AsksSection() {
     const visible = questions.filter(
       (r) => (!filter.answerer || r.ask.answerer === filter.answerer) && (!filter.hint || r.ask.hint === filter.hint),
     );
-    return { questions, visible, noQuestion, versionOnly, done, byAnswerer, byHint };
+    return { questions, visible, noQuestion, versionOnly, done, steps, byAnswerer, byHint };
   }, [data, filter, results]);
 
   const onResult = (id: string, r: AnswerResult) => setResults((m) => ({ ...m, [id]: r }));
 
-  const cardTitle = `Questions — what the fleet needs decided${data?.pushedAt ? ` (${groups.questions.length})` : ''}`;
+  const cardTitle = `Questions — what the fleet needs decided${data ? ` (${groups.questions.length})` : ''}`;
 
   if (!target) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
   if (error) return <Card title={cardTitle}><Muted>Questions unavailable: {error}</Muted></Card>;
   if (!data) return <Card title={cardTitle}><Muted>Loading…</Muted></Card>;
 
-  if (!data.pushedAt) {
+  // MindBlown's own rows (stalled work, steps) need no push — only an empty card does.
+  if (!data.pushedAt && data.items.length === 0) {
     return (
       <Card title={cardTitle}>
         <Muted>
@@ -189,7 +205,23 @@ export function AsksSection() {
   const answerers = (ASK_ANSWERERS as readonly string[]).filter((a) => groups.byAnswerer[a]);
   const hints = Object.keys(groups.byHint);
 
+  const stepsCard = (
+    <Card title={`Your steps — what only a person can do (${groups.steps.length})`}>
+      <Muted>
+        Tickets tagged needs-human (or kira-skip …): the fleet never takes them. Done when you did it; Fleet can do it puts it back in the queue; any text
+        becomes the new next step.
+      </Muted>
+      <div style={{ marginTop: 12 }} data-testid="your-steps">
+        {groups.steps.length === 0 && <Muted>Nothing waiting on a person. 🎉</Muted>}
+        {groups.steps.map((r) => (
+          <AskCard key={rowKey(r)} row={r} mapId={currentMapId} scope={scope} by={by} readOnly={readOnly} result={results[rowKey(r)] ?? null} onResult={onResult} />
+        ))}
+      </div>
+    </Card>
+  );
+
   return (
+    <>
     <Card title={cardTitle}>
       <Muted>
         As of {fmtTime(data.pushedAt)}
@@ -262,6 +294,8 @@ export function AsksSection() {
         </Fold>
       )}
     </Card>
+    {stepsCard}
+    </>
   );
 }
 
@@ -377,6 +411,9 @@ function AskCard({
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
 
   const today = new Date().toISOString().slice(0, 10);
+  // MindBlown's own rows write through a fix, not the collector's plan.
+  const derived = isDerivedAsk(a);
+  const derivedPreview = derived ? derivedAnswerPreview(a, decision) : null;
   const preview: AskWritePlan = planAskWrites(
     a,
     { action: 'answered', decision: decision || '…', by, milestone: milestone || undefined, noRequeue },
@@ -510,7 +547,9 @@ function AskCard({
           <textarea
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
-            placeholder="Decision (free text, or pick an option above)…"
+            placeholder={
+              stepAskNodeId(a.id) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
+            }
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
           />
@@ -526,7 +565,7 @@ function AskCard({
                 />
               </label>
             )}
-            {a.unblocks.node_id && (
+            {a.unblocks.node_id && !derived && (
               <label>
                 <input type="checkbox" checked={noRequeue} onChange={(e) => setNoRequeue(e.target.checked)} /> no requeue (status stays)
               </label>
@@ -535,6 +574,10 @@ function AskCard({
           <div style={{ marginTop: 8, fontSize: 12, color: '#64748b' }}>
             <b>This answer writes:</b>
             <ul style={{ margin: '2px 0 0', paddingLeft: 18 }}>
+              {derivedPreview ? (
+                derivedPreview.map((l) => <li key={l}>{l}</li>)
+              ) : (
+                <>
               {preview.skip && <li>{preview.skip}</li>}
               {preview.github && (
                 <li>
@@ -549,6 +592,8 @@ function AskCard({
               )}
               {preview.worker && <li>Note to worker {preview.worker.worker} — delivered by the next tick</li>}
               {!preview.skip && !preview.github && !preview.node && !preview.worker && <li>only the ledger row (no ticket, no node, no worker)</li>}
+                </>
+              )}
             </ul>
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'center' }}>
