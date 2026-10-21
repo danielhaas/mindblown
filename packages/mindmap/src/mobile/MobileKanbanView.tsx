@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, personHolds, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -43,6 +43,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
     setOpenGroups((o) => ({ ...o, [col]: { ...o[col], [key]: !isOpen(col, key) } }));
   // Same rule as the Blocked panel: computeIsBlocked over the whole map.
   const nodeMap: NodeMap = useMemo(() => new Map(nodes.map((n) => [n.id, n])) as NodeMap, [nodes]);
+  const holds = useMemo(() => personHolds(nodes, map.statusWorkflow), [nodes, map.statusWorkflow]);
 
   const breadcrumbs = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -137,7 +138,9 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 computeIsBlocked(n, nodeMap).blockedBy,
                 col.status?.category === 'done',
                 (id) => nodeMap.get(id)?.text ?? id,
+                holds.get(n.id) ?? null,
               );
+              const human = block?.kind === 'human';
               const inProgress = col.status?.category === 'in_progress';
               const started = inProgress ? startedLabel(n.startedAt) : null;
               const eta = inProgress ? etaLabel(n.expectedDoneAt) : null;
@@ -146,7 +149,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                   key={n.id}
                   className="mb-kanban-card"
                   onClick={() => onSelect(n.id)}
-                  style={block ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
+                  style={human ? { background: '#fffbeb', borderLeft: '3px solid #f59e0b' } : block ? { background: '#e2e8f0', opacity: 0.7 } : undefined}
                 >
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
                     <span
@@ -180,7 +183,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                       <span>· {n.assigneeIds.length}👤</span>
                     )}
                     {block && (
-                      <span style={{ color: '#475569', fontWeight: 600 }}>
+                      <span style={{ color: human ? '#92400e' : '#475569', fontWeight: 600 }}>
                         · {block.detail.length > 64 ? `${block.detail.slice(0, 61)}…` : block.detail}
                       </span>
                     )}
