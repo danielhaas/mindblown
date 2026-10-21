@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds, personHolds } from '../kanban.js';
 
 describe('etaLabel', () => {
   const now = new Date(2026, 9, 20, 12, 0); // local time — the label is local
@@ -135,6 +135,14 @@ describe('cardBlockState — the Blocked panel\'s rule', () => {
     expect(cardBlockState(n({}), none, false, title)).toBeNull();
     expect(cardBlockState(n({ blockedReason: 'stale' }), { manual: true, predecessorIds: ['a1'] }, true, title)).toBeNull();
   });
+  it('human: a person hold beats a dependency wait, a manual block beats both', () => {
+    const hold = 'Needs a person: tagged needs-human';
+    expect(cardBlockState(n({}), { manual: false, predecessorIds: ['a1'] }, false, title, hold))
+      .toEqual({ kind: 'human', detail: hold });
+    expect(cardBlockState(n({ blockedReason: 'legal' }), { manual: true, predecessorIds: [] }, false, title, hold)?.kind)
+      .toBe('blocked');
+    expect(cardBlockState(n({}), none, true, title, hold)).toBeNull();
+  });
 });
 
 describe('readyNodeIds', () => {
@@ -167,5 +175,42 @@ describe('readyNodeIds', () => {
       node('underHeld', { parentId: 'heldParent' }),
     ];
     expect([...readyNodeIds(nodes, workflow)].sort()).toEqual(['afterDone', 'nostatus', 'ok']);
+  });
+});
+
+describe('personHolds', () => {
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 1 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, ...extra }) as unknown as Node;
+
+  it('skip tags on the ticket or an open parent; not epics, not plain blockers, not under a done parent', () => {
+    const holds = personHolds(
+      [
+        node('root', { parentId: null }),
+        node('tagged', { tags: ['Needs-Human'] }),
+        node('skip', { tags: ['kira-skip'] }),
+        node('epic', { text: 'Epic: billing' }),
+        node('blocker', { blockedReason: 'waiting on legal' }),
+        node('decide', { text: 'Decide pricing', blockedReason: 'which tier?' }),
+        node('underDecide', { parentId: 'decide' }),
+        node('humanParent', { text: 'Contracts', tags: ['needs-human'] }),
+        node('underHuman', { parentId: 'humanParent' }),
+        node('doneParent', { status: 'done', tags: ['needs-human'] }),
+        node('underDone', { parentId: 'doneParent' }),
+        node('free'),
+      ],
+      workflow,
+    );
+    expect(Object.fromEntries(holds)).toEqual({
+      tagged: 'Needs a person: tagged Needs-Human',
+      skip: 'Needs a person: tagged kira-skip',
+      underDecide: 'Needs a person: parent "Decide pricing" is blocked: which tier?',
+      humanParent: 'Needs a person: tagged needs-human',
+      underHuman: 'Needs a person: parent "Contracts" is tagged needs-human',
+      doneParent: 'Needs a person: tagged needs-human',
+    });
   });
 });

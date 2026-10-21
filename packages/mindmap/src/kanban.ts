@@ -15,6 +15,7 @@ import {
   BLOCKED_TAG,
   buildIsDonePredicate,
   dispatchHold,
+  EPIC_HOLD_TAG,
   hasBrief,
   pullableNodes,
   type BlockedBy,
@@ -170,8 +171,11 @@ export function etaLabel(
 
 // ── Blocked ──
 
-/** What a card shows: a manual block, a dependency wait, or nothing. */
-export type CardBlock = { kind: 'blocked' | 'waiting'; detail: string } | null;
+/**
+ * What a card shows: a manual block, a hold for a person, a dependency
+ * wait, or nothing.
+ */
+export type CardBlock = { kind: 'blocked' | 'human' | 'waiting'; detail: string } | null;
 
 interface BlockableNode {
   status: string | null;
@@ -180,11 +184,35 @@ interface BlockableNode {
 }
 
 /**
+ * Tickets held for a person, keyed by id, with the hover text: a skip tag
+ * (needs-human, kira-skip …) on the ticket, or a skip tag or manual blocker
+ * on an open parent — `dispatchHold`, the rule the pull queue skips by. An
+ * epic leaf is held too, but for the fleet, not for a person: left out.
+ */
+export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, string> {
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const ancestors = { nodeMap, isDone: buildIsDonePredicate(workflow) };
+  const holds = new Map<string, string>();
+  for (const n of nodes) {
+    const hold = dispatchHold(n, ancestors);
+    if (!hold) continue;
+    if (hold.heldBy) {
+      const why = hold.tag ? `is tagged ${hold.tag}` : `is blocked: ${(hold.blockedReason ?? '').trim()}`;
+      holds.set(n.id, `Needs a person: parent "${hold.heldBy.text}" ${why}`);
+    } else if (hold.tag && hold.tag !== EPIC_HOLD_TAG) {
+      holds.set(n.id, `Needs a person: tagged ${hold.tag}`);
+    }
+  }
+  return holds;
+}
+
+/**
  * The Blocked panel's rule (core computeIsBlocked), so the board and the
  * panel always show the same set:
  *   - blocked: a blocked reason (manual), plus the two other markers the
  *     fleet's park path writes — the `blocked` tag and a status named
  *     "blocked";
+ *   - human: held for a person (`personHolds`), passed in as its hover text;
  *   - waiting: a finish-to-start predecessor that is not 100% done.
  * Done work is never shown as blocked.
  */
@@ -193,6 +221,7 @@ export function cardBlockState(
   blockedBy: Pick<BlockedBy, 'manual' | 'predecessorIds'> | null | undefined,
   isDone: boolean,
   titleOf: (id: string) => string,
+  personHold: string | null = null,
 ): CardBlock {
   if (isDone) return null;
   const manual =
@@ -204,6 +233,7 @@ export function cardBlockState(
     const reason = (node.blockedReason ?? '').trim();
     return { kind: 'blocked', detail: reason ? `Blocked: ${reason}` : 'Blocked' };
   }
+  if (personHold) return { kind: 'human', detail: personHold };
   const preds = blockedBy?.predecessorIds ?? [];
   if (preds.length > 0) {
     return { kind: 'waiting', detail: `Waiting on: ${preds.map(titleOf).join(', ')}` };

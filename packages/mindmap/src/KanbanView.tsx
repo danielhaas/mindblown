@@ -4,7 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, readyNodeIds, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -83,7 +83,10 @@ function Card({
   card: KanbanCard;
   effortUnit: string;
   selected: boolean;
-  /** Blocked or waiting on a predecessor (cardBlockState) — greyed out, detail on hover. */
+  /**
+   * Blocked or waiting on a predecessor (cardBlockState) — greyed out; held
+   * for a person — amber, it is yours to act on. Detail on hover.
+   */
   block: CardBlock;
   /** In-progress columns show when the work started. */
   showStarted: boolean;
@@ -98,6 +101,8 @@ function Card({
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
   const started = showStarted ? startedLabel(node.startedAt) : null;
   const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
+  const human = block?.kind === 'human';
+  const greyed = block !== null && !human;
 
   return (
     <div
@@ -106,13 +111,13 @@ function Card({
       onClick={onClick}
       title={block?.detail}
       style={{
-        background: block ? '#e2e8f0' : '#ffffff',
-        opacity: block ? 0.7 : 1,
+        background: human ? '#fffbeb' : greyed ? '#e2e8f0' : '#ffffff',
+        opacity: greyed ? 0.7 : 1,
         borderRadius: 8,
         padding: '10px 12px',
         marginBottom: 6,
         cursor: 'grab',
-        borderLeft: `3px solid ${block ? '#94a3b8' : borderColor}`,
+        borderLeft: `3px solid ${human ? '#f59e0b' : greyed ? '#94a3b8' : borderColor}`,
         boxShadow: selected
           ? '0 0 0 2px #4f46e5, 0 1px 4px rgba(0,0,0,0.08)'
           : '0 1px 3px rgba(0,0,0,0.06)',
@@ -172,11 +177,12 @@ function Card({
         </span>
         {block && (
           <span
+            data-testid={`kanban-card-${block.kind}`}
             style={{
               fontSize: 9,
               fontWeight: 700,
-              color: '#475569',
-              background: '#cbd5e1',
+              color: human ? '#92400e' : '#475569',
+              background: human ? '#fde68a' : '#cbd5e1',
               padding: '1px 6px',
               borderRadius: 4,
               flexShrink: 0,
@@ -185,7 +191,7 @@ function Card({
               letterSpacing: '0.04em',
             }}
           >
-            {block.kind === 'blocked' ? 'Blocked' : 'Waiting'}
+            {block.kind === 'blocked' ? 'Blocked' : human ? 'Needs you' : 'Waiting'}
           </span>
         )}
         {githubLink && (
@@ -333,6 +339,7 @@ function Column({
   selectedNodeId,
   swimlanes,
   nodes,
+  holds,
   onSelectNode,
   onDragStart,
   onDragOver,
@@ -343,6 +350,8 @@ function Column({
   selectedNodeId: string | null;
   swimlanes: boolean;
   nodes: Record<string, Node>;
+  /** Tickets held for a person (`personHolds`) → hover text. */
+  holds: Map<string, string>;
   onSelectNode: (id: string) => void;
   onDragStart: (e: React.DragEvent, nodeId: string) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -388,7 +397,7 @@ function Column({
       card={card}
       effortUnit={effortUnit}
       selected={card.node.id === selectedNodeId}
-      block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id)}
+      block={cardBlockState(card.node, card.blockedBy, isDone, (id) => nodes[id]?.text ?? id, holds.get(card.node.id) ?? null)}
       showStarted={column.category === 'in_progress'}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
@@ -651,6 +660,7 @@ export function KanbanView() {
   // Ready is read against the map's own workflow, as the pull queue reads it.
   const workflow = currentMap?.statusWorkflow;
   const ready = useMemo(() => readyNodeIds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+  const holds = useMemo(() => personHolds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
 
   // Build columns with cards
   const columns: KanbanColumn[] = useMemo(() => {
@@ -861,6 +871,7 @@ export function KanbanView() {
             selectedNodeId={selectedNodeId}
             swimlanes={swimlanes}
             nodes={nodes}
+            holds={holds}
             onSelectNode={selectNode}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
