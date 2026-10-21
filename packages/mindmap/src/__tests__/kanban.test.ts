@@ -1,6 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+
+describe('hiddenFromBoard', () => {
+  const todo: StatusDef = { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 };
+  it('hides a cancelled ticket unless the workflow has a Cancelled column', () => {
+    expect(hiddenFromBoard({ status: 'cancelled' }, [todo])).toBe(true);
+    expect(hiddenFromBoard({ status: 'Canceled' }, [todo])).toBe(true);
+    expect(hiddenFromBoard({ status: 'cancelled' }, [todo, { id: 'x', name: 'Cancelled', category: 'done', color: '#000', position: 1 }])).toBe(false);
+    expect(hiddenFromBoard({ status: 'todo' }, [todo])).toBe(false);
+    expect(hiddenFromBoard({ status: null }, [todo])).toBe(false);
+  });
+});
 
 describe('outsideGate — open tickets the fleet will not take', () => {
   const workflow: StatusDef[] = [

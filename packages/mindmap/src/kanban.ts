@@ -51,6 +51,17 @@ export function kanbanColumnId(
   return null;
 }
 
+/**
+ * A cancelled ticket is off the board: a "cancelled" status the workflow
+ * has no column for landed in Unset and counted as ready there (Navy,
+ * 21.10.2026). A map whose workflow has a Cancelled column keeps showing it.
+ */
+export function hiddenFromBoard(node: { status: string | null }, workflow: readonly StatusDef[]): boolean {
+  if (!node.status || !/^cancel+ed$/i.test(node.status)) return false;
+  const status = node.status.toLowerCase();
+  return !workflow.some((s) => s.id === node.status || s.name.toLowerCase() === status);
+}
+
 export type DoneGroupKey = 'today' | 'week' | 'earlier';
 
 export interface DoneGroup<T> {

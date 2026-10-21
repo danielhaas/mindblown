@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -66,6 +66,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
       // Parents are containers, not work items — a card for "Backend"
       // next to its own children only adds noise on a phone screen.
       if (n.childrenIds.length > 0) continue;
+      if (hiddenFromBoard(n, workflow)) continue;
       const columnId = kanbanColumnId(n, workflow);
       if (columnId === null) {
         unstatused.push(n);
