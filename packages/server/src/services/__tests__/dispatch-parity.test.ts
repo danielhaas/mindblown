@@ -97,3 +97,24 @@ describe('dispatchQueueSnapshot ⇔ selectPullCandidates', () => {
     expect(dispatchQueueSnapshot(fixture, { workflow: WORKFLOW, cap: 1, gate: [] }).state).toBe('full');
   });
 });
+
+describe('"Fleet can fix it" check runs (fleet-check)', () => {
+  it('a fleet-check ticket goes first — past its blocker, its status and the gate; claimed or done ones do not', () => {
+    const nodes = [
+      ...fixture,
+      n({ id: 'check', status: 'in_progress', blockedReason: 'agent exited with 1', tags: ['fleet-check'] }),
+      n({ id: 'checkClaimed', blockedReason: 'x', tags: ['fleet-check'], claimedBySession: 's2' }),
+      n({ id: 'checkDone', status: 'done', blockedReason: 'x', tags: ['fleet-check'] }),
+    ];
+    const d = selectPullCandidates(nodes, { workflow: WORKFLOW, cap: 10, gate: ['version:v2'], policy: [] });
+    expect(d.ranked[0].id).toBe('check');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkClaimed');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkDone');
+    expect(d.ranked.filter((x) => x.id === 'check')).toHaveLength(1);
+  });
+
+  it('a held map (cap 0) hands out no check run either', () => {
+    const d = selectPullCandidates([...fixture, n({ id: 'check', blockedReason: 'x', tags: ['fleet-check'] })], { workflow: WORKFLOW, cap: 0, gate: [], policy: [] });
+    expect(d.ranked).toEqual([]);
+  });
+});

@@ -144,6 +144,7 @@ function makeRecorder(): Recorder {
     getFleetJournalForFleet: async () => { throw new Error('not used'); },
     listAsksForFleet: async () => { throw new Error('not used'); },
     answerAskForFleet: async () => { throw new Error('not used'); },
+    fleetCheckBlockers: async () => { throw new Error('not used'); },
     auditClosedIssues: async () => { throw new Error('not used'); },
     listAsks: async () => { throw new Error('not used'); },
     answerAsk: async () => { throw new Error('not used'); },

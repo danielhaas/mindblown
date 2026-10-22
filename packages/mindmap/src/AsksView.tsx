@@ -17,6 +17,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ASK_ANSWERERS,
   derivedAnswerPreview,
+  blockerAskNodeId,
   isDerivedAsk,
   isNoQuestion,
   isPersonStepAsk,
@@ -100,6 +101,8 @@ export function AsksSection() {
   const [data, setData] = useState<AsksResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [poll, setPoll] = useState(0);
+  const [checking, setChecking] = useState(false);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>({ answerer: null, hint: null });
   const [showDone, setShowDone] = useState(false);
   const [showNoQuestion, setShowNoQuestion] = useState(false);
@@ -207,12 +210,36 @@ export function AsksSection() {
   const answerers = (ASK_ANSWERERS as readonly string[]).filter((a) => groups.byAnswerer[a]);
   const hints = Object.keys(groups.byHint);
 
+  const blockerCount = groups.steps.filter((r) => blockerAskNodeId(r.ask.id) !== null).length;
+  const checkAll = async () => {
+    if (!scope?.fleetId) return;
+    if (!window.confirm(`Hand all ${blockerCount} blocked tickets to the fleet?\n\nA worker's own PR with red CI or a conflict: the worker reworks it. Any other blocker: the fleet takes the ticket next, with the blocker in its brief — it gets past it, or writes down what you must do.`)) return;
+    setChecking(true);
+    try {
+      const r = await api.fleetCheckBlockers(scope.fleetId, by);
+      setCheckNote(`${r.sent.length} handed to the fleet${r.failed.length ? `, ${r.failed.length} failed: ${r.failed.map((f) => f.error).join('; ')}` : ''}`);
+      setPoll((t) => t + 1);
+    } catch (e) {
+      setCheckNote(e instanceof Error ? e.message : 'failed');
+    } finally {
+      setChecking(false);
+    }
+  };
+
   const stepsCard = (
     <Card title={`Your steps — what only a person can do (${groups.steps.length})`}>
       <Muted>
         Tickets tagged needs-human (or kira-skip …): the fleet never takes them. Done when you did it; Fleet can do it puts it back in the queue; any text
-        becomes the new next step. Blocked tickets (a red CI run, a merge conflict, a wait): Unblocked clears the blocker once you fixed it.
+        becomes the new next step. Blocked tickets: Fleet can fix it hands one back to the fleet; Unblocked clears the blocker once you fixed it.
       </Muted>
+      {scope?.fleetId && blockerCount > 0 && !readOnly && (
+        <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button data-testid="fleet-check-all" disabled={checking} onClick={checkAll} style={btn('fleet', checking)}>
+            {checking ? 'Handing over…' : `Let the fleet check all ${blockerCount} blockers`}
+          </button>
+          {checkNote && <span style={{ fontSize: 12, color: '#475569' }}>{checkNote}</span>}
+        </div>
+      )}
       <div style={{ marginTop: 12 }} data-testid="your-steps">
         {groups.steps.length === 0 && <Muted>Nothing waiting on a person. 🎉</Muted>}
         {groups.steps.map((r) => (
@@ -354,13 +381,14 @@ function DoneRow({ row, scope }: { row: AskRow; scope: FleetScope | null }) {
   );
 }
 
-const btn = (kind: 'primary' | 'plain', disabled: boolean): React.CSSProperties => ({
+// 'fleet': hands the ticket back to the fleet — indigo, like the board's fleet colours.
+const btn = (kind: 'primary' | 'plain' | 'fleet', disabled: boolean): React.CSSProperties => ({
   fontSize: 13,
   padding: '6px 12px',
   borderRadius: 6,
-  border: `1px solid ${kind === 'primary' ? '#2563eb' : '#cbd5e1'}`,
-  background: kind === 'primary' ? '#2563eb' : '#fff',
-  color: kind === 'primary' ? '#fff' : '#334155',
+  border: `1px solid ${kind === 'primary' ? '#2563eb' : kind === 'fleet' ? '#6366f1' : '#cbd5e1'}`,
+  background: kind === 'primary' ? '#2563eb' : kind === 'fleet' ? '#eef2ff' : '#fff',
+  color: kind === 'primary' ? '#fff' : kind === 'fleet' ? '#3730a3' : '#334155',
   cursor: disabled ? 'not-allowed' : 'pointer',
   opacity: disabled ? 0.5 : 1,
 });
@@ -410,7 +438,9 @@ function AskCard({
       .catch(() => setNode('error'));
   }, [more, node, a.unblocks.node_id, askMapId]);
 
-  const options = a.options.length > 0 ? a.options : ['Yes', 'No'];
+  // The answer that hands the ticket back to the fleet is a button next to Answer, not a chip.
+  const fleetOption = a.options.find((o) => FLEET_OPTIONS.includes(o)) ?? null;
+  const options = a.options.length > 0 ? a.options.filter((o) => o !== fleetOption) : ['Yes', 'No'];
   const canAnswer = !readOnly && !busy && decision.trim().length > 0 && !(a.needs_version && isVersionOnly(a) && !milestone.trim());
 
   const today = new Date().toISOString().slice(0, 10);
@@ -604,6 +634,17 @@ function AskCard({
             >
               Answer
             </button>
+            {fleetOption && (
+              <button
+                data-testid="ask-fleet"
+                disabled={busy}
+                style={btn('fleet', busy)}
+                title={derivedAnswerPreview(a, fleetOption)?.join(' ') ?? undefined}
+                onClick={() => submit({ action: 'answered', decision: fleetOption, by })}
+              >
+                {fleetOption}
+              </button>
+            )}
             <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'later', by })}>
               Later
             </button>
@@ -624,6 +665,7 @@ function AskCard({
   );
 }
 
+const FLEET_OPTIONS = ['Fleet can fix it', 'Fleet can do it'];
 const OTHER = '__other__';
 const delegateName = (picked: string, other: string) => (picked === OTHER ? other.trim() : picked);
 

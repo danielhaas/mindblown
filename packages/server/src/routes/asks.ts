@@ -28,7 +28,7 @@ import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { answerAsk, AskNotFoundError, AskValidationError } from '../services/asks.js';
-import { fleetInbox, mapInbox, resolveFleetAnswer } from '../services/asksInbox.js';
+import { fleetCheckBlockers, fleetInbox, mapInbox, resolveFleetAnswer } from '../services/asksInbox.js';
 import { authorizeTickPush } from '../services/fleetTelemetry.js';
 import { syncNodeToGitHub } from './nodes.js';
 import { broadcast } from '../ws.js';
@@ -185,6 +185,16 @@ export async function asksRoutes(app: FastifyInstance): Promise<void> {
       return sendAnswer(reply, key, (req.body ?? {}) as AskAnswerInput, req.userId);
     },
   );
+
+  // "Let the fleet check all blockers": every blocker row → Fleet can fix it.
+  app.post<{ Params: { id: string }; Body: { by?: unknown } }>('/api/fleets/:id/asks/fleet-check', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    const by = typeof req.body?.by === 'string' && req.body.by.trim() ? req.body.by.trim().slice(0, 100) : 'Dan';
+    const out = await fleetCheckBlockers(req.userId, req.params.id, by);
+    if ('status' in out) return fail(reply, out.status, out.code, out.message);
+    await broadcastFleetMaps(req.params.id, { type: 'asks:updated', kind: 'answer', askId: 'fleet-check', status: 'answered' });
+    return reply.send(out);
+  });
 
   app.post<{ Params: { id: string }; Body: { askIds?: unknown } }>('/api/fleets/:id/asks/worker-ack', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);

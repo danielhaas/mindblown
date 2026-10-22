@@ -16,7 +16,7 @@ import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { getFleetForUser } from './fleets.js';
 import { authorizeTickPush, type TelemetryError } from './fleetTelemetry.js';
-import { openDerivedAsks } from './derivedAsks.js';
+import { openDerivedAsks, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
 import * as nodeDb from '../db/nodes.js';
 
 export interface AskInbox {
@@ -120,4 +120,20 @@ export async function resolveFleetAnswer(userId: string, fleetId: string, askId:
     if (denied) return denied;
   }
   return { fleetId: view.id, mapId: rowMap, askId };
+}
+
+/**
+ * "Let the fleet check all blockers" (Your steps): every blocker row on the
+ * fleet's maps this user may edit goes to the fleet. Maps they only view
+ * are left out, not refused.
+ */
+export async function fleetCheckBlockers(userId: string, fleetId: string, by: string): Promise<FleetCheckOutcome | TelemetryError> {
+  const view = await getFleetForUser(userId, fleetId);
+  if ('status' in view) return view;
+  const editable: string[] = [];
+  for (const m of view.maps) {
+    if (permDb.hasPermission(await permDb.getPermission(m.id, userId), 'edit')) editable.push(m.id);
+  }
+  if (editable.length === 0) return { sent: [], failed: [] };
+  return sendBlockersToFleet({ fleetId: view.id, visibleMapIds: editable, fleetLevel: false }, editable, userId, by);
 }

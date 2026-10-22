@@ -144,6 +144,8 @@ export {
   BLOCKED_TAG,
   FLEET_FIX_TAG,
   fleetCanFix,
+  FLEET_CHECK_TAG,
+  fleetFixAction,
   planUnblock,
 } from './dispatch.js';
 export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
@@ -402,6 +404,7 @@ export {
   isPersonStepAsk,
   buildBlockerAsk,
   blockerAnswerAction,
+  blockerFleetAction,
 } from './humanSteps.js';
 export type { StepAnswer, StepParts, BlockerAnswer } from './humanSteps.js';
 

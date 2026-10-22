@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_FIX_TAG, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -223,6 +223,14 @@ export async function applyLintFix(
         input.status = workflow.find((s) => s.category === 'in_progress')?.id ?? 'in_progress';
         changedFields.push('status');
       }
+      break;
+    }
+    case 'fleet-check': {
+      // Any other blocker: the tag puts it at the head of the queue (the
+      // pull clears blocker and tag on the grant), so until then the board
+      // still says why it was blocked.
+      input = { tagsAppend: [FLEET_CHECK_TAG] };
+      changedFields = ['tags'];
       break;
     }
     case 'to-fleet': {

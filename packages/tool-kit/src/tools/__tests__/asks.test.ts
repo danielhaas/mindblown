@@ -4,7 +4,7 @@
  * the "keine Frage" fold, the write report after an answer, the digest.
  */
 import { describe, it, expect } from 'vitest';
-import { listAsksTool, answerAskTool, asksDigestTool } from '../asks.js';
+import { listAsksTool, answerAskTool, asksDigestTool, fleetCheckBlockersTool } from '../asks.js';
 import type { ToolBackend, AskListResult, AskAnswerResult } from '../../backend.js';
 import type { Ask, AskRow } from '@mindblown/core';
 
@@ -113,5 +113,26 @@ describe('asks_digest', () => {
     const out = await asksDigestTool.handler(backend, { mapId: 'm1', since: '2026-09-03T00:00:00Z' } as never);
     expect(calls).toEqual([['m1', { status: 'all', since: '2026-09-03T00:00:00Z' }]]);
     expect(out).toBe('/leidang-asks 2026-09-03: 1 beantwortet, 1 vertagt, 0 delegiert · Tickets #6823 · wieder pullbar: n1n1n1n1');
+  });
+});
+
+describe('fleet_check_blockers', () => {
+  it('passes fleet and by through and reports fix runs, check runs and failures', async () => {
+    const calls: unknown[][] = [];
+    const backend = {
+      fleetCheckBlockers: async (...a: unknown[]) => {
+        calls.push(a);
+        return {
+          sent: [{ askId: 'blocker-a', mapId: 'm1', action: 'fleet-fix' }, { askId: 'blocker-b', mapId: 'm1', action: 'fleet-check' }],
+          failed: [{ askId: 'blocker-c', mapId: 'm1', error: 'gone' }],
+        };
+      },
+    } as unknown as ToolBackend;
+    const out = await fleetCheckBlockersTool.handler(backend, { fleetId: 'f1', by: 'Dan' } as never);
+    expect(calls[0]).toEqual(['f1', 'Dan']);
+    expect(out).toContain('2 blocker(s) handed to the fleet, 1 failed');
+    expect(out).toContain('fix its PR: blocker-a');
+    expect(out).toContain('check run: blocker-b');
+    expect(out).toContain('FAILED blocker-c: gone');
   });
 });

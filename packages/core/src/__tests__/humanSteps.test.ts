@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   blockerAnswerAction,
   blockerAskNodeId,
+  blockerFleetAction,
   buildBlockerAsk,
   buildStepAsk,
   derivedAnswerPreview,
@@ -135,12 +136,18 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(isPersonStepAsk({ id: 'stalled-n1' })).toBe(false);
   });
 
-  it('Fleet can fix it only on the worker\'s own red-CI or conflict note', () => {
-    expect(buildBlockerAsk({ id: 'n2', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: PR #22 has merge conflicts with its base. Resolve them.' }, 'm').options).toContain('Fleet can fix it');
-    expect(buildBlockerAsk({ id: 'n3', text: 'x', blockedReason: 'Waiting for the vendor' }, 'm').options).toEqual(['Unblocked', 'Done']);
-    expect(buildBlockerAsk({ id: 'n4', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: needs a decision: which DB?' }, 'm').options).toEqual(['Unblocked', 'Done']);
+  it('Fleet can fix it: the held PR is reworked (fleet-fix), anything else is a check run (fleet-check)', () => {
+    const conflict = buildBlockerAsk({ id: 'n2', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: PR #22 has merge conflicts with its base. Resolve them.', claimedBySession: 'h:slot1:fleet-worker' }, 'm');
+    const vendor = buildBlockerAsk({ id: 'n3', text: 'x', blockedReason: 'Waiting for the vendor' }, 'm');
+    const released = buildBlockerAsk({ id: 'n4', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: CI failed on PR #9 (abc).' }, 'm');
+    expect(conflict.options).toEqual(['Fleet can fix it', 'Unblocked', 'Done']);
+    expect(vendor.options).toEqual(['Fleet can fix it', 'Unblocked', 'Done']);
     expect(blockerAnswerAction('Fleet can fix it')).toBe('fleet-fix');
-    expect(derivedAnswerPreview({ id: 'blocker-n2' }, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
+    expect(blockerFleetAction(conflict)).toBe('fleet-fix');
+    expect(blockerFleetAction(vendor)).toBe('fleet-check');
+    expect(blockerFleetAction(released)).toBe('fleet-check'); // nobody holds the PR any more
+    expect(derivedAnswerPreview(conflict, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
+    expect(derivedAnswerPreview(vendor, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-check/);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {
