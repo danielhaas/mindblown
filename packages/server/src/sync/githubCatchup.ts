@@ -244,42 +244,41 @@ export function computeStateUpdates(
   const looksDoneInMB = node.percentComplete === 100 || node.status === 'done';
   const hasSnapshot = hasCloseSnapshot(link);
 
-  // "Issue offen, Node done" ist seit dem Gate in updateGitHubIssue der
-  // NORMALZUSTAND, solange ein PR läuft — der Agent setzt den Node beim
-  // Öffnen des PRs auf done, und das Issue bleibt bewusst offen bis zum
-  // Merge. Ohne dieses Gate läse der Reopen-Zweig unten das als "auf
-  // GitHub wieder geöffnet" und setzte percentComplete auf null zurück
-  // (Snapshot ist leer, weil der Close-Pfad nie lief) — der Fortschritt
-  // wäre unrettbar weg. Geblockt wird darum NUR bei laufendem PR OHNE
-  // Snapshot; ein vorhandener Snapshot macht den Reset zum verlustfreien
-  // Restore, und ein abgebrochener PR heisst, dass die Arbeit NICHT
-  // gelandet ist — der Node darf dann nicht ewig auf done/100 stehen.
-  // Semantik + Incident-Rationale: prBlocksNodeReopen in @mindblown/core
-  // (Gegenstück zum Outbound-Gate prBlocksIssueClose).
-  // Zweiter, breiterer Wächter für dieselbe Gefahr — und der Grund, dass
-  // er nötig wurde, ist dieser PR selbst.
+  // Since the gate in updateGitHubIssue, "issue open, node done" is the
+  // NORMAL STATE while a PR is running — the agent sets the node to done
+  // when it opens the PR, and the issue deliberately stays open until the
+  // merge. Without this gate the reopen branch below would read that as
+  // "reopened on GitHub" and reset percentComplete to null (the snapshot is
+  // empty because the close path never ran) — the progress would be lost
+  // for good. So we block ONLY while a PR is running WITHOUT a snapshot; an
+  // existing snapshot turns the reset into a lossless restore, and an
+  // abandoned PR means the work did NOT land — the node must not sit at
+  // done/100 forever then.
+  // Semantics + incident rationale: prBlocksNodeReopen in @mindblown/core
+  // (counterpart of the outbound gate prBlocksIssueClose).
+  // A second, broader guard for the same danger — and the reason it became
+  // necessary is this PR itself.
   //
-  // `prBlocksNodeReopen(null, …)` liefert false: ohne Mirror gibt es
-  // nichts zu vetieren. Vor dem Close-Gate war das folgenlos, weil ein
-  // done-Node sein Issue sofort geschlossen hatte — der Reopen-Zweig war
-  // für diese Form unerreichbar. Jetzt hält der Sync das Issue bewusst
-  // OFFEN, während der Node done ist, und der Hold-Pfad PATCHt weiter
-  // Titel/Body/Labels, hebt also `updated_at` und holt das Issue in den
-  // nächsten 5-Minuten-Catchup. Ist `linkedPr` in dem Moment leer (das
-  // Webhook kam nie an — genau die Lage, für die dieser PR gebaut ist),
-  // nähme der Zweig unten „Issue offen + Node done" als Wiedereröffnung
-  // und schriebe `percentComplete: null, status: 'in_progress'`.
+  // `prBlocksNodeReopen(null, …)` returns false: without a mirror there is
+  // nothing to veto. Before the close gate that was harmless, because a
+  // done node closed its issue immediately — the reopen branch was
+  // unreachable for this shape. Now the sync deliberately keeps the issue
+  // OPEN while the node is done, and the hold path keeps PATCHing
+  // title/body/labels, which bumps `updated_at` and pulls the issue into
+  // the next 5-minute catchup. If `linkedPr` is empty at that moment (the
+  // webhook never arrived — exactly the situation this PR was built for),
+  // the branch below would take "issue open + node done" as a reopen and
+  // write `percentComplete: null, status: 'in_progress'`.
   //
-  // Ohne Snapshot ist dieser Reset kein Restore, sondern Datenverlust:
-  // es gibt keinen erfassten Vorzustand, auf den er zurückfiele. Das ist
-  // dasselbe „wipe progress irrecoverably"-Argument, das der Kommentar
-  // oben für `state === 'open'` bereits macht — nur nie auf den leeren
-  // Mirror ausgedehnt.
+  // Without a snapshot this reset is not a restore but data loss: there is
+  // no recorded prior state to fall back to. It is the same "wipe progress
+  // irrecoverably" argument the comment above already makes for
+  // `state === 'open'` — just never extended to the empty mirror.
   //
-  // Preis, bewusst bezahlt: ein von Hand auf GitHub wiedereröffnetes
-  // Issue ohne Mirror und ohne Snapshot repariert der Catchup nicht mehr
-  // von selbst. Das Ereignis dafür ist `issues.reopened`, und dessen
-  // Webhook-Pfad (routes/integrations.ts) bleibt unangetastet.
+  // Price, paid deliberately: an issue reopened by hand on GitHub with no
+  // mirror and no snapshot is no longer repaired by the catchup on its own.
+  // The event for that is `issues.reopened`, and its webhook path
+  // (routes/integrations.ts) stays untouched.
   const emptyMirrorOnDoneNode =
     node.linkedPr == null && !hasSnapshot && looksDoneInMB;
   const blockReopen =

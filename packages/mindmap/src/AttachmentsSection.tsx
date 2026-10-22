@@ -258,7 +258,7 @@ export function AttachmentsSection({ attachments, onAdd, onRemove }: Props) {
                 cursor: 'pointer',
               }}
             >
-              Abbrechen
+              Cancel
             </button>
           </div>
         </div>

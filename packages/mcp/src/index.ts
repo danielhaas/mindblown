@@ -548,7 +548,7 @@ server.tool(
       .enum(['it', 'business'])
       .optional()
       .describe(
-        "Which gate to sign: 'it' = verified it works (dev/QA side), 'business' = accepted as delivered (the Abnahme). Defaults to 'business'.",
+        "Which gate to sign: 'it' = verified it works (dev/QA side), 'business' = accepted as delivered (the business sign-off). Defaults to 'business'.",
       ),
   },
   async ({ mapId, requirementId, nodeId, gate }) => {
@@ -645,7 +645,7 @@ server.tool(
 
 server.tool(
   'requirements_export',
-  'Export the requirements register as a Markdown Anforderungsdokument: chapter per Bereich, one table row per requirement (ID, business text, Muss/Soll/Kann, derived status, Aufwand/Rest in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Gefilterter Auszug" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
+  'Export the requirements register as a Markdown requirements document (German-language): chapter per area, one table row per requirement (ID, business text, Muss/Soll/Kann priority, derived status, effort/remaining in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Gefilterter Auszug" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
   {
     mapId: z.string().describe('The map ID'),
     status: z
@@ -735,7 +735,7 @@ server.tool(
         );
       }
 
-      // Chapter = the requirement's parent node (the Bereich in a
+      // Chapter = the requirement's parent node (the area in a
       // doc-shaped map). Chapters are ordered by depth-first tree order.
       const chapterOf = (id: string): string => {
         const parentId = nodeById.get(id)?.parentId;
@@ -915,7 +915,7 @@ server.tool(
               const why = a.decision === 'rejected' && a.comment ? ` («${a.comment}»)` : '';
               return `${a.gate ?? 'business'}/${a.userName}${mark}${why}${stale ? ' ⚠stale' : ''}`;
             });
-            parts.push(`· Abnahme: ${fmt.join(', ')}`);
+            parts.push(`· acceptance: ${fmt.join(', ')}`);
           }
           lines.push(`  ${parts.join(' ')}`);
         }

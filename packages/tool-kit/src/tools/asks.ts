@@ -64,22 +64,22 @@ export function renderAskList(res: AskListResult, scopeLabel: string): string {
     if (a.stale) bits.push('STALE (ticket closed)');
     if (r.workerPending) bits.push('worker note pending');
     lines.push(`- ${projectOf(r, names)}${a.id} · ${ref(r)} ${title(r).slice(0, 80)} · ${bits.join(' · ')}`);
-    lines.push(`  Frage (${a.question_author ?? '?'}): ${a.question.slice(0, 400)}`);
-    if (a.options.length > 0) lines.push(`  Optionen: ${a.options.join(' | ')}`);
+    lines.push(`  Question (${a.question_author ?? '?'}): ${a.question.slice(0, 400)}`);
+    if (a.options.length > 0) lines.push(`  Options: ${a.options.join(' | ')}`);
     const unb: string[] = [];
     if (a.unblocks.node_id) unb.push(`node ${a.unblocks.node_id.slice(0, 8)}${a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}`);
     if (a.unblocks.worker) unb.push(`worker ${a.unblocks.worker}`);
     if (a.unblocks.pr) unb.push(`PR ${a.unblocks.pr}${a.unblocks.pr_state ? ` ${a.unblocks.pr_state}` : ''}`);
     if (a.url) unb.push(a.url);
-    if (unb.length) lines.push(`  entblockt: ${unb.join(' · ')}`);
-    if (r.answer?.decision) lines.push(`  Entscheid: ${r.answer.decision}`);
+    if (unb.length) lines.push(`  unblocks: ${unb.join(' · ')}`);
+    if (r.answer?.decision) lines.push(`  Decision: ${r.answer.decision}`);
   }
   if (noQuestion.length > 0) {
-    lines.push('', `## Keine Frage — geparkte Planposten / Text ist schon der Entscheid (${noQuestion.length})`);
+    lines.push('', `## No question — parked plan items / the text already is the decision (${noQuestion.length})`);
     for (const r of noQuestion) lines.push(`- ${projectOf(r, names)}${r.ask.id} · ${ref(r)} [${r.ask.hint}] ${title(r).slice(0, 90)}`);
   }
   if (versionOnly.length > 0) {
-    lines.push('', `## Nur Version fehlt — NEEDS-VERSION (${versionOnly.length}, Antwort = Milestone)`);
+    lines.push('', `## Only the version is missing — NEEDS-VERSION (${versionOnly.length}, answer = milestone)`);
     for (const r of versionOnly) lines.push(`- ${projectOf(r, names)}${r.ask.id} · ${ref(r)} ${title(r).slice(0, 90)}${r.ask.priority ? ` · ${r.ask.priority}` : ''}`);
   }
   return lines.join('\n');
@@ -95,7 +95,7 @@ export const listAsksTool = defineTool({
     'ordered answerer → priority → idle age. `hint` says what kind of thing it',
     'is: decision (someone must choose), ops-task (a session with the right key',
     'can just do it), waiting-external, already-decided / parked-plan (folded',
-    'as "keine Frage"). MindBlown never invents an ask — wording, options and',
+    'as "no question"). MindBlown never invents an ask — wording, options and',
     'answerer come from the collector. Read-only; answer with answer_ask.',
     'Pass `mapId` for one project, or `fleetId` for every project of a fleet',
     '(each row then names its map; [fleet] = a fleet-level ask).',

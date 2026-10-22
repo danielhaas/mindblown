@@ -12,15 +12,15 @@ export default defineConfig({
   server: {
     port: 5180,
     open: true,
-    // Auf allen Schnittstellen lauschen statt nur auf localhost: claudia wird
-    // über Tailscale von anderen Rechnern aus benutzt, und der Default bindet
-    // nur [::1] — von dort ist die Oberfläche sonst nicht erreichbar.
+    // Listen on all interfaces, not just localhost: claudia is used from
+    // other machines over Tailscale, and the default binds only [::1] — the
+    // UI is unreachable from there otherwise.
     host: true,
-    // API und WebSocket über den Dev-Server proxien, damit die Oberfläche
-    // gleiche Herkunft hat wie ihre Datenquelle. Sonst lädt der Browser die
-    // Seite von claudia, ruft die API aber auf SEINEM eigenen localhost:3001 —
-    // und selbst mit korrigierter Adresse müsste die Herkunft in der
-    // CORS-Allowlist des Servers stehen. Mit Proxy entfällt beides.
+    // Proxy API and WebSocket through the dev server so the UI shares an
+    // origin with its data source. Otherwise the browser loads the page from
+    // claudia but calls the API on ITS OWN localhost:3001 — and even with a
+    // corrected address the origin would have to be in the server's CORS
+    // allowlist. The proxy removes both problems.
     proxy: {
       '/api': { target: 'http://localhost:3001', changeOrigin: true },
       '/ws': { target: 'ws://localhost:3001', ws: true },

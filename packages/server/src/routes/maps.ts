@@ -293,11 +293,11 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     return reply.send({ stalled: await stalledOrEmpty(data.map, data.nodes) });
   });
 
-  // ── GET /api/maps/:id/requirements-export — Anforderungsdokument ──
+  // ── GET /api/maps/:id/requirements-export — requirements document ──
   //
   // Renders the requirements register as a document mirroring the
-  // hand-maintained Anforderungsdokument format: chapters = the
-  // requirement nodes' parents (Bereiche) in depth-first tree order,
+  // hand-maintained requirements document format: chapters = the
+  // requirement nodes' parents (areas) in depth-first tree order,
   // one table row per requirement with derived status, S/M/L/XL effort
   // buckets. ?format=md (default, text/markdown) or ?format=docx
   // (Word download for business consumers). Rendering lives in

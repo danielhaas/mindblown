@@ -21,12 +21,12 @@ import type {
   TrustPolicy,
 } from '@mindblown/core';
 
-// Leer = gleiche Herkunft. Im Dev-Betrieb proxied Vite `/api` und `/ws` an den
-// Server (siehe vite.config.ts), im Produktivbetrieb liegen Oberfläche und API
-// ohnehin hinter demselben Host. Der frühere Default `http://localhost:3001`
-// funktionierte nur, wenn der Browser auf derselben Maschine lief wie der
-// Server — von jedem anderen Rechner zeigte er auf dessen eigenen localhost.
-// Wer die API woanders hat, setzt VITE_API_URL explizit.
+// Empty = same origin. In dev, Vite proxies `/api` and `/ws` to the server
+// (see vite.config.ts); in production UI and API sit behind the same host
+// anyway. The former default `http://localhost:3001` only worked when the
+// browser ran on the same machine as the server — from any other machine it
+// pointed at that machine's own localhost. If the API lives elsewhere, set
+// VITE_API_URL explicitly.
 const BASE_URL: string = import.meta.env.VITE_API_URL ?? '';
 
 // ── Token helpers ────────────────────────────────────────────────
@@ -764,7 +764,7 @@ export async function saveTrustPolicy(mapId: string, policy: TrustPolicy | null)
 
 /**
  * Fetch the requirements register rendered as a Markdown
- * Anforderungsdokument. Raw text — not JSON.
+ * requirements document. Raw text — not JSON.
  */
 /**
  * Fetch the requirements register as a Word document (docx) — the

@@ -986,7 +986,7 @@ describe('requirement fields', () => {
     });
   });
 
-  // The MCP setter is how the Prüfanleitung, the deep link and the demo
+  // The MCP setter is how the how-to-verify text, the deep link and the demo
   // video actually get onto a requirement — an agent-written register with
   // no way to set the video field leaves the review surface half-empty.
   //

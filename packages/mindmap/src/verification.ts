@@ -1,8 +1,8 @@
 /**
- * The Prüf-felder's data rules: which of the three review-surface fields
+ * The verification fields' data rules: which of the three review-surface fields
  * are set, and which URLs are safe to render as a link.
  *
- * Two callers, two questions. `guide.ts` builds the Prüfanleitungen view
+ * Two callers, two questions. `guide.ts` builds the Guide view
  * out of these; the register uses `verificationOf` only to decide whether a
  * row carries documentation at all, and so earns the marker that jumps
  * over there.
@@ -55,9 +55,9 @@ export function verificationOf(node: Node): Verification | null {
  * this* — the written steps or the clip. Drives the register's marker.
  *
  * A bare `verificationUrl` deliberately does not count. It answers "where",
- * not "how", and it is the one part of the Prüf-felder the register should
+ * not "how", and it is the one verification field the register should
  * not advertise: a link out of the application is an invitation to leave
- * the view its reader is standing in. It belongs on the Prüfanleitung,
+ * the view its reader is standing in. It belongs in the Guide view,
  * where the reader has already decided to go and check.
  */
 export function isDocumented(node: Node): boolean {
@@ -69,7 +69,7 @@ export function isDocumented(node: Node): boolean {
  * True only for absolute `http:`/`https:` URLs.
  *
  * `verificationUrl` / `verificationVideoUrl` are free-text columns with no
- * server-side validation, and the Prüfanleitung is the only place in the
+ * server-side validation, and the Guide view is the only place in the
  * product that renders them as an `href`. Anything else — `javascript:`,
  * `data:`, `vbscript:`, a bare relative path — is refused, and the caller
  * drops the button rather than emitting a dead or dangerous link.

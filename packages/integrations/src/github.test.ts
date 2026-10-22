@@ -184,10 +184,10 @@ describe('updateGitHubIssue — issue state vs. linked PR', () => {
     expect(patch.labels).toEqual(['compliance']);
   });
 
-  // Unit-Kontrakt, kein Happy-Path-Nachweis: `handlePrClosed` setzt beim
-  // Merge `linkedPr: null`, ein persistiertes 'merged' entsteht nur über
-  // ein nachträgliches `pull_request.edited`. Den echten Merge-Weg decken
-  // GitHubs eigenes `Closes #N` und der `linkedPr: null`-Test darunter ab.
+  // Unit contract, not proof of the happy path: `handlePrClosed` sets
+  // `linkedPr: null` on merge; a persisted 'merged' only arises from a
+  // later `pull_request.edited`. The real merge path is covered by GitHub's
+  // own `Closes #N` and the `linkedPr: null` test below.
   it('closes the issue once the PR is merged', async () => {
     await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: pr('merged') }),
