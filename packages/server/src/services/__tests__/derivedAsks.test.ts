@@ -155,7 +155,7 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     const rows = await derivedAskRows(['m1']);
     expect(rows.filter((r) => r.ask.id.startsWith('blocker-')).map((r) => r.ask.id)).toEqual(['blocker-ci']);
     expect(rows.map((r) => r.ask.id)).toContain('step-tagged');
-    expect(rows.find((r) => r.ask.id === 'blocker-ci')!.ask).toMatchObject({ question: `Blocked: ${ci}`, options: ['Unblocked', 'Done'] });
+    expect(rows.find((r) => r.ask.id === 'blocker-ci')!.ask).toMatchObject({ question: `Blocked: ${ci}`, options: ['Fleet can fix it', 'Unblocked', 'Done'] });
   });
 
   it('no row for a node a collector\'s open question already names', async () => {
@@ -164,6 +164,8 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
   });
 
   it('Unblocked clears the blocker, Done finishes, free text = a person\'s next step', async () => {
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Fleet can fix it' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'fleet-fix', 'u1', { note: undefined });
     await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Unblocked' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'clear-blocker', 'u1', { note: undefined });
     await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Done' }, 'u1');

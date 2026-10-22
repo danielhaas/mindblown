@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_FIX_TAG, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -209,6 +209,18 @@ export async function applyLintFix(
       if ((before.status ?? '').toLowerCase() === BLOCKED_TAG) {
         const category = (before.percentComplete ?? 0) > 0 ? 'in_progress' : 'todo';
         input.status = workflow.find((s) => s.category === category)?.id ?? category;
+        changedFields.push('status');
+      }
+      break;
+    }
+    case 'fleet-fix': {
+      // The worker's own PR is red or conflicted: blocker off, the tag on,
+      // claim and progress kept — the worker that holds it sees the tag on
+      // its next PR check, reworks the branch and drops the tag.
+      input = { blockedReason: null, tagsAppend: [FLEET_FIX_TAG], tagsRemove: [BLOCKED_TAG] };
+      changedFields = ['blockedReason', 'tags'];
+      if ((before.status ?? '').toLowerCase() === BLOCKED_TAG) {
+        input.status = workflow.find((s) => s.category === 'in_progress')?.id ?? 'in_progress';
         changedFields.push('status');
       }
       break;

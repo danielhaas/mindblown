@@ -122,7 +122,7 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(ask).toMatchObject({
       id: 'blocker-n1',
       question: `Blocked: ${reason}`,
-      options: ['Unblocked', 'Done'],
+      options: ['Fleet can fix it', 'Unblocked', 'Done'],
       url: pr.url,
       sources: ['mindblown-blocker'],
       unblocks: { node_id: 'n1', node_status: 'blocked · 90 %', claimed_by: 'big-blower:slot1:fleet-worker', pr: pr.url, pr_state: 'open' },
@@ -133,6 +133,14 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(isDerivedAsk(ask)).toBe(true);
     expect(isPersonStepAsk(ask)).toBe(true);
     expect(isPersonStepAsk({ id: 'stalled-n1' })).toBe(false);
+  });
+
+  it('Fleet can fix it only on the worker\'s own red-CI or conflict note', () => {
+    expect(buildBlockerAsk({ id: 'n2', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: PR #22 has merge conflicts with its base. Resolve them.' }, 'm').options).toContain('Fleet can fix it');
+    expect(buildBlockerAsk({ id: 'n3', text: 'x', blockedReason: 'Waiting for the vendor' }, 'm').options).toEqual(['Unblocked', 'Done']);
+    expect(buildBlockerAsk({ id: 'n4', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: needs a decision: which DB?' }, 'm').options).toEqual(['Unblocked', 'Done']);
+    expect(blockerAnswerAction('Fleet can fix it')).toBe('fleet-fix');
+    expect(derivedAnswerPreview({ id: 'blocker-n2' }, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {
