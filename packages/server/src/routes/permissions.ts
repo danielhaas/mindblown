@@ -140,6 +140,8 @@ export async function permissionRoutes(app: FastifyInstance): Promise<void> {
         name: r.userName,
         email: r.userEmail,
         permission: r.permission,
+        // 'fleet' = a fleet's service user (#481): assignable, but not a person to hand a question to.
+        kind: r.userKind ?? 'person',
       })),
     });
   });

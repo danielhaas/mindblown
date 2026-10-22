@@ -323,6 +323,8 @@ export interface MapMember {
   name: string;
   email: string;
   permission: 'view' | 'edit' | 'admin';
+  /** 'fleet' = a fleet's service user (#481). */
+  kind?: 'person' | 'fleet';
 }
 
 /**
