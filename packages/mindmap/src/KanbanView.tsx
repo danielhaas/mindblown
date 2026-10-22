@@ -76,6 +76,7 @@ function blockLook(block: CardBlock) {
     return { label: block.kind === 'brief' ? 'Needs brief' : 'Needs you', card: '#fffbeb', border: '#f59e0b', badge: '#fde68a', text: '#92400e' };
   }
   if (block.kind === 'later') return { label: 'Later', card: '#eef2ff', border: '#a5b4fc', badge: '#e0e7ff', text: '#3730a3' };
+  if (block.kind === 'fleet') return { label: 'Fleet', card: '#eef2ff', border: '#6366f1', badge: '#c7d2fe', text: '#3730a3' };
   return { label: block.kind === 'blocked' ? 'Blocked' : 'Waiting', card: '#e2e8f0', border: '#94a3b8', badge: '#cbd5e1', text: '#475569' };
 }
 
@@ -111,7 +112,7 @@ function Card({
   const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
   const human = block?.kind === 'human' || block?.kind === 'brief';
   const later = block?.kind === 'later';
-  const greyed = block !== null && !human && !later;
+  const greyed = block !== null && !human && !later && block.kind !== 'fleet';
   const look = blockLook(block);
 
   return (

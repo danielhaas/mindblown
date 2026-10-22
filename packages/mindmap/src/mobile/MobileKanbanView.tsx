@@ -144,7 +144,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                 later.get(n.id) ?? null,
               );
               const human = block?.kind === 'human';
-              const isLater = block?.kind === 'later';
+              const isLater = block?.kind === 'later' || block?.kind === 'fleet';
               const inProgress = col.status?.category === 'in_progress';
               const started = inProgress ? startedLabel(n.startedAt) : null;
               const eta = inProgress ? etaLabel(n.expectedDoneAt) : null;
