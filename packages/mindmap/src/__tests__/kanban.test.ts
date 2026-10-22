@@ -251,3 +251,15 @@ describe('personHolds', () => {
     });
   });
 });
+
+describe('cards handed back to the fleet', () => {
+  it('fleet-fix / fleet-check show "Fleet", ahead of the blocker they carry', () => {
+    const blocked = { status: 'in_progress', blockedReason: 'Fleet worker x: the agent exited with 3.', tags: [] as string[] };
+    expect(cardBlockState(blocked, null, false, (id) => id)?.kind).toBe('blocked');
+    const check = cardBlockState({ ...blocked, tags: ['fleet-check'] }, null, false, (id) => id);
+    expect(check?.kind).toBe('fleet');
+    expect(check?.detail).toContain('the agent exited with 3.');
+    expect(cardBlockState({ status: 'in_progress', blockedReason: null, tags: ['fleet-fix'] }, null, false, (id) => id)?.kind).toBe('fleet');
+    expect(cardBlockState({ ...blocked, tags: ['fleet-check'] }, null, true, (id) => id)).toBeNull();
+  });
+});

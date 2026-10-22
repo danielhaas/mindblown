@@ -18,6 +18,8 @@ import {
   dispatchHold,
   effectiveVersionId,
   EPIC_HOLD_TAG,
+  FLEET_CHECK_TAG,
+  FLEET_FIX_TAG,
   hasBrief,
   matchesDispatchGate,
   parseGateEntry,
@@ -171,7 +173,7 @@ export function etaLabel(
  * What a card shows: a manual block, a hold for a person, a dependency
  * wait, or nothing.
  */
-export type CardBlock = { kind: 'blocked' | 'human' | 'waiting' | 'later' | 'brief'; detail: string } | null;
+export type CardBlock = { kind: 'fleet' | 'blocked' | 'human' | 'waiting' | 'later' | 'brief'; detail: string } | null;
 
 interface BlockableNode {
   status: string | null;
@@ -224,6 +226,13 @@ export function cardBlockState(
   needsBrief = false,
 ): CardBlock {
   if (isDone) return null;
+  // Handed back with "Fleet can fix it" (mindblown#539/#540): the fleet has
+  // it, not a person — until the worker reports back.
+  if (node.tags.includes(FLEET_FIX_TAG)) return { kind: 'fleet', detail: 'Fleet fixing — the worker reworks its PR (CI log or conflict); it merges once CI is green' };
+  if (node.tags.includes(FLEET_CHECK_TAG)) {
+    const reason = (node.blockedReason ?? '').trim();
+    return { kind: 'fleet', detail: `Fleet checking — next in the queue, to get past: ${reason || 'its blocker'}` };
+  }
   const manual =
     Boolean(blockedBy?.manual) ||
     (node.blockedReason ?? '').trim() !== '' ||
