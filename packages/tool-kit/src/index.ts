@@ -16,6 +16,7 @@ export type {
   AskListOptions,
   AskListResult,
   AskAnswerResult,
+  FleetCheckResult,
   FleetStatusOptions,
   FleetJournalResult,
   FleetJournalOptions,

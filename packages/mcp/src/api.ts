@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, FleetWithMaps, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
@@ -1739,6 +1739,11 @@ export function answerAskForFleet(fleetId: string, askId: string, input: AskAnsw
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+/** fleet_check_blockers: every blocker row of the fleet → "Fleet can fix it". */
+export function fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetCheckResult> {
+  return request<FleetCheckResult>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify(by ? { by } : {}) });
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

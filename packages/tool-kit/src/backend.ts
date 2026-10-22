@@ -74,6 +74,12 @@ export interface AskListResult {
 }
 
 /** POST /api/maps/:id/asks/:askId/answer */
+/** fleet_check_blockers: which blocker rows went to the fleet, and which could not. */
+export interface FleetCheckResult {
+  sent: Array<{ askId: string; mapId: string; action: 'fleet-fix' | 'fleet-check' }>;
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
 export interface AskAnswerResult {
   ask: AskRow;
   plan: AskWritePlan;
@@ -296,6 +302,12 @@ export interface TicketBrief {
   effortEstimate: number | null;
   githubLinks: Array<{ externalId: string; url: string }>;
   claimedAt: string | null;
+  /**
+   * A check run ("Fleet can fix it" on a blocker): the blocker it was
+   * handed out past. The worker gets past it, or writes down what a person
+   * must do.
+   */
+  check?: { blockedReason: string };
 }
 
 export interface SkippedTicket {
@@ -538,6 +550,8 @@ export interface ToolBackend {
   answerAsk(mapId: string, askId: string, input: AskAnswerInput): Promise<AskAnswerResult>;
   /** The same through the fleet (#479); `mapId` picks between rows sharing an ask id ('' = fleet-level). */
   answerAskForFleet(fleetId: string, askId: string, input: AskAnswerInput, mapId?: string): Promise<AskAnswerResult>;
+  /** "Fleet can fix it" on every blocker row of the fleet's maps the caller may edit. */
+  fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetCheckResult>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

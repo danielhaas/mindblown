@@ -158,6 +158,31 @@ export const answerAskTool = defineTool({
   },
 });
 
+export const fleetCheckBlockersTool = defineTool({
+  name: 'fleet_check_blockers',
+  description: [
+    'Hand every blocked ticket on the fleet\'s maps back to the fleet ("Fleet',
+    'can fix it" on each blocker row of Your steps). A worker\'s own PR with red',
+    'CI or a merge conflict: the worker reworks the branch (fleet-fix). Any',
+    'other blocker: the queue hands the ticket out first, the blocker in the',
+    'brief — the agent gets past it or writes down what a person must do',
+    '(fleet-check). Rows a question to a person already covers, and',
+    'needs-human steps, are left alone. Only on maps you may edit. Only on a',
+    'human\'s request — it starts agent runs.',
+  ].join('\n'),
+  schema: {
+    fleetId: z.string().describe('The fleet (list_fleets)'),
+    by: z.string().optional().describe('Who asked — default Dan'),
+  },
+  handler: async (backend, { fleetId, by }) => {
+    const r = await backend.fleetCheckBlockers(fleetId, by);
+    const lines = [`${r.sent.length} blocker(s) handed to the fleet${r.failed.length ? `, ${r.failed.length} failed` : ''}`];
+    for (const s of r.sent) lines.push(`  ${s.action === 'fleet-fix' ? 'fix its PR' : 'check run'}: ${s.askId}`);
+    for (const f of r.failed) lines.push(`  FAILED ${f.askId}: ${f.error}`);
+    return lines.join('\n');
+  },
+});
+
 export const asksDigestTool = defineTool({
   name: 'asks_digest',
   description: [
@@ -183,4 +208,4 @@ export const asksDigestTool = defineTool({
 /** Exposed so a caller can preview what an answer would write without writing. */
 export { planAskWrites };
 
-export const asksTools = [listAsksTool, answerAskTool, asksDigestTool];
+export const asksTools = [listAsksTool, answerAskTool, asksDigestTool, fleetCheckBlockersTool];

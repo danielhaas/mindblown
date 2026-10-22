@@ -50,7 +50,7 @@ vi.mock('../../db/asks.js', () => ({
 }));
 vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
 
-import { answerDerivedAsk, openDerivedAsks, derivedAskRows } from '../derivedAsks.js';
+import { answerDerivedAsk, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
 const scope = { fleetId: 'f1', mapId: 'm1' };
@@ -144,16 +144,18 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
   const ci = 'Fleet worker bb:slot1:fleet-worker: CI failed on PR #995 (445fab60). Fix the branch or close the PR.';
   beforeEach(() => {
     state.nodes.push(
-      node('ci', { blockedReason: ci, percentComplete: 90 }),
+      node('ci', { blockedReason: ci, percentComplete: 90, claimedBySession: 'bb:slot1:fleet-worker' }),
+      node('vendor', { blockedReason: 'Waiting for the vendor' }),
+      node('checking', { blockedReason: 'Waiting for the vendor', tags: ['fleet-check'] }),
       node('tagged', { blockedReason: 'x', tags: ['needs-human'] }),
       node('epic', { blockedReason: 'y', childrenIds: ['free'] }),
       node('closed', { blockedReason: 'z', status: 'done', percentComplete: 100 }),
     );
   });
 
-  it('one row per open blocked leaf; a skip-tagged one stays a step, parents and done work get none', async () => {
+  it('one row per open blocked leaf; a skip-tagged one stays a step, parents, done work and ones the fleet is checking get none', async () => {
     const rows = await derivedAskRows(['m1']);
-    expect(rows.filter((r) => r.ask.id.startsWith('blocker-')).map((r) => r.ask.id)).toEqual(['blocker-ci']);
+    expect(rows.filter((r) => r.ask.id.startsWith('blocker-')).map((r) => r.ask.id)).toEqual(['blocker-ci', 'blocker-vendor']);
     expect(rows.map((r) => r.ask.id)).toContain('step-tagged');
     expect(rows.find((r) => r.ask.id === 'blocker-ci')!.ask).toMatchObject({ question: `Blocked: ${ci}`, options: ['Fleet can fix it', 'Unblocked', 'Done'] });
   });
@@ -170,7 +172,19 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'clear-blocker', 'u1', { note: undefined });
     await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Done' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'mark-done', 'u1', { note: undefined });
-    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'bump webpki on main' }, 'u1');
-    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'needs-human', 'u1', { note: 'bump webpki on main' });
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'bump the dependency on main' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'needs-human', 'u1', { note: 'bump the dependency on main' });
+    await answerDerivedAsk({ ...blockerKey, askId: 'blocker-vendor' }, { action: 'answered', decision: 'Fleet can fix it' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'vendor', 'fleet-check', 'u1', { note: undefined });
+  });
+
+  it('"Let the fleet check all": every blocker row, fix or check by its kind; steps and stalled rows stay', async () => {
+    const out = await sendBlockersToFleet({ fleetId: 'f1', visibleMapIds: ['m1'], fleetLevel: false }, ['m1'], 'u1', 'Dan');
+    expect(out.sent).toEqual([
+      { askId: 'blocker-ci', mapId: 'm1', action: 'fleet-fix' },
+      { askId: 'blocker-vendor', mapId: 'm1', action: 'fleet-check' },
+    ]);
+    expect(out.failed).toEqual([]);
+    expect(applyLintFix.mock.calls.map((c) => (c as unknown[]).slice(1, 3))).toEqual([['ci', 'fleet-fix'], ['vendor', 'fleet-check']]);
   });
 });

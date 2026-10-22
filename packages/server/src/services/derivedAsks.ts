@@ -28,6 +28,8 @@
  */
 import {
   blockerAnswerAction,
+  blockerFleetAction,
+  FLEET_CHECK_TAG,
   blockerAskNodeId,
   BLOCKER_ASK_OPTIONS,
   buildBlockerAsk,
@@ -91,7 +93,8 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     for (const node of data.nodes) {
       if (isDone(node.status) || (node.childrenIds.length === 0 && (node.percentComplete ?? 0) >= 100)) continue;
       if (dispatchSkipTag(node) !== null) out.push(openRow(buildStepAsk(node, mapId), mapId, now, node.updatedAt));
-      else if (node.childrenIds.length === 0 && node.blockedReason?.trim()) out.push(openRow(buildBlockerAsk(node, mapId), mapId, now, node.updatedAt));
+      // fleet-check: the fleet has it already, nothing for a person until it reports back.
+      else if (node.childrenIds.length === 0 && node.blockedReason?.trim() && !node.tags.includes(FLEET_CHECK_TAG)) out.push(openRow(buildBlockerAsk(node, mapId), mapId, now, node.updatedAt));
     }
   }
   return out;
@@ -116,10 +119,12 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
 }
 
 /** Which fix an answer runs, and the note it carries. */
-function plannedFix(askId: string, decision: string): { action: LintActionId; note: string | undefined } {
+function plannedFix(ask: AskRow['ask'], decision: string): { action: LintActionId; note: string | undefined } {
+  const askId = ask.id;
   if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined };
   const blocker = blockerAskNodeId(askId) !== null;
-  const action = blocker ? blockerAnswerAction(decision) : stepAnswerAction(decision);
+  let action: LintActionId = blocker ? blockerAnswerAction(decision) : stepAnswerAction(decision);
+  if (action === 'fleet-fix') action = blockerFleetAction(ask);
   const isOption = [...STEP_ASK_OPTIONS, ...BLOCKER_ASK_OPTIONS].some((o) => o.toLowerCase() === decision.toLowerCase());
   return { action, note: action === 'needs-human' && !isOption && decision ? decision : undefined };
 }
@@ -145,7 +150,7 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
 
   if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
-    const { action, note } = plannedFix(key.askId, decision);
+    const { action, note } = plannedFix(row.ask, decision);
     const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${decisionLine(by, decision, date)}`, done: false };
     writes.push(w);
     try {
@@ -163,4 +168,34 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
   const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
   const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
   return { row: saved, plan: planAskWrites(row.ask, answer, null, date), ok: writes.every((w) => w.done), node, changedFields };
+}
+
+/** What "Let the fleet check all blockers" did. */
+export interface FleetCheckOutcome {
+  /** Blocker rows handed to the fleet, by fix: a held PR reworked, or a check run from the queue. */
+  sent: Array<{ askId: string; mapId: string; action: 'fleet-fix' | 'fleet-check' }>;
+  /** Rows whose fix failed, with why. */
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
+/**
+ * Every open blocker row of these maps answered "Fleet can fix it" — rows
+ * a collector's open question covers are not in the set (openDerivedAsks),
+ * steps and stalled rows are a person's call and stay. The caller checked
+ * edit on each map; every answer is recorded like a click.
+ */
+export async function sendBlockersToFleet(scope: asksDb.AskScope, mapIds: string[], userId: string | null, by: string): Promise<FleetCheckOutcome> {
+  const rows = (await openDerivedAsks(scope, mapIds)).filter((r) => blockerAskNodeId(r.ask.id) !== null && r.mapId);
+  const out: FleetCheckOutcome = { sent: [], failed: [] };
+  for (const r of rows) {
+    const key = { fleetId: scope.fleetId, mapId: r.mapId!, askId: r.ask.id };
+    try {
+      const res = await answerDerivedAsk(key, { action: 'answered', decision: 'Fleet can fix it', by }, userId);
+      if (res.ok) out.sent.push({ askId: r.ask.id, mapId: r.mapId!, action: blockerFleetAction(r.ask) });
+      else out.failed.push({ askId: r.ask.id, mapId: r.mapId!, error: res.row.writes.find((w) => w.error)?.error ?? 'not written' });
+    } catch (err) {
+      out.failed.push({ askId: r.ask.id, mapId: r.mapId!, error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return out;
 }

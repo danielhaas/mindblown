@@ -100,6 +100,19 @@ export function fleetCanFix(blockedReason: string | null | undefined): boolean {
   return /^Fleet worker \S+: (CI failed on PR #\d+|PR #\d+ has merge conflicts)/.test((blockedReason ?? '').trim());
 }
 
+/**
+ * "Fleet can fix it" on any other blocker: the queue hands the ticket out
+ * again ahead of the rest, gate and blocker notwithstanding, with the
+ * blocker in the brief — the agent gets past it or writes down what a
+ * person must do (server orchestration claimFromMap, fleet-worker check).
+ */
+export const FLEET_CHECK_TAG = 'fleet-check';
+
+/** Which fix "Fleet can fix it" means: a held PR's red CI / conflict → the worker reworks it; else a check run. */
+export function fleetFixAction(blockedReason: string | null | undefined, claimed: boolean): 'fleet-fix' | 'fleet-check' {
+  return claimed && fleetCanFix(blockedReason) ? 'fleet-fix' : 'fleet-check';
+}
+
 export interface UnblockPlan {
   /** New status, or undefined when the status stays as it is. */
   status?: string | null;

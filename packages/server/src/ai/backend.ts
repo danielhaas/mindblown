@@ -429,6 +429,11 @@ export function createChatBackend(userId: string): ToolBackend {
       if ('status' in key) throw new Error(key.message);
       return answerAndBroadcast(key, input);
     },
+    async fleetCheckBlockers(fleetId, by) {
+      const out = await asksInbox.fleetCheckBlockers(userId, fleetId, by?.trim() || 'Dan');
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //
@@ -532,6 +537,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   // Fleet asks (#479): services/asksInbox scopes the read and checks the answer.
   'listAsksForFleet',
   'answerAskForFleet',
+  // Edit on each map checked in services/asksInbox.
+  'fleetCheckBlockers',
 ]);
 
 /**

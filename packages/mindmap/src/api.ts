@@ -1205,6 +1205,16 @@ export function answerFleetAsk(fleetId: string, askId: string, input: AskAnswerI
   });
 }
 
+export interface FleetCheckResponse {
+  sent: Array<{ askId: string; mapId: string; action: 'fleet-fix' | 'fleet-check' }>;
+  failed: Array<{ askId: string; mapId: string; error: string }>;
+}
+
+/** "Let the fleet check all blockers": every blocker row of the fleet → Fleet can fix it. */
+export function fleetCheckBlockers(fleetId: string, by: string): Promise<FleetCheckResponse> {
+  return request<FleetCheckResponse>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify({ by }) });
+}
+
 // ── Attachments ──────────────────────────────────────────────────
 
 export interface NewAttachment {

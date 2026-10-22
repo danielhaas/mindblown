@@ -55,6 +55,7 @@ export const httpBackend: ToolBackend = {
   answerAsk: (mapId, askId, input) => api.answerAsk(mapId, askId, input),
   listAsksForFleet: (fleetId, opts) => api.listAsksForFleet(fleetId, opts),
   answerAskForFleet: (fleetId, askId, input, mapId) => api.answerAskForFleet(fleetId, askId, input, mapId),
+  fleetCheckBlockers: (fleetId, by) => api.fleetCheckBlockers(fleetId, by),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
   // ── Attachments ─────────────────────────────────────────────────

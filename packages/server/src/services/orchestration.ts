@@ -39,6 +39,8 @@ import {
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
   NEEDS_BRIEF_TAG,
+  FLEET_CHECK_TAG,
+  BLOCKED_TAG,
   orderFleetPull,
   advanceFleetPull,
 } from '@mindblown/core';
@@ -665,10 +667,19 @@ export function selectPullCandidates(
   const policy = opts.policy.length > 0 ? opts.policy : DEFAULT_DISPATCH_POLICY;
   const rankedAll = sortByDispatchPolicy(eligible, policy, opts.mixAcc ?? 0);
 
+  // "Fleet can fix it" on a blocker (FLEET_CHECK_TAG): a person sent it, so
+  // it goes first — past the gate, the blocker and the status rule; the
+  // grant clears blocker and tag and hands the reason over (claimFromMap).
+  const isDone = buildIsDonePredicate(opts.workflow);
+  const checks = allNodes.filter(
+    (n) => n.tags.includes(FLEET_CHECK_TAG) && n.claimedBySession === null && n.childrenIds.length === 0 && n.parentId !== null && !isDone(n.status),
+  );
+  const checkIds = new Set(checks.map((n) => n.id));
+
   return {
     active,
     cap,
-    ranked: rankedAll.filter(hasBrief),
+    ranked: [...checks, ...rankedAll.filter((n) => hasBrief(n) && !checkIds.has(n.id))],
     skipped: rankedAll.filter((n) => !hasBrief(n)),
     humanOnly,
   };
@@ -1007,9 +1018,16 @@ async function claimFromMap(
   const mix = parseMixBugs((ev.mapRow.dispatchPolicy as string[]) ?? []);
 
   for (const candidate of ev.decision.ranked) {
+    // A check run (FLEET_CHECK_TAG): the claim takes over from the blocker.
+    const check = candidate.tags.includes(FLEET_CHECK_TAG) ? { blockedReason: candidate.blockedReason ?? '' } : null;
     const [row] = await tx
       .update(nodes)
-      .set({ claimedBySession: sessionId, claimedAt: now, updatedAt: now })
+      .set({
+        claimedBySession: sessionId,
+        claimedAt: now,
+        updatedAt: now,
+        ...(check ? { blockedReason: null, tags: candidate.tags.filter((t) => t !== FLEET_CHECK_TAG && t !== BLOCKED_TAG) } : {}),
+      })
       .where(and(eq(nodes.id, candidate.id), notDeleted, isNull(nodes.claimedBySession)))
       .returning();
     if (!row) continue; // claimed out from under us via claim_node — next
@@ -1045,6 +1063,7 @@ async function claimFromMap(
         .filter((l) => isForgeLink(l))
         .map((l) => ({ externalId: l.externalId, url: l.url })),
       claimedAt: winner.claimedAt,
+      ...(check ? { check } : {}),
     };
     return { winner, ticket };
   }
@@ -1061,7 +1080,7 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
   broadcast(w.mapId, {
     type: 'node:updated',
     nodeId: w.node.id,
-    fields: ['claimedBySession', 'claimedAt'],
+    fields: ['claimedBySession', 'claimedAt', 'blockedReason', 'tags'],
     node: w.node,
   });
   // The conditional UPDATE in claimFromMap only succeeds on an unclaimed
