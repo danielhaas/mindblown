@@ -142,7 +142,7 @@ export const answerAskTool = defineTool({
     by: z.string().optional().describe('Who decided — default Dan'),
     milestone: z.string().optional().describe('Milestone title to set on the ticket when it carried NEEDS-VERSION'),
     noRequeue: z.boolean().optional().describe('Record the answer but keep the node status — a human step still precedes the fleet'),
-    delegateTo: z.enum(['Rita', 'Susi', 'Dana']).optional().describe('For delegate'),
+    delegateTo: z.string().trim().min(1).max(100).optional().describe('For delegate: who takes it — a person on the map (name) or any name'),
   },
   handler: async (backend, { mapId, fleetId, askMapId, askId, action, decision, by, milestone, noRequeue, delegateTo }) => {
     if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');

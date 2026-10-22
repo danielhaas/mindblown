@@ -7,8 +7,8 @@
  * blocked nodes: the collector is the truth, this is the inbox. Answering
  * writes exactly what `leidang-asks-apply` writes (server side): the
  * «Entscheid (Dan, Datum): …» comment on the ticket, the decision at the
- * top of the node, blocked → todo. "Later" and "delegate to Rita/Susi/Dana"
- * only record. No answer is written without a click.
+ * top of the node, blocked → todo. "Later" and "delegate" (to a person on
+ * the ask's map, or a name typed in) only record. No answer is written without a click.
  *
  * The comment line on the ticket stays German on purpose: it is the fleet's
  * contract — the collector recognises «Entscheid (…)» as a taken decision.
@@ -389,7 +389,8 @@ function AskCard({
   const [decision, setDecision] = useState('');
   const [milestone, setMilestone] = useState('');
   const [noRequeue, setNoRequeue] = useState(false);
-  const [delegateTo, setDelegateTo] = useState<'Rita' | 'Susi' | 'Dana'>('Rita');
+  const [delegateTo, setDelegateTo] = useState('');
+  const [delegateOther, setDelegateOther] = useState('');
   const [busy, setBusy] = useState(false);
   const setResult = (r: AnswerResult) => onResult(rowKey(row), r);
   // The ask's own map (#480): its node lives there, and an answer for another
@@ -607,12 +608,12 @@ function AskCard({
               Later
             </button>
             <span style={{ display: 'inline-flex', gap: 4, alignItems: 'center' }}>
-              <select value={delegateTo} onChange={(e) => setDelegateTo(e.target.value as 'Rita' | 'Susi' | 'Dana')} style={{ fontSize: 12 }}>
-                <option>Rita</option>
-                <option>Susi</option>
-                <option>Dana</option>
-              </select>
-              <button disabled={busy} style={btn('plain', busy)} onClick={() => submit({ action: 'delegate', by, delegateTo })}>
+              <DelegatePicker mapId={askMapId} value={delegateTo} onChange={setDelegateTo} other={delegateOther} onOther={setDelegateOther} />
+              <button
+                disabled={busy || !delegateName(delegateTo, delegateOther)}
+                style={btn('plain', busy || !delegateName(delegateTo, delegateOther))}
+                onClick={() => submit({ action: 'delegate', by, delegateTo: delegateName(delegateTo, delegateOther) })}
+              >
                 Delegate
               </button>
             </span>
@@ -620,6 +621,54 @@ function AskCard({
         </div>
       )}
     </section>
+  );
+}
+
+const OTHER = '__other__';
+const delegateName = (picked: string, other: string) => (picked === OTHER ? other.trim() : picked);
+
+// One members request per map, shared by every card on the page.
+const membersByMap = new Map<string, Promise<api.MapMember[]>>();
+function mapMembers(mapId: string): Promise<api.MapMember[]> {
+  let p = membersByMap.get(mapId);
+  if (!p) {
+    p = api.fetchMapMembers(mapId).then((r) => r.members, () => []);
+    membersByMap.set(mapId, p);
+  }
+  return p;
+}
+
+/**
+ * Who a question can be handed to: the people on the ask's map, or a name
+ * typed in. It used to be Rita / Susi / Dana — Fulcrum's agents, which no
+ * other project has.
+ */
+function DelegatePicker({ mapId, value, onChange, other, onOther }: { mapId: string | null; value: string; onChange: (v: string) => void; other: string; onOther: (v: string) => void }) {
+  const me = useMindmapStore((s) => s.user?.id);
+  const [members, setMembers] = useState<api.MapMember[]>([]);
+  useEffect(() => {
+    if (!mapId) return;
+    let live = true;
+    mapMembers(mapId).then((m) => live && setMembers(m.filter((x) => x.userId !== me)));
+    return () => {
+      live = false;
+    };
+  }, [mapId, me]);
+  return (
+    <>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={{ fontSize: 12, maxWidth: 220 }} data-testid="ask-delegate-to">
+        <option value="">Delegate to…</option>
+        {members.map((m) => (
+          <option key={m.userId} value={m.name || m.email} title={m.email}>
+            {m.name ? `${m.name} — ${m.email}` : m.email}
+          </option>
+        ))}
+        <option value={OTHER}>Someone else…</option>
+      </select>
+      {value === OTHER && (
+        <input value={other} onChange={(e) => onOther(e.target.value)} placeholder="Name" style={{ fontSize: 12, width: 120 }} onKeyDown={(e) => e.stopPropagation()} />
+      )}
+    </>
   );
 }
 
