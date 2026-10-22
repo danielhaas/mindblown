@@ -28,7 +28,7 @@ import type { RequirementStage } from '@mindblown/core';
 import { isForgeLink, forgeLabel, LINT_RULE_IDS, LINT_ACTION_IDS } from '@mindblown/core';
 import * as api from './api.js';
 import { scopedLeaves } from './scope.js';
-import { stalledSectionLines, wipClaimMarker } from './stalled.js';
+import { stalledSectionLines, wipClaimMarker, wipPhaseTexts } from './stalled.js';
 import { blockedBelowCounts } from './blockedSubtrees.js';
 import { formatAttachmentList } from './attachments.js';
 import { descendantVersionIds } from './requirementScope.js';
@@ -2604,9 +2604,19 @@ server.tool(
   },
 );
 
+/** The fleet's phase per ticket (#546) for get_wip_status; empty without a fleet or when the read fails. */
+async function fleetPhaseTexts(mapId: string): Promise<Map<string, string>> {
+  try {
+    const read = await api.getFleetStatus(mapId);
+    return wipPhaseTexts(read.hosts, new Date(read.now));
+  } catch {
+    return new Map();
+  }
+}
+
 server.tool(
   'get_wip_status',
-  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest).',
+  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest). A fleet ticket also says where the fleet is with it (Setting up / Agent working / Waiting for CI / CI red / Merge conflict / Fixing / Merging) and for how long.',
   {
     mapId: z.string().describe('The map ID'),
   },
@@ -2639,9 +2649,10 @@ server.tool(
         lines.push('No tasks currently in progress.');
       } else {
         const stalledById = new Map((data.stalled ?? []).map((s) => [s.nodeId, s]));
+        const phases = await fleetPhaseTexts(mapId);
         lines.push('In progress:');
         for (const n of inProgressNodes) {
-          lines.push(`  - ${n.id} ${n.text}${wipClaimMarker(n, stalledById)}`);
+          lines.push(`  - ${n.id} ${n.text}${wipClaimMarker(n, stalledById, new Date(), phases.get(n.id))}`);
         }
       }
       return toolResult(lines.join('\n'));

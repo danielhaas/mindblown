@@ -127,6 +127,24 @@ export interface FleetWorkerStatus {
 }
 
 /**
+ * One ticket a host holds and the step it is at (#546). `workers` names
+ * only each slot's current ticket; once a PR is open the slot moves on, so
+ * the tickets waiting for CI or merging are reported here.
+ */
+export interface FleetClaimPhase {
+  nodeId: string;
+  mapId?: string;
+  /** starting | working | pr | fixing | merging — anything else is shown verbatim. */
+  phase: string;
+  phase_since?: string | null;
+  pr_number?: number | null;
+  /** On `pr`: what the PR is waiting on. */
+  ci?: 'pending' | 'red' | 'conflict' | null;
+  /** On `fixing`: which fix run this is, from 1. */
+  fix_attempt?: number | null;
+}
+
+/**
  * One host's rollup (`rollup/<host>.json`). v1 is pushed per map and
  * serves that map; v2 (#479) is pushed once per fleet and names the maps
  * the host serves in `maps`. Everything else is shared.
@@ -141,6 +159,8 @@ export interface FleetRollup {
   /** Non-null = host is draining (DRAIN file), string = the reason. */
   draining?: string | null;
   workers: FleetWorkerStatus[];
+  /** #546: every ticket the host holds, with its phase. Absent from older workers. */
+  claims?: FleetClaimPhase[];
   counts?: Record<string, number>;
   dead?: string[];
   blocked?: { count: number; recent: { node: string; at: string }[] };
@@ -193,6 +213,16 @@ export function parseRollup(x: unknown): FleetRollup | null {
     if (!Array.isArray(r.maps)) return null;
     out.maps = [...new Set(r.maps.filter((m): m is string => typeof m === 'string' && m !== ''))];
   }
+  // A malformed claims list loses the phases, not the whole rollup.
+  if (r.claims !== undefined) {
+    if (Array.isArray(r.claims)) {
+      out.claims = r.claims.filter(
+        (c): c is FleetClaimPhase => !!c && typeof c === 'object' && typeof (c as FleetClaimPhase).nodeId === 'string' && typeof (c as FleetClaimPhase).phase === 'string',
+      );
+    } else {
+      delete out.claims;
+    }
+  }
   return out;
 }
 
@@ -236,6 +266,7 @@ export function redactRollup(rollup: FleetRollup, served: string[], visible: Rea
     return out;
   });
   const out: FleetRollup = { ...rollup, workers };
+  if (rollup.claims) out.claims = rollup.claims.filter((c) => (c.mapId ? visible.has(c.mapId) : seesAll));
   if (rollup.maps) out.maps = rollup.maps.filter((m) => visible.has(m));
   if (rollup.map_id && !visible.has(rollup.map_id)) delete out.map_id;
   if (!seesAll && rollup.blocked) out.blocked = { count: rollup.blocked.count, recent: [] };
@@ -422,6 +453,66 @@ export function estimateServerNow(serverNowIso: string, fetchedAtMs: number, now
   const serverNow = Date.parse(serverNowIso);
   if (Number.isNaN(serverNow)) return new Date(nowMs);
   return new Date(serverNow + Math.max(0, nowMs - fetchedAtMs));
+}
+
+// ── Ticket phase (#546) ───────────────────────────────────────────
+
+/** Where a fleet ticket is, for its card: `problem` waits on a person or a fix, `waiting` on CI. */
+export interface TicketPhase {
+  label: string;
+  tone: 'active' | 'waiting' | 'problem';
+  /** ISO; null when the worker did not say. */
+  since: string | null;
+  prNumber: number | null;
+}
+
+export function ticketPhase(c: FleetClaimPhase): TicketPhase {
+  const base = { since: c.phase_since ?? null, prNumber: c.pr_number ?? null };
+  switch (c.phase) {
+    case 'starting':
+      return { ...base, label: 'Setting up', tone: 'active' };
+    case 'working':
+      return { ...base, label: 'Agent working', tone: 'active' };
+    case 'pr':
+      if (c.ci === 'red') return { ...base, label: 'CI red', tone: 'problem' };
+      if (c.ci === 'conflict') return { ...base, label: 'Merge conflict', tone: 'problem' };
+      return { ...base, label: 'Waiting for CI', tone: 'waiting' };
+    case 'fixing':
+      return { ...base, label: c.fix_attempt ? `Fixing (${c.fix_attempt})` : 'Fixing', tone: 'active' };
+    case 'merging':
+      return { ...base, label: 'Merging', tone: 'active' };
+    default:
+      return { ...base, label: c.phase, tone: 'active' };
+  }
+}
+
+/**
+ * Each claimed ticket's phase from the hosts' last rollups, by node id.
+ * A stale host says nothing — no phase beats a wrong one. A ticket two
+ * hosts report goes to the newer rollup.
+ */
+export function ticketPhases(
+  hosts: { generatedAt: string; receivedAt: string; rollup: FleetRollup }[],
+  now: Date,
+): Map<string, TicketPhase> {
+  const out = new Map<string, TicketPhase>();
+  const fresh = hosts
+    .filter((h) => !hostFreshness(h.generatedAt, h.receivedAt, now).stale)
+    .sort((a, b) => Date.parse(a.generatedAt) - Date.parse(b.generatedAt));
+  for (const h of fresh) {
+    for (const c of h.rollup.claims ?? []) out.set(c.nodeId, ticketPhase(c));
+  }
+  return out;
+}
+
+/** "Waiting for CI · 12m": the label and how long the ticket has been in it. */
+export function ticketPhaseText(p: TicketPhase, now: Date): string {
+  const t = p.since ? Date.parse(p.since) : NaN;
+  if (!Number.isFinite(t)) return p.label;
+  const minutes = Math.max(0, Math.floor((now.getTime() - t) / 60_000));
+  const hours = Math.floor(minutes / 60);
+  const elapsed = minutes < 60 ? `${minutes}m` : hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
+  return `${p.label} · ${elapsed}`;
 }
 
 // ── Tick history ──────────────────────────────────────────────────

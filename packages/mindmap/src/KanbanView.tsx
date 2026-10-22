@@ -4,6 +4,7 @@ import { collectScopeMatches, hasActiveScopeFilter } from './scopeFilter.js';
 import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
+import { useTicketPhases, type CardPhase } from './useTicketPhases.js';
 import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
@@ -80,12 +81,20 @@ function blockLook(block: CardBlock) {
   return { label: block.kind === 'blocked' ? 'Blocked' : 'Waiting', card: '#e2e8f0', border: '#94a3b8', badge: '#cbd5e1', text: '#475569' };
 }
 
+/** Phase chip: the fleet at work, waiting on CI, or waiting on a person or a fix. */
+const PHASE_LOOK: Record<CardPhase['tone'], { background: string; color: string }> = {
+  active: { background: '#e0e7ff', color: '#3730a3' },
+  waiting: { background: '#f1f5f9', color: '#475569' },
+  problem: { background: '#fee2e2', color: '#b91c1c' },
+};
+
 function Card({
   card,
   effortUnit,
   selected,
   block,
   showStarted,
+  phase,
   onClick,
   onDragStart,
 }: {
@@ -99,6 +108,8 @@ function Card({
   block: CardBlock;
   /** In-progress columns show when the work started. */
   showStarted: boolean;
+  /** Where the fleet is with this ticket (#546); null for a ticket no fresh rollup reports. */
+  phase: CardPhase | null;
   onClick: () => void;
   onDragStart: (e: React.DragEvent) => void;
 }) {
@@ -309,6 +320,17 @@ function Card({
           </span>
         )}
 
+        {/* The fleet's phase */}
+        {phase && (
+          <span
+            data-testid="kanban-card-phase"
+            title={phase.prNumber ? `Fleet: ${phase.text} — PR #${phase.prNumber}` : `Fleet: ${phase.text}`}
+            style={{ fontSize: 10, fontWeight: 600, padding: '1px 6px', borderRadius: 4, ...PHASE_LOOK[phase.tone] }}
+          >
+            {phase.text}
+          </span>
+        )}
+
         {/* Started */}
         {started && (
           <span
@@ -373,6 +395,7 @@ function Column({
   nodes,
   holds,
   later,
+  phases,
   onSelectNode,
   onDragStart,
   onDragOver,
@@ -387,6 +410,8 @@ function Column({
   holds: Map<string, string>;
   /** Tickets outside the dispatch gate (`outsideGate`) → hover text. */
   later: Map<string, string>;
+  /** Fleet tickets' phases (`useTicketPhases`), shown in in-progress columns. */
+  phases: Map<string, CardPhase>;
   onSelectNode: (id: string) => void;
   onDragStart: (e: React.DragEvent, nodeId: string) => void;
   onDragOver: (e: React.DragEvent) => void;
@@ -444,6 +469,7 @@ function Column({
       selected={card.node.id === selectedNodeId}
       block={blocks.get(card.node.id) ?? null}
       showStarted={column.category === 'in_progress'}
+      phase={column.category === 'in_progress' ? phases.get(card.node.id) ?? null : null}
       onClick={() => onSelectNode(card.node.id)}
       onDragStart={(e) => onDragStart(e, card.node.id)}
     />
@@ -704,6 +730,7 @@ export function KanbanView() {
 
   const workflow = currentMap?.statusWorkflow;
   const holds = useMemo(() => personHolds(Object.values(nodes), workflow ?? []), [nodes, workflow]);
+  const phases = useTicketPhases();
   const versions = useMindmapStore((s) => s.versions);
   const gate = currentMap?.dispatchGate;
   const later = useMemo(
@@ -919,6 +946,7 @@ export function KanbanView() {
             nodes={nodes}
             holds={holds}
             later={later}
+            phases={phases}
             onSelectNode={selectNode}
             onDragStart={handleDragStart}
             onDragOver={handleDragOver}
