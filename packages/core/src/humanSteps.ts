@@ -12,7 +12,7 @@
  * while open: the tag is the truth, and answering changes the tag.
  */
 import { questionParts, type Ask, type QuestionParts } from './asks.js';
-import { dispatchSkipTag } from './dispatch.js';
+import { dispatchSkipTag, fleetCanFix } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
@@ -40,11 +40,13 @@ export function stepAskNodeId(askId: string): string | null {
  * fleet-worker note_once); without a collector nobody is asked, so on
  * Sonarpipe (22.10.2026) the Kanban showed three blocked PRs and the fleet
  * page nothing. Unblocked = the blocker goes (the worker merges once CI is
- * green); free text = a person's next step, as on a stalled row.
+ * green); free text = a person's next step, as on a stalled row. On the
+ * worker's own red-CI / conflict note, Fleet can fix it sends the agent
+ * back to the PR branch (`fleetCanFix`, FLEET_FIX_TAG).
  */
 export const BLOCKER_ASK_PREFIX = 'blocker-';
-export const BLOCKER_ASK_OPTIONS = ['Unblocked', 'Done'] as const;
-export type BlockerAnswer = 'clear-blocker' | 'mark-done' | 'needs-human';
+export const BLOCKER_ASK_OPTIONS = ['Fleet can fix it', 'Unblocked', 'Done'] as const;
+export type BlockerAnswer = 'fleet-fix' | 'clear-blocker' | 'mark-done' | 'needs-human';
 const BLOCKED_PREFIX = 'Blocked: ';
 
 export function blockerAskId(nodeId: string): string {
@@ -218,7 +220,7 @@ export function buildBlockerAsk(
     url: issue?.url ?? pr?.url ?? null,
     sources: ['mindblown-blocker'],
     question: BLOCKED_PREFIX + (node.blockedReason?.trim() || '(no reason given)'),
-    options: [...BLOCKER_ASK_OPTIONS],
+    options: BLOCKER_ASK_OPTIONS.filter((o) => o !== 'Fleet can fix it' || fleetCanFix(node.blockedReason)),
     unblocks: {
       node_id: node.id,
       node_title: node.text,
@@ -231,9 +233,10 @@ export function buildBlockerAsk(
   };
 }
 
-/** Which write an answer to a blocker means: Unblocked, Done, else the text is a person's next step. */
+/** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
 export function blockerAnswerAction(decision: string): BlockerAnswer {
   const d = decision.trim().toLowerCase();
+  if (d === 'fleet can fix it' || d === 'fleet-fix') return 'fleet-fix';
   if (d === 'unblocked' || d === 'unblock' || d === 'clear-blocker') return 'clear-blocker';
   if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
   return 'needs-human';
@@ -279,6 +282,8 @@ export function derivedAnswerPreview(a: Pick<Ask, 'id'>, decision: string): stri
   }
   if (blockerAskNodeId(a.id)) {
     switch (blockerAnswerAction(d)) {
+      case 'fleet-fix':
+        return ['Node: blocker cleared, tagged fleet-fix — the worker holding the PR runs its agent on the branch again (CI log in the prompt) and pushes'];
       case 'clear-blocker':
         return ['Node: blocker cleared — a worker holding it carries on (an open PR merges once CI is green)'];
       case 'mark-done':

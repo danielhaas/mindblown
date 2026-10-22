@@ -88,6 +88,18 @@ export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boo
 /** Tag the fleet's give-up path (blocked.sh) sets next to status=blocked + blockedReason. */
 export const BLOCKED_TAG = 'blocked';
 
+/**
+ * "Fleet can fix it" on a worker's red-CI or merge-conflict blocker: the
+ * worker that holds the claim runs its agent on the PR branch again, then
+ * drops the tag (claude-fleet fleet-worker fix_pr).
+ */
+export const FLEET_FIX_TAG = 'fleet-fix';
+
+/** A blocker the fleet worker wrote about its own PR that an agent can work on: red CI, a merge conflict. */
+export function fleetCanFix(blockedReason: string | null | undefined): boolean {
+  return /^Fleet worker \S+: (CI failed on PR #\d+|PR #\d+ has merge conflicts)/.test((blockedReason ?? '').trim());
+}
+
 export interface UnblockPlan {
   /** New status, or undefined when the status stays as it is. */
   status?: string | null;

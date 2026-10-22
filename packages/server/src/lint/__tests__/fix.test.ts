@@ -187,6 +187,13 @@ describe('applyLintFix — node-side actions', () => {
     expect(r.changedFields).toEqual(['tags', 'status', 'claimedBySession']);
   });
 
+  it('fleet-fix ("Fleet can fix it") drops the blocker, tags fleet-fix, keeps the claim and progress', async () => {
+    seed({ id: 'a', status: 'wip', percentComplete: 90, blockedReason: 'Fleet worker h: CI failed on PR #9 (abc).', tags: ['blocked'], claimedBySession: 'h:slot1:fleet-worker' });
+    const r = await applyLintFix('m1', 'a', 'fleet-fix', 'u1');
+    expect(updateNode).toHaveBeenCalledWith('a', { blockedReason: null, tagsAppend: ['fleet-fix'], tagsRemove: ['blocked'] });
+    expect(r.changedFields).toEqual(['blockedReason', 'tags']);
+  });
+
   it('clear-blocker delegates to the unblock service and fans out its changed fields', async () => {
     seed({ id: 'a', status: 'shipped', blockedReason: 'swept', tags: ['blocked'] });
     const r = await applyLintFix('m1', 'a', 'clear-blocker', 'u1');

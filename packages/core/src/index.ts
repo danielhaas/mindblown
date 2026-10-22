@@ -142,6 +142,8 @@ export {
   EPIC_HOLD_TAG,
   DISPATCH_SKIP_TAGS,
   BLOCKED_TAG,
+  FLEET_FIX_TAG,
+  fleetCanFix,
   planUnblock,
 } from './dispatch.js';
 export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan } from './dispatch.js';
