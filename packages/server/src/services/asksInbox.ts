@@ -9,7 +9,7 @@
  * project, like a tick's prose. A fleet-wide push's meta (counts across
  * projects) is cut the same way.
  */
-import { countAsks, sortAsks, stalledAskNodeId, stepAskNodeId } from '@mindblown/core';
+import { countAsks, derivedAskNodeId, sortAsks } from '@mindblown/core';
 import type { AskDocumentMeta, AskRow } from '@mindblown/core';
 import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
@@ -99,7 +99,7 @@ export async function resolveFleetAnswer(userId: string, fleetId: string, askId:
   const full = view.isOwner || view.hiddenMapCount === 0;
   let rows: Array<{ mapId?: string | null }> = await asksDb.findAsks({ fleetId: view.id, visibleMapIds: view.maps.map((m) => m.id), fleetLevel: full }, askId);
   // A derived row is not stored while open (services/derivedAsks.ts): its node names the map.
-  const derivedNode = stalledAskNodeId(askId) ?? stepAskNodeId(askId);
+  const derivedNode = derivedAskNodeId(askId);
   if (derivedNode && rows.length === 0) {
     const nodeMap = await nodeDb.getNodeMapId(derivedNode);
     if (nodeMap && view.maps.some((m) => m.id === nodeMap)) rows = [{ mapId: nodeMap }];

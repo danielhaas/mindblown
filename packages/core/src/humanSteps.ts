@@ -34,9 +34,41 @@ export function stepAskNodeId(askId: string): string | null {
   return askId.startsWith(STEP_ASK_PREFIX) && askId.length > STEP_ASK_PREFIX.length ? askId.slice(STEP_ASK_PREFIX.length) : null;
 }
 
-/** Rows MindBlown derives itself (stalled work, a person's steps) — not the collector's. */
+/**
+ * A manual blocker is a step too. A worker that stops on a red CI run or a
+ * merge conflict writes `blockedReason` and keeps its claim (claude-fleet
+ * fleet-worker note_once); without a collector nobody is asked, so on
+ * Sonarpipe (22.10.2026) the Kanban showed three blocked PRs and the fleet
+ * page nothing. Unblocked = the blocker goes (the worker merges once CI is
+ * green); free text = a person's next step, as on a stalled row.
+ */
+export const BLOCKER_ASK_PREFIX = 'blocker-';
+export const BLOCKER_ASK_OPTIONS = ['Unblocked', 'Done'] as const;
+export type BlockerAnswer = 'clear-blocker' | 'mark-done' | 'needs-human';
+const BLOCKED_PREFIX = 'Blocked: ';
+
+export function blockerAskId(nodeId: string): string {
+  return BLOCKER_ASK_PREFIX + nodeId;
+}
+
+/** The node a blocker row is about, or null for any other ask id. */
+export function blockerAskNodeId(askId: string): string | null {
+  return askId.startsWith(BLOCKER_ASK_PREFIX) && askId.length > BLOCKER_ASK_PREFIX.length ? askId.slice(BLOCKER_ASK_PREFIX.length) : null;
+}
+
+/** The node behind any derived row (stalled, step, blocker), or null for a collector's ask. */
+export function derivedAskNodeId(askId: string): string | null {
+  return stalledAskNodeId(askId) ?? stepAskNodeId(askId) ?? blockerAskNodeId(askId);
+}
+
+/** Rows MindBlown derives itself (stalled work, a person's steps, blockers) — not the collector's. */
 export function isDerivedAsk(a: Pick<Ask, 'id'>): boolean {
-  return stalledAskNodeId(a.id) !== null || stepAskNodeId(a.id) !== null;
+  return derivedAskNodeId(a.id) !== null;
+}
+
+/** Rows for the "Your steps" card: steps and blockers. */
+export function isPersonStepAsk(a: Pick<Ask, 'id'>): boolean {
+  return stepAskNodeId(a.id) !== null || blockerAskNodeId(a.id) !== null;
 }
 
 /** The step a needs-human node carries: "Next step (a person): …" at the top of its description. */
@@ -172,6 +204,41 @@ export function buildStepAsk(
   };
 }
 
+/** The blocker row of a node with a manual `blockedReason`. */
+export function buildBlockerAsk(
+  node: { id: string; text: string; blockedReason?: string | null; priority?: string | null; externalLinks?: ExternalLink[]; percentComplete?: number | null; claimedBySession?: string | null },
+  mapId: string,
+): Ask {
+  const links = node.externalLinks ?? [];
+  const issue = links.find((l) => isForgeLink(l) && !l.isPullRequest);
+  const pr = links.find((l) => isForgeLink(l) && l.isPullRequest);
+  return {
+    ...buildStepAsk({ ...node, tags: [], description: null }, mapId),
+    id: blockerAskId(node.id),
+    url: issue?.url ?? pr?.url ?? null,
+    sources: ['mindblown-blocker'],
+    question: BLOCKED_PREFIX + (node.blockedReason?.trim() || '(no reason given)'),
+    options: [...BLOCKER_ASK_OPTIONS],
+    unblocks: {
+      node_id: node.id,
+      node_title: node.text,
+      node_status: `blocked${node.percentComplete ? ` · ${node.percentComplete} %` : ''}`,
+      claimed_by: node.claimedBySession ?? null,
+      worker: null,
+      pr: pr?.url ?? null,
+      pr_state: pr?.state ?? null,
+    },
+  };
+}
+
+/** Which write an answer to a blocker means: Unblocked, Done, else the text is a person's next step. */
+export function blockerAnswerAction(decision: string): BlockerAnswer {
+  const d = decision.trim().toLowerCase();
+  if (d === 'unblocked' || d === 'unblock' || d === 'clear-blocker') return 'clear-blocker';
+  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
+  return 'needs-human';
+}
+
 /** Which write an answer to a step means: Done, Fleet can do it, else the text is the new next step. */
 export function stepAnswerAction(decision: string): StepAnswer {
   const d = decision.trim().toLowerCase();
@@ -208,6 +275,16 @@ export function derivedAnswerPreview(a: Pick<Ask, 'id'>, decision: string): stri
         return ['Node: needs-human (and other skip tags) removed, back to the queue as todo — the fleet takes it'];
       default:
         return [`Node: "Next step (a person): ${d || '…'}" at the top of the description — the step stays yours`];
+    }
+  }
+  if (blockerAskNodeId(a.id)) {
+    switch (blockerAnswerAction(d)) {
+      case 'clear-blocker':
+        return ['Node: blocker cleared — a worker holding it carries on (an open PR merges once CI is green)'];
+      case 'mark-done':
+        return ['Node: done, 100 % (the linked issue closes via sync)'];
+      default:
+        return [`Node: blocker becomes "Next step (a person): …" plus your note "${d || '…'}", tagged needs-human`];
     }
   }
   return null;

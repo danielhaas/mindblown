@@ -138,3 +138,37 @@ describe('a person\'s steps', () => {
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'needs-human', 'u1', { note: 'waiting for Thomas to send the key' });
   });
 });
+
+describe('blockers (a worker\'s red CI, a wait)', () => {
+  const blockerKey = { fleetId: 'f1', mapId: 'm1', askId: 'blocker-ci' };
+  const ci = 'Fleet worker bb:slot1:fleet-worker: CI failed on PR #995 (445fab60). Fix the branch or close the PR.';
+  beforeEach(() => {
+    state.nodes.push(
+      node('ci', { blockedReason: ci, percentComplete: 90 }),
+      node('tagged', { blockedReason: 'x', tags: ['needs-human'] }),
+      node('epic', { blockedReason: 'y', childrenIds: ['free'] }),
+      node('closed', { blockedReason: 'z', status: 'done', percentComplete: 100 }),
+    );
+  });
+
+  it('one row per open blocked leaf; a skip-tagged one stays a step, parents and done work get none', async () => {
+    const rows = await derivedAskRows(['m1']);
+    expect(rows.filter((r) => r.ask.id.startsWith('blocker-')).map((r) => r.ask.id)).toEqual(['blocker-ci']);
+    expect(rows.map((r) => r.ask.id)).toContain('step-tagged');
+    expect(rows.find((r) => r.ask.id === 'blocker-ci')!.ask).toMatchObject({ question: `Blocked: ${ci}`, options: ['Unblocked', 'Done'] });
+  });
+
+  it('no row for a node a collector\'s open question already names', async () => {
+    state.stored = [{ ask: { id: 'fleet-ci', unblocks: { node_id: 'ci' } }, mapId: 'm1', status: 'open', answeredAt: null }];
+    expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).not.toContain('blocker-ci');
+  });
+
+  it('Unblocked clears the blocker, Done finishes, free text = a person\'s next step', async () => {
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Unblocked' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'clear-blocker', 'u1', { note: undefined });
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'Done' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'mark-done', 'u1', { note: undefined });
+    await answerDerivedAsk(blockerKey, { action: 'answered', decision: 'bump webpki on main' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'needs-human', 'u1', { note: 'bump webpki on main' });
+  });
+});

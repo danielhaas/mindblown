@@ -39,5 +39,8 @@ describe('groupBlockers (#322)', () => {
   it('classifies the vocabulary', () => {
     expect(classifyBlocker('awaiting review on the PR')).toBe('pr_open');
     expect(classifyBlocker('Vendor has not answered')).toBe('external');
+    // The fleet worker's own notes (claude-fleet fleet-worker land_pr) are merge blocks, not reviews.
+    expect(classifyBlocker('Fleet worker x: CI failed on PR #995 (445fab60). Fix the branch or close the PR; it merges by itself once CI is green.')).toBe('merge_blocked');
+    expect(classifyBlocker('Fleet worker x: PR #22 has merge conflicts with its base. Resolve them.')).toBe('merge_blocked');
   });
 });

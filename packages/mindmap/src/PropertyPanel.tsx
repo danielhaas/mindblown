@@ -447,8 +447,11 @@ function PropertyPanelInner({
 
         {/* Blocked reason */}
         <Field label="Blocked reason">
-          <div style={{ display: 'flex', gap: 6 }}>
-            <input
+          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+            {/* A textarea that grows with the text: worker blockers run to two or three sentences. */}
+            <textarea
+              data-testid="property-blocked-reason"
+              rows={Math.min(8, Math.max(1, Math.ceil(blockedReason.length / 38)))}
               value={blockedReason}
               onChange={(e) => {
                 setBlockedReason(e.target.value);
@@ -462,7 +465,7 @@ function PropertyPanelInner({
                 }
               }}
               onKeyDown={(e) => e.stopPropagation()}
-              style={{ ...inputStyle, flex: 1, minWidth: 0 }}
+              style={{ ...inputStyle, flex: 1, minWidth: 0, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.4 }}
               placeholder="Why is this blocked? (leave empty if not blocked)"
             />
             {isManuallyBlocked && (
