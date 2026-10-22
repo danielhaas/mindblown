@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { buildStepAsk, derivedAnswerPreview, isDerivedAsk, nextStepOf, stepAnswerAction, stepAskNodeId, stepParts, stepSummaryOf } from '../humanSteps.js';
+import {
+  blockerAnswerAction,
+  blockerAskNodeId,
+  buildBlockerAsk,
+  buildStepAsk,
+  derivedAnswerPreview,
+  derivedAskNodeId,
+  isDerivedAsk,
+  isPersonStepAsk,
+  nextStepOf,
+  stepAnswerAction,
+  stepAskNodeId,
+  stepParts,
+  stepSummaryOf,
+} from '../humanSteps.js';
 
 describe('a step for reading', () => {
   it('without a next-step line the row shows the description\'s first paragraph, headings skipped', () => {
@@ -96,5 +110,35 @@ describe('a person\'s steps', () => {
     expect(derivedAnswerPreview({ id: 'stalled-n1' }, 'Back to the queue')?.[0]).toMatch(/progress kept/);
     expect(derivedAnswerPreview({ id: 'stalled-n1' }, 'For a person')?.[0]).toMatch(/Your steps/);
     expect(derivedAnswerPreview({ id: 'fleet-1' }, 'Done')).toBeNull();
+  });
+});
+
+describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
+  const reason = 'Fleet worker big-blower:slot1:fleet-worker: CI failed on PR #995 (445fab60). Fix the branch or close the PR; it merges by itself once CI is green.';
+  const pr = { provider: 'gitea', externalId: 'dan/Sonarpipe#995', url: 'https://git.example/dan/Sonarpipe/pulls/995', syncEnabled: true, lastSyncedAt: null, isPullRequest: true, state: 'open' as const };
+
+  it('the row says the reason, links the PR and names the claim', () => {
+    const ask = buildBlockerAsk({ id: 'n1', text: 'Beacon identity', blockedReason: reason, externalLinks: [pr], percentComplete: 90, claimedBySession: 'big-blower:slot1:fleet-worker' }, 'm');
+    expect(ask).toMatchObject({
+      id: 'blocker-n1',
+      question: `Blocked: ${reason}`,
+      options: ['Unblocked', 'Done'],
+      url: pr.url,
+      sources: ['mindblown-blocker'],
+      unblocks: { node_id: 'n1', node_status: 'blocked · 90 %', claimed_by: 'big-blower:slot1:fleet-worker', pr: pr.url, pr_state: 'open' },
+    });
+    expect(blockerAskNodeId('blocker-n1')).toBe('n1');
+    expect(derivedAskNodeId('blocker-n1')).toBe('n1');
+    expect(derivedAskNodeId('stalled-n2')).toBe('n2');
+    expect(isDerivedAsk(ask)).toBe(true);
+    expect(isPersonStepAsk(ask)).toBe(true);
+    expect(isPersonStepAsk({ id: 'stalled-n1' })).toBe(false);
+  });
+
+  it('Unblocked clears, Done finishes, text is a person\'s next step', () => {
+    expect(blockerAnswerAction('Unblocked')).toBe('clear-blocker');
+    expect(blockerAnswerAction('Done')).toBe('mark-done');
+    expect(blockerAnswerAction('bump webpki on main first')).toBe('needs-human');
+    expect(derivedAnswerPreview({ id: 'blocker-n1' }, 'Unblocked')?.[0]).toMatch(/blocker cleared/);
   });
 });

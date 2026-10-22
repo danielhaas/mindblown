@@ -5,6 +5,9 @@
  *                   STALLED_ASK_AFTER_HOURS (core stalled.ts) — a question
  *   step-<node>     an open ticket carrying a skip tag (needs-human …):
  *                   a step only a person can do (core humanSteps.ts)
+ *   blocker-<node>  an open leaf with a manual blockedReason and no skip
+ *                   tag — a worker's red CI or merge conflict, a wait
+ *                   (core humanSteps.ts)
  *
  * Nothing is stored while a row is open, so a fleet push (which replaces
  * the open set) cannot wipe it and there is no second list to keep in step:
@@ -20,13 +23,19 @@
  * The answers are lint fixes (lint/fix.ts). Stalled: Done = mark-done,
  * Back to the queue = requeue, For a person / free text = needs-human.
  * Step: Done = mark-done, Fleet can do it = to-fleet, free text =
- * needs-human with the text as the new next step.
+ * needs-human with the text as the new next step. Blocker: Unblocked =
+ * clear-blocker, Done = mark-done, free text = needs-human.
  */
 import {
+  blockerAnswerAction,
+  blockerAskNodeId,
+  BLOCKER_ASK_OPTIONS,
+  buildBlockerAsk,
   buildIsDonePredicate,
   buildStalledAsk,
   buildStepAsk,
   decisionLine,
+  derivedAskNodeId,
   dispatchSkipTag,
   isStalledAskDue,
   planAskWrites,
@@ -80,9 +89,9 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
 
     const isDone = buildIsDonePredicate(data.map.statusWorkflow ?? []);
     for (const node of data.nodes) {
-      if (dispatchSkipTag(node) === null) continue;
       if (isDone(node.status) || (node.childrenIds.length === 0 && (node.percentComplete ?? 0) >= 100)) continue;
-      out.push(openRow(buildStepAsk(node, mapId), mapId, now, node.updatedAt));
+      if (dispatchSkipTag(node) !== null) out.push(openRow(buildStepAsk(node, mapId), mapId, now, node.updatedAt));
+      else if (node.childrenIds.length === 0 && node.blockedReason?.trim()) out.push(openRow(buildBlockerAsk(node, mapId), mapId, now, node.updatedAt));
     }
   }
   return out;
@@ -102,15 +111,16 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
   const asked = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   return derived.filter((r) => {
     if (snoozed.has(rowKey(r))) return false;
-    return !(stepAskNodeId(r.ask.id) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
+    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   });
 }
 
 /** Which fix an answer runs, and the note it carries. */
 function plannedFix(askId: string, decision: string): { action: LintActionId; note: string | undefined } {
   if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined };
-  const action = stepAnswerAction(decision);
-  const isOption = STEP_ASK_OPTIONS.some((o) => o.toLowerCase() === decision.toLowerCase());
+  const blocker = blockerAskNodeId(askId) !== null;
+  const action = blocker ? blockerAnswerAction(decision) : stepAnswerAction(decision);
+  const isOption = [...STEP_ASK_OPTIONS, ...BLOCKER_ASK_OPTIONS].some((o) => o.toLowerCase() === decision.toLowerCase());
   return { action, note: action === 'needs-human' && !isOption && decision ? decision : undefined };
 }
 
@@ -120,7 +130,7 @@ function plannedFix(askId: string, decision: string): { action: LintActionId; no
  * left to answer.
  */
 export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
-  const nodeId = stalledAskNodeId(key.askId) ?? stepAskNodeId(key.askId);
+  const nodeId = derivedAskNodeId(key.askId);
   if (!nodeId || !key.mapId) throw new AskNotFoundError(key.askId);
   const now = new Date();
   const [row] = (await derivedAskRows([key.mapId], now)).filter((r) => r.ask.id === key.askId);

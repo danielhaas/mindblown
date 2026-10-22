@@ -19,12 +19,12 @@ import {
   derivedAnswerPreview,
   isDerivedAsk,
   isNoQuestion,
+  isPersonStepAsk,
   isVersionOnly,
   planAskWrites,
   proseMirrorToPlainText,
   questionParts,
   sortAsks,
-  stepAskNodeId,
   stepParts,
 } from '@mindblown/core';
 import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
@@ -167,9 +167,9 @@ export function AsksSection() {
     const rows = sortAsks(data?.items ?? []);
     const allOpen = rows.filter((r) => r.status === 'open' || results[rowKey(r)]);
     const done = rows.filter((r) => r.status !== 'open' && !results[rowKey(r)]);
-    // A person's steps (needs-human tickets) get their own card below.
-    const steps = allOpen.filter((r) => stepAskNodeId(r.ask.id) !== null);
-    const open = allOpen.filter((r) => stepAskNodeId(r.ask.id) === null);
+    // A person's steps (needs-human tickets, manual blockers) get their own card below.
+    const steps = allOpen.filter((r) => isPersonStepAsk(r.ask));
+    const open = allOpen.filter((r) => !isPersonStepAsk(r.ask));
     const questions = open.filter((r) => !isNoQuestion(r.ask) && !isVersionOnly(r.ask));
     const noQuestion = open.filter((r) => isNoQuestion(r.ask));
     const versionOnly = open.filter((r) => isVersionOnly(r.ask) && !isNoQuestion(r.ask));
@@ -211,7 +211,7 @@ export function AsksSection() {
     <Card title={`Your steps — what only a person can do (${groups.steps.length})`}>
       <Muted>
         Tickets tagged needs-human (or kira-skip …): the fleet never takes them. Done when you did it; Fleet can do it puts it back in the queue; any text
-        becomes the new next step.
+        becomes the new next step. Blocked tickets (a red CI run, a merge conflict, a wait): Unblocked clears the blocker once you fixed it.
       </Muted>
       <div style={{ marginTop: 12 }} data-testid="your-steps">
         {groups.steps.length === 0 && <Muted>Nothing waiting on a person. 🎉</Muted>}
@@ -547,7 +547,7 @@ function AskCard({
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
             placeholder={
-              stepAskNodeId(a.id) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
+              isPersonStepAsk(a) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
             }
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
@@ -626,17 +626,19 @@ function AskCard({
 /** The step's own label: its "Next step" line, the description's gist, or none for the bare tag note. */
 function stepLabel(question: string): { label: string | null; text: string } {
   if (question.startsWith(NEXT_STEP)) return { label: 'Next step', text: question.slice(NEXT_STEP.length) };
+  if (question.startsWith(BLOCKED)) return { label: 'Blocked', text: question.slice(BLOCKED.length) };
   if (question.startsWith('Tagged ')) return { label: null, text: question };
   return { label: "What's left", text: question };
 }
 const NEXT_STEP = 'Next step: ';
+const BLOCKED = 'Blocked: ';
 
 /**
  * The question as lead + numbered sub-questions + tail (core questionParts), not one block.
  * A person's step splits by core stepParts — runs numbered, a finding's points bulleted.
  */
 function QuestionText({ ask: a }: { ask: Ask }) {
-  const step = stepAskNodeId(a.id) !== null;
+  const step = isPersonStepAsk(a);
   const s = step ? stepLabel(a.question) : null;
   const { lead, items, tail, ordered } = s ? stepParts(s.text) : { ...questionParts(a.question), ordered: true };
   const labelText = s ? (s.label ? `${s.label}: ` : '') : `Question (${a.question_author ?? '?'}): `;

@@ -32,8 +32,8 @@ const BLOCKER_KINDS: { kind: BlockerKind; label: string; re: RegExp }[] = [
   { kind: 'orphaned_claim', label: 'Claim swept off a worker — in progress with nobody on it', re: /swept off|nobody on it|orphan/i },
   {
     kind: 'merge_blocked',
-    label: 'Code done, cannot merge — CI red on main / migration fork / Actions not dispatching',
-    re: /ci (is )?red|red ci|main (is )?red|cannot merge|can't merge|migration[- ]?(graph )?fork|not dispatch|workflow scope|merge[- ]blocked|blocks merging/i,
+    label: 'Code done, cannot merge — CI red / merge conflict / migration fork / Actions not dispatching',
+    re: /ci (is )?red|red ci|ci failed|merge conflicts|no ci reported|refused to merge|main (is )?red|cannot merge|can't merge|migration[- ]?(graph )?fork|not dispatch|workflow scope|merge[- ]blocked|blocks merging/i,
   },
   { kind: 'pr_open', label: 'PR open, waiting for review or checks', re: /\bPRs?\b.*(open|review|green|pending|approv)|pull request|awaiting review|in review/i },
   {

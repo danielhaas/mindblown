@@ -392,8 +392,16 @@ export {
   buildStepAsk,
   stepAnswerAction,
   derivedAnswerPreview,
+  BLOCKER_ASK_PREFIX,
+  BLOCKER_ASK_OPTIONS,
+  blockerAskId,
+  blockerAskNodeId,
+  derivedAskNodeId,
+  isPersonStepAsk,
+  buildBlockerAsk,
+  blockerAnswerAction,
 } from './humanSteps.js';
-export type { StepAnswer, StepParts } from './humanSteps.js';
+export type { StepAnswer, StepParts, BlockerAnswer } from './humanSteps.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

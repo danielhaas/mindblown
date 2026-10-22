@@ -225,6 +225,27 @@ function Card({
         )}
       </div>
 
+      {/* The reason on the card, two lines; the whole text on hover. */}
+      {block?.kind === 'blocked' && block.detail !== 'Blocked' && (
+        <div
+          data-testid="kanban-card-reason"
+          style={{
+            fontSize: 11,
+            lineHeight: 1.35,
+            color: '#475569',
+            margin: '-2px 0 6px',
+            display: '-webkit-box',
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: 'vertical',
+            overflow: 'hidden',
+            wordBreak: 'break-word',
+          }}
+        >
+          {/* The worker's session name eats a line; the hover keeps it. */}
+          {block.detail.replace(/^Blocked: /, '').replace(/^Fleet worker \S+: /, '')}
+        </div>
+      )}
+
       {/* Progress bar */}
       {progress != null && progress > 0 && (
         <div
