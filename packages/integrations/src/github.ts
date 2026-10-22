@@ -589,7 +589,7 @@ export async function closeGitHubIssue(
 }
 
 /**
- * Post a comment on an issue — the «Entscheid (Dan, Datum): …» line the
+ * Post a comment on an issue — the «Decision (Dan, date): …» line the
  * asks inbox writes, same body `leidang-asks-apply` posts via `gh`.
  */
 export async function commentOnGitHubIssue(

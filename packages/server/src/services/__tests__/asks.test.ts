@@ -72,11 +72,11 @@ const today = new Date().toISOString().slice(0, 10);
 describe('answerAsk — answered', () => {
   it('comments the ticket, rewrites the node like apply, records the writes', async () => {
     const out = await answerAsk(key('#6823'), { action: 'answered', decision: 'skip' }, 'u1');
-    expect(commentMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, `**Entscheid (Dan, ${today}): skip**\n\n_via /leidang-asks_`, FORGE);
+    expect(commentMock).toHaveBeenCalledWith('FulcrumCRM', 'crm', 6823, `**Decision (Dan, ${today}): skip**\n\n_via /leidang-asks_`, FORGE);
     expect(milestoneMock).not.toHaveBeenCalled();
     expect(updateNodeMock).toHaveBeenCalledWith(NODE, {
       blockedReason: null,
-      description: `**Entscheid (Dan, ${today}): skip**\n\nold body`,
+      description: `**Decision (Dan, ${today}): skip**\n\nold body`,
       tagsRemove: ['blocked'],
       status: 'todo',
     });

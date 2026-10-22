@@ -121,7 +121,7 @@ export const answerAskTool = defineTool({
   description: [
     'Record a human\'s answer to one ask and write it where the fleet picks it',
     'up — exactly what claude-fleet leidang-asks-apply does: issue comment',
-    '«Entscheid (by, date): …» on the ticket (+ milestone and NEEDS-VERSION off',
+    '«Decision (by, date): …» on the ticket (+ milestone and NEEDS-VERSION off',
     'when that was the question and a milestone is given); decision at the top',
     'of the node description, blockedReason cleared, `blocked` tag removed,',
     'status → todo unless the node is done, claimed, or noRequeue; a',

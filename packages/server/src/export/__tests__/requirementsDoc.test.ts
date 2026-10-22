@@ -1,6 +1,6 @@
 /**
  * Pure register-data tests for the requirements export: verdict rendering
- * (✓ / ✗ with comment) and staleness suffix in the Abnahme column.
+ * (✓ / ✗ with comment) and staleness suffix in the Acceptance column.
  */
 import { describe, it, expect } from 'vitest';
 import type { Node, MindMap, ComputedNodeValues, NodeId } from '@mindblown/core';
@@ -64,10 +64,10 @@ const baseAcc = {
   nodeRevisionAtAcceptance: 3,
 };
 
-describe('buildRegisterData — Abnahme verdicts', () => {
+describe('buildRegisterData — acceptance verdicts', () => {
   const nodes = [
     makeNode({ id: 'root', childrenIds: ['ch'] }),
-    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Area' }),
     makeNode({
       id: 'r1',
       parentId: 'ch',
@@ -79,32 +79,32 @@ describe('buildRegisterData — Abnahme verdicts', () => {
 
   it('renders an acceptance as ✓ without comment', () => {
     const data = build(nodes, [{ ...baseAcc, nodeId: 'r1', decision: 'accepted' }]);
-    expect(data.chapters[0].rows[0].abnahme).toEqual([
-      'IT: offen',
+    expect(data.chapters[0].rows[0].acceptance).toEqual([
+      'IT: open',
       'Business: T. Muster ✓ 17.07.',
     ]);
   });
 
   it('renders a rejection as ✗ with the truncated comment', () => {
     const data = build(nodes, [
-      { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'Rollen-Dropdown speichert nicht' },
+      { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'Role dropdown does not save' },
     ]);
-    expect(data.chapters[0].rows[0].abnahme).toEqual([
-      'IT: offen',
-      'Business: T. Muster ✗ 17.07. («Rollen-Dropdown speichert nicht»)',
+    expect(data.chapters[0].rows[0].acceptance).toEqual([
+      'IT: open',
+      'Business: T. Muster ✗ 17.07. («Role dropdown does not save»)',
     ]);
   });
 
   it('treats rows without a decision (pre-migration shape) as accepted', () => {
     const data = build(nodes, [{ ...baseAcc, nodeId: 'r1' }]);
-    expect(data.chapters[0].rows[0].abnahme.join(' ')).toContain('✓');
+    expect(data.chapters[0].rows[0].acceptance.join(' ')).toContain('✓');
   });
 
   it('suffixes ⚠ when the requirement changed after the verdict', () => {
     const data = build(nodes, [
       { ...baseAcc, nodeId: 'r1', decision: 'rejected', comment: 'kaputt', nodeRevisionAtAcceptance: 1 },
     ]);
-    expect(data.chapters[0].rows[0].abnahme.at(-1)).toMatch(/⚠$/);
+    expect(data.chapters[0].rows[0].acceptance.at(-1)).toMatch(/⚠$/);
   });
 
   it('renders verdicts into the markdown table', () => {
@@ -119,15 +119,15 @@ describe('buildRegisterData — Abnahme verdicts', () => {
 describe('renderMarkdown — legend', () => {
   const nodes = [
     makeNode({ id: 'root', childrenIds: ['ch'] }),
-    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Area' }),
     makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', percentComplete: 100 }),
   ];
 
-  it('explains the Lieferstand convention', () => {
+  it('explains the delivery-notes convention', () => {
     const md = renderMarkdown(build(nodes, []));
-    expect(md).toContain('**Lieferstand-Notizen:**');
-    expect(md).toContain('«Lieferstand TT.MM.JJJJ:»');
-    expect(md).toContain('nicht** Teil der bestellten Anforderung');
+    expect(md).toContain('**Delivery notes:**');
+    expect(md).toContain('"Delivery status DD.MM.YYYY:"');
+    expect(md).toContain('not** part of the ordered requirement');
   });
 });
 
@@ -141,7 +141,7 @@ describe('buildRegisterData — Release column', () => {
     const childIds = childVersions.map((_, i) => `c${i}`);
     return [
       makeNode({ id: 'root', childrenIds: ['ch'] }),
-      makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+      makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Area' }),
       makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', childrenIds: childIds, ...reqOverrides }),
       ...childVersions.map((v, i) => makeNode({ id: `c${i}`, parentId: 'r1', versionId: v })),
     ];
@@ -172,19 +172,19 @@ describe('buildRegisterData — Release column', () => {
 describe('buildRegisterData — status detail', () => {
   const req = (percentComplete: number | null) => [
     makeNode({ id: 'root', childrenIds: ['ch'] }),
-    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Bereich' }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1'], text: 'Area' }),
     makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', percentComplete }),
   ];
   const detail = (p: number | null) =>
     buildRegisterData(map, req(p), new Map(), []).chapters[0].rows[0].statusDetail;
 
   it('appends the derived percentage to partial rows', () => {
-    expect(detail(42)).toBe('In Umsetzung · 42 %');
+    expect(detail(42)).toBe('In Progress · 42 %');
   });
 
-  it('leaves Gebaut and Offen without a percentage', () => {
-    expect(detail(100)).toBe('Gebaut');
-    expect(detail(null)).toBe('Offen');
+  it('leaves Built and Open without a percentage', () => {
+    expect(detail(100)).toBe('Built');
+    expect(detail(null)).toBe('Open');
   });
 });
 
@@ -198,7 +198,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
   // MAN-04 open, unscheduled, priority could.
   const nodes = [
     makeNode({ id: 'root', childrenIds: ['ch'] }),
-    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1', 'r2', 'r3', 'r4'], text: 'Bereich' }),
+    makeNode({ id: 'ch', parentId: 'root', childrenIds: ['r1', 'r2', 'r3', 'r4'], text: 'Area' }),
     makeNode({ id: 'r1', parentId: 'ch', requirementId: 'MAN-01', requirementPriority: 'must', percentComplete: 100, versionId: 'v1' }),
     makeNode({ id: 'r2', parentId: 'ch', requirementId: 'MAN-02', requirementPriority: 'must', percentComplete: 50, versionId: 'v2' }),
     makeNode({ id: 'r3', parentId: 'ch', requirementId: 'MAN-03', childrenIds: ['r3c'] }),
@@ -301,7 +301,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
       { ...baseAcc, nodeId: 'r1', userId: 'u1', decision: 'accepted' as const, gate: 'business' as const, nodeRevisionAtAcceptance: 0 },
     ], versions, {});
     const row = data.chapters[0].rows.find((r) => r.id === 'MAN-01')!;
-    expect(row.abnahme).toEqual([
+    expect(row.acceptance).toEqual([
       'IT: T. Muster ✓ 17.07.',
       'Business: T. Muster ✓ 17.07.',
     ]);
@@ -312,13 +312,13 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     // An empty cell read as "no signature expected". Spelling out which
     // gate is missing is the whole point of the column on a built row.
     const rows = buildF({}).chapters.flatMap((c) => c.rows);
-    expect(rows.find((r) => r.id === 'MAN-01')!.abnahme).toEqual([
-      'IT: offen',
+    expect(rows.find((r) => r.id === 'MAN-01')!.acceptance).toEqual([
+      'IT: open',
       'Business: T. Muster ✓ 17.07.',
     ]);
     // MAN-03/04 sit at 0 %: nothing is outstanding yet, so the cell stays
     // empty rather than accusing anyone of a missing signature.
-    expect(rows.find((r) => r.id === 'MAN-03')!.abnahme).toEqual([]);
+    expect(rows.find((r) => r.id === 'MAN-03')!.acceptance).toEqual([]);
   });
 
   it('counts reflect the filtered set, totalAll the whole register', () => {
@@ -329,30 +329,30 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
   });
 
   it('describes the active filter in German', () => {
-    expect(buildF({ release: 'v2' }).filterLabel).toBe('Release: bis V2');
-    expect(buildF({ release: 'v1', releaseMode: 'exact' }).filterLabel).toBe('Release: nur V1');
-    expect(buildF({ release: 'none' }).filterLabel).toBe('Release: ohne Zuordnung');
+    expect(buildF({ release: 'v2' }).filterLabel).toBe('Release: up to V2');
+    expect(buildF({ release: 'v1', releaseMode: 'exact' }).filterLabel).toBe('Release: only V1');
+    expect(buildF({ release: 'none' }).filterLabel).toBe('Release: unassigned');
     expect(buildF({ status: 'open', hideDone: true, priority: 'must' }).filterLabel).toBe(
-      'Status: Offen · ohne Gebaute · Priorität: Muss',
+      'Status: Open · without built · Priority: Must',
     );
   });
 
-  it('marks the rendered Markdown as a filtered Auszug and separates scope from Stand', () => {
+  it('marks the rendered Markdown as a filtered extract and separates scope from status', () => {
     const md = renderMarkdown(buildF({ release: 'none' }));
-    expect(md).toContain('Gefilterter Auszug');
-    expect(md).toContain('Release: ohne Zuordnung');
+    expect(md).toContain('Filtered extract');
+    expect(md).toContain('Release: unassigned');
     expect(md).toContain(
-      '**Umfang:** 1 der insgesamt 4 Anforderungen dieses Projekts — gefilterter Auszug (Release: ohne Zuordnung)',
+      "**Scope:** 1 of this project's 4 requirements — filtered extract (Release: unassigned)",
     );
-    expect(md).toContain('**Stand dieser Anforderung:**');
+    expect(md).toContain('**Status of this requirement:**');
   });
 
-  it('renders an unfiltered document without the Auszug banner', () => {
+  it('renders an unfiltered document without the extract banner', () => {
     const md = renderMarkdown(buildF({}));
-    expect(md).not.toContain('Gefilterter Auszug');
-    expect(md).toContain('**Umfang:** alle 4 Anforderungen dieses Projekts');
+    expect(md).not.toContain('Filtered extract');
+    expect(md).toContain('**Scope:** all 4 requirements of this project');
     expect(md).toContain(
-      '**Stand dieser 4 Anforderungen:** 1 Abgenommen · 2 Offen · 1 Zurückgewiesen',
+      '**Status of these 4 requirements:** 1 Accepted · 2 Open · 1 Rejected',
     );
   });
 });

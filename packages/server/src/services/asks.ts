@@ -3,7 +3,7 @@
  * `bin/leidang-asks-apply`, so the browser round and the terminal round
  * write the same things to the same places:
  *
- *   ticket  → «Entscheid (by, date): …» comment (+ milestone / NEEDS-VERSION
+ *   ticket  → «Decision (by, date): …» comment (+ milestone / NEEDS-VERSION
  *             off when that was the question and a milestone came along)
  *   node    → decision at the top of the description, blockedReason null,
  *             `blocked` tag off, status → todo unless done / claimed / noRequeue

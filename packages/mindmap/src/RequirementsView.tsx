@@ -26,9 +26,7 @@ import * as api from './api.js';
 //
 // The word matters: 100 % code progress is "Built", not "Done" — the
 // rollup only knows that code merged. Green is reserved for the two
-// stages that required a human verdict. (The German wording lives in
-// core too, but only the requirements document export uses it — the app is
-// English throughout.)
+// stages that required a human verdict.
 
 /** Gate names. Same two words in the app and in the German export. */
 const GATE_LABEL: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };

@@ -84,8 +84,8 @@ describe('parseAskDocument', () => {
 
 describe('decision text', () => {
   it('is the apply script\'s line, on the issue and in the node', () => {
-    expect(decisionLine('Dan', 'skip', DATE)).toBe('Entscheid (Dan, 2026-09-03): skip');
-    expect(decisionCommentBody('Dan', 'skip', DATE)).toBe('**Entscheid (Dan, 2026-09-03): skip**\n\n_via /leidang-asks_');
+    expect(decisionLine('Dan', 'skip', DATE)).toBe('Decision (Dan, 2026-09-03): skip');
+    expect(decisionCommentBody('Dan', 'skip', DATE)).toBe('**Decision (Dan, 2026-09-03): skip**\n\n_via /leidang-asks_');
   });
 
   it('prepends to a string description and to an empty one', () => {

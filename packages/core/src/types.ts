@@ -400,7 +400,7 @@ export interface Node {
    */
   requirementId: string | null;
 
-  /** MoSCoW-style requirement priority (Muss/Soll/Kann). */
+  /** MoSCoW-style requirement priority (must/should/could). */
   requirementPriority: 'must' | 'should' | 'could' | null;
 
   /**

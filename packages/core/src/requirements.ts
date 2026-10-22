@@ -76,22 +76,8 @@ export const STAGE_LABEL: Record<RequirementStage, string> = {
 };
 
 /**
- * Labels for the requirements document export (Markdown + Word), which is written
- * for German-speaking business readers and has always been German. Kept
- * next to the English set so the two can't drift apart.
- */
-export const STAGE_LABEL_DE: Record<RequirementStage, string> = {
-  open: 'Offen',
-  in_progress: 'In Umsetzung',
-  built: 'Gebaut',
-  it_verified: 'IT-geprüft',
-  accepted: 'Abgenommen',
-  rejected: 'Zurückgewiesen',
-};
-
-/**
  * Funnel order, least to most complete. Green is reserved for the last
- * two — see STAGE_COLOR: if "Gebaut" stayed green, renaming it would
+ * two — see STAGE_COLOR: if "Built" stayed green, renaming it would
  * change nothing for anyone skimming the column.
  */
 export const STAGE_ORDER: RequirementStage[] = [
