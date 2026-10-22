@@ -27,7 +27,7 @@ import * as api from './api.js';
 // The word matters: 100 % code progress is "Built", not "Done" — the
 // rollup only knows that code merged. Green is reserved for the two
 // stages that required a human verdict. (The German wording lives in
-// core too, but only the Anforderungsdokument uses it — the app is
+// core too, but only the requirements document export uses it — the app is
 // English throughout.)
 
 /** Gate names. Same two words in the app and in the German export. */
@@ -202,7 +202,7 @@ export function RequirementsView() {
         const isLeaf = node.childrenIds.length === 0;
         const progress = isLeaf ? (node.percentComplete ?? 0) : (cv?.computedProgress ?? 0);
         // Chapter = the requirement's parent node. In a doc-shaped map the
-        // requirements sit directly under their Bereich node, so the parent
+        // requirements sit directly under their area node, so the parent
         // IS the chapter; this also matches ListView's group-by-parent.
         const chapter = node.parentId ? nodes[node.parentId] : null;
         // One active verdict per gate is a DB invariant, so first-wins is
@@ -333,7 +333,7 @@ export function RequirementsView() {
   );
 
   // Depth-first tree order — used to sort chapter groups so the register
-  // follows the map's structure (Bereich order in a doc-shaped spine).
+  // follows the map's structure (area order in a doc-shaped spine).
   const dfsOrder = useMemo(() => {
     const order = new Map<string, number>();
     if (!rootNodeId) return order;
@@ -362,7 +362,7 @@ export function RequirementsView() {
   }, [filteredRows, dfsOrder]);
 
   // Add-form chapter choices: parents that already hold requirements (the
-  // Bereiche once the map is doc-shaped), falling back to root's children
+  // areas once the map is doc-shaped), falling back to root's children
   // on a map with no requirements yet.
   const chapters = useMemo(() => {
     const parentIds = new Set<string>();
@@ -438,7 +438,7 @@ export function RequirementsView() {
   };
 
   /**
-   * Over to the Prüfanleitungen, on this criterion.
+   * Over to the Guide view, on this criterion.
    *
    * Same two moves as jumpToNode, minus the mindmap's focus/pan: the guide
    * reads the selection out of the store (and useUrlState mirrors it to
@@ -652,7 +652,7 @@ export function RequirementsView() {
               }
             }}
             disabled={exporting}
-            title="Export as Anforderungsdokument (Word) — the active filters carry over"
+            title="Export as requirements document (Word) — the active filters carry over"
             style={secondaryButtonStyle(exporting)}
           >
             {exporting ? 'Exporting…' : 'Export Word'}
@@ -857,20 +857,19 @@ function ChapterGroup({
         <tr
           key={r.node.id}
           ref={current ? selectedRowRef : undefined}
-          // Auswählen, nicht wegspringen (#299): das Register bleibt stehen,
-          // das Property-Panel rechts zeigt die geklickte Zeile. Den Sprung in
-          // die Mindmap macht das ↗ in der Requirement-Spalte.
+          // Select, don't jump away (#299): the register stays put and the
+          // property panel on the right shows the clicked row. The jump into
+          // the mindmap is the ↗ in the Requirement column.
           //
-          // Capture-Phase, nicht Bubble. Fünf der neun Zellen rufen
-          // stopPropagation, um ihre eigene Bedienung zu schützen (REQ-ID,
-          // Requirement-Text, Priority, Release, Acceptance) — ein
-          // Bubble-Handler auf der Zeile sah deren Klicks deshalb nie. Zum
-          // Auswählen blieben Status und Remaining übrig, also gerade nicht
-          // die Stellen, auf die ein Mensch zielt: Klicks auf den Titel
-          // öffneten den Inline-Editor, und das Panel zeigte weiter die
-          // vorherige Zeile. Capture läuft vor den Zellen-Handlern, damit
-          // trifft jeder Klick in der Zeile die Auswahl, ohne dass eine der
-          // Zellen ihre eigene Reaktion verliert.
+          // Capture phase, not bubble. Five of the nine cells call
+          // stopPropagation to protect their own controls (REQ-ID,
+          // requirement text, Priority, Release, Acceptance) — so a bubble
+          // handler on the row never saw their clicks. That left Status and
+          // Remaining for selecting, i.e. exactly not the spots a person aims
+          // at: clicks on the title opened the inline editor, and the panel
+          // kept showing the previous row. Capture runs before the cell
+          // handlers, so every click in the row hits the selection without
+          // any cell losing its own reaction.
           onClickCapture={() => selectNode(r.node.id)}
           onMouseEnter={(e) => (e.currentTarget.style.background = '#eff6ff')}
           onMouseLeave={(e) => (e.currentTarget.style.background = rowBackground)}
@@ -878,7 +877,7 @@ function ChapterGroup({
           style={{
             background: rowBackground,
             borderBottom: '1px solid #f1f5f9',
-            // Marks where a jump from the Prüfanleitungen landed. Quiet on
+            // Marks where a jump from the Guide view landed. Quiet on
             // purpose: it says "here", it does not claim a status.
             boxShadow: current ? 'inset 3px 0 0 #a5b4fc' : 'none',
             cursor: 'pointer',
@@ -1599,13 +1598,13 @@ const groupHeaderStyle: React.CSSProperties = {
 /** Alternating row background — striping survives hover via onMouseLeave. */
 const stripeFor = (i: number) => (i % 2 === 1 ? '#fbfcfe' : '#ffffff');
 
-// ── Link into the Prüfanleitungen ────────────────────────────────
+// ── Link into the Guide view ─────────────────────────────────────
 
 /**
  * The marker beside the requirement ID.
  *
  * Deliberately not a navigation icon on all 168 rows: it appears only where
- * a Prüfanleitung (or a Prüf-Link / clip) actually exists, so its presence
+ * how-to-verify text (or a where-to-check link / clip) actually exists, so its presence
  * is the information — which criteria are documented — and its click is
  * only the way to go read them. Muted until hover; a register scanned for
  * status should not have 23 blue dots pulling the eye.

@@ -3,7 +3,7 @@
  *
  * `verificationText` / `verificationUrl` / `verificationVideoUrl` are what
  * the Requirements view puts in front of a non-technical reviewer before he
- * presses ✓ or ✗ (the Abnahme card). They are plain nullable TEXT columns —
+ * presses ✓ or ✗ (the acceptance card). They are plain nullable TEXT columns —
  * no validation, no GitHub sync — so the only thing that can break is the
  * wiring, and the wiring is exactly what silently drops a field.
  *
@@ -61,7 +61,7 @@ import { nodeRoutes } from '../nodes.js';
 const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
 const NODE_ID = 'nnnn-nnnn-nnnn-nnnn';
 
-const ANLEITUNG = '1. Als Treuhänder einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar';
+const HOW_TO_VERIFY = '1. Als Treuhänder einloggen\n2. Mandat öffnen\n\n**Erwartet:** Badge sichtbar';
 const PRUEF_URL = 'https://staging.example.com/mandates/42';
 const VIDEO_URL = 'https://videos.example.com/abnahme/man-14.mp4';
 const POSTER_URL = 'https://videos.example.com/abnahme/man-14-poster.jpg';
@@ -106,7 +106,7 @@ describe('PUT /api/maps/:id/nodes/:nodeId — verification fields round-trip', (
   it('forwards all three verification fields and returns them on the node', async () => {
     updateNodeMock.mockResolvedValueOnce(
       stubNode({
-        verificationText: ANLEITUNG,
+        verificationText: HOW_TO_VERIFY,
         verificationUrl: PRUEF_URL,
         verificationVideoUrl: VIDEO_URL,
       }),
@@ -116,7 +116,7 @@ describe('PUT /api/maps/:id/nodes/:nodeId — verification fields round-trip', (
       method: 'PUT',
       url: `/api/maps/${MAP_ID}/nodes/${NODE_ID}`,
       payload: {
-        verificationText: ANLEITUNG,
+        verificationText: HOW_TO_VERIFY,
         verificationUrl: PRUEF_URL,
         verificationVideoUrl: VIDEO_URL,
       },
@@ -127,13 +127,13 @@ describe('PUT /api/maps/:id/nodes/:nodeId — verification fields round-trip', (
     expect(updateNodeMock).toHaveBeenCalledOnce();
     expect(updateNodeMock.mock.calls[0][0]).toBe(NODE_ID);
     expect(updateNodeMock.mock.calls[0][1]).toEqual({
-      verificationText: ANLEITUNG,
+      verificationText: HOW_TO_VERIFY,
       verificationUrl: PRUEF_URL,
       verificationVideoUrl: VIDEO_URL,
     });
     expect(res.json().verificationVideoUrl).toBe(VIDEO_URL);
     expect(res.json().verificationUrl).toBe(PRUEF_URL);
-    expect(res.json().verificationText).toBe(ANLEITUNG);
+    expect(res.json().verificationText).toBe(HOW_TO_VERIFY);
   });
 
   it('forwards verificationVideoUrl on its own — no sibling field required', async () => {
@@ -244,7 +244,7 @@ describe('POST /api/maps/:id/nodes — verification fields on create', () => {
     createNodeMock.mockResolvedValueOnce(
       stubNode({
         text: 'Neue Anforderung',
-        verificationText: ANLEITUNG,
+        verificationText: HOW_TO_VERIFY,
         verificationUrl: PRUEF_URL,
         verificationVideoUrl: VIDEO_URL,
       }),
@@ -256,7 +256,7 @@ describe('POST /api/maps/:id/nodes — verification fields on create', () => {
       payload: {
         parentId: 'pppp-pppp',
         text: 'Neue Anforderung',
-        verificationText: ANLEITUNG,
+        verificationText: HOW_TO_VERIFY,
         verificationUrl: PRUEF_URL,
         verificationVideoUrl: VIDEO_URL,
       },
@@ -269,7 +269,7 @@ describe('POST /api/maps/:id/nodes — verification fields on create', () => {
       mapId: MAP_ID,
       parentId: 'pppp-pppp',
       text: 'Neue Anforderung',
-      verificationText: ANLEITUNG,
+      verificationText: HOW_TO_VERIFY,
       verificationUrl: PRUEF_URL,
       verificationVideoUrl: VIDEO_URL,
     });

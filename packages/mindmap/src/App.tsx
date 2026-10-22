@@ -2418,17 +2418,17 @@ export function App() {
           {activeView === 'hill' && <HillChart />}
           {activeView === 'workload' && <WorkloadView />}
         </div>
-        {/* Die vier Arbeits-Panels bleiben untereinander exklusiv — jeweils
-            eines rechts. Das Property-Panel steht daneben statt in derselben
-            else-Kette: es hing vorher am Ende der Kette und war damit
-            unsichtbar, solange eines der anderen offen war. Genau aus dem
-            Blocked- und dem Sprint-Panel heraus klickt man aber Knoten an
-            (BlockedPanel.tsx:39, SprintPanel.tsx:258) — die Auswahl passierte,
-            die Eigenschaften dazu blieben verborgen, bis man das Panel schloss.
+        {/* The four work panels stay mutually exclusive — one at a time on
+            the right. The property panel sits beside them instead of in the
+            same else-chain: it used to hang at the end of the chain and was
+            invisible while any of the others was open. Yet the Blocked and
+            Sprint panels are exactly where you click nodes
+            (BlockedPanel.tsx:39, SprintPanel.tsx:258) — the selection
+            happened, but its properties stayed hidden until you closed the
+            panel.
 
-            Reihenfolge: das Arbeits-Panel innen, das Property-Panel aussen am
-            Rand. Damit sitzt es immer an derselben Stelle, egal was sonst
-            offen ist. */}
+            Order: work panel inside, property panel on the outer edge. That
+            way it always sits in the same place, whatever else is open. */}
         {blockedPanelOpen && showPanel('blocked') ? (
           <BlockedPanel onClose={() => setBlockedPanelOpen(false)} blocked={blocked} />
         ) : sprintPanelOpen && showPanel('sprint') ? (

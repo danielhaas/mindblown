@@ -72,7 +72,7 @@ describe('stage presentation', () => {
   });
 
   it('keeps the German document wording in step with the English UI', () => {
-    // The app is English; only the Anforderungsdokument is German. Both
+    // The app is English; only the requirements document export is German. Both
     // sets live in core so a new stage can't reach one and miss the other.
     expect(Object.keys(STAGE_LABEL_DE).sort()).toEqual(Object.keys(STAGE_LABEL).sort());
     expect(STAGE_LABEL_DE.built).toBe('Gebaut');

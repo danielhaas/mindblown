@@ -8,7 +8,7 @@ import { requireMapAccess } from '../lib/mapAccess.js';
 import { broadcast } from '../ws.js';
 
 /**
- * Requirement acceptance (Abnahme) routes. Acceptance is the one write
+ * Requirement acceptance routes. Acceptance is the one write
  * a view-permission user may perform: it never touches the node itself,
  * only the append-only requirement_acceptances history.
  */

@@ -224,7 +224,7 @@ export const updateMapTool = defineTool({
             .string()
             .optional()
             .describe('Stable phase id. REQUIRED for existing phases (keep it unchanged); omit for a new phase and one is generated.'),
-          name: z.string().min(1).describe('Display name, e.g. "M1 – Grundgerüst"'),
+          name: z.string().min(1).describe('Display name, e.g. "M1 – Foundation"'),
           position: z
             .number()
             .optional()

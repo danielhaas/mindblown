@@ -102,9 +102,9 @@ export function BlockedPanel({ onClose, blocked }: { onClose: () => void; blocke
     <div
       style={{
         width: PANEL_WIDTH,
-        // Das Property-Panel steht seit App.tsx:2184 daneben statt in derselben
-        // else-Kette, also können zwei Panels nebeneinander liegen. Ohne dies
-        // schrumpfen beide, sobald der Platz knapp wird.
+        // The property panel sits beside the work panel rather than in the
+        // same else-chain (see App.tsx), so two panels can be side by side.
+        // Without this, both shrink as soon as space runs short.
         flexShrink: 0,
         height: '100%',
         borderLeft: '1px solid #e2e8f0',

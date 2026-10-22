@@ -14,17 +14,17 @@ import {
 } from './guide.js';
 
 /**
- * The Anwenderansicht — "So prüfst du das".
+ * The Guide view — "how do I check this?".
  *
  * A reading surface for the person who has to *check* a criterion, next to
  * (never inside) the requirements register. The register is a controlling
  * instrument: nine columns, six filters, one row per requirement. Five of
  * those nine columns are noise to a reader whose only question is "how do I
- * verify this myself?", and the Prüfanleitung briefly squeezed into its
- * Abnahme cell was unreadable at that width. So this view drops everything
+ * verify this myself?", and the how-to-verify text briefly squeezed into its
+ * acceptance cell was unreadable at that width. So this view drops everything
  * the question doesn't need:
  *
- * - **Left: three facts.** Kürzel, title, one marker. Nothing else.
+ * - **Left: three facts.** Requirement ID, title, one marker. Nothing else.
  * - **Right: the criterion whole.** Steps at full reading width, the clip
  *   as a real player, two actions.
  *
@@ -151,7 +151,7 @@ export function GuideView() {
 
   /**
    * Editing is a jump into the existing property panel, not a second
-   * editor: the three Prüf-felder already have one home, and a copy here
+   * editor: the three verification fields already have one home, and a copy here
    * would be a second place for the same value to drift. Same move the
    * register makes when you click a row.
    */
@@ -349,9 +349,9 @@ function ChapterBlock({
 }
 
 /**
- * One dot per row. Filled = a written Anleitung exists; filled with a
+ * One dot per row. Filled = written how-to-verify text exists; filled with a
  * triangle = a clip too; a hollow ring = nothing written yet. The ring is
- * deliberately quiet — a missing Anleitung is a gap in the documentation,
+ * deliberately quiet — missing how-to-verify text is a gap in the documentation,
  * not a fault in the product.
  */
 function Marker({ marker }: { marker: ReturnType<typeof guideMarker> }) {
@@ -405,7 +405,7 @@ function GuideCard({
 
       {/* Not built yet: said plainly and once, in grey. That something does
           not exist yet is a state of the plan, not an error — red here
-          would read as "broken". The Anleitung, if someone wrote one ahead
+          would read as "broken". The how-to-verify text, if someone wrote it ahead
           of time, still follows below rather than being swallowed. */}
       {!entry.available && (
         <div style={noticeStyle}>
@@ -561,8 +561,8 @@ function GuideCard({
 }
 
 /**
- * Links inside the Anleitung open in a new tab: react-markdown emits a bare
- * `<a href>`, and GFM autolinks turn a naked URL typed into an Anleitung
+ * Links inside the how-to-verify text open in a new tab: react-markdown emits a bare
+ * `<a href>`, and GFM autolinks turn a naked URL typed into that text
  * into one whether the author meant it or not. Navigating the app away
  * mid-check loses the reader's place.
  *
@@ -793,7 +793,7 @@ const placeholderStyle: React.CSSProperties = {
 /**
  * Class-based rules for what inline styles cannot express: the two-column
  * layout collapsing on a narrow window, hover/focus states, and the
- * markdown the Anleitung is written in.
+ * markdown the how-to-verify text is written in.
  *
  * Same approach as the register's `.mb-verification-md` block — index.html
  * applies a global `* { margin: 0; padding: 0 }`, which strips the indent
@@ -852,7 +852,7 @@ const guideCss = `
      A grid li turns every child into a grid item — including the inline
      <strong> and <em> that markdown puts *inside* a sentence, and the bare
      text around them into anonymous items. A step reading
-     "öffne **Mandate → Übersicht** und prüfe …" then broke into three
+     "open **Mandates → Overview** and check …" then broke into three
      stacked blocks, the last of them wrapping one word per line in the
      26px marker column. Out-of-flow keeps the step a paragraph. */
   .mb-guide-md ol > li {

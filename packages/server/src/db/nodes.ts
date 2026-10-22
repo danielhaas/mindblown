@@ -879,19 +879,19 @@ export function buildAttachment(
   // is present, so `{"url": 5}` reaches here, and `.trim()` on a number is
   // a TypeError — a 500 for what is plainly a bad request.
   if (typeof input.url !== "string") {
-    throw new AttachmentValidationError("url muss Text sein");
+    throw new AttachmentValidationError("url must be a string");
   }
   if (input.title !== undefined && typeof input.title !== "string") {
-    throw new AttachmentValidationError("title muss Text sein");
+    throw new AttachmentValidationError("title must be a string");
   }
   if (input.kind !== "file" && input.kind !== "link") {
-    throw new AttachmentValidationError('kind muss "file" oder "link" sein');
+    throw new AttachmentValidationError('kind must be "file" or "link"');
   }
 
   const raw = input.url.trim();
   if (!isHttpUrl(raw)) {
     throw new AttachmentValidationError(
-      "URL muss mit http:// oder https:// beginnen",
+      "URL must start with http:// or https://",
     );
   }
 
@@ -907,7 +907,7 @@ export function buildAttachment(
   // ~600 KB of jsonb on one node while the number looked like 100.
   if (parsed.href.length > MAX_URL_LENGTH) {
     throw new AttachmentValidationError(
-      `URL ist länger als ${MAX_URL_LENGTH} Zeichen`,
+      `URL is longer than ${MAX_URL_LENGTH} characters`,
     );
   }
 
@@ -984,7 +984,7 @@ export async function addAttachment(
       .where(and(eq(nodes.id, nodeId), notDeleted));
     throw new AttachmentValidationError(
       row
-        ? `Höchstens ${MAX_ATTACHMENTS_PER_NODE} Anhänge pro Knoten`
+        ? `At most ${MAX_ATTACHMENTS_PER_NODE} attachments per node`
         : `Node ${nodeId} not found`,
     );
   }

@@ -421,7 +421,7 @@ export interface Node {
    */
   phaseId: string | null;
   /**
-   * How to verify this requirement (Prüfanleitung): markdown with numbered
+   * How to verify this requirement: markdown with numbered
    * steps, expected result and test data, written for a non-technical
    * reviewer. Rendered on the review surface next to the accept/reject
    * actions. Like `requirementText`, NOT in the GitHub SYNC_FIELDS.
@@ -438,7 +438,7 @@ export interface Node {
    * Link to a short demo video showing the requirement in action (e.g. a
    * screen recording). Rendered as a "watch video" button on the review
    * surface next to `verificationUrl`. Optional companion to the written
-   * Prüfanleitung — a non-technical reviewer who can't follow the steps
+   * how-to-verify text — a non-technical reviewer who can't follow the steps
    * can watch instead. Like the other two, NOT in the GitHub SYNC_FIELDS.
    */
   verificationVideoUrl: string | null;
@@ -531,14 +531,14 @@ export interface CustomFieldDef {
 }
 
 /**
- * A project phase (e.g. "M1 – Grundgerüst"). Lives on the map (same
+ * A project phase (e.g. "M1 – Foundation"). Lives on the map (same
  * pattern as StatusDef in `statusWorkflow`); nodes reference it via
  * `Node.phaseId`. Stable `id` so phases can be renamed without touching
  * nodes; `position` is the canonical phase order.
  */
 export interface PhaseDef {
   id: string; // stable — rename without touching nodes
-  name: string; // e.g. 'M1 – Grundgerüst'
+  name: string; // e.g. 'M1 – Foundation'
   position: number; // canonical sort order
   color?: string; // optional hex, unused in v1 UI
   targetDate?: string | null; // optional ISO date; deliberately in the model, unused in v1

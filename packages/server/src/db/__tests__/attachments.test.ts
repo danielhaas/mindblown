@@ -269,7 +269,7 @@ describe('addAttachment', () => {
 
     await expect(
       addAttachment('n1', { kind: 'link', url: 'https://example.com' }, null, handle),
-    ).rejects.toThrow(/Höchstens 50/);
+    ).rejects.toThrow(/At most 50/);
   });
 
   it('says "not found" when the node is gone', async () => {

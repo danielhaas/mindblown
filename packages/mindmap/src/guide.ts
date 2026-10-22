@@ -1,5 +1,5 @@
 /**
- * The Anwenderansicht's data rules: which requirements it shows, how they
+ * The Guide view's data rules: which requirements it shows, how they
  * group into chapters, what the left rail's marker means, and how a search
  * query narrows the list.
  *
@@ -39,7 +39,7 @@ export interface GuideEntry {
   /** First non-empty line of the description, plain text. null when unset. */
   lede: string | null;
   verification: Verification | null;
-  /** The Prüfanleitung markdown, or null when nobody has written one. */
+  /** The how-to-verify markdown, or null when nobody has written one. */
   guideText: string | null;
   /** Validated http(s) deep link into the running application. */
   appUrl: string | null;
@@ -72,7 +72,7 @@ export interface GuideChapter {
  * The mock called it "video vorhanden", and against today's data that
  * would be a dead column — `verificationVideoUrl` is empty on every
  * requirement, so all 168 rows would show the same empty ring. Folding the
- * written Anleitung into the same slot keeps one marker that actually
+ * written how-to-verify text into the same slot keeps one marker that actually
  * varies now and still gains a distinct state the day clips land.
  */
 export type GuideMarker = 'video' | 'guide' | 'none';

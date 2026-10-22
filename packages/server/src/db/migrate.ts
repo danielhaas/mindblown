@@ -868,7 +868,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
       ON nodes (map_id, requirement_id)
       WHERE requirement_id IS NOT NULL AND deleted_at IS NULL
   `);
-  // verification_text: how to verify (Prüfanleitung, markdown) rendered on
+  // verification_text: how to verify (markdown) rendered on
   // the review surface. verification_url: deep link (e.g. staging URL).
   // verification_video_url: short demo recording for reviewers who would
   // rather watch than read. All three business prose like requirement_text
@@ -897,7 +897,7 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS attachments JSONB NOT NULL DEFAULT '[]'
   `);
 
-  // ── Requirement acceptances (Abnahme) ──────────────────────────
+  // ── Requirement acceptances (sign-off) ──────────────────────────
   // Append-only sign-off history per requirement node per user.
   // Active acceptance = revoked_at IS NULL; the partial unique index
   // guarantees at most one active acceptance per (node, user) even

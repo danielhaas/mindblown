@@ -4,11 +4,11 @@ import type { Permission, PendingInvite } from './api.js';
 import { useMindmapStore } from './store.js';
 
 /**
- * Basis für die geteilten Links. Funktion statt Modul-Konstante aus demselben
- * Grund wie `wsBase()` in ws.ts: `window` beim Import zu lesen macht das Modul
- * ausserhalb des Browsers unimportierbar. Hier ist noch nichts daran
- * gescheitert — dieses Modul hängt bloss an keinem Test — aber der erste
- * Test, der es importiert, würde ohne DOM sofort fallen.
+ * Base for the shared links. A function rather than a module constant for
+ * the same reason as `wsBase()` in ws.ts: reading `window` at import time
+ * makes the module unimportable outside the browser. Nothing has failed on it
+ * here yet — no test imports this module — but the first test that does
+ * would fall over at once without a DOM.
  */
 function baseUrl(): string {
   return (import.meta as any).env?.VITE_APP_URL ?? window.location.origin;

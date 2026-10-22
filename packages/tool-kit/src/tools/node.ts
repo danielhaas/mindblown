@@ -93,7 +93,7 @@ export const createNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to the issue tracker.'),
+      .describe('How to verify this requirement: markdown with numbered steps, expected result and test data, written for a non-technical reviewer. Shown on the review surface next to accept/reject. Not synced to the issue tracker.'),
     verificationUrl: z
       .string()
       .nullable()
@@ -239,7 +239,7 @@ export const updateNodeTool = defineTool({
       .string()
       .nullable()
       .optional()
-      .describe('How to verify this requirement (Prüfanleitung): markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to the issue tracker. null clears it.'),
+      .describe('How to verify this requirement: markdown with numbered steps, expected result and test data, for a non-technical reviewer. Safe to edit freely — never pushed to the issue tracker. null clears it.'),
     verificationUrl: z
       .string()
       .nullable()

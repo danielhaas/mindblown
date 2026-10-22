@@ -251,7 +251,7 @@ export function collectDoneNodeIds(
  * `requirementId`, plus the ancestors that connect them to the root.
  *
  * The ancestors stay so the chapters still group the rows and the
- * indentation keeps meaning — a flat list of REQ-IDs loses which Bereich
+ * indentation keeps meaning — a flat list of REQ-IDs loses which area
  * each one belongs to. Everything a requirement decomposes into is left
  * out on purpose: that work is already inside the requirement's rolled-up
  * bar, which is what makes the chart one row per REQ-ID.

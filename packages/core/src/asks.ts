@@ -8,7 +8,7 @@
  * from its own blocked nodes — that would be a second list that disagrees
  * with the terminal round. One exception: stalled work (core stalled.ts,
  * `buildStalledAsk`) — no worker holds it, so no collector can ask. What this module owns is the reading (counts,
- * ordering, the "keine Frage" folds) and the write plan of an answer,
+ * ordering, the "no question" folds) and the write plan of an answer,
  * which mirrors `bin/leidang-asks-apply` line for line.
  */
 
@@ -438,10 +438,10 @@ export function digestAsks(rows: AskRow[], since?: string | null): AskDigest {
 /** One line, as the Pushover digest reads it. */
 export function formatAskDigest(d: AskDigest, runLabel: string): string {
   return (
-    `/leidang-asks ${runLabel}: ${d.answered} beantwortet, ${d.later} vertagt, ${d.delegated} delegiert` +
-    (d.tickets.length ? ` · Tickets ${d.tickets.join(', ')}` : '') +
-    (d.requeued.length ? ` · wieder pullbar: ${d.requeued.join(', ')}` : ' · wieder pullbar: keine') +
-    (d.delegated_to.length ? ` · delegiert: ${d.delegated_to.join(', ')}` : '') +
-    (d.workerPending.length ? ` · Worker-Notiz ausstehend: ${d.workerPending.join(', ')}` : '')
+    `/leidang-asks ${runLabel}: ${d.answered} answered, ${d.later} deferred, ${d.delegated} delegated` +
+    (d.tickets.length ? ` · tickets ${d.tickets.join(', ')}` : '') +
+    (d.requeued.length ? ` · requeued: ${d.requeued.join(', ')}` : ' · requeued: none') +
+    (d.delegated_to.length ? ` · delegated: ${d.delegated_to.join(', ')}` : '') +
+    (d.workerPending.length ? ` · worker note pending: ${d.workerPending.join(', ')}` : '')
   );
 }

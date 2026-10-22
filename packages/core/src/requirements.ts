@@ -76,7 +76,7 @@ export const STAGE_LABEL: Record<RequirementStage, string> = {
 };
 
 /**
- * Labels for the Anforderungsdokument (Markdown + Word), which is written
+ * Labels for the requirements document export (Markdown + Word), which is written
  * for German-speaking business readers and has always been German. Kept
  * next to the English set so the two can't drift apart.
  */

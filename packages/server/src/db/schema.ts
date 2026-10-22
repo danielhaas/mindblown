@@ -316,7 +316,7 @@ export const nodes = pgTable('nodes', {
   requirementPriority: text('requirement_priority'),
   // Business phrasing for register/doc export; NOT GitHub-synced.
   requirementText: text('requirement_text'),
-  // How to verify (Prüfanleitung, markdown) + deep link + demo video for
+  // How to verify (markdown) + deep link + demo video for
   // the review surface. Like requirement_text, NOT GitHub-synced.
   verificationText: text('verification_text'),
   verificationUrl: text('verification_url'),
@@ -605,7 +605,7 @@ export const cycles = pgTable('cycles', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-// ── Requirement acceptances (Abnahme) ──────────────────────────────
+// ── Requirement acceptances (sign-off) ──────────────────────────────
 //
 // Human sign-off per requirement node per user — orthogonal to the
 // derived status. Append-only history: revoking sets revoked_at, a

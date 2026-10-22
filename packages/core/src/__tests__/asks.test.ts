@@ -190,6 +190,6 @@ describe('reading', () => {
     ];
     const d = digestAsks(rows, '2026-09-03T00:00:00Z');
     expect(d).toEqual({ answered: 1, later: 1, delegated: 1, tickets: ['#6823'], requeued: ['n1n1n1n1'], delegated_to: ['#3→Rita'], workerPending: [] });
-    expect(formatAskDigest(d, '2026-09-03')).toBe('/leidang-asks 2026-09-03: 1 beantwortet, 1 vertagt, 1 delegiert · Tickets #6823 · wieder pullbar: n1n1n1n1 · delegiert: #3→Rita');
+    expect(formatAskDigest(d, '2026-09-03')).toBe('/leidang-asks 2026-09-03: 1 answered, 1 deferred, 1 delegated · tickets #6823 · requeued: n1n1n1n1 · delegated: #3→Rita');
   });
 });

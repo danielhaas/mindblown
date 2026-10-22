@@ -775,12 +775,12 @@ describe('computeStateUpdates → link state mirror', () => {
     ).toBeNull();
   });
 
-  // "Issue offen + Node done" ist der Normalzustand, solange ein PR läuft:
-  // der Agent setzt den Node beim Öffnen des PRs auf done, und
-  // updateGitHubIssue lässt das Issue bewusst offen bis zum Merge. Ohne
-  // Gate liest der Reopen-Zweig das als "auf GitHub wieder geöffnet" und
-  // setzt percentComplete auf null — der Snapshot ist leer, weil der
-  // Close-Pfad nie lief, der Fortschritt also unrettbar weg.
+  // "Issue open + node done" is the normal state while a PR is running:
+  // the agent sets the node to done when it opens the PR, and
+  // updateGitHubIssue deliberately keeps the issue open until the merge.
+  // Without the gate the reopen branch reads that as "reopened on GitHub"
+  // and sets percentComplete to null — the snapshot is empty because the
+  // close path never ran, so the progress is lost for good.
   const pr = (state: 'open' | 'closed' | 'merged') =>
     ({ number: 7, repo: 'o/r', url: 'https://github.com/o/r/pull/7', head: 'f', base: 'main',
        author: 'max', draft: false, state, mergeable: true, changedFiles: [], reviews: [],
