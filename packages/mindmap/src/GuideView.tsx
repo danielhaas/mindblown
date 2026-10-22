@@ -14,7 +14,7 @@ import {
 } from './guide.js';
 
 /**
- * The Guide view — "how do I check this?".
+ * The Guide view — "here's how you check it".
  *
  * A reading surface for the person who has to *check* a criterion, next to
  * (never inside) the requirements register. The register is a controlling

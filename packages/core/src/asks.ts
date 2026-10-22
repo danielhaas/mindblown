@@ -9,7 +9,8 @@
  * with the terminal round. One exception: stalled work (core stalled.ts,
  * `buildStalledAsk`) — no worker holds it, so no collector can ask. What this module owns is the reading (counts,
  * ordering, the "no question" folds) and the write plan of an answer,
- * which mirrors `bin/leidang-asks-apply` line for line.
+ * which mirrors `bin/leidang-asks-apply` line for line. (The digest text
+ * is English here; the Python twin still prints German.)
  */
 
 export const ASK_ANSWERERS = ['Dan', 'Rita', 'Susi', 'Dana', 'Thomas', 'Kunde'] as const;

@@ -44,7 +44,7 @@ export interface UploadedMedia {
    * The name to show a person, and to save the file under: `filename`
    * without the `.bin` we appended. Returned rather than left to the
    * caller because the caller would otherwise have to know that rule —
-   * and the first caller that didn't put "Requirements.txt.bin" in front
+   * and the first caller that didn't put "Anforderungen.txt.bin" in front
    * of a user.
    */
   displayName: string;

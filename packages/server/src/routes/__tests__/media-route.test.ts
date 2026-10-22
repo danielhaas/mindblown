@@ -190,7 +190,7 @@ describe('POST /api/media', () => {
     // What a person is shown, and what the file saves as: the stored `.bin`
     // is our business, not theirs. Returned by the server so no caller has
     // to know the rule — the first one that didn't put
-    // "Requirements.txt.bin" in front of a user.
+    // "Anforderungen.txt.bin" in front of a user.
     expect(body.displayName).toBe('Quartalsbericht.xlsx');
     expect(await readFile(path.join(dir, body.id, body.filename), 'utf8')).toBe(
       'spreadsheet-bytes',
