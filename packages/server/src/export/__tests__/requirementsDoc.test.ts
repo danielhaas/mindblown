@@ -126,7 +126,6 @@ describe('renderMarkdown — legend', () => {
   it('explains the delivery-notes convention', () => {
     const md = renderMarkdown(build(nodes, []));
     expect(md).toContain('**Delivery notes:**');
-    expect(md).toContain('"Delivery status DD.MM.YYYY:"');
     expect(md).toContain('not** part of the ordered requirement');
   });
 });
@@ -333,7 +332,7 @@ describe('buildRegisterData — filters (export mirrors the filter bar)', () => 
     expect(buildF({ release: 'v1', releaseMode: 'exact' }).filterLabel).toBe('Release: only V1');
     expect(buildF({ release: 'none' }).filterLabel).toBe('Release: unassigned');
     expect(buildF({ status: 'open', hideDone: true, priority: 'must' }).filterLabel).toBe(
-      'Status: Open · without built · Priority: Must',
+      'Status: Open · excluding Built · Priority: Must',
     );
   });
 

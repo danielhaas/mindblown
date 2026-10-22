@@ -781,7 +781,9 @@ const SOURCE_LABEL: Record<string, string> = {
   'mindblown:live': 'Node (blockedReason)',
   'rollup:prompt': 'Worker dialog (PROMPT-BLOCKED)',
   'pending-notes': 'Heartbeat backlog',
-  'github:human': 'GitHub ("why not fixed now" section)',
+  // Tickets whose «Warum nicht jetzt gefixt» section (the CRM ticket-gate's
+  // literal heading) names a human — the collector's GitHub sweep.
+  'github:human': 'GitHub ticket (needs a human)',
   'github:needs-version': 'GitHub NEEDS-VERSION',
 };
 

@@ -291,7 +291,7 @@ export function buildRegisterData(
     );
   }
   if (filter.status) filterParts.push(`Status: ${statusFilterLabel(filter.status)}`);
-  if (filter.hideDone) filterParts.push('without built');
+  if (filter.hideDone) filterParts.push('excluding Built');
   if (filter.priority) filterParts.push(`Priority: ${PRIO[filter.priority]}`);
   if (filter.acceptance === 'none') filterParts.push('Acceptance: no verdict');
   if (filter.acceptance === 'mine-open') filterParts.push('Acceptance: my verdict pending');
@@ -399,7 +399,7 @@ const LEGEND = [
   '**Code %** (code progress): share of the finished work packages under a requirement. Measures how much software was built — **not** whether the result is right for the business. 100 % means "Built", not "Accepted".',
   '**Effort** (total reference) and **Rem.** (remaining; "—" once built): **S** ≤ 2 days · **M** 3–5 days · **L** 1–3 weeks · **XL** > 3 weeks',
   '**Acceptance:** two gates, one line each — **IT** (does it work?) and **Business** (is it what we ordered?) · ✓ granted, with name and date · ✗ rejected (with reason) · "open" = built, but this signature is still missing · ⚠ changed since the verdict · "—" not that far yet',
-  '**Delivery notes:** remarks from the project team on the current state of delivery (known gaps, where to find things in the UI, fixes in flight), usually starting with "Delivery status DD.MM.YYYY:" or "Still open:" — they are **not** part of the ordered requirement.',
+  '**Delivery notes:** remarks from the project team on the current state of delivery (known gaps, where to find things in the UI, fixes in flight), usually introduced with a dated status line (e.g. "Status DD.MM.YYYY:") or "Still open:" — they are **not** part of the ordered requirement.',
 ];
 
 /**
@@ -452,7 +452,7 @@ export function renderMarkdown(data: RegisterData): string {
     L.push('');
     L.push(`## ${i + 1}. ${ch.name}`);
     L.push('');
-    L.push('| ID | Requirement | Priority | Release | Status | Effort | Rem. | Acceptance |');
+    L.push('| ID | Requirement | Prio | Release | Status | Effort | Rem. | Acceptance |');
     L.push('|---|---|---|---|---|---|---|---|');
     for (const r of ch.rows) {
       L.push(

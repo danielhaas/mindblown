@@ -28,7 +28,7 @@ import * as api from './api.js';
 // rollup only knows that code merged. Green is reserved for the two
 // stages that required a human verdict.
 
-/** Gate names. Same two words in the app and in the German export. */
+/** Gate names. Same two words in the app and in the export. */
 const GATE_LABEL: Record<RequirementGate, string> = { it: 'IT', business: 'Business' };
 
 const HEALTH_COLOR: Record<string, string> = {
@@ -642,7 +642,7 @@ export function RequirementsView() {
                 });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(blob);
-                a.download = `anforderungsdokument-${new Date().toISOString().slice(0, 10)}.docx`;
+                a.download = `requirements-${new Date().toISOString().slice(0, 10)}.docx`;
                 a.click();
                 URL.revokeObjectURL(a.href);
               } finally {
@@ -1377,7 +1377,7 @@ function ghostChipStyle(borderColor: string, color: string): React.CSSProperties
 
 /**
  * The funnel bar under the header. Its job is to make the gap between
- * "gebaut" and "abgenommen" impossible to skip past — a single green
+ * "built" and "accepted" impossible to skip past — a single green
  * percentage never showed it.
  */
 function StageFunnel({
