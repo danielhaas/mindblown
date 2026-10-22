@@ -216,6 +216,9 @@ export function buildBlockerAsk(
   const links = node.externalLinks ?? [];
   const issue = links.find((l) => isForgeLink(l) && !l.isPullRequest);
   const pr = links.find((l) => isForgeLink(l) && l.isPullRequest);
+  // The worker's notes name their PR ("CI failed on PR #995"); with no PR link, that names the row.
+  const prNum = /\bPR #(\d+)/.exec(node.blockedReason ?? '')?.[1];
+  const prRef = pr?.url ?? (prNum ? `#${prNum}` : null);
   return {
     ...buildStepAsk({ ...node, tags: [], description: null }, mapId),
     id: blockerAskId(node.id),
@@ -229,7 +232,7 @@ export function buildBlockerAsk(
       node_status: `blocked${node.percentComplete ? ` · ${node.percentComplete} %` : ''}`,
       claimed_by: node.claimedBySession ?? null,
       worker: null,
-      pr: pr?.url ?? null,
+      pr: prRef,
       pr_state: pr?.state ?? null,
     },
   };

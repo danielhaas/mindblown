@@ -177,6 +177,9 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'ci', 'needs-human', 'u1', { note: 'bump the dependency on main' });
     await answerDerivedAsk({ ...blockerKey, askId: 'blocker-vendor' }, { action: 'answered', decision: 'Fleet can fix it' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'vendor', 'fleet-check', 'u1', { note: undefined });
+    expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({
+      writes: [expect.objectContaining({ detail: expect.stringMatching(/^fleet-check — Decision \(Dan, \d{4}-\d\d-\d\d\): Fleet can fix it$/) })],
+    }));
   });
 
   it('"Let the fleet check all": every blocker row, fix or check by its kind; steps and stalled rows stay', async () => {

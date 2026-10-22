@@ -36,7 +36,6 @@ import {
   buildIsDonePredicate,
   buildStalledAsk,
   buildStepAsk,
-  decisionLine,
   derivedAskNodeId,
   dispatchSkipTag,
   isStalledAskDue,
@@ -151,7 +150,7 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
   if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
     const { action, note } = plannedFix(row.ask, decision);
-    const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${decisionLine(by, decision, date)}`, done: false };
+    const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — Decision (${by}, ${date}): ${decision}`, done: false };
     writes.push(w);
     try {
       const out = await applyLintFix(key.mapId, nodeId, action, userId, { note });
