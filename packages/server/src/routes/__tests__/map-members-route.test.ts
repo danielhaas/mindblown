@@ -49,7 +49,8 @@ beforeEach(() => {
   listPermissionsMock.mockReset();
   listPermissionsMock.mockResolvedValue([
     { mapId: MAP_ID, userId: 'u-dan', permission: 'admin', userName: 'Daniel Haas', userEmail: 'dan@example.com' },
-    { mapId: MAP_ID, userId: 'u-tom', permission: 'edit', userName: 'Thomas', userEmail: 'tom@example.com' },
+    { mapId: MAP_ID, userId: 'u-tom', permission: 'edit', userName: 'Thomas', userEmail: 'tom@example.com', userKind: 'person' },
+    { mapId: MAP_ID, userId: 'u-fleet', permission: 'edit', userName: 'Fleet: claudia', userEmail: 'fleet-1@fleets.invalid', userKind: 'fleet' },
   ]);
 });
 
@@ -62,8 +63,9 @@ describe('GET /api/maps/:mapId/members', () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().members).toEqual([
-      { userId: 'u-dan', name: 'Daniel Haas', email: 'dan@example.com', permission: 'admin' },
-      { userId: 'u-tom', name: 'Thomas', email: 'tom@example.com', permission: 'edit' },
+      { userId: 'u-dan', name: 'Daniel Haas', email: 'dan@example.com', permission: 'admin', kind: 'person' },
+      { userId: 'u-tom', name: 'Thomas', email: 'tom@example.com', permission: 'edit', kind: 'person' },
+      { userId: 'u-fleet', name: 'Fleet: claudia', email: 'fleet-1@fleets.invalid', permission: 'edit', kind: 'fleet' },
     ]);
   });
 
@@ -74,7 +76,7 @@ describe('GET /api/maps/:mapId/members', () => {
     await app.close();
 
     expect(res.statusCode).toBe(200);
-    expect(res.json().members).toHaveLength(2);
+    expect(res.json().members).toHaveLength(3);
   });
 
   it('403s for a caller with no permission on the map', async () => {

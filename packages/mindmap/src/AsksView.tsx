@@ -649,7 +649,7 @@ function DelegatePicker({ mapId, value, onChange, other, onOther }: { mapId: str
   useEffect(() => {
     if (!mapId) return;
     let live = true;
-    mapMembers(mapId).then((m) => live && setMembers(m.filter((x) => x.userId !== me)));
+    mapMembers(mapId).then((m) => live && setMembers(m.filter((x) => x.userId !== me && x.kind !== 'fleet')));
     return () => {
       live = false;
     };
