@@ -108,9 +108,15 @@ export function fleetCanFix(blockedReason: string | null | undefined): boolean {
  */
 export const FLEET_CHECK_TAG = 'fleet-check';
 
-/** Which fix "Fleet can fix it" means: a held PR's red CI / conflict → the worker reworks it; else a check run. */
-export function fleetFixAction(blockedReason: string | null | undefined, claimed: boolean): 'fleet-fix' | 'fleet-check' {
-  return claimed && fleetCanFix(blockedReason) ? 'fleet-fix' : 'fleet-check';
+/**
+ * Which fix "Fleet can fix it" means: the worker's red-CI / conflict note →
+ * the worker reworks its PR; else a check run. Not the MindBlown claim: the
+ * worker follows its PR from its own claim file, and the node's claim can
+ * be gone (released, swept) while it does — on 22.10.2026 three such PRs
+ * were sent to the queue as fresh check runs, one of them over its open PR.
+ */
+export function fleetFixAction(blockedReason: string | null | undefined): 'fleet-fix' | 'fleet-check' {
+  return fleetCanFix(blockedReason) ? 'fleet-fix' : 'fleet-check';
 }
 
 export interface UnblockPlan {

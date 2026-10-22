@@ -144,7 +144,8 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
   const ci = 'Fleet worker bb:slot1:fleet-worker: CI failed on PR #995 (445fab60). Fix the branch or close the PR.';
   beforeEach(() => {
     state.nodes.push(
-      node('ci', { blockedReason: ci, percentComplete: 90, claimedBySession: 'bb:slot1:fleet-worker' }),
+      // No MindBlown claim: the worker still follows the PR from its own claim file (22.10.2026).
+      node('ci', { blockedReason: ci, percentComplete: 90 }),
       node('vendor', { blockedReason: 'Waiting for the vendor' }),
       node('checking', { blockedReason: 'Waiting for the vendor', tags: ['fleet-check'] }),
       node('tagged', { blockedReason: 'x', tags: ['needs-human'] }),
