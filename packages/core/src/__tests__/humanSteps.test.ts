@@ -145,7 +145,7 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(blockerAnswerAction('Fleet can fix it')).toBe('fleet-fix');
     expect(blockerFleetAction(conflict)).toBe('fleet-fix');
     expect(blockerFleetAction(vendor)).toBe('fleet-check');
-    expect(blockerFleetAction(released)).toBe('fleet-check'); // nobody holds the PR any more
+    expect(blockerFleetAction(released)).toBe('fleet-fix'); // the worker follows its PR from its claim file, MindBlown's claim or not
     expect(derivedAnswerPreview(conflict, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
     expect(derivedAnswerPreview(vendor, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-check/);
   });

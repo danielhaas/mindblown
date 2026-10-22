@@ -236,9 +236,9 @@ export function buildBlockerAsk(
 }
 
 /** Which fix "Fleet can fix it" runs for this blocker row (core fleetFixAction): from its reason and whether a worker holds it. */
-export function blockerFleetAction(a: Pick<Ask, 'question' | 'unblocks'>): 'fleet-fix' | 'fleet-check' {
+export function blockerFleetAction(a: Pick<Ask, 'question'>): 'fleet-fix' | 'fleet-check' {
   const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
-  return fleetFixAction(reason, !!a.unblocks.claimed_by);
+  return fleetFixAction(reason);
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
@@ -291,7 +291,7 @@ export function derivedAnswerPreview(a: Pick<Ask, 'id'> & Partial<Pick<Ask, 'que
   if (blockerAskNodeId(a.id)) {
     switch (blockerAnswerAction(d)) {
       case 'fleet-fix':
-        return a.question && a.unblocks && blockerFleetAction({ question: a.question, unblocks: a.unblocks }) === 'fleet-check'
+        return a.question && blockerFleetAction({ question: a.question }) === 'fleet-check'
           ? ['Node: tagged fleet-check — the fleet takes it next, the blocker in its brief: it gets past it, or writes down what a person must do']
           : ['Node: blocker cleared, tagged fleet-fix — the worker holding the PR runs its agent on the branch again (CI log in the prompt) and pushes'];
       case 'clear-blocker':
