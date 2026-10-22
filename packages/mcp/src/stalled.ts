@@ -4,7 +4,7 @@
  * get_wip_status marker. The list itself comes with the map payload.
  */
 
-import { describeStalled, formatIdle, STALLED_GROUP_LABEL, type StalledLeaf } from '@mindblown/core';
+import { describeStalled, formatIdle, STALLED_GROUP_LABEL, ticketPhases, ticketPhaseText, type StalledLeaf } from '@mindblown/core';
 
 /** blocked_digest section: one line per stalled leaf with progress, idle time and the last claim holder. */
 export function stalledSectionLines(
@@ -23,13 +23,27 @@ export function stalledSectionLines(
   return lines;
 }
 
-/** get_wip_status marker after an in-progress leaf: who holds it, or that nobody does. */
+/** Each fleet ticket's "phase · elapsed" from a fleet read, by node id; stale hosts say nothing. */
+export function wipPhaseTexts(hosts: Parameters<typeof ticketPhases>[0], now: Date): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const [nodeId, p] of ticketPhases(hosts, now)) {
+    out.set(nodeId, ticketPhaseText(p, now) + (p.prNumber ? `, PR #${p.prNumber}` : ''));
+  }
+  return out;
+}
+
+/**
+ * get_wip_status marker after an in-progress leaf: who holds it, or that
+ * nobody does. `phase` = where the fleet is with it (#546), e.g.
+ * "Waiting for CI · 12m".
+ */
 export function wipClaimMarker(
   node: { id: string; claimedBySession: string | null },
   stalledById: Map<string, StalledLeaf>,
   now: Date = new Date(),
+  phase?: string,
 ): string {
-  if (node.claimedBySession) return ` (claimed by ${node.claimedBySession})`;
+  if (node.claimedBySession) return ` (claimed by ${node.claimedBySession}${phase ? ` — ${phase}` : ''})`;
   const s = stalledById.get(node.id);
   return s ? ` (unclaimed, stalled — no change for ${formatIdle(s.lastChangeAt, now)})` : ' (unclaimed)';
 }

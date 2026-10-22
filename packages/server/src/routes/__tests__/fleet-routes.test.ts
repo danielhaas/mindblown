@@ -392,6 +392,27 @@ describe('fleet routes (#479)', () => {
     expect(upsertRollupMock).toHaveBeenCalledWith(FLEET, expect.objectContaining({ maps: [MAP_A, MAP_B] }), null);
   });
 
+  it('#546: the claims list is stored with the rollup; a malformed entry is dropped, not the push', async () => {
+    const claims = [{ nodeId: 'n1', mapId: MAP_A, phase: 'pr', ci: 'pending', pr_number: 7, phase_since: '2026-09-01T09:50:00Z' }, { phase: 'pr' }];
+    const app = await buildApp();
+    const res = await app.inject({ method: 'PUT', url: `/api/fleets/${FLEET}/fleet-status/big`, payload: { ...v2, claims } });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(upsertRollupMock).toHaveBeenCalledWith(FLEET, expect.objectContaining({ claims: [claims[0]] }), null);
+  });
+
+  it("#546: a read drops the phases of tickets on maps the reader can't view", async () => {
+    const row = statusRow('big', [MAP_A, MAP_B], []);
+    listRollupsMock.mockResolvedValueOnce([
+      { ...row, rollup: { ...row.rollup, claims: [{ nodeId: 'n1', mapId: MAP_A, phase: 'working' }, { nodeId: 'secret-n2', mapId: MAP_B, phase: 'pr' }] } },
+    ]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet` });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hosts[0].rollup.claims).toEqual([{ nodeId: 'n1', mapId: MAP_A, phase: 'working' }]);
+  });
+
   it('a fleet-route rollup without maps[] is refused (it would serve no map)', async () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'PUT', url: `/api/fleets/${FLEET}/fleet-status/big`, payload: { ...v2, maps: undefined } });
