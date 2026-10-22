@@ -2616,7 +2616,7 @@ async function fleetPhaseTexts(mapId: string): Promise<Map<string, string>> {
 
 server.tool(
   'get_wip_status',
-  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest). A fleet ticket also says where the fleet is with it (Setting up / Agent working / Waiting for CI / CI red / Merge conflict / Fixing / Merging) and for how long.',
+  'Report how many leaf nodes are currently in an in_progress status, list them, and compare against the map\'s wipLimit (set via update_map). Each entry says who holds its claim, or "(unclaimed)" — and "stalled" when nobody has touched it for 2+ hours (see blocked_digest). A fleet ticket also says where the fleet is with it (Setting up / Agent working / Waiting for CI / CI red / Merge conflict / No CI / Needs a human merge / Fixing) and for how long.',
   {
     mapId: z.string().describe('The map ID'),
   },

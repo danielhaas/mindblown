@@ -138,8 +138,8 @@ export interface FleetClaimPhase {
   phase: string;
   phase_since?: string | null;
   pr_number?: number | null;
-  /** On `pr`: what the PR is waiting on. */
-  ci?: 'pending' | 'red' | 'conflict' | null;
+  /** On `pr`: what the PR is waiting on — `none` = no CI reported, `manual` = a person must merge it. */
+  ci?: 'pending' | 'red' | 'conflict' | 'none' | 'manual' | null;
   /** On `fixing`: which fix run this is, from 1. */
   fix_attempt?: number | null;
 }
@@ -476,6 +476,8 @@ export function ticketPhase(c: FleetClaimPhase): TicketPhase {
     case 'pr':
       if (c.ci === 'red') return { ...base, label: 'CI red', tone: 'problem' };
       if (c.ci === 'conflict') return { ...base, label: 'Merge conflict', tone: 'problem' };
+      if (c.ci === 'none') return { ...base, label: 'No CI', tone: 'problem' };
+      if (c.ci === 'manual') return { ...base, label: 'Needs a human merge', tone: 'problem' };
       return { ...base, label: 'Waiting for CI', tone: 'waiting' };
     case 'fixing':
       return { ...base, label: c.fix_attempt ? `Fixing (${c.fix_attempt})` : 'Fixing', tone: 'active' };

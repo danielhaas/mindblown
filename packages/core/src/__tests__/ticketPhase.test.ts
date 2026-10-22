@@ -22,6 +22,8 @@ describe('ticket phase (#546)', () => {
     expect(ticketPhase({ nodeId: 'n', phase: 'pr' })).toMatchObject({ label: 'Waiting for CI' });
     expect(ticketPhase({ nodeId: 'n', phase: 'pr', ci: 'red' })).toMatchObject({ label: 'CI red', tone: 'problem' });
     expect(ticketPhase({ nodeId: 'n', phase: 'pr', ci: 'conflict' })).toMatchObject({ label: 'Merge conflict', tone: 'problem' });
+    expect(ticketPhase({ nodeId: 'n', phase: 'pr', ci: 'none' })).toMatchObject({ label: 'No CI', tone: 'problem' });
+    expect(ticketPhase({ nodeId: 'n', phase: 'pr', ci: 'manual' })).toMatchObject({ label: 'Needs a human merge', tone: 'problem' });
     expect(ticketPhase({ nodeId: 'n', phase: 'fixing', fix_attempt: 2 })).toMatchObject({ label: 'Fixing (2)', tone: 'active' });
     expect(ticketPhase({ nodeId: 'n', phase: 'fixing' }).label).toBe('Fixing');
     expect(ticketPhase({ nodeId: 'n', phase: 'merging' }).label).toBe('Merging');
