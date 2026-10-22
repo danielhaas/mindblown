@@ -562,9 +562,9 @@ function PropertyPanelInner({
               style={selectStyle}
             >
               <option value="">None</option>
-              <option value="must">Must (Muss)</option>
-              <option value="should">Should (Soll)</option>
-              <option value="could">Could (Kann)</option>
+              <option value="must">Must</option>
+              <option value="should">Should</option>
+              <option value="could">Could</option>
             </select>
           </Field>
         )}

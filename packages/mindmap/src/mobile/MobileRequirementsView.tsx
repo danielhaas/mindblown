@@ -136,7 +136,7 @@ export function MobileRequirementsView({
   return (
     <div className="mb-body" style={{ paddingTop: 8 }}>
       {/* Lead with the accepted count — the whole point of the stage split
-          is that "gebaut" must not read as the finish line. */}
+          is that "built" must not read as the finish line. */}
       <div style={{ padding: '0 12px 8px', fontSize: 12, color: '#64748b' }}>
         <b style={{ fontSize: 17, color: '#047857' }}>{counts.accepted}</b> of {rows.length}{' '}
         accepted · {counts.built} built

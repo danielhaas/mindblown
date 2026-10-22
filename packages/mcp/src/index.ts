@@ -645,7 +645,7 @@ server.tool(
 
 server.tool(
   'requirements_export',
-  'Export the requirements register as a Markdown requirements document (German-language): chapter per area, one table row per requirement (ID, business text, Muss/Soll/Kann priority, derived status, effort/remaining in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Gefilterter Auszug" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
+  'Export the requirements register as a Markdown requirements document: chapter per area, one table row per requirement (ID, business text, Must/Should/Could priority, derived status, effort/remaining in S/M/L/XL buckets). Optional filters scope the document (a filtered export is labeled "Filtered extract" in the header). Returns the full Markdown document — save it to a file or convert with pandoc for docx/pdf.',
   {
     mapId: z.string().describe('The map ID'),
     status: z

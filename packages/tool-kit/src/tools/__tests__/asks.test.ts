@@ -61,7 +61,7 @@ describe('answer_ask', () => {
       ask: row(ask(), {
         status: 'answered', answeredBy: 'Dan',
         writes: [
-          { kind: 'gh-comment', target: '#6823', detail: 'Entscheid (Dan, 2026-09-03): skip', done: true },
+          { kind: 'gh-comment', target: '#6823', detail: 'Decision (Dan, 2026-09-03): skip', done: true },
           { kind: 'mb-put', target: 'n1n1n1n1', detail: 'status → todo', done: false, error: 'boom' },
         ],
       }),

@@ -210,9 +210,9 @@ export function parseAskDocument(raw: unknown): AskDocument | null {
 
 // ── the answer, as text ────────────────────────────────────────────
 
-/** `Entscheid (Dan, 2026-09-03): …` — the same line on the issue and in the node. */
+/** `Decision (Dan, 2026-09-03): …` — the same line on the issue and in the node. */
 export function decisionLine(by: string, decision: string, date: string): string {
-  return `Entscheid (${by}, ${date}): ${decision}`;
+  return `Decision (${by}, ${date}): ${decision}`;
 }
 
 /** Body of the GitHub comment `leidang-asks-apply` posts. */

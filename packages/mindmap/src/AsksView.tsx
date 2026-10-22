@@ -6,12 +6,13 @@
  * pending-notes / GitHub). Nothing here is derived from the map's own
  * blocked nodes: the collector is the truth, this is the inbox. Answering
  * writes exactly what `leidang-asks-apply` writes (server side): the
- * «Entscheid (Dan, Datum): …» comment on the ticket, the decision at the
+ * «Decision (Dan, date): …» comment on the ticket, the decision at the
  * top of the node, blocked → todo. "Later" and "delegate" (to a person on
  * the ask's map, or a name typed in) only record. No answer is written without a click.
  *
- * The comment line on the ticket stays German on purpose: it is the fleet's
- * contract — the collector recognises «Entscheid (…)» as a taken decision.
+ * The comment line on the ticket is the fleet's contract: the collector
+ * recognises «Decision (…)» (and the older German «Entscheid (…)») as a
+ * taken decision.
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -159,7 +160,7 @@ export function AsksSection() {
 
   // Only the stakeholder lens is read-only; PM, developer and All answer.
   const readOnly = viewRole === 'stakeholder';
-  // First name only — «Entscheid (Dan, …)» is what the terminal round writes
+  // First name only — «Decision (Dan, …)» is what the terminal round writes
   // and what the collector recognises as an already-taken decision. Dan's
   // account says «Daniel»; he asked for «Dan» (2026-09-03), same as the skill.
   const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
@@ -611,7 +612,7 @@ function AskCard({
               {preview.skip && <li>{preview.skip}</li>}
               {preview.github && (
                 <li>
-                  Comment on #{preview.github.ticket}: «Entscheid ({by}, {today}): {decision || '…'}»
+                  Comment on #{preview.github.ticket}: «Decision ({by}, {today}): {decision || '…'}»
                   {preview.github.milestone ? ` · milestone ${preview.github.milestone}, NEEDS-VERSION label removed` : ''}
                 </li>
               )}
@@ -780,8 +781,9 @@ const SOURCE_LABEL: Record<string, string> = {
   'mindblown:live': 'Node (blockedReason)',
   'rollup:prompt': 'Worker dialog (PROMPT-BLOCKED)',
   'pending-notes': 'Heartbeat backlog',
-  // The section heading the collector scans for on the ticket — a literal.
-  'github:human': 'GitHub («Warum nicht jetzt gefixt» section)',
+  // Tickets whose «Warum nicht jetzt gefixt» section (the CRM ticket-gate's
+  // literal heading) names a human — the collector's GitHub sweep.
+  'github:human': 'GitHub ticket (needs a human)',
   'github:needs-version': 'GitHub NEEDS-VERSION',
 };
 

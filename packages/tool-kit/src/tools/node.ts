@@ -76,7 +76,7 @@ export const createNodeTool = defineTool({
       .enum(['must', 'should', 'could'])
       .nullable()
       .optional()
-      .describe('MoSCoW requirement priority (Muss/Soll/Kann). Only meaningful alongside requirementId.'),
+      .describe('MoSCoW requirement priority (must/should/could). Only meaningful alongside requirementId.'),
     requirementText: z
       .string()
       .nullable()
@@ -222,7 +222,7 @@ export const updateNodeTool = defineTool({
       .enum(['must', 'should', 'could'])
       .nullable()
       .optional()
-      .describe('MoSCoW requirement priority (Muss/Soll/Kann). null clears it.'),
+      .describe('MoSCoW requirement priority (must/should/could). null clears it.'),
     requirementText: z
       .string()
       .nullable()

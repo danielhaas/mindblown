@@ -389,7 +389,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
         );
         reply.header(
           'content-disposition',
-          `attachment; filename="anforderungsdokument-${register.generatedAt}.docx"`,
+          `attachment; filename="requirements-${register.generatedAt}.docx"`,
         );
         return reply.send(buf);
       }

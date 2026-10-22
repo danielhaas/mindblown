@@ -251,7 +251,6 @@ export {
   stageCounts,
   BUILT_THRESHOLD,
   STAGE_LABEL,
-  STAGE_LABEL_DE,
   STAGE_ORDER,
   STAGE_COLOR,
 } from './requirements.js';
