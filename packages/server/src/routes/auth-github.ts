@@ -20,6 +20,7 @@ import { encrypt } from '../crypto.js';
 import { eq, and, notInArray } from 'drizzle-orm';
 import { findGithubIdentity, githubAccessTokenFor } from '../lib/githubIdentity.js';
 import { userInstallationRepos } from '../lib/githubInstallations.js';
+import { repoDescription } from '../lib/repoDescription.js';
 import {
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
@@ -350,7 +351,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     const name = typeof body.name === 'string' ? body.name.trim() : '';
     const installationId = typeof body.installationId === 'string' ? body.installationId : '';
     const isPrivate = typeof body.private === 'boolean' ? body.private : true;
-    const description = typeof body.description === 'string' ? body.description.slice(0, 350) : undefined;
+    const description = repoDescription(body.description);
     if (!installationId || !REPO_NAME.test(name)) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'installationId and a repository name (letters, digits, ".", "-", "_") are required' },

@@ -35,6 +35,7 @@ import { encrypt } from '../crypto.js';
 import { requireAdmin, OAUTH_STATE_TYP } from '../auth.js';
 import { bindMapToForgeRepo, FORGE_PROVIDERS, mapBindableToWorkspaceForge, pickForgeRow, type ForgeIntegrationConfig } from '../lib/forge.js';
 import { requireMapAccess } from '../lib/mapAccess.js';
+import { repoDescription } from '../lib/repoDescription.js';
 import { setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import {
   findGiteaIdentity,
@@ -263,7 +264,7 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       const repo = await createGiteaUserRepo(giteaUserForge(oauth.instanceUrl, token), {
         name,
         private: typeof body.private === 'boolean' ? body.private : true,
-        description: typeof body.description === 'string' ? body.description.slice(0, 350) : undefined,
+        description: repoDescription(body.description),
       });
       return reply.status(201).send({ fullName: repo.full_name, owner: repo.owner.login, name: repo.name, private: repo.private, htmlUrl: repo.html_url });
     } catch (err) {
