@@ -11,12 +11,19 @@ export interface CardPhase {
   text: string;
   tone: TicketPhase['tone'];
   prNumber: number | null;
+  /** An agent works it right now — the Stop button's cue (#549). */
+  agentRunning: boolean;
 }
 
 /** Each fleet ticket's phase on the open map (#546), by node id; empty for a map with no fleet. */
 export function useTicketPhases(): Map<string, CardPhase> {
   const mapId = useMindmapStore((s) => s.currentMapId);
   const fleetId = useMindmapStore((s) => s.currentMap?.fleetId ?? null);
+  return useTicketPhasesFor(mapId, fleetId);
+}
+
+/** The same for a map given by id — mobile keeps its map outside the store. */
+export function useTicketPhasesFor(mapId: string | null, fleetId: string | null): Map<string, CardPhase> {
   const [loaded, setLoaded] = useState<{ data: api.FleetResponse; fetchedAt: number } | null>(null);
 
   useEffect(() => {
@@ -42,7 +49,7 @@ export function useTicketPhases(): Map<string, CardPhase> {
     // Judged against the server's clock, like the Fleet tab.
     const now = estimateServerNow(loaded.data.now, loaded.fetchedAt, Date.now());
     for (const [nodeId, p] of ticketPhases(loaded.data.hosts, now)) {
-      out.set(nodeId, { text: ticketPhaseText(p, now), tone: p.tone, prNumber: p.prNumber });
+      out.set(nodeId, { text: ticketPhaseText(p, now), tone: p.tone, prNumber: p.prNumber, agentRunning: p.agentRunning });
     }
     return out;
   }, [loaded]);

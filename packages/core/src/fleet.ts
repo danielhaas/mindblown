@@ -464,15 +464,17 @@ export interface TicketPhase {
   /** ISO; null when the worker did not say. */
   since: string | null;
   prNumber: number | null;
+  /** An agent runs on it now (set up, coding or fixing): what a Stop can stop (#549). */
+  agentRunning: boolean;
 }
 
 export function ticketPhase(c: FleetClaimPhase): TicketPhase {
-  const base = { since: c.phase_since ?? null, prNumber: c.pr_number ?? null };
+  const base = { since: c.phase_since ?? null, prNumber: c.pr_number ?? null, agentRunning: false };
   switch (c.phase) {
     case 'starting':
-      return { ...base, label: 'Setting up', tone: 'active' };
+      return { ...base, label: 'Setting up', tone: 'active', agentRunning: true };
     case 'working':
-      return { ...base, label: 'Agent working', tone: 'active' };
+      return { ...base, label: 'Agent working', tone: 'active', agentRunning: true };
     case 'pr':
       if (c.ci === 'red') return { ...base, label: 'CI red', tone: 'problem' };
       if (c.ci === 'conflict') return { ...base, label: 'Merge conflict', tone: 'problem' };
@@ -480,7 +482,7 @@ export function ticketPhase(c: FleetClaimPhase): TicketPhase {
       if (c.ci === 'manual') return { ...base, label: 'Needs a human merge', tone: 'problem' };
       return { ...base, label: 'Waiting for CI', tone: 'waiting' };
     case 'fixing':
-      return { ...base, label: c.fix_attempt ? `Fixing (${c.fix_attempt})` : 'Fixing', tone: 'active' };
+      return { ...base, label: c.fix_attempt ? `Fixing (${c.fix_attempt})` : 'Fixing', tone: 'active', agentRunning: true };
     case 'merging':
       return { ...base, label: 'Merging', tone: 'active' };
     default:
@@ -515,6 +517,17 @@ export function ticketPhaseText(p: TicketPhase, now: Date): string {
   const hours = Math.floor(minutes / 60);
   const elapsed = minutes < 60 ? `${minutes}m` : hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`;
   return `${p.label} · ${elapsed}`;
+}
+
+/**
+ * The blocker the Stop button writes (#549). A blocker on a running ticket
+ * is what stops the worker's agent (claude-fleet#92), so Stop is a blocker
+ * that says who stopped it and why.
+ */
+export function stopBlockerReason(who: string, reason: string): string {
+  const name = who.trim() || 'a person';
+  const why = reason.trim();
+  return why ? `Stopped by ${name}: ${why}` : `Stopped by ${name}`;
 }
 
 // ── Tick history ──────────────────────────────────────────────────

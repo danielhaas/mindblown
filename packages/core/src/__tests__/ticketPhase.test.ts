@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { FleetRollup } from '../fleet.js';
-import { parseRollup, redactRollup, ticketPhase, ticketPhases, ticketPhaseText } from '../fleet.js';
+import { parseRollup, redactRollup, stopBlockerReason, ticketPhase, ticketPhases, ticketPhaseText } from '../fleet.js';
 
 const base = { host: 'big', generated_at: '2026-10-22T10:00:00Z' };
 const now = new Date('2026-10-22T10:05:00Z');
@@ -28,6 +28,18 @@ describe('ticket phase (#546)', () => {
     expect(ticketPhase({ nodeId: 'n', phase: 'fixing' }).label).toBe('Fixing');
     expect(ticketPhase({ nodeId: 'n', phase: 'merging' }).label).toBe('Merging');
     expect(ticketPhase({ nodeId: 'n', phase: 'reviewing' }).label).toBe('reviewing');
+  });
+
+  it('agentRunning only while an agent works it — what a Stop can stop (#549)', () => {
+    const running = (phase: string, ci?: string) => ticketPhase({ nodeId: 'n', phase, ...(ci ? { ci } : {}) } as never).agentRunning;
+    expect(['starting', 'working', 'fixing'].map((p) => running(p))).toEqual([true, true, true]);
+    expect([running('pr'), running('pr', 'red'), running('merging'), running('reviewing')]).toEqual([false, false, false, false]);
+  });
+
+  it('stopBlockerReason names who stopped it, with the reason when there is one', () => {
+    expect(stopBlockerReason('Dan Haas', ' wrong approach ')).toBe('Stopped by Dan Haas: wrong approach');
+    expect(stopBlockerReason('Dan Haas', '  ')).toBe('Stopped by Dan Haas');
+    expect(stopBlockerReason('', 'x')).toBe('Stopped by a person: x');
   });
 
   it('ticketPhases: by node id, stale hosts say nothing, the newer rollup wins', () => {
