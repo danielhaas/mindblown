@@ -425,3 +425,5 @@ The default expiration is 7 days. Adjust `JWT_EXPIRES_IN` if needed. Users need 
 
 **Port 5433 already in use**
 Docker Compose maps PostgreSQL to port 5433 to avoid conflicts with a local PostgreSQL on 5432. Either stop the conflicting service or change the port mapping in `docker-compose.yml`.
+
+<!-- #552 e2e probe, closing immediately -->
