@@ -336,7 +336,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const createRepo = async (owner: string) => {
     setError(null);
     setBusy('Creating the repository…');
-    const description = stripTags(map.description ?? '').trim().slice(0, 350) || undefined;
+    const description = Array.from(plainText(map.description ?? '')).slice(0, 350).join('') || undefined;
     try {
       let choice: RepoChoice;
       if (owner === 'gitea') {
@@ -774,6 +774,12 @@ function StartStep({ onClose }: { onClose: () => void }) {
 
 function Footer({ children }: { children: React.ReactNode }) {
   return <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>{children}</div>;
+}
+
+/** Rich-text HTML as one line of text: blocks become spaces, entities decoded. */
+function plainText(html: string): string {
+  const spaced = html.replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|blockquote|pre)>/gi, ' ');
+  return (new DOMParser().parseFromString(spaced, 'text/html').body.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
 function stripTags(s: string): string {

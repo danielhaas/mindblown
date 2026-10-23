@@ -136,6 +136,13 @@ describe('POST /api/integrations/github/repositories', () => {
     expect(state.createGitHub).toHaveBeenCalledWith('user-token', { name: 'x', private: true, description: undefined });
   });
 
+  it('sends a multi-line description as one line (GitHub refuses control characters)', async () => {
+    state.createGitHub.mockResolvedValue(ghRepo('alice', 'x'));
+    state.reachable = ['alice/x'];
+    await createGitHub({ installationId: '111', name: 'x', description: 'A shop.\nDone = first order.' });
+    expect(state.createGitHub).toHaveBeenCalledWith('user-token', { name: 'x', private: true, description: 'A shop. Done = first order.' });
+  });
+
   it('answers 502 / reconnect when GitHub fails to list the installations', async () => {
     state.installationsFail = 500;
     expect((await createGitHub({ installationId: '111', name: 'x' })).statusCode).toBe(502);
@@ -179,6 +186,12 @@ describe('POST /api/integrations/gitea/repositories', () => {
     expect(res.statusCode).toBe(201);
     expect(res.json()).toMatchObject({ fullName: 'alice/dumb2', owner: 'alice', name: 'dumb2' });
     expect(state.createGitea.mock.calls[0][1]).toEqual({ name: 'dumb2', private: true, description: undefined });
+  });
+
+  it('sends a multi-line description to Gitea as one line', async () => {
+    state.createGitea.mockResolvedValue({ full_name: 'alice/x', name: 'x', owner: { login: 'alice' }, private: true, html_url: 'u' });
+    await post('/api/integrations/gitea/repositories', { name: 'x', description: 'A shop.\r\nDone.' });
+    expect(state.createGitea.mock.calls[0][1]).toEqual({ name: 'x', private: true, description: 'A shop. Done.' });
   });
 
   it('answers 409 for a taken name and 404 without a Gitea sign-in', async () => {
