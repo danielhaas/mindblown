@@ -9,29 +9,23 @@
  * Anthropic but the API key isn't set, we fall back to Ollama and surface
  * that mismatch via providerStatus().
  *
- * With a local model configured, Claude never fails on its own: a call it
- * refuses for an outage-type reason (credit, key, rate limit, overload,
- * network) goes to the local model, and Claude is skipped while the outage
- * lasts (fallback.ts).
+ * With a local model configured, Claude is skipped while an outage lasts
+ * (credit, key, rate limit, overload, network — see fallback.ts, whose
+ * withProviderFallback redoes the failed call on the local model).
  */
 
 import { aiEnabled } from '../client.js';
 import { ollamaProvider } from './ollama.js';
 import { anthropicProvider, anthropicAvailable } from './anthropic.js';
 import { getAiProviderSettings, type AiProviderPreference } from '../../db/settings.js';
-import { claudeOutage, withLocalFallback, type ClaudeOutage } from './fallback.js';
+import { claudeOutage, type ClaudeOutage } from './fallback.js';
 import type { ChatProvider, ProviderName } from './types.js';
 
 export type { ChatProvider, ProviderName, NormalizedMessage, ProviderEvent } from './types.js';
 
-let claudeWithLocalFallback: ChatProvider | null = null;
-
-/** Claude as handed out: behind the local model when there is one, skipped during an outage. */
+/** Claude, unless it is out and a local model can stand in. */
 function claude(): ChatProvider {
-  if (!aiEnabled) return anthropicProvider;
-  if (claudeOutage()) return ollamaProvider;
-  claudeWithLocalFallback ??= withLocalFallback(anthropicProvider, ollamaProvider);
-  return claudeWithLocalFallback;
+  return aiEnabled && claudeOutage() ? ollamaProvider : anthropicProvider;
 }
 
 /** Pick a provider given a preference, honoring availability. */

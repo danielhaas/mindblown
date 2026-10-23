@@ -1,135 +1,139 @@
 /**
- * Claude with the local model behind it (fallback.ts): an outage-type
- * refusal (credit, key, rate limit, overload, network) moves the call to
- * the local model and skips Claude for a while; a malformed request or an
- * aborted call is not retried; a turn Claude already started streaming is
- * not switched mid-way. pickProvider hands out the local model during an
- * outage.
+ * The local model behind Claude (fallback.ts): an outage-type refusal
+ * (credit, key, rate limit, overload, network) redoes the work with the
+ * provider resolved anew — the local one, under its own name — and skips
+ * Claude for a while; a malformed request or an aborted call is not
+ * retried; pickProvider hands out the local model during an outage.
+ * Errors are built from the real SDK classes.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ChatProvider, ProviderEvent } from '../types.js';
+import Anthropic from '@anthropic-ai/sdk';
 
 const fake = vi.hoisted(() => {
-  const make = (name: 'anthropic' | 'ollama') => ({
-    name,
-    model: `${name}-model`,
-    complete: vi.fn(),
-    runTurn: vi.fn(),
-  });
-  return { claude: make('anthropic'), local: make('ollama') };
+  const make = (name: 'anthropic' | 'ollama') => ({ name, model: `${name}-model`, complete: vi.fn(), runTurn: vi.fn() });
+  return { claude: make('anthropic'), local: make('ollama'), aiEnabled: true };
 });
 vi.mock('../anthropic.js', () => ({ anthropicProvider: fake.claude, anthropicAvailable: true }));
 vi.mock('../ollama.js', () => ({ ollamaProvider: fake.local }));
-vi.mock('../../client.js', () => ({ aiEnabled: true }));
+vi.mock('../../client.js', () => ({
+  get aiEnabled() {
+    return fake.aiEnabled;
+  },
+}));
 vi.mock('../../../db/settings.js', () => ({ getAiProviderSettings: async () => ({ preference: 'auto' }) }));
 
-import { withLocalFallback, classifyClaudeError, claudeOutage, __resetClaudeOutage } from '../fallback.js';
-import { pickProvider, providerStatus } from '../index.js';
+import { classifyClaudeError, claudeOutage, withProviderFallback, providerAfterFailure, __resetClaudeOutage } from '../fallback.js';
+import { pickProvider, providerStatus, resolveProvider } from '../index.js';
 
-const apiError = (status: number | undefined, message: string, name = 'APIError') =>
-  Object.assign(new Error(message), { status, name });
-const CREDIT = apiError(400, '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}');
-
-async function* events(list: ProviderEvent[], failAfter?: Error): AsyncIterable<ProviderEvent> {
-  for (const e of list) yield e;
-  if (failAfter) throw failAfter;
-}
-async function collect(it: AsyncIterable<ProviderEvent>): Promise<ProviderEvent[]> {
-  const out: ProviderEvent[] = [];
-  for await (const e of it) out.push(e);
-  return out;
-}
-const OPTS = { systemPrompt: 'S', parts: [{ text: 'P' }] };
-const provider = () => withLocalFallback(fake.claude as unknown as ChatProvider, fake.local as unknown as ChatProvider);
+const apiError = (status: number, type: string, message: string) =>
+  Anthropic.APIError.generate(status, { type: 'error', error: { type, message } }, undefined, new Headers());
+const CREDIT = apiError(400, 'invalid_request_error', 'Your credit balance is too low to access the Anthropic API.');
+/** An `error` event inside the stream: no status, only the body. */
+const STREAM_OVERLOADED = new Anthropic.APIError(undefined, { type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }, 'Overloaded', undefined);
 
 beforeEach(() => {
   __resetClaudeOutage();
+  fake.aiEnabled = true;
   for (const p of [fake.claude, fake.local]) {
     p.complete.mockReset();
     p.runTurn.mockReset();
   }
   vi.spyOn(console, 'warn').mockImplementation(() => {});
+  vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 afterEach(() => vi.useRealTimers());
 
 describe('classifyClaudeError', () => {
-  it('falls back on credit, key, access, rate limit, overload, server and network errors', () => {
+  it('falls back on credit, key, access, rate limit, overload, server and connection errors', () => {
     expect(classifyClaudeError(CREDIT)?.reason).toBe('Claude: credit balance too low');
-    expect(classifyClaudeError(apiError(401, 'invalid x-api-key'))?.reason).toBe('Claude: API key rejected');
-    expect(classifyClaudeError(apiError(403, 'forbidden'))).not.toBeNull();
-    expect(classifyClaudeError(apiError(429, 'rate'))?.pauseMs).toBe(60_000);
-    expect(classifyClaudeError(apiError(529, 'overloaded'))?.reason).toBe('Claude: overloaded');
-    expect(classifyClaudeError(apiError(500, 'oops'))).not.toBeNull();
-    expect(classifyClaudeError(apiError(undefined, 'Connection error.', 'APIConnectionError'))?.reason).toBe('Claude: not reachable');
+    expect(classifyClaudeError(apiError(401, 'authentication_error', 'invalid x-api-key'))?.reason).toBe('Claude: API key rejected');
+    expect(classifyClaudeError(apiError(403, 'permission_error', 'no'))?.reason).toBe('Claude: access refused');
+    expect(classifyClaudeError(apiError(429, 'rate_limit_error', 'slow down'))?.pauseMs).toBe(60_000);
+    expect(classifyClaudeError(apiError(529, 'overloaded_error', 'Overloaded'))?.reason).toBe('Claude: overloaded');
+    expect(classifyClaudeError(apiError(500, 'api_error', 'oops'))?.reason).toBe('Claude: server error 500');
+    expect(classifyClaudeError(STREAM_OVERLOADED)?.reason).toBe('Claude: overloaded');
+    expect(classifyClaudeError(new Anthropic.APIConnectionError({ message: 'Connection error.' }))?.reason).toBe('Claude: not reachable');
+    expect(classifyClaudeError(new Anthropic.APIConnectionTimeoutError())?.reason).toBe('Claude: not reachable');
   });
 
   it('does not fall back on a malformed request or an abort', () => {
-    expect(classifyClaudeError(apiError(400, 'messages: field required'))).toBeNull();
-    expect(classifyClaudeError(apiError(undefined, 'Request was aborted.', 'APIUserAbortError'))).toBeNull();
-    expect(classifyClaudeError(apiError(undefined, 'This operation was aborted', 'AbortError'))).toBeNull();
+    expect(classifyClaudeError(apiError(400, 'invalid_request_error', 'messages: field required'))).toBeNull();
+    expect(classifyClaudeError(new Anthropic.APIUserAbortError())).toBeNull();
+    expect(classifyClaudeError(Object.assign(new Error('This operation was aborted'), { name: 'AbortError' }))).toBeNull();
   });
 });
 
-describe('withLocalFallback.complete', () => {
-  it('answers from the local model when Claude has no credit, without the Claude model override', async () => {
+describe('withProviderFallback', () => {
+  it('redoes the work with the local provider — under its own name — when Claude has no credit', async () => {
     fake.claude.complete.mockRejectedValue(CREDIT);
     fake.local.complete.mockResolvedValue('{"ok":true}');
-    expect(await provider().complete({ ...OPTS, model: 'claude-haiku' })).toBe('{"ok":true}');
-    expect(fake.local.complete.mock.calls[0][0]).toMatchObject({ systemPrompt: 'S', model: undefined });
+    const seen: string[] = [];
+    const out = await withProviderFallback(resolveProvider, async (p) => {
+      seen.push(p.name);
+      return { name: p.name, text: await p.complete({ systemPrompt: 'S', parts: [] }) };
+    });
+    expect(seen).toEqual(['anthropic', 'ollama']);
+    expect(out).toEqual({ name: 'ollama', text: '{"ok":true}' });
     expect(claudeOutage()?.reason).toBe('Claude: credit balance too low');
   });
 
-  it('passes Claude through untouched when it answers', async () => {
-    fake.claude.complete.mockResolvedValue('fine');
-    expect(await provider().complete(OPTS)).toBe('fine');
+  it('leaves Claude alone when it answers, and rethrows a malformed-request 400', async () => {
+    fake.claude.complete.mockResolvedValueOnce('fine');
+    expect(await withProviderFallback(resolveProvider, (p) => p.complete({ systemPrompt: 'S', parts: [] }))).toBe('fine');
+    fake.claude.complete.mockRejectedValueOnce(apiError(400, 'invalid_request_error', 'messages: field required'));
+    await expect(withProviderFallback(resolveProvider, (p) => p.complete({ systemPrompt: 'S', parts: [] }))).rejects.toThrow('field required');
     expect(fake.local.complete).not.toHaveBeenCalled();
     expect(claudeOutage()).toBeNull();
   });
 
-  it('rethrows a malformed-request 400 without trying the local model', async () => {
-    fake.claude.complete.mockRejectedValue(apiError(400, 'messages: field required'));
-    await expect(provider().complete(OPTS)).rejects.toThrow('field required');
-    expect(fake.local.complete).not.toHaveBeenCalled();
+  it('says plainly when the local model fails too, without its host detail', async () => {
+    fake.claude.complete.mockRejectedValue(CREDIT);
+    fake.local.complete.mockRejectedValue(new Error('connect ECONNREFUSED 100.64.0.1:8000'));
+    await expect(withProviderFallback(resolveProvider, (p) => p.complete({ systemPrompt: 'S', parts: [] }))).rejects.toThrow(
+      'AI is unavailable right now: Claude: credit balance too low, and the local model did not answer either.',
+    );
   });
 
-  it('says plainly when both fail', async () => {
+  it('keeps a typed error from the local run (e.g. a bad JSON reply) as it is', async () => {
+    class BadReply extends Error {}
     fake.claude.complete.mockRejectedValue(CREDIT);
-    fake.local.complete.mockRejectedValue(new Error('connect ECONNREFUSED'));
-    await expect(provider().complete(OPTS)).rejects.toThrow(
-      'AI is unavailable right now. Claude: credit balance too low, and the local model failed too (connect ECONNREFUSED).',
-    );
+    fake.local.complete.mockResolvedValue('not json');
+    await expect(
+      withProviderFallback(resolveProvider, async (p) => {
+        const raw = await p.complete({ systemPrompt: 'S', parts: [] });
+        if (raw === 'not json') throw new BadReply('bad');
+        return raw;
+      }),
+    ).rejects.toBeInstanceOf(BadReply);
+  });
+
+  it('without a local model there is nothing to fall back to', async () => {
+    fake.aiEnabled = false;
+    fake.claude.complete.mockRejectedValue(CREDIT);
+    await expect(withProviderFallback(resolveProvider, (p) => p.complete({ systemPrompt: 'S', parts: [] }))).rejects.toBe(CREDIT);
+    expect(fake.local.complete).not.toHaveBeenCalled();
   });
 });
 
-describe('withLocalFallback.runTurn', () => {
-  it('moves a chat turn to the local model when Claude refuses before streaming', async () => {
-    fake.claude.runTurn.mockImplementation(() => events([], CREDIT));
-    fake.local.runTurn.mockImplementation(() => events([{ type: 'text_delta', text: 'hi' }, { type: 'turn_end', reason: 'stop' }]));
-    const out = await collect(provider().runTurn({ systemPrompt: 'S', messages: [], tools: [] }));
-    expect(out).toEqual([{ type: 'text_delta', text: 'hi' }, { type: 'turn_end', reason: 'stop' }]);
-  });
-
-  it('does not switch models after Claude started streaming', async () => {
-    fake.claude.runTurn.mockImplementation(() => events([{ type: 'text_delta', text: 'par' }], apiError(529, 'overloaded')));
-    await expect(collect(provider().runTurn({ systemPrompt: 'S', messages: [], tools: [] }))).rejects.toThrow('overloaded');
-    expect(fake.local.runTurn).not.toHaveBeenCalled();
+describe('providerAfterFailure', () => {
+  it('only reacts to Claude failing', async () => {
+    expect(await providerAfterFailure(CREDIT, fake.local, resolveProvider)).toBeNull();
+    expect(await providerAfterFailure(CREDIT, fake.claude, resolveProvider)).toBe(fake.local);
   });
 });
 
 describe('pickProvider during an outage', () => {
-  it('hands out Claude-with-fallback normally, the local model while Claude is out, Claude again after', async () => {
+  it('Claude normally, the local model while Claude is out, Claude again after', async () => {
     vi.useFakeTimers();
-    expect(pickProvider('auto')?.name).toBe('anthropic');
-    fake.claude.complete.mockRejectedValue(apiError(529, 'overloaded'));
-    fake.local.complete.mockResolvedValue('x');
-    await pickProvider('auto')!.complete(OPTS);
+    expect(pickProvider('auto')).toBe(fake.claude);
+    await providerAfterFailure(apiError(529, 'overloaded_error', 'Overloaded'), fake.claude, resolveProvider);
     expect(pickProvider('auto')).toBe(fake.local);
     expect(pickProvider('anthropic')).toBe(fake.local);
     const status = await providerStatus();
     expect(status.active?.name).toBe('ollama');
     expect(status.claudeOutage?.reason).toBe('Claude: overloaded');
     vi.advanceTimersByTime(61_000);
-    expect(pickProvider('auto')?.name).toBe('anthropic');
+    expect(pickProvider('auto')).toBe(fake.claude);
     expect((await providerStatus()).claudeOutage).toBeNull();
   });
 });

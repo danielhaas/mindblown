@@ -14,6 +14,7 @@
 
 import Anthropic from '@anthropic-ai/sdk';
 import { specToAnthropicTool } from '@mindblown/tool-kit';
+import { aiEnabled } from '../client.js';
 import type {
   ChatProvider,
   CompletionOptions,
@@ -33,7 +34,12 @@ function getClient(): Anthropic {
     if (!anthropicAvailable) {
       throw new Error('Anthropic provider unavailable — set ANTHROPIC_API_KEY');
     }
-    _client = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
+    // With a local model behind Claude (fallback.ts), fail fast instead of
+    // the SDK's default 2 retries × 10-minute timeout: the local model is
+    // the better retry. Alone, Claude keeps the SDK's patience.
+    _client = new Anthropic(
+      aiEnabled ? { apiKey: ANTHROPIC_API_KEY, maxRetries: 1, timeout: 120_000 } : { apiKey: ANTHROPIC_API_KEY },
+    );
   }
   return _client;
 }

@@ -139,6 +139,28 @@ describe('per-map AI policy (#375)', () => {
   });
 });
 
+describe('Claude outage (fallback to the local model)', () => {
+  it('a decision redone on the local model is recorded as local, so it is never auto-applied', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
+    const credit = Anthropic.APIError.generate(
+      400,
+      { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low' } },
+      undefined,
+      new Headers(),
+    );
+    const claude: TriageProvider = { name: 'anthropic', model: 'claude', complete: vi.fn().mockRejectedValue(credit) };
+    const local = provider('ollama', PLACE);
+    mocks.resolveProvider.mockResolvedValueOnce(claude).mockResolvedValueOnce(local);
+    const decision = await triageIssue({ issue: issue(), mapContext: mapContext() });
+    expect(decision.decision).toBe('place');
+    expect(decision.provider).toEqual({ name: 'ollama', model: triageModelFor(local) });
+    expect(autoApplyThreshold(decision)).toBe(TRIAGE_LOCAL_AUTO_APPLY_CONFIDENCE);
+    const { __resetClaudeOutage } = await import('../../ai/providers/fallback.js');
+    __resetClaudeOutage();
+  });
+});
+
 describe('resolveTriageProvider', () => {
   it('auto follows the chat resolver', async () => {
     const p = provider('anthropic', '{}');
