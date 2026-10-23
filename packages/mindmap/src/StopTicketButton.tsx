@@ -7,7 +7,8 @@
  * released, the partial work is discarded, the blocker stays. Clearing the
  * blocker requeues the ticket with the description as it is then — so
  * Stop → edit the description → Unblock is how a running ticket changes
- * course. MCP agents do the same with `flag_blocker`.
+ * course. A fix run on an open PR just stops; the PR stays open.
+ * MCP agents do the same with `flag_blocker`.
  *
  * Shown only while the fleet reports an agent on the ticket and the viewer
  * may edit the map; after the click, "Stopping…" until the worker lets go.
@@ -20,8 +21,9 @@ import type { CardPhase } from './useTicketPhases.js';
 
 const PROMPT =
   'Stop this ticket?\n\n' +
-  'The fleet worker stops its agent within about a minute; the partial work is discarded. ' +
-  'To run it again, edit the description and clear the blocker.\n\n' +
+  'The fleet worker stops its agent within about a minute. ' +
+  'If it was coding the ticket, the partial work is discarded; to run it again, edit the description and clear the blocker. ' +
+  'If it was fixing an open PR, the fix stops and the PR stays open.\n\n' +
   'Reason (optional):';
 
 /** Confirm and ask for a reason; the blocker text to write, or null when cancelled. Mobile uses it too. */
@@ -44,19 +46,28 @@ const buttonStyle: CSSProperties = {
 
 const pendingStyle: CSSProperties = { fontSize: 10, fontWeight: 600, color: '#b91c1c' };
 
-export function StopTicketButton({ nodeId, phase, style }: {
+interface Props {
   nodeId: string;
   /** The ticket's fleet phase (useTicketPhases); no button without a running agent. */
   phase: Pick<CardPhase, 'agentRunning'> | null | undefined;
   style?: CSSProperties;
-}) {
+}
+
+export function StopTicketButton(props: Props) {
+  // Most cards have no agent: return before the hooks below, so a board of
+  // 200 cards doesn't mount 200 member lookups.
+  if (!props.phase?.agentRunning) return null;
+  return <RunningStop {...props} />;
+}
+
+function RunningStop({ nodeId, style }: Props) {
   const canEdit = useCanEditMap();
   const blockedReason = useMindmapStore((s) => s.nodes[nodeId]?.blockedReason ?? null);
   const user = useMindmapStore((s) => s.user);
   const stopFleetTicket = useMindmapStore((s) => s.stopFleetTicket);
   const [busy, setBusy] = useState(false);
 
-  if (!phase?.agentRunning || !canEdit) return null;
+  if (!canEdit) return null;
   if ((blockedReason ?? '').trim() || busy) {
     return (
       <span data-testid="stop-ticket-pending" title={blockedReason ?? undefined} style={{ ...pendingStyle, ...style }}>
