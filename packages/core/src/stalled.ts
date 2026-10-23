@@ -157,8 +157,20 @@ export function stalledAskNodeId(askId: string): string | null {
     : null;
 }
 
-export function isStalledAskDue(s: StalledLeaf, now: Date = new Date()): boolean {
-  return now.getTime() - Date.parse(s.lastChangeAt) >= STALLED_ASK_AFTER_HOURS * 3_600_000;
+/**
+ * A "Decision: …" ticket is a person's call: left in progress with nobody
+ * on it, it asks as soon as it counts as stalled. A Sonarpipe decision sat at 75 %
+ * for 8 h on 23.10.2026 and looked like a fleet job running that long.
+ */
+export const DECISION_TITLE_RE = /^\s*(decision|entscheid)\s*:/i;
+
+/** How long a stalled leaf waits before it becomes an ask: a decision after STALLED_AFTER_HOURS, anything else after a day. */
+export function stalledAskAfterHours(title: string): number {
+  return DECISION_TITLE_RE.test(title) ? STALLED_AFTER_HOURS : STALLED_ASK_AFTER_HOURS;
+}
+
+export function isStalledAskDue(s: StalledLeaf, now: Date = new Date(), title = ''): boolean {
+  return now.getTime() - Date.parse(s.lastChangeAt) >= stalledAskAfterHours(title) * 3_600_000;
 }
 
 export function buildStalledAsk(

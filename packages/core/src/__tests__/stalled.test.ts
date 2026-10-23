@@ -6,6 +6,7 @@ import {
   STALLED_AFTER_HOURS,
   STALLED_ASK_AFTER_HOURS,
   isStalledAskDue,
+  stalledAskAfterHours,
   buildStalledAsk,
   stalledAskNodeId,
   stalledAnswerAction,
@@ -110,6 +111,15 @@ describe('stalled asks', () => {
     expect(isStalledAskDue(s, now)).toBe(true);
     const [fresh] = findStalled([node('f')], workflow, activity({ f: hoursAgo(STALLED_ASK_AFTER_HOURS - 1) }), now);
     expect(isStalledAskDue(fresh, now)).toBe(false);
+  });
+
+  it('a decision ticket is due once it is stalled', () => {
+    const [two] = findStalled([node('d')], workflow, activity({ d: hoursAgo(STALLED_AFTER_HOURS) }), now);
+    expect(isStalledAskDue(two, now, 'Decision: STP participation')).toBe(true);
+    expect(isStalledAskDue(two, now, '  entscheid: Lizenz')).toBe(true);
+    expect(isStalledAskDue(two, now, 'Implement the decision log')).toBe(false);
+    expect(stalledAskAfterHours('Decision: x')).toBe(STALLED_AFTER_HOURS);
+    expect(stalledAskAfterHours('Signed reports')).toBe(STALLED_ASK_AFTER_HOURS);
   });
 
   it('ask about the node with three answers, the issue link and the last holder', () => {
