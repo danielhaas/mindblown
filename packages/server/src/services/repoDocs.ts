@@ -58,7 +58,8 @@ interface Snapshot {
   truncated: boolean;
 }
 
-const trees = new Map<string, { at: number; snap: Promise<Snapshot> }>();
+/** `binding` = the map's repo binding the tree was read for — a rebind must not serve the old repo. */
+const trees = new Map<string, { at: number; binding: string; snap: Promise<Snapshot> }>();
 const branches = new Map<string, { at: number; branch: string }>();
 /** LRU by insertion order; `blobBytes` is the sum of what it holds. */
 const blobs = new Map<string, Uint8Array>();
@@ -84,8 +85,10 @@ function forgeError(err: unknown): RepoDocsError {
   return new RepoDocsError(502, 'FORGE_ERROR', `Could not read the repo: ${err instanceof Error ? err.message : String(err)}`);
 }
 
+const branchKey = (forge: ForgeClient, owner: string, repo: string) => `${forge.endpoint.apiBaseUrl}/${owner}/${repo}`.toLowerCase();
+
 async function defaultBranch(forge: ForgeClient, owner: string, repo: string): Promise<string> {
-  const key = `${forge.endpoint.apiBaseUrl}/${owner}/${repo}`.toLowerCase();
+  const key = branchKey(forge, owner, repo);
   const hit = branches.get(key);
   if (hit && Date.now() - hit.at < BRANCH_TTL_MS) return hit.branch;
   const branch = await getRepoDefaultBranch(owner, repo, forge);
@@ -103,8 +106,21 @@ async function loadSnapshot(mapId: string): Promise<Snapshot> {
   }
   if (!ctx) throw new RepoDocsError(404, 'NO_REPO', 'This map has no repository connected');
   try {
-    const branch = await defaultBranch(ctx.forge, ctx.owner, ctx.repo);
-    const tree = await ctx.forge.getRepoTree(ctx.owner, ctx.repo, branch);
+    const { forge, owner, repo } = ctx;
+    let branch = await defaultBranch(forge, owner, repo);
+    let tree = await treeOrNull(forge, owner, repo, branch);
+    if (!tree) {
+      // No such branch: the cached default may have been renamed (a rename
+      // sends no push) — ask the forge once more.
+      branches.delete(branchKey(forge, owner, repo));
+      const fresh = await defaultBranch(forge, owner, repo);
+      if (fresh !== branch) {
+        branch = fresh;
+        tree = await treeOrNull(forge, owner, repo, branch);
+      }
+    }
+    // Still none: an empty repo — its default branch has no commit yet.
+    tree ??= { sha: '', files: [], truncated: false };
     return {
       forge: ctx.forge,
       owner: ctx.owner,
@@ -119,14 +135,35 @@ async function loadSnapshot(mapId: string): Promise<Snapshot> {
   }
 }
 
-function snapshot(mapId: string): Promise<Snapshot> {
+/** GitHub answers 409 for an empty repo, both forges 404 for a missing branch. */
+async function treeOrNull(forge: ForgeClient, owner: string, repo: string, branch: string) {
+  try {
+    return await forge.getRepoTree(owner, repo, branch);
+  } catch (err) {
+    if (err instanceof ForgeApiError && (err.status === 404 || err.status === 409)) return null;
+    throw err;
+  }
+}
+
+/** Which repo the map is bound to right now — one primary-key read, no token minted. */
+async function bindingOf(mapId: string): Promise<string> {
+  const [row] = await db
+    .select({ installation: maps.githubInstallationId, owner: maps.githubRepoOwner, name: maps.githubRepoName })
+    .from(maps)
+    .where(eq(maps.id, mapId));
+  return row ? `${row.installation ?? ''}|${row.owner ?? ''}/${row.name ?? ''}`.toLowerCase() : '';
+}
+
+async function snapshot(mapId: string): Promise<Snapshot> {
+  const binding = await bindingOf(mapId);
   const now = Date.now();
   // Expired trees go, so maps nobody reads any more hold nothing.
   for (const [id, entry] of trees) if (now - entry.at >= TREE_TTL_MS) trees.delete(id);
+  // Synchronous from here: concurrent misses still share one load.
   const hit = trees.get(mapId);
-  if (hit) return hit.snap;
+  if (hit?.binding === binding) return hit.snap;
   const snap = loadSnapshot(mapId);
-  trees.set(mapId, { at: Date.now(), snap });
+  trees.set(mapId, { at: Date.now(), binding, snap });
   // A failure is not cached — the next read tries again.
   snap.catch(() => {
     if (trees.get(mapId)?.snap === snap) trees.delete(mapId);
@@ -199,7 +236,16 @@ export async function readRepoDoc(mapId: string, path: string): Promise<RepoDocT
   if (!file) throw new RepoDocsError(404, 'NOT_FOUND', `No document '${path}' on ${snap.branch}`);
   if (file.size > DOC_MAX_BYTES) throw new RepoDocsError(413, 'TOO_LARGE', `'${path}' is larger than ${DOC_MAX_BYTES / 1024 / 1024} MB`);
   const bytes = await blob(snap, file);
-  return { path, sha: file.sha, size: file.size, text: new TextDecoder().decode(bytes), webUrl: webUrl(snap, path) };
+  let text: string;
+  let utf8 = true;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    // Shown with U+FFFD; `utf8: false` tells editors a proposal is refused.
+    text = new TextDecoder().decode(bytes);
+    utf8 = false;
+  }
+  return { path, sha: file.sha, size: file.size, text, utf8, webUrl: webUrl(snap, path) };
 }
 
 /** The name the PR body credits — the user's display name, never the email (repos may be public). */

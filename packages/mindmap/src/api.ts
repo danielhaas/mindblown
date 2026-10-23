@@ -2689,6 +2689,8 @@ export interface RepoDocText {
   sha: string;
   size: number;
   text: string;
+  /** False: not valid UTF-8 — the server refuses a proposal, so no Edit. */
+  utf8: boolean;
   webUrl: string;
 }
 
@@ -2708,7 +2710,7 @@ export function proposeRepoDocEdit(
   return request(`/api/maps/${mapId}/docs/propose`, { method: 'POST', body: JSON.stringify(input) });
 }
 
-/** An image a doc embeds — fetched with the token, since an <img src> carries none. */
+/** An image a doc embeds — fetched with the token, since an <img src> carries none. Revalidated by ETag (the blob sha) on every fetch. */
 export async function fetchRepoImage(mapId: string, path: string): Promise<Blob> {
   const token = getToken();
   const res = await fetch(`${BASE_URL}/api/maps/${mapId}/docs/image?path=${encodeURIComponent(path)}`, {

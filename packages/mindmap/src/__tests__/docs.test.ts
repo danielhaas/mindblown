@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { defaultDoc, filterDocs, groupDocs, headingSlug, resolveRepoLink, siblingWebUrl } from '../docs.js';
+import {
+  createSlugger,
+  defaultDoc,
+  filterDocs,
+  groupDocs,
+  headingSlug,
+  remarkHeadingIds,
+  resolveRepoLink,
+  restoreLineEndings,
+  siblingWebUrl,
+} from '../docs.js';
 
 const d = (path: string) => ({ path, sha: path, size: 1 });
 
@@ -69,5 +79,51 @@ describe('headingSlug', () => {
     expect(headingSlug('Feature Definition of Done')).toBe('feature-definition-of-done');
     expect(headingSlug('When adding a field to `Node`')).toBe('when-adding-a-field-to-node');
     expect(headingSlug('Ä/B — test')).toBe('äb--test');
+  });
+});
+
+describe('createSlugger', () => {
+  it('numbers repeats like GitHub, skipping a suffix a real heading took', () => {
+    const slug = createSlugger();
+    expect(['Setup', 'Setup', 'Setup-1', 'Setup', 'Other'].map(slug)).toEqual(['setup', 'setup-1', 'setup-1-1', 'setup-2', 'other']);
+  });
+});
+
+describe('remarkHeadingIds', () => {
+  it('ids every heading in order, nested ones and inline code included', () => {
+    const h = (text: string) => ({ type: 'heading', children: [{ type: 'text', value: text }] });
+    const tree = {
+      type: 'root',
+      children: [
+        h('Notes'),
+        { type: 'blockquote', children: [h('Notes')] },
+        { type: 'heading', children: [{ type: 'text', value: 'Use ' }, { type: 'inlineCode', value: 'x' }] },
+      ],
+    };
+    remarkHeadingIds()(tree);
+    const ids = JSON.stringify(tree).match(/"id":"[^"]+"/g);
+    expect(ids).toEqual(['"id":"notes"', '"id":"notes-1"', '"id":"use-x"']);
+  });
+});
+
+describe('restoreLineEndings', () => {
+  it('LF docs pass through; pure CRLF docs come back all CRLF', () => {
+    expect(restoreLineEndings('a\nb\n', 'a\nc\n')).toBe('a\nc\n');
+    expect(restoreLineEndings('a\r\nb\r\n', 'a\nc\nd\n')).toBe('a\r\nc\r\nd\r\n');
+  });
+
+  it('a mixed doc keeps every untouched line ending', () => {
+    const original = 'h\r\n\r\none\ntwo\r\nthree\nend';
+    expect(restoreLineEndings(original, 'h\n\none\nTWO\nthree\nend')).toBe('h\r\n\r\none\nTWO\r\nthree\nend');
+    // An inserted line takes the majority ending (CRLF here); its neighbours keep theirs.
+    expect(restoreLineEndings(original, 'h\n\none\nnew\ntwo\nthree\nend')).toBe('h\r\n\r\none\nnew\r\ntwo\r\nthree\nend');
+    // A deleted line takes nothing with it.
+    expect(restoreLineEndings(original, 'h\n\none\nthree\nend')).toBe('h\r\n\r\none\nthree\nend');
+  });
+
+  it('round-trips the unchanged draft exactly', () => {
+    for (const raw of ['a\r\nb\nc', 'a\nb\r\n', '\r\n\n\r\n', 'x\r\n']) {
+      expect(restoreLineEndings(raw, raw.replace(/\r\n/g, '\n'))).toBe(raw);
+    }
   });
 });

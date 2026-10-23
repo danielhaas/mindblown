@@ -117,3 +117,91 @@ export function headingSlug(text: string): string {
     .replace(/[^\p{L}\p{N}\s_-]/gu, '')
     .replace(/\s/g, '-');
 }
+
+/**
+ * GitHub's rule for repeated headings (github-slugger): the first `a`, then
+ * `a-1`, `a-2`… One slugger per rendered doc.
+ */
+export function createSlugger(): (text: string) => string {
+  const seen = new Map<string, number>();
+  return (text) => {
+    const base = headingSlug(text);
+    let slug = base;
+    while (seen.has(slug)) {
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      slug = `${base}-${n}`;
+    }
+    seen.set(slug, 0);
+    return slug;
+  };
+}
+
+interface MdNode {
+  type: string;
+  value?: string;
+  alt?: string;
+  children?: MdNode[];
+  data?: { hProperties?: Record<string, unknown> };
+}
+
+function mdText(node: MdNode): string {
+  if (typeof node.value === 'string') return node.value;
+  if (node.type === 'image') return node.alt ?? '';
+  return node.children?.map(mdText).join('') ?? '';
+}
+
+/** Remark plugin: every heading gets its GitHub anchor as `id`, duplicates numbered in document order. */
+export function remarkHeadingIds() {
+  return (tree: MdNode) => {
+    const slug = createSlugger();
+    const walk = (node: MdNode) => {
+      if (node.type === 'heading') {
+        node.data = { ...node.data, hProperties: { ...node.data?.hProperties, id: slug(mdText(node)) } };
+        return;
+      }
+      node.children?.forEach(walk);
+    };
+    walk(tree);
+  };
+}
+
+/**
+ * The draft — LF only, a textarea yields nothing else — with the original
+ * doc's line endings put back, so a PR changes only the lines edited.
+ * Unchanged lines before and after the edited stretch keep their ending
+ * exactly; inside it a line identical to an original one there takes that
+ * one's ending, a new line the doc's majority ending.
+ */
+export function restoreLineEndings(original: string, draft: string): string {
+  if (!original.includes('\r\n')) return draft;
+  const orig = original.split('\n').map((seg, i, all) =>
+    i === all.length - 1 ? { text: seg, eol: '' } : seg.endsWith('\r') ? { text: seg.slice(0, -1), eol: '\r\n' } : { text: seg, eol: '\n' },
+  );
+  const crlf = orig.filter((l) => l.eol === '\r\n').length;
+  const majority = crlf * 2 >= orig.length - 1 ? '\r\n' : '\n';
+  // Segment j of the draft is followed by eols[j]; the last one by nothing.
+  const lines = draft.split('\n');
+  const eols: string[] = new Array(lines.length - 1).fill(majority);
+  let head = 0;
+  while (head < lines.length - 1 && head < orig.length - 1 && lines[head] === orig[head].text) {
+    eols[head] = orig[head].eol;
+    head++;
+  }
+  // From the end: draft segment n-1-k pairs with original segment len-1-k.
+  let tail = 0;
+  while (tail < lines.length - head && tail < orig.length - head && lines[lines.length - 1 - tail] === orig[orig.length - 1 - tail].text) {
+    const j = lines.length - 1 - tail;
+    if (j < eols.length) eols[j] = orig[orig.length - 1 - tail].eol;
+    tail++;
+  }
+  const pool = new Map<string, string[]>();
+  for (const l of orig.slice(head, orig.length - tail)) {
+    if (!l.eol) continue;
+    pool.set(l.text, [...(pool.get(l.text) ?? []), l.eol]);
+  }
+  for (let j = head; j < lines.length - tail && j < eols.length; j++) {
+    eols[j] = pool.get(lines[j])?.shift() ?? majority;
+  }
+  return lines.map((l, j) => l + (eols[j] ?? '')).join('');
+}

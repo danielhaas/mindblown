@@ -599,6 +599,8 @@ export interface RepoDocText {
   sha: string;
   size: number;
   text: string;
+  /** False: the file is not valid UTF-8 (shown with U+FFFD) and propose_doc_edit refuses it. */
+  utf8: boolean;
   /** The file on the forge's web UI. */
   webUrl: string;
 }

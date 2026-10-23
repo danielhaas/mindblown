@@ -54,13 +54,17 @@ export async function repoDocsRoutes(app: FastifyInstance): Promise<void> {
     if (!path) return reply;
     try {
       const img = await readRepoImage(req.params.id, path);
+      const etag = `"${img.sha}"`;
+      // no-cache = revalidate every time: an image changed upstream under the
+      // same path shows at once, an unchanged one costs a 304.
+      if (req.headers['if-none-match'] === etag) return reply.status(304).header('ETag', etag).header('Cache-Control', 'private, no-cache').send();
       return reply
         .header('Content-Type', img.contentType)
         // An SVG is a document: opened on its own it must not run script on our origin.
         .header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox")
         .header('X-Content-Type-Options', 'nosniff')
-        .header('Cache-Control', 'private, max-age=300')
-        .header('ETag', `"${img.sha}"`)
+        .header('Cache-Control', 'private, no-cache')
+        .header('ETag', etag)
         .send(Buffer.from(img.bytes));
     } catch (err) {
       return sendError(reply, err);

@@ -24,7 +24,7 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import { baseName, defaultDoc, filterDocs, groupDocs, headingSlug, resolveRepoLink, siblingWebUrl } from './docs.js';
+import { baseName, defaultDoc, filterDocs, groupDocs, remarkHeadingIds, resolveRepoLink, restoreLineEndings, siblingWebUrl } from './docs.js';
 import { formatSize } from './AttachmentsSection.js';
 import { useCanEditMap } from './useCanEditMap.js';
 
@@ -50,8 +50,8 @@ interface EditState {
   /** Text as loaded, line endings normalised to LF (a textarea only ever yields LF). */
   original: string;
   draft: string;
-  /** The doc used CRLF: the proposal converts back, so the PR doesn't rewrite every line. */
-  crlf: boolean;
+  /** The doc as loaded, kept only when it has CRLF endings: the proposal puts them back (`restoreLineEndings`). */
+  raw?: string;
   message: string;
   preview: boolean;
 }
@@ -66,8 +66,11 @@ const draftKey = (mapId: string) => `mb-docs-draft:${mapId}`;
 function readDraft(mapId: string): EditState | null {
   try {
     const raw = sessionStorage.getItem(draftKey(mapId));
-    const d = raw ? (JSON.parse(raw) as EditState) : null;
-    return d && d.mapId === mapId && typeof d.draft === 'string' ? { ...d, preview: false } : null;
+    const d = raw ? (JSON.parse(raw) as EditState & { crlf?: boolean }) : null;
+    if (!d || d.mapId !== mapId || typeof d.draft !== 'string') return null;
+    // A draft stored before `raw` existed said only "the doc was CRLF".
+    if (d.crlf && d.raw === undefined) d.raw = d.original.replace(/\n/g, '\r\n');
+    return { ...d, preview: false };
   } catch {
     return null;
   }
@@ -88,6 +91,39 @@ function writeDraft(mapId: string, edit: EditState | null) {
   }
 }
 
+const MARKDOWN_PLUGINS = [remarkGfm, remarkHeadingIds];
+
+interface Proposed {
+  path: string;
+  number: number;
+  url: string;
+}
+
+/**
+ * A proposal outlives the view, like the draft: leaving the tab while the
+ * PR is being opened must neither lose its link nor let the restored draft
+ * open a second one. Per map — the view that is mounted when it settles
+ * shows it; if none is, the next one does.
+ */
+const pendingProposals = new Map<string, Promise<Proposed>>();
+const unseenProposals = new Map<string, Proposed>();
+
+function startProposal(mapId: string, input: Parameters<typeof api.proposeRepoDocEdit>[1]): Promise<Proposed> {
+  const p = api.proposeRepoDocEdit(mapId, input).then((res) => {
+    // Even with the view gone: the draft is a PR now.
+    writeDraft(mapId, null);
+    const done = { path: res.path, ...res.pullRequest };
+    unseenProposals.set(mapId, done);
+    return done;
+  });
+  pendingProposals.set(mapId, p);
+  const clear = () => {
+    if (pendingProposals.get(mapId) === p) pendingProposals.delete(mapId);
+  };
+  p.then(clear, clear);
+  return p;
+}
+
 export function DocsView() {
   const mapId = useMindmapStore((s) => s.currentMapId);
   // The server decides in the end (the propose route needs edit).
@@ -95,7 +131,7 @@ export function DocsView() {
   const [edit, setEdit] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<{ code?: string; message: string } | null>(null);
-  const [proposed, setProposed] = useState<{ path: string; number: number; url: string } | null>(null);
+  const [proposed, setProposed] = useState<Proposed | null>(null);
   const [restored, setRestored] = useState(false);
   const dirty = !!edit && edit.draft !== edit.original;
   /** Set synchronously: two submits before a re-render (Ctrl+Enter repeat) must not open two PRs. */
@@ -114,6 +150,14 @@ export function DocsView() {
   mapRef.current = mapId;
   const listRef = useRef(list);
   listRef.current = list;
+  const mounted = useRef(false);
+  useEffect(() => {
+    // Set here, not in useRef: StrictMode runs this cleanup and re-mounts.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const loadList = useCallback(async () => {
     if (!mapId) return;
@@ -189,53 +233,78 @@ export function DocsView() {
   const startEdit = () => {
     if (!doc || !mapId) return;
     const original = doc.text.replace(/\r\n/g, '\n');
-    setEdit({ mapId, path: doc.path, baseSha: doc.sha, original, draft: original, crlf: doc.text.includes('\r\n'), message: '', preview: false });
+    const raw = doc.text.includes('\r\n') ? doc.text : undefined;
+    setEdit({ mapId, path: doc.path, baseSha: doc.sha, original, draft: original, raw, message: '', preview: false });
     setEditError(null);
     setProposed(null);
     setRestored(false);
   };
 
-  const propose = async () => {
-    if (!mapId || !edit || !dirty || inFlight.current) return;
+  /** Follow a proposal of `forMap` — one started here, or one still in flight from before a remount. */
+  const awaitProposal = async (forMap: string, p: Promise<Proposed>) => {
     inFlight.current = true;
     setSaving(true);
     setEditError(null);
     try {
-      const res = await api.proposeRepoDocEdit(mapId, {
-        path: edit.path,
-        text: edit.crlf ? edit.draft.replace(/\n/g, '\r\n') : edit.draft,
-        baseSha: edit.baseSha,
-        message: edit.message.trim() || undefined,
-      });
-      setProposed({ path: res.path, ...res.pullRequest });
-      dropEdit();
+      const done = await p;
+      // Gone, or showing another map: the view showing this map next picks it up.
+      if (!mounted.current || mapRef.current !== forMap) return;
+      unseenProposals.delete(forMap);
+      setProposed(done);
+      setEdit(null);
+      setRestored(false);
     } catch (err) {
+      if (!mounted.current || mapRef.current !== forMap) return;
       setEditError(err instanceof api.ApiError ? { code: err.code, message: err.message } : { message: String(err) });
       // The server just re-read the branch; re-list so "Discard and reload" gets the new version.
       if (err instanceof api.ApiError && err.code === 'CONFLICT') void loadList();
     } finally {
-      inFlight.current = false;
-      setSaving(false);
+      if (mapRef.current === forMap) {
+        inFlight.current = false;
+        setSaving(false);
+      }
     }
+  };
+
+  const propose = () => {
+    if (!mapId || !edit || !dirty || inFlight.current || pendingProposals.has(mapId)) return;
+    const p = startProposal(mapId, {
+      path: edit.path,
+      text: edit.raw === undefined ? edit.draft : restoreLineEndings(edit.raw, edit.draft),
+      baseSha: edit.baseSha,
+      message: edit.message.trim() || undefined,
+    });
+    void awaitProposal(mapId, p);
   };
 
   // A different map is a different repo: start over — with that map's
   // stored draft, if one was left there.
   useEffect(() => {
     const saved = mapId ? readDraft(mapId) : null;
+    // A PR opened after the view was left (its draft is gone by then).
+    // Dropped from `unseenProposals` once shown (below), not here — StrictMode runs this twice.
+    const done = mapId ? unseenProposals.get(mapId) : undefined;
+    const pending = mapId ? pendingProposals.get(mapId) : undefined;
     setList(null);
     listRef.current = null;
     setListError(null);
-    setSelected(saved?.path ?? null);
+    setSelected(saved?.path ?? done?.path ?? null);
     setDoc(null);
     setDocError(null);
     setEdit(saved);
-    setRestored(!!saved);
+    setRestored(!!saved && !pending);
     setEditError(null);
-    setProposed(null);
+    setProposed(done ?? null);
+    inFlight.current = false;
+    setSaving(false);
+    if (mapId && pending) void awaitProposal(mapId, pending);
     void loadList();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadList]);
+
+  useEffect(() => {
+    if (proposed && mapId) unseenProposals.delete(mapId);
+  }, [proposed, mapId]);
 
   useEffect(() => {
     const onPush = () => void loadList();
@@ -298,23 +367,12 @@ export function DocsView() {
   // The renderers below read the current doc through this ref, so their
   // identities never change: a new identity makes React remount every
   // heading, link and image of the open doc (images blank and refetch).
-  const live = useRef({ doc, docPaths, mapId });
-  live.current = { doc, docPaths, mapId };
+  const live = useRef({ doc, docPaths, mapId, treeSha: list?.treeSha ?? '' });
+  live.current = { doc, docPaths, mapId, treeSha: list?.treeSha ?? '' };
 
+  // Heading ids come from `remarkHeadingIds` (GitHub's numbering of repeats).
   const components = useMemo<Components>(() => {
-    const heading = (Tag: 'h1' | 'h2' | 'h3' | 'h4') =>
-      function Heading({ node: _node, children, ...props }: React.ComponentProps<typeof Tag> & { node?: unknown }) {
-        return (
-          <Tag id={headingSlug(textOf(children))} {...props}>
-            {children}
-          </Tag>
-        );
-      };
     return {
-      h1: heading('h1'),
-      h2: heading('h2'),
-      h3: heading('h3'),
-      h4: heading('h4'),
       a: ({ node: _node, href, children, ...props }) => {
         if (href?.startsWith('#')) {
           return (
@@ -357,11 +415,12 @@ export function DocsView() {
         );
       },
       img: ({ node: _node, src, alt, ...props }) => {
-        const { doc, mapId } = live.current;
+        const { doc, mapId, treeSha } = live.current;
         const target = doc && typeof src === 'string' ? resolveRepoLink(doc.path, src) : null;
         if (!target || !mapId) return <img {...props} src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} style={{ maxWidth: '100%' }} />;
         // Keyed: the renderer is stable now, so a slot would otherwise keep the previous image's state.
-        return <RepoImage key={`${mapId}:${target.path}`} mapId={mapId} path={target.path} alt={alt ?? ''} />;
+        // `version` re-asks on every new tree: the server answers 304 unless the image changed.
+        return <RepoImage key={`${mapId}:${target.path}`} mapId={mapId} path={target.path} version={treeSha} alt={alt ?? ''} />;
       },
     };
   }, []);
@@ -483,10 +542,15 @@ export function DocsView() {
                 <span style={{ fontFamily: 'Menlo, Monaco, monospace', fontSize: 12, color: MUTED }}>{doc.path}</span>
                 <span style={{ fontSize: 11, color: FAINT }}>{formatSize(doc.size)}</span>
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: 14, alignItems: 'baseline' }}>
-                  {canEdit && !edit && (
+                  {canEdit && !edit && doc.utf8 !== false && (
                     <button type="button" onClick={startEdit} style={linkButtonStyle}>
                       Edit
                     </button>
+                  )}
+                  {canEdit && !edit && doc.utf8 === false && (
+                    <span style={{ fontSize: 12, color: FAINT }} title="This file is not UTF-8 text; editing it here would corrupt it">
+                      Not UTF-8 — edit in the repo
+                    </span>
                   )}
                   <a href={doc.webUrl} target="_blank" rel="noreferrer" style={{ fontSize: 12, color: ACCENT, textDecoration: 'none' }}>
                     Open in repo ↗
@@ -525,7 +589,7 @@ export function DocsView() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => void propose()}
+                      onClick={propose}
                       disabled={saving || !dirty}
                       title={dirty ? `Opens a pull request against ${list.repo.branch}` : 'Nothing changed yet'}
                       style={{ ...primaryButtonStyle, opacity: saving || !dirty ? 0.5 : 1 }}
@@ -563,7 +627,7 @@ export function DocsView() {
                   )}
                   {edit.preview ? (
                     <article className="mb-docs-md">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+                      <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
                         {edit.draft}
                       </ReactMarkdown>
                     </article>
@@ -575,7 +639,7 @@ export function DocsView() {
                       readOnly={saving}
                       onChange={(e) => setEdit({ ...edit, draft: e.target.value })}
                       onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void propose();
+                        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') propose();
                       }}
                       aria-label={`Edit ${edit.path}`}
                       spellCheck
@@ -585,7 +649,7 @@ export function DocsView() {
                 </div>
               ) : (
                 <article className="mb-docs-md">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+                  <ReactMarkdown remarkPlugins={MARKDOWN_PLUGINS} components={components}>
                     {doc.text}
                   </ReactMarkdown>
                 </article>
@@ -604,20 +668,21 @@ export function DocsView() {
   );
 }
 
-/** A repo image, fetched with the token and shown from an object URL. */
-function RepoImage({ mapId, path, alt }: { mapId: string; path: string; alt: string }) {
+/**
+ * A repo image, fetched with the token and shown from an object URL.
+ * A new `version` (the branch tree) fetches again; the old picture stays
+ * until the new one is in, so an unchanged image never blinks.
+ */
+function RepoImage({ mapId, path, version, alt }: { mapId: string; path: string; version: string; alt: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   useEffect(() => {
-    let href: string | null = null;
     let cancelled = false;
-    setUrl(null);
-    setFailed(false);
     api.fetchRepoImage(mapId, path).then(
       (blob) => {
         if (cancelled) return;
-        href = URL.createObjectURL(blob);
-        setUrl(href);
+        setUrl(URL.createObjectURL(blob));
+        setFailed(false);
       },
       () => {
         if (!cancelled) setFailed(true);
@@ -625,19 +690,17 @@ function RepoImage({ mapId, path, alt }: { mapId: string; path: string; alt: str
     );
     return () => {
       cancelled = true;
-      if (href) URL.revokeObjectURL(href);
     };
-  }, [mapId, path]);
+  }, [mapId, path, version]);
+  // Each object URL is let go once it is replaced or the image unmounts.
+  useEffect(
+    () => () => {
+      if (url) URL.revokeObjectURL(url);
+    },
+    [url],
+  );
   if (failed) return <span style={{ color: FAINT, fontSize: 12 }}>[image: {alt || path}]</span>;
   return url ? <img src={url} alt={alt} style={{ maxWidth: '100%' }} /> : null;
-}
-
-function textOf(children: React.ReactNode): string {
-  if (children == null || typeof children === 'boolean') return '';
-  if (typeof children === 'string' || typeof children === 'number') return String(children);
-  if (Array.isArray(children)) return children.map(textOf).join('');
-  if (typeof children === 'object' && 'props' in children) return textOf((children.props as { children?: React.ReactNode }).children);
-  return '';
 }
 
 function scrollToAnchor(container: HTMLElement | null, hash: string) {
