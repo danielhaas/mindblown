@@ -2700,6 +2700,14 @@ export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
   return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
 }
 
+/** #552 — branch + commit + PR; never the default branch. 409 CONFLICT when the doc moved on since `baseSha`. */
+export function proposeRepoDocEdit(
+  mapId: string,
+  input: { path: string; text: string; baseSha: string; message?: string },
+): Promise<{ path: string; branch: string; commitSha: string; pullRequest: { number: number; url: string } }> {
+  return request(`/api/maps/${mapId}/docs/propose`, { method: 'POST', body: JSON.stringify(input) });
+}
+
 /** An image a doc embeds — fetched with the token, since an <img src> carries none. */
 export async function fetchRepoImage(mapId: string, path: string): Promise<Blob> {
   const token = getToken();

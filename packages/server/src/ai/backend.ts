@@ -30,7 +30,7 @@ import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
-import { listRepoDocs, readRepoDoc } from '../services/repoDocs.js';
+import { listRepoDocs, proposeRepoDocEdit, proposerName, readRepoDoc } from '../services/repoDocs.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -501,6 +501,8 @@ export function createChatBackend(userId: string): ToolBackend {
     },
     listRepoDocs: (mapId) => listRepoDocs(mapId),
     readRepoDoc: (mapId, path) => readRepoDoc(mapId, path),
+    // Not a read: the chat guard asks edit on the map.
+    proposeRepoDocEdit: async (mapId, input) => proposeRepoDocEdit(mapId, input, await proposerName(userId)),
   };
   return guardChatBackend(backend, userId);
 }

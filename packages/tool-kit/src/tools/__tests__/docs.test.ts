@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { RepoDocsList, RepoDocText, ToolBackend } from '../../backend.js';
 import { allTools } from '../../index.js';
-import { listDocsTool, readDocTool } from '../docs.js';
+import { listDocsTool, proposeDocEditTool, readDocTool } from '../docs.js';
 
 const LIST: RepoDocsList = {
   repo: { owner: 'o', name: 'r', branch: 'main', webUrl: 'https://github.com/o/r' },
@@ -29,10 +29,30 @@ function backendWith(doc?: RepoDocText): { backend: ToolBackend; calls: unknown[
 }
 
 describe('list_docs / read_doc', () => {
-  it('are registered on the shared surface (MCP + chat)', () => {
+  it('are registered on the shared (MCP) surface', () => {
     const names = allTools.map((t) => t.name);
     expect(names).toContain('list_docs');
     expect(names).toContain('read_doc');
+    expect(names).toContain('propose_doc_edit');
+  });
+
+  it('read_doc prints the sha an edit needs', async () => {
+    const { backend } = backendWith({ path: 'README.md', sha: 'abc123', size: 8, text: '# Hello\n', webUrl: 'u' });
+    expect(await readDocTool.handler(backend, { mapId: 'm', path: 'README.md' })).toContain('sha abc123');
+  });
+
+  it('propose_doc_edit forwards the edit and prints the PR', async () => {
+    const calls: unknown[] = [];
+    const backend = {
+      proposeRepoDocEdit: async (mapId: string, input: unknown) => {
+        calls.push([mapId, input]);
+        return { path: 'README.md', branch: 'mindblown/docs-readme-x', commitSha: 'c0ffee1234', pullRequest: { number: 12, url: 'https://github.com/o/r/pull/12' } };
+      },
+    } as unknown as ToolBackend;
+    const out = await proposeDocEditTool.handler(backend, { mapId: 'm', path: 'README.md', text: '# Hi\n', baseSha: 'a' });
+    expect(calls).toEqual([['m', { path: 'README.md', text: '# Hi\n', baseSha: 'a', message: undefined }]]);
+    expect(out).toContain('Opened PR #12 for README.md: https://github.com/o/r/pull/12');
+    expect(out).toContain('branch mindblown/docs-readme-x · commit c0ffee1');
   });
 
   it('list_docs prints repo, branch and every path', async () => {

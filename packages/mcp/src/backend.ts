@@ -66,4 +66,5 @@ export const httpBackend: ToolBackend = {
   // ── Repo docs (#550) ────────────────────────────────────────────
   listRepoDocs: (mapId) => api.listRepoDocs(mapId),
   readRepoDoc: (mapId, path) => api.readRepoDoc(mapId, path),
+  proposeRepoDocEdit: (mapId, input) => api.proposeRepoDocEdit(mapId, input),
 };

@@ -171,6 +171,32 @@ export interface RepoTree {
   truncated: boolean;
 }
 
+/** Overwrite one existing file on a branch (#552). */
+export interface PutFileInput {
+  path: string;
+  branch: string;
+  content: Uint8Array;
+  /**
+   * The blob sha the edit was made against. The forge refuses the write
+   * when the file on `branch` has moved on — surfaced as `ForgeApiError`
+   * with status 409 on every forge (Gitea answers 422, normalised).
+   */
+  blobSha: string;
+  message: string;
+}
+
+export interface PutFileResult {
+  blobSha: string;
+  commitSha: string;
+}
+
+export interface CreatePullRequestInput {
+  title: string;
+  body: string;
+  head: string;
+  base: string;
+}
+
 // ── Transport ─────────────────────────────────────────────────────
 
 /**
@@ -306,6 +332,13 @@ export interface ForgeClient {
   getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree>;
   /** A blob's content (decoded from the forge's base64). */
   getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array>;
+
+  // Repo writes (#552) — doc edits go to a fresh branch + PR, never to the default branch.
+  /** New branch `name` at the head of `from`. An existing name is a `ForgeApiError` (GitHub 422, Gitea 409). */
+  createBranch(owner: string, repo: string, name: string, from: string): Promise<void>;
+  deleteBranch(owner: string, repo: string, name: string): Promise<void>;
+  putFile(owner: string, repo: string, input: PutFileInput): Promise<PutFileResult>;
+  createPullRequest(owner: string, repo: string, input: CreatePullRequestInput): Promise<{ number: number; url: string }>;
 
   // URLs
   issueWebUrl(owner: string, repo: string, issueNumber: number): string;

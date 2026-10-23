@@ -578,6 +578,8 @@ export interface ToolBackend {
   listRepoDocs(mapId: string): Promise<RepoDocsList>;
   /** One markdown file's text — `GET /api/maps/:id/docs/file?path=`. Throws for a path that is not a doc of the repo. */
   readRepoDoc(mapId: string, path: string): Promise<RepoDocText>;
+  /** Branch + commit + pull request with the new text — `POST /api/maps/:id/docs/propose` (#552). Throws on a stale `baseSha`. */
+  proposeRepoDocEdit(mapId: string, input: ProposeDocEditInput): Promise<ProposeDocEditResult>;
 }
 
 // ── Repo docs ──────────────────────────────────────────────────────
@@ -599,6 +601,23 @@ export interface RepoDocText {
   text: string;
   /** The file on the forge's web UI. */
   webUrl: string;
+}
+
+export interface ProposeDocEditInput {
+  path: string;
+  /** The whole new file text. */
+  text: string;
+  /** `sha` of the version the edit was made against (from read_doc / the list). */
+  baseSha: string;
+  /** Commit message and PR title; defaults to `docs: update <path>`. */
+  message?: string;
+}
+
+export interface ProposeDocEditResult {
+  path: string;
+  branch: string;
+  commitSha: string;
+  pullRequest: { number: number; url: string };
 }
 
 // ── Attachments ────────────────────────────────────────────────────
