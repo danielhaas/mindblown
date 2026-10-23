@@ -1763,7 +1763,9 @@ export function App() {
     if (!user) return;
     const mapId = takeSetupResume();
     if (!mapId) return;
-    void loadMap(mapId).then(() => setSetupStep('repo'));
+    void loadMap(mapId).then(() => {
+      if (useMindmapStore.getState().currentMapId === mapId) setSetupStep('repo');
+    });
   }, [user, loadMap]);
 
   // ── Auth check loading ───────────────────────────────────────

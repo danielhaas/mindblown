@@ -140,10 +140,14 @@ export function ProjectSetupWizard({
 
 function DescribeStep({ isNew, onDone }: { isNew: boolean; onDone: () => void }) {
   const map = useMindmapStore((s) => s.currentMap);
-  const createMap = useMindmapStore((s) => s.createMap);
+  const loadMap = useMindmapStore((s) => s.loadMap);
+  const loadMaps = useMindmapStore((s) => s.loadMaps);
   const updateMapSettings = useMindmapStore((s) => s.updateMapSettings);
   const [name, setName] = useState(isNew ? '' : map?.name ?? '');
-  const [description, setDescription] = useState(isNew ? '' : stripTags(map?.description ?? ''));
+  // Edited as plain text; a description with markup (set over MCP) is only
+  // written back when the user changed it.
+  const initialDescription = isNew ? '' : stripTags(map?.description ?? '');
+  const [description, setDescription] = useState(initialDescription);
   const [policy, setPolicy] = useState<AiPolicy>('any');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -153,12 +157,25 @@ function DescribeStep({ isNew, onDone }: { isNew: boolean; onDone: () => void })
     if (!n || busy) return;
     setBusy(true);
     setError(null);
-    const ok = isNew
-      ? (await createMap(n, policy, description.trim() || undefined)) !== null
-      : await updateMapSettings({ name: n, description: description.trim() || null });
+    if (isNew) {
+      try {
+        const { map: created } = await api.createMap(n, { aiPolicy: policy, ...(description.trim() ? { description: description.trim() } : {}) });
+        // Step on before the map opens: opening swaps the map list for the
+        // editor, which mounts the wizard anew at whatever step is set.
+        onDone();
+        await loadMap(created.id);
+        void loadMaps();
+      } catch (e: any) {
+        setBusy(false);
+        setError(e?.message ?? 'Creating the project failed.');
+      }
+      return;
+    }
+    const changed = description !== initialDescription;
+    const ok = await updateMapSettings(changed ? { name: n, description: description.trim() || null } : { name: n });
     setBusy(false);
     if (ok) onDone();
-    else setError(isNew ? 'Creating the project failed.' : 'Saving failed.');
+    else setError('Saving failed.');
   };
 
   return (
@@ -313,6 +330,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
           Connected to <strong>{boundName ?? 'its repository'}</strong>.
           {imported !== null && ` Imported ${imported} open issue${imported === 1 ? '' : 's'}; new ones come in by themselves.`}
         </p>
+        {error && <div style={errorBox}>{error} New issues still come in by themselves; the import can be rerun in the map&apos;s forge settings.</div>}
         <Footer><button type="button" onClick={onNext} style={primary(true)}>Continue</button></Footer>
       </>
     );

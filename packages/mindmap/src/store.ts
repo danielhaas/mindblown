@@ -17,6 +17,7 @@ import type { ViewRole } from './roles.js';
  *  flags too), and those keep their pre-existing no-live-sync behaviour —
  *  merging them would revert optimistic edits such as an in-flight rename. */
 const BROADCAST_MAP_SETTINGS = [
+  'setupCompletedAt',
   'maxActiveClaims',
   'dispatchGate',
   'dispatchPolicy',
@@ -177,8 +178,7 @@ export interface MindmapState {
   // Actions — map level
   loadMaps: () => Promise<void>;
   loadMap: (id: string) => Promise<void>;
-  /** Create and open a map; resolves to its id, or null when it failed. */
-  createMap: (name: string, aiPolicy?: 'any' | 'local' | 'none', description?: string) => Promise<string | null>;
+  createMap: (name: string, aiPolicy?: 'any' | 'local' | 'none') => Promise<void>;
   closeMap: () => void;
   updateMapName: (name: string) => void;
   /**
@@ -463,19 +463,17 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
   },
 
-  createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none', description?: string) => {
+  createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none') => {
     set({ loading: true, error: null });
     try {
-      const { map } = await api.createMap(name, { ...(aiPolicy ? { aiPolicy } : {}), ...(description ? { description } : {}) });
+      const { map } = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
       // Reload maps list
       const maps = await api.fetchMaps();
       set({ maps, loading: false });
       // Open the new map
-      await get().loadMap(map.id);
-      return map.id;
+      get().loadMap(map.id);
     } catch (e: any) {
       set({ loading: false, error: e.message ?? 'Failed to create map' });
-      return null;
     }
   },
 
