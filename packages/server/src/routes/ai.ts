@@ -174,6 +174,8 @@ export async function aiRoutes(app: FastifyInstance): Promise<void> {
       enabled: aiCapabilities().enabled,
       capabilities,
       health: { chat: view(health.chat), embeddings: view(health.embeddings) },
+      // The reason names the account's state (credit, key) — signed-in callers only.
+      claudeOutage: signedIn ? status.claudeOutage : status.claudeOutage && { ...status.claudeOutage, reason: 'Claude unavailable' },
       ...(policy ? { policy } : {}),
     };
   });
