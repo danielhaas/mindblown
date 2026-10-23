@@ -3500,6 +3500,24 @@ server.tool(
 );
 
 server.tool(
+  'ai_plan_questions',
+  'Before drafting a plan with ai_braindump: the (up to three) questions whose answers would change the plan the most — who uses it, what the first version must do, constraints. Returns none when the description already covers what matters. Ask the person, then pass their answers to ai_braindump as `answers`.',
+  {
+    mapId: z.string().describe('The map ID'),
+    prose: z.string().describe('The project description / brain dump the plan will be drafted from'),
+  },
+  async ({ mapId, prose }) => {
+    try {
+      const { questions } = await api.aiPlanQuestions(mapId, prose);
+      if (questions.length === 0) return toolResult('No questions — the description covers what the plan needs. Draft with ai_braindump.');
+      return toolResult(`Ask the person, then pass the answers to ai_braindump as answers:\n${questions.map((q, i) => `${i + 1}. ${q}`).join('\n')}`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
+server.tool(
   'ai_braindump',
   'Convert a freeform brain-dump of prose into a nested tree of tasks and (by default) attach it under an existing parent node. Useful for capturing meeting notes or stream-of-consciousness planning. The LLM groups related ideas, strips numbering, and writes imperative task labels.',
   {
@@ -3508,10 +3526,15 @@ server.tool(
     prose: z.string().describe('Freeform prose to structure into tasks'),
     maxDepth: z.number().int().min(1).max(3).optional().describe('Maximum nesting depth (1-3, default 3)'),
     apply: z.boolean().optional().describe('If true (default), create the tree; if false, only return the preview'),
+    answers: z
+      .array(z.object({ question: z.string(), answer: z.string() }))
+      .max(3)
+      .optional()
+      .describe("The person's answers to ai_plan_questions; added to the prose the tree is drafted from"),
   },
-  async ({ mapId, parentId, prose, maxDepth, apply }) => {
+  async ({ mapId, parentId, prose, maxDepth, apply, answers }) => {
     try {
-      const { tree } = await api.aiBraindump(mapId, parentId, prose, maxDepth);
+      const { tree } = await api.aiBraindump(mapId, parentId, prose, maxDepth, answers);
       if (tree.length === 0) {
         return toolResult('Model returned no usable tasks.');
       }

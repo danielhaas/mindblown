@@ -1721,10 +1721,20 @@ export function aiBraindump(
   parentId: string,
   prose: string,
   maxDepth?: number,
+  /** Answers to /braindump/questions, appended to the prose by the server. */
+  answers?: Array<{ question: string; answer: string }>,
 ): Promise<{ tree: BraindumpNode[] }> {
   return request('/api/ai/braindump', {
     method: 'POST',
-    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth, answers }),
+  });
+}
+
+/** Up to three questions to ask before drafting a plan from `prose` (none when it covers what matters). */
+export function aiBraindumpQuestions(mapId: string, prose: string): Promise<{ questions: string[] }> {
+  return request('/api/ai/braindump/questions', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, prose }),
   });
 }
 

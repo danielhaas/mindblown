@@ -326,6 +326,7 @@ The pre-Gitea names (`connect_github_repo`, `import_github_issues`, `link_github
 | Tool | Description | Parameters |
 |------|-------------|------------|
 | `ai_breakdown` | Break a node into suggested child tasks via the LLM; creates them by default | `mapId`, `nodeId`, `count?`, `hint?`, `apply?` |
+| `ai_plan_questions` | Up to three questions to ask before drafting a plan (none when the description covers it); answers go to `ai_braindump` | `mapId`, `prose` |
 | `ai_braindump` | Turn freeform prose into a nested tree under a parent node | `mapId`, `parentId`, `prose`, `maxDepth?`, `apply?` |
 | `ai_estimate` | Calibrated effort estimate using past velocity + sample leaves | `mapId`, `text?`, `nodeId?`, `hint?` |
 | `semantic_search` | Embedding-based search ranked by cosine similarity | `mapId`, `q`, `limit?` |

@@ -35,6 +35,13 @@ import { guardMapIdInPayload } from '../lib/mapAccess.js';
 import * as versionDb from '../db/versions.js';
 import { resolveProvider, providerStatus } from '../ai/providers/index.js';
 import { withProviderFallback, providerAfterFailure, bothFailedError, claudeOutage } from '../ai/providers/fallback.js';
+import {
+  MAX_PLAN_QUESTIONS,
+  PLAN_QUESTIONS_SYSTEM_PROMPT,
+  planQuestionsUserPrompt,
+  proseWithAnswers,
+  sanitizePlanQuestions,
+} from '../ai/planQuestions.js';
 import { aiCapabilities, AI_DISABLED_MESSAGE } from '../ai/capabilities.js';
 import { aiHealth, type BackendHealth } from '../ai/health.js';
 import {
@@ -870,9 +877,61 @@ Rules:
     }
   });
 
+  // ── POST /api/ai/braindump/questions — ask before drafting ─────
+  //
+  // Request:  { mapId, prose }
+  // Response: { questions: string[] }   (0–3; none when the prose covers it)
+  //
+  // The setup wizard asks these before "Draft the plan with AI"; the
+  // answers go back with /braindump as `answers`.
+
+  app.post('/api/ai/braindump/questions', async (req, reply) => {
+    if (!requireStructured(reply)) return;
+    const body = req.body as { mapId?: string; prose?: string };
+    if (!body.mapId || typeof body.prose !== 'string' || !body.prose.trim()) {
+      return reply.status(400).send({
+        error: { code: 'VALIDATION_ERROR', message: 'mapId and non-empty prose are required' },
+      });
+    }
+    const mapDetail = await mapDb.getMap(body.mapId);
+    if (!mapDetail) {
+      return reply.status(404).send({ error: { code: 'MAP_NOT_FOUND', message: `Map ${body.mapId} not found` } });
+    }
+    const root = mapDetail.nodes.find((n) => n.parentId === null);
+    const userPrompt = planQuestionsUserPrompt({
+      projectName: mapDetail.map.name,
+      prose: body.prose.slice(0, 8000),
+      existingAreas: root ? childrenTexts(root.id, mapDetail.nodes) : [],
+    });
+    try {
+      const raw = await withProviderFallback(
+        () => resolveProviderForMap(body.mapId!),
+        (provider) =>
+          provider.complete({
+            systemPrompt: PLAN_QUESTIONS_SYSTEM_PROMPT,
+            parts: [{ text: userPrompt }],
+            format: 'json',
+            temperature: 0.3,
+            // Thinking models spend reasoning tokens from the same budget.
+            maxTokens: 1500,
+          }),
+      );
+      const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
+      return { questions: sanitizePlanQuestions(JSON.parse(cleaned)) };
+    } catch (err: any) {
+      if (policyDenied(reply, err)) return;
+      if (err instanceof SyntaxError) {
+        return reply.status(502).send({ error: { code: 'AI_BAD_RESPONSE', message: 'Model returned invalid JSON' } });
+      }
+      return reply.status(502).send({ error: { code: 'AI_ERROR', message: err.message } });
+    }
+  });
+
   // ── POST /api/ai/braindump — prose → nested tree preview ───────
   //
-  // Request:  { mapId, parentId, prose, maxDepth? }
+  // Request:  { mapId, parentId, prose, maxDepth?, answers? }
+  //           answers: [{ question, answer }] from /braindump/questions,
+  //           appended to the prose
   // Response: { tree: BraindumpNode[] }
   //
   // The model receives a blob of freeform prose and the current ancestor
@@ -886,6 +945,7 @@ Rules:
       parentId: string;
       prose: string;
       maxDepth?: number;
+      answers?: Array<{ question?: unknown; answer?: unknown }>;
     };
 
     if (!body.mapId || !body.parentId || !body.prose?.trim()) {
@@ -934,7 +994,11 @@ Parent node: "${parentNode.text}"`;
     if (existingChildren.length > 0) {
       userPrompt += `\nExisting children (don't duplicate): ${existingChildren.join(', ')}`;
     }
-    userPrompt += `\n\nBrain dump:\n${body.prose.trim()}`;
+    const answers = (Array.isArray(body.answers) ? body.answers : [])
+      .filter((a) => typeof a?.question === 'string' && typeof a?.answer === 'string')
+      .slice(0, MAX_PLAN_QUESTIONS)
+      .map((a) => ({ question: (a.question as string).slice(0, 300), answer: (a.answer as string).slice(0, 2000) }));
+    userPrompt += `\n\nBrain dump:\n${proseWithAnswers(body.prose, answers)}`;
 
     try {
       const raw = await withProviderFallback(
