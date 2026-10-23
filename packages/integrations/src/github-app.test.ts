@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { listInstallationRepositories, mintScopedRepoToken, createGitHubRepository, listUserInstallations } from './github-app.js';
+import { listInstallationRepositories, mintScopedRepoToken, mintInstallationToken, createGitHubRepository, listUserInstallations } from './github-app.js';
 import { GitHubCrossOriginPaginationError } from './github.js';
 
 const { privateKey } = generateKeyPairSync('rsa', {
@@ -259,5 +259,16 @@ describe('user-token helpers', () => {
     ]);
     expect((await listUserInstallations('ut')).map((i) => i.id)).toEqual([1, 2]);
     expect(calls.map((c) => c.url)).toEqual(['https://api.github.com/user/installations?per_page=100', next]);
+  });
+
+  it("the server's own installation token never carries Administration", async () => {
+    const calls = stubOnce([
+      { status: 422, body: { message: 'permissions not granted' } },
+      { status: 201, body: { token: 'ghs_narrow', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-1')).toBe('ghs_narrow');
+    const asked = calls.map((c) => JSON.parse(String(c.init.body)).permissions);
+    expect(asked[0]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read' });
+    expect(asked[1]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' });
   });
 });

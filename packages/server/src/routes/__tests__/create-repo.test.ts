@@ -17,10 +17,13 @@ vi.mock('../../crypto.js', () => ({ encrypt: vi.fn() }));
 vi.mock('../../auth.js', () => ({ OAUTH_STATE_TYP: 'oauth-state', requireAdmin: vi.fn() }));
 vi.mock('../../lib/forge.js', () => ({ FORGE_PROVIDERS: ['github', 'gitea'] }));
 
+vi.hoisted(() => { process.env.GITHUB_REACHABLE_RETRY_MS = '0'; });
+
 const state = vi.hoisted(() => ({
   githubIdentity: { id: 'ident-1', githubLogin: 'Alice' } as { id: string; githubLogin: string } | null,
   giteaIdentity: { id: 'gt-1', githubLogin: 'alice' } as { id: string; githubLogin: string } | null,
   installations: [] as Array<{ id: number; account: { login: string; type: string; id: number } }>,
+  installationsFail: null as null | number,
   reachable: [] as string[],
   createGitHub: vi.fn(),
   createGitea: vi.fn(),
@@ -44,7 +47,10 @@ vi.mock('@mindblown/integrations', async () => {
   return {
     ...actual,
     isGitHubAppConfigured: () => true,
-    listUserInstallations: async () => state.installations,
+    listUserInstallations: async () => {
+      if (state.installationsFail) throw Object.assign(new Error('GitHub'), { status: state.installationsFail });
+      return state.installations;
+    },
     createGitHubRepository: (...a: unknown[]) => state.createGitHub(...a),
     createGiteaUserRepo: (...a: unknown[]) => state.createGitea(...a),
   };
@@ -59,7 +65,7 @@ const OTHER_USER = { id: 333, account: { login: 'bob', type: 'User', id: 3 } };
 const ghRepo = (owner: string, name: string) => ({
   full_name: `${owner}/${name}`, name, owner: { login: owner }, private: true, html_url: `https://github.com/${owner}/${name}`,
 });
-const apiError = (status: number) => Object.assign(new Error(`API ${status}`), { status });
+const apiError = (status: number, body = '') => Object.assign(new Error(`API ${status}`), { status, body });
 
 async function post(url: string, payload: Record<string, unknown>) {
   const app = Fastify();
@@ -77,6 +83,7 @@ beforeEach(() => {
   state.giteaIdentity = { id: 'gt-1', githubLogin: 'alice' };
   state.installations = [OWN, ORG, OTHER_USER];
   state.reachable = [];
+  state.installationsFail = null;
   state.createGitHub.mockReset();
   state.createGitea.mockReset();
   vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -123,8 +130,34 @@ describe('POST /api/integrations/github/repositories', () => {
     expect(state.createGitHub).not.toHaveBeenCalled();
   });
 
-  it("maps GitHub's answers: 422 → name taken, 403 → App permission, other → 502", async () => {
-    state.createGitHub.mockRejectedValueOnce(apiError(422));
+  it('ignores a non-boolean private and a non-string description', async () => {
+    state.createGitHub.mockResolvedValue(ghRepo('alice', 'x'));
+    await createGitHub({ installationId: '111', name: 'x', private: 'false', description: 42 });
+    expect(state.createGitHub).toHaveBeenCalledWith('user-token', { name: 'x', private: true, description: undefined });
+  });
+
+  it('answers 502 / reconnect when GitHub fails to list the installations', async () => {
+    state.installationsFail = 500;
+    expect((await createGitHub({ installationId: '111', name: 'x' })).statusCode).toBe(502);
+    state.installationsFail = 401;
+    expect((await createGitHub({ installationId: '111', name: 'x' })).json().error.code).toBe('GITHUB_NOT_CONNECTED');
+  });
+
+  it('passes a 422 that is not about the name through with GitHub\'s words', async () => {
+    state.createGitHub.mockRejectedValueOnce(apiError(422, JSON.stringify({
+      message: 'Repository creation failed.',
+      errors: [{ message: 'Visibility can\'t be private. Please upgrade your plan.' }],
+    })));
+    const res = await createGitHub({ installationId: '222', name: 'x' });
+    expect(res.statusCode).toBe(422);
+    expect(res.json().error.message).toMatch(/Visibility can't be private/);
+  });
+
+  it("maps GitHub's answers: 422 name taken → 409, 403 → App permission, other → 502", async () => {
+    state.createGitHub.mockRejectedValueOnce(apiError(422, JSON.stringify({
+      message: 'Repository creation failed.',
+      errors: [{ resource: 'Repository', field: 'name', message: 'name already exists on this account' }],
+    })));
     const taken = await createGitHub({ installationId: '111', name: 'dup' });
     expect(taken.statusCode).toBe(409);
     expect(taken.json().error.message).toBe('alice/dup already exists');

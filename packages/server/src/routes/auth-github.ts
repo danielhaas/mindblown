@@ -70,6 +70,19 @@ async function upsertInstallation(
 
 /** GitHub's repository-name alphabet. */
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
+/** Pause between looks for a just-created repo in the installation (tests set 0). */
+const REACHABLE_RETRY_MS = Number(process.env.GITHUB_REACHABLE_RETRY_MS ?? 1000);
+
+/** The readable part of a GitHub error body: its message plus each error's message. */
+function githubErrorDetail(body: string | undefined): string {
+  try {
+    const parsed = JSON.parse(body ?? '') as { message?: string; errors?: Array<{ message?: string } | string> };
+    const parts = (parsed.errors ?? []).map((e) => (typeof e === 'string' ? e : e.message)).filter(Boolean);
+    return [parsed.message, ...parts].filter(Boolean).join(': ');
+  } catch {
+    return '';
+  }
+}
 
 function verifyState(token: string): StatePayload {
   const payload = jwt.verify(token, JWT_SECRET) as StatePayload;
@@ -333,9 +346,12 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     if (!userId) {
       return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
     }
-    const body = (req.body ?? {}) as { installationId?: string; name?: string; private?: boolean; description?: string };
-    const name = (body.name ?? '').trim();
-    if (!body.installationId || !REPO_NAME.test(name)) {
+    const body = (req.body ?? {}) as { installationId?: unknown; name?: unknown; private?: unknown; description?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const installationId = typeof body.installationId === 'string' ? body.installationId : '';
+    const isPrivate = typeof body.private === 'boolean' ? body.private : true;
+    const description = typeof body.description === 'string' ? body.description.slice(0, 350) : undefined;
+    if (!installationId || !REPO_NAME.test(name)) {
       return reply.status(400).send({
         error: { code: 'VALIDATION_ERROR', message: 'installationId and a repository name (letters, digits, ".", "-", "_") are required' },
       });
@@ -346,7 +362,17 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(403).send({ error: { code: 'GITHUB_NOT_CONNECTED', message: 'Connect your GitHub account first' } });
     }
 
-    const inst = (await listUserInstallations(token)).find((i) => String(i.id) === body.installationId);
+    let installations;
+    try {
+      installations = await listUserInstallations(token);
+    } catch (err) {
+      if ((err as { status?: number }).status === 401) {
+        return reply.status(403).send({ error: { code: 'GITHUB_NOT_CONNECTED', message: 'Your GitHub sign-in expired — connect GitHub again' } });
+      }
+      console.error('[github] Listing installations failed:', err);
+      return reply.status(502).send({ error: { code: 'GITHUB_ERROR', message: 'GitHub did not answer; try again' } });
+    }
+    const inst = installations.find((i) => String(i.id) === installationId);
     if (!inst) {
       return reply.status(403).send({ error: { code: 'FORBIDDEN', message: 'That GitHub App installation is not connected to your account' } });
     }
@@ -359,14 +385,19 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     try {
       repo = await createGitHubRepository(token, {
         name,
-        private: body.private ?? true,
-        description: body.description,
+        private: isPrivate,
+        description,
         ...(isOrg ? { org: inst.account.login } : {}),
       });
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status === 422) {
-        return reply.status(409).send({ error: { code: 'REPO_EXISTS', message: `${inst.account.login}/${name} already exists` } });
+        // 422 is "name taken" — or an org policy, e.g. no private repos.
+        const detail = githubErrorDetail((err as { body?: string }).body);
+        if (/already exists/i.test(detail)) {
+          return reply.status(409).send({ error: { code: 'REPO_EXISTS', message: `${inst.account.login}/${name} already exists` } });
+        }
+        return reply.status(422).send({ error: { code: 'GITHUB_REFUSED', message: `GitHub refused: ${detail || 'the repository settings were not accepted'}` } });
       }
       if (status === 403 || status === 404) {
         return reply.status(403).send({
@@ -384,8 +415,13 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
 
     // An installation limited to selected repositories may not see the
     // new one; then the user adds it there before it can be connected.
-    const access = await userInstallationRepos(userId, body.installationId);
-    const reachable = !('status' in access) && access.repos.some((r) => r.full_name === repo.full_name);
+    // A new repo can take a moment to show up in the installation's list.
+    let reachable = false;
+    for (let attempt = 0; attempt < 3 && !reachable; attempt++) {
+      if (attempt > 0) await new Promise((r) => setTimeout(r, REACHABLE_RETRY_MS));
+      const access = await userInstallationRepos(userId, installationId);
+      reachable = !('status' in access) && access.repos.some((r) => r.full_name === repo.full_name);
+    }
     const addAccessUrl = isOrg
       ? `https://github.com/organizations/${inst.account.login}/settings/installations/${inst.id}`
       : `https://github.com/settings/installations/${inst.id}`;
@@ -395,7 +431,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       name: repo.name,
       private: repo.private,
       htmlUrl: repo.html_url,
-      installationId: body.installationId,
+      installationId,
       reachable,
       ...(reachable ? {} : { addAccessUrl }),
     });

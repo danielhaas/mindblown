@@ -159,17 +159,22 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   const appJwt = await mintAppJwt();
 
-  const res = await fetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
-    {
+  const mint = (permissions: Record<string, string>) =>
+    fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${appJwt}`,
         'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
       },
-    },
-  );
+      body: JSON.stringify({ permissions }),
+    });
+  // Narrowed to what sync and import use: never the App's Administration
+  // right, which is there only for users creating repos with their own
+  // token. An App without the CI reads (GitHub answers 422) gets the rest.
+  let res = await mint({ ...SERVER_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  if (res.status === 422) res = await mint(SERVER_TOKEN_PERMISSIONS);
 
   if (!res.ok) {
     const body = await res.text();
@@ -195,6 +200,9 @@ export async function mintInstallationToken(installationId: string): Promise<str
   _tokenCache.set(installationId, installationToken);
   return installationToken.token;
 }
+
+/** What the server's own installation token does: issues, PRs, contents (docs, labels). */
+const SERVER_TOKEN_PERMISSIONS = { contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' } as const;
 
 /** What a fleet worker does with the repo: push a branch, open and merge the PR. */
 const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;

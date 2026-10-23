@@ -249,8 +249,8 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
   app.post('/api/integrations/gitea/repositories', async (req, reply) => {
     const userId = (req as { userId?: string }).userId;
     if (!userId) return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
-    const body = (req.body ?? {}) as { name?: string; private?: boolean; description?: string };
-    const name = (body.name ?? '').trim();
+    const body = (req.body ?? {}) as { name?: unknown; private?: unknown; description?: unknown };
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
     if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'A repository name (letters, digits, ".", "-", "_") is required' } });
     }
@@ -262,8 +262,8 @@ export async function giteaAuthRoutes(app: FastifyInstance): Promise<void> {
       const token = await giteaAccessTokenFor(identity);
       const repo = await createGiteaUserRepo(giteaUserForge(oauth.instanceUrl, token), {
         name,
-        private: body.private ?? true,
-        description: body.description,
+        private: typeof body.private === 'boolean' ? body.private : true,
+        description: typeof body.description === 'string' ? body.description.slice(0, 350) : undefined,
       });
       return reply.status(201).send({ fullName: repo.full_name, owner: repo.owner.login, name: repo.name, private: repo.private, htmlUrl: repo.html_url });
     } catch (err) {

@@ -3045,6 +3045,12 @@ server.tool(
 
 // ── Forge integration tools (GitHub or Gitea) ─────────────────
 
+/** The repo exists now — say so, or the agent retries and hits "already exists". */
+function createdNotConnected(fullName: string, url: string, err: unknown) {
+  const why = err instanceof Error ? err.message : String(err);
+  return toolResult(`Created ${fullName} (${url}) but could NOT connect it to the map: ${why}. Do not create it again; connect the existing repo once the cause is fixed.`);
+}
+
 server.tool(
   'create_forge_repo',
   'Create a NEW repository for a project and connect it to the map, using the caller\'s own GitHub or Gitea sign-in (no token needed). GitHub: created in the caller\'s account or one of their organizations that has the MindBlown GitHub App installed; seeded with a README so it has a main branch. Use connect_forge_repo instead for an existing repo. Needs map admin. New issues on the repo then come into the map by themselves.',
@@ -3059,13 +3065,21 @@ server.tool(
   async ({ mapId, name, owner, kind, private: isPrivate, description }) => {
     try {
       const priv = isPrivate ?? true;
+      // Connecting needs map admin; check before anything is created on the forge.
+      if (!(await api.isMapAdmin(mapId))) {
+        return toolResult(`Not created: connecting a repository needs admin permission on map ${mapId}.`);
+      }
       const gh = await api.getGitHubInstallStatus().catch(() => null);
       const forge = kind ?? (gh?.connected && gh.installations.length > 0 ? 'github' : 'gitea');
       if (forge === 'gitea') {
         const { map } = await api.getMap(mapId);
         const repo = await api.createGiteaRepository({ name, private: priv, description });
-        await api.bindGiteaRepo(map.workspaceId, repo.owner, repo.name, mapId);
-        await api.updateMap(mapId, { autoImportNewIssues: true });
+        try {
+          await api.bindGiteaRepo(map.workspaceId, repo.owner, repo.name, mapId);
+          await api.updateMap(mapId, { autoImportNewIssues: true });
+        } catch (err) {
+          return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+        }
         return toolResult(`Created Gitea repo ${repo.fullName} (${repo.htmlUrl}) and connected it to map ${mapId}.`);
       }
       if (!gh?.connected || !gh.identity) {
@@ -3084,12 +3098,16 @@ server.tool(
             `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step).`,
         );
       }
-      await api.updateMap(mapId, {
-        githubInstallationId: inst.installationId,
-        githubRepoOwner: repo.owner,
-        githubRepoName: repo.name,
-        autoImportNewIssues: true,
-      });
+      try {
+        await api.updateMap(mapId, {
+          githubInstallationId: inst.installationId,
+          githubRepoOwner: repo.owner,
+          githubRepoName: repo.name,
+          autoImportNewIssues: true,
+        });
+      } catch (err) {
+        return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+      }
       return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.`);
     } catch (err) {
       return toolError(err);

@@ -257,8 +257,8 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const [newName, setNewName] = useState(() => repoSlug(map.name));
   const [newOwner, setNewOwner] = useState('');
   const [newPrivate, setNewPrivate] = useState(true);
-  /** A created repo the App can't see yet (installation limited to selected repos). */
-  const [needsAccess, setNeedsAccess] = useState<{ url: string; choice: RepoChoice } | null>(null);
+  /** The repo this form created; Connect retries with it (and `addAccessUrl` says the App can't see it yet). */
+  const [created, setCreated] = useState<{ choice: RepoChoice; addAccessUrl?: string } | null>(null);
 
   const bound = map.forgeKind && !map.forgeProblem;
   const boundName = map.githubRepoOwner && map.githubRepoName ? `${map.githubRepoOwner}/${map.githubRepoName}` : null;
@@ -317,7 +317,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
           githubRepoName: name,
           autoImportNewIssues: true,
         });
-        if (!ok) throw new Error('Connecting the repository failed.');
+        if (!ok) throw new Error(useMindmapStore.getState().error ?? 'Connecting the repository failed.');
       } else {
         await api.bindGiteaRepo(map.workspaceId, owner, name, undefined, map.id);
         await updateMapSettings({ autoImportNewIssues: true });
@@ -335,7 +335,6 @@ function RepoStep({ onNext }: { onNext: () => void }) {
 
   const createRepo = async (owner: string) => {
     setError(null);
-    setNeedsAccess(null);
     setBusy('Creating the repository…');
     const description = stripTags(map.description ?? '').trim().slice(0, 350) || undefined;
     try {
@@ -343,12 +342,13 @@ function RepoStep({ onNext }: { onNext: () => void }) {
       if (owner === 'gitea') {
         const r = await api.createGiteaRepository({ name: newName.trim(), private: newPrivate, description });
         choice = { kind: 'gitea', fullName: r.fullName };
+        setCreated({ choice });
       } else {
         const installationId = owner.slice('github:'.length);
         const r = await api.createGitHubRepository({ installationId, name: newName.trim(), private: newPrivate, description });
         choice = { kind: 'github', fullName: r.fullName, installationId };
+        setCreated({ choice, ...(r.reachable ? {} : { addAccessUrl: r.addAccessUrl }) });
         if (!r.reachable) {
-          setNeedsAccess({ url: r.addAccessUrl ?? '', choice });
           setBusy(null);
           return;
         }
@@ -434,32 +434,35 @@ function RepoStep({ onNext }: { onNext: () => void }) {
           <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
             <div style={{ flex: '0 0 40%' }}>
               <label style={label}>Owner</label>
-              <select data-testid="setup-repo-new-owner" value={owner} onChange={(e) => setNewOwner(e.target.value)} disabled={!!busy} style={input}>
+              <select data-testid="setup-repo-new-owner" value={owner} onChange={(e) => setNewOwner(e.target.value)} disabled={!!busy || !!created} style={input}>
                 {owners.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </div>
             <div style={{ flex: 1 }}>
               <label style={label}>Name</label>
-              <input data-testid="setup-repo-new-name" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={!!busy} style={input} />
+              <input data-testid="setup-repo-new-name" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={!!busy || !!created} style={input} />
             </div>
           </div>
           <label style={{ ...hint, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
-            <input type="checkbox" data-testid="setup-repo-new-private" checked={newPrivate} onChange={(e) => setNewPrivate(e.target.checked)} disabled={!!busy} />
+            <input type="checkbox" data-testid="setup-repo-new-private" checked={newPrivate} onChange={(e) => setNewPrivate(e.target.checked)} disabled={!!busy || !!created} />
             Private
           </label>
           <div style={{ ...hint, marginBottom: 8 }}>
             Starts with a README so agents have a main branch to work from. The project description becomes the repository description.
           </div>
-          {needsAccess && (
-            <div style={{ ...hint, marginBottom: 8 }} data-testid="setup-repo-needs-access">
-              Created <strong>{needsAccess.choice.fullName}</strong>, but the GitHub App only sees selected repositories.{' '}
-              <a href={needsAccess.url} target="_blank" rel="noreferrer">Add it to the App</a>, then press Connect.
+          {created && (
+            <div style={{ ...hint, marginBottom: 8 }} data-testid="setup-repo-created">
+              Created <strong>{created.choice.fullName}</strong>.
+              {created.addAccessUrl && (
+                <> The GitHub App only sees selected repositories:{' '}
+                  <a href={created.addAccessUrl} target="_blank" rel="noreferrer">add it to the App</a>, then press Connect.</>
+              )}
             </div>
           )}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={() => { setCreating(false); setNeedsAccess(null); }} disabled={!!busy} style={secondary}>Cancel</button>
-            {needsAccess ? (
-              <button type="button" onClick={() => connectChoice(needsAccess.choice)} disabled={!!busy} style={primary(!busy)}>Connect</button>
+            <button type="button" onClick={() => { setCreating(false); setCreated(null); }} disabled={!!busy} style={secondary}>Cancel</button>
+            {created ? (
+              <button type="button" data-testid="setup-repo-created-connect" onClick={() => connectChoice(created.choice)} disabled={!!busy} style={primary(!busy)}>Connect</button>
             ) : (
               <button
                 type="button"

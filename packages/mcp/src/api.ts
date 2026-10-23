@@ -752,6 +752,17 @@ export function createGiteaRepository(input: { name: string; private: boolean; d
   return request('/api/integrations/gitea/repositories', { method: 'POST', body: JSON.stringify(input) });
 }
 
+/** Is the caller admin on the map? The permissions list is admin-only, so its answer says. */
+export async function isMapAdmin(mapId: string): Promise<boolean> {
+  try {
+    await request(`/api/maps/${mapId}/permissions`);
+    return true;
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 403) return false;
+    throw err;
+  }
+}
+
 export function bindGiteaRepo(workspaceId: string, owner: string, repo: string, mapId: string): Promise<{ id: string; repo: string }> {
   return request('/api/integrations/gitea/bind', { method: 'POST', body: JSON.stringify({ workspaceId, owner, repo, mapId }) });
 }
