@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { MindMap, Node, StatusDef } from '@mindblown/core';
 import * as api from '../api.js';
 import type { NodeWithComputed } from '../api.js';
+import { useMindmapStore } from '../store.js';
+import { useTicketPhasesFor } from '../useTicketPhases.js';
+import { promptStop } from '../StopTicketButton.js';
 
 interface Props {
   node: NodeWithComputed;
@@ -60,6 +63,9 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
   const pct = draftPct ?? Math.round(isLeaf ? node.percentComplete ?? 0 : node.computedProgress ?? 0);
 
   const [blockerDraft, setBlockerDraft] = useState<string | null>(null);
+  // A fleet agent working this ticket can be stopped from here (#549): Stop is a blocker.
+  const agentRunning = useTicketPhasesFor(map.id, map.fleetId ?? null).get(node.id)?.agentRunning ?? false;
+  const user = useMindmapStore((s) => s.user);
   const blockerInputRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (blockerDraft !== null) blockerInputRef.current?.focus();
@@ -211,7 +217,14 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
             <div className="mb-detail-label">Blocked</div>
             {node.blockedReason ? (
               <div className="mb-blocker-box">
-                <div style={{ color: '#b91c1c', flex: 1 }}>{node.blockedReason}</div>
+                <div style={{ color: '#b91c1c', flex: 1 }}>
+                  {node.blockedReason}
+                  {agentRunning && (
+                    <div data-testid="mobile-stop-pending" style={{ fontSize: 12, fontWeight: 600, marginTop: 4 }}>
+                      Stopping the fleet agent…
+                    </div>
+                  )}
+                </div>
                 <button
                   className="mb-link"
                   disabled={saving}
@@ -246,9 +259,25 @@ export function MobileNodeDetailSheet({ node, map, byId, onClose, onChanged }: P
                 </div>
               </div>
             ) : (
-              <button className="mb-btn-soft" onClick={() => setBlockerDraft('')}>
-                Flag a blocker
-              </button>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {agentRunning && (
+                  <button
+                    className="mb-btn-soft"
+                    data-testid="mobile-stop-ticket"
+                    disabled={saving}
+                    style={{ color: '#b91c1c' }}
+                    onClick={() => {
+                      const blocker = promptStop(user);
+                      if (blocker !== null) void save({ blockedReason: blocker });
+                    }}
+                  >
+                    Stop the fleet agent
+                  </button>
+                )}
+                <button className="mb-btn-soft" onClick={() => setBlockerDraft('')}>
+                  Flag a blocker
+                </button>
+              </div>
             )}
           </div>
 

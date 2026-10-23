@@ -5,6 +5,7 @@ import type { Node, NodeId, StatusDef, HealthSignal, Priority, BlockedBy } from 
 import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { useTicketPhases, type CardPhase } from './useTicketPhases.js';
+import { StopTicketButton } from './StopTicketButton.js';
 import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
@@ -330,6 +331,7 @@ function Card({
             {phase.text}
           </span>
         )}
+        <StopTicketButton nodeId={node.id} phase={phase} />
 
         {/* Started */}
         {started && (

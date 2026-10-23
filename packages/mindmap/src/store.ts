@@ -255,6 +255,14 @@ export interface MindmapState {
    */
   unblockNode: (id: string) => Promise<boolean>;
   /**
+   * Stop a ticket a fleet worker is running (#549): writes `blockedReason`,
+   * which the worker sees within a minute and stops its agent on
+   * (claude-fleet#92). No revision check — the worker writes progress and
+   * ETA to the same node meanwhile, and a 409 would drop the Stop.
+   * Resolves false on failure (error is set).
+   */
+  stopFleetTicket: (id: string, blockedReason: string) => Promise<boolean>;
+  /**
    * Replace a node with what the server just returned, without writing
    * back. For sub-resource endpoints (attachments, dependencies) that have
    * already persisted the change and answered with the whole node —
@@ -1216,6 +1224,26 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       return true;
     } catch (e: any) {
       set({ error: e?.message ?? 'Failed to release the ticket' });
+      return false;
+    }
+  },
+
+  stopFleetTicket: async (id, blockedReason) => {
+    const state = get();
+    const mapId = state.currentMapId;
+    if (!mapId || !state.nodes[id]) {
+      set({ error: 'That ticket is no longer on this map.' });
+      return false;
+    }
+    try {
+      const node = await api.updateNode(mapId, id, { blockedReason });
+      const current = get();
+      if (current.currentMapId !== mapId || !current.nodes[id]) return true;
+      const nodes = { ...current.nodes, [id]: node };
+      set({ nodes, computed: recomputeValues(nodes) });
+      return true;
+    } catch (e: any) {
+      set({ error: e?.message ?? 'Failed to stop the ticket' });
       return false;
     }
   },

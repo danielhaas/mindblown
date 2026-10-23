@@ -9,6 +9,8 @@ import { MediaUploadButton } from './MediaUploadButton.js';
 import * as api from './api.js';
 import type { EstimateResult } from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
+import { useTicketPhases } from './useTicketPhases.js';
+import { StopTicketButton } from './StopTicketButton.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -258,6 +260,8 @@ function PropertyPanelInner({
   // the three manual markers — the fleet's park path writes all of them.
   const unblockNode = useMindmapStore((s) => s.unblockNode);
   const [unblocking, setUnblocking] = useState(false);
+  // A fleet agent working this ticket gets a Stop beside the blocker field (#549).
+  const ticketPhases = useTicketPhases();
   const isManuallyBlocked =
     (node.blockedReason ?? '').trim() !== '' ||
     node.tags.includes(BLOCKED_TAG) ||
@@ -468,6 +472,7 @@ function PropertyPanelInner({
               style={{ ...inputStyle, flex: 1, minWidth: 0, resize: 'vertical', fontFamily: 'inherit', lineHeight: 1.4 }}
               placeholder="Why is this blocked? (leave empty if not blocked)"
             />
+            <StopTicketButton nodeId={nodeId} phase={ticketPhases.get(nodeId)} style={{ alignSelf: 'center' }} />
             {isManuallyBlocked && (
               <button
                 type="button"

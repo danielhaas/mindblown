@@ -25,6 +25,7 @@ import { Link } from './DigestView.js';
 import { formatAge } from './dispatch.js';
 import { projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
 import type { FleetScope } from './fleetScope.js';
+import { StopTicketButton } from './StopTicketButton.js';
 
 const CLOCK_MS = 30_000;
 const POLL_MS = 60_000;
@@ -223,7 +224,7 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
       {open && (
         <ul style={{ margin: '2px 0 4px 14px', paddingLeft: 12, fontSize: 12, lineHeight: 1.7 }}>
           {h.workers.map((w) => (
-            <WorkerRow key={w.session} w={w} now={now} nodes={nodes} selectNode={selectNode} scope={scope} />
+            <WorkerRow key={w.session} w={w} now={now} nodes={nodes} selectNode={selectNode} scope={scope} hostStale={h.freshness.stale} />
           ))}
         </ul>
       )}
@@ -231,12 +232,14 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
   );
 }
 
-function WorkerRow({ w, now, nodes, selectNode, scope }: {
+function WorkerRow({ w, now, nodes, selectNode, scope, hostStale }: {
   w: FleetWorkerStatus;
   now: Date;
   nodes: NodeIndex;
   selectNode: (id: string) => void;
   scope: FleetScope | null;
+  /** A stale host's rows are its last word, not what runs now: no Stop on them. */
+  hostStale: boolean;
 }) {
   const state = effectiveWorkerState(w, now);
   const style = STATE_STYLE[state] ?? { bg: '#f1f5f9', color: '#475569' };
@@ -259,6 +262,10 @@ function WorkerRow({ w, now, nodes, selectNode, scope }: {
           {' '}— {project && <span style={projectTag}>{project}</span>}
           {claimId && local && nodes[claimId] ? <Link onClick={() => selectNode(claimId)}>{claimTitle}</Link> : claimTitle}
         </span>
+      )}
+      {/* A worker "working" holds a claim whose agent runs (starting, working, fixing) — Stop it (#549). Only this map's tickets. */}
+      {claimId && local && nodes[claimId] && (
+        <StopTicketButton nodeId={claimId} phase={{ agentRunning: state === 'working' && !hostStale }} style={{ marginLeft: 6 }} />
       )}
       {state === 'limit-parked' && w.limit_reset_at && <span style={{ color: '#9a3412' }}> · reset {localHHMM(w.limit_reset_at)}</span>}
       {state === 'prompt' && w.prompt_question && <span style={{ color: '#1e40af' }}> · asks: {w.prompt_question}</span>}

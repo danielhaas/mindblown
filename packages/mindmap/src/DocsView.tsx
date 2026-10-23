@@ -26,6 +26,7 @@ import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import { baseName, defaultDoc, filterDocs, groupDocs, headingSlug, resolveRepoLink, siblingWebUrl } from './docs.js';
 import { formatSize } from './AttachmentsSection.js';
+import { useCanEditMap } from './useCanEditMap.js';
 
 // ── Palette (same slate + indigo every view carries) ────────────────
 
@@ -89,11 +90,8 @@ function writeDraft(mapId: string, edit: EditState | null) {
 
 export function DocsView() {
   const mapId = useMindmapStore((s) => s.currentMapId);
-  const map = useMindmapStore((s) => s.currentMap);
-  const user = useMindmapStore((s) => s.user);
-  const members = useMindmapStore((s) => s.members);
-  const membersMapId = useMindmapStore((s) => s.membersMapId);
-  const loadMembers = useMindmapStore((s) => s.loadMembers);
+  // The server decides in the end (the propose route needs edit).
+  const canEdit = useCanEditMap();
   const [edit, setEdit] = useState<EditState | null>(null);
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<{ code?: string; message: string } | null>(null);
@@ -157,15 +155,6 @@ export function DocsView() {
     else setSelected(path);
   };
 
-  // Same rule as the server's getPermission: the creator is admin without a
-  // permission row. The server decides in the end (the propose route needs edit).
-  const canEdit =
-    !!map &&
-    ((user !== null && map.createdBy === user.id) ||
-      (membersMapId === map.id && members.some((m) => m.userId === user?.id && (m.permission === 'edit' || m.permission === 'admin'))));
-  useEffect(() => {
-    if (mapId && membersMapId !== mapId) void loadMembers();
-  }, [mapId, membersMapId, loadMembers]);
 
   // A closed tab or a reload loses even the stored draft's context — ask.
   useEffect(() => {
