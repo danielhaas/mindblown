@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { BraindumpNode } from './api.js';
@@ -9,6 +9,8 @@ interface Props {
   parentText: string;
   /** Prose to start from (the setup wizard passes the project description). */
   initialProse?: string;
+  /** Ask the model's questions about `initialProse` first; the answers go into the draft. */
+  askFirst?: boolean;
   onClose: () => void;
 }
 
@@ -51,8 +53,15 @@ function countNodes(tree: BraindumpNode[]): number {
   return tree.reduce((acc, n) => acc + 1 + countNodes(n.children), 0);
 }
 
-export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, onClose }: Props) {
+export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, askFirst, onClose }: Props) {
   const [prose, setProse] = useState(initialProse ?? '');
+  const asking = !!askFirst && !!initialProse?.trim();
+  /** null while the questions load; [] when there are none (or they failed). */
+  const [questions, setQuestions] = useState<string[] | null>(asking ? null : []);
+  const [answers, setAnswers] = useState<string[]>([]);
+  /** Still on the questions screen. */
+  const [questioning, setQuestioning] = useState(asking);
+  const [questionNote, setQuestionNote] = useState<string | null>(null);
   const [tree, setTree] = useState<BraindumpNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -61,20 +70,49 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, on
 
   const loadMap = useMindmapStore((s) => s.loadMap);
 
-  const generate = useCallback(async () => {
+  useEffect(() => {
+    if (!asking) return;
+    let alive = true;
+    api
+      .aiBraindumpQuestions(mapId, initialProse!)
+      .then((r) => {
+        if (!alive) return;
+        setQuestions(r.questions);
+        setAnswers(r.questions.map(() => ''));
+        if (r.questions.length === 0) {
+          setQuestioning(false);
+          setQuestionNote('No questions — the description covers what the plan needs.');
+        }
+      })
+      .catch(() => {
+        if (!alive) return;
+        setQuestions([]);
+        setQuestioning(false);
+        setQuestionNote('Could not get questions; the draft uses the description alone.');
+      });
+    return () => {
+      alive = false;
+    };
+  }, [asking, mapId, initialProse]);
+
+  const generate = useCallback(async (withAnswers = true) => {
     if (!prose.trim()) return;
     setLoading(true);
     setError(null);
     try {
-      const res = await api.aiBraindump(mapId, parentId, prose);
+      const answered = withAnswers
+        ? (questions ?? []).map((question, i) => ({ question, answer: answers[i] ?? '' })).filter((a) => a.answer.trim())
+        : [];
+      const res = await api.aiBraindump(mapId, parentId, prose, undefined, answered.length ? answered : undefined);
       setTree(res.tree);
       setGenerated(true);
+      setQuestioning(false);
     } catch (err: any) {
       setError(err.message || 'Failed to generate tree');
     } finally {
       setLoading(false);
     }
-  }, [mapId, parentId, prose]);
+  }, [mapId, parentId, prose, questions, answers]);
 
   const accept = useCallback(async () => {
     if (tree.length === 0) return;
@@ -125,8 +163,33 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, on
         </div>
 
         <div style={bodyStyle}>
-          {!generated ? (
+          {questioning ? (
+            questions === null ? (
+              <div style={{ fontSize: 13, color: '#475569' }} data-testid="braindump-questions-loading">
+                Reading the description and thinking of questions…
+              </div>
+            ) : (
+              <div data-testid="braindump-questions">
+                <div style={{ marginBottom: 10, fontSize: 12, color: '#475569' }}>
+                  A few questions first — the answers shape the plan. Leave any blank to skip it.
+                </div>
+                {questions.map((q, i) => (
+                  <div key={i} style={{ marginBottom: 10 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: '#0f172a', marginBottom: 4 }}>{q}</div>
+                    <textarea
+                      data-testid={`braindump-answer-${i}`}
+                      value={answers[i] ?? ''}
+                      onChange={(e) => setAnswers((prev) => prev.map((a, j) => (j === i ? e.target.value : a)))}
+                      style={{ ...textareaStyle, minHeight: 56 }}
+                      autoFocus={i === 0}
+                    />
+                  </div>
+                ))}
+              </div>
+            )
+          ) : !generated ? (
             <>
+              {questionNote && <div style={{ marginBottom: 8, fontSize: 12, color: '#64748b' }}>{questionNote}</div>}
               <div style={{ marginBottom: 8, fontSize: 12, color: '#475569' }}>
                 Paste raw thoughts, a spec, a Slack thread — anything. The model
                 will convert it into a structured tree of tasks.
@@ -202,9 +265,28 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, on
           )}
           <div style={{ flex: 1 }} />
           <button onClick={onClose} style={secondaryBtnStyle}>Cancel</button>
-          {!generated ? (
+          {questioning ? (
+            <>
+              <button
+                data-testid="braindump-skip-questions"
+                onClick={() => generate(false)}
+                disabled={loading || questions === null}
+                style={secondaryBtnStyle}
+              >
+                Skip questions
+              </button>
+              <button
+                data-testid="braindump-draft"
+                onClick={() => generate(true)}
+                disabled={loading || questions === null}
+                style={primaryBtnStyle}
+              >
+                {loading ? 'Drafting…' : 'Draft the plan'}
+              </button>
+            </>
+          ) : !generated ? (
             <button
-              onClick={generate}
+              onClick={() => generate()}
               disabled={loading || !prose.trim()}
               style={primaryBtnStyle}
             >

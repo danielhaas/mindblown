@@ -527,7 +527,7 @@ function PlanStep({ onNext }: { onNext: () => void }) {
   const all = Object.values(nodes).filter((n) => n.parentId !== null);
   const topLevel = all.filter((n) => n.parentId === rootNodeId);
   const imported = all.filter((n) => (n.externalLinks ?? []).length > 0).length;
-  const description = stripTags(map.description ?? '');
+  const description = plainText(map.description ?? '');
 
   // One at a time: parallel creates race on the root's child order.
   const addLines = async () => {
@@ -593,6 +593,7 @@ function PlanStep({ onNext }: { onNext: () => void }) {
           parentId={rootNodeId}
           parentText={nodes[rootNodeId]?.text ?? map.name}
           initialProse={description}
+          askFirst
           onClose={() => setDrafting(false)}
         />
       )}

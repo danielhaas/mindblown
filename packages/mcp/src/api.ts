@@ -1243,10 +1243,18 @@ export function aiBraindump(
   parentId: string,
   prose: string,
   maxDepth?: number,
+  answers?: Array<{ question: string; answer: string }>,
 ): Promise<{ tree: BraindumpNode[] }> {
   return request<{ tree: BraindumpNode[] }>('/api/ai/braindump', {
     method: 'POST',
-    body: JSON.stringify({ mapId, parentId, prose, maxDepth }),
+    body: JSON.stringify({ mapId, parentId, prose, maxDepth, answers }),
+  });
+}
+
+export function aiPlanQuestions(mapId: string, prose: string): Promise<{ questions: string[] }> {
+  return request<{ questions: string[] }>('/api/ai/braindump/questions', {
+    method: 'POST',
+    body: JSON.stringify({ mapId, prose }),
   });
 }
 
