@@ -10,6 +10,7 @@ import { db } from './connection.js';
 import { apiKeys, fleets, mapPermissions, maps, nodes, users } from './schema.js';
 import { invalidateApiKeyCache } from '../lib/apiKeys.js';
 import { dbFleetToCore } from './helpers.js';
+import { holdsCapSlotSql } from './capSlot.js';
 
 /**
  * Claims held right now on every map of the fleet — what its cap is
@@ -20,7 +21,7 @@ export async function countActiveClaims(fleetId: string): Promise<number> {
     .select({ n: sql<number>`count(*)::int` })
     .from(nodes)
     .innerJoin(maps, eq(nodes.mapId, maps.id))
-    .where(and(eq(maps.fleetId, fleetId), isNull(nodes.deletedAt), isNotNull(nodes.claimedBySession)));
+    .where(and(eq(maps.fleetId, fleetId), isNull(nodes.deletedAt), holdsCapSlotSql()));
   return Number(row?.n ?? 0);
 }
 

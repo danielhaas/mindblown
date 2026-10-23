@@ -95,6 +95,27 @@ export const BLOCKED_TAG = 'blocked';
  */
 export const FLEET_FIX_TAG = 'fleet-fix';
 
+/**
+ * The note a fleet worker writes on a claim it keeps while its PR waits on
+ * a person (red CI, a conflict, no CI, a refused merge). Session ids have no
+ * spaces. Server SQL twin: db/fleets `holdsCapSlotSql`.
+ */
+export const WORKER_WAIT_NOTE = /^Fleet worker [^ ]+: /;
+
+/**
+ * A claim that uses up the map's / fleet's cap. The one exception: the
+ * worker's own wait note on its PR, with no fix asked for — the worker
+ * follows the PR but runs no agent, so the slot is free for the next
+ * ticket. Every other blocker still counts: a person's Stop lands while the
+ * agent runs, and a fix run (fleet-fix / fleet-check tag) is an agent.
+ */
+export function holdsCapSlot(node: Pick<Node, 'claimedBySession' | 'blockedReason' | 'tags'>): boolean {
+  if (node.claimedBySession === null) return false;
+  const waiting =
+    WORKER_WAIT_NOTE.test((node.blockedReason ?? '').trim()) && !node.tags.includes(FLEET_FIX_TAG) && !node.tags.includes(FLEET_CHECK_TAG);
+  return !waiting;
+}
+
 /** A blocker the fleet worker wrote about its own PR that an agent can work on: red CI, a merge conflict. */
 export function fleetCanFix(blockedReason: string | null | undefined): boolean {
   return /^Fleet worker \S+: (CI failed on PR #\d+|PR #\d+ has merge conflicts)/.test((blockedReason ?? '').trim());
@@ -422,7 +443,7 @@ export function dispatchQueueSnapshot(
   opts: { workflow: StatusDef[]; cap: number; gate: string[] },
 ): DispatchQueueSnapshot {
   const cap = Math.max(0, Math.floor(opts.cap));
-  const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
+  const activeClaims = nodes.filter(holdsCapSlot).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.
