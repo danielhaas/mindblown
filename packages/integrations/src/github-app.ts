@@ -159,17 +159,28 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   const appJwt = await mintAppJwt();
 
-  const res = await fetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`,
-    {
+  const mint = (permissions: Record<string, string>) =>
+    fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
       method: 'POST',
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${appJwt}`,
         'X-GitHub-Api-Version': '2022-11-28',
+        'Content-Type': 'application/json',
       },
-    },
-  );
+      body: JSON.stringify({ permissions }),
+    });
+  // Narrowed to what sync and import use: never the App's Administration
+  // right, which is there only for users creating repos with their own
+  // token. An App without the CI reads (GitHub answers 422) gets the rest.
+  let res = await mint({ ...SERVER_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  if (res.status === 422) res = await mint(SERVER_TOKEN_PERMISSIONS);
+  if (res.status === 422) {
+    // An installation that never accepted a later permission (contents,
+    // pull requests) still syncs issues rather than nothing.
+    console.warn(`[github-app] installation ${installationId}: contents/pull_requests not granted — token limited to issues`);
+    res = await mint(SERVER_TOKEN_MINIMUM);
+  }
 
   if (!res.ok) {
     const body = await res.text();
@@ -195,6 +206,11 @@ export async function mintInstallationToken(installationId: string): Promise<str
   _tokenCache.set(installationId, installationToken);
   return installationToken.token;
 }
+
+/** What the server's own installation token does: issues, PRs, contents (docs, labels). */
+const SERVER_TOKEN_PERMISSIONS = { contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' } as const;
+/** The floor: issue sync and import. */
+const SERVER_TOKEN_MINIMUM = { issues: 'write', metadata: 'read' } as const;
 
 /** What a fleet worker does with the repo: push a branch, open and merge the PR. */
 const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;
@@ -482,4 +498,28 @@ export async function listUserInstallationRepositories(accessToken: string, inst
     `${GITHUB_API_BASE}/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=100`,
     'repositories',
   );
+}
+
+/** What a new repository gets; the same shape serves GitHub and Gitea. */
+export interface NewRepositoryInput {
+  name: string;
+  private: boolean;
+  description?: string;
+}
+
+/**
+ * Create a repository with the user's own access token: in their account,
+ * or in `org` when given. Seeded with a README (`auto_init`) so it has a
+ * default branch for agents to branch from. An App user token needs the
+ * App's "Administration: write" permission (GitHub answers 403 without it).
+ */
+export async function createGitHubRepository(
+  accessToken: string,
+  input: NewRepositoryInput & { org?: string },
+): Promise<GitHubRepo> {
+  const path = input.org ? `/orgs/${encodeURIComponent(input.org)}/repos` : '/user/repos';
+  return new GitHubForge({ token: accessToken }).requestJson<GitHubRepo>(path, {
+    method: 'POST',
+    body: { name: input.name, private: input.private, description: input.description || undefined, auto_init: true },
+  });
 }

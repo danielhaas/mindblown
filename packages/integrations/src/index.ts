@@ -33,6 +33,7 @@ export {
   giteaUserForge,
   getGiteaUser,
   listGiteaUserRepos,
+  createGiteaUserRepo,
   GITHUB_API_BASE,
   GITHUB_WEB_BASE,
   GITHUB_ENDPOINT,
@@ -136,6 +137,7 @@ export {
   buildOAuthAuthorizeUrl,
   listUserInstallations,
   listUserInstallationRepositories,
+  createGitHubRepository,
 } from './github-app.js';
 
 export type {

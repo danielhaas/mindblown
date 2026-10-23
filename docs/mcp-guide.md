@@ -311,6 +311,7 @@ Files and links hung on nodes. `get_map` shows them on each node's line (`files:
 
 | Tool | Description | Parameters |
 |------|-------------|------------|
+| `create_forge_repo` | Create a new repo with the caller's own GitHub/Gitea sign-in (README-seeded, private by default) and connect it to the map | `mapId`, `name`, `owner?`, `kind?`, `private?`, `description?` |
 | `connect_forge_repo` | Connect a GitHub or Gitea repo to a workspace | `workspaceId`, `owner`, `repo`, `token`, `webhookSecret?`, `kind?`, `apiBaseUrl?`, `webBaseUrl?` |
 | `import_issues` | Import issues into a functional tree; auto-creates versions/milestones | `mapId`, `parentNodeId?`, `includeAll?`, `owner?`, `repo?` |
 | `link_issue` | Link a node to an existing issue | `mapId`, `nodeId`, `owner`, `repo`, `issueNumber` |

@@ -140,3 +140,14 @@ export async function listGiteaUserRepos(forge: GiteaForge, maxPages = 20): Prom
   });
   return out;
 }
+
+/** Create a repository in the signed-in user's account, seeded with a README. */
+export function createGiteaUserRepo(
+  forge: GiteaForge,
+  input: { name: string; private: boolean; description?: string },
+): Promise<GiteaRepo> {
+  return forge.requestJson<GiteaRepo>('/user/repos', {
+    method: 'POST',
+    body: { name: input.name, private: input.private, description: input.description || undefined, auto_init: true },
+  });
+}

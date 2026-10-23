@@ -3045,6 +3045,76 @@ server.tool(
 
 // ── Forge integration tools (GitHub or Gitea) ─────────────────
 
+/** The repo exists now — say so, or the agent retries and hits "already exists". */
+function createdNotConnected(fullName: string, url: string, err: unknown) {
+  const why = err instanceof Error ? err.message : String(err);
+  return toolResult(`Created ${fullName} (${url}) but could NOT connect it to the map: ${why}. Do not create it again; connect the existing repo once the cause is fixed.`);
+}
+
+server.tool(
+  'create_forge_repo',
+  'Create a NEW repository for a project and connect it to the map, using the caller\'s own GitHub or Gitea sign-in (no token needed). GitHub: created in the caller\'s account or one of their organizations that has the MindBlown GitHub App installed; seeded with a README so it has a main branch. Use connect_forge_repo instead for an existing repo. Needs map admin. New issues on the repo then come into the map by themselves.',
+  {
+    mapId: z.string().describe('The map that plans this repo'),
+    name: z.string().describe('Repository name (letters, digits, ".", "-", "_")'),
+    owner: z.string().optional().describe('GitHub account or organization login to create it in; default: the caller\'s own account. Ignored for Gitea (always the caller\'s account).'),
+    kind: z.enum(['github', 'gitea']).optional().describe('Forge; default "github" when the caller has GitHub connected, else "gitea"'),
+    private: z.boolean().optional().describe('Private repository; default true'),
+    description: z.string().optional().describe('Repository description; default: none'),
+  },
+  async ({ mapId, name, owner, kind, private: isPrivate, description }) => {
+    try {
+      const priv = isPrivate ?? true;
+      // Connecting needs map admin; check before anything is created on the forge.
+      if (!(await api.isMapAdmin(mapId))) {
+        return toolResult(`Not created: connecting a repository needs admin permission on map ${mapId}.`);
+      }
+      const gh = await api.getGitHubInstallStatus().catch(() => null);
+      const forge = kind ?? (gh?.connected && gh.installations.length > 0 ? 'github' : 'gitea');
+      if (forge === 'gitea') {
+        const { map } = await api.getMap(mapId);
+        const repo = await api.createGiteaRepository({ name, private: priv, description });
+        try {
+          await api.bindGiteaRepo(map.workspaceId, repo.owner, repo.name, mapId);
+          await api.updateMap(mapId, { autoImportNewIssues: true });
+        } catch (err) {
+          return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+        }
+        return toolResult(`Created Gitea repo ${repo.fullName} (${repo.htmlUrl}) and connected it to map ${mapId}.`);
+      }
+      if (!gh?.connected || !gh.identity) {
+        return toolResult('GitHub is not connected for this account. Connect GitHub in MindBlown (map settings or the new-project wizard) first.');
+      }
+      const target = (owner ?? gh.identity.githubLogin).toLowerCase();
+      const inst = gh.installations.find((i) => i.accountLogin.toLowerCase() === target);
+      if (!inst) {
+        const known = gh.installations.map((i) => i.accountLogin).join(', ') || 'none';
+        return toolResult(`The MindBlown GitHub App is not installed on ${owner ?? gh.identity.githubLogin}. Installed on: ${known}.`);
+      }
+      const repo = await api.createGitHubRepository({ installationId: inst.installationId, name, private: priv, description });
+      if (!repo.reachable) {
+        return toolResult(
+          `Created GitHub repo ${repo.fullName} (${repo.htmlUrl}), but the GitHub App only sees selected repositories, so it is NOT connected yet. ` +
+            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step).`,
+        );
+      }
+      try {
+        await api.updateMap(mapId, {
+          githubInstallationId: inst.installationId,
+          githubRepoOwner: repo.owner,
+          githubRepoName: repo.name,
+          autoImportNewIssues: true,
+        });
+      } catch (err) {
+        return createdNotConnected(repo.fullName, repo.htmlUrl, err);
+      }
+      return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.`);
+    } catch (err) {
+      return toolError(err);
+    }
+  },
+);
+
 toolWithAlias(
   'connect_forge_repo',
   'Connect a GitHub or Gitea/Forgejo repository to a workspace and bind it to a map. Required before importing issues. Stores the forge kind, base URL, owner, repo, and token for API access. Pass mapId: only maps bound to the repo sync with it (a map planning another repo, or none, stays untouched). A self-hosted forge (kind "gitea" or a custom apiBaseUrl) needs an admin web session — API-key auth gets 403 for that; github.com works with any authenticated caller.',

@@ -20,7 +20,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
-import { listInstallationRepositories, mintScopedRepoToken } from './github-app.js';
+import { listInstallationRepositories, mintScopedRepoToken, mintInstallationToken, createGitHubRepository, listUserInstallations } from './github-app.js';
 import { GitHubCrossOriginPaginationError } from './github.js';
 
 const { privateKey } = generateKeyPairSync('rsa', {
@@ -208,5 +208,78 @@ describe('mintScopedRepoToken (fleet worker, #507)', () => {
   it('an App without push rights fails clearly (422 on both)', async () => {
     stubMint(() => 422);
     await expect(mintScopedRepoToken('inst-1', 'navy-app')).rejects.toMatchObject({ status: 422 });
+  });
+});
+
+describe('user-token helpers', () => {
+  function stubOnce(responses: Array<{ status: number; body: unknown; link?: string }>) {
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init: RequestInit) => {
+        calls.push({ url: String(url), init });
+        const r = responses.shift()!;
+        return {
+          ok: r.status < 300,
+          status: r.status,
+          headers: new Headers(r.link ? { link: r.link } : {}),
+          json: async () => r.body,
+          text: async () => JSON.stringify(r.body),
+        };
+      }),
+    );
+    return calls;
+  }
+
+  it('createGitHubRepository posts to /user/repos, or /orgs/{org}/repos, with auto_init', async () => {
+    const calls = stubOnce([
+      { status: 201, body: { full_name: 'alice/a' } },
+      { status: 201, body: { full_name: 'acme/b' } },
+    ]);
+    await createGitHubRepository('ut', { name: 'a', private: true });
+    await createGitHubRepository('ut', { name: 'b', private: false, description: 'd', org: 'acme' });
+    expect(calls.map((c) => [c.url, c.init.method])).toEqual([
+      ['https://api.github.com/user/repos', 'POST'],
+      ['https://api.github.com/orgs/acme/repos', 'POST'],
+    ]);
+    expect(JSON.parse(String(calls[0].init.body))).toEqual({ name: 'a', private: true, auto_init: true });
+    expect(JSON.parse(String(calls[1].init.body))).toEqual({ name: 'b', private: false, description: 'd', auto_init: true });
+  });
+
+  it('createGitHubRepository surfaces the status (422 = name taken)', async () => {
+    stubOnce([{ status: 422, body: { message: 'name already exists' } }]);
+    await expect(createGitHubRepository('ut', { name: 'a', private: true })).rejects.toMatchObject({ status: 422 });
+  });
+
+  it('listUserInstallations follows the next link', async () => {
+    const next = 'https://api.github.com/user/installations?per_page=100&page=2';
+    const calls = stubOnce([
+      { status: 200, body: { total_count: 2, installations: [{ id: 1 }] }, link: `<${next}>; rel="next"` },
+      { status: 200, body: { total_count: 2, installations: [{ id: 2 }] } },
+    ]);
+    expect((await listUserInstallations('ut')).map((i) => i.id)).toEqual([1, 2]);
+    expect(calls.map((c) => c.url)).toEqual(['https://api.github.com/user/installations?per_page=100', next]);
+  });
+
+  it("the server's own installation token never carries Administration", async () => {
+    const calls = stubOnce([
+      { status: 422, body: { message: 'permissions not granted' } },
+      { status: 201, body: { token: 'ghs_narrow', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-1')).toBe('ghs_narrow');
+    const asked = calls.map((c) => JSON.parse(String(c.init.body)).permissions);
+    expect(asked[0]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read' });
+    expect(asked[1]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' });
+  });
+
+  it('falls back to an issues-only token for an installation without contents/PR rights', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = stubOnce([
+      { status: 422, body: {} },
+      { status: 422, body: {} },
+      { status: 201, body: { token: 'ghs_issues', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-2')).toBe('ghs_issues');
+    expect(JSON.parse(String(calls[2].init.body)).permissions).toEqual({ issues: 'write', metadata: 'read' });
   });
 });

@@ -402,7 +402,7 @@ export const listBaselinesTool = defineTool({
 /** What an agent calls to finish each setup step. */
 const SETUP_HOW: Record<SetupStepId, string> = {
   describe: 'update_map(description): what it is, who it is for, what done looks like.',
-  repo: 'connect_forge_repo (or connect_github_repo), then import_issues to bring in the open issues.',
+  repo: 'create_forge_repo (MCP) or the setup wizard for a new repo; for an existing one connect_forge_repo (or connect_github_repo), then import_issues to bring in the open issues.',
   plan: 'bulk_create_nodes or ai_braindump under the root, built from the description and the imported issues.',
   fleet: 'list_fleets, then update_map(fleetId, maxActiveClaims: 0) — connected but on hold until the start step. Skip it when people do the work.',
   start: 'update_map(maxActiveClaims: 1) once the person agrees the fleet may begin.',
