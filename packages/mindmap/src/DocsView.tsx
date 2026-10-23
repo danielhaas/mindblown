@@ -77,7 +77,13 @@ function writeDraft(mapId: string, edit: EditState | null) {
     if (edit) sessionStorage.setItem(draftKey(mapId), JSON.stringify(edit));
     else sessionStorage.removeItem(draftKey(mapId));
   } catch {
-    // Not persisted — the in-memory draft still works.
+    // Not persisted (quota) — and an older stored draft must not come back
+    // later as "your unsaved edit". The in-memory draft still works.
+    try {
+      sessionStorage.removeItem(draftKey(mapId));
+    } catch {
+      // Storage blocked altogether.
+    }
   }
 }
 
@@ -174,9 +180,22 @@ export function DocsView() {
 
   // Keep a changed draft across tab and map switches. Removal is explicit
   // (dropEdit) — a null `edit` also means "just mounted, not restored yet".
+  // Debounced: a large doc serialised on every keystroke would lag typing.
+  // An unmount within the window flushes, so a quick tab switch keeps it.
+  const latestDraft = useRef<{ edit: EditState | null; dirty: boolean }>({ edit, dirty });
+  latestDraft.current = { edit, dirty };
   useEffect(() => {
-    if (edit) writeDraft(edit.mapId, dirty ? edit : null);
+    if (!edit) return;
+    const t = setTimeout(() => writeDraft(edit.mapId, dirty ? edit : null), 400);
+    return () => clearTimeout(t);
   }, [edit, dirty]);
+  useEffect(
+    () => () => {
+      const { edit: last, dirty: lastDirty } = latestDraft.current;
+      if (last) writeDraft(last.mapId, lastDirty ? last : null);
+    },
+    [],
+  );
 
   const startEdit = () => {
     if (!doc || !mapId) return;
@@ -563,6 +582,8 @@ export function DocsView() {
                     <textarea
                       className="mb-docs-textarea"
                       value={edit.draft}
+                      // Text typed while the PR is being opened would be dropped with the draft on success.
+                      readOnly={saving}
                       onChange={(e) => setEdit({ ...edit, draft: e.target.value })}
                       onKeyDown={(e) => {
                         if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') void propose();
