@@ -158,8 +158,8 @@ export function stalledAskNodeId(askId: string): string | null {
 }
 
 /**
- * A "Decision: …" ticket is a person's call, so no agent will pick it up.
- * It asks as soon as it counts as stalled. A Sonarpipe decision sat at 75 %
+ * A "Decision: …" ticket is a person's call: left in progress with nobody
+ * on it, it asks as soon as it counts as stalled. A Sonarpipe decision sat at 75 %
  * for 8 h on 23.10.2026 and looked like a fleet job running that long.
  */
 export const DECISION_TITLE_RE = /^\s*(decision|entscheid)\s*:/i;

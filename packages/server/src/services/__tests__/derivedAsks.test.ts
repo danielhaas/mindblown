@@ -1,6 +1,7 @@
 /**
  * MindBlown's own rows on the Questions card (services/derivedAsks.ts):
- * stalled work after a day and a person's steps (skip-tagged tickets),
+ * stalled work after a day (a "Decision:" ticket after 2 h) and a
+ * person's steps (skip-tagged tickets),
  * derived on read, snoozed by Later / Delegate, answered through the lint
  * fixes and recorded so the answered fold shows the round.
  */
@@ -133,6 +134,11 @@ describe('a person\'s steps', () => {
   it('no step row for a node a collector\'s open question already names', async () => {
     state.stored = [{ ask: { id: 'fleet-phone', unblocks: { node_id: 'phone' } }, mapId: 'm1', status: 'open', answeredAt: null }];
     expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).toEqual(['stalled-old']);
+  });
+
+  it('no stalled row for a node a collector\'s open question already names', async () => {
+    state.stored = [{ ask: { id: 'fleet-old', unblocks: { node_id: 'old' } }, mapId: 'm1', status: 'open', answeredAt: null }];
+    expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).toEqual(['step-phone']);
   });
 
   it('Done / Fleet can do it / free text = the new next step', async () => {

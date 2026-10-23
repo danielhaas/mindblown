@@ -114,7 +114,7 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
   const asked = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   return derived.filter((r) => {
     if (snoozed.has(rowKey(r))) return false;
-    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
+    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   });
 }
 
