@@ -40,6 +40,9 @@ export type {
   AttachmentText,
   AttachmentTextPage,
   AttachmentNotReadable,
+  // Repo docs
+  RepoDocsList,
+  RepoDocText,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
@@ -59,7 +62,8 @@ import { asksTools } from './tools/asks.js';
 import { fleetJournalTools } from './tools/fleetJournal.js';
 import { attachmentTools } from './tools/attachments.js';
 import { fleetTools } from './tools/fleets.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools };
+import { docsTools } from './tools/docs.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools };
 export { renderAskList } from './tools/asks.js';
 
 export const allTools = [
@@ -73,4 +77,5 @@ export const allTools = [
   ...asksTools,
   ...fleetJournalTools,
   ...attachmentTools,
+  ...docsTools,
 ];

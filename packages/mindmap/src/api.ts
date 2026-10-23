@@ -2674,3 +2674,38 @@ export interface VelocityPaceResponse {
 export function fetchVelocity(mapId: string, windowDays = 14): Promise<VelocityPaceResponse> {
   return request<VelocityPaceResponse>(`/api/maps/${mapId}/velocity?windowDays=${windowDays}`);
 }
+
+// ── Repo docs (#550) — mirrors tool-kit RepoDocsList / RepoDocText ──
+
+export interface RepoDocsList {
+  repo: { owner: string; name: string; branch: string; webUrl: string };
+  treeSha: string;
+  docs: { path: string; sha: string; size: number }[];
+  truncated: boolean;
+}
+
+export interface RepoDocText {
+  path: string;
+  sha: string;
+  size: number;
+  text: string;
+  webUrl: string;
+}
+
+export function listRepoDocs(mapId: string): Promise<RepoDocsList> {
+  return request<RepoDocsList>(`/api/maps/${mapId}/docs`);
+}
+
+export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
+  return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
+}
+
+/** An image a doc embeds — fetched with the token, since an <img src> carries none. */
+export async function fetchRepoImage(mapId: string, path: string): Promise<Blob> {
+  const token = getToken();
+  const res = await fetch(`${BASE_URL}/api/maps/${mapId}/docs/image?path=${encodeURIComponent(path)}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new ApiError(res.status, `Image failed: HTTP ${res.status}`);
+  return res.blob();
+}

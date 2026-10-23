@@ -30,6 +30,7 @@ import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
+import { listRepoDocs, readRepoDoc } from '../services/repoDocs.js';
 
 function toIsoString(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
@@ -498,6 +499,8 @@ export function createChatBackend(userId: string): ToolBackend {
         ? { ...res, attachmentId }
         : { ...res, attachmentId, url: attachment.url };
     },
+    listRepoDocs: (mapId) => listRepoDocs(mapId),
+    readRepoDoc: (mapId, path) => readRepoDoc(mapId, path),
   };
   return guardChatBackend(backend, userId);
 }
@@ -514,6 +517,8 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'getFleetJournal',
   'listAsks',
   'readAttachment',
+  'listRepoDocs',
+  'readRepoDoc',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */

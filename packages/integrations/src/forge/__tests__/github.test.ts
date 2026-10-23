@@ -141,6 +141,39 @@ describe('GitHubForge wire format', () => {
     expect(forge.issueWebUrl('o', 'r', 42)).toBe('https://ghe.example/o/r/issues/42');
     expect(issueWebUrl(forge.endpoint, 'o/r', 42)).toBe('https://ghe.example/o/r/issues/42');
   });
+
+  it('getRepoTree: one recursive read, files only, truncated passed through', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    t.respond({
+      status: 200,
+      body: {
+        sha: 'abc',
+        truncated: true,
+        tree: [
+          { path: 'docs', mode: '040000', type: 'tree', sha: 'd1' },
+          { path: 'docs/a.md', mode: '100644', type: 'blob', sha: 'b1', size: 12 },
+          { path: 'vendor/lib', mode: '160000', type: 'commit', sha: 'c1' },
+        ],
+      },
+    });
+    expect(await forge.getRepoTree('o', 'r', 'main')).toEqual({
+      sha: 'abc',
+      truncated: true,
+      files: [{ path: 'docs/a.md', sha: 'b1', size: 12 }],
+    });
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/git/trees/main?recursive=1');
+  });
+
+  it('getBlob decodes line-wrapped base64 (UTF-8 text survives)', async () => {
+    const t = fakeTransport();
+    const forge = new GitHubForge({ token: 't', fetchImpl: t.fetchImpl });
+    const text = '# Überblick\n\nÄnderung → ✓\n';
+    const b64 = Buffer.from(text, 'utf8').toString('base64');
+    t.respond({ status: 200, body: { content: `${b64.slice(0, 10)}\n${b64.slice(10)}\n`, encoding: 'base64' } });
+    expect(new TextDecoder().decode(await forge.getBlob('o', 'r', 'b1'))).toBe(text);
+    expect(t.calls[0].url).toBe('https://api.github.com/repos/o/r/git/blobs/b1');
+  });
 });
 
 // ── The sync layer's transport helpers ride on the client ────────

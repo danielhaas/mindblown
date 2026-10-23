@@ -155,6 +155,22 @@ export interface ListPullRequestsQuery {
   direction: 'asc' | 'desc';
 }
 
+/** One file of a repo tree. `sha` is the blob's — content-addressed, so it changes exactly when the file does. */
+export interface RepoTreeFile {
+  path: string;
+  sha: string;
+  size: number;
+}
+
+export interface RepoTree {
+  /** The tree's own sha — changes whenever any file under it does. */
+  sha: string;
+  /** Files only (no directories, no submodules), repo-relative paths. */
+  files: RepoTreeFile[];
+  /** The forge cut the listing short; `files` is a prefix. */
+  truncated: boolean;
+}
+
 // ── Transport ─────────────────────────────────────────────────────
 
 /**
@@ -284,6 +300,12 @@ export interface ForgeClient {
   pullRequestsListPath(owner: string, repo: string, query: ListPullRequestsQuery): string;
   /** Paths of the files a PR touches (first 100). */
   listPullRequestFiles(owner: string, repo: string, prNumber: number): Promise<string[]>;
+
+  // Repo contents (#550)
+  /** Every file under `ref` (a branch name or sha), recursively. */
+  getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree>;
+  /** A blob's content (decoded from the forge's base64). */
+  getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array>;
 
   // URLs
   issueWebUrl(owner: string, repo: string, issueNumber: number): string;

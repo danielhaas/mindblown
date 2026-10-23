@@ -63,6 +63,8 @@ export type {
   MilestoneRef,
   IssueCloseEvent,
   ListPullRequestsQuery,
+  RepoTree,
+  RepoTreeFile,
   RequestOptions,
   GitHubForgeOptions,
   GiteaForgeOptions,

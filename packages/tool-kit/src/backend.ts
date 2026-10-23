@@ -572,6 +572,33 @@ export interface ToolBackend {
    * a type with no text in it; throws only for a missing node/attachment.
    */
   readAttachment(mapId: string, nodeId: string, attachmentId: string, opts?: ReadAttachmentOptions): Promise<AttachmentText>;
+
+  // ── Repo docs (#550) ────────────────────────────────────────────
+  /** The markdown files on the default branch of the map's repo — `GET /api/maps/:id/docs`. Throws when the map has no repo. */
+  listRepoDocs(mapId: string): Promise<RepoDocsList>;
+  /** One markdown file's text — `GET /api/maps/:id/docs/file?path=`. Throws for a path that is not a doc of the repo. */
+  readRepoDoc(mapId: string, path: string): Promise<RepoDocText>;
+}
+
+// ── Repo docs ──────────────────────────────────────────────────────
+
+export interface RepoDocsList {
+  repo: { owner: string; name: string; branch: string; webUrl: string };
+  /** The branch tree's sha: unchanged = no file changed. */
+  treeSha: string;
+  /** Sorted by path. `sha` is the blob's — it changes exactly when the file does. */
+  docs: { path: string; sha: string; size: number }[];
+  /** The forge cut a very large tree short; `docs` is incomplete. */
+  truncated: boolean;
+}
+
+export interface RepoDocText {
+  path: string;
+  sha: string;
+  size: number;
+  text: string;
+  /** The file on the forge's web UI. */
+  webUrl: string;
 }
 
 // ── Attachments ────────────────────────────────────────────────────

@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText } from '@mindblown/tool-kit';
 import type { AskAnswerInput, FleetWithMaps, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
@@ -1811,6 +1811,16 @@ export function readAttachment(
   return request<AttachmentText>(
     `/api/maps/${mapId}/nodes/${nodeId}/attachments/${encodeURIComponent(attachmentId)}/text${qs}`,
   );
+}
+
+// ── Repo docs (#550) ─────────────────────────────────────────────
+
+export function listRepoDocs(mapId: string): Promise<RepoDocsList> {
+  return request<RepoDocsList>(`/api/maps/${mapId}/docs`);
+}
+
+export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
+  return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
 }
 
 export function conflictScan(

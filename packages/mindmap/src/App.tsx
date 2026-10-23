@@ -21,6 +21,7 @@ import { ReleasesView } from './ReleasesView.js';
 import { RequirementsView } from './RequirementsView.js';
 import { GuideView } from './GuideView.js';
 import { FilesView } from './FilesView.js';
+import { DocsView } from './DocsView.js';
 import { ImportExport } from './ImportExport.js';
 import { AuthScreen } from './AuthScreen.js';
 import { downloadWithSession } from './mediaDownload.js';
@@ -923,6 +924,8 @@ const VIEW_TABS: { id: ActiveView; label: string; enabled: boolean }[] = [
   // The shared shelf: every file and link hung anywhere in the map, plus
   // a place to drop what belongs to the map rather than to one node.
   { id: 'files', label: 'Files', enabled: true },
+  // The repo's markdown — specs, ADRs, READMEs — read in place (#550).
+  { id: 'docs', label: 'Docs', enabled: true },
   { id: 'list', label: 'List', enabled: true },
   { id: 'calendar', label: 'Calendar', enabled: true },
   { id: 'hill', label: 'Hill Chart', enabled: true },
@@ -2413,6 +2416,7 @@ export function App() {
           {activeView === 'requirements' && <RequirementsView />}
           {activeView === 'guide' && <GuideView />}
           {activeView === 'files' && <FilesView />}
+          {activeView === 'docs' && <DocsView />}
           {activeView === 'list' && (<div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}><PaceStrip /><div style={{ flex: 1, position: 'relative', overflow: 'hidden' }}><ListView /></div></div>)}
           {activeView === 'calendar' && <CalendarView />}
           {activeView === 'hill' && <HillChart />}

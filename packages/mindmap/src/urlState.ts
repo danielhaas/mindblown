@@ -76,6 +76,7 @@ const VIEW_IDS: ReadonlySet<string> = new Set<ActiveView>([
   'cockpit',
   'fleet',
   'files',
+  'docs',
 ]);
 
 /** Retired view ids that shared links may still carry → where that content lives now. */

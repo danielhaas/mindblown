@@ -60,7 +60,8 @@ export type ActiveView =
   | 'digest'
   | 'cockpit'
   | 'fleet'
-  | 'files';
+  | 'files'
+  | 'docs';
 
 export interface VisibleNode {
   node: Node;
@@ -1518,6 +1519,12 @@ function handleWsMessage(
   // a poll. Mirrors the `ws:comment` pattern above.
   if (msg.type === 'triage:updated') {
     window.dispatchEvent(new CustomEvent('ws:triage', { detail: msg }));
+    return;
+  }
+
+  // A push landed on the repo's default branch (#550) — the Docs tab re-lists.
+  if (msg.type === 'docs:updated') {
+    window.dispatchEvent(new CustomEvent('ws:docs', { detail: msg }));
     return;
   }
 

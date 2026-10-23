@@ -68,6 +68,7 @@ import {
   type ForgeIntegrationConfig,
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
+import { onRepoPush } from '../services/repoDocs.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 
 // ── Helper: a workspace's row for one repo (PAT) ──────────────────
@@ -1567,6 +1568,13 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         payload.action = review.action;
         payload.review = review.review;
       }
+    }
+
+    // ── push → Docs tabs re-list (#550) ─────────────────────────────
+    // Nothing else consumes a push; answer here.
+    if (event === 'push') {
+      const maps = repoFullName ? await onRepoPush(repoFullName, payload) : 0;
+      return reply.send({ ok: true, docsMaps: maps });
     }
 
     // Special handling for issues.closed / issues.reopened: preserve and restore
