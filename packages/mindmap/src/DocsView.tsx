@@ -204,7 +204,8 @@ export function DocsView() {
         const { doc, mapId } = live.current;
         const target = doc && typeof src === 'string' ? resolveRepoLink(doc.path, src) : null;
         if (!target || !mapId) return <img {...props} src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} style={{ maxWidth: '100%' }} />;
-        return <RepoImage mapId={mapId} path={target.path} alt={alt ?? ''} />;
+        // Keyed: the renderer is stable now, so a slot would otherwise keep the previous image's state.
+        return <RepoImage key={`${mapId}:${target.path}`} mapId={mapId} path={target.path} alt={alt ?? ''} />;
       },
     };
   }, []);
@@ -323,6 +324,8 @@ function RepoImage({ mapId, path, alt }: { mapId: string; path: string; alt: str
   useEffect(() => {
     let href: string | null = null;
     let cancelled = false;
+    setUrl(null);
+    setFailed(false);
     api.fetchRepoImage(mapId, path).then(
       (blob) => {
         if (cancelled) return;
