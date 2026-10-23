@@ -140,14 +140,14 @@ export function createSlugger(): (text: string) => string {
 interface MdNode {
   type: string;
   value?: string;
-  alt?: string;
   children?: MdNode[];
   data?: { hProperties?: Record<string, unknown> };
 }
 
+/** The heading's rendered text, as GitHub slugs it: raw HTML (not rendered here) and image alt text don't count. */
 function mdText(node: MdNode): string {
+  if (node.type === 'html' || node.type === 'image') return '';
   if (typeof node.value === 'string') return node.value;
-  if (node.type === 'image') return node.alt ?? '';
   return node.children?.map(mdText).join('') ?? '';
 }
 

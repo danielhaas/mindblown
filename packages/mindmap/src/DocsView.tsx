@@ -95,6 +95,8 @@ const MARKDOWN_PLUGINS = [remarkGfm, remarkHeadingIds];
 
 interface Proposed {
   path: string;
+  /** The version the edit was made against — tells the proposed edit apart from a later one of the same doc. */
+  baseSha: string;
   number: number;
   url: string;
 }
@@ -110,9 +112,11 @@ const unseenProposals = new Map<string, Proposed>();
 
 function startProposal(mapId: string, input: Parameters<typeof api.proposeRepoDocEdit>[1]): Promise<Proposed> {
   const p = api.proposeRepoDocEdit(mapId, input).then((res) => {
-    // Even with the view gone: the draft is a PR now.
-    writeDraft(mapId, null);
-    const done = { path: res.path, ...res.pullRequest };
+    // Even with the view gone: the draft is a PR now — unless the stored
+    // draft is already a different edit, begun while this one was in flight.
+    const stored = readDraft(mapId);
+    if (!stored || (stored.path === input.path && stored.baseSha === input.baseSha)) writeDraft(mapId, null);
+    const done = { path: res.path, baseSha: input.baseSha, ...res.pullRequest };
     unseenProposals.set(mapId, done);
     return done;
   });
@@ -251,8 +255,13 @@ export function DocsView() {
       if (!mounted.current || mapRef.current !== forMap) return;
       unseenProposals.delete(forMap);
       setProposed(done);
-      setEdit(null);
-      setRestored(false);
+      // Close the editor only on the edit that was proposed — not on one
+      // of another doc started while the PR was being opened.
+      const current = latestDraft.current.edit;
+      if (!current || (current.path === done.path && current.baseSha === done.baseSha)) {
+        setEdit(null);
+        setRestored(false);
+      }
     } catch (err) {
       if (!mounted.current || mapRef.current !== forMap) return;
       setEditError(err instanceof api.ApiError ? { code: err.code, message: err.message } : { message: String(err) });
@@ -676,6 +685,8 @@ export function DocsView() {
 function RepoImage({ mapId, path, version, alt }: { mapId: string; path: string; version: string; alt: string }) {
   const [url, setUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const shown = useRef(false);
+  shown.current = !!url;
   useEffect(() => {
     let cancelled = false;
     api.fetchRepoImage(mapId, path).then(
@@ -684,8 +695,13 @@ function RepoImage({ mapId, path, version, alt }: { mapId: string; path: string;
         setUrl(URL.createObjectURL(blob));
         setFailed(false);
       },
-      () => {
-        if (!cancelled) setFailed(true);
+      (err) => {
+        if (cancelled) return;
+        // A blip on a re-check keeps the picture; only a deleted image goes.
+        if (!shown.current || (err instanceof api.ApiError && err.status === 404)) {
+          setUrl(null);
+          setFailed(true);
+        }
       },
     );
     return () => {

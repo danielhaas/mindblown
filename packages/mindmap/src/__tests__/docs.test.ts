@@ -104,6 +104,18 @@ describe('remarkHeadingIds', () => {
     const ids = JSON.stringify(tree).match(/"id":"[^"]+"/g);
     expect(ids).toEqual(['"id":"notes"', '"id":"notes-1"', '"id":"use-x"']);
   });
+
+  it('leaves raw HTML and image alt text out, as GitHub does', () => {
+    const tree = {
+      type: 'root',
+      children: [
+        { type: 'heading', children: [{ type: 'html', value: '<a name="install"></a>' }, { type: 'text', value: 'Install' }] },
+        { type: 'heading', children: [{ type: 'image', alt: 'logo' }, { type: 'text', value: ' Title' }] },
+      ],
+    };
+    remarkHeadingIds()(tree);
+    expect(JSON.stringify(tree).match(/"id":"[^"]+"/g)).toEqual(['"id":"install"', '"id":"title"']);
+  });
 });
 
 describe('restoreLineEndings', () => {
