@@ -177,7 +177,8 @@ export interface MindmapState {
   // Actions — map level
   loadMaps: () => Promise<void>;
   loadMap: (id: string) => Promise<void>;
-  createMap: (name: string, aiPolicy?: 'any' | 'local' | 'none') => Promise<void>;
+  /** Create and open a map; resolves to its id, or null when it failed. */
+  createMap: (name: string, aiPolicy?: 'any' | 'local' | 'none', description?: string) => Promise<string | null>;
   closeMap: () => void;
   updateMapName: (name: string) => void;
   /**
@@ -186,7 +187,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare'>> & { archived?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -462,17 +463,19 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     }
   },
 
-  createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none') => {
+  createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none', description?: string) => {
     set({ loading: true, error: null });
     try {
-      const map = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
+      const { map } = await api.createMap(name, { ...(aiPolicy ? { aiPolicy } : {}), ...(description ? { description } : {}) });
       // Reload maps list
       const maps = await api.fetchMaps();
       set({ maps, loading: false });
       // Open the new map
-      get().loadMap(map.id);
+      await get().loadMap(map.id);
+      return map.id;
     } catch (e: any) {
       set({ loading: false, error: e.message ?? 'Failed to create map' });
+      return null;
     }
   },
 

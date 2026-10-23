@@ -187,6 +187,12 @@ export interface UpdateMapInput {
    */
   archived?: boolean;
   /**
+   * Setup checklist switch (guided onboarding), same shape as `archived`:
+   * `true` stamps `setupCompletedAt` (kept if already set), `false` clears
+   * it so the checklist shows again.
+   */
+  setupCompleted?: boolean;
+  /**
    * Trust policy (#491); null = back to the defaults. Admin-only, so
    * updateMap ignores it: the callers gate it and write it through
    * services/trustPolicy.ts.
@@ -253,6 +259,10 @@ export async function updateMap(
   if (typeof input.archived === 'boolean') {
     if (!input.archived) updates.archivedAt = null;
     else if (before.archivedAt == null) updates.archivedAt = new Date();
+  }
+  if (typeof input.setupCompleted === 'boolean') {
+    if (!input.setupCompleted) updates.setupCompletedAt = null;
+    else if (before.setupCompletedAt == null) updates.setupCompletedAt = new Date();
   }
 
   const [row] = await db.update(maps).set(updates).where(eq(maps.id, mapId)).returning();

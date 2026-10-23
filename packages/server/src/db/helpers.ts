@@ -137,6 +137,9 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     archivedAt: (get('archivedAt', 'archived_at') instanceof Date
       ? (get('archivedAt', 'archived_at') as Date).toISOString()
       : (get('archivedAt', 'archived_at') as string)) ?? null,
+    setupCompletedAt: (get('setupCompletedAt', 'setup_completed_at') instanceof Date
+      ? (get('setupCompletedAt', 'setup_completed_at') as Date).toISOString()
+      : (get('setupCompletedAt', 'setup_completed_at') as string)) ?? null,
     githubInstallationId: (get('githubInstallationId', 'github_installation_id') as string) ?? null,
     githubRepoOwner: (get('githubRepoOwner', 'github_repo_owner') as string) ?? null,
     githubRepoName: (get('githubRepoName', 'github_repo_name') as string) ?? null,

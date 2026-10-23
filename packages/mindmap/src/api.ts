@@ -726,17 +726,18 @@ export function fetchNodeActors(mapId: string): Promise<{ actors: NodeActor[] }>
 
 export function createMap(
   name: string,
-  options: { aiPolicy?: 'any' | 'local' | 'none' } = {},
-): Promise<MindMap> {
+  options: { aiPolicy?: 'any' | 'local' | 'none'; description?: string } = {},
+): Promise<{ map: MindMap }> {
   // createdBy will be inferred from the auth token on the server,
   // but we send it as fallback for compatibility
-  return request<MindMap>('/api/maps', {
+  return request<{ map: MindMap }>('/api/maps', {
     method: 'POST',
     body: JSON.stringify({
       name,
       workspaceId: 'default',
       createdBy: 'current-user',
       ...(options.aiPolicy ? { aiPolicy: options.aiPolicy } : {}),
+      ...(options.description ? { description: options.description } : {}),
     }),
   });
 }

@@ -26,7 +26,8 @@ import * as asksInbox from '../services/asksInbox.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
-import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { getGitHubContextForMap, getMapForgeKind } from '../lib/githubContext.js';
+import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { checkMapAccess } from '../lib/mapAccess.js';
@@ -161,6 +162,13 @@ export function createChatBackend(userId: string): ToolBackend {
           fleetId: data.map.fleetId,
           fleetName: await fleetService.fleetNameOf(data.map.fleetId),
           fleetShare: data.map.fleetShare,
+          // The setup checklist (project_setup_status) reads these, as GET /api/maps/:id derives them.
+          maxActiveClaims: data.map.maxActiveClaims,
+          forgeKind: await getMapForgeKind(mapId),
+          forgeProblem: await forgeProblemForMap(data.map).catch(() => null),
+          githubRepoOwner: data.map.githubRepoOwner ?? null,
+          githubRepoName: data.map.githubRepoName ?? null,
+          setupCompletedAt: data.map.setupCompletedAt ?? null,
         },
         nodes: nodesWithComputed,
       };

@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX } from '@mindblown/core';
-import type { TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
+import { DISPATCH_POLICY_KEYS, MIX_BUGS_PREFIX, MIX_BUGS_REGEX, projectSetup } from '@mindblown/core';
+import type { SetupStepId, TrustLevelPolicy, TrustPolicy } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import { filterMapData, formatMapTree } from '../formatters.js';
 
@@ -170,6 +170,10 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe('Archive (true) or unarchive (false) the map. An archived map is on hold: forge webhooks and catch-up sync, issue triage, the get_next_ticket pull queue, sprint rollover and every other automated or agent-driven write (including your own tool calls) get 409 MAP_ARCHIVED until it is unarchived. People can still open and edit it in the browser. Only archive or unarchive when a person asked for it.'),
+    setupCompleted: z
+      .boolean()
+      .optional()
+      .describe('Finish (true) or reopen (false) the project setup checklist (see project_setup_status). true hides the "Set up this project" card on the map; it does not change anything else.'),
     aiPolicy: z
       .enum(['any', 'local', 'none'])
       .optional()
@@ -257,7 +261,7 @@ export const updateMapTool = defineTool({
       .optional()
       .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, trustPolicy }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, setupCompleted, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -279,6 +283,7 @@ export const updateMapTool = defineTool({
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: Array<{ id: string; name: string; position: number; color?: string; targetDate?: string | null }>;
       archived?: boolean;
+      setupCompleted?: boolean;
       trustPolicy?: TrustPolicy | null;
     } = {};
     if (name !== undefined) fields.name = name;
@@ -300,6 +305,7 @@ export const updateMapTool = defineTool({
     if (holidayJurisdiction !== undefined) fields.holidayJurisdiction = holidayJurisdiction;
     if (holidayOverrides !== undefined) fields.holidayOverrides = holidayOverrides;
     if (archived !== undefined) fields.archived = archived;
+    if (setupCompleted !== undefined) fields.setupCompleted = setupCompleted;
     if (trustPolicy !== undefined) fields.trustPolicy = trustPolicy;
     if (phases !== undefined) {
       // Normalize: generate ids for new entries, default position to the
@@ -393,4 +399,50 @@ export const listBaselinesTool = defineTool({
   },
 });
 
-export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool];
+/** What an agent calls to finish each setup step. */
+const SETUP_HOW: Record<SetupStepId, string> = {
+  describe: 'update_map(description): what it is, who it is for, what done looks like.',
+  repo: 'connect_forge_repo (or connect_github_repo), then import_issues to bring in the open issues.',
+  plan: 'bulk_create_nodes or ai_braindump under the root, built from the description and the imported issues.',
+  fleet: 'list_fleets, then update_map(fleetId, maxActiveClaims: 0) — connected but on hold until the start step. Skip it when people do the work.',
+  start: 'update_map(maxActiveClaims: 1) once the person agrees the fleet may begin.',
+};
+
+export const projectSetupStatusTool = defineTool({
+  name: 'project_setup_status',
+  description:
+    "The setup checklist of a project (guided onboarding): describe it → connect the repo → lay out the plan → pick who does the work (fleet) → start. Shows each step done or open and the tool that finishes it. Use it to walk a person through a new project in conversation, one step at a time; the repo comes before the plan so the plan can build on the repo's issues. When every step they want is done, update_map(setupCompleted: true) closes the checklist on the map.",
+  schema: {
+    mapId: z.string().describe('The map ID'),
+  },
+  handler: async (backend, { mapId }) => {
+    const { map, nodes } = await backend.getMap(mapId);
+    const setup = projectSetup(
+      {
+        description: map.description,
+        rootNodeId: map.rootNodeId,
+        fleetId: map.fleetId ?? null,
+        fleetName: map.fleetName ?? null,
+        maxActiveClaims: map.maxActiveClaims ?? 0,
+        forgeKind: map.forgeKind ?? null,
+        forgeProblem: map.forgeProblem ?? null,
+        githubRepoOwner: map.githubRepoOwner ?? null,
+        githubRepoName: map.githubRepoName ?? null,
+        setupCompletedAt: map.setupCompletedAt ?? null,
+      },
+      nodes,
+    );
+    const lines = [
+      `Setup of "${map.name}": ${setup.steps.filter((s) => s.done).length}/${setup.steps.length} steps done${setup.completed ? ' (checklist closed)' : ''}.`,
+      ...setup.steps.map((s, i) => {
+        const head = `${i + 1}. [${s.done ? 'x' : ' '}] ${s.label}${s.optional ? ' (optional)' : ''} — ${s.detail}`;
+        return s.done ? head : `${head}\n   How: ${SETUP_HOW[s.id]}`;
+      }),
+    ];
+    lines.push(setup.next ? `Next: ${setup.next.label}.` : 'Every step is done.');
+    if (!setup.completed && !setup.next) lines.push('Close the checklist with update_map(setupCompleted: true).');
+    return lines.join('\n');
+  },
+});
+
+export const mapTools = [listMapsTool, getMapTool, createMapTool, updateMapTool, deleteMapTool, freezeBaselineTool, listBaselinesTool, projectSetupStatusTool];

@@ -521,6 +521,7 @@ export function updateMap(
     holidayOverrides?: { add: string[]; remove: string[] };
     phases?: PhaseDef[];
     archived?: boolean;
+    setupCompleted?: boolean;
     trustPolicy?: TrustPolicy | null;
   },
 ): Promise<MapSummary> {

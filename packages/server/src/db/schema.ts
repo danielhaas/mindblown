@@ -99,6 +99,8 @@ export const maps = pgTable('maps', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),
   archivedAt: timestamp('archived_at', { withTimezone: true }),
+  // Guided onboarding: the owner finished or dismissed the setup checklist.
+  setupCompletedAt: timestamp('setup_completed_at', { withTimezone: true }),
   publicToken: text('public_token'),
   githubInstallationId: text('github_installation_id'),
   githubRepoOwner: text('github_repo_owner'),

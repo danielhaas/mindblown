@@ -128,6 +128,15 @@ export interface MapDetail {
     fleetId?: string | null;
     fleetName?: string | null;
     fleetShare?: number;
+    /** The map's own pull-queue cap; 0 = on hold. */
+    maxActiveClaims?: number;
+    /** Repo binding, derived at read time (core MindMap.forgeKind / forgeProblem). */
+    forgeKind?: 'github' | 'gitea' | null;
+    forgeProblem?: { kind: 'unbound' | 'refused'; repo: string; message: string } | null;
+    githubRepoOwner?: string | null;
+    githubRepoName?: string | null;
+    /** Guided onboarding: setup checklist finished or dismissed; null = still open. */
+    setupCompletedAt?: string | null;
   };
   nodes: NodeWithComputed[];
 }

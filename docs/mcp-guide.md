@@ -202,6 +202,7 @@ Once connected, the AI can fully manage your projects through natural conversati
 | `create_map` | Create a new map/project | `name`, `description?` |
 | `update_map` | Update name, description, WIP limit, or Gantt anchors | `mapId`, `name?`, `description?`, `wipLimit?`, `projectStartDate?`, `hoursPerDay?` |
 | `delete_map` | Permanently delete a map and its nodes | `mapId` |
+| `project_setup_status` | The new-project checklist (describe → repo → plan → fleet → start) with the tool that finishes each open step; `update_map(setupCompleted: true)` closes it | `mapId` |
 
 ### Node Tools
 
