@@ -194,7 +194,7 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.state).toBe('full');
   });
 
-  it('a claimed ticket with a blocker does not count toward full', () => {
+  it('a claimed ticket with the worker\'s PR wait note does not count toward full', () => {
     const c1 = n({ id: 'c1', status: 'in_progress', claimedBySession: 'a' });
     const c2 = n({ id: 'c2', status: 'in_progress', claimedBySession: 'b', blockedReason: 'Fleet worker b: CI failed on PR #3 (abc).' });
     const s = dispatchQueueSnapshot([...all, c1, c2], { workflow: WORKFLOW, cap: 2, gate: [] });

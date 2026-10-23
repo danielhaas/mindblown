@@ -17,6 +17,7 @@ import { db } from '../db/connection.js';
 import { nodes, maps, cycles, fleets } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
+import { holdsCapSlotSql } from '../db/capSlot.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
 import { getForgeRepoForMap } from '../lib/githubContext.js';
@@ -943,7 +944,7 @@ async function countFleetClaims(tx: PullTx, fleetId: string): Promise<number> {
     .select({ n: sql<number>`count(*)::int` })
     .from(nodes)
     .innerJoin(maps, eq(nodes.mapId, maps.id))
-    .where(and(eq(maps.fleetId, fleetId), notDeleted, isNotNull(nodes.claimedBySession), isNull(nodes.blockedReason)));
+    .where(and(eq(maps.fleetId, fleetId), notDeleted, holdsCapSlotSql()));
   return Number(row?.n ?? 0);
 }
 

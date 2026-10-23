@@ -342,9 +342,10 @@ export interface HostSummary {
   counts: Record<string, number>;
   claims: number;
   /**
-   * Claims the host holds with no agent on them — its open PRs (waiting
-   * for CI, red, a conflict, a hand merge). A "parked" slot can still hold
-   * these; a `problem` tone means a person has to act.
+   * The host's open PRs (phase `pr`: waiting for CI, red, a conflict, a
+   * hand merge) — claims with no agent on them, so a "parked" slot can still
+   * hold these; a `problem` tone means a person has to act. Empty on a
+   * stale host.
    */
   held: HeldClaim[];
 }
@@ -388,15 +389,18 @@ export function summarizeFleet(
         counts[s] = (counts[s] ?? 0) + 1;
         if (w.claim && (w.claim.nodeId || w.claim.title || w.claim.redacted)) claims += 1;
       }
-      const onWorker = new Set(rollup.workers.map((w) => w.claim?.nodeId).filter(Boolean));
-      const held = (rollup.claims ?? [])
-        .filter((c) => !onWorker.has(c.nodeId))
-        .map((c) => ({ nodeId: c.nodeId, mapId: c.mapId ?? null, phase: ticketPhase(c) }));
+      const freshness = hostFreshness(rollup.generated_at, receivedAt, now, staleMin);
+      // Like ticketPhases: a stale host says nothing about where its PRs are.
+      const held = freshness.stale
+        ? []
+        : (rollup.claims ?? [])
+            .filter((c) => c.phase === 'pr')
+            .map((c) => ({ nodeId: c.nodeId, mapId: c.mapId ?? null, phase: ticketPhase(c) }));
       return {
         host: rollup.host,
         generatedAt: rollup.generated_at,
         receivedAt,
-        freshness: hostFreshness(rollup.generated_at, receivedAt, now, staleMin),
+        freshness,
         draining: rollup.draining ?? null,
         workers: rollup.workers,
         counts,

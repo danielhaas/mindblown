@@ -212,7 +212,7 @@ describe('fleet_status tool', () => {
     };
     const out = await fleetStatusTool.handler(backendWith(result), { mapId: 'm1' } as never);
     expect(out).toContain('slot1: parked');
-    expect(out).toContain('- holds PR #1038 (node n1): CI red · 1h — waiting for a person (Questions card)');
+    expect(out).toContain('- holds PR #1038 (node n1): CI red · 1h — needs a person');
     expect(out).toContain('- holds PR #1040 (node n2): Waiting for CI · 5m\n');
   });
 });

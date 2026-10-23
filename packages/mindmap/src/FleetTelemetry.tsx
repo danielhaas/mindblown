@@ -208,7 +208,7 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
   scope: FleetScope | null;
 }) {
   const age = `${Math.round(h.freshness.ageMin)}m`;
-  const waitsForYou = h.freshness.stale ? 0 : h.held.filter((c) => c.phase.tone === 'problem').length;
+  const waitsForYou = h.held.filter((c) => c.phase.tone === 'problem').length;
   return (
     <li style={{ marginTop: 4 }}>
       <Link onClick={onToggle}>
@@ -259,7 +259,7 @@ function HeldRow({ c, now, nodes, selectNode, scope }: {
       {' '}— {project && <span style={projectTag}>{project}</span>}
       {title ? <Link onClick={() => selectNode(c.nodeId)}>{title}</Link> : <span style={{ color: '#94a3b8' }}>{c.nodeId.slice(0, 8)}</span>}
       <span style={{ color: problem ? '#991b1b' : '#64748b' }}>
-        {' '}· {ticketPhaseText(c.phase, now)}{problem ? ' — waiting for you (Questions card)' : ''}
+        {' '}· {ticketPhaseText(c.phase, now)}{problem ? ' — needs a person' : ''}
       </span>
     </li>
   );

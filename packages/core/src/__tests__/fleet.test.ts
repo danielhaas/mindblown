@@ -106,6 +106,9 @@ describe('summarizeFleet', () => {
     const [h] = summarizeFleet([{ rollup: bb, receivedAt: ago(1) }], NOW).hosts;
     expect(h.held).toHaveLength(1);
     expect(h.held[0]).toMatchObject({ nodeId: 'n1', mapId: 'm', phase: { label: 'CI red', tone: 'problem', prNumber: 1038 } });
+    // A stale host says nothing about its PRs.
+    const [stale] = summarizeFleet([{ rollup: { ...bb, generated_at: ago(40) }, receivedAt: ago(40) }], NOW).hosts;
+    expect(stale.held).toEqual([]);
   });
 });
 

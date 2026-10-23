@@ -105,6 +105,8 @@ export const getNextTicketTool = defineTool({
     '  1. Cap gate: if the map\'s active claims >= maxActiveClaims, the pull is',
     '     refused with reason "cap" (reason "hold" when the map\'s cap is 0). A map in',
     '     a fleet is also refused with "fleet_cap" when the fleet\'s total cap is reached.',
+    '     A claim whose PR waits on a person (the worker\'s own "Fleet worker …:" blocker,',
+    '     no fix asked for) does not count; any other blocker on a claim still does.',
     '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug",',
     '     or "type:bug|version:<id>" = either; empty = no fence). Tickets outside',
     '     the gate are invisible, not deprioritized.',
@@ -498,7 +500,7 @@ export const fleetStatusTool = defineTool({
         // Open PRs the host follows with no agent on them — a parked slot can still hold these.
         for (const c of h.held) {
           const pr = c.phase.prNumber ? `PR #${c.phase.prNumber}` : 'PR';
-          const who = c.phase.tone === 'problem' ? ' — waiting for a person (Questions card)' : '';
+          const who = c.phase.tone === 'problem' ? ' — needs a person' : '';
           lines.push(`  - holds ${pr} (node ${c.nodeId}): ${ticketPhaseText(c.phase, now)}${who}`);
         }
       }

@@ -146,6 +146,21 @@ describe('cap gate', () => {
     expect(d.ranked.map((n) => n.id)).toEqual(['b']);
   });
 
+  it('every other blocked claim still counts: a Stop (agent may still run), a fix asked for', () => {
+    const note = 'Fleet worker w1: CI failed on PR #7 (abc).';
+    const cases = [
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: 'Stopped by Dan: wrong approach' }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: note, tags: ['fleet-fix'] }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: note, tags: ['fleet-check'] }),
+      makeNode({ id: 'a', claimedBySession: 'w1', blockedReason: '   ' }),
+    ];
+    for (const held of cases) {
+      const d = select([held, makeNode({ id: 'b' })], { cap: 1 });
+      expect(d.reason).toBe('cap');
+      expect(d.active).toBe(1);
+    }
+  });
+
   it('grants below the cap', () => {
     const d = select(
       [makeNode({ id: 'a', claimedBySession: 'w1' }), makeNode({ id: 'b' })],

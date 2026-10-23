@@ -96,14 +96,24 @@ export const BLOCKED_TAG = 'blocked';
 export const FLEET_FIX_TAG = 'fleet-fix';
 
 /**
- * A claim that uses up the map's / fleet's cap. A claimed ticket with a
- * blocker is waiting on a person (red CI, a conflict, a hand merge) — the
- * worker holds it to follow its PR but runs no agent, so it leaves the
- * slot free for the next ticket. "Fleet can fix it" clears the blocker and
- * the claim counts again.
+ * The note a fleet worker writes on a claim it keeps while its PR waits on
+ * a person (red CI, a conflict, no CI, a refused merge). Session ids have no
+ * spaces. Server SQL twin: db/fleets `holdsCapSlotSql`.
  */
-export function holdsCapSlot(node: Pick<Node, 'claimedBySession' | 'blockedReason'>): boolean {
-  return node.claimedBySession !== null && !node.blockedReason;
+export const WORKER_WAIT_NOTE = /^Fleet worker [^ ]+: /;
+
+/**
+ * A claim that uses up the map's / fleet's cap. The one exception: the
+ * worker's own wait note on its PR, with no fix asked for — the worker
+ * follows the PR but runs no agent, so the slot is free for the next
+ * ticket. Every other blocker still counts: a person's Stop lands while the
+ * agent runs, and a fix run (fleet-fix / fleet-check tag) is an agent.
+ */
+export function holdsCapSlot(node: Pick<Node, 'claimedBySession' | 'blockedReason' | 'tags'>): boolean {
+  if (node.claimedBySession === null) return false;
+  const waiting =
+    WORKER_WAIT_NOTE.test((node.blockedReason ?? '').trim()) && !node.tags.includes(FLEET_FIX_TAG) && !node.tags.includes(FLEET_CHECK_TAG);
+  return !waiting;
 }
 
 /** A blocker the fleet worker wrote about its own PR that an agent can work on: red CI, a merge conflict. */
