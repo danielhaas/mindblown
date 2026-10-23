@@ -384,6 +384,8 @@ export {
   stalledAskId,
   stalledAskNodeId,
   isStalledAskDue,
+  stalledAskAfterHours,
+  DECISION_TITLE_RE,
   buildStalledAsk,
   stalledAnswerAction,
   stalledAnswerNote,

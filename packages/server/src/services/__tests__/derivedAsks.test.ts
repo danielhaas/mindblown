@@ -79,6 +79,12 @@ describe('stalled questions', () => {
     expect(rows[0].ask.options).toEqual(['Done', 'Back to the queue', 'For a person']);
   });
 
+  it('a "Decision:" ticket asks once it is stalled, not after a day', async () => {
+    state.nodes = [...state.nodes.filter((n) => (n as { id: string }).id !== 'new'), node('new', { text: 'Decision: STP participation', percentComplete: 75 })];
+    const rows = (await derivedAskRows(['m1'])).filter((r) => r.ask.id.startsWith('stalled-'));
+    expect(rows.map((r) => r.ask.id)).toEqual(['stalled-old', 'stalled-new']);
+  });
+
   it('a recent Later or Delegate snoozes the row; an old one or a plain answer does not', async () => {
     const stalledIds = async () => (await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id).filter((id) => id.startsWith('stalled-'));
     state.stored = [{ ask: { id: 'stalled-old', unblocks: {} }, mapId: 'm1', status: 'later', answeredAt: hoursAgo(2) }];

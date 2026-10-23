@@ -2,7 +2,8 @@
  * The rows MindBlown adds to the Questions card itself, derived on read:
  *
  *   stalled-<node>  in progress, nobody on it, no change for
- *                   STALLED_ASK_AFTER_HOURS (core stalled.ts) — a question
+ *                   a day, a "Decision:" ticket 2 h (core
+ *                   stalledAskAfterHours) — a question
  *   step-<node>     an open ticket carrying a skip tag (needs-human …):
  *                   a step only a person can do (core humanSteps.ts)
  *   blocker-<node>  an open leaf with a manual blockedReason and no skip
@@ -40,7 +41,7 @@ import {
   dispatchSkipTag,
   isStalledAskDue,
   planAskWrites,
-  STALLED_ASK_AFTER_HOURS,
+  stalledAskAfterHours,
   stalledAnswerAction,
   stalledAnswerNote,
   stalledAskNodeId,
@@ -83,8 +84,8 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     const stalled = await stalledForMap(data.map, data.nodes, now).catch(() => []);
     for (const s of stalled) {
       const node = byId.get(s.nodeId);
-      if (!node || !isStalledAskDue(s, now)) continue;
-      const seen = new Date(Date.parse(s.lastChangeAt) + STALLED_ASK_AFTER_HOURS * 3_600_000).toISOString();
+      if (!node || !isStalledAskDue(s, now, node.text)) continue;
+      const seen = new Date(Date.parse(s.lastChangeAt) + stalledAskAfterHours(node.text) * 3_600_000).toISOString();
       out.push(openRow(buildStalledAsk(node, s, mapId, now), mapId, now, seen));
     }
 
