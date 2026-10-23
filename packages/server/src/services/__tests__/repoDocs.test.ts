@@ -144,6 +144,30 @@ describe('proposeRepoDocEdit (#552)', () => {
     expect(mocks.createBranch).not.toHaveBeenCalled();
   });
 
+  it('keeps a leading BOM the editor never saw', async () => {
+    mocks.getBlob.mockImplementation(async () => new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('# Vision')]));
+    await expect(proposeRepoDocEdit('m1', { ...edit, text: '# Vision' }, 'Dan')).rejects.toMatchObject({ code: 'NO_CHANGE' });
+    await proposeRepoDocEdit('m1', { ...edit, text: '# Vision 2' }, 'Dan');
+    expect([...mocks.putFile.mock.calls[0][2].content.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  });
+
+  it('refuses a doc that is not UTF-8 instead of writing U+FFFD into it', async () => {
+    mocks.getBlob.mockImplementation(async () => new Uint8Array([0x23, 0x20, 0xe4, 0x0a])); // Latin-1 "ä"
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toMatchObject({ status: 422, code: 'NOT_UTF8' });
+    expect(mocks.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('a multi-line summary: first line is the PR title, all of it the commit message', async () => {
+    await proposeRepoDocEdit('m1', { ...edit, message: 'docs: tighten vision\n\nWhy: shorter.' }, 'Dan');
+    expect(mocks.createPullRequest.mock.calls[0][2].title).toBe('docs: tighten vision');
+    expect(mocks.putFile.mock.calls[0][2].message).toBe('docs: tighten vision\n\nWhy: shorter.');
+  });
+
+  it('no write access says so, instead of a "could not read" error', async () => {
+    mocks.createBranch.mockRejectedValue(new ForgeApiError(403, 'Resource not accessible by integration'));
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toThrow(/no write access to o\/r/);
+  });
+
   it('refuses text over the doc cap', async () => {
     await expect(proposeRepoDocEdit('m1', { ...edit, text: 'x'.repeat(2 * 1024 * 1024 + 1) }, 'Dan')).rejects.toMatchObject({ status: 413 });
   });

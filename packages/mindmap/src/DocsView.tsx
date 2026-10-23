@@ -42,13 +42,43 @@ const DANGER = '#b91c1c';
 const POLL_MS = 60_000;
 
 interface EditState {
+  mapId: string;
   path: string;
   /** The blob the draft started from — the server refuses the proposal if the doc moved on. */
   baseSha: string;
+  /** Text as loaded, line endings normalised to LF (a textarea only ever yields LF). */
   original: string;
   draft: string;
+  /** The doc used CRLF: the proposal converts back, so the PR doesn't rewrite every line. */
+  crlf: boolean;
   message: string;
   preview: boolean;
+}
+
+/**
+ * An unsaved draft outlives the view: switching tabs or maps unmounts it.
+ * One draft per map, per browser tab (sessionStorage); try/catch because
+ * storage can be full or blocked.
+ */
+const draftKey = (mapId: string) => `mb-docs-draft:${mapId}`;
+
+function readDraft(mapId: string): EditState | null {
+  try {
+    const raw = sessionStorage.getItem(draftKey(mapId));
+    const d = raw ? (JSON.parse(raw) as EditState) : null;
+    return d && d.mapId === mapId && typeof d.draft === 'string' ? { ...d, preview: false } : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(mapId: string, edit: EditState | null) {
+  try {
+    if (edit) sessionStorage.setItem(draftKey(mapId), JSON.stringify(edit));
+    else sessionStorage.removeItem(draftKey(mapId));
+  } catch {
+    // Not persisted — the in-memory draft still works.
+  }
 }
 
 export function DocsView() {
@@ -62,7 +92,10 @@ export function DocsView() {
   const [saving, setSaving] = useState(false);
   const [editError, setEditError] = useState<{ code?: string; message: string } | null>(null);
   const [proposed, setProposed] = useState<{ path: string; number: number; url: string } | null>(null);
+  const [restored, setRestored] = useState(false);
   const dirty = !!edit && edit.draft !== edit.original;
+  /** Set synchronously: two submits before a re-render (Ctrl+Enter repeat) must not open two PRs. */
+  const inFlight = useRef(false);
   const [list, setList] = useState<api.RepoDocsList | null>(null);
   const [listError, setListError] = useState<{ code?: string; message: string } | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
@@ -95,10 +128,16 @@ export function DocsView() {
   }, [mapId]);
 
   /** Leaving the editor with changes asks first. */
-  const leaveEdit = (): boolean => {
-    if (dirty && !window.confirm('Discard your unsaved edit?')) return false;
+  const dropEdit = () => {
+    if (edit) writeDraft(edit.mapId, null);
     setEdit(null);
     setEditError(null);
+    setRestored(false);
+  };
+
+  const leaveEdit = (): boolean => {
+    if (dirty && !window.confirm('Discard your unsaved edit?')) return false;
+    dropEdit();
     return true;
   };
 
@@ -122,53 +161,72 @@ export function DocsView() {
     if (mapId && membersMapId !== mapId) void loadMembers();
   }, [mapId, membersMapId, loadMembers]);
 
-  // An unsaved draft survives neither a reload nor a closed tab — ask.
+  // A closed tab or a reload loses even the stored draft's context — ask.
   useEffect(() => {
     if (!dirty) return;
-    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = ''; // older Chrome / Safari need it to show the prompt
+    };
     window.addEventListener('beforeunload', warn);
     return () => window.removeEventListener('beforeunload', warn);
   }, [dirty]);
 
+  // Keep a changed draft across tab and map switches. Removal is explicit
+  // (dropEdit) — a null `edit` also means "just mounted, not restored yet".
+  useEffect(() => {
+    if (edit) writeDraft(edit.mapId, dirty ? edit : null);
+  }, [edit, dirty]);
+
   const startEdit = () => {
-    if (!doc) return;
-    setEdit({ path: doc.path, baseSha: doc.sha, original: doc.text, draft: doc.text, message: '', preview: false });
+    if (!doc || !mapId) return;
+    const original = doc.text.replace(/\r\n/g, '\n');
+    setEdit({ mapId, path: doc.path, baseSha: doc.sha, original, draft: original, crlf: doc.text.includes('\r\n'), message: '', preview: false });
     setEditError(null);
     setProposed(null);
+    setRestored(false);
   };
 
   const propose = async () => {
-    if (!mapId || !edit || !dirty) return;
+    if (!mapId || !edit || !dirty || inFlight.current) return;
+    inFlight.current = true;
     setSaving(true);
     setEditError(null);
     try {
       const res = await api.proposeRepoDocEdit(mapId, {
         path: edit.path,
-        text: edit.draft,
+        text: edit.crlf ? edit.draft.replace(/\n/g, '\r\n') : edit.draft,
         baseSha: edit.baseSha,
         message: edit.message.trim() || undefined,
       });
       setProposed({ path: res.path, ...res.pullRequest });
-      setEdit(null);
+      dropEdit();
     } catch (err) {
       setEditError(err instanceof api.ApiError ? { code: err.code, message: err.message } : { message: String(err) });
+      // The server just re-read the branch; re-list so "Discard and reload" gets the new version.
+      if (err instanceof api.ApiError && err.code === 'CONFLICT') void loadList();
     } finally {
+      inFlight.current = false;
       setSaving(false);
     }
   };
 
-  // A different map is a different repo: start over.
+  // A different map is a different repo: start over — with that map's
+  // stored draft, if one was left there.
   useEffect(() => {
+    const saved = mapId ? readDraft(mapId) : null;
     setList(null);
     listRef.current = null;
     setListError(null);
-    setSelected(null);
+    setSelected(saved?.path ?? null);
     setDoc(null);
     setDocError(null);
-    setEdit(null);
+    setEdit(saved);
+    setRestored(!!saved);
     setEditError(null);
     setProposed(null);
     void loadList();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadList]);
 
   useEffect(() => {
@@ -183,11 +241,15 @@ export function DocsView() {
     };
   }, [loadList]);
 
-  // First list, or the open doc deleted upstream → the default doc.
+  // First list, or the open doc deleted upstream → the default doc. Not
+  // while a draft is open: it stays on screen (see `editGone`).
   useEffect(() => {
-    if (!list) return;
+    if (!list || edit) return;
     if (!selected || !list.docs.some((d) => d.path === selected)) setSelected(defaultDoc(list.docs));
-  }, [list, selected]);
+  }, [list, selected, edit]);
+
+  /** The doc being edited was deleted or renamed on the branch. */
+  const editGone = !!edit && !!list && !list.docs.some((d) => d.path === edit.path);
 
   const selectedSha = list?.docs.find((d) => d.path === selected)?.sha ?? null;
 
@@ -375,7 +437,26 @@ export function DocsView() {
         </aside>
 
         <main className="mb-docs-body" ref={bodyRef}>
-          {doc && doc.path === selected ? (
+          {edit && editGone ? (
+            <div className="mb-docs-editor">
+              <div role="alert" style={{ ...bannerStyle, background: '#fef2f2', borderColor: '#fecaca', color: DANGER }}>
+                <span>
+                  {edit.path} no longer exists on {list.repo.branch} — it was deleted or renamed. Copy your text below before you discard it.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!window.confirm('Discard your unsaved edit?')) return;
+                    dropEdit();
+                  }}
+                  style={linkButtonStyle}
+                >
+                  Discard
+                </button>
+              </div>
+              <textarea className="mb-docs-textarea" value={edit.draft} readOnly aria-label={`Unsaved text of ${edit.path}`} />
+            </div>
+          ) : doc && doc.path === selected ? (
             <>
               {proposed && proposed.path === doc.path && (
                 <div role="status" style={bannerStyle}>
@@ -444,6 +525,11 @@ export function DocsView() {
                       {saving ? 'Opening PR…' : 'Propose change'}
                     </button>
                   </div>
+                  {restored && !editError && (
+                    <div role="status" style={bannerStyle}>
+                      <span>Restored your unsaved edit of {edit.path}.</span>
+                    </div>
+                  )}
                   {editError && (
                     <div role="alert" style={{ ...bannerStyle, background: '#fef2f2', borderColor: '#fecaca', color: DANGER }}>
                       <span>
@@ -455,8 +541,9 @@ export function DocsView() {
                         <button
                           type="button"
                           onClick={() => {
-                            setEdit(null);
-                            setEditError(null);
+                            dropEdit();
+                            // The new sha reaches the reload effect through a fresh list.
+                            void loadList();
                             setRetry((n) => n + 1);
                           }}
                           style={linkButtonStyle}

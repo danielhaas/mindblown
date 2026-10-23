@@ -41,9 +41,26 @@ describe('list_docs / read_doc', () => {
     expect(await readDocTool.handler(backend, { mapId: 'm', path: 'README.md' })).toContain('sha abc123');
   });
 
+  it('propose_doc_edit refuses a drastic shrink (one page of a paged doc) unless allowed', async () => {
+    const calls: unknown[] = [];
+    const backend = {
+      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 1000, text: 'x'.repeat(1000), webUrl: 'u' }),
+      proposeRepoDocEdit: async (...a: unknown[]) => {
+        calls.push(a);
+        return { path: 'README.md', branch: 'b', commitSha: 'c0ffee1', pullRequest: { number: 1, url: 'u' } };
+      },
+    } as unknown as ToolBackend;
+    const refused = await proposeDocEditTool.handler(backend, { mapId: 'm', path: 'README.md', text: 'x'.repeat(300), baseSha: 'a' });
+    expect(refused).toMatch(/^Refused: .*less than half/);
+    expect(calls).toHaveLength(0);
+    await proposeDocEditTool.handler(backend, { mapId: 'm', path: 'README.md', text: 'x'.repeat(300), baseSha: 'a', allowLargeDeletion: true });
+    expect(calls).toHaveLength(1);
+  });
+
   it('propose_doc_edit forwards the edit and prints the PR', async () => {
     const calls: unknown[] = [];
     const backend = {
+      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 5, text: '# Hi\n', webUrl: 'u' }),
       proposeRepoDocEdit: async (mapId: string, input: unknown) => {
         calls.push([mapId, input]);
         return { path: 'README.md', branch: 'mindblown/docs-readme-x', commitSha: 'c0ffee1234', pullRequest: { number: 12, url: 'https://github.com/o/r/pull/12' } };
@@ -76,7 +93,7 @@ describe('list_docs / read_doc', () => {
     expect(calls).toEqual([['read', 'm', 'docs/vision.md']]);
     expect(out).toContain('# docs/vision.md (30 bytes) — chars 5–14 of 30');
     expect(out).toContain('https://github.com/o/r/blob/main/docs/vision.md');
-    expect(out).toContain('\n\n' + 'x'.repeat(10) + '\n\n[15 characters remain — call read_doc again with offset 15]');
+    expect(out).toContain('\n\n' + 'x'.repeat(10) + '\n\n[15 characters remain — call read_doc again with offset 15. To edit, propose_doc_edit needs the complete text, not this page.]');
   });
 
   it('read_doc returns a short doc whole, without a continue hint', async () => {

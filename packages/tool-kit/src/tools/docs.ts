@@ -51,7 +51,10 @@ export const readDocTool = defineTool({
     const end = Math.min(offset + (args.maxChars ?? DOC_DEFAULT_CHARS), total);
     const range = total === 0 ? 'empty file' : offset === total ? `end of file (${total} chars in total)` : `chars ${offset}–${end - 1} of ${total}`;
     const header = `# ${doc.path} (${formatBytes(doc.size)}) — ${range}\nsha ${doc.sha} · ${doc.webUrl}`;
-    const tail = end < total ? `\n\n[${total - end} characters remain — call read_doc again with offset ${end}]` : '';
+    const tail =
+      end < total
+        ? `\n\n[${total - end} characters remain — call read_doc again with offset ${end}. To edit, propose_doc_edit needs the complete text, not this page.]`
+        : '';
     return `${header}\n\n${doc.text.slice(offset, end)}${tail}`;
   },
 });
@@ -65,9 +68,25 @@ export const proposeDocEditTool = defineTool({
     path: z.string().describe('Repo-relative path of an existing doc, as list_docs prints it'),
     text: z.string().describe('The complete new file content (not a diff)'),
     baseSha: z.string().describe('The sha read_doc printed for the version you edited'),
-    message: z.string().optional().describe('Commit message and PR title (default "docs: update <path>")'),
+    message: z.string().optional().describe('Commit message; its first line is the PR title (default "docs: update <path>")'),
+    allowLargeDeletion: z
+      .boolean()
+      .optional()
+      .describe('Set true only when you deliberately remove more than half of the document'),
   },
   handler: async (backend, args) => {
+    // read_doc pages long docs; one page passed back as `text` would delete
+    // the rest of the file in the PR. Refuse a drastic shrink unless meant.
+    if (!args.allowLargeDeletion) {
+      const current = await backend.readRepoDoc(args.mapId, args.path);
+      if (args.text.length < current.text.length / 2) {
+        return (
+          `Refused: the new text (${args.text.length} chars) is less than half of ${args.path} (${current.text.length} chars). ` +
+          'propose_doc_edit replaces the WHOLE file — if you read it in pages, read every page and send the complete text. ' +
+          'If you really mean to delete most of it, call again with allowLargeDeletion: true.'
+        );
+      }
+    }
     const res = await backend.proposeRepoDocEdit(args.mapId, { path: args.path, text: args.text, baseSha: args.baseSha, message: args.message });
     return `Opened PR #${res.pullRequest.number} for ${res.path}: ${res.pullRequest.url}\nbranch ${res.branch} · commit ${res.commitSha.slice(0, 7)}`;
   },

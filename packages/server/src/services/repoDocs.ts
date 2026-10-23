@@ -39,8 +39,8 @@ const BLOB_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 export class RepoDocsError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409 | 413 | 502,
-    readonly code: 'NO_REPO' | 'NOT_FOUND' | 'TOO_LARGE' | 'FORGE_ERROR' | 'CONFLICT' | 'NO_CHANGE',
+    readonly status: 400 | 404 | 409 | 413 | 422 | 502,
+    readonly code: 'NO_REPO' | 'NOT_FOUND' | 'TOO_LARGE' | 'FORGE_ERROR' | 'CONFLICT' | 'NO_CHANGE' | 'NOT_UTF8',
     message: string,
   ) {
     super(message);
@@ -230,8 +230,6 @@ export async function proposeRepoDocEdit(
   proposedBy: string,
 ): Promise<ProposeDocEditResult> {
   const { path, text, baseSha } = input;
-  const content = new TextEncoder().encode(text);
-  if (content.length > DOC_MAX_BYTES) throw new RepoDocsError(413, 'TOO_LARGE', `The new text is larger than ${DOC_MAX_BYTES / 1024 / 1024} MB`);
   // Judge staleness against the branch as it is now, not a cached tree.
   trees.delete(mapId);
   const snap = await snapshot(mapId);
@@ -241,20 +239,33 @@ export async function proposeRepoDocEdit(
     throw new RepoDocsError(409, 'CONFLICT', `'${path}' changed on ${snap.branch} since it was opened — reload it and apply the edit again`);
   }
   const current = await blob(snap, file);
+  // The editor saw decoded text: a doc that is not UTF-8 would come back
+  // with U+FFFD where its bytes were — refuse rather than corrupt it.
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(current);
+  } catch {
+    throw new RepoDocsError(422, 'NOT_UTF8', `'${path}' is not UTF-8 text — edit it in the repo instead`);
+  }
+  // Decoding drops a leading BOM; put it back so the PR doesn't remove it.
+  const bom = current[0] === 0xef && current[1] === 0xbb && current[2] === 0xbf;
+  const content = new TextEncoder().encode(bom && !text.startsWith('﻿') ? `﻿${text}` : text);
+  if (content.length > DOC_MAX_BYTES) throw new RepoDocsError(413, 'TOO_LARGE', `The new text is larger than ${DOC_MAX_BYTES / 1024 / 1024} MB`);
   if (current.length === content.length && current.every((b, i) => b === content[i])) {
     throw new RepoDocsError(400, 'NO_CHANGE', 'The text is unchanged — nothing to propose');
   }
 
   const branch = editBranchName(path, new Date(), Math.random().toString(16).slice(2, 6));
-  const title = input.message?.trim() || `docs: update ${path}`;
+  // The summary's first line is the title; all of it is the commit message.
+  const summary = input.message?.trim() || `docs: update ${path}`;
+  const title = summary.split('\n')[0].trim().slice(0, 200);
   const { forge, owner, repo } = snap;
   try {
     await forge.createBranch(owner, repo, branch, snap.branch);
   } catch (err) {
-    throw forgeError(err);
+    throw forgeWriteError(err, `${owner}/${repo}`);
   }
   try {
-    const commit = await forge.putFile(owner, repo, { path, branch, content, blobSha: baseSha, message: title });
+    const commit = await forge.putFile(owner, repo, { path, branch, content, blobSha: baseSha, message: summary });
     const pr = await forge.createPullRequest(owner, repo, {
       title,
       head: branch,
@@ -264,12 +275,23 @@ export async function proposeRepoDocEdit(
     return { path, branch, commitSha: commit.commitSha, pullRequest: pr };
   } catch (err) {
     // Leave no orphan branch behind; the error is the answer either way.
-    await forge.deleteBranch(owner, repo, branch).catch(() => undefined);
+    // (A PR that timed out but was created loses its head here and closes —
+    // a retry then opens a fresh one, which beats a dangling branch.)
+    await forge.deleteBranch(owner, repo, branch).catch((cleanupErr) => {
+      console.warn(`[docs] could not delete orphan branch ${owner}/${repo}:${branch}:`, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+    });
     if (err instanceof ForgeApiError && err.status === 409) {
       throw new RepoDocsError(409, 'CONFLICT', `'${path}' changed on ${snap.branch} while the edit was being saved — reload it and apply the edit again`);
     }
-    throw forgeError(err);
+    throw forgeWriteError(err, `${owner}/${repo}`);
   }
+}
+
+function forgeWriteError(err: unknown, repo: string): RepoDocsError {
+  if (err instanceof ForgeApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+    return new RepoDocsError(502, 'FORGE_ERROR', `The repo connection has no write access to ${repo} (branches, contents and pull requests) — ${err.message}`);
+  }
+  return new RepoDocsError(502, 'FORGE_ERROR', `Could not write to the repo: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 /** An image a doc embeds by a relative path. */
