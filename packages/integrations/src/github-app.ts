@@ -463,27 +463,28 @@ export function buildOAuthAuthorizeUrl(state: string): string {
 }
 
 /**
- * List all installations of the GitHub App that a user has access to.
- * Uses the App JWT (not a user token).
+ * The App's installations this GitHub user can reach, read with the
+ * user's own access token. This is the ownership answer: an
+ * installation_id from a redirect or a request body is only the caller's
+ * when it is in this list (GitHub's setup-URL docs say as much).
  */
-export async function listAppInstallations(): Promise<Array<{
+export async function listUserInstallations(accessToken: string): Promise<Array<{
   id: number;
   account: GitHubInstallationAccount;
 }>> {
-  const appJwt = await mintAppJwt();
-
-  const res = await fetch(`${GITHUB_API_BASE}/app/installations`, {
+  const res = await fetch(`${GITHUB_API_BASE}/user/installations?per_page=100`, {
     headers: {
       Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${appJwt}`,
+      Authorization: `Bearer ${accessToken}`,
       'X-GitHub-Api-Version': '2022-11-28',
     },
   });
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Failed to list installations: ${res.status} ${body}`);
+    throw new Error(`Failed to list the user's installations: ${res.status} ${body}`);
   }
 
-  return (await res.json()) as Array<{ id: number; account: GitHubInstallationAccount }>;
+  const data = (await res.json()) as { installations?: Array<{ id: number; account: GitHubInstallationAccount }> };
+  return data.installations ?? [];
 }

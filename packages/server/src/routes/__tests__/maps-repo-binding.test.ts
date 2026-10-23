@@ -1,0 +1,130 @@
+/**
+ * PUT /api/maps/:id { githubInstallationId, githubRepoOwner, githubRepoName }
+ * — the binding decides whose repo the map syncs and imports with the App's
+ * token. Changing it needs map admin and an installation recorded for the
+ * caller; resending the current binding (a settings form) is not a change.
+ *
+ * Harness mirrors maps-fleet-connect.test.ts; the db stub answers the
+ * service's read of the map's current binding.
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import Fastify, { type FastifyInstance } from 'fastify';
+
+const updateMapMock = vi.fn();
+const state = vi.hoisted(() => ({
+  current: { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null } as Record<string, string | null>,
+  owned: new Set<string>(),
+}));
+
+vi.mock('../../db/maps.js', () => ({
+  updateMap: (...args: unknown[]) => updateMapMock(...args),
+  getMap: vi.fn(),
+  listMapsForUser: async () => [],
+  createBaseline: vi.fn(),
+  deleteMap: vi.fn(),
+  createMap: vi.fn(),
+}));
+vi.mock('../../db/fleets.js', () => ({ getFleet: vi.fn(), getMapFleetId: async () => null, listFleetMaps: async () => [] }));
+vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
+
+const perm = vi.hoisted(() => ({ level: 'admin' as 'view' | 'edit' | 'admin' | null }));
+vi.mock('../../db/permissions.js', () => ({
+  getPermission: async () => perm.level,
+  hasPermission: (actual: string | null, required: string) => {
+    if (actual == null) return false;
+    const rank: Record<string, number> = { view: 1, edit: 2, admin: 3 };
+    return (rank[actual] ?? 0) >= (rank[required] ?? 0);
+  },
+}));
+vi.mock('../../lib/githubInstallations.js', () => ({
+  userHasGithubInstallation: async (_u: string, id: string) => state.owned.has(id),
+}));
+
+vi.mock('../../db/versions.js', () => ({}));
+vi.mock('../../db/cycles.js', () => ({}));
+vi.mock('../../db/connection.js', () => {
+  const chain = { from: () => chain, where: () => chain, limit: async () => [state.current] };
+  return { db: { select: () => chain } };
+});
+vi.mock('../../db/schema.js', () => ({ workspaces: {}, users: {}, releaseSnapshots: {}, maps: {} }));
+vi.mock('../../lib/releaseForecast.js', () => ({ computeReleaseForecast: vi.fn() }));
+vi.mock('../../lib/releaseSnapshots.js', () => ({ snapshotReleaseForecastForMap: vi.fn() }));
+vi.mock('../../lib/calendarIcs.js', () => ({
+  buildCalendarIcs: vi.fn(),
+  calendarTokenFor: vi.fn(),
+  verifyCalendarToken: vi.fn(),
+  CALENDAR_VIEWS: [],
+}));
+vi.mock('drizzle-orm', () => ({ and: vi.fn(), eq: vi.fn(), lte: vi.fn(), desc: vi.fn() }));
+
+import { mapRoutes } from '../maps.js';
+
+const MAP_ID = 'mmmm-mmmm-mmmm-mmmm';
+const BIND = { githubInstallationId: '111', githubRepoOwner: 'alice-org', githubRepoName: 'shop' };
+
+async function put(payload: Record<string, unknown>) {
+  const app: FastifyInstance = Fastify({ logger: false });
+  app.addHook('preHandler', async (req) => {
+    req.userId = 'u1';
+  });
+  await app.register(mapRoutes);
+  const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_ID}`, payload });
+  await app.close();
+  return res;
+}
+
+beforeEach(() => {
+  perm.level = 'admin';
+  state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null };
+  state.owned = new Set(['111']);
+  updateMapMock.mockReset();
+  updateMapMock.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({ id: MAP_ID, name: 'M', ...input }));
+});
+
+describe('PUT /api/maps/:id — GitHub repo binding', () => {
+  it("binds when the caller is map admin and the installation is theirs", async () => {
+    const res = await put(BIND);
+    expect(res.statusCode).toBe(200);
+    expect(updateMapMock).toHaveBeenCalledWith(MAP_ID, BIND, 'u1');
+  });
+
+  it('refuses an edit-level member', async () => {
+    perm.level = 'edit';
+    const res = await put(BIND);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/admin/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses a map admin binding someone else's installation", async () => {
+    state.owned = new Set();
+    const res = await put(BIND);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/not connected to your account/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses re-pointing the repo under the current, foreign installation", async () => {
+    state.current = { ...BIND };
+    state.owned = new Set();
+    const res = await put({ githubRepoOwner: 'alice-org', githubRepoName: 'secret' });
+    expect(res.statusCode).toBe(403);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it('lets an editor resend the binding the map already has', async () => {
+    perm.level = 'edit';
+    state.current = { ...BIND };
+    state.owned = new Set();
+    const res = await put({ ...BIND, name: 'Renamed' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('lets a map admin disconnect the repo', async () => {
+    state.current = { ...BIND };
+    state.owned = new Set();
+    const res = await put({ githubInstallationId: null, githubRepoOwner: null, githubRepoName: null });
+    expect(res.statusCode).toBe(200);
+  });
+});

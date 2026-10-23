@@ -135,7 +135,7 @@ export {
   getInstallationDetails,
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
-  listAppInstallations,
+  listUserInstallations,
 } from './github-app.js';
 
 export type {
