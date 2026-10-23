@@ -415,34 +415,6 @@ export async function getGitHubUser(accessToken: string): Promise<GitHubUser> {
   return (await res.json()) as GitHubUser;
 }
 
-/**
- * Fetch installation details (account login, type, etc.)
- */
-export async function getInstallationDetails(installationId: string): Promise<{
-  id: number;
-  account: GitHubInstallationAccount;
-}> {
-  const appJwt = await mintAppJwt();
-
-  const res = await fetch(
-    `${GITHUB_API_BASE}/app/installations/${installationId}`,
-    {
-      headers: {
-        Accept: 'application/vnd.github+json',
-        Authorization: `Bearer ${appJwt}`,
-        'X-GitHub-Api-Version': '2022-11-28',
-      },
-    },
-  );
-
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to fetch installation: ${res.status} ${body}`);
-  }
-
-  return (await res.json()) as { id: number; account: GitHubInstallationAccount };
-}
-
 // ── Install URL ──────────────────────────────────────────────────
 
 /**
@@ -463,6 +435,29 @@ export function buildOAuthAuthorizeUrl(state: string): string {
 }
 
 /**
+ * Walk a user-token list endpoint that answers with an envelope
+ * (`{ total_count, <key>: [...] }`), following `Link: rel="next"` with the
+ * same page ceiling and origin guard as `listInstallationRepositories`.
+ */
+async function walkUserEnvelope<T>(accessToken: string, firstUrl: string, key: string): Promise<T[]> {
+  const MAX_PAGES = 100;
+  const items: T[] = [];
+  let url: string | null = firstUrl;
+  let pages = 0;
+  while (url) {
+    const page: GitHubPage<Record<string, unknown> & { total_count: number }> =
+      await githubFetchPage(url, new GitHubForge({ token: accessToken }));
+    items.push(...((page.data[key] as T[] | undefined) ?? []));
+    pages += 1;
+    if (items.length >= page.data.total_count) break;
+    if (!page.nextUrl || pages >= MAX_PAGES) break;
+    assertSamePaginationOrigin(firstUrl, page.nextUrl);
+    url = page.nextUrl;
+  }
+  return items;
+}
+
+/**
  * The App's installations this GitHub user can reach, read with the
  * user's own access token. This is the ownership answer: an
  * installation_id from a redirect or a request body is only the caller's
@@ -472,19 +467,19 @@ export async function listUserInstallations(accessToken: string): Promise<Array<
   id: number;
   account: GitHubInstallationAccount;
 }>> {
-  const res = await fetch(`${GITHUB_API_BASE}/user/installations?per_page=100`, {
-    headers: {
-      Accept: 'application/vnd.github+json',
-      Authorization: `Bearer ${accessToken}`,
-      'X-GitHub-Api-Version': '2022-11-28',
-    },
-  });
+  return walkUserEnvelope(accessToken, `${GITHUB_API_BASE}/user/installations?per_page=100`, 'installations');
+}
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Failed to list the user's installations: ${res.status} ${body}`);
-  }
-
-  const data = (await res.json()) as { installations?: Array<{ id: number; account: GitHubInstallationAccount }> };
-  return data.installations ?? [];
+/**
+ * The repos of one installation that this user can reach — not every repo
+ * the App sees there. An org member with access to one repo of an org-wide
+ * installation gets that repo here, not its neighbours. GitHub answers
+ * 403/404 when the installation is not the user's at all.
+ */
+export async function listUserInstallationRepositories(accessToken: string, installationId: string): Promise<GitHubRepo[]> {
+  return walkUserEnvelope(
+    accessToken,
+    `${GITHUB_API_BASE}/user/installations/${encodeURIComponent(installationId)}/repositories?per_page=100`,
+    'repositories',
+  );
 }

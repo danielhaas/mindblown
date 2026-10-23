@@ -18,13 +18,12 @@ import { githubInstallations, userGithubIdentities } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
 import { eq, and, notInArray } from 'drizzle-orm';
 import { findGithubIdentity, githubAccessTokenFor } from '../lib/githubIdentity.js';
-import { userHasGithubInstallation } from '../lib/githubInstallations.js';
+import { userInstallationRepos } from '../lib/githubInstallations.js';
 import {
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
   exchangeUserAuthorizationCode,
   getGitHubUser,
-  listInstallationRepositories,
   listUserInstallations,
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
@@ -197,11 +196,14 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         if (identity) userToken = await githubAccessTokenFor(identity).catch(() => null);
       }
       if (!userToken) {
-        return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=installation_unverified`);
+        // Installed without the OAuth step and no identity yet: sign in
+        // with GitHub; that callback (code, no installation_id) syncs the
+        // user's installations, this one included.
+        return reply.redirect(buildOAuthAuthorizeUrl(signState(userId)));
       }
 
-      const reachable = await listUserInstallations(userToken);
       if (query.installation_id) {
+        const reachable = await listUserInstallations(userToken);
         const inst = reachable.find((i) => String(i.id) === query.installation_id);
         if (!inst) {
           return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=installation_not_yours`);
@@ -209,7 +211,15 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         await upsertInstallation(userId, inst);
       } else {
         // OAuth-only flow: sync the full list, and drop rows the user can
-        // no longer reach (uninstalled, or access removed on GitHub).
+        // no longer reach (uninstalled, or access removed on GitHub). The
+        // identity is saved already; a failed listing keeps the old rows.
+        let reachable: Awaited<ReturnType<typeof listUserInstallations>>;
+        try {
+          reachable = await listUserInstallations(userToken);
+        } catch (syncErr) {
+          console.warn('[github] Failed to sync installations:', syncErr);
+          return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
+        }
         for (const inst of reachable) await upsertInstallation(userId, inst);
         const keep = reachable.map((i) => String(i.id));
         await db.delete(githubInstallations).where(and(
@@ -275,12 +285,6 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     // If installationId provided, use it directly; otherwise use the user's first installation
     let installationId = query.installationId;
 
-    if (installationId && !(await userHasGithubInstallation(userId, installationId))) {
-      return reply.status(403).send({
-        error: { code: 'FORBIDDEN', message: 'That GitHub App installation is not connected to your account' },
-      });
-    }
-
     if (!installationId) {
       const [inst] = await db.select({ installationId: githubInstallations.installationId })
         .from(githubInstallations)
@@ -295,11 +299,15 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       installationId = inst.installationId;
     }
 
-    try {
-      const repos = await listInstallationRepositories(installationId);
-      return reply.send({
+    // Listed with the user's own token: only installations and repos they
+    // can reach on GitHub, whatever the request names.
+    const access = await userInstallationRepos(userId, installationId);
+    if ('status' in access) {
+      return reply.status(access.status).send({ error: { code: access.code, message: access.message } });
+    }
+    return reply.send({
         installationId,
-        repositories: repos.map((r) => ({
+        repositories: access.repos.map((r) => ({
           id: r.id,
           fullName: r.full_name,
           name: r.name,
@@ -309,12 +317,6 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
           description: r.description,
         })),
       });
-    } catch (err) {
-      console.error('[github] List repos failed:', err);
-      return reply.status(502).send({
-        error: { code: 'GITHUB_ERROR', message: 'Failed to list repositories from GitHub' },
-      });
-    }
   });
 
   // ── POST /api/auth/github/disconnect ─────────────────────────────

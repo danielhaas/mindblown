@@ -1,8 +1,9 @@
 /**
  * PUT /api/maps/:id { githubInstallationId, githubRepoOwner, githubRepoName }
  * — the binding decides whose repo the map syncs and imports with the App's
- * token. Changing it needs map admin and an installation recorded for the
- * caller; resending the current binding (a settings form) is not a change.
+ * token. Changing it needs map admin and a repo the caller's own GitHub
+ * token reaches in that installation; resending the current binding (a
+ * settings form) is not a change.
  *
  * Harness mirrors maps-fleet-connect.test.ts; the db stub answers the
  * service's read of the map's current binding.
@@ -14,7 +15,8 @@ import Fastify, { type FastifyInstance } from 'fastify';
 const updateMapMock = vi.fn();
 const state = vi.hoisted(() => ({
   current: { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null } as Record<string, string | null>,
-  owned: new Set<string>(),
+  /** installationId → repos the caller's token reaches there. */
+  reach: new Map<string, string[]>(),
 }));
 
 vi.mock('../../db/maps.js', () => ({
@@ -38,7 +40,12 @@ vi.mock('../../db/permissions.js', () => ({
   },
 }));
 vi.mock('../../lib/githubInstallations.js', () => ({
-  userHasGithubInstallation: async (_u: string, id: string) => state.owned.has(id),
+  userInstallationRepos: async (_u: string, id: string) => {
+    const repos = state.reach.get(id);
+    return repos
+      ? { repos: repos.map((full_name) => ({ full_name })) }
+      : { status: 403, code: 'FORBIDDEN', message: 'That GitHub App installation is not connected to your account' };
+  },
 }));
 
 vi.mock('../../db/versions.js', () => ({}));
@@ -77,7 +84,7 @@ async function put(payload: Record<string, unknown>) {
 beforeEach(() => {
   perm.level = 'admin';
   state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null };
-  state.owned = new Set(['111']);
+  state.reach = new Map([['111', ['Alice-Org/shop']]]);
   updateMapMock.mockReset();
   updateMapMock.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({ id: MAP_ID, name: 'M', ...input }));
 });
@@ -98,16 +105,29 @@ describe('PUT /api/maps/:id — GitHub repo binding', () => {
   });
 
   it("refuses a map admin binding someone else's installation", async () => {
-    state.owned = new Set();
+    state.reach = new Map();
     const res = await put(BIND);
     expect(res.statusCode).toBe(403);
     expect(res.json().error.message).toMatch(/not connected to your account/);
     expect(updateMapMock).not.toHaveBeenCalled();
   });
 
+  it('refuses a repo of the installation that the caller cannot reach', async () => {
+    const res = await put({ ...BIND, githubRepoName: 'secret' });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/no access to alice-org\/secret/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a repo with no installation (that path is /connect with a token)', async () => {
+    const res = await put({ githubInstallationId: null, githubRepoOwner: 'alice-org', githubRepoName: 'shop' });
+    expect(res.statusCode).toBe(400);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
   it("refuses re-pointing the repo under the current, foreign installation", async () => {
     state.current = { ...BIND };
-    state.owned = new Set();
+    state.reach = new Map();
     const res = await put({ githubRepoOwner: 'alice-org', githubRepoName: 'secret' });
     expect(res.statusCode).toBe(403);
     expect(updateMapMock).not.toHaveBeenCalled();
@@ -116,14 +136,14 @@ describe('PUT /api/maps/:id — GitHub repo binding', () => {
   it('lets an editor resend the binding the map already has', async () => {
     perm.level = 'edit';
     state.current = { ...BIND };
-    state.owned = new Set();
+    state.reach = new Map();
     const res = await put({ ...BIND, name: 'Renamed' });
     expect(res.statusCode).toBe(200);
   });
 
   it('lets a map admin disconnect the repo', async () => {
     state.current = { ...BIND };
-    state.owned = new Set();
+    state.reach = new Map();
     const res = await put({ githubInstallationId: null, githubRepoOwner: null, githubRepoName: null });
     expect(res.statusCode).toBe(200);
   });

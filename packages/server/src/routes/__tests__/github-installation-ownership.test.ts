@@ -3,7 +3,7 @@
  * token lists it. The install callback stores nothing on the word of the
  * installation_id in the redirect URL, the OAuth-only flow syncs the user's
  * list (never every installation of the App), and the repository listing
- * refuses an installation id that is not recorded for the caller.
+ * goes through the user's own token (lib/githubInstallations).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify from 'fastify';
@@ -54,13 +54,16 @@ vi.mock('../../lib/githubIdentity.js', () => ({
   githubAccessTokenFor: async () => 'stored-token',
 }));
 vi.mock('../../lib/githubInstallations.js', () => ({
-  userHasGithubInstallation: async (_u: string, id: string) => identity.owned.has(id),
+  userInstallationRepos: async (_u: string, id: string) =>
+    identity.owned.has(id)
+      ? { repos: [{ id: 1, full_name: 'alice-org/shop', name: 'shop', owner: { login: 'alice-org' }, private: true, html_url: '', description: null }] }
+      : { status: 403, code: 'FORBIDDEN', message: 'not yours' },
 }));
 
 const gh = vi.hoisted(() => ({
   userInstallations: [] as Array<{ id: number; account: { login: string; type: string; id: number } }>,
   tokenSeen: [] as string[],
-  listRepos: vi.fn(async () => [] as unknown[]),
+  listFails: false,
 }));
 vi.mock('@mindblown/integrations', () => ({
   isGitHubAppConfigured: () => true,
@@ -68,8 +71,11 @@ vi.mock('@mindblown/integrations', () => ({
   buildOAuthAuthorizeUrl: () => 'https://github.test/oauth',
   exchangeUserAuthorizationCode: async () => ({ accessToken: 'fresh-token', refreshToken: null, expiresIn: null, scope: '' }),
   getGitHubUser: async () => ({ id: 7, login: 'alice', avatar_url: '' }),
-  listUserInstallations: async (token: string) => { gh.tokenSeen.push(token); return gh.userInstallations; },
-  listInstallationRepositories: (...a: unknown[]) => gh.listRepos(...(a as [])),
+  listUserInstallations: async (token: string) => {
+    gh.tokenSeen.push(token);
+    if (gh.listFails) throw new Error('GitHub down');
+    return gh.userInstallations;
+  },
 }));
 
 import { githubAuthRoutes } from '../auth-github.js';
@@ -99,7 +105,7 @@ beforeEach(() => {
   identity.owned = new Set();
   gh.userInstallations = [ALICE_ORG];
   gh.tokenSeen = [];
-  gh.listRepos.mockClear();
+  gh.listFails = false;
 });
 
 describe('GitHub install callback — installation ownership', () => {
@@ -129,11 +135,19 @@ describe('GitHub install callback — installation ownership', () => {
     expect(installationInserts()).toHaveLength(1);
   });
 
-  it('without a code or a stored identity, stores nothing', async () => {
+  it('without a code or a stored identity, stores nothing and sends the user to sign in', async () => {
     const app = await build();
     const res = await app.inject({ method: 'GET', url: `/api/auth/github/install/callback?state=${state}&installation_id=111` });
-    expect(reason(res.headers.location)).toBe('installation_unverified');
+    expect(res.headers.location).toBe('https://github.test/oauth');
     expect(installationInserts()).toEqual([]);
+  });
+
+  it('OAuth-only flow keeps the stored rows when GitHub fails to list', async () => {
+    gh.listFails = true;
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: `/api/auth/github/install/callback?state=${state}&code=c` });
+    expect(res.headers.location).toMatch(/gh=connected/);
+    expect(calls.deletes).toEqual([]);
   });
 
   it("OAuth-only flow syncs the user's list and drops rows they can no longer reach", async () => {
@@ -151,18 +165,17 @@ describe('GitHub install callback — installation ownership', () => {
 });
 
 describe('GET /api/integrations/github/repositories — installation ownership', () => {
-  it('refuses an installation that is not recorded for the caller', async () => {
+  it("refuses an installation the user's token cannot reach", async () => {
     const app = await build();
     const res = await app.inject({ method: 'GET', url: '/api/integrations/github/repositories?installationId=999' });
     expect(res.statusCode).toBe(403);
-    expect(gh.listRepos).not.toHaveBeenCalled();
   });
 
-  it("lists the caller's own installation", async () => {
+  it("lists the repos the user's token reaches", async () => {
     identity.owned = new Set(['111']);
     const app = await build();
     const res = await app.inject({ method: 'GET', url: '/api/integrations/github/repositories?installationId=111' });
     expect(res.statusCode).toBe(200);
-    expect(gh.listRepos).toHaveBeenCalledWith('111');
+    expect(res.json().repositories.map((r: { fullName: string }) => r.fullName)).toEqual(['alice-org/shop']);
   });
 });

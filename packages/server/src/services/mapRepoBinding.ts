@@ -1,16 +1,17 @@
 /**
- * Who may point a map at a GitHub App installation (PUT /api/maps/:id).
+ * Who may point a map at a GitHub repo through the App (PUT /api/maps/:id).
  * The binding decides whose repo the map syncs and imports with the App's
- * token, so it takes map admin AND an installation recorded for the caller
- * — rows that only the install callback writes, after the user's own
- * GitHub token listed it.
+ * token, so it takes map admin AND a repo the caller can reach on GitHub in
+ * that installation, asked of GitHub with the caller's own token. A repo
+ * without an installation goes through /api/integrations/github/connect,
+ * which brings its own token.
  */
 
 import { eq } from 'drizzle-orm';
 import { db } from '../db/connection.js';
 import { maps } from '../db/schema.js';
 import * as permDb from '../db/permissions.js';
-import { userHasGithubInstallation } from '../lib/githubInstallations.js';
+import { userInstallationRepos } from '../lib/githubInstallations.js';
 
 const FIELDS = ['githubInstallationId', 'githubRepoOwner', 'githubRepoName'] as const;
 type BindingInput = { [K in (typeof FIELDS)[number]]?: string | null };
@@ -44,9 +45,24 @@ export async function authorizeMapRepoBinding(
   if (!permDb.hasPermission(perm, 'admin')) {
     return { status: 403, code: 'FORBIDDEN', message: "Only map admins can change the map's GitHub repository" };
   }
-  const installationId = input.githubInstallationId !== undefined ? input.githubInstallationId : current.githubInstallationId;
-  if (installationId && !(await userHasGithubInstallation(userId, installationId))) {
-    return { status: 403, code: 'FORBIDDEN', message: 'That GitHub App installation is not connected to your account' };
+  const next = {
+    installationId: input.githubInstallationId !== undefined ? input.githubInstallationId : current.githubInstallationId,
+    owner: input.githubRepoOwner !== undefined ? input.githubRepoOwner : current.githubRepoOwner,
+    name: input.githubRepoName !== undefined ? input.githubRepoName : current.githubRepoName,
+  };
+  if (!next.installationId) {
+    // Disconnecting clears the repo too; a repo with no installation would
+    // sync through whichever stored token matches it, not the caller's.
+    if (next.owner || next.name) {
+      return { status: 400, code: 'VALIDATION_ERROR', message: 'Pick the repo through the GitHub App, or connect it with a token' };
+    }
+    return null;
+  }
+  const access = await userInstallationRepos(userId, next.installationId);
+  if ('status' in access) return access;
+  const wanted = `${next.owner ?? ''}/${next.name ?? ''}`.toLowerCase();
+  if (!access.repos.some((r) => r.full_name.toLowerCase() === wanted)) {
+    return { status: 403, code: 'FORBIDDEN', message: `You have no access to ${next.owner}/${next.name} through that GitHub App installation` };
   }
   return null;
 }
