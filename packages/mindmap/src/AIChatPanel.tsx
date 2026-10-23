@@ -538,7 +538,9 @@ export function AIChatPanel({ mapId, onClose, onMinimise }: Props) {
         {config?.active && (
           <span
             title={`Provider: ${config.active.name}${
-              config.preferenceHonored ? '' : ' (fallback — preferred backend not configured)'
+              config.claudeOutage
+                ? ` (${config.claudeOutage.reason} — local model until ${new Date(config.claudeOutage.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+                : config.preferenceHonored ? '' : ' (fallback — preferred backend not configured)'
             }`}
             style={modelBadgeStyle}
           >

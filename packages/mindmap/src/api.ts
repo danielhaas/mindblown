@@ -2014,6 +2014,8 @@ export interface AiConfigResponse {
   models: { ollama: string | null; anthropic: string | null };
   /** Reachability of the local backends (#429). */
   health?: { chat: AiBackendHealth; embeddings: AiBackendHealth };
+  /** Claude refused (credit, key, overload…): the local model takes its calls until `until`. */
+  claudeOutage?: { reason: string; until: string } | null;
 }
 
 export interface AiBackendHealth {

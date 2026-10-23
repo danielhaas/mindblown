@@ -43,6 +43,7 @@ import { createHash } from 'crypto';
 import { aiCapabilities } from '../ai/capabilities.js';
 import { capabilitiesForMap, getMapAiPolicy, resolveProviderForPolicy } from '../ai/policy.js';
 import { pickProvider, resolveProvider } from '../ai/providers/index.js';
+import { withProviderFallback } from '../ai/providers/fallback.js';
 import type { ChatProvider, ProviderName } from '../ai/providers/types.js';
 import type { AiProviderPreference } from '../db/settings.js';
 import type { AiPolicy } from '@mindblown/core';
@@ -621,27 +622,36 @@ async function callTriageProvider(
   input: TriageInput,
   opts: TriageCallOpts = {},
 ): Promise<{ text: string; provider: { name: ProviderName; model: string } }> {
-  const provider: TriageProvider =
-    opts.provider ??
-    (await resolveTriageProvider(TRIAGE_PROVIDER, await getMapAiPolicy(input.mapContext.mapId)));
-  const model = opts.model ?? triageModelFor(provider);
   const { context, issue } = buildUserMessage(input);
-
-  const text = await provider.complete({
-    systemPrompt: SYSTEM_PROMPT,
-    format: 'json',
-    model,
-    maxTokens: 1024,
-    parts: [
-      // Map context is the bulk of the per-call tokens but changes only
-      // when the map's epics change — cacheable on backends that support
-      // prompt caching; the issue-specific tail changes every call.
-      { text: context, cacheable: true },
-      { text: issue },
-    ],
-  });
-
-  return { text: text.trim(), provider: { name: provider.name, model } };
+  const call = async (provider: TriageProvider, model: string) => {
+    const text = await provider.complete({
+      systemPrompt: SYSTEM_PROMPT,
+      format: 'json',
+      model,
+      maxTokens: 1024,
+      parts: [
+        // Map context is the bulk of the per-call tokens but changes only
+        // when the map's epics change — cacheable on backends that support
+        // prompt caching; the issue-specific tail changes every call.
+        { text: context, cacheable: true },
+        { text: issue },
+      ],
+    });
+    // The provider that answered is recorded: it decides the auto-apply
+    // thresholds (isLocalDecision), so a local answer must say it is local.
+    return { text: text.trim(), provider: { name: provider.name, model } };
+  };
+  if (opts.provider) return call(opts.provider, opts.model ?? triageModelFor(opts.provider));
+  let first = true;
+  return withProviderFallback(
+    async () => resolveTriageProvider(TRIAGE_PROVIDER, await getMapAiPolicy(input.mapContext.mapId)),
+    (provider) => {
+      // A model override names a model of the first backend; after a fallback the local one uses its own.
+      const model = (first && opts.model) || triageModelFor(provider);
+      first = false;
+      return call(provider, model);
+    },
+  );
 }
 
 // ── Public entry point ────────────────────────────────────────────
