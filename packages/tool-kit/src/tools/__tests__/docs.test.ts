@@ -37,14 +37,21 @@ describe('list_docs / read_doc', () => {
   });
 
   it('read_doc prints the sha an edit needs', async () => {
-    const { backend } = backendWith({ path: 'README.md', sha: 'abc123', size: 8, text: '# Hello\n', webUrl: 'u' });
+    const { backend } = backendWith({ path: 'README.md', sha: 'abc123', size: 8, text: '# Hello\n', utf8: true, webUrl: 'u' });
     expect(await readDocTool.handler(backend, { mapId: 'm', path: 'README.md' })).toContain('sha abc123');
+  });
+
+  it('read_doc warns when the doc is not UTF-8', async () => {
+    const { backend } = backendWith({ path: 'old.md', sha: 'a', size: 4, text: 'caf\uFFFD', utf8: false, webUrl: 'u' });
+    const out = await readDocTool.handler(backend, { mapId: 'm', path: 'old.md' });
+    expect(out).toContain('sha a');
+    expect(out).toMatch(/Not UTF-8 .*propose_doc_edit refuses it/);
   });
 
   it('propose_doc_edit refuses a drastic shrink (one page of a paged doc) unless allowed', async () => {
     const calls: unknown[] = [];
     const backend = {
-      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 1000, text: 'x'.repeat(1000), webUrl: 'u' }),
+      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 1000, text: 'x'.repeat(1000), utf8: true, webUrl: 'u' }),
       proposeRepoDocEdit: async (...a: unknown[]) => {
         calls.push(a);
         return { path: 'README.md', branch: 'b', commitSha: 'c0ffee1', pullRequest: { number: 1, url: 'u' } };
@@ -60,7 +67,7 @@ describe('list_docs / read_doc', () => {
   it('propose_doc_edit forwards the edit and prints the PR', async () => {
     const calls: unknown[] = [];
     const backend = {
-      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 5, text: '# Hi\n', webUrl: 'u' }),
+      readRepoDoc: async () => ({ path: 'README.md', sha: 'a', size: 5, text: '# Hi\n', utf8: true, webUrl: 'u' }),
       proposeRepoDocEdit: async (mapId: string, input: unknown) => {
         calls.push([mapId, input]);
         return { path: 'README.md', branch: 'mindblown/docs-readme-x', commitSha: 'c0ffee1234', pullRequest: { number: 12, url: 'https://github.com/o/r/pull/12' } };
@@ -88,7 +95,7 @@ describe('list_docs / read_doc', () => {
   });
 
   it('read_doc pages the text and names the next offset', async () => {
-    const { backend, calls } = backendWith({ path: 'docs/vision.md', sha: 'b', size: 30, text: 'x'.repeat(30), webUrl: 'https://github.com/o/r/blob/main/docs/vision.md' });
+    const { backend, calls } = backendWith({ path: 'docs/vision.md', sha: 'b', size: 30, text: 'x'.repeat(30), utf8: true, webUrl: 'https://github.com/o/r/blob/main/docs/vision.md' });
     const out = await readDocTool.handler(backend, { mapId: 'm', path: 'docs/vision.md', offset: 5, maxChars: 10 });
     expect(calls).toEqual([['read', 'm', 'docs/vision.md']]);
     expect(out).toContain('# docs/vision.md (30 bytes) — chars 5–14 of 30');
@@ -97,7 +104,7 @@ describe('list_docs / read_doc', () => {
   });
 
   it('read_doc returns a short doc whole, without a continue hint', async () => {
-    const { backend } = backendWith({ path: 'README.md', sha: 'a', size: 8, text: '# Hello\n', webUrl: 'u' });
+    const { backend } = backendWith({ path: 'README.md', sha: 'a', size: 8, text: '# Hello\n', utf8: true, webUrl: 'u' });
     const out = await readDocTool.handler(backend, { mapId: 'm', path: 'README.md' });
     expect(out).toContain('chars 0–7 of 8');
     expect(out.endsWith('# Hello\n')).toBe(true);

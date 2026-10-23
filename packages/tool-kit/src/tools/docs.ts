@@ -50,7 +50,9 @@ export const readDocTool = defineTool({
     const offset = Math.min(args.offset ?? 0, total);
     const end = Math.min(offset + (args.maxChars ?? DOC_DEFAULT_CHARS), total);
     const range = total === 0 ? 'empty file' : offset === total ? `end of file (${total} chars in total)` : `chars ${offset}–${end - 1} of ${total}`;
-    const header = `# ${doc.path} (${formatBytes(doc.size)}) — ${range}\nsha ${doc.sha} · ${doc.webUrl}`;
+    const header =
+      `# ${doc.path} (${formatBytes(doc.size)}) — ${range}\nsha ${doc.sha} · ${doc.webUrl}` +
+      (doc.utf8 === false ? '\n[Not UTF-8 text — shown with U+FFFD; propose_doc_edit refuses it. Edit it in the repo instead.]' : '');
     const tail =
       end < total
         ? `\n\n[${total - end} characters remain — call read_doc again with offset ${end}. To edit, propose_doc_edit needs the complete text, not this page.]`

@@ -165,5 +165,18 @@ describe('GET /api/maps/:id/docs/image', () => {
     expect(res.headers.etag).toBe('"abc"');
     expect(res.body).toBe('<svg>');
     expect(mocks.readRepoImage).toHaveBeenCalledWith('m1', 'docs/x.svg');
+    // Revalidated on every use — a changed image must not hide behind a cache.
+    expect(res.headers['cache-control']).toBe('private, no-cache');
+  });
+
+  it('answers 304 when the browser already holds this blob', async () => {
+    mocks.readRepoImage.mockResolvedValue({ bytes: new Uint8Array([1]), contentType: 'image/png', sha: 'abc' });
+    const app = await buildApp();
+    const same = await app.inject({ method: 'GET', url: '/api/maps/m1/docs/image?path=a.png', headers: { 'if-none-match': '"abc"' } });
+    expect(same.statusCode).toBe(304);
+    expect(same.body).toBe('');
+    const changed = await app.inject({ method: 'GET', url: '/api/maps/m1/docs/image?path=a.png', headers: { 'if-none-match': '"old"' } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.headers.etag).toBe('"abc"');
   });
 });

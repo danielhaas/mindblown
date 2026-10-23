@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   getBlob: vi.fn(),
   defaultBranch: vi.fn(async () => 'main'),
   boundMaps: [] as { id: string }[],
+  binding: { installation: null as string | null, owner: 'o' as string | null, name: 'r' as string | null },
   broadcast: vi.fn(),
   createBranch: vi.fn(),
   deleteBranch: vi.fn(),
@@ -38,7 +39,12 @@ vi.mock('@mindblown/integrations', () => {
 });
 vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcast }));
 vi.mock('../../db/connection.js', () => ({
-  db: { select: () => ({ from: () => ({ where: async () => mocks.boundMaps }) }) },
+  // The binding read selects `installation`; the push lookup selects `id`.
+  db: {
+    select: (fields: Record<string, unknown>) => ({
+      from: () => ({ where: async () => ('installation' in fields ? [mocks.binding] : mocks.boundMaps) }),
+    }),
+  },
 }));
 
 import { ForgeApiError } from '@mindblown/integrations';
@@ -85,6 +91,7 @@ beforeEach(() => {
   mocks.defaultBranch.mockClear();
   mocks.broadcast.mockReset();
   mocks.boundMaps = [];
+  mocks.binding = { installation: null, owner: 'o', name: 'r' };
   mocks.createBranch.mockReset().mockResolvedValue(undefined);
   mocks.deleteBranch.mockReset().mockResolvedValue(undefined);
   mocks.putFile.mockReset().mockResolvedValue({ blobSha: 'nb', commitSha: 'c0ffee1234' });
@@ -210,6 +217,44 @@ describe('listRepoDocs', () => {
     await listRepoDocs('m1');
     expect(mocks.getRepoTree).toHaveBeenCalledTimes(1);
   });
+
+  it('a map rebound to another repo is read afresh, not served from the old tree', async () => {
+    await listRepoDocs('m1');
+    mocks.binding = { installation: null, owner: 'o', name: 'other' };
+    mocks.ctx = { owner: 'o', repo: 'other', token: 't', forge: forge('github') };
+    expect((await listRepoDocs('m1')).repo.name).toBe('other');
+    expect(mocks.getRepoTree).toHaveBeenLastCalledWith('o', 'other', 'main');
+  });
+
+  it('a renamed default branch: the missing branch asks the forge again instead of waiting out the cache', async () => {
+    await listRepoDocs('m1');
+    // The tree expires (15 s); the cached branch name (10 min) would not.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 16_000);
+    mocks.defaultBranch.mockResolvedValueOnce('trunk');
+    mocks.getRepoTree.mockImplementation(async (_o: string, _r: string, ref: string) => {
+      if (ref === 'main') throw new ForgeApiError(404, 'Branch not found');
+      return { ...TREE, sha: 'tree2' };
+    });
+    const res = await listRepoDocs('m1');
+    vi.useRealTimers();
+    expect(res.repo.branch).toBe('trunk');
+    expect(res.treeSha).toBe('tree2');
+    expect(mocks.defaultBranch).toHaveBeenCalledTimes(2);
+  });
+
+  it('an empty repo (GitHub 409, Gitea 404) lists no docs instead of failing', async () => {
+    mocks.getRepoTree.mockRejectedValue(new ForgeApiError(409, 'Git Repository is empty.'));
+    await expect(listRepoDocs('m1')).resolves.toMatchObject({ docs: [], treeSha: '', truncated: false });
+    _resetRepoDocsCacheForTests();
+    mocks.getRepoTree.mockRejectedValue(new ForgeApiError(404, 'not found'));
+    await expect(listRepoDocs('m1')).resolves.toMatchObject({ docs: [] });
+  });
+
+  it('other forge errors on the tree still fail', async () => {
+    mocks.getRepoTree.mockRejectedValue(new ForgeApiError(403, 'Resource not accessible by integration'));
+    await expect(listRepoDocs('m1')).rejects.toMatchObject({ status: 502, code: 'FORGE_ERROR' });
+  });
 });
 
 describe('readRepoDoc', () => {
@@ -220,9 +265,17 @@ describe('readRepoDoc', () => {
       sha: 'd2',
       size: 12,
       text: '# Vision ✓',
+      utf8: true,
       webUrl: 'https://web.example/o/r/blob/main/docs/vision.md',
     });
     expect(mocks.getBlob).toHaveBeenCalledWith('o', 'r', 'd2');
+  });
+
+  it('flags a doc that is not UTF-8, still showing it', async () => {
+    mocks.getBlob.mockResolvedValueOnce(new Uint8Array([0x63, 0x61, 0x66, 0xe9]));
+    const doc = await readRepoDoc('m1', 'README.md');
+    expect(doc.utf8).toBe(false);
+    expect(doc.text).toBe('caf\uFFFD');
   });
 
   it('links Gitea files under src/branch', async () => {
