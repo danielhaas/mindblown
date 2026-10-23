@@ -132,10 +132,10 @@ export {
   exchangeUserAuthorizationCode,
   refreshUserAccessToken,
   getGitHubUser,
-  getInstallationDetails,
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
-  listAppInstallations,
+  listUserInstallations,
+  listUserInstallationRepositories,
 } from './github-app.js';
 
 export type {

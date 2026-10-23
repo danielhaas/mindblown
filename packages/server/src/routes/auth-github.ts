@@ -16,15 +16,15 @@ import { OAUTH_STATE_TYP } from '../auth.js';
 import { db } from '../db/connection.js';
 import { githubInstallations, userGithubIdentities } from '../db/schema.js';
 import { encrypt } from '../crypto.js';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, notInArray } from 'drizzle-orm';
+import { findGithubIdentity, githubAccessTokenFor } from '../lib/githubIdentity.js';
+import { userInstallationRepos } from '../lib/githubInstallations.js';
 import {
   buildInstallUrl,
   buildOAuthAuthorizeUrl,
   exchangeUserAuthorizationCode,
   getGitHubUser,
-  getInstallationDetails,
-  listInstallationRepositories,
-  listAppInstallations,
+  listUserInstallations,
   isGitHubAppConfigured,
 } from '@mindblown/integrations';
 
@@ -44,6 +44,26 @@ interface StatePayload {
 function signState(userId: string): string {
   const nonce = Math.random().toString(36).slice(2);
   return jwt.sign({ userId, nonce, kind: 'github', typ: OAUTH_STATE_TYP } satisfies StatePayload, JWT_SECRET, { expiresIn: '15m' });
+}
+
+async function upsertInstallation(
+  userId: string,
+  inst: { id: number; account: { login: string; type: string; id: number } },
+): Promise<void> {
+  const values = {
+    accountLogin: inst.account.login,
+    accountType: inst.account.type,
+    accountId: String(inst.account.id),
+  };
+  const [existing] = await db.select({ id: githubInstallations.id })
+    .from(githubInstallations)
+    .where(and(eq(githubInstallations.userId, userId), eq(githubInstallations.installationId, String(inst.id))))
+    .limit(1);
+  if (existing) {
+    await db.update(githubInstallations).set({ ...values, updatedAt: new Date() }).where(eq(githubInstallations.id, existing.id));
+  } else {
+    await db.insert(githubInstallations).values({ userId, installationId: String(inst.id), ...values });
+  }
 }
 
 function verifyState(token: string): StatePayload {
@@ -132,39 +152,10 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     }
 
     try {
-      // If we have an installation_id, persist the installation record
-      if (query.installation_id) {
-        const installation = await getInstallationDetails(query.installation_id);
-
-        const existing = await db.select({ id: githubInstallations.id })
-          .from(githubInstallations)
-          .where(and(
-            eq(githubInstallations.userId, userId),
-            eq(githubInstallations.installationId, query.installation_id),
-          ))
-          .limit(1);
-
-        if (existing.length > 0) {
-          await db.update(githubInstallations)
-            .set({
-              accountLogin: installation.account.login,
-              accountType: installation.account.type,
-              accountId: String(installation.account.id),
-              updatedAt: new Date(),
-            })
-            .where(eq(githubInstallations.id, existing[0].id));
-        } else {
-          await db.insert(githubInstallations).values({
-            userId,
-            installationId: query.installation_id,
-            accountLogin: installation.account.login,
-            accountType: installation.account.type,
-            accountId: String(installation.account.id),
-          });
-        }
-      }
-
-      // If we got an OAuth code, exchange it for user tokens
+      // The user's own GitHub token decides which installations are theirs.
+      // installation_id arrives in the redirect URL and can be anyone's, so
+      // it is never stored on its word alone.
+      let userToken: string | null = null;
       if (query.code) {
         const tokens = await exchangeUserAuthorizationCode(query.code);
         const ghUser = await getGitHubUser(tokens.accessToken);
@@ -198,36 +189,43 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
             ...identityValues,
           });
         }
+        userToken = tokens.accessToken;
+      } else {
+        // An install without the OAuth step: fall back to the token we hold.
+        const identity = await findGithubIdentity(userId);
+        if (identity) userToken = await githubAccessTokenFor(identity).catch(() => null);
+      }
+      if (!userToken) {
+        // Installed without the OAuth step and no identity yet: sign in
+        // with GitHub; that callback (code, no installation_id) syncs the
+        // user's installations, this one included.
+        return reply.redirect(buildOAuthAuthorizeUrl(signState(userId)));
       }
 
-      // If this was an OAuth-only flow (no installation_id), sync installations
-      // from the App API so we have the records
-      if (!query.installation_id) {
+      if (query.installation_id) {
+        const reachable = await listUserInstallations(userToken);
+        const inst = reachable.find((i) => String(i.id) === query.installation_id);
+        if (!inst) {
+          return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=installation_not_yours`);
+        }
+        await upsertInstallation(userId, inst);
+      } else {
+        // OAuth-only flow: sync the full list, and drop rows the user can
+        // no longer reach (uninstalled, or access removed on GitHub). The
+        // identity is saved already; a failed listing keeps the old rows.
+        let reachable: Awaited<ReturnType<typeof listUserInstallations>>;
         try {
-          const allInstalls = await listAppInstallations();
-          for (const inst of allInstalls) {
-            const existInst = await db.select({ id: githubInstallations.id })
-              .from(githubInstallations)
-              .where(and(
-                eq(githubInstallations.userId, userId),
-                eq(githubInstallations.installationId, String(inst.id)),
-              ))
-              .limit(1);
-
-            if (existInst.length === 0) {
-              await db.insert(githubInstallations).values({
-                userId,
-                installationId: String(inst.id),
-                accountLogin: inst.account.login,
-                accountType: inst.account.type,
-                accountId: String(inst.account.id),
-              });
-            }
-          }
+          reachable = await listUserInstallations(userToken);
         } catch (syncErr) {
           console.warn('[github] Failed to sync installations:', syncErr);
-          // Non-fatal — identity was saved, installations can be synced later
+          return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
         }
+        for (const inst of reachable) await upsertInstallation(userId, inst);
+        const keep = reachable.map((i) => String(i.id));
+        await db.delete(githubInstallations).where(and(
+          eq(githubInstallations.userId, userId),
+          keep.length ? notInArray(githubInstallations.installationId, keep) : undefined,
+        ));
       }
 
       return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
@@ -301,11 +299,15 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       installationId = inst.installationId;
     }
 
-    try {
-      const repos = await listInstallationRepositories(installationId);
-      return reply.send({
+    // Listed with the user's own token: only installations and repos they
+    // can reach on GitHub, whatever the request names.
+    const access = await userInstallationRepos(userId, installationId);
+    if ('status' in access) {
+      return reply.status(access.status).send({ error: { code: access.code, message: access.message } });
+    }
+    return reply.send({
         installationId,
-        repositories: repos.map((r) => ({
+        repositories: access.repos.map((r) => ({
           id: r.id,
           fullName: r.full_name,
           name: r.name,
@@ -315,12 +317,6 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
           description: r.description,
         })),
       });
-    } catch (err) {
-      console.error('[github] List repos failed:', err);
-      return reply.status(502).send({
-        error: { code: 'GITHUB_ERROR', message: 'Failed to list repositories from GitHub' },
-      });
-    }
   });
 
   // ── POST /api/auth/github/disconnect ─────────────────────────────
