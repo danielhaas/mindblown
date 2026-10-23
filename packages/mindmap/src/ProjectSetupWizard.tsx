@@ -336,7 +336,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const createRepo = async (owner: string) => {
     setError(null);
     setBusy('Creating the repository…');
-    const description = plainText(map.description ?? '').slice(0, 350) || undefined;
+    const description = Array.from(plainText(map.description ?? '')).slice(0, 350).join('') || undefined;
     try {
       let choice: RepoChoice;
       if (owner === 'gitea') {
