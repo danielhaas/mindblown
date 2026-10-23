@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  ctx: null as null | { owner: string; repo: string; token: string; forge: unknown },
+  ctx: null as null | 'throw' | { owner: string; repo: string; token: string; forge: unknown },
   getRepoTree: vi.fn(),
   getBlob: vi.fn(),
   defaultBranch: vi.fn(async () => 'main'),
@@ -15,7 +15,12 @@ const mocks = vi.hoisted(() => ({
   broadcast: vi.fn(),
 }));
 
-vi.mock('../../lib/githubContext.js', () => ({ getForgeContextForMap: async () => mocks.ctx }));
+vi.mock('../../lib/githubContext.js', () => ({
+  getForgeContextForMap: async () => {
+    if (mocks.ctx === 'throw') throw new Error('OAuth refresh failed');
+    return mocks.ctx;
+  },
+}));
 vi.mock('@mindblown/integrations', () => ({ getRepoDefaultBranch: mocks.defaultBranch }));
 vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcast }));
 vi.mock('../../db/connection.js', () => ({
@@ -69,6 +74,11 @@ describe('listRepoDocs', () => {
     await expect(listRepoDocs('m1')).rejects.toMatchObject({ status: 404, code: 'NO_REPO' });
   });
 
+  it('a failure resolving the forge (token refresh) is FORGE_ERROR, not a 500', async () => {
+    mocks.ctx = 'throw';
+    await expect(listRepoDocs('m1')).rejects.toMatchObject({ status: 502, code: 'FORGE_ERROR' });
+  });
+
   it('a forge failure is FORGE_ERROR and is not cached', async () => {
     mocks.getRepoTree.mockRejectedValueOnce(new Error('GitHub API 401'));
     await expect(listRepoDocs('m1')).rejects.toMatchObject({ status: 502, code: 'FORGE_ERROR' });
@@ -116,6 +126,17 @@ describe('readRepoDoc', () => {
     await readRepoDoc('m1', 'docs/vision.md');
     expect(mocks.getBlob).toHaveBeenCalledTimes(1);
   });
+
+  it('concurrent misses on one blob share a single forge read', async () => {
+    await Promise.all([readRepoDoc('m1', 'docs/vision.md'), readRepoDoc('m1', 'docs/vision.md'), readRepoDoc('m1', 'docs/vision.md')]);
+    expect(mocks.getBlob).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed blob read is not kept — the next read tries again', async () => {
+    mocks.getBlob.mockRejectedValueOnce(new Error('GitHub API 500'));
+    await expect(readRepoDoc('m1', 'README.md')).rejects.toMatchObject({ status: 502 });
+    await expect(readRepoDoc('m1', 'README.md')).resolves.toMatchObject({ sha: 'd1' });
+  });
 });
 
 describe('readRepoImage', () => {
@@ -125,8 +146,9 @@ describe('readRepoImage', () => {
     expect(img.sha).toBe('i1');
   });
 
-  it('refuses a non-image path', async () => {
+  it('refuses a non-image path, prototype names included', async () => {
     await expect(readRepoImage('m1', 'src/index.ts')).rejects.toMatchObject({ status: 404 });
+    await expect(readRepoImage('m1', 'x.constructor')).rejects.toMatchObject({ status: 404 });
   });
 });
 

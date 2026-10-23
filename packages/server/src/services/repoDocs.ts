@@ -53,14 +53,17 @@ interface Snapshot {
   repo: string;
   branch: string;
   treeSha: string;
-  /** Every file, not only docs — images are looked up here too. */
+  /** Docs and images only — the rest of the tree is never served, so never held. */
   files: Map<string, RepoTreeFile>;
   truncated: boolean;
 }
 
 const trees = new Map<string, { at: number; snap: Promise<Snapshot> }>();
 const branches = new Map<string, { at: number; branch: string }>();
+/** LRU by insertion order; `blobBytes` is the sum of what it holds. */
 const blobs = new Map<string, Uint8Array>();
+/** One forge read per blob, however many viewers miss at once. */
+const blobsInFlight = new Map<string, Promise<Uint8Array>>();
 let blobBytes = 0;
 
 /** Test seam. */
@@ -68,7 +71,13 @@ export function _resetRepoDocsCacheForTests(): void {
   trees.clear();
   branches.clear();
   blobs.clear();
+  blobsInFlight.clear();
   blobBytes = 0;
+}
+
+function imageType(path: string): string | undefined {
+  const ext = path.slice(path.lastIndexOf('.') + 1).toLowerCase();
+  return Object.hasOwn(IMAGE_TYPES, ext) ? IMAGE_TYPES[ext] : undefined;
 }
 
 function forgeError(err: unknown): RepoDocsError {
@@ -85,7 +94,13 @@ async function defaultBranch(forge: ForgeClient, owner: string, repo: string): P
 }
 
 async function loadSnapshot(mapId: string): Promise<Snapshot> {
-  const ctx = await getForgeContextForMap(mapId);
+  let ctx: Awaited<ReturnType<typeof getForgeContextForMap>>;
+  try {
+    // Can throw too — an OAuth refresh, an App token mint.
+    ctx = await getForgeContextForMap(mapId);
+  } catch (err) {
+    throw forgeError(err);
+  }
   if (!ctx) throw new RepoDocsError(404, 'NO_REPO', 'This map has no repository connected');
   try {
     const branch = await defaultBranch(ctx.forge, ctx.owner, ctx.repo);
@@ -96,7 +111,7 @@ async function loadSnapshot(mapId: string): Promise<Snapshot> {
       repo: ctx.repo,
       branch,
       treeSha: tree.sha,
-      files: new Map(tree.files.map((f) => [f.path, f])),
+      files: new Map(tree.files.filter((f) => DOC_PATH.test(f.path) || imageType(f.path)).map((f) => [f.path, f])),
       truncated: tree.truncated,
     };
   } catch (err) {
@@ -105,8 +120,11 @@ async function loadSnapshot(mapId: string): Promise<Snapshot> {
 }
 
 function snapshot(mapId: string): Promise<Snapshot> {
+  const now = Date.now();
+  // Expired trees go, so maps nobody reads any more hold nothing.
+  for (const [id, entry] of trees) if (now - entry.at >= TREE_TTL_MS) trees.delete(id);
   const hit = trees.get(mapId);
-  if (hit && Date.now() - hit.at < TREE_TTL_MS) return hit.snap;
+  if (hit) return hit.snap;
   const snap = loadSnapshot(mapId);
   trees.set(mapId, { at: Date.now(), snap });
   // A failure is not cached — the next read tries again.
@@ -124,20 +142,30 @@ async function blob(snap: Snapshot, file: RepoTreeFile): Promise<Uint8Array> {
     blobs.set(key, hit);
     return hit;
   }
-  let bytes: Uint8Array;
-  try {
-    bytes = await snap.forge.getBlob(snap.owner, snap.repo, file.sha);
-  } catch (err) {
-    throw forgeError(err);
-  }
-  blobs.set(key, bytes);
-  blobBytes += bytes.length;
-  for (const [k, v] of blobs) {
-    if (blobBytes <= BLOB_CACHE_MAX_BYTES) break;
-    blobs.delete(k);
-    blobBytes -= v.length;
-  }
-  return bytes;
+  const pending = blobsInFlight.get(key);
+  if (pending) return pending;
+  const read = snap.forge.getBlob(snap.owner, snap.repo, file.sha).then(
+    (bytes) => {
+      blobs.set(key, bytes);
+      blobBytes += bytes.length;
+      for (const [k, v] of blobs) {
+        if (blobBytes <= BLOB_CACHE_MAX_BYTES) break;
+        blobs.delete(k);
+        blobBytes -= v.length;
+      }
+      return bytes;
+    },
+    (err) => {
+      throw forgeError(err);
+    },
+  );
+  blobsInFlight.set(key, read);
+  // Settled either way → the next miss reads again (a failure is not kept).
+  void read.then(
+    () => blobsInFlight.delete(key),
+    () => blobsInFlight.delete(key),
+  );
+  return read;
 }
 
 function webUrl(snap: Snapshot, path?: string): string {
@@ -176,7 +204,7 @@ export async function readRepoDoc(mapId: string, path: string): Promise<RepoDocT
 
 /** An image a doc embeds by a relative path. */
 export async function readRepoImage(mapId: string, path: string): Promise<{ bytes: Uint8Array; contentType: string; sha: string }> {
-  const contentType = IMAGE_TYPES[path.split('.').pop()?.toLowerCase() ?? ''];
+  const contentType = imageType(path);
   const snap = await snapshot(mapId);
   const file = contentType ? snap.files.get(path) : undefined;
   if (!contentType || !file) throw new RepoDocsError(404, 'NOT_FOUND', `No image '${path}' on ${snap.branch}`);
@@ -195,6 +223,9 @@ export async function onRepoPush(fullName: string, payload: { ref?: unknown; rep
   if (!owner || !name) return 0;
   const branch = payload.repository?.default_branch;
   if (typeof branch === 'string' && payload.ref !== `refs/heads/${branch}`) return 0;
+  // The default branch may just have been renamed — ask again.
+  const suffix = `/${owner}/${name}`.toLowerCase();
+  for (const key of branches.keys()) if (key.endsWith(suffix)) branches.delete(key);
   const rows = await db
     .select({ id: maps.id })
     .from(maps)

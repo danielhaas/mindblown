@@ -19,6 +19,11 @@ export interface RawBlob {
   encoding: string;
 }
 
+/** A branch name in a path: each segment escaped (`#`, `?`, `%`), the slashes kept. */
+export function encodeRef(ref: string): string {
+  return ref.split('/').map(encodeURIComponent).join('/');
+}
+
 /** Files only — directories (`tree`) and submodules (`commit`) dropped. */
 export function treeFiles(raw: RawTree): RepoTreeFile[] {
   return raw.tree

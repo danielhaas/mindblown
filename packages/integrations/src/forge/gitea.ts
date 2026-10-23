@@ -51,7 +51,7 @@ import {
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
-import { blobBytes, treeFiles, type RawBlob, type RawTree } from './contents.js';
+import { blobBytes, encodeRef, treeFiles, type RawBlob, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
@@ -522,7 +522,7 @@ export class GiteaForge implements ForgeClient {
     let sha = '';
     for (let page = 1; page <= TREE_MAX_PAGES; page++) {
       const raw = await this.requestJson<RawTree>(
-        `/repos/${owner}/${repo}/git/trees/${encodeURI(ref)}?recursive=true&per_page=1000&page=${page}`,
+        `/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=true&per_page=1000&page=${page}`,
       );
       sha = raw.sha;
       files.push(...treeFiles(raw));

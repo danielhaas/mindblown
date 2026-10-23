@@ -26,7 +26,7 @@ import {
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
-import { blobBytes, treeFiles, type RawBlob, type RawTree } from './contents.js';
+import { blobBytes, encodeRef, treeFiles, type RawBlob, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
@@ -282,7 +282,7 @@ export class GitHubForge implements ForgeClient {
   // ── Repo contents ───────────────────────────────────────────────
 
   async getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree> {
-    const raw = await this.requestJson<RawTree>(`/repos/${owner}/${repo}/git/trees/${encodeURI(ref)}?recursive=1`);
+    const raw = await this.requestJson<RawTree>(`/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=1`);
     return { sha: raw.sha, files: treeFiles(raw), truncated: !!raw.truncated };
   }
 

@@ -45,25 +45,45 @@ export function DocsView() {
   const [doc, setDoc] = useState<api.RepoDocText | null>(null);
   const [docError, setDocError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
+  /** Bumped to read the open doc again after a failed read. */
+  const [retry, setRetry] = useState(0);
   const pendingHash = useRef<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const mapRef = useRef(mapId);
+  mapRef.current = mapId;
+  const listRef = useRef(list);
+  listRef.current = list;
 
   const loadList = useCallback(async () => {
     if (!mapId) return;
     try {
-      setList(await api.listRepoDocs(mapId));
+      const next = await api.listRepoDocs(mapId);
+      // The map changed while this was in flight — not this view's list.
+      if (mapRef.current !== mapId) return;
+      // Same tree = nothing changed; keeping the object keeps the open doc mounted.
+      setList((prev) => (prev && prev.treeSha === next.treeSha && prev.repo.branch === next.repo.branch ? prev : next));
       setListError(null);
     } catch (err) {
-      setListError(err instanceof api.ApiError ? { code: err.code, message: err.message } : { message: String(err) });
+      if (mapRef.current !== mapId) return;
+      // A failed re-list keeps what is on screen; only a first load shows the error.
+      if (!listRef.current) setListError(err instanceof api.ApiError ? { code: err.code, message: err.message } : { message: String(err) });
     }
   }, [mapId]);
+
+  const select = (path: string) => {
+    setDocError(null);
+    if (path === selected) setRetry((n) => n + 1);
+    else setSelected(path);
+  };
 
   // A different map is a different repo: start over.
   useEffect(() => {
     setList(null);
+    listRef.current = null;
     setListError(null);
     setSelected(null);
     setDoc(null);
+    setDocError(null);
     void loadList();
   }, [loadList]);
 
@@ -109,7 +129,7 @@ export function DocsView() {
     };
     // `doc` is read only to skip a redundant fetch; it must not retrigger.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mapId, selected, selectedSha]);
+  }, [mapId, selected, selectedSha, retry]);
 
   // A link to `other.md#section` lands on the section once the doc is in.
   useEffect(() => {
@@ -120,6 +140,12 @@ export function DocsView() {
   }, [doc]);
 
   const docPaths = useMemo(() => new Set(list?.docs.map((d) => d.path) ?? []), [list]);
+
+  // The renderers below read the current doc through this ref, so their
+  // identities never change: a new identity makes React remount every
+  // heading, link and image of the open doc (images blank and refetch).
+  const live = useRef({ doc, docPaths, mapId });
+  live.current = { doc, docPaths, mapId };
 
   const components = useMemo<Components>(() => {
     const heading = (Tag: 'h1' | 'h2' | 'h3' | 'h4') =>
@@ -143,6 +169,7 @@ export function DocsView() {
             </a>
           );
         }
+        const { doc, docPaths } = live.current;
         const target = doc && href ? resolveRepoLink(doc.path, href) : null;
         if (target && docPaths.has(target.path)) {
           return (
@@ -151,11 +178,12 @@ export function DocsView() {
               href={href}
               onClick={(e) => {
                 e.preventDefault();
-                if (target.path === doc?.path) {
+                if (target.path === live.current.doc?.path) {
                   if (target.hash) scrollToAnchor(bodyRef.current, target.hash);
                   return;
                 }
                 pendingHash.current = target.hash;
+                setDocError(null);
                 setSelected(target.path);
               }}
             >
@@ -173,12 +201,13 @@ export function DocsView() {
         );
       },
       img: ({ node: _node, src, alt, ...props }) => {
+        const { doc, mapId } = live.current;
         const target = doc && typeof src === 'string' ? resolveRepoLink(doc.path, src) : null;
         if (!target || !mapId) return <img {...props} src={typeof src === 'string' ? src : undefined} alt={alt ?? ''} style={{ maxWidth: '100%' }} />;
         return <RepoImage mapId={mapId} path={target.path} alt={alt ?? ''} />;
       },
     };
-  }, [doc, docPaths, mapId]);
+  }, []);
 
   if (listError) {
     return (
@@ -236,7 +265,7 @@ export function DocsView() {
                     key={d.path}
                     type="button"
                     className="mb-docs-item"
-                    onClick={() => setSelected(d.path)}
+                    onClick={() => select(d.path)}
                     title={d.path}
                     style={{
                       paddingLeft: g.dir ? 24 : 14,
