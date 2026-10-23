@@ -112,7 +112,10 @@ export const anthropicProvider: ChatProvider = {
         tools,
         messages: toAnthropicMessages(opts.messages),
       },
-      opts.signal ? { signal: opts.signal } : undefined,
+      // The stream's timeout covers the wait for response headers only. With a
+      // local model behind Claude, give up after 60 s so the chat's 120 s turn
+      // watchdog doesn't abort first (an abort never falls back).
+      { ...(opts.signal ? { signal: opts.signal } : {}), ...(aiEnabled ? { timeout: 60_000 } : {}) },
     );
 
     // Per-block accumulators for tool_use input JSON, keyed by content-block index.
