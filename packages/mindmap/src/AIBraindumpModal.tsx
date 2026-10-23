@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { BraindumpNode } from './api.js';
@@ -55,13 +55,19 @@ function countNodes(tree: BraindumpNode[]): number {
 
 export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, askFirst, onClose }: Props) {
   const [prose, setProse] = useState(initialProse ?? '');
-  const asking = !!askFirst && !!initialProse?.trim();
+  // Read once: the wizard re-derives the description on every render, and a
+  // change arriving while the dialog is open must not refetch and wipe answers.
+  const [startProse] = useState(initialProse ?? '');
+  const asking = !!askFirst && !!startProse.trim();
   /** null while the questions load; [] when there are none (or they failed). */
   const [questions, setQuestions] = useState<string[] | null>(asking ? null : []);
   const [answers, setAnswers] = useState<string[]>([]);
   /** Still on the questions screen. */
   const [questioning, setQuestioning] = useState(asking);
   const [questionNote, setQuestionNote] = useState<string | null>(null);
+  /** Skip means the answers stay out of every draft, Regenerate included. */
+  const [useAnswers, setUseAnswers] = useState(true);
+  const skippedRef = useRef(false);
   const [tree, setTree] = useState<BraindumpNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
@@ -74,9 +80,9 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, as
     if (!asking) return;
     let alive = true;
     api
-      .aiBraindumpQuestions(mapId, initialProse!)
+      .aiBraindumpQuestions(mapId, startProse)
       .then((r) => {
-        if (!alive) return;
+        if (!alive || skippedRef.current) return;
         setQuestions(r.questions);
         setAnswers(r.questions.map(() => ''));
         if (r.questions.length === 0) {
@@ -93,9 +99,9 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, as
     return () => {
       alive = false;
     };
-  }, [asking, mapId, initialProse]);
+  }, [asking, mapId, startProse]);
 
-  const generate = useCallback(async (withAnswers = true) => {
+  const generate = useCallback(async (withAnswers = useAnswers) => {
     if (!prose.trim()) return;
     setLoading(true);
     setError(null);
@@ -112,7 +118,7 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, as
     } finally {
       setLoading(false);
     }
-  }, [mapId, parentId, prose, questions, answers]);
+  }, [mapId, parentId, prose, questions, answers, useAnswers]);
 
   const accept = useCallback(async () => {
     if (tree.length === 0) return;
@@ -269,15 +275,22 @@ export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, as
             <>
               <button
                 data-testid="braindump-skip-questions"
-                onClick={() => generate(false)}
-                disabled={loading || questions === null}
+                onClick={() => {
+                  setUseAnswers(false);
+                  skippedRef.current = true;
+                  void generate(false);
+                }}
+                disabled={loading}
                 style={secondaryBtnStyle}
               >
                 Skip questions
               </button>
               <button
                 data-testid="braindump-draft"
-                onClick={() => generate(true)}
+                onClick={() => {
+                  setUseAnswers(true);
+                  void generate(true);
+                }}
                 disabled={loading || questions === null}
                 style={primaryBtnStyle}
               >

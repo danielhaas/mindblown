@@ -912,7 +912,8 @@ Rules:
             parts: [{ text: userPrompt }],
             format: 'json',
             temperature: 0.3,
-            maxTokens: 512,
+            // Thinking models spend reasoning tokens from the same budget.
+            maxTokens: 1500,
           }),
       );
       const cleaned = raw.replace(/```(?:json)?\s*/g, '').replace(/```\s*/g, '').trim();
