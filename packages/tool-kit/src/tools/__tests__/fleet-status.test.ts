@@ -187,4 +187,32 @@ describe('fleet_status tool', () => {
     expect(out).toContain('gate RECOMMENDED (needs the human) → type:bug');
     expect(out).toContain('numbers: claims 0/12');
   });
+
+  it('names the open PRs a parked slot still holds and which wait for a person', async () => {
+    const result: FleetStatusResult = {
+      now: NOW,
+      hosts: [
+        {
+          host: 'big-blower',
+          generatedAt: ago(1),
+          receivedAt: ago(1),
+          rollup: {
+            v: 2,
+            host: 'big-blower',
+            generated_at: ago(1),
+            workers: [{ session: 'big-blower:slot1:fleet-worker', worker: 'slot1', state: 'parked', last_activity: ago(1), claim: null }],
+            claims: [
+              { nodeId: 'n1', mapId: 'm1', phase: 'pr', ci: 'red', pr_number: 1038, phase_since: ago(90) },
+              { nodeId: 'n2', mapId: 'm1', phase: 'pr', ci: 'pending', pr_number: 1040, phase_since: ago(5) },
+            ],
+          },
+        },
+      ],
+      ticks: [],
+    };
+    const out = await fleetStatusTool.handler(backendWith(result), { mapId: 'm1' } as never);
+    expect(out).toContain('slot1: parked');
+    expect(out).toContain('- holds PR #1038 (node n1): CI red · 1h — waiting for a person (Questions card)');
+    expect(out).toContain('- holds PR #1040 (node n2): Waiting for CI · 5m\n');
+  });
 });

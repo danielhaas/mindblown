@@ -194,6 +194,14 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.state).toBe('full');
   });
 
+  it('a claimed ticket with a blocker does not count toward full', () => {
+    const c1 = n({ id: 'c1', status: 'in_progress', claimedBySession: 'a' });
+    const c2 = n({ id: 'c2', status: 'in_progress', claimedBySession: 'b', blockedReason: 'Fleet worker b: CI failed on PR #3 (abc).' });
+    const s = dispatchQueueSnapshot([...all, c1, c2], { workflow: WORKFLOW, cap: 2, gate: [] });
+    expect(s.activeClaims).toBe(1);
+    expect(s.state).toBe('running');
+  });
+
   it('an "or" gate counts both sides in the gate, and only the rest as outside (#265)', () => {
     const or = dispatchQueueSnapshot(all, { workflow: WORKFLOW, cap: 6, gate: ['type:bug|version:v1'] });
     expect(or.inGateIds.sort()).toEqual(['bug', 'leaf']);

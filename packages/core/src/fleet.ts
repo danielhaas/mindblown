@@ -341,6 +341,18 @@ export interface HostSummary {
   /** Effective states (dead derived) → count. */
   counts: Record<string, number>;
   claims: number;
+  /**
+   * Claims the host holds with no agent on them — its open PRs (waiting
+   * for CI, red, a conflict, a hand merge). A "parked" slot can still hold
+   * these; a `problem` tone means a person has to act.
+   */
+  held: HeldClaim[];
+}
+
+export interface HeldClaim {
+  nodeId: string;
+  mapId: string | null;
+  phase: TicketPhase;
 }
 
 export interface FleetSummary {
@@ -376,6 +388,10 @@ export function summarizeFleet(
         counts[s] = (counts[s] ?? 0) + 1;
         if (w.claim && (w.claim.nodeId || w.claim.title || w.claim.redacted)) claims += 1;
       }
+      const onWorker = new Set(rollup.workers.map((w) => w.claim?.nodeId).filter(Boolean));
+      const held = (rollup.claims ?? [])
+        .filter((c) => !onWorker.has(c.nodeId))
+        .map((c) => ({ nodeId: c.nodeId, mapId: c.mapId ?? null, phase: ticketPhase(c) }));
       return {
         host: rollup.host,
         generatedAt: rollup.generated_at,
@@ -385,6 +401,7 @@ export function summarizeFleet(
         workers: rollup.workers,
         counts,
         claims,
+        held,
       };
     })
     .sort((a, b) => a.host.localeCompare(b.host));

@@ -12,7 +12,7 @@
  */
 
 import { z } from 'zod';
-import { summarizeFleet, effectiveWorkerState, silentSatellites, summarizeTick, TICK_WINDOW_MAX_LIMIT } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, summarizeTick, ticketPhaseText, TICK_WINDOW_MAX_LIMIT } from '@mindblown/core';
 import { defineTool } from '../spec.js';
 import type { FleetStatusResult } from '../backend.js';
 
@@ -494,6 +494,12 @@ export const fleetStatusTool = defineTool({
           if (w.waiting?.reason) bits.push(`waiting: ${w.waiting.reason}`);
           if (typeof w.ctx_pct === 'number') bits.push(`ctx ${w.ctx_pct}%`);
           lines.push(`  - ${w.worker ?? w.session}: ${bits.filter(Boolean).join(' · ')}`);
+        }
+        // Open PRs the host follows with no agent on them — a parked slot can still hold these.
+        for (const c of h.held) {
+          const pr = c.phase.prNumber ? `PR #${c.phase.prNumber}` : 'PR';
+          const who = c.phase.tone === 'problem' ? ' — waiting for a person (Questions card)' : '';
+          lines.push(`  - holds ${pr} (node ${c.nodeId}): ${ticketPhaseText(c.phase, now)}${who}`);
         }
       }
     }

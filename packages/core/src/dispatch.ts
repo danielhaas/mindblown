@@ -95,6 +95,17 @@ export const BLOCKED_TAG = 'blocked';
  */
 export const FLEET_FIX_TAG = 'fleet-fix';
 
+/**
+ * A claim that uses up the map's / fleet's cap. A claimed ticket with a
+ * blocker is waiting on a person (red CI, a conflict, a hand merge) — the
+ * worker holds it to follow its PR but runs no agent, so it leaves the
+ * slot free for the next ticket. "Fleet can fix it" clears the blocker and
+ * the claim counts again.
+ */
+export function holdsCapSlot(node: Pick<Node, 'claimedBySession' | 'blockedReason'>): boolean {
+  return node.claimedBySession !== null && !node.blockedReason;
+}
+
 /** A blocker the fleet worker wrote about its own PR that an agent can work on: red CI, a merge conflict. */
 export function fleetCanFix(blockedReason: string | null | undefined): boolean {
   return /^Fleet worker \S+: (CI failed on PR #\d+|PR #\d+ has merge conflicts)/.test((blockedReason ?? '').trim());
@@ -422,7 +433,7 @@ export function dispatchQueueSnapshot(
   opts: { workflow: StatusDef[]; cap: number; gate: string[] },
 ): DispatchQueueSnapshot {
   const cap = Math.max(0, Math.floor(opts.cap));
-  const activeClaims = nodes.filter((n) => n.claimedBySession !== null).length;
+  const activeClaims = nodes.filter(holdsCapSlot).length;
   const { pullable, nodeMap } = pullableNodes(nodes, opts.workflow);
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.

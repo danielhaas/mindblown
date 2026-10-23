@@ -16,8 +16,8 @@
  * message and every 60 s as a backstop.
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow, summarizeTick } from '@mindblown/core';
-import type { FleetWorkerStatus, HostSummary, Node, TickSummary } from '@mindblown/core';
+import { summarizeFleet, effectiveWorkerState, silentSatellites, estimateServerNow, summarizeTick, ticketPhaseText } from '@mindblown/core';
+import type { FleetWorkerStatus, HeldClaim, HostSummary, Node, TickSummary } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetResponse } from './api.js';
@@ -208,6 +208,7 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
   scope: FleetScope | null;
 }) {
   const age = `${Math.round(h.freshness.ageMin)}m`;
+  const waitsForYou = h.freshness.stale ? 0 : h.held.filter((c) => c.phase.tone === 'problem').length;
   return (
     <li style={{ marginTop: 4 }}>
       <Link onClick={onToggle}>
@@ -221,13 +222,45 @@ function HostRow({ host: h, now, open, onToggle, nodes, selectNode, scope }: {
         {' '}· {Object.entries(h.counts).map(([s, n]) => `${s} ${n}`).join(', ') || 'no workers'}
         {h.freshness.stale && h.workers.length > 0 ? ' (last seen)' : ''}
       </span>
+      {waitsForYou > 0 && (
+        <span style={{ ...pill, background: '#fee2e2', color: '#991b1b', marginLeft: 6 }} data-testid="held-waiting">
+          {waitsForYou} PR{waitsForYou === 1 ? '' : 's'} waiting for you
+        </span>
+      )}
       {open && (
         <ul style={{ margin: '2px 0 4px 14px', paddingLeft: 12, fontSize: 12, lineHeight: 1.7 }}>
           {h.workers.map((w) => (
             <WorkerRow key={w.session} w={w} now={now} nodes={nodes} selectNode={selectNode} scope={scope} hostStale={h.freshness.stale} />
           ))}
+          {h.held.map((c) => (
+            <HeldRow key={c.nodeId} c={c} now={now} nodes={nodes} selectNode={selectNode} scope={scope} />
+          ))}
         </ul>
       )}
+    </li>
+  );
+}
+
+/** An open PR the host follows with no agent on it — a "parked" slot can still hold one. */
+function HeldRow({ c, now, nodes, selectNode, scope }: {
+  c: HeldClaim;
+  now: Date;
+  nodes: NodeIndex;
+  selectNode: (id: string) => void;
+  scope: FleetScope | null;
+}) {
+  const local = !scope || !c.mapId || c.mapId === scope.mapId;
+  const title = local ? nodes[c.nodeId]?.text : undefined;
+  const project = projectLabel(scope, c.mapId ?? undefined);
+  const problem = c.phase.tone === 'problem';
+  return (
+    <li data-testid="held-claim">
+      <span style={{ color: '#64748b' }}>holds {c.phase.prNumber ? `PR #${c.phase.prNumber}` : 'a PR'}</span>
+      {' '}— {project && <span style={projectTag}>{project}</span>}
+      {title ? <Link onClick={() => selectNode(c.nodeId)}>{title}</Link> : <span style={{ color: '#94a3b8' }}>{c.nodeId.slice(0, 8)}</span>}
+      <span style={{ color: problem ? '#991b1b' : '#64748b' }}>
+        {' '}· {ticketPhaseText(c.phase, now)}{problem ? ' — waiting for you (Questions card)' : ''}
+      </span>
     </li>
   );
 }

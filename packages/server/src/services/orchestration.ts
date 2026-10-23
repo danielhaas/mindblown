@@ -35,6 +35,7 @@ import {
   matchesDispatchGate,
   pullableNodes,
   dispatchHold,
+  holdsCapSlot,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
   MIX_BUGS_REGEX,
@@ -625,7 +626,7 @@ export function selectPullCandidates(
     fleetFull?: boolean;
   },
 ): PullDecision {
-  const active = allNodes.filter((n) => n.claimedBySession !== null).length;
+  const active = allNodes.filter(holdsCapSlot).length;
   const cap = Math.max(0, Math.floor(opts.cap));
   if (cap === 0) return { active, cap, reason: 'hold', ranked: [], skipped: [], humanOnly: [] };
   if (active >= cap) return { active, cap, reason: 'cap', ranked: [], skipped: [], humanOnly: [] };
@@ -936,13 +937,13 @@ function isFleetFull(cap: number, active: number): boolean {
   return cap > 0 && active >= cap;
 }
 
-/** Claims across every map of the fleet — what the fleet cap limits. */
+/** Claims across every map of the fleet — what the fleet cap limits (core holdsCapSlot). */
 async function countFleetClaims(tx: PullTx, fleetId: string): Promise<number> {
   const [row] = await tx
     .select({ n: sql<number>`count(*)::int` })
     .from(nodes)
     .innerJoin(maps, eq(nodes.mapId, maps.id))
-    .where(and(eq(maps.fleetId, fleetId), notDeleted, isNotNull(nodes.claimedBySession)));
+    .where(and(eq(maps.fleetId, fleetId), notDeleted, isNotNull(nodes.claimedBySession), isNull(nodes.blockedReason)));
   return Number(row?.n ?? 0);
 }
 

@@ -95,6 +95,18 @@ describe('summarizeFleet', () => {
   it('is empty-safe', () => {
     expect(summarizeFleet([], NOW)).toMatchObject({ hosts: [], totals: {}, workersTotal: 0, working: 0, freshHosts: 0, staleHosts: [] });
   });
+
+  it('lists the claims a parked slot still holds (open PRs), not the one an agent works on', () => {
+    const bb = rollup('big-blower', [w({ session: 'big-blower:slot1:fleet-worker', state: 'working', claim: { nodeId: 'n2', title: 'B' } })], {
+      claims: [
+        { nodeId: 'n2', mapId: 'm', phase: 'working' },
+        { nodeId: 'n1', mapId: 'm', phase: 'pr', ci: 'red', pr_number: 1038, phase_since: ago(90) },
+      ],
+    });
+    const [h] = summarizeFleet([{ rollup: bb, receivedAt: ago(1) }], NOW).hosts;
+    expect(h.held).toHaveLength(1);
+    expect(h.held[0]).toMatchObject({ nodeId: 'n1', mapId: 'm', phase: { label: 'CI red', tone: 'problem', prNumber: 1038 } });
+  });
 });
 
 describe('silentSatellites', () => {
