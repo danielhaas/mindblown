@@ -271,4 +271,15 @@ describe('user-token helpers', () => {
     expect(asked[0]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read', checks: 'read', statuses: 'read' });
     expect(asked[1]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' });
   });
+
+  it('falls back to an issues-only token for an installation without contents/PR rights', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const calls = stubOnce([
+      { status: 422, body: {} },
+      { status: 422, body: {} },
+      { status: 201, body: { token: 'ghs_issues', expires_at: new Date(Date.now() + 3600_000).toISOString() } },
+    ]);
+    expect(await mintInstallationToken('narrow-test-2')).toBe('ghs_issues');
+    expect(JSON.parse(String(calls[2].init.body)).permissions).toEqual({ issues: 'write', metadata: 'read' });
+  });
 });

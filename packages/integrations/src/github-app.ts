@@ -175,6 +175,12 @@ export async function mintInstallationToken(installationId: string): Promise<str
   // token. An App without the CI reads (GitHub answers 422) gets the rest.
   let res = await mint({ ...SERVER_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
   if (res.status === 422) res = await mint(SERVER_TOKEN_PERMISSIONS);
+  if (res.status === 422) {
+    // An installation that never accepted a later permission (contents,
+    // pull requests) still syncs issues rather than nothing.
+    console.warn(`[github-app] installation ${installationId}: contents/pull_requests not granted — token limited to issues`);
+    res = await mint(SERVER_TOKEN_MINIMUM);
+  }
 
   if (!res.ok) {
     const body = await res.text();
@@ -203,6 +209,8 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
 /** What the server's own installation token does: issues, PRs, contents (docs, labels). */
 const SERVER_TOKEN_PERMISSIONS = { contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' } as const;
+/** The floor: issue sync and import. */
+const SERVER_TOKEN_MINIMUM = { issues: 'write', metadata: 'read' } as const;
 
 /** What a fleet worker does with the repo: push a branch, open and merge the PR. */
 const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;
