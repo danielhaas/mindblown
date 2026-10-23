@@ -515,6 +515,9 @@ export function updateMap(
     fleetId?: string | null;
     fleetShare?: number;
     autoImportNewIssues?: boolean;
+    githubInstallationId?: string | null;
+    githubRepoOwner?: string | null;
+    githubRepoName?: string | null;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
     holidayJurisdiction?: string | null;
@@ -711,6 +714,46 @@ export function rolloverCycle(fromCycleId: string, targetCycleId: string): Promi
     method: 'POST',
     body: JSON.stringify({ targetCycleId }),
   });
+}
+
+// ── Repository creation (the caller's own GitHub / Gitea sign-in) ──
+
+export function getGitHubInstallStatus(): Promise<{
+  connected: boolean;
+  identity: { githubLogin: string } | null;
+  installations: Array<{ installationId: string; accountLogin: string; accountType: string }>;
+  appConfigured: boolean;
+}> {
+  return request('/api/auth/github/status');
+}
+
+export function getGiteaAuthStatus(): Promise<{ configured: boolean; connected: boolean; identity: { login: string } | null }> {
+  return request('/api/auth/gitea/status');
+}
+
+export interface CreatedRepo {
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  htmlUrl: string;
+}
+
+export function createGitHubRepository(input: {
+  installationId: string;
+  name: string;
+  private: boolean;
+  description?: string;
+}): Promise<CreatedRepo & { installationId: string; reachable: boolean; addAccessUrl?: string }> {
+  return request('/api/integrations/github/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function createGiteaRepository(input: { name: string; private: boolean; description?: string }): Promise<CreatedRepo> {
+  return request('/api/integrations/gitea/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function bindGiteaRepo(workspaceId: string, owner: string, repo: string, mapId: string): Promise<{ id: string; repo: string }> {
+  return request('/api/integrations/gitea/bind', { method: 'POST', body: JSON.stringify({ workspaceId, owner, repo, mapId }) });
 }
 
 // ── GitHub Integration ─────────────────────────────────────────

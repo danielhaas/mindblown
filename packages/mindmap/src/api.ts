@@ -457,6 +457,29 @@ export function getGitHubRepositories(installationId?: string): Promise<{
   return request(`/api/integrations/github/repositories${qs}`);
 }
 
+export interface CreatedRepo {
+  fullName: string;
+  owner: string;
+  name: string;
+  private: boolean;
+  htmlUrl: string;
+}
+
+/** Create a repo with the user's own GitHub token, in one of their installations' accounts. */
+export function createGitHubRepository(input: {
+  installationId: string;
+  name: string;
+  private: boolean;
+  description?: string;
+}): Promise<CreatedRepo & { installationId: string; reachable: boolean; addAccessUrl?: string }> {
+  return request('/api/integrations/github/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
+/** Create a repo in the signed-in user's Gitea account. */
+export function createGiteaRepository(input: { name: string; private: boolean; description?: string }): Promise<CreatedRepo> {
+  return request('/api/integrations/gitea/repositories', { method: 'POST', body: JSON.stringify(input) });
+}
+
 export function disconnectGitHub(): Promise<{ disconnected: boolean }> {
   return request('/api/auth/github/disconnect', { method: 'POST' });
 }

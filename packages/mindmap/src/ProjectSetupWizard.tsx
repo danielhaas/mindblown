@@ -253,6 +253,12 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [imported, setImported] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState(() => repoSlug(map.name));
+  const [newOwner, setNewOwner] = useState('');
+  const [newPrivate, setNewPrivate] = useState(true);
+  /** A created repo the App can't see yet (installation limited to selected repos). */
+  const [needsAccess, setNeedsAccess] = useState<{ url: string; choice: RepoChoice } | null>(null);
 
   const bound = map.forgeKind && !map.forgeProblem;
   const boundName = map.githubRepoOwner && map.githubRepoName ? `${map.githubRepoOwner}/${map.githubRepoName}` : null;
@@ -295,7 +301,11 @@ function RepoStep({ onNext }: { onNext: () => void }) {
 
   const connect = async () => {
     const choice = repos?.find((r) => `${r.kind}:${r.fullName}` === selected);
-    if (!choice || !user) return;
+    if (choice) await connectChoice(choice);
+  };
+
+  const connectChoice = async (choice: RepoChoice) => {
+    if (!user) return;
     const [owner, name] = choice.fullName.split('/');
     setError(null);
     setBusy('Connecting…');
@@ -323,12 +333,41 @@ function RepoStep({ onNext }: { onNext: () => void }) {
     }
   };
 
+  const createRepo = async (owner: string) => {
+    setError(null);
+    setNeedsAccess(null);
+    setBusy('Creating the repository…');
+    const description = stripTags(map.description ?? '').trim().slice(0, 350) || undefined;
+    try {
+      let choice: RepoChoice;
+      if (owner === 'gitea') {
+        const r = await api.createGiteaRepository({ name: newName.trim(), private: newPrivate, description });
+        choice = { kind: 'gitea', fullName: r.fullName };
+      } else {
+        const installationId = owner.slice('github:'.length);
+        const r = await api.createGitHubRepository({ installationId, name: newName.trim(), private: newPrivate, description });
+        choice = { kind: 'github', fullName: r.fullName, installationId };
+        if (!r.reachable) {
+          setNeedsAccess({ url: r.addAccessUrl ?? '', choice });
+          setBusy(null);
+          return;
+        }
+      }
+      await connectChoice(choice);
+    } catch (e: any) {
+      setError(e?.message ?? 'Creating the repository failed.');
+      setBusy(null);
+    }
+  };
+
   if (bound) {
     return (
       <>
         <p style={text} data-testid="setup-repo-bound">
           Connected to <strong>{boundName ?? 'its repository'}</strong>.
-          {imported !== null && ` Imported ${imported} open issue${imported === 1 ? '' : 's'}; new ones come in by themselves.`}
+          {imported !== null && (imported === 0
+            ? ' No open issues yet; new ones come in by themselves.'
+            : ` Imported ${imported} open issue${imported === 1 ? '' : 's'}; new ones come in by themselves.`)}
         </p>
         {error && <div style={errorBox}>{error} New issues still come in by themselves; the import can be rerun in the map&apos;s forge settings.</div>}
         <Footer><button type="button" onClick={onNext} style={primary(true)}>Continue</button></Footer>
@@ -339,6 +378,16 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const ghReady = !!gh?.connected && gh.installations.length > 0;
   const giteaReady = !!gitea?.configured && gitea.connected;
   const nothingConfigured = gh !== null && !gh.appConfigured && !gitea?.configured;
+  // Where a new repo can go: the user's own account and orgs among their
+  // App installations, and their Gitea account.
+  const owners: Array<{ value: string; label: string }> = [
+    ...(ghReady ? gh!.installations : [])
+      .filter((i) => i.accountType === 'Organization' || i.accountLogin.toLowerCase() === gh!.identity?.githubLogin.toLowerCase())
+      .map((i) => ({ value: `github:${i.installationId}`, label: `${i.accountLogin}${giteaReady ? ' (GitHub)' : ''}` })),
+    ...(giteaReady && gitea!.identity ? [{ value: 'gitea', label: `${gitea!.identity.login}${ghReady ? ' (Gitea)' : ''}` }] : []),
+  ];
+  const owner = newOwner || owners[0]?.value || '';
+  const nameOk = /^[A-Za-z0-9._-]{1,100}$/.test(newName.trim());
 
   return (
     <>
@@ -373,6 +422,59 @@ function RepoStep({ onNext }: { onNext: () => void }) {
         </>
       )}
 
+      {owners.length > 0 && !creating && (
+        <div style={{ marginBottom: 12 }}>
+          <button type="button" data-testid="setup-repo-new" onClick={() => setCreating(true)} disabled={!!busy} style={secondary}>
+            Create a new repository
+          </button>
+        </div>
+      )}
+      {creating && (
+        <div data-testid="setup-repo-create" style={{ border: '1px solid #e2e8f0', borderRadius: 8, padding: 12, marginBottom: 12 }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 8 }}>
+            <div style={{ flex: '0 0 40%' }}>
+              <label style={label}>Owner</label>
+              <select data-testid="setup-repo-new-owner" value={owner} onChange={(e) => setNewOwner(e.target.value)} disabled={!!busy} style={input}>
+                {owners.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div style={{ flex: 1 }}>
+              <label style={label}>Name</label>
+              <input data-testid="setup-repo-new-name" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={!!busy} style={input} />
+            </div>
+          </div>
+          <label style={{ ...hint, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+            <input type="checkbox" data-testid="setup-repo-new-private" checked={newPrivate} onChange={(e) => setNewPrivate(e.target.checked)} disabled={!!busy} />
+            Private
+          </label>
+          <div style={{ ...hint, marginBottom: 8 }}>
+            Starts with a README so agents have a main branch to work from. The project description becomes the repository description.
+          </div>
+          {needsAccess && (
+            <div style={{ ...hint, marginBottom: 8 }} data-testid="setup-repo-needs-access">
+              Created <strong>{needsAccess.choice.fullName}</strong>, but the GitHub App only sees selected repositories.{' '}
+              <a href={needsAccess.url} target="_blank" rel="noreferrer">Add it to the App</a>, then press Connect.
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" onClick={() => { setCreating(false); setNeedsAccess(null); }} disabled={!!busy} style={secondary}>Cancel</button>
+            {needsAccess ? (
+              <button type="button" onClick={() => connectChoice(needsAccess.choice)} disabled={!!busy} style={primary(!busy)}>Connect</button>
+            ) : (
+              <button
+                type="button"
+                data-testid="setup-repo-new-create"
+                onClick={() => createRepo(owner)}
+                disabled={!nameOk || !owner || !!busy}
+                style={primary(nameOk && !!owner && !busy)}
+              >
+                Create and connect
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
         {gh?.appConfigured && !ghReady && (
           <button type="button" data-testid="setup-github-connect" onClick={() => signIn('github')} style={secondary}>Connect GitHub</button>
@@ -399,6 +501,11 @@ function RepoStep({ onNext }: { onNext: () => void }) {
       </Footer>
     </>
   );
+}
+
+/** A repository name from the project name: "Bakery Shop" → "bakery-shop". */
+function repoSlug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 100) || 'project';
 }
 
 // ── 3. Plan ──────────────────────────────────────────────────────

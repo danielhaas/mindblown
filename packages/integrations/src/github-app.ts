@@ -483,3 +483,27 @@ export async function listUserInstallationRepositories(accessToken: string, inst
     'repositories',
   );
 }
+
+/** What a new repository gets; the same shape serves GitHub and Gitea. */
+export interface NewRepositoryInput {
+  name: string;
+  private: boolean;
+  description?: string;
+}
+
+/**
+ * Create a repository with the user's own access token: in their account,
+ * or in `org` when given. Seeded with a README (`auto_init`) so it has a
+ * default branch for agents to branch from. An App user token needs the
+ * App's "Administration: write" permission (GitHub answers 403 without it).
+ */
+export async function createGitHubRepository(
+  accessToken: string,
+  input: NewRepositoryInput & { org?: string },
+): Promise<GitHubRepo> {
+  const path = input.org ? `/orgs/${encodeURIComponent(input.org)}/repos` : '/user/repos';
+  return new GitHubForge({ token: accessToken }).requestJson<GitHubRepo>(path, {
+    method: 'POST',
+    body: { name: input.name, private: input.private, description: input.description || undefined, auto_init: true },
+  });
+}

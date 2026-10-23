@@ -26,7 +26,7 @@ describe('project_setup_status', () => {
     expect(out).toContain('Setup of "Shop": 1/5 steps done.');
     expect(out).toContain('1. [ ] Describe the project');
     expect(out.indexOf('Connect the repository')).toBeLessThan(out.indexOf('Lay out the plan'));
-    expect(out).toContain('How: connect_forge_repo');
+    expect(out).toContain('How: create_forge_repo for a new repo; for an existing one connect_forge_repo');
     expect(out).toContain('Next: Describe the project.');
   });
 
