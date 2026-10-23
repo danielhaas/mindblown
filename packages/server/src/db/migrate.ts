@@ -1463,5 +1463,21 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS expected_done_at TIMESTAMPTZ
   `);
 
+  // ── maps.setup_completed_at (guided onboarding) ─────────────────
+  // NULL = a new project still showing its setup checklist. Every map from
+  // before the checklist counts as set up, once.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS setup_completed_at TIMESTAMPTZ
+  `);
+  await db.execute(sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM data_migrations WHERE id = 'backfill_setup_completed_at_v1') THEN
+        UPDATE maps SET setup_completed_at = NOW() WHERE setup_completed_at IS NULL;
+        INSERT INTO data_migrations (id) VALUES ('backfill_setup_completed_at_v1');
+      END IF;
+    END $$;
+  `);
+
   console.log('[db] Migrations complete.');
 }

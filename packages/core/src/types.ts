@@ -787,6 +787,12 @@ export interface MindMap {
   updatedAt: string;
   createdBy: UserId;
   archivedAt: string | null;
+  /**
+   * Guided onboarding (setup.ts): when the owner finished or dismissed the
+   * setup checklist. null = a new project still showing it. Maps from
+   * before the checklist count as set up. Absent = unknown, never shown.
+   */
+  setupCompletedAt?: string | null;
 
   // ── GitHub integration ──────────────────────────────────
   githubInstallationId?: string | null;

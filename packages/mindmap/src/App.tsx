@@ -30,7 +30,8 @@ import { GitHubSettingsDialog } from './GitHubPanel.js';
 import { AIChatPanel } from './AIChatPanel.js';
 import { TicketIntakeModal } from './TicketIntakeModal.js';
 import { useAiCapabilities } from './aiCapabilities.js';
-import { NewMapDialog } from './NewMapDialog.js';
+import { ProjectSetupWizard, takeSetupResume, type SetupWizardStep } from './ProjectSetupWizard.js';
+import { ProjectSetupCard } from './ProjectSetupCard.js';
 import { MapChatPanel } from './MapChatPanel.js';
 import { useMapChatUnread } from './useMapChatUnread.js';
 import { useUrlState } from './useUrlState.js';
@@ -1580,7 +1581,6 @@ export function App() {
 
   const loadMaps = useMindmapStore((s) => s.loadMaps);
   const loadMap = useMindmapStore((s) => s.loadMap);
-  const createMap = useMindmapStore((s) => s.createMap);
   const closeMap = useMindmapStore((s) => s.closeMap);
   const updateMapName = useMindmapStore((s) => s.updateMapName);
   const setActiveView = useMindmapStore((s) => s.setActiveView);
@@ -1752,12 +1752,21 @@ export function App() {
   // that logic lives in one place instead of racing effects here.
   const restoringMap = useUrlState();
 
-  // New-map dialog: name + AI policy (#375), asked up front instead of a
-  // bare prompt() so a private project starts with the right policy.
-  const [newMapOpen, setNewMapOpen] = useState(false);
+  // Guided onboarding: "New map" opens the setup wizard ('new' = the
+  // describe step before the map exists); the card on a new map reopens it.
+  const [setupStep, setSetupStep] = useState<SetupWizardStep | null>(null);
   const handleCreateMap = useCallback(() => {
-    setNewMapOpen(true);
+    setSetupStep('new');
   }, []);
+  // Back from a GitHub / Gitea sign-in the wizard sent us to: reopen it there.
+  useEffect(() => {
+    if (!user) return;
+    const mapId = takeSetupResume();
+    if (!mapId) return;
+    void loadMap(mapId).then(() => {
+      if (useMindmapStore.getState().currentMapId === mapId) setSetupStep('repo');
+    });
+  }, [user, loadMap]);
 
   // ── Auth check loading ───────────────────────────────────────
 
@@ -1837,14 +1846,8 @@ export function App() {
           <WorkspaceSettings onClose={() => setWorkspaceSettingsOpen(false)} />
         )}
         {helpOpen && <HelpOverlay onClose={() => setHelpOpen(false)} />}
-        {newMapOpen && (
-          <NewMapDialog
-            onClose={() => setNewMapOpen(false)}
-            onCreate={(name, aiPolicy) => {
-              setNewMapOpen(false);
-              createMap(name, aiPolicy);
-            }}
-          />
+        {setupStep && (
+          <ProjectSetupWizard step={setupStep} onStep={setSetupStep} onClose={() => setSetupStep(null)} />
         )}
         <TicketButton />
       </div>
@@ -2532,14 +2535,10 @@ export function App() {
         />
       )}
 
-      {newMapOpen && (
-        <NewMapDialog
-          onClose={() => setNewMapOpen(false)}
-          onCreate={(name, aiPolicy) => {
-            setNewMapOpen(false);
-            createMap(name, aiPolicy);
-          }}
-        />
+      {setupStep ? (
+        <ProjectSetupWizard step={setupStep} onStep={setSetupStep} onClose={() => setSetupStep(null)} />
+      ) : (
+        <ProjectSetupCard onContinue={setSetupStep} />
       )}
 
       {/* AI Chat Panel — full panel when open & !minimised, chip when minimised */}

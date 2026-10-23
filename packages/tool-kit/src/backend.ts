@@ -431,6 +431,8 @@ export interface ToolBackend {
       holidayOverrides?: { add: string[]; remove: string[] };
       phases?: PhaseDef[];
       archived?: boolean;
+      /** Guided onboarding: finish (true) or reopen (false) the setup checklist. */
+      setupCompleted?: boolean;
       /** #491 — admin only; null = back to the defaults. */
       trustPolicy?: TrustPolicy | null;
     },

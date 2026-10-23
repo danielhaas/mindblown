@@ -17,6 +17,7 @@ import type { ViewRole } from './roles.js';
  *  flags too), and those keep their pre-existing no-live-sync behaviour —
  *  merging them would revert optimistic edits such as an in-flight rename. */
 const BROADCAST_MAP_SETTINGS = [
+  'setupCompletedAt',
   'maxActiveClaims',
   'dispatchGate',
   'dispatchPolicy',
@@ -186,7 +187,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare'>> & { archived?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -465,7 +466,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
   createMap: async (name: string, aiPolicy?: 'any' | 'local' | 'none') => {
     set({ loading: true, error: null });
     try {
-      const map = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
+      const { map } = await api.createMap(name, aiPolicy ? { aiPolicy } : {});
       // Reload maps list
       const maps = await api.fetchMaps();
       set({ maps, loading: false });

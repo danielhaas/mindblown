@@ -7,6 +7,8 @@ interface Props {
   mapId: string;
   parentId: string;
   parentText: string;
+  /** Prose to start from (the setup wizard passes the project description). */
+  initialProse?: string;
   onClose: () => void;
 }
 
@@ -49,8 +51,8 @@ function countNodes(tree: BraindumpNode[]): number {
   return tree.reduce((acc, n) => acc + 1 + countNodes(n.children), 0);
 }
 
-export function AIBraindumpModal({ mapId, parentId, parentText, onClose }: Props) {
-  const [prose, setProse] = useState('');
+export function AIBraindumpModal({ mapId, parentId, parentText, initialProse, onClose }: Props) {
+  const [prose, setProse] = useState(initialProse ?? '');
   const [tree, setTree] = useState<BraindumpNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [accepting, setAccepting] = useState(false);
