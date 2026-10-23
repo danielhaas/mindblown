@@ -63,4 +63,7 @@ export const httpBackend: ToolBackend = {
   attachFile: (mapId, nodeId, file) => api.attachFile(mapId, nodeId, file),
   removeAttachment: (mapId, nodeId, attachmentId) => api.removeAttachment(mapId, nodeId, attachmentId),
   readAttachment: (mapId, nodeId, attachmentId, opts) => api.readAttachment(mapId, nodeId, attachmentId, opts),
+  // ── Repo docs (#550) ────────────────────────────────────────────
+  listRepoDocs: (mapId) => api.listRepoDocs(mapId),
+  readRepoDoc: (mapId, path) => api.readRepoDoc(mapId, path),
 };

@@ -47,11 +47,16 @@ import {
   type IssuesListQuery,
   type ListPullRequestsQuery,
   type MilestoneRef,
+  type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
+import { blobBytes, encodeRef, treeFiles, type RawBlob, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS } from './constants.js';
 import { walkIssueScan } from './pagination.js';
+
+/** 20 pages × 1000 entries — beyond that the Docs tab reports a partial listing. */
+const TREE_MAX_PAGES = 20;
 
 export interface GiteaForgeOptions {
   token: string;
@@ -503,6 +508,31 @@ export class GiteaForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  // ── Repo contents ───────────────────────────────────────────────
+
+  /**
+   * Gitea pages a recursive tree (`truncated` on every page but the last;
+   * per_page clamps at `[api] DEFAULT_GIT_TREES_PER_PAGE`, 1000 by default).
+   * Walks at most `TREE_MAX_PAGES` pages and reports `truncated` past that.
+   */
+  async getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree> {
+    const files: RepoTree['files'] = [];
+    let sha = '';
+    for (let page = 1; page <= TREE_MAX_PAGES; page++) {
+      const raw = await this.requestJson<RawTree>(
+        `/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=true&per_page=1000&page=${page}`,
+      );
+      sha = raw.sha;
+      files.push(...treeFiles(raw));
+      if (!raw.truncated) return { sha, files, truncated: false };
+    }
+    return { sha, files, truncated: true };
+  }
+
+  async getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array> {
+    return blobBytes(await this.requestJson<RawBlob>(`/repos/${owner}/${repo}/git/blobs/${sha}`));
   }
 
   // ── URLs ────────────────────────────────────────────────────────

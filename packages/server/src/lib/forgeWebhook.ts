@@ -26,10 +26,12 @@ export const WEBHOOK_PATH = '/api/webhooks/github';
  * What the webhook route consumes. Gitea splits GitHub's `issues` and
  * `pull_request` into one event per facet (label, assignee, milestone,
  * sync) and delivers each under the GitHub name — subscribing only
- * `issues` would miss label and assignee changes.
+ * `issues` would miss label and assignee changes. `push` keeps the Docs
+ * tab current (#550).
  */
 export const WEBHOOK_EVENTS: Record<ForgeKind, string[]> = {
   gitea: [
+    'push',
     'issues',
     'issue_assign',
     'issue_label',
@@ -41,7 +43,7 @@ export const WEBHOOK_EVENTS: Record<ForgeKind, string[]> = {
     'pull_request_sync',
     'pull_request_review',
   ],
-  github: ['issues', 'pull_request', 'pull_request_review', 'check_suite'],
+  github: ['push', 'issues', 'pull_request', 'pull_request_review', 'check_suite'],
 };
 
 /**

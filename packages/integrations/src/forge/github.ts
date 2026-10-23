@@ -22,9 +22,11 @@ import {
   type IssuesListQuery,
   type ListPullRequestsQuery,
   type MilestoneRef,
+  type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
+import { blobBytes, encodeRef, treeFiles, type RawBlob, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
@@ -275,6 +277,17 @@ export class GitHubForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  // ── Repo contents ───────────────────────────────────────────────
+
+  async getRepoTree(owner: string, repo: string, ref: string): Promise<RepoTree> {
+    const raw = await this.requestJson<RawTree>(`/repos/${owner}/${repo}/git/trees/${encodeRef(ref)}?recursive=1`);
+    return { sha: raw.sha, files: treeFiles(raw), truncated: !!raw.truncated };
+  }
+
+  async getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array> {
+    return blobBytes(await this.requestJson<RawBlob>(`/repos/${owner}/${repo}/git/blobs/${sha}`));
   }
 
   // ── URLs ────────────────────────────────────────────────────────

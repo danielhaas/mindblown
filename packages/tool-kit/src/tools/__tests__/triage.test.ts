@@ -152,6 +152,8 @@ function makeRecorder(): Recorder {
     attachFile: async () => { throw new Error('not used'); },
     removeAttachment: async () => { throw new Error('not used'); },
     readAttachment: async () => { throw new Error('not used'); },
+    listRepoDocs: async () => { throw new Error('not used'); },
+    readRepoDoc: async () => { throw new Error('not used'); },
   };
   return state;
 }

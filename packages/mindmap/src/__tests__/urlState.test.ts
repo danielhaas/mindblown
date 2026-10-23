@@ -76,6 +76,7 @@ describe('parseUrlState', () => {
       'cockpit',
       'fleet',
       'files',
+      'docs',
     ]) {
       expect(parseUrlState(`?view=${view}`).view).toBe(view === 'mindmap' ? 'mindmap' : view);
     }

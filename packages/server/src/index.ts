@@ -48,6 +48,7 @@ import { fleetEntityRoutes } from './routes/fleets.js';
 import { fleetPairingRoutes } from './routes/fleetPairings.js';
 import { asksRoutes } from './routes/asks.js';
 import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
+import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { registerWebSocket } from './ws.js';
@@ -137,6 +138,7 @@ async function main(): Promise<void> {
   await app.register(asksRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(fleetJournalByFleetRoutes);
+  await app.register(repoDocsRoutes);
   await app.register(prRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
