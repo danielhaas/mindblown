@@ -14,7 +14,7 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText } from '@mindblown/tool-kit';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
 import type { AskAnswerInput, FleetWithMaps, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
@@ -1821,6 +1821,10 @@ export function listRepoDocs(mapId: string): Promise<RepoDocsList> {
 
 export function readRepoDoc(mapId: string, path: string): Promise<RepoDocText> {
   return request<RepoDocText>(`/api/maps/${mapId}/docs/file?path=${encodeURIComponent(path)}`);
+}
+
+export function proposeRepoDocEdit(mapId: string, input: ProposeDocEditInput): Promise<ProposeDocEditResult> {
+  return request<ProposeDocEditResult>(`/api/maps/${mapId}/docs/propose`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 export function conflictScan(

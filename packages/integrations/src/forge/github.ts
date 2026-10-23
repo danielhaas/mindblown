@@ -22,11 +22,14 @@ import {
   type IssuesListQuery,
   type ListPullRequestsQuery,
   type MilestoneRef,
+  type CreatePullRequestInput,
+  type PutFileInput,
+  type PutFileResult,
   type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
 } from './types.js';
-import { blobBytes, encodeRef, treeFiles, type RawBlob, type RawTree } from './contents.js';
+import { blobBytes, contentsPath, encodeRef, toBase64, treeFiles, type RawBlob, type RawPutFile, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
 
@@ -288,6 +291,30 @@ export class GitHubForge implements ForgeClient {
 
   async getBlob(owner: string, repo: string, sha: string): Promise<Uint8Array> {
     return blobBytes(await this.requestJson<RawBlob>(`/repos/${owner}/${repo}/git/blobs/${sha}`));
+  }
+
+  // ── Repo writes ─────────────────────────────────────────────────
+
+  async createBranch(owner: string, repo: string, name: string, from: string): Promise<void> {
+    const head = await this.requestJson<{ object: { sha: string } }>(`/repos/${owner}/${repo}/git/ref/heads/${encodeRef(from)}`);
+    await this.requestJson(`/repos/${owner}/${repo}/git/refs`, { method: 'POST', body: { ref: `refs/heads/${name}`, sha: head.object.sha } });
+  }
+
+  async deleteBranch(owner: string, repo: string, name: string): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/git/refs/heads/${encodeRef(name)}`, { method: 'DELETE' });
+  }
+
+  async putFile(owner: string, repo: string, input: PutFileInput): Promise<PutFileResult> {
+    const res = await this.requestJson<RawPutFile>(contentsPath(owner, repo, input.path), {
+      method: 'PUT',
+      body: { message: input.message, content: toBase64(input.content), sha: input.blobSha, branch: input.branch },
+    });
+    return { blobSha: res.content.sha, commitSha: res.commit.sha };
+  }
+
+  async createPullRequest(owner: string, repo: string, input: CreatePullRequestInput): Promise<{ number: number; url: string }> {
+    const pr = await this.requestJson<{ number: number; html_url: string }>(`/repos/${owner}/${repo}/pulls`, { method: 'POST', body: input });
+    return { number: pr.number, url: pr.html_url };
   }
 
   // ── URLs ────────────────────────────────────────────────────────

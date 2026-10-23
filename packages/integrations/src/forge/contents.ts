@@ -31,6 +31,27 @@ export function treeFiles(raw: RawTree): RepoTreeFile[] {
     .map((e) => ({ path: e.path, sha: e.sha, size: e.size ?? 0 }));
 }
 
+/**
+ * Writes (#552). `PUT …/contents/{path}` `{ message, content, sha, branch }`
+ * and `POST …/pulls` `{ title, body, head, base }` are the same on both
+ * forges, request and response. A stale `sha` is 409 on GitHub and 422
+ * "sha does not match" on Gitea (measured 1.27, 2026-10-23).
+ */
+export interface RawPutFile {
+  content: { sha: string };
+  commit: { sha: string };
+}
+
+export function contentsPath(owner: string, repo: string, path: string): string {
+  return `/repos/${owner}/${repo}/contents/${path.split('/').map(encodeURIComponent).join('/')}`;
+}
+
+export function toBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
 /** A blob body as bytes. GitHub wraps its base64 at 60 columns. */
 export function blobBytes(raw: RawBlob): Uint8Array {
   if (raw.encoding !== 'base64') return new TextEncoder().encode(raw.content);

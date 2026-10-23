@@ -4,12 +4,14 @@
  *   GET /api/maps/:id/docs                 → the markdown files on the default branch
  *   GET /api/maps/:id/docs/file?path=      → one of them, as text
  *   GET /api/maps/:id/docs/image?path=     → an image a doc embeds by relative path
+ *   POST /api/maps/:id/docs/propose        → branch + commit + PR with an edited doc (#552)
  *
- * View on the map (#403). Rules and caching live in services/repoDocs.
+ * Reads need view on the map (#403), the proposal edit. Rules and caching
+ * live in services/repoDocs.
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { guardMapRoutes } from '../lib/mapAccess.js';
-import { listRepoDocs, readRepoDoc, readRepoImage, RepoDocsError } from '../services/repoDocs.js';
+import { listRepoDocs, proposeRepoDocEdit, proposerName, readRepoDoc, readRepoImage, RepoDocsError } from '../services/repoDocs.js';
 
 function sendError(reply: FastifyReply, err: unknown) {
   if (err instanceof RepoDocsError) {
@@ -64,4 +66,23 @@ export async function repoDocsRoutes(app: FastifyInstance): Promise<void> {
       return sendError(reply, err);
     }
   });
+
+  // Edit on the map (a POST — the guard's default). The body carries a
+  // whole doc, so the limit sits above the 2 MB doc cap plus JSON escaping.
+  app.post<{ Params: { id: string }; Body: { path?: unknown; text?: unknown; baseSha?: unknown; message?: unknown } }>(
+    '/api/maps/:id/docs/propose',
+    { bodyLimit: 5 * 1024 * 1024 },
+    async (req, reply) => {
+      const { path, text, baseSha, message } = req.body ?? {};
+      if (typeof path !== 'string' || !path || typeof text !== 'string' || typeof baseSha !== 'string' || !baseSha || (message !== undefined && typeof message !== 'string')) {
+        return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: 'path, text and baseSha are required strings; message is an optional string' } });
+      }
+      try {
+        const res = await proposeRepoDocEdit(req.params.id, { path, text, baseSha, message }, await proposerName(req.userId!));
+        return reply.status(201).send(res);
+      } catch (err) {
+        return sendError(reply, err);
+      }
+    },
+  );
 }

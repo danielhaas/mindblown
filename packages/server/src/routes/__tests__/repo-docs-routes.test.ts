@@ -12,9 +12,14 @@ const mocks = vi.hoisted(() => ({
   listRepoDocs: vi.fn(),
   readRepoDoc: vi.fn(),
   readRepoImage: vi.fn(),
+  proposeRepoDocEdit: vi.fn(),
 }));
 
-vi.mock('../../db/permissions.js', () => ({ getPermission: async () => mocks.permission, hasPermission: (perm: string | null) => perm !== null }));
+const RANK: Record<string, number> = { view: 1, edit: 2, admin: 3 };
+vi.mock('../../db/permissions.js', () => ({
+  getPermission: async () => mocks.permission,
+  hasPermission: (perm: string | null, level: string) => perm !== null && RANK[perm] >= RANK[level],
+}));
 vi.mock('../../services/repoDocs.js', () => {
   class RepoDocsError extends Error {
     constructor(
@@ -25,7 +30,14 @@ vi.mock('../../services/repoDocs.js', () => {
       super(message);
     }
   }
-  return { listRepoDocs: mocks.listRepoDocs, readRepoDoc: mocks.readRepoDoc, readRepoImage: mocks.readRepoImage, RepoDocsError };
+  return {
+    listRepoDocs: mocks.listRepoDocs,
+    readRepoDoc: mocks.readRepoDoc,
+    readRepoImage: mocks.readRepoImage,
+    proposeRepoDocEdit: mocks.proposeRepoDocEdit,
+    proposerName: async (userId: string) => `name-of-${userId}`,
+    RepoDocsError,
+  };
 });
 
 import { repoDocsRoutes } from '../repoDocs.js';
@@ -45,6 +57,53 @@ beforeEach(() => {
   mocks.listRepoDocs.mockReset();
   mocks.readRepoDoc.mockReset();
   mocks.readRepoImage.mockReset();
+  mocks.proposeRepoDocEdit.mockReset();
+});
+
+describe('POST /api/maps/:id/docs/propose (#552)', () => {
+  const body = { path: 'docs/a.md', text: '# new\n', baseSha: 'b1', message: 'docs: tweak' };
+
+  it('needs edit on the map — a viewer is refused before any forge write', async () => {
+    mocks.permission = 'view';
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/maps/m1/docs/propose', payload: body });
+    expect(res.statusCode).toBe(403);
+    expect(mocks.proposeRepoDocEdit).not.toHaveBeenCalled();
+  });
+
+  it('an editor gets 201 with the PR; the service gets the fields and the proposer name', async () => {
+    mocks.permission = 'edit';
+    const result = { path: 'docs/a.md', branch: 'mindblown/docs-a-x', commitSha: 'c1', pullRequest: { number: 3, url: 'u' } };
+    mocks.proposeRepoDocEdit.mockResolvedValue(result);
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/maps/m1/docs/propose', payload: body });
+    expect(res.statusCode).toBe(201);
+    expect(res.json()).toEqual(result);
+    expect(mocks.proposeRepoDocEdit).toHaveBeenCalledWith('m1', body, 'name-of-user-1');
+  });
+
+  it('validates the body', async () => {
+    mocks.permission = 'edit';
+    const app = await buildApp();
+    for (const bad of [{ ...body, path: '' }, { ...body, text: 1 }, { ...body, baseSha: undefined }, { ...body, message: 5 }]) {
+      const res = await app.inject({ method: 'POST', url: '/api/maps/m1/docs/propose', payload: bad });
+      expect(res.statusCode).toBe(400);
+    }
+    expect(mocks.proposeRepoDocEdit).not.toHaveBeenCalled();
+  });
+
+  it('accepts a doc above the default 1 MB body limit', async () => {
+    mocks.permission = 'edit';
+    mocks.proposeRepoDocEdit.mockResolvedValue({});
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/maps/m1/docs/propose', payload: { ...body, text: 'x'.repeat(1_500_000) } });
+    expect(res.statusCode).toBe(201);
+  });
+
+  it('a stale base is 409 CONFLICT', async () => {
+    mocks.permission = 'edit';
+    mocks.proposeRepoDocEdit.mockRejectedValue(new RepoDocsError(409, 'CONFLICT', 'changed'));
+    const res = await (await buildApp()).inject({ method: 'POST', url: '/api/maps/m1/docs/propose', payload: body });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('CONFLICT');
+  });
 });
 
 describe('GET /api/maps/:id/docs', () => {

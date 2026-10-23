@@ -154,6 +154,7 @@ function makeRecorder(): Recorder {
     readAttachment: async () => { throw new Error('not used'); },
     listRepoDocs: async () => { throw new Error('not used'); },
     readRepoDoc: async () => { throw new Error('not used'); },
+    proposeRepoDocEdit: async () => { throw new Error('not used'); },
   };
   return state;
 }

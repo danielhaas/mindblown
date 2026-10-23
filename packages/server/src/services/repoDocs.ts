@@ -12,10 +12,10 @@
  */
 
 import { and, eq, sql } from 'drizzle-orm';
-import { getRepoDefaultBranch, type ForgeClient, type RepoTreeFile } from '@mindblown/integrations';
-import type { RepoDocsList, RepoDocText } from '@mindblown/tool-kit';
+import { ForgeApiError, getRepoDefaultBranch, type ForgeClient, type RepoTreeFile } from '@mindblown/integrations';
+import type { ProposeDocEditInput, ProposeDocEditResult, RepoDocsList, RepoDocText } from '@mindblown/tool-kit';
 import { db } from '../db/connection.js';
-import { maps } from '../db/schema.js';
+import { maps, users } from '../db/schema.js';
 import { getForgeContextForMap } from '../lib/githubContext.js';
 import { broadcast } from '../ws.js';
 
@@ -39,8 +39,8 @@ const BLOB_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 
 export class RepoDocsError extends Error {
   constructor(
-    readonly status: 404 | 413 | 502,
-    readonly code: 'NO_REPO' | 'NOT_FOUND' | 'TOO_LARGE' | 'FORGE_ERROR',
+    readonly status: 400 | 404 | 409 | 413 | 422 | 502,
+    readonly code: 'NO_REPO' | 'NOT_FOUND' | 'TOO_LARGE' | 'FORGE_ERROR' | 'CONFLICT' | 'NO_CHANGE' | 'NOT_UTF8',
     message: string,
   ) {
     super(message);
@@ -200,6 +200,98 @@ export async function readRepoDoc(mapId: string, path: string): Promise<RepoDocT
   if (file.size > DOC_MAX_BYTES) throw new RepoDocsError(413, 'TOO_LARGE', `'${path}' is larger than ${DOC_MAX_BYTES / 1024 / 1024} MB`);
   const bytes = await blob(snap, file);
   return { path, sha: file.sha, size: file.size, text: new TextDecoder().decode(bytes), webUrl: webUrl(snap, path) };
+}
+
+/** The name the PR body credits — the user's display name, never the email (repos may be public). */
+export async function proposerName(userId: string): Promise<string> {
+  const [row] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId)).limit(1);
+  return row?.name?.trim() || 'a MindBlown user';
+}
+
+/** `docs/product-vision.md` at 2026-10-23T09:14:05Z → `mindblown/docs-product-vision-20261023-091405-a1b2`. */
+export function editBranchName(path: string, now: Date, suffix: string): string {
+  const stem = path.slice(path.lastIndexOf('/') + 1).replace(/\.(md|markdown)$/i, '');
+  const slug = stem.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'doc';
+  const stamp = now.toISOString().slice(0, 19).replace(/-|:/g, '').replace('T', '-');
+  return `mindblown/docs-${slug}-${stamp}-${suffix}`;
+}
+
+/**
+ * Propose an edit to one doc (#552): a fresh branch off the default
+ * branch, one commit with the new text, a pull request back. The default
+ * branch is never written. `baseSha` is the blob the editor loaded; if
+ * the doc moved on since, nothing is created and the caller gets 409 —
+ * the forge enforces the same rule on the commit itself, as a backstop
+ * for a push that lands in between.
+ */
+export async function proposeRepoDocEdit(
+  mapId: string,
+  input: ProposeDocEditInput,
+  proposedBy: string,
+): Promise<ProposeDocEditResult> {
+  const { path, text, baseSha } = input;
+  // Judge staleness against the branch as it is now, not a cached tree.
+  trees.delete(mapId);
+  const snap = await snapshot(mapId);
+  const file = DOC_PATH.test(path) ? snap.files.get(path) : undefined;
+  if (!file) throw new RepoDocsError(404, 'NOT_FOUND', `No document '${path}' on ${snap.branch}`);
+  if (file.sha !== baseSha) {
+    throw new RepoDocsError(409, 'CONFLICT', `'${path}' changed on ${snap.branch} since it was opened — reload it and apply the edit again`);
+  }
+  const current = await blob(snap, file);
+  // The editor saw decoded text: a doc that is not UTF-8 would come back
+  // with U+FFFD where its bytes were — refuse rather than corrupt it.
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(current);
+  } catch {
+    throw new RepoDocsError(422, 'NOT_UTF8', `'${path}' is not UTF-8 text — edit it in the repo instead`);
+  }
+  // Decoding drops a leading BOM; put it back so the PR doesn't remove it.
+  const bom = current[0] === 0xef && current[1] === 0xbb && current[2] === 0xbf;
+  const content = new TextEncoder().encode(bom && !text.startsWith('﻿') ? `﻿${text}` : text);
+  if (content.length > DOC_MAX_BYTES) throw new RepoDocsError(413, 'TOO_LARGE', `The new text is larger than ${DOC_MAX_BYTES / 1024 / 1024} MB`);
+  if (current.length === content.length && current.every((b, i) => b === content[i])) {
+    throw new RepoDocsError(400, 'NO_CHANGE', 'The text is unchanged — nothing to propose');
+  }
+
+  const branch = editBranchName(path, new Date(), Math.random().toString(16).slice(2, 6));
+  // The summary's first line is the title; all of it is the commit message.
+  const summary = input.message?.trim() || `docs: update ${path}`;
+  const title = summary.split('\n')[0].trim().slice(0, 200);
+  const { forge, owner, repo } = snap;
+  try {
+    await forge.createBranch(owner, repo, branch, snap.branch);
+  } catch (err) {
+    throw forgeWriteError(err, `${owner}/${repo}`);
+  }
+  try {
+    const commit = await forge.putFile(owner, repo, { path, branch, content, blobSha: baseSha, message: summary });
+    const pr = await forge.createPullRequest(owner, repo, {
+      title,
+      head: branch,
+      base: snap.branch,
+      body: `Edited in the MindBlown Docs tab by ${proposedBy}.\n\nOne file: \`${path}\`.`,
+    });
+    return { path, branch, commitSha: commit.commitSha, pullRequest: pr };
+  } catch (err) {
+    // Leave no orphan branch behind; the error is the answer either way.
+    // (A PR that timed out but was created loses its head here and closes —
+    // a retry then opens a fresh one, which beats a dangling branch.)
+    await forge.deleteBranch(owner, repo, branch).catch((cleanupErr) => {
+      console.warn(`[docs] could not delete orphan branch ${owner}/${repo}:${branch}:`, cleanupErr instanceof Error ? cleanupErr.message : cleanupErr);
+    });
+    if (err instanceof ForgeApiError && err.status === 409) {
+      throw new RepoDocsError(409, 'CONFLICT', `'${path}' changed on ${snap.branch} while the edit was being saved — reload it and apply the edit again`);
+    }
+    throw forgeWriteError(err, `${owner}/${repo}`);
+  }
+}
+
+function forgeWriteError(err: unknown, repo: string): RepoDocsError {
+  if (err instanceof ForgeApiError && (err.status === 401 || err.status === 403 || err.status === 404)) {
+    return new RepoDocsError(502, 'FORGE_ERROR', `The repo connection has no write access to ${repo} (branches, contents and pull requests) — ${err.message}`);
+  }
+  return new RepoDocsError(502, 'FORGE_ERROR', `Could not write to the repo: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 /** An image a doc embeds by a relative path. */

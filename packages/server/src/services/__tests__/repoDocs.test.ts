@@ -13,6 +13,10 @@ const mocks = vi.hoisted(() => ({
   defaultBranch: vi.fn(async () => 'main'),
   boundMaps: [] as { id: string }[],
   broadcast: vi.fn(),
+  createBranch: vi.fn(),
+  deleteBranch: vi.fn(),
+  putFile: vi.fn(),
+  createPullRequest: vi.fn(),
 }));
 
 vi.mock('../../lib/githubContext.js', () => ({
@@ -21,19 +25,42 @@ vi.mock('../../lib/githubContext.js', () => ({
     return mocks.ctx;
   },
 }));
-vi.mock('@mindblown/integrations', () => ({ getRepoDefaultBranch: mocks.defaultBranch }));
+vi.mock('@mindblown/integrations', () => {
+  class ForgeApiError extends Error {
+    constructor(
+      readonly status: number,
+      readonly body: string,
+    ) {
+      super(body);
+    }
+  }
+  return { getRepoDefaultBranch: mocks.defaultBranch, ForgeApiError };
+});
 vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcast }));
 vi.mock('../../db/connection.js', () => ({
   db: { select: () => ({ from: () => ({ where: async () => mocks.boundMaps }) }) },
 }));
 
-import { _resetRepoDocsCacheForTests, listRepoDocs, onRepoPush, readRepoDoc, readRepoImage } from '../repoDocs.js';
+import { ForgeApiError } from '@mindblown/integrations';
+import {
+  _resetRepoDocsCacheForTests,
+  editBranchName,
+  listRepoDocs,
+  onRepoPush,
+  proposeRepoDocEdit,
+  readRepoDoc,
+  readRepoImage,
+} from '../repoDocs.js';
 
 function forge(kind: 'github' | 'gitea') {
   return {
     endpoint: { kind, apiBaseUrl: 'https://api.example', webBaseUrl: 'https://web.example' },
     getRepoTree: mocks.getRepoTree,
     getBlob: mocks.getBlob,
+    createBranch: mocks.createBranch,
+    deleteBranch: mocks.deleteBranch,
+    putFile: mocks.putFile,
+    createPullRequest: mocks.createPullRequest,
   };
 }
 
@@ -58,6 +85,99 @@ beforeEach(() => {
   mocks.defaultBranch.mockClear();
   mocks.broadcast.mockReset();
   mocks.boundMaps = [];
+  mocks.createBranch.mockReset().mockResolvedValue(undefined);
+  mocks.deleteBranch.mockReset().mockResolvedValue(undefined);
+  mocks.putFile.mockReset().mockResolvedValue({ blobSha: 'nb', commitSha: 'c0ffee1234' });
+  mocks.createPullRequest.mockReset().mockResolvedValue({ number: 7, url: 'https://web.example/o/r/pull/7' });
+});
+
+describe('proposeRepoDocEdit (#552)', () => {
+  const edit = { path: 'docs/vision.md', text: '# Vision v2\n', baseSha: 'd2' };
+
+  it('branch off the default branch → commit against the base sha → PR back; default branch untouched', async () => {
+    const res = await proposeRepoDocEdit('m1', { ...edit, message: 'docs: sharpen vision' }, 'Dan');
+    const branch = mocks.createBranch.mock.calls[0][2] as string;
+    expect(branch).toMatch(/^mindblown\/docs-vision-\d{8}-\d{6}-[0-9a-f]{1,4}$/);
+    expect(mocks.createBranch).toHaveBeenCalledWith('o', 'r', branch, 'main');
+    const put = mocks.putFile.mock.calls[0][2];
+    expect(put).toMatchObject({ path: 'docs/vision.md', branch, blobSha: 'd2', message: 'docs: sharpen vision' });
+    expect(new TextDecoder().decode(put.content)).toBe('# Vision v2\n');
+    expect(mocks.createPullRequest).toHaveBeenCalledWith('o', 'r', expect.objectContaining({ head: branch, base: 'main', title: 'docs: sharpen vision' }));
+    expect(mocks.createPullRequest.mock.calls[0][2].body).toContain('by Dan');
+    expect(res).toEqual({ path: 'docs/vision.md', branch, commitSha: 'c0ffee1234', pullRequest: { number: 7, url: 'https://web.example/o/r/pull/7' } });
+    expect(mocks.deleteBranch).not.toHaveBeenCalled();
+  });
+
+  it('defaults the title to "docs: update <path>"', async () => {
+    await proposeRepoDocEdit('m1', edit, 'Dan');
+    expect(mocks.putFile.mock.calls[0][2].message).toBe('docs: update docs/vision.md');
+  });
+
+  it('judges staleness on a fresh tree: a moved doc is CONFLICT and nothing is created', async () => {
+    await listRepoDocs('m1'); // tree cached with d2
+    mocks.getRepoTree.mockResolvedValue({ ...TREE, files: TREE.files.map((f) => (f.path === 'docs/vision.md' ? { ...f, sha: 'd2-new' } : f)) });
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+    expect(mocks.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('a push landing between check and commit: the forge 409 → CONFLICT, branch cleaned up', async () => {
+    mocks.putFile.mockRejectedValue(new ForgeApiError(409, 'does not match'));
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toMatchObject({ status: 409, code: 'CONFLICT' });
+    expect(mocks.deleteBranch).toHaveBeenCalledWith('o', 'r', mocks.createBranch.mock.calls[0][2]);
+    expect(mocks.createPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('a PR refusal is FORGE_ERROR and the branch is cleaned up', async () => {
+    mocks.createPullRequest.mockRejectedValue(new ForgeApiError(403, 'Resource not accessible by integration'));
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toMatchObject({ status: 502, code: 'FORGE_ERROR' });
+    expect(mocks.deleteBranch).toHaveBeenCalledTimes(1);
+  });
+
+  it('unchanged text is NO_CHANGE, before any write', async () => {
+    await expect(proposeRepoDocEdit('m1', { ...edit, text: '# Vision ✓' }, 'Dan')).rejects.toMatchObject({ status: 400, code: 'NO_CHANGE' });
+    expect(mocks.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('only an existing doc can be edited — no source files, no new paths', async () => {
+    await expect(proposeRepoDocEdit('m1', { ...edit, path: 'src/index.ts', baseSha: 's1' }, 'Dan')).rejects.toMatchObject({ status: 404 });
+    await expect(proposeRepoDocEdit('m1', { ...edit, path: 'docs/new.md' }, 'Dan')).rejects.toMatchObject({ status: 404 });
+    expect(mocks.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('keeps a leading BOM the editor never saw', async () => {
+    mocks.getBlob.mockImplementation(async () => new Uint8Array([0xef, 0xbb, 0xbf, ...new TextEncoder().encode('# Vision')]));
+    await expect(proposeRepoDocEdit('m1', { ...edit, text: '# Vision' }, 'Dan')).rejects.toMatchObject({ code: 'NO_CHANGE' });
+    await proposeRepoDocEdit('m1', { ...edit, text: '# Vision 2' }, 'Dan');
+    expect([...mocks.putFile.mock.calls[0][2].content.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+  });
+
+  it('refuses a doc that is not UTF-8 instead of writing U+FFFD into it', async () => {
+    mocks.getBlob.mockImplementation(async () => new Uint8Array([0x23, 0x20, 0xe4, 0x0a])); // Latin-1 "ä"
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toMatchObject({ status: 422, code: 'NOT_UTF8' });
+    expect(mocks.createBranch).not.toHaveBeenCalled();
+  });
+
+  it('a multi-line summary: first line is the PR title, all of it the commit message', async () => {
+    await proposeRepoDocEdit('m1', { ...edit, message: 'docs: tighten vision\n\nWhy: shorter.' }, 'Dan');
+    expect(mocks.createPullRequest.mock.calls[0][2].title).toBe('docs: tighten vision');
+    expect(mocks.putFile.mock.calls[0][2].message).toBe('docs: tighten vision\n\nWhy: shorter.');
+  });
+
+  it('no write access says so, instead of a "could not read" error', async () => {
+    mocks.createBranch.mockRejectedValue(new ForgeApiError(403, 'Resource not accessible by integration'));
+    await expect(proposeRepoDocEdit('m1', edit, 'Dan')).rejects.toThrow(/no write access to o\/r/);
+  });
+
+  it('refuses text over the doc cap', async () => {
+    await expect(proposeRepoDocEdit('m1', { ...edit, text: 'x'.repeat(2 * 1024 * 1024 + 1) }, 'Dan')).rejects.toMatchObject({ status: 413 });
+  });
+});
+
+describe('editBranchName', () => {
+  it('slug of the file stem + UTC stamp + suffix', () => {
+    expect(editBranchName('docs/Product Vision.md', new Date('2026-10-23T09:14:05Z'), 'a1b2')).toBe('mindblown/docs-product-vision-20261023-091405-a1b2');
+    expect(editBranchName('ÄÖÜ.md', new Date('2026-10-23T09:14:05Z'), 'ff')).toBe('mindblown/docs-doc-20261023-091405-ff');
+  });
 });
 
 describe('listRepoDocs', () => {

@@ -43,6 +43,8 @@ export type {
   // Repo docs
   RepoDocsList,
   RepoDocText,
+  ProposeDocEditInput,
+  ProposeDocEditResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';

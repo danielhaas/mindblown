@@ -118,6 +118,7 @@ function makeRecordingBackend(): {
     readAttachment: async () => { throw new Error('not implemented'); },
     listRepoDocs: async () => { throw new Error('not implemented'); },
     readRepoDoc: async () => { throw new Error('not implemented'); },
+    proposeRepoDocEdit: async () => { throw new Error('not implemented'); },
   };
   return {
     backend,
