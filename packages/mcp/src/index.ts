@@ -3118,8 +3118,10 @@ server.tool(
           await api.updateMap(mapId, { fleetCanEditCi: true });
           ci = ' The fleet may set up its CI workflows.';
         } catch (err) {
-          if (!(err instanceof api.ApiError && err.status === 403)) throw err;
-          ci = " CI stays closed to the fleet: only the map's creator can open it (update_map(fleetCanEditCi: true)).";
+          // The repo is connected already: report, never throw, or the agent retries the create.
+          ci = err instanceof api.ApiError && err.status === 403
+            ? " CI stays closed to the fleet: only the map's creator can open it (update_map(fleetCanEditCi: true))."
+            : ` CI access could not be set (${err instanceof Error ? err.message : String(err)}); run update_map(fleetCanEditCi: true) to retry.`;
         }
       }
       return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.${ci}`);

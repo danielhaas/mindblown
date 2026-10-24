@@ -70,10 +70,10 @@ export async function authorizeMapRepoBinding(
 
 /**
  * `fleetCanEditCi` lets fleet code change the repo's CI, which can read its
- * secrets. Turning it on is the map creator's call alone: the fleet's token
- * comes from the creator's GitHub App installation and goes only to the
- * creator's fleet, so another admin must not open the creator's secrets to
- * it. Never a fleet key's: agent code must not open CI to itself. Any map
+ * secrets. Turning it on is the map creator's call alone: repo credentials
+ * go only to a fleet the creator owns (fleetRepoAccess), so a co-admin must
+ * not open CI to it. Rebinding the repo clears the flag, so a later
+ * binding never inherits it. Never a fleet key's: agent code must not open CI to itself. Any map
  * admin may turn it off; an editor may resend "off" (a settings form).
  * `true` is checked every time, so a stale resend can't undo a switch-off.
  */

@@ -93,6 +93,19 @@ describe('create_forge_repo', () => {
     expect(text).toMatch(/and connected it to map m1\. CI stays closed to the fleet/);
   });
 
+  it('a failed CI write after connecting still reports the connected repo', async () => {
+    const { text } = await run({ name: 'shop', owner: 'ACME' }, (c) => {
+      if (c.method === 'POST' && c.url === '/api/integrations/github/repositories') return created('acme', 'shop', { installationId: '222', reachable: true });
+      if (c.method === 'PUT' && c.url === '/api/maps/m1') {
+        return JSON.parse(c.payload as string).fleetCanEditCi
+          ? { status: 500, body: { error: { code: 'INTERNAL', message: 'boom' } } }
+          : { status: 200, body: { id: 'm1' } };
+      }
+      return base(c);
+    });
+    expect(text).toMatch(/and connected it to map m1\. CI access could not be set .*update_map\(fleetCanEditCi: true\)/);
+  });
+
   it('fleetCanEditCi: false keeps CI closed to the fleet', async () => {
     const { text, calls } = await run({ name: 'shop', owner: 'ACME', fleetCanEditCi: false }, (c) => {
       if (c.method === 'POST' && c.url === '/api/integrations/github/repositories') return created('acme', 'shop', { installationId: '222', reachable: true });
