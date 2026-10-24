@@ -184,7 +184,9 @@ export async function mintInstallationToken(installationId: string): Promise<str
 
   if (!res.ok) {
     const body = await res.text();
-    if (res.status === 401 || res.status === 404) {
+    // 403 = a suspended installation: a refused binding like 401/404, so
+    // catch-up doesn't count it against the watchdog (incident 2026-10-23).
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
       // `GitHubApiError`'s constructor formats the message as
       // `GitHub API <status>: <body>`, which slots into the catchup
       // token-resolution catch the same way a fetch-401 from `github.ts`

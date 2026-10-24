@@ -288,6 +288,11 @@ describe('user-token helpers', () => {
     expect(asked[1]).toEqual({ contents: 'write', issues: 'write', pull_requests: 'write', metadata: 'read' });
   });
 
+  it('a suspended installation (403) throws GitHubApiError, so catch-up reads it as refused', async () => {
+    stubOnce([{ status: 403, body: { message: 'This installation has been suspended' } }]);
+    await expect(mintInstallationToken('suspended-1')).rejects.toMatchObject({ status: 403 });
+  });
+
   it('falls back to an issues-only token for an installation without contents/PR rights', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const calls = stubOnce([

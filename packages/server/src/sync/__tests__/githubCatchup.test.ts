@@ -151,6 +151,7 @@ import {
   pushCatchupHeartbeat,
   isHealthyTick,
   rowsBoundToMaps,
+  UnservableBindingError,
   reconcileRepo,
   resolveUnlistedLinks,
   resolveHeldCloses,
@@ -486,6 +487,18 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     const result = await reconcileRepo(makeTarget('o', 'r'));
     expect(result.refused).toBe(true);
     expect(result.authFailure).toBeUndefined();
+    expect(isHealthyTick([result])).toBe(true);
+  });
+
+  it('a binding this server cannot serve (Gitea sign-in gone) is refused, not a sick loop', async () => {
+    const result = await reconcileRepo({
+      ...makeTarget('o', 'r'),
+      resolveForge: async () => {
+        throw new UnservableBindingError('integration i1 (gitea) cannot be served');
+      },
+    });
+    expect(result.error).toMatch(/^token: .*cannot be served/);
+    expect(result.refused).toBe(true);
     expect(isHealthyTick([result])).toBe(true);
   });
 

@@ -763,7 +763,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
       ...(isAuthFailure && { authFailure: true }),
-      ...(refused && { refused: true }),
+      ...((refused || err instanceof UnservableBindingError) && { refused: true }),
     };
   }
 
@@ -1118,6 +1118,14 @@ interface DiscoveredTarget extends RepoTarget {
  * cycle, regardless of how many maps reference it.
  */
 /**
+ * A forge row this server can't build a client for: its Gitea sign-in is
+ * gone or can't be refreshed, URLs are missing, or Gitea OAuth isn't
+ * configured. It fails the same way every tick until someone reconnects,
+ * so catch-up reports it as `refused`, not as a sick loop.
+ */
+export class UnservableBindingError extends Error {}
+
+/**
  * The forge rows some map syncs with: same workspace, same owner/repo (the
  * match `patIntegrationForMap` makes). Exported for unit-test access.
  */
@@ -1166,8 +1174,10 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
   }
 
   // PAT integrations (any forge kind) — only rows a map syncs with. A row
-  // whose map was deleted or moved to another repo has nowhere to put its
-  // issues; polling it only risks errors (dan/xx2, 2026-10-23).
+  // whose map was deleted or moved to another repo has nowhere to ingest
+  // to (dan/xx2, 2026-10-23). Accepted trade-off: nodes still linked to
+  // such a repo (link_issue, a rebound map's old links) get its state
+  // changes from webhooks only, without catch-up as the backstop.
   const patIntegrations = await db
     .select()
     .from(integrations)
@@ -1190,7 +1200,7 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
       // path a failed App-token mint takes.
       resolveForge: async () => {
         const forge = await forgeFromIntegration(integ);
-        if (!forge) throw new Error(`integration ${integ.id} (${integ.provider}) cannot be served`);
+        if (!forge) throw new UnservableBindingError(`integration ${integ.id} (${integ.provider}) cannot be served`);
         return forge;
       },
       bindingKey: rowBindingKey(integ),
