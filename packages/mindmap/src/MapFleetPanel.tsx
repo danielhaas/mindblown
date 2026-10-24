@@ -282,8 +282,14 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
       {/* Workflow write on the fleet's repo token — GitHub App repos only; a PAT goes out as is. */}
       {variant === 'settings' && !readOnly && isMapAdmin && map.githubInstallationId && (
         <label style={{ ...row, marginTop: 10, fontSize: 12, color: '#334155' }} data-testid="map-fleet-ci">
-          <input type="checkbox" checked={map.fleetCanEditCi ?? false} disabled={busy} onChange={(e) => void toggleCi(e.target.checked)} />
+          <input
+            type="checkbox"
+            checked={map.fleetCanEditCi ?? false}
+            disabled={busy || (!map.fleetCanEditCi && map.createdBy !== user?.id)}
+            onChange={(e) => void toggleCi(e.target.checked)}
+          />
           Fleet may change CI workflows (.github/workflows)
+          {!map.fleetCanEditCi && map.createdBy !== user?.id && <span style={{ color: '#94a3b8' }}>· only the map&apos;s creator can turn this on</span>}
         </label>
       )}
 

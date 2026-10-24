@@ -85,7 +85,7 @@ async function put(payload: Record<string, unknown>) {
 beforeEach(() => {
   perm.level = 'admin';
   fleetUser.is = false;
-  state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null, fleetCanEditCi: false };
+  state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null, fleetCanEditCi: false, createdBy: 'u1' };
   state.reach = new Map([['111', ['Alice-Org/shop']]]);
   updateMapMock.mockReset();
   updateMapMock.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({ id: MAP_ID, name: 'M', ...input }));
@@ -149,18 +149,25 @@ describe('PUT /api/maps/:id — GitHub repo binding', () => {
     expect(updateMapMock).toHaveBeenCalledWith(MAP_ID, { ...BIND, fleetCanEditCi: true }, 'u1');
   });
 
-  it('lets only a map admin turn fleet CI access on', async () => {
-    perm.level = 'edit';
+  it("refuses a co-admin who isn't the map's creator turning CI access on", async () => {
+    state.current.createdBy = 'someone-else';
     const res = await put({ fleetCanEditCi: true });
     expect(res.statusCode).toBe(403);
-    expect(res.json().error.message).toMatch(/admins can let the fleet change CI/);
+    expect(res.json().error.message).toMatch(/creator/);
     expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it('lets any map admin turn CI access off, but not an editor', async () => {
+    state.current = { ...BIND, fleetCanEditCi: true, createdBy: 'someone-else' };
+    expect((await put({ fleetCanEditCi: false })).statusCode).toBe(200);
+    perm.level = 'edit';
+    expect((await put({ fleetCanEditCi: false })).statusCode).toBe(403);
   });
 
   it('lets an editor resend "off", but checks "on" every time', async () => {
     perm.level = 'edit';
     expect((await put({ fleetCanEditCi: false, name: 'Renamed' })).statusCode).toBe(200);
-    state.current = { ...BIND, fleetCanEditCi: true };
+    state.current = { ...BIND, fleetCanEditCi: true, createdBy: 'someone-else' };
     expect((await put({ fleetCanEditCi: true })).statusCode).toBe(403);
   });
 
