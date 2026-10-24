@@ -150,6 +150,8 @@ import {
   runAllCatchups,
   pushCatchupHeartbeat,
   isHealthyTick,
+  rowsBoundToMaps,
+  UnservableBindingError,
   reconcileRepo,
   resolveUnlistedLinks,
   resolveHeldCloses,
@@ -358,6 +360,19 @@ describe('runAllCatchups → systemd watchdog', () => {
   });
 });
 
+describe('rowsBoundToMaps', () => {
+  const row = (workspaceId: string, owner: string, repo: string) => ({ workspaceId, config: { owner, repo } });
+  it('keeps only rows a map in the same workspace syncs with', () => {
+    const rows = [row('w1', 'dan', 'crm2'), row('w1', 'dan', 'xx2'), row('w2', 'dan', 'crm2')];
+    const kept = rowsBoundToMaps(rows, [{ workspaceId: 'w1', owner: 'dan', repo: 'crm2' }]);
+    expect(kept).toEqual([rows[0]]);
+  });
+
+  it('keeps nothing when no map is bound', () => {
+    expect(rowsBoundToMaps([row('w1', 'dan', 'xx2')], [])).toEqual([]);
+  });
+});
+
 describe('isHealthyTick', () => {
   it('returns true for an empty results array (sweep completed without crashing)', () => {
     expect(isHealthyTick([])).toBe(true);
@@ -399,6 +414,15 @@ describe('isHealthyTick', () => {
           error: 'fetch: GitHub API 401: Bad credentials',
           authFailure: true,
         }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('returns true when a repo is refused (404: deleted under its binding)', () => {
+    expect(
+      isHealthyTick([
+        makeResult({ fetched: 3 }),
+        makeResult({ repo: 'dan/xx2', error: 'fetch: Gitea API 404: not found', refused: true }),
       ]),
     ).toBe(true);
   });
@@ -456,6 +480,33 @@ describe('reconcileRepo → 401 auth-failure escalation (#75)', () => {
     _resetAuthFailureCountersForTests();
     delete process.env.KUMA_GITHUB_AUTH_FAILURE_PUSH_URL;
     delete process.env.CATCHUP_AUTH_FAILURE_THRESHOLD;
+  });
+
+  it('marks a 404 fetch as refused, not as an auth failure', async () => {
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(404, 'not found'));
+    const result = await reconcileRepo(makeTarget('o', 'r'));
+    expect(result.refused).toBe(true);
+    expect(result.authFailure).toBeUndefined();
+    expect(isHealthyTick([result])).toBe(true);
+  });
+
+  it('a binding this server cannot serve (Gitea sign-in gone) is refused, not a sick loop', async () => {
+    const result = await reconcileRepo({
+      ...makeTarget('o', 'r'),
+      resolveForge: async () => {
+        throw new UnservableBindingError('integration i1 (gitea) cannot be served');
+      },
+    });
+    expect(result.error).toMatch(/^token: .*cannot be served/);
+    expect(result.refused).toBe(true);
+    expect(isHealthyTick([result])).toBe(true);
+  });
+
+  it('a 5xx fetch stays a real error', async () => {
+    fetchChangedIssuesMock.mockRejectedValue(new MockGitHubApiError(502, 'bad gateway'));
+    const result = await reconcileRepo(makeTarget('o', 'r'));
+    expect(result.refused).toBeUndefined();
+    expect(isHealthyTick([result])).toBe(false);
   });
 
   it('does NOT push on the first 401 (counter below default threshold of 3)', async () => {
