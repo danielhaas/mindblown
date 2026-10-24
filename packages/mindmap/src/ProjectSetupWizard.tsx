@@ -350,7 +350,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
       } else {
         const installationId = owner.slice('github:'.length);
         const r = await api.createGitHubRepository({ installationId, name: newName.trim(), private: newPrivate, description });
-        choice = { kind: 'github', fullName: r.fullName, installationId, fleetCanEditCi: newCi };
+        choice = { kind: 'github', fullName: r.fullName, installationId, fleetCanEditCi: newCi && map.createdBy === user?.id };
         setCreated({ choice, ...(r.reachable ? {} : { addAccessUrl: r.addAccessUrl }) });
         if (!r.reachable) {
           setBusy(null);
@@ -451,7 +451,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
             <input type="checkbox" data-testid="setup-repo-new-private" checked={newPrivate} onChange={(e) => setNewPrivate(e.target.checked)} disabled={!!busy || !!created} />
             Private
           </label>
-          {owner.startsWith('github:') && (
+          {owner.startsWith('github:') && map.createdBy === user?.id && (
             <label style={{ ...hint, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
               <input type="checkbox" data-testid="setup-repo-new-ci" checked={newCi} onChange={(e) => setNewCi(e.target.checked)} disabled={!!busy || !!created} />
               Let the fleet set up CI (GitHub Actions)

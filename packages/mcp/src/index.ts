@@ -3061,7 +3061,7 @@ server.tool(
     kind: z.enum(['github', 'gitea']).optional().describe('Forge; default "github" when the caller has GitHub connected, else "gitea"'),
     private: z.boolean().optional().describe('Private repository; default true'),
     description: z.string().optional().describe('Repository description; default: none'),
-    fleetCanEditCi: z.boolean().optional().describe("GitHub: let the map's fleet change CI workflows (.github/workflows/*) in the new repo; default true, since a new repo has no secrets yet. Same as update_map(fleetCanEditCi). Ignored for Gitea."),
+    fleetCanEditCi: z.boolean().optional().describe("GitHub: let the map's fleet change CI workflows (.github/workflows/*) in the new repo; default true, since a new repo has no secrets yet. Only the map's creator can turn it on; for anyone else the repo is connected with CI left closed. Same as update_map(fleetCanEditCi). Ignored for Gitea."),
   },
   async ({ mapId, name, owner, kind, private: isPrivate, description, fleetCanEditCi }) => {
     try {
@@ -3106,12 +3106,22 @@ server.tool(
           githubRepoOwner: repo.owner,
           githubRepoName: repo.name,
           autoImportNewIssues: true,
-          fleetCanEditCi: fleetCanEditCi ?? true,
         });
       } catch (err) {
         return createdNotConnected(repo.fullName, repo.htmlUrl, err);
       }
-      const ci = (fleetCanEditCi ?? true) ? ' The fleet may set up its CI workflows.' : '';
+      // A call of its own: only the map's creator may open CI, and a refusal
+      // must not undo the connection.
+      let ci = '';
+      if (fleetCanEditCi ?? true) {
+        try {
+          await api.updateMap(mapId, { fleetCanEditCi: true });
+          ci = ' The fleet may set up its CI workflows.';
+        } catch (err) {
+          if (!(err instanceof api.ApiError && err.status === 403)) throw err;
+          ci = " CI stays closed to the fleet: only the map's creator can open it (update_map(fleetCanEditCi: true)).";
+        }
+      }
       return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.${ci}`);
     } catch (err) {
       return toolError(err);

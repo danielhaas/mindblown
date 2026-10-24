@@ -70,10 +70,12 @@ export async function authorizeMapRepoBinding(
 
 /**
  * `fleetCanEditCi` lets fleet code change the repo's CI, which can read its
- * secrets — a map admin's call, like the binding itself, and never a fleet
- * key's: agent code must not open CI to itself. Only turning it off may
- * be resent by an editor (a settings form); `true` is checked every time,
- * so a stale resend can't undo an admin switching it off.
+ * secrets. Turning it on is the map creator's call alone: the fleet's token
+ * comes from the creator's GitHub App installation and goes only to the
+ * creator's fleet, so another admin must not open the creator's secrets to
+ * it. Never a fleet key's: agent code must not open CI to itself. Any map
+ * admin may turn it off; an editor may resend "off" (a settings form).
+ * `true` is checked every time, so a stale resend can't undo a switch-off.
  */
 export async function authorizeFleetCiChange(
   userId: string,
@@ -91,9 +93,17 @@ export async function authorizeFleetCiChange(
   if (await isFleetUser(userId)) {
     return { status: 403, code: 'FORBIDDEN', message: 'A fleet key cannot change whether the fleet may edit CI workflows' };
   }
+  if (input.fleetCanEditCi) {
+    const [map] = await db.select({ createdBy: maps.createdBy }).from(maps).where(eq(maps.id, mapId)).limit(1);
+    if (!map) return null; // the update itself answers 404
+    if (map.createdBy !== userId) {
+      return { status: 403, code: 'FORBIDDEN', message: "Only the map's creator can let the fleet change CI workflows — the fleet uses their GitHub access" };
+    }
+    return null;
+  }
   const perm = await permDb.getPermission(mapId, userId);
   if (!permDb.hasPermission(perm, 'admin')) {
-    return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can let the fleet change CI workflows' };
+    return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can change whether the fleet may edit CI workflows' };
   }
   return null;
 }

@@ -785,7 +785,7 @@ export interface MindMap {
    * code doesn't get to change it (#507). The setup wizard turns it on for
    * a repo it creates, which has no secrets yet. GitHub App maps only; a
    * PAT/OAuth token goes out as is anyway. Cleared when the map's repo
-   * changes. Server source: `maps.fleet_can_edit_ci`.
+   * changes. Only the map's creator turns it on; any admin turns it off. Server source: `maps.fleet_can_edit_ci`.
    */
   fleetCanEditCi?: boolean;
   /** Name of `fleetId`, derived at read time by GET /api/maps/:id. Not stored. */

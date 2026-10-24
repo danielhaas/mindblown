@@ -72,9 +72,25 @@ describe('create_forge_repo', () => {
     expect(text).toMatch(/^Created GitHub repo acme\/shop .* and connected it to map m1/);
     const create = calls.find((c) => c.method === 'POST' && c.url === '/api/integrations/github/repositories')!;
     expect(JSON.parse(create.payload as string)).toEqual({ installationId: '222', name: 'shop', private: true });
-    const put = calls.find((c) => c.method === 'PUT')!;
-    expect(JSON.parse(put.payload as string)).toEqual({ githubInstallationId: '222', githubRepoOwner: 'acme', githubRepoName: 'shop', autoImportNewIssues: true, fleetCanEditCi: true });
+    const puts = calls.filter((c) => c.method === 'PUT').map((c) => JSON.parse(c.payload as string));
+    expect(puts).toEqual([
+      { githubInstallationId: '222', githubRepoOwner: 'acme', githubRepoName: 'shop', autoImportNewIssues: true },
+      { fleetCanEditCi: true },
+    ]);
     expect(text).toContain('The fleet may set up its CI workflows.');
+  });
+
+  it("a caller who isn't the map's creator gets the repo connected, CI closed", async () => {
+    const { text } = await run({ name: 'shop', owner: 'ACME' }, (c) => {
+      if (c.method === 'POST' && c.url === '/api/integrations/github/repositories') return created('acme', 'shop', { installationId: '222', reachable: true });
+      if (c.method === 'PUT' && c.url === '/api/maps/m1') {
+        return JSON.parse(c.payload as string).fleetCanEditCi
+          ? { status: 403, body: { error: { code: 'FORBIDDEN', message: 'creator only' } } }
+          : { status: 200, body: { id: 'm1' } };
+      }
+      return base(c);
+    });
+    expect(text).toMatch(/and connected it to map m1\. CI stays closed to the fleet/);
   });
 
   it('fleetCanEditCi: false keeps CI closed to the fleet', async () => {
@@ -83,9 +99,8 @@ describe('create_forge_repo', () => {
       if (c.method === 'PUT' && c.url === '/api/maps/m1') return { status: 200, body: { id: 'm1' } };
       return base(c);
     });
-    const put = calls.find((c) => c.method === 'PUT')!;
-    expect(JSON.parse(put.payload as string).fleetCanEditCi).toBe(false);
-    expect(text).not.toContain('CI workflows');
+    expect(calls.filter((c) => c.method === 'PUT')).toHaveLength(1);
+    expect(text).not.toContain('CI');
   });
 
   it("reports a repo the App can't see yet as created, not connected", async () => {
