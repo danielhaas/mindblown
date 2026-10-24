@@ -178,6 +178,15 @@ export interface ReconcileResult {
    * restart-looped prod every ~24 min for two weeks).
    */
   authFailure?: boolean;
+  /**
+   * True when the forge refused the repo (401/403/404, `refusalStatus`):
+   * a dead token, no access, or a repo deleted under its binding. The loop
+   * is alive and the binding is the problem, so it doesn't make the tick
+   * unhealthy either (Plan health shows it; incident 2026-10-23: a deleted
+   * test map's Gitea row answered 404 every tick and the watchdog
+   * restart-looped prod every ~14 min for a day).
+   */
+  refused?: boolean;
 }
 
 // ── State helper (idempotent transition logic) ───────────────────
@@ -754,6 +763,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       since,
       error: `token: ${err instanceof Error ? err.message : String(err)}`,
       ...(isAuthFailure && { authFailure: true }),
+      ...(refused && { refused: true }),
     };
   }
 
@@ -798,6 +808,7 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       since,
       error: `fetch: ${err instanceof Error ? err.message : String(err)}`,
       ...(isAuthFailure && { authFailure: true }),
+      ...(refused && { refused: true }),
     };
   }
 
@@ -1106,6 +1117,21 @@ interface DiscoveredTarget extends RepoTarget {
  * Deduplicated by `${owner}/${repo}` — a repo only needs one fetch per
  * cycle, regardless of how many maps reference it.
  */
+/**
+ * The forge rows some map syncs with: same workspace, same owner/repo (the
+ * match `patIntegrationForMap` makes). Exported for unit-test access.
+ */
+export function rowsBoundToMaps<R extends { workspaceId: string; config: unknown }>(
+  rows: R[],
+  boundMaps: Array<{ workspaceId: string; owner: string | null; repo: string | null }>,
+): R[] {
+  const bound = new Set(boundMaps.map((m) => `${m.workspaceId}\0${m.owner}/${m.repo}`));
+  return rows.filter((r) => {
+    const cfg = r.config as { owner?: string; repo?: string } | null;
+    return bound.has(`${r.workspaceId}\0${cfg?.owner}/${cfg?.repo}`);
+  });
+}
+
 async function discoverTargets(): Promise<DiscoveredTarget[]> {
   const seen = new Map<string, DiscoveredTarget>();
 
@@ -1139,12 +1165,18 @@ async function discoverTargets(): Promise<DiscoveredTarget[]> {
     });
   }
 
-  // PAT integrations (any forge kind)
+  // PAT integrations (any forge kind) — only rows a map syncs with. A row
+  // whose map was deleted or moved to another repo has nowhere to put its
+  // issues; polling it only risks errors (dan/xx2, 2026-10-23).
   const patIntegrations = await db
     .select()
     .from(integrations)
     .where(and(inArray(integrations.provider, FORGE_PROVIDERS), eq(integrations.enabled, true)));
-  for (const integ of patIntegrations) {
+  const patMaps = await db
+    .select({ workspaceId: maps.workspaceId, owner: maps.githubRepoOwner, repo: maps.githubRepoName })
+    .from(maps)
+    .where(and(isNull(maps.githubInstallationId), isNotNull(maps.githubRepoOwner), isNotNull(maps.githubRepoName), isNull(maps.archivedAt)));
+  for (const integ of rowsBoundToMaps(patIntegrations, patMaps)) {
     const cfg = integ.config as unknown as ForgeIntegrationConfig;
     if (!isServableIntegrationConfig(cfg)) continue;
     const key = `${cfg.owner}/${cfg.repo}`;
@@ -1273,6 +1305,8 @@ export function getLastHealthyTickAt(): number {
  * Before this carve-out, a single tenant's dead token suppressed the
  * watchdog ping forever and systemd restart-looped the whole service
  * every ~24 min (incident 2026-07-10, `meheav1-stack/proptechdev`).
+ * The same goes for any repo the forge refuses (`refused`: 401/403/404),
+ * e.g. a repo deleted under its binding (incident 2026-10-23, `dan/xx2`).
  *
  * An empty `results` array (no repos discovered, no work done) counts
  * as healthy — the sweep completed without crashing, which is what
@@ -1283,7 +1317,7 @@ export function getLastHealthyTickAt(): number {
 export function isHealthyTick(results: ReconcileResult[]): boolean {
   return results.every(
     (r) =>
-      (!r.error || r.authFailure) &&
+      (!r.error || r.authFailure || r.refused) &&
       r.ingestErrored === 0 &&
       r.stateSyncErrored === 0,
   );
@@ -1317,9 +1351,9 @@ export async function pushCatchupHeartbeat(results: ReconcileResult[]): Promise<
     results.reduce((acc, r) => acc + pick(r), 0);
 
   const hasError = results.some(
-    (r) => (r.error && !r.authFailure) || r.ingestErrored > 0 || r.stateSyncErrored > 0,
+    (r) => (r.error && !r.authFailure && !r.refused) || r.ingestErrored > 0 || r.stateSyncErrored > 0,
   );
-  const authFailed = results.filter((r) => r.authFailure).length;
+  const authFailed = results.filter((r) => r.authFailure || r.refused).length;
   const status = hasError ? 'down' : 'up';
   const msg = `repos=${results.length} fetched=${sum((r) => r.fetched)} ingested=${sum((r) => r.ingested)} applied=${sum((r) => r.applied)} errored=${sum((r) => r.ingestErrored + r.stateSyncErrored)} authFailed=${authFailed}`;
 
