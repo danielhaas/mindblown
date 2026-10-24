@@ -1479,5 +1479,12 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     END $$;
   `);
 
+  // ── maps.fleet_can_edit_ci ──────────────────────────────────────
+  // The fleet's repo token may change CI workflows. Off for every existing
+  // map; the setup wizard turns it on for a repo it creates.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS fleet_can_edit_ci BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+
   console.log('[db] Migrations complete.');
 }

@@ -159,6 +159,17 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
     else failed('Saving the share failed');
   };
 
+  // CI code can read the repo's secrets; ask before letting fleet code change it.
+  const toggleCi = async (on: boolean) => {
+    if (busy) return;
+    if (on && !window.confirm(`Let the fleet change CI workflows in ${map.githubRepoOwner}/${map.githubRepoName}? Workflows can read the repository's secrets, so only allow this for a repo without secrets or a fleet you trust with them.`)) return;
+    setBusy(true);
+    setError(null);
+    const ok = await updateMapSettings({ fleetCanEditCi: on });
+    setBusy(false);
+    if (!ok) failed('Saving the CI setting failed');
+  };
+
   const dirty = draft === CREATE ? newName.trim() !== '' : draft !== PAIR && draft !== (fleetId ?? NONE);
   const showShare = fleetId !== null && canEditMap && current?.isOwner === true && shareApplies(current, map.id);
   const otherMaps = current ? current.maps.filter((m) => m.id !== map.id) : [];
@@ -267,6 +278,14 @@ export function MapFleetPanel({ variant = 'settings', readOnly = false }: { vari
           </span>
         </div>
           )}
+
+      {/* Workflow write on the fleet's repo token — GitHub App repos only; a PAT goes out as is. */}
+      {variant === 'settings' && !readOnly && isMapAdmin && map.githubInstallationId && (
+        <label style={{ ...row, marginTop: 10, fontSize: 12, color: '#334155' }} data-testid="map-fleet-ci">
+          <input type="checkbox" checked={map.fleetCanEditCi ?? false} disabled={busy} onChange={(e) => void toggleCi(e.target.checked)} />
+          Fleet may change CI workflows (.github/workflows)
+        </label>
+      )}
 
       {/* The fleet's own keys (#481) — its owner manages them, in the settings only. */}
       {/* key: a fresh plaintext key must not survive a switch to another fleet. */}

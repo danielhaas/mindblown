@@ -7,7 +7,7 @@ import type { ScheduleConstraint, NodeId, Node as CoreNode, MindMap, TrustPolicy
 import * as mapDb from '../db/maps.js';
 import * as permDb from '../db/permissions.js';
 import * as fleetService from '../services/fleets.js';
-import { authorizeMapRepoBinding } from '../services/mapRepoBinding.js';
+import { authorizeFleetCiChange, authorizeMapRepoBinding } from '../services/mapRepoBinding.js';
 import * as trustService from '../services/trustPolicy.js';
 import { isFleetUser } from '../db/fleets.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
@@ -431,7 +431,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     if (fleetDenied) {
       return reply.status(fleetDenied.status).send({ error: { code: fleetDenied.code, message: fleetDenied.message } });
     }
-    const repoDenied = await authorizeMapRepoBinding(userId, req.params.id, body);
+    const repoDenied =
+      (await authorizeMapRepoBinding(userId, req.params.id, body)) ?? (await authorizeFleetCiChange(userId, req.params.id, body));
     if (repoDenied) {
       return reply.status(repoDenied.status).send({ error: { code: repoDenied.code, message: repoDenied.message } });
     }

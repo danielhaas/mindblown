@@ -3061,8 +3061,9 @@ server.tool(
     kind: z.enum(['github', 'gitea']).optional().describe('Forge; default "github" when the caller has GitHub connected, else "gitea"'),
     private: z.boolean().optional().describe('Private repository; default true'),
     description: z.string().optional().describe('Repository description; default: none'),
+    fleetCanEditCi: z.boolean().optional().describe("GitHub: let the map's fleet change CI workflows (.github/workflows/*) in the new repo; default true, since a new repo has no secrets yet. Same as update_map(fleetCanEditCi). Ignored for Gitea."),
   },
-  async ({ mapId, name, owner, kind, private: isPrivate, description }) => {
+  async ({ mapId, name, owner, kind, private: isPrivate, description, fleetCanEditCi }) => {
     try {
       const priv = isPrivate ?? true;
       // Connecting needs map admin; check before anything is created on the forge.
@@ -3095,7 +3096,8 @@ server.tool(
       if (!repo.reachable) {
         return toolResult(
           `Created GitHub repo ${repo.fullName} (${repo.htmlUrl}), but the GitHub App only sees selected repositories, so it is NOT connected yet. ` +
-            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step).`,
+            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step)` +
+            ((fleetCanEditCi ?? true) ? ', and run update_map(fleetCanEditCi: true) so the fleet can set up its CI.' : '.'),
         );
       }
       try {
@@ -3104,11 +3106,13 @@ server.tool(
           githubRepoOwner: repo.owner,
           githubRepoName: repo.name,
           autoImportNewIssues: true,
+          fleetCanEditCi: fleetCanEditCi ?? true,
         });
       } catch (err) {
         return createdNotConnected(repo.fullName, repo.htmlUrl, err);
       }
-      return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.`);
+      const ci = (fleetCanEditCi ?? true) ? ' The fleet may set up its CI workflows.' : '';
+      return toolResult(`Created GitHub repo ${repo.fullName} (${repo.htmlUrl}, ${repo.private ? 'private' : 'public'}) and connected it to map ${mapId}.${ci}`);
     } catch (err) {
       return toolError(err);
     }

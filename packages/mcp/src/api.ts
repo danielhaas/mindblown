@@ -514,6 +514,7 @@ export function updateMap(
     profilePolicy?: ProfilePolicy | null;
     fleetId?: string | null;
     fleetShare?: number;
+    fleetCanEditCi?: boolean;
     autoImportNewIssues?: boolean;
     githubInstallationId?: string | null;
     githubRepoOwner?: string | null;

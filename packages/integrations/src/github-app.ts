@@ -216,6 +216,8 @@ const SERVER_TOKEN_MINIMUM = { issues: 'write', metadata: 'read' } as const;
 const FLEET_TOKEN_PERMISSIONS = { contents: 'write', pull_requests: 'write' } as const;
 /** And what it reads to merge on green CI (claude-fleet#74). Optional: an App without them still works. */
 const FLEET_TOKEN_CI_PERMISSIONS = { checks: 'read', statuses: 'read' } as const;
+/** Changing `.github/workflows/*` — only on a map that allows it (`fleetCanEditCi`). */
+const FLEET_TOKEN_WORKFLOW_PERMISSIONS = { workflows: 'write' } as const;
 
 /**
  * A token narrowed to one repo and the permissions a fleet worker needs —
@@ -224,8 +226,16 @@ const FLEET_TOKEN_CI_PERMISSIONS = { checks: 'read', statuses: 'read' } as const
  * unpick. CI read access is asked for first; an App that lacks it (GitHub
  * answers 422) gets a token without it, and the worker then reports "no
  * CI" instead of merging.
+ *
+ * `workflows` (the map's `fleetCanEditCi`) adds write access to CI
+ * workflows. An App without that permission gets the token without it,
+ * and the push of a workflow file fails as before.
  */
-export async function mintScopedRepoToken(installationId: string, repo: string): Promise<{ token: string; expiresAt: string }> {
+export async function mintScopedRepoToken(
+  installationId: string,
+  repo: string,
+  opts: { workflows?: boolean } = {},
+): Promise<{ token: string; expiresAt: string }> {
   const appJwt = await mintAppJwt();
   const mint = (permissions: Record<string, string>) =>
     fetch(`${GITHUB_API_BASE}/app/installations/${installationId}/access_tokens`, {
@@ -238,7 +248,12 @@ export async function mintScopedRepoToken(installationId: string, repo: string):
       },
       body: JSON.stringify({ repositories: [repo], permissions }),
     });
-  let res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
+  let res: Response | undefined;
+  if (opts.workflows) {
+    res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS, ...FLEET_TOKEN_WORKFLOW_PERMISSIONS });
+    if (res.status === 422) console.warn(`[github-app] installation ${installationId}: workflows not granted — fleet token for ${repo} can't change CI`);
+  }
+  if (!res || res.status === 422) res = await mint({ ...FLEET_TOKEN_PERMISSIONS, ...FLEET_TOKEN_CI_PERMISSIONS });
   if (res.status === 422) res = await mint(FLEET_TOKEN_PERMISSIONS);
   if (!res.ok) {
     const body = await res.text();

@@ -87,6 +87,7 @@ interface MapBindingRow {
   githubRepoOwner: string | null;
   githubRepoName: string | null;
   workspaceId: string;
+  fleetCanEditCi: boolean;
 }
 
 async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined> {
@@ -96,6 +97,7 @@ async function loadMapBinding(mapId: string): Promise<MapBindingRow | undefined>
       githubRepoOwner: maps.githubRepoOwner,
       githubRepoName: maps.githubRepoName,
       workspaceId: maps.workspaceId,
+      fleetCanEditCi: maps.fleetCanEditCi,
     })
     .from(maps)
     .where(eq(maps.id, mapId));
@@ -226,14 +228,15 @@ export async function getForgeBindingForMap(mapId: string): Promise<{ repo: Tick
  * The repo and a token for a fleet worker (#507) — the same binding
  * `getForgeRepoForMap` reports, so the pull and the credentials never
  * disagree (no PAT fallback when an App mint fails). An App-bound map
- * gets a fresh token narrowed to this one repo (contents + pull requests);
+ * gets a fresh token narrowed to this one repo (contents + pull requests,
+ * plus workflows when the map lets the fleet change CI);
  * a PAT/OAuth row can't be narrowed, so its token goes out as is.
  */
 export async function getFleetRepoCredentials(mapId: string): Promise<{ repo: TicketRepo; token: string } | null> {
   const map = await loadMapBinding(mapId);
   if (!map) return null;
   if (map.githubInstallationId && map.githubRepoOwner && map.githubRepoName) {
-    const minted = await mintScopedRepoToken(map.githubInstallationId, map.githubRepoName);
+    const minted = await mintScopedRepoToken(map.githubInstallationId, map.githubRepoName, { workflows: map.fleetCanEditCi });
     return { repo: ticketRepo(GITHUB_ENDPOINT, map.githubRepoOwner, map.githubRepoName), token: minted.token };
   }
   const integration = await patIntegrationForMap(map);

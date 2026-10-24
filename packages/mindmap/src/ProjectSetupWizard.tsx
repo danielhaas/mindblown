@@ -239,6 +239,8 @@ interface RepoChoice {
   kind: 'github' | 'gitea';
   fullName: string;
   installationId?: string;
+  /** A repo the wizard just created: the fleet may set up its CI. */
+  fleetCanEditCi?: boolean;
 }
 
 function RepoStep({ onNext }: { onNext: () => void }) {
@@ -257,6 +259,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
   const [newName, setNewName] = useState(() => repoSlug(map.name));
   const [newOwner, setNewOwner] = useState('');
   const [newPrivate, setNewPrivate] = useState(true);
+  const [newCi, setNewCi] = useState(true);
   /** The repo this form created; Connect retries with it (and `addAccessUrl` says the App can't see it yet). */
   const [created, setCreated] = useState<{ choice: RepoChoice; addAccessUrl?: string } | null>(null);
 
@@ -316,6 +319,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
           githubRepoOwner: owner,
           githubRepoName: name,
           autoImportNewIssues: true,
+          ...(choice.fleetCanEditCi ? { fleetCanEditCi: true } : {}),
         });
         if (!ok) throw new Error(useMindmapStore.getState().error ?? 'Connecting the repository failed.');
       } else {
@@ -346,7 +350,7 @@ function RepoStep({ onNext }: { onNext: () => void }) {
       } else {
         const installationId = owner.slice('github:'.length);
         const r = await api.createGitHubRepository({ installationId, name: newName.trim(), private: newPrivate, description });
-        choice = { kind: 'github', fullName: r.fullName, installationId };
+        choice = { kind: 'github', fullName: r.fullName, installationId, fleetCanEditCi: newCi };
         setCreated({ choice, ...(r.reachable ? {} : { addAccessUrl: r.addAccessUrl }) });
         if (!r.reachable) {
           setBusy(null);
@@ -447,6 +451,12 @@ function RepoStep({ onNext }: { onNext: () => void }) {
             <input type="checkbox" data-testid="setup-repo-new-private" checked={newPrivate} onChange={(e) => setNewPrivate(e.target.checked)} disabled={!!busy || !!created} />
             Private
           </label>
+          {owner.startsWith('github:') && (
+            <label style={{ ...hint, display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+              <input type="checkbox" data-testid="setup-repo-new-ci" checked={newCi} onChange={(e) => setNewCi(e.target.checked)} disabled={!!busy || !!created} />
+              Let the fleet set up CI (GitHub Actions)
+            </label>
+          )}
           <div style={{ ...hint, marginBottom: 8 }}>
             Starts with a README so agents have a main branch to work from. The project description becomes the repository description.
           </div>

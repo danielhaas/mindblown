@@ -127,6 +127,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     profilePolicy: (get('profilePolicy', 'profile_policy') as MindMap['profilePolicy']) ?? null,
     fleetId: (get('fleetId', 'fleet_id') as string | null) ?? null,
     fleetShare: (get('fleetShare', 'fleet_share') as number) ?? 1,
+    fleetCanEditCi: (get('fleetCanEditCi', 'fleet_can_edit_ci') as boolean) ?? false,
     createdAt: (get('createdAt', 'created_at') instanceof Date
       ? (get('createdAt', 'created_at') as Date).toISOString()
       : (get('createdAt', 'created_at') as string)),

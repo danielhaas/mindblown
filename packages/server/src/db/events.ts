@@ -160,6 +160,8 @@ export const AUDITED_MAP_FIELDS = [
   // Which fleet works the map, and its weight there (#477).
   'fleetId',
   'fleetShare',
+  // Lets fleet code change CI, which can read the repo's secrets.
+  'fleetCanEditCi',
   // Archive flips are the loudest setting of all: every automation goes
   // quiet on the map. Journal who did it and when.
   'archivedAt',

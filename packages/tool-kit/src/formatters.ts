@@ -178,6 +178,7 @@ export function formatMapTree(data: MapDetail): string {
     const share = data.map.fleetShare != null && data.map.fleetShare !== 1 ? `, share ${data.map.fleetShare}` : '';
     lines.push(`Fleet: ${data.map.fleetName ?? 'unnamed'} (fleetId: ${data.map.fleetId}${share})`);
   }
+  if (data.map.fleetCanEditCi) lines.push('Fleet may change CI workflows (fleetCanEditCi)');
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(
