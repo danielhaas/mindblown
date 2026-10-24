@@ -12,6 +12,7 @@ import { db } from '../db/connection.js';
 import { maps } from '../db/schema.js';
 import * as permDb from '../db/permissions.js';
 import { userInstallationRepos } from '../lib/githubInstallations.js';
+import { isFleetUser } from '../db/fleets.js';
 
 const FIELDS = ['githubInstallationId', 'githubRepoOwner', 'githubRepoName'] as const;
 type BindingInput = { [K in (typeof FIELDS)[number]]?: string | null };
@@ -69,8 +70,10 @@ export async function authorizeMapRepoBinding(
 
 /**
  * `fleetCanEditCi` lets fleet code change the repo's CI, which can read its
- * secrets — a map admin's call, like the binding itself. Resending the
- * current value is not a change.
+ * secrets — a map admin's call, like the binding itself, and never a fleet
+ * key's: agent code must not open CI to itself. Only turning it off may
+ * be resent by an editor (a settings form); `true` is checked every time,
+ * so a stale resend can't undo an admin switching it off.
  */
 export async function authorizeFleetCiChange(
   userId: string,
@@ -81,8 +84,13 @@ export async function authorizeFleetCiChange(
   if (typeof input.fleetCanEditCi !== 'boolean') {
     return { status: 400, code: 'VALIDATION_ERROR', message: 'fleetCanEditCi must be true or false' };
   }
-  const [current] = await db.select({ fleetCanEditCi: maps.fleetCanEditCi }).from(maps).where(eq(maps.id, mapId)).limit(1);
-  if (!current || current.fleetCanEditCi === input.fleetCanEditCi) return null;
+  if (input.fleetCanEditCi === false) {
+    const [current] = await db.select({ fleetCanEditCi: maps.fleetCanEditCi }).from(maps).where(eq(maps.id, mapId)).limit(1);
+    if (!current || !current.fleetCanEditCi) return null;
+  }
+  if (await isFleetUser(userId)) {
+    return { status: 403, code: 'FORBIDDEN', message: 'A fleet key cannot change whether the fleet may edit CI workflows' };
+  }
   const perm = await permDb.getPermission(mapId, userId);
   if (!permDb.hasPermission(perm, 'admin')) {
     return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can let the fleet change CI workflows' };

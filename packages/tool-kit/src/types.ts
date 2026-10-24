@@ -128,6 +128,8 @@ export interface MapDetail {
     fleetId?: string | null;
     fleetName?: string | null;
     fleetShare?: number;
+    /** The fleet's repo token may change CI workflows. */
+    fleetCanEditCi?: boolean;
     /** The map's own pull-queue cap; 0 = on hold. */
     maxActiveClaims?: number;
     /** Repo binding, derived at read time (core MindMap.forgeKind / forgeProblem). */

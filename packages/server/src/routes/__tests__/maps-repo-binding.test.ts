@@ -27,7 +27,8 @@ vi.mock('../../db/maps.js', () => ({
   deleteMap: vi.fn(),
   createMap: vi.fn(),
 }));
-vi.mock('../../db/fleets.js', () => ({ getFleet: vi.fn(), getMapFleetId: async () => null, listFleetMaps: async () => [] }));
+const fleetUser = vi.hoisted(() => ({ is: false }));
+vi.mock('../../db/fleets.js', () => ({ getFleet: vi.fn(), getMapFleetId: async () => null, listFleetMaps: async () => [], isFleetUser: async () => fleetUser.is }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
 const perm = vi.hoisted(() => ({ level: 'admin' as 'view' | 'edit' | 'admin' | null }));
@@ -83,6 +84,7 @@ async function put(payload: Record<string, unknown>) {
 
 beforeEach(() => {
   perm.level = 'admin';
+  fleetUser.is = false;
   state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null, fleetCanEditCi: false };
   state.reach = new Map([['111', ['Alice-Org/shop']]]);
   updateMapMock.mockReset();
@@ -155,11 +157,19 @@ describe('PUT /api/maps/:id — GitHub repo binding', () => {
     expect(updateMapMock).not.toHaveBeenCalled();
   });
 
-  it('lets an editor resend the CI setting the map already has', async () => {
+  it('lets an editor resend "off", but checks "on" every time', async () => {
     perm.level = 'edit';
+    expect((await put({ fleetCanEditCi: false, name: 'Renamed' })).statusCode).toBe(200);
     state.current = { ...BIND, fleetCanEditCi: true };
-    const res = await put({ fleetCanEditCi: true, name: 'Renamed' });
-    expect(res.statusCode).toBe(200);
+    expect((await put({ fleetCanEditCi: true })).statusCode).toBe(403);
+  });
+
+  it('refuses a fleet key, even with admin on the map', async () => {
+    fleetUser.is = true;
+    const res = await put({ fleetCanEditCi: true });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/fleet key/);
+    expect(updateMapMock).not.toHaveBeenCalled();
   });
 
   it('refuses a non-boolean CI setting', async () => {

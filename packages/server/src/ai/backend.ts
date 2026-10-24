@@ -163,6 +163,7 @@ export function createChatBackend(userId: string): ToolBackend {
           fleetId: data.map.fleetId,
           fleetName: await fleetService.fleetNameOf(data.map.fleetId),
           fleetShare: data.map.fleetShare,
+          fleetCanEditCi: data.map.fleetCanEditCi ?? false,
           // The setup checklist (project_setup_status) reads these, as GET /api/maps/:id derives them.
           maxActiveClaims: data.map.maxActiveClaims,
           forgeKind: await getMapForgeKind(mapId),

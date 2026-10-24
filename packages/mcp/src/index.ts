@@ -3096,7 +3096,8 @@ server.tool(
       if (!repo.reachable) {
         return toolResult(
           `Created GitHub repo ${repo.fullName} (${repo.htmlUrl}), but the GitHub App only sees selected repositories, so it is NOT connected yet. ` +
-            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step).`,
+            `Add it to the App at ${repo.addAccessUrl}, then pick it in the map's repository settings (or the setup wizard's Repository step)` +
+            ((fleetCanEditCi ?? true) ? ', and run update_map(fleetCanEditCi: true) so the fleet can set up its CI.' : '.'),
         );
       }
       try {
