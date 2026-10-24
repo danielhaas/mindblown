@@ -14,7 +14,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 const updateMapMock = vi.fn();
 const state = vi.hoisted(() => ({
-  current: { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null } as Record<string, string | null>,
+  current: { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null, fleetCanEditCi: false } as Record<string, string | boolean | null>,
   /** installationId → repos the caller's token reaches there. */
   reach: new Map<string, string[]>(),
 }));
@@ -83,7 +83,7 @@ async function put(payload: Record<string, unknown>) {
 
 beforeEach(() => {
   perm.level = 'admin';
-  state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null };
+  state.current = { githubInstallationId: null, githubRepoOwner: null, githubRepoName: null, fleetCanEditCi: false };
   state.reach = new Map([['111', ['Alice-Org/shop']]]);
   updateMapMock.mockReset();
   updateMapMock.mockImplementation(async (_id: string, input: Record<string, unknown>) => ({ id: MAP_ID, name: 'M', ...input }));
@@ -139,6 +139,33 @@ describe('PUT /api/maps/:id — GitHub repo binding', () => {
     state.reach = new Map();
     const res = await put({ ...BIND, name: 'Renamed' });
     expect(res.statusCode).toBe(200);
+  });
+
+  it('binds a new repo with CI access in one call (the wizard)', async () => {
+    const res = await put({ ...BIND, fleetCanEditCi: true });
+    expect(res.statusCode).toBe(200);
+    expect(updateMapMock).toHaveBeenCalledWith(MAP_ID, { ...BIND, fleetCanEditCi: true }, 'u1');
+  });
+
+  it('lets only a map admin turn fleet CI access on', async () => {
+    perm.level = 'edit';
+    const res = await put({ fleetCanEditCi: true });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.message).toMatch(/admins can let the fleet change CI/);
+    expect(updateMapMock).not.toHaveBeenCalled();
+  });
+
+  it('lets an editor resend the CI setting the map already has', async () => {
+    perm.level = 'edit';
+    state.current = { ...BIND, fleetCanEditCi: true };
+    const res = await put({ fleetCanEditCi: true, name: 'Renamed' });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('refuses a non-boolean CI setting', async () => {
+    const res = await put({ fleetCanEditCi: 'yes' });
+    expect(res.statusCode).toBe(400);
+    expect(updateMapMock).not.toHaveBeenCalled();
   });
 
   it('lets a map admin disconnect the repo', async () => {

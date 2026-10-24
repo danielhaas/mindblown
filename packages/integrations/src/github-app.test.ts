@@ -205,6 +205,22 @@ describe('mintScopedRepoToken (fleet worker, #507)', () => {
     ]);
   });
 
+  it('a map that lets the fleet change CI asks for workflows write too', async () => {
+    const asked = stubMint(() => 201);
+    await mintScopedRepoToken('inst-1', 'xmirror', { workflows: true });
+    expect(asked).toEqual([{ contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read', workflows: 'write' }]);
+  });
+
+  it('an App without Workflows (422) gets the usual token', async () => {
+    const asked = stubMint((p) => (p.workflows ? 422 : 201));
+    const t = await mintScopedRepoToken('inst-1', 'xmirror', { workflows: true });
+    expect(t.token).toBe('ghs_scoped');
+    expect(asked).toEqual([
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read', workflows: 'write' },
+      { contents: 'write', pull_requests: 'write', checks: 'read', statuses: 'read' },
+    ]);
+  });
+
   it('an App without push rights fails clearly (422 on both)', async () => {
     stubMint(() => 422);
     await expect(mintScopedRepoToken('inst-1', 'navy-app')).rejects.toMatchObject({ status: 422 });

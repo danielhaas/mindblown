@@ -174,6 +174,12 @@ export interface UpdateMapInput {
   aiPolicy?: AiPolicy;
   /** Draft estimates for committed work (#318). */
   aiEstimateDrafts?: boolean;
+  /**
+   * The fleet's repo token may change CI workflows. Admin only, checked by
+   * the callers (services/mapRepoBinding `authorizeFleetCiChange`). A
+   * change of the repo binding clears it unless the same call sets it.
+   */
+  fleetCanEditCi?: boolean;
   /** #110 — date-holidays code; null clears. Validated by the route / tool. */
   holidayJurisdiction?: string | null;
   /** #110 — full replacement of the map's own days off. */
@@ -211,6 +217,11 @@ export { isMapArchived } from './archived.js';
  * for system writes. The before-row is read first so the diff is against
  * what was persisted, not against what the caller assumed.
  */
+function repoBindingChanges(before: MindMap, input: UpdateMapInput): boolean {
+  const fields = ['githubInstallationId', 'githubRepoOwner', 'githubRepoName'] as const;
+  return fields.some((f) => input[f] !== undefined && (input[f] ?? null) !== (before[f] ?? null));
+}
+
 export async function updateMap(
   mapId: string,
   input: UpdateMapInput,
@@ -252,6 +263,9 @@ export async function updateMap(
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
   if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
+  // CI access was granted for one repo; another repo may hold secrets.
+  if (typeof input.fleetCanEditCi === 'boolean') updates.fleetCanEditCi = input.fleetCanEditCi;
+  else if (repoBindingChanges(before, input)) updates.fleetCanEditCi = false;
   if (input.holidayJurisdiction !== undefined) updates.holidayJurisdiction = input.holidayJurisdiction;
   if (input.holidayOverrides !== undefined) updates.holidayOverrides = input.holidayOverrides;
   // Boolean only: a raw REST caller sending `archived: null` must not

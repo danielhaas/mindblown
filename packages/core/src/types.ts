@@ -779,6 +779,15 @@ export interface MindMap {
    * fleet or is the fleet's only map.
    */
   fleetShare: number;
+  /**
+   * The fleet's repo token may change CI workflows (`.github/workflows/*`).
+   * Off by default: CI code can read the repo's secrets, so fleet-written
+   * code doesn't get to change it (#507). The setup wizard turns it on for
+   * a repo it creates, which has no secrets yet. GitHub App maps only; a
+   * PAT/OAuth token goes out as is anyway. Cleared when the map's repo
+   * changes. Server source: `maps.fleet_can_edit_ci`.
+   */
+  fleetCanEditCi?: boolean;
   /** Name of `fleetId`, derived at read time by GET /api/maps/:id. Not stored. */
   fleetName?: string | null;
 

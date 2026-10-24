@@ -199,6 +199,10 @@ export const updateMapTool = defineTool({
       .max(100)
       .optional()
       .describe("This map's weight when its fleet picks between projects (0.1–100, default 1): a map with share 2 gets twice the pulls of a map with share 1 when both have ready work."),
+    fleetCanEditCi: z
+      .boolean()
+      .optional()
+      .describe("Let the fleet change CI workflows (.github/workflows/*) in the map's GitHub repo (default false). CI code can read the repo's secrets, so this is off unless the repo is new or you trust the fleet's code with them; the setup wizard and create_forge_repo turn it on for a repo they create. Changing the map's repo turns it off again. Needs admin on the map, and the MindBlown GitHub App needs its Workflows permission (without it the fleet gets its usual token)."),
     aiEstimateDrafts: z
       .boolean()
       .optional()
@@ -261,7 +265,7 @@ export const updateMapTool = defineTool({
       .optional()
       .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, setupCompleted, trustPolicy }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, holidayJurisdiction, holidayOverrides, phases, archived, setupCompleted, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -276,6 +280,7 @@ export const updateMapTool = defineTool({
       profilePolicy?: { heavyMinHours?: number; lightMaxHours?: number } | null;
       fleetId?: string | null;
       fleetShare?: number;
+      fleetCanEditCi?: boolean;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
@@ -299,6 +304,7 @@ export const updateMapTool = defineTool({
     if (profilePolicy !== undefined) fields.profilePolicy = profilePolicy;
     if (fleetId !== undefined) fields.fleetId = fleetId;
     if (fleetShare !== undefined) fields.fleetShare = fleetShare;
+    if (fleetCanEditCi !== undefined) fields.fleetCanEditCi = fleetCanEditCi;
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;

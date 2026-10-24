@@ -66,3 +66,26 @@ export async function authorizeMapRepoBinding(
   }
   return null;
 }
+
+/**
+ * `fleetCanEditCi` lets fleet code change the repo's CI, which can read its
+ * secrets — a map admin's call, like the binding itself. Resending the
+ * current value is not a change.
+ */
+export async function authorizeFleetCiChange(
+  userId: string,
+  mapId: string,
+  input: { fleetCanEditCi?: unknown },
+): Promise<RepoBindingError | null> {
+  if (input.fleetCanEditCi === undefined) return null;
+  if (typeof input.fleetCanEditCi !== 'boolean') {
+    return { status: 400, code: 'VALIDATION_ERROR', message: 'fleetCanEditCi must be true or false' };
+  }
+  const [current] = await db.select({ fleetCanEditCi: maps.fleetCanEditCi }).from(maps).where(eq(maps.id, mapId)).limit(1);
+  if (!current || current.fleetCanEditCi === input.fleetCanEditCi) return null;
+  const perm = await permDb.getPermission(mapId, userId);
+  if (!permDb.hasPermission(perm, 'admin')) {
+    return { status: 403, code: 'FORBIDDEN', message: 'Only map admins can let the fleet change CI workflows' };
+  }
+  return null;
+}

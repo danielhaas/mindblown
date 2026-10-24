@@ -47,6 +47,21 @@ describe('project_setup_status', () => {
   });
 });
 
+describe('update_map — fleetCanEditCi', () => {
+  it('forwards the switch to the backend', async () => {
+    expect(z.object(updateMapTool.schema).parse({ mapId: 'm1', fleetCanEditCi: true }).fleetCanEditCi).toBe(true);
+    let sent: Record<string, unknown> | null = null;
+    const backend = {
+      updateMap: async (_id: string, fields: Record<string, unknown>) => {
+        sent = fields;
+        return { id: 'm1', name: 'Shop' };
+      },
+    } as unknown as ToolBackend;
+    await updateMapTool.handler(backend, { mapId: 'm1', fleetCanEditCi: false } as never);
+    expect(sent).toEqual({ fleetCanEditCi: false });
+  });
+});
+
 describe('update_map — setupCompleted', () => {
   it('forwards the switch to the backend', async () => {
     expect(z.object(updateMapTool.schema).parse({ mapId: 'm1', setupCompleted: true }).setupCompleted).toBe(true);

@@ -424,6 +424,7 @@ export interface ToolBackend {
       profilePolicy?: ProfilePolicy | null;
       fleetId?: string | null;
       fleetShare?: number;
+      fleetCanEditCi?: boolean;
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;

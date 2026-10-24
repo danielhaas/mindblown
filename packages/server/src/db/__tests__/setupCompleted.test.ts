@@ -70,6 +70,29 @@ beforeEach(() => {
   };
 });
 
+describe('updateMap — fleetCanEditCi', () => {
+  it('sets and round-trips the switch', async () => {
+    const updated = await updateMap('map-1', { fleetCanEditCi: true }, 'user-1');
+    expect(state.lastSet?.fleetCanEditCi).toBe(true);
+    expect(updated?.fleetCanEditCi).toBe(true);
+  });
+
+  it('a new repo binding clears it; the same call can set it again', async () => {
+    Object.assign(state.current!, { githubInstallationId: '1', githubRepoOwner: 'dan', githubRepoName: 'fresh', fleetCanEditCi: true });
+    await updateMap('map-1', { githubRepoName: 'crm' }, 'user-1');
+    expect(state.lastSet?.fleetCanEditCi).toBe(false);
+
+    await updateMap('map-1', { githubRepoName: 'other', fleetCanEditCi: true }, 'user-1');
+    expect(state.lastSet?.fleetCanEditCi).toBe(true);
+  });
+
+  it('resending the same binding or another setting leaves it alone', async () => {
+    Object.assign(state.current!, { githubInstallationId: '1', githubRepoOwner: 'dan', githubRepoName: 'fresh', fleetCanEditCi: true });
+    await updateMap('map-1', { githubInstallationId: '1', githubRepoOwner: 'dan', githubRepoName: 'fresh', name: 'Renamed' }, 'user-1');
+    expect('fleetCanEditCi' in state.lastSet!).toBe(false);
+  });
+});
+
 describe('updateMap — setupCompleted', () => {
   it('true stamps setupCompletedAt on an open checklist', async () => {
     const updated = await updateMap('map-1', { setupCompleted: true }, 'user-1');
