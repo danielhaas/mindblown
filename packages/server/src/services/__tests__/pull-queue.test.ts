@@ -204,7 +204,8 @@ describe('dispatchGate', () => {
     const d = select([epic, inherited, explicit, other, unversioned], {
       gate: ['version:v1'],
     });
-    expect(d.ranked.map((n) => n.id).sort()).toEqual(['epic', 'explicit', 'inherited']);
+    // `epic` is a container (it has a child) — never ranked, only its leaf is.
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['explicit', 'inherited']);
   });
 
   it('type:bug + version:<id> AND together', () => {
@@ -563,7 +564,19 @@ describe('human-only guard (#266)', () => {
     expect(d.ranked.map((n) => n.id)).toEqual(['late']);
     const kidHold = d.humanOnly.find((h) => h.node.id === 'kid')!;
     expect(kidHold).toMatchObject({ tag: 'needs-human', blockedReason: null, heldBy: { id: 'epic', text: 'Node epic' } });
-    expect(d.humanOnly.find((h) => h.node.id === 'epic')!.heldBy).toBeNull();
+    // The container itself is not pullable, so it is not reported as held either.
+    expect(d.humanOnly.map((h) => h.node.id)).toEqual(['kid']);
+  });
+
+  it('never ranks a container, tagged epic or not — the leaves are the work', () => {
+    // "Phase 2.5: Make it fun" (25.10.2026): an untagged todo parent was granted.
+    const phase = makeNode({ id: 'phase', text: 'Phase 2.5: Make it fun', childrenIds: ['a', 'b'] });
+    const a = makeNode({ id: 'a', parentId: 'phase' });
+    const b = makeNode({ id: 'b', parentId: 'phase' });
+    const d = select([phase, a, b]);
+    expect(d.ranked.map((n) => n.id).sort()).toEqual(['a', 'b']);
+    expect(d.skipped).toEqual([]);
+    expect(d.humanOnly).toEqual([]);
   });
 });
 

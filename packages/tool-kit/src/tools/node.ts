@@ -367,8 +367,13 @@ export const flagBlockerTool = defineTool({
       .describe('Short human-readable reason for the block (e.g. "waiting on legal review", "vendor SLA pending"). This is what surfaces in digests.'),
   },
   handler: async (backend, { mapId, nodeId, reason }) => {
-    await backend.updateNode(mapId, nodeId, { blockedReason: reason });
-    return `Flagged ${nodeId} as blocked: "${reason}".`;
+    const node = await backend.updateNode(mapId, nodeId, { blockedReason: reason });
+    const done = `Flagged ${nodeId} as blocked: "${reason}".`;
+    const children = node.childrenIds?.length ?? 0;
+    if (children === 0) return done;
+    // A blocker on a container holds its whole subtree out of the queue —
+    // on 25.10.2026 one on "Phase 2.5" idled four workers (dispatchHold).
+    return `${done}\nWarning: this node has ${children} child node(s) — the blocker holds every ticket below it out of the queue. If only one child is stuck, clear_blocker here and flag that child instead.`;
   },
 });
 

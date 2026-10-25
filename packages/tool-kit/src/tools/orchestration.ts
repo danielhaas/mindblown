@@ -100,6 +100,8 @@ export const getNextTicketTool = defineTool({
     'Pull the next ticket from a map\'s work queue — the one call a worker needs.',
     'Atomically picks the best ready node per the map\'s dispatch settings and',
     'claims it for your session, all serialized per map (no pull races).',
+    'Only leaves are handed out: a node with children is a container — its children',
+    'are the work, epic tag or not.',
     '',
     'Selection pipeline (configured via update_map):',
     '  1. Cap gate: if the map\'s active claims >= maxActiveClaims, the pull is',
