@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool, etaFromMinutes } from '../node.js';
+import { createNodeTool, updateNodeTool, restoreNodeTool, listRecentlyDeletedTool, searchNodesTool, clearBlockerTool, flagBlockerTool, etaFromMinutes } from '../node.js';
 import type { ToolBackend } from '../../backend.js';
 import type { MapDetail, NodeWithComputed } from '../../types.js';
 
@@ -1320,6 +1320,27 @@ describe('clear_blocker tool', () => {
     expect(rec.lastUpdate).toBeNull();
     expect(out).toContain('status reset to todo');
     expect(out).toContain('"blocked" tag removed');
+  });
+});
+
+describe('flag_blocker tool', () => {
+  it('sets only blockedReason and says nothing more on a leaf', async () => {
+    const rec = makeRecordingBackend();
+    const out = await flagBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'leaf', reason: 'waiting on legal' } as never);
+    expect(rec.lastUpdate).toEqual({ mapId: 'm1', nodeId: 'leaf', fields: { blockedReason: 'waiting on legal' } });
+    expect(out).toBe('Flagged leaf as blocked: "waiting on legal".');
+  });
+
+  it('warns that a blocker on a container holds its subtree (Phase 2.5, 25.10.2026)', async () => {
+    const rec = makeRecordingBackend();
+    const backend = {
+      ...rec.backend,
+      updateNode: async () => ({ id: 'phase', childrenIds: ['a', 'b', 'c'] }) as unknown as NodeWithComputed,
+    } as ToolBackend;
+    const out = await flagBlockerTool.handler(backend, { mapId: 'm1', nodeId: 'phase', reason: 'cannot do a container' } as never);
+    expect(out).toContain('Flagged phase as blocked');
+    expect(out).toContain('3 child node(s)');
+    expect(out).toContain('flag that child instead');
   });
 });
 

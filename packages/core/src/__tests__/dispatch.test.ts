@@ -52,9 +52,7 @@ const WORKFLOW: StatusDef[] = [
 ];
 
 const root = n({ id: 'root', parentId: null, childrenIds: ['epic', 'bug', 'loose'] });
-// Note: the server does NOT exclude parents from the pullable set — a
-// status-less epic would be pullable too. Give it a non-todo status so the
-// fixtures below read as leaves-only.
+// A parent is never pullable (leaves only); `epic` is in_progress besides.
 const epic = n({ id: 'epic', versionId: 'v1', childrenIds: ['leaf'], status: 'in_progress' });
 const leaf = n({ id: 'leaf', parentId: 'epic', status: 'todo' });
 const bug = n({ id: 'bug', status: 'todo', tags: ['Bug'] });
@@ -173,6 +171,18 @@ describe('pullableNodes', () => {
     const waiting = n({ id: 'waiting', status: 'todo', dependencies: [{ targetNodeId: 'loose', type: 'FS' }] as never });
     const { pullable } = pullableNodes([root, epic, leaf, bug, loose, claimed, blocked, waiting], WORKFLOW);
     expect(pullable.map((x) => x.id).sort()).toEqual(['bug', 'leaf', 'loose']);
+  });
+
+  it('never yields a container — no epic tag, no "Epic:" title, its children are the work', () => {
+    // "Phase 2.5: Make it fun" (25.10.2026): a todo parent was handed out,
+    // its worker's blocker then held all ten children.
+    const phase = n({ id: 'phase', parentId: 'root', text: 'Phase 2.5: Make it fun', status: 'todo' });
+    const c1 = n({ id: 'c1', parentId: 'phase', status: 'todo' });
+    const c2 = n({ id: 'c2', parentId: 'phase', status: null });
+    const { pullable } = pullableNodes([root, phase, c1, c2], WORKFLOW);
+    expect(pullable.map((x) => x.id).sort()).toEqual(['c1', 'c2']);
+    // A child missing from the list (deleted) does not keep its parent a container.
+    expect(pullableNodes([root, phase], WORKFLOW).pullable.map((x) => x.id)).toEqual(['phase']);
   });
 });
 
@@ -358,7 +368,7 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     ];
     const snap = dispatchQueueSnapshot(nodes, { workflow, cap: 3, gate: [] });
     expect(snap.inGateIds).toEqual(['fresh']);
-    expect(snap.humanOnly).toBe(3); // epic itself, mid and leaf
+    expect(snap.humanOnly).toBe(1); // leaf — epic and mid are containers, never pullable
     const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
     const isDone = (st: string | null) => st === 'done';
     expect(dispatchHold(nodes[3] as never, { nodeMap, isDone })).toEqual({ tag: null, blockedReason: 'Waiting on Dan', heldBy: { id: 'epic', text: 'epic' } });
@@ -381,9 +391,8 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     ];
     const snap = dispatchQueueSnapshot(nodes, { workflow: [], cap: 5, gate: [] });
     expect([...snap.inGateIds].sort()).toEqual(['repo', 'sub']);
-    // e1–e4, plus `big`: the snapshot counts a status-less parent as pullable
-    // (see the fixture note above); held is right for it, and `sub` stays free.
-    expect(snap.humanOnly).toBe(5);
+    // e1–e4; `big` has a child, so it is a container and not pullable at all.
+    expect(snap.humanOnly).toBe(4);
     expect(dispatchHold(nodes[1] as never)).toEqual({ tag: 'epic', blockedReason: null, heldBy: null });
     const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
     expect(dispatchHold(nodes[6] as never, { nodeMap, isDone: () => false })).toBeNull();

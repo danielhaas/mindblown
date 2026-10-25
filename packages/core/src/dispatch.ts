@@ -251,17 +251,26 @@ export function matchesDispatchGate(node: Node, gate: string[], nodeMap: NodeMap
 }
 
 /**
- * The pullable set BEFORE the gate: a non-root node in a todo status (or
+ * The pullable set BEFORE the gate: a non-root LEAF in a todo status (or
  * no status), unclaimed, with every dependency predecessor done. The
  * server's `selectPullCandidates` starts from exactly this set.
+ *
+ * Leaves only, same rule as ready_nodes (#323): a node with children is a
+ * container — its children are the work. The pull handed out an untagged
+ * container ("Phase 2.5: Make it fun", 25.10.2026); the worker could only
+ * flag a blocker on it, which held its whole subtree and emptied the queue.
+ * "Has children" is read from `parentId` of the nodes passed in, so a
+ * deleted child (not in the list) does not keep its parent a container.
  */
 export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable: Node[]; nodeMap: NodeMap } {
   const isDone = buildIsDonePredicate(workflow);
   const todoIds = buildTodoIds(workflow);
   const nodeMap: NodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const hasChild = new Set(nodes.map((n) => n.parentId).filter((p): p is string => p !== null));
   const pullable = nodes.filter(
     (n) =>
       n.parentId !== null &&
+      !hasChild.has(n.id) &&
       (n.status === null || todoIds.has(n.status)) &&
       n.claimedBySession === null &&
       isReady(n, nodeMap, isDone),
