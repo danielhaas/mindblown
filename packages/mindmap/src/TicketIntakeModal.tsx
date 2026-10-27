@@ -124,6 +124,11 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
         existing: first ? { nodeId: first.nodeId, issueNumber: first.issueNumber } : null,
       });
       await loadMap(mapId);
+      // A clean accept ends the intake; only a warning keeps the window open, showing just that result.
+      if (!r.issueError && !r.dependencyErrors?.length && !r.issue?.author?.fallbackReason) {
+        onClose();
+        return;
+      }
       setAcceptedCount((n) => n + 1);
       const parts = [`Created «${r.node.text}»`];
       if (r.issue) {
@@ -137,7 +142,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
       }
       if (r.issueError) parts.push(r.issueError);
       if (r.dependencyErrors?.length) parts.push(`dependency errors: ${r.dependencyErrors.join('; ')}`);
-      setLog((l) => [...l, { role: 'system', text: parts.join(' — ') }]);
+      setLog([{ role: 'system', text: parts.join(' — ') }]);
       setDraft(null);
       setEdits(null);
       setQuestions([]);
@@ -147,7 +152,7 @@ export function TicketIntakeModal({ mapId, parentId, parentText, onClose }: Prop
     } finally {
       setAccepting(false);
     }
-  }, [draft, edits, accepting, tagsRaw, mapId, intakeId, createIssue, loadMap]);
+  }, [draft, edits, accepting, tagsRaw, mapId, intakeId, createIssue, loadMap, onClose]);
 
   const [existingBusy, setExistingBusy] = useState<string | null>(null);
   const existingAction = useCallback(
