@@ -60,19 +60,39 @@ export function blockerAskNodeId(askId: string): string | null {
   return askId.startsWith(BLOCKER_ASK_PREFIX) && askId.length > BLOCKER_ASK_PREFIX.length ? askId.slice(BLOCKER_ASK_PREFIX.length) : null;
 }
 
-/** The node behind any derived row (stalled, step, blocker), or null for a collector's ask. */
-export function derivedAskNodeId(askId: string): string | null {
-  return stalledAskNodeId(askId) ?? stepAskNodeId(askId) ?? blockerAskNodeId(askId);
+/**
+ * A ticket the pull queue refuses for want of a brief (core hasBrief) is a
+ * step too. Only the Kanban badge and a count on the Dispatch card showed
+ * it, so a ticket typed in the app as a bare title sat unnoticed
+ * (28.10.2026). Any text is the brief and becomes the description.
+ */
+export const BRIEF_ASK_PREFIX = 'brief-';
+export const BRIEF_ASK_OPTIONS = ['Done'] as const;
+export type BriefAnswer = 'mark-done' | 'write-brief';
+const BRIEF_PREFIX = 'Needs a brief: ';
+
+export function briefAskId(nodeId: string): string {
+  return BRIEF_ASK_PREFIX + nodeId;
 }
 
-/** Rows MindBlown derives itself (stalled work, a person's steps, blockers) — not the collector's. */
+/** The node a brief row is about, or null for any other ask id. */
+export function briefAskNodeId(askId: string): string | null {
+  return askId.startsWith(BRIEF_ASK_PREFIX) && askId.length > BRIEF_ASK_PREFIX.length ? askId.slice(BRIEF_ASK_PREFIX.length) : null;
+}
+
+/** The node behind any derived row (stalled, step, blocker, brief), or null for a collector's ask. */
+export function derivedAskNodeId(askId: string): string | null {
+  return stalledAskNodeId(askId) ?? stepAskNodeId(askId) ?? blockerAskNodeId(askId) ?? briefAskNodeId(askId);
+}
+
+/** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs) — not the collector's. */
 export function isDerivedAsk(a: Pick<Ask, 'id'>): boolean {
   return derivedAskNodeId(a.id) !== null;
 }
 
-/** Rows for the "Your steps" card: steps and blockers. */
+/** Rows for the "Your steps" card: steps, blockers and missing briefs. */
 export function isPersonStepAsk(a: Pick<Ask, 'id'>): boolean {
-  return stepAskNodeId(a.id) !== null || blockerAskNodeId(a.id) !== null;
+  return stepAskNodeId(a.id) !== null || blockerAskNodeId(a.id) !== null || briefAskNodeId(a.id) !== null;
 }
 
 /** The step a needs-human node carries: "Next step (a person): …" at the top of its description. */
@@ -291,6 +311,29 @@ export function stepAnswerAction(decision: string): StepAnswer {
   return 'needs-human';
 }
 
+/** The row of a ticket the pull queue refuses for want of a brief. */
+export function buildBriefAsk(
+  node: { id: string; text: string; priority?: string | null; externalLinks?: ExternalLink[]; percentComplete?: number | null },
+  mapId: string,
+): Ask {
+  const step = buildStepAsk({ ...node, tags: [], description: null }, mapId);
+  return {
+    ...step,
+    id: briefAskId(node.id),
+    sources: ['mindblown-brief'],
+    question: `${BRIEF_PREFIX}the fleet will not take it until it says what is to be done. Your text becomes the description.`,
+    options: [...BRIEF_ASK_OPTIONS],
+    unblocks: { ...step.unblocks, node_status: 'needs a brief' },
+  };
+}
+
+/** Which write an answer to a brief row means: Done, else the text is the brief. */
+export function briefAnswerAction(decision: string): BriefAnswer {
+  const d = decision.trim().toLowerCase();
+  if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
+  return 'write-brief';
+}
+
 /**
  * What answering a derived row writes, for the card's preview — the
  * collector's rows preview through planAskWrites instead.
@@ -334,6 +377,12 @@ export function derivedAnswerPreview(a: Pick<Ask, 'id'> & Partial<Pick<Ask, 'que
       default:
         return [`Node: blocker becomes "Next step (a person): …" plus your note "${d || '…'}", tagged needs-human`];
     }
+  }
+  if (briefAskNodeId(a.id)) {
+    // A linked issue would be a brief, so there is none to close here.
+    return briefAnswerAction(d) === 'mark-done'
+      ? ['Node: done, 100 %']
+      : [`Node: "${d || '…'}" becomes the description — the fleet takes it on its next pull`];
   }
   return null;
 }

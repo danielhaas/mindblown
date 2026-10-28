@@ -9,6 +9,8 @@
  *   blocker-<node>  an open leaf with a manual blockedReason and no skip
  *                   tag — a worker's red CI or merge conflict, a wait
  *                   (core humanSteps.ts)
+ *   brief-<node>    a ready ticket inside the gate the pull refuses for
+ *                   want of a brief (core dispatchQueueSnapshot)
  *
  * Nothing is stored while a row is open, so a fleet push (which replaces
  * the open set) cannot wipe it and there is no second list to keep in step:
@@ -25,12 +27,17 @@
  * Back to the queue = requeue, For a person / free text = needs-human.
  * Step: Done = mark-done, Fleet can do it = to-fleet, free text =
  * needs-human with the text as the new next step. Blocker: Unblocked =
- * clear-blocker, Done = mark-done, free text = needs-human.
+ * clear-blocker, Done = mark-done, free text = needs-human. Brief: Done =
+ * mark-done, free text = write-brief.
  */
 import {
   AUTO_CHECK_BY,
   AUTO_CHECK_GRACE_MINUTES,
   autoCheckable,
+  briefAnswerAction,
+  briefAskNodeId,
+  buildBriefAsk,
+  dispatchQueueSnapshot,
   blockerAnswerAction,
   blockerFleetAction,
   FLEET_CHECK_TAG,
@@ -99,6 +106,15 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
       // fleet-check: the fleet has it already, nothing for a person until it reports back.
       else if (node.childrenIds.length === 0 && node.blockedReason?.trim() && !node.tags.includes(FLEET_CHECK_TAG)) out.push(openRow(buildBlockerAsk(node, mapId), mapId, now, node.updatedAt));
     }
+
+    // Held tickets are out of this set already — they have their step or
+    // blocker row. A map on hold (cap 0) pulls nothing, so nothing waits on a brief.
+    const cap = data.map.maxActiveClaims ?? 0;
+    const queue = cap > 0 ? dispatchQueueSnapshot(data.nodes, { workflow: data.map.statusWorkflow ?? [], cap, gate: data.map.dispatchGate ?? [] }) : null;
+    for (const id of queue?.needsBriefIds ?? []) {
+      const node = byId.get(id);
+      if (node) out.push(openRow(buildBriefAsk(node, mapId), mapId, now, node.updatedAt));
+    }
   }
   return out;
 }
@@ -117,7 +133,7 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
   const asked = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   return derived.filter((r) => {
     if (snoozed.has(rowKey(r))) return false;
-    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
+    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || briefAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
   });
 }
 
@@ -125,6 +141,10 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
 function plannedFix(ask: AskRow['ask'], decision: string): { action: LintActionId; note: string | undefined } {
   const askId = ask.id;
   if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined };
+  if (briefAskNodeId(askId)) {
+    const brief = briefAnswerAction(decision);
+    return { action: brief, note: brief === 'write-brief' ? decision : undefined };
+  }
   const blocker = blockerAskNodeId(askId) !== null;
   let action: LintActionId = blocker ? blockerAnswerAction(decision) : stepAnswerAction(decision);
   if (action === 'fleet-fix') action = blockerFleetAction(ask);
