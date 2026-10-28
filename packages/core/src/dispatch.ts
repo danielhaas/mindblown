@@ -429,6 +429,8 @@ export interface DispatchQueueSnapshot {
   unknownGateEntries: string[];
   /** Grantable ticket ids, for drill-down lists. */
   inGateIds: string[];
+  /** The `needsBrief` tickets — each a brief row on the Questions card. */
+  needsBriefIds: string[];
   state: DispatchState;
 }
 
@@ -485,6 +487,7 @@ export function dispatchQueueSnapshot(
     unversionedOutsideGate,
     unknownGateEntries,
     inGateIds: inGate.map((n) => n.id),
+    needsBriefIds: gated.filter((n) => !hasBrief(n)).map((n) => n.id),
     state,
   };
 }

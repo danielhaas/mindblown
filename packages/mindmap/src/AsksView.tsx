@@ -19,6 +19,7 @@ import {
   ASK_ANSWERERS,
   derivedAnswerPreview,
   blockerAskNodeId,
+  briefAskNodeId,
   isDerivedAsk,
   isNoQuestion,
   isPersonStepAsk,
@@ -232,6 +233,7 @@ export function AsksSection() {
       <Muted>
         Tickets tagged needs-human (or kira-skip …): the fleet never takes them. Done when you did it; Fleet can do it puts it back in the queue; any text
         becomes the new next step. Blocked tickets: Fleet can fix it hands one back to the fleet; Unblocked clears the blocker once you fixed it.
+        Tickets with no brief: what you write becomes the description, and the fleet takes the ticket on its next pull.
       </Muted>
       {scope?.fleetId && blockerCount > 0 && !readOnly && (
         <div style={{ marginTop: 8, display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -579,7 +581,7 @@ function AskCard({
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
             placeholder={
-              isPersonStepAsk(a) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
+              briefAskNodeId(a.id) ? 'Write the brief — what is to be done…' : isPersonStepAsk(a) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
             }
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
@@ -719,11 +721,13 @@ function DelegatePicker({ mapId, value, onChange, other, onOther }: { mapId: str
 function stepLabel(question: string): { label: string | null; text: string } {
   if (question.startsWith(NEXT_STEP)) return { label: 'Next step', text: question.slice(NEXT_STEP.length) };
   if (question.startsWith(BLOCKED)) return { label: 'Blocked', text: question.slice(BLOCKED.length) };
+  if (question.startsWith(NEEDS_BRIEF)) return { label: 'Needs a brief', text: question.slice(NEEDS_BRIEF.length) };
   if (question.startsWith('Tagged ')) return { label: null, text: question };
   return { label: "What's left", text: question };
 }
 const NEXT_STEP = 'Next step: ';
 const BLOCKED = 'Blocked: ';
+const NEEDS_BRIEF = 'Needs a brief: ';
 
 /**
  * The question as lead + numbered sub-questions + tail (core questionParts), not one block.
