@@ -167,6 +167,45 @@ export function etaLabel(
   return { short: `ETA ${day}${time}`, full, overdue: false };
 }
 
+// ── Took / planned ──
+
+/** A span of minutes, compact: "45m", "2h 10m", "3h", "2d 4h". */
+export function formatSpan(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${Math.max(1, m)}m`;
+  const hours = Math.floor(m / 60);
+  if (hours < 24) return m % 60 ? `${hours}h ${m % 60}m` : `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days}d ${hours % 24}h` : `${days}d`;
+}
+
+function spanMinutes(from: string | null | undefined, to: string | null | undefined): number | null {
+  const a = from ? Date.parse(from) : NaN;
+  const b = to ? Date.parse(to) : NaN;
+  if (!Number.isFinite(a) || !Number.isFinite(b) || b < a) return null;
+  return (b - a) / 60_000;
+}
+
+/**
+ * What the worker planned (startedAt → expectedDoneAt, its ETA) and, once
+ * done, what it took (startedAt → completedAt): "planned 45m", "took 1h 10m".
+ * `over` when it took longer than planned. Either side null when the
+ * timestamps for it are missing.
+ */
+export function durationLabels(node: {
+  startedAt: string | null | undefined;
+  completedAt?: string | null | undefined;
+  expectedDoneAt: string | null | undefined;
+}): { took: string | null; planned: string | null; over: boolean } {
+  const took = spanMinutes(node.startedAt, node.completedAt);
+  const planned = spanMinutes(node.startedAt, node.expectedDoneAt);
+  return {
+    took: took == null ? null : `took ${formatSpan(took)}`,
+    planned: planned == null ? null : `planned ${formatSpan(planned)}`,
+    over: took != null && planned != null && took > planned,
+  };
+}
+
 // ── Blocked ──
 
 /**

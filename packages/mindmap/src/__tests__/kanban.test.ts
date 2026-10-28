@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, formatSpan, outsideGate, personHolds } from '../kanban.js';
 
 describe('needsBriefOnBoard — the pull queue\'s empty-brief guard', () => {
   const issue = { id: 'l', provider: 'github', url: 'https://github.com/o/r/issues/1', externalId: 'o/r#1', isPullRequest: false, syncEnabled: true };
@@ -69,6 +69,35 @@ describe('outsideGate — open tickets the fleet will not take', () => {
     expect(cardBlockState(n, null, false, (id) => id, 'Needs a person', 'Later')?.kind).toBe('human');
     expect(cardBlockState(n, { manual: false, predecessorIds: ['a'] }, false, (id) => id, null, 'Later')?.kind).toBe('waiting');
     expect(cardBlockState(n, null, true, (id) => id, null, 'Later')).toBeNull();
+  });
+});
+
+describe('durationLabels — took / planned', () => {
+  const t0 = '2026-10-20T10:00:00.000Z';
+  const plus = (min: number) => new Date(Date.parse(t0) + min * 60_000).toISOString();
+
+  it('a done ticket shows what it took and what was planned', () => {
+    expect(durationLabels({ startedAt: t0, completedAt: plus(70), expectedDoneAt: plus(45) }))
+      .toEqual({ took: 'took 1h 10m', planned: 'planned 45m', over: true });
+    expect(durationLabels({ startedAt: t0, completedAt: plus(30), expectedDoneAt: plus(45) }).over).toBe(false);
+  });
+
+  it('an in-progress ticket shows only the plan', () => {
+    expect(durationLabels({ startedAt: t0, completedAt: null, expectedDoneAt: plus(120) }))
+      .toEqual({ took: null, planned: 'planned 2h', over: false });
+  });
+
+  it('is empty without a start, and ignores an ETA before the start', () => {
+    expect(durationLabels({ startedAt: null, completedAt: plus(5), expectedDoneAt: plus(5) }))
+      .toEqual({ took: null, planned: null, over: false });
+    expect(durationLabels({ startedAt: t0, completedAt: null, expectedDoneAt: plus(-5) }).planned).toBeNull();
+  });
+
+  it('formats spans compactly', () => {
+    expect(formatSpan(0)).toBe('1m');
+    expect(formatSpan(59)).toBe('59m');
+    expect(formatSpan(180)).toBe('3h');
+    expect(formatSpan(60 * 52)).toBe('2d 4h');
   });
 });
 
