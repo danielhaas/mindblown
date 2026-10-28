@@ -20,6 +20,7 @@ import type {
   StalledLeaf,
   TrustPolicy,
 } from '@mindblown/core';
+import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
 // Empty = same origin. In dev, Vite proxies `/api` and `/ws` to the server
 // (see vite.config.ts); in production UI and API sit behind the same host
@@ -38,10 +39,12 @@ export function getToken(): string | null {
 }
 
 export function setToken(token: string): void {
+  clearApiCache();
   localStorage.setItem(TOKEN_KEY, token);
 }
 
 export function clearToken(): void {
+  clearApiCache();
   localStorage.removeItem(TOKEN_KEY);
 }
 
@@ -216,10 +219,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, {
-    ...init,
-    headers,
-  });
+  const url = `${BASE_URL}${path}`;
+  const isGet = (init?.method ?? 'GET').toUpperCase() === 'GET';
+  let res: Response;
+  try {
+    res = await fetch(url, { ...init, headers });
+  } catch (err) {
+    // No response at all: serve the last copy of a read, read-only (#572).
+    if (err instanceof TypeError) {
+      const hit = isGet ? await cachedResponse(url) : null;
+      markOffline(hit?.cachedAt);
+      if (hit) return hit.data as T;
+    }
+    throw err;
+  }
+  markOnline();
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new ApiError(
@@ -230,7 +244,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   if (res.status === 204) return undefined as unknown as T;
-  return res.json();
+  const data = await res.json();
+  if (isGet) void saveResponse(url, data);
+  return data;
 }
 
 export class ApiError extends Error {

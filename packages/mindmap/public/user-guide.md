@@ -258,8 +258,17 @@ Everything we have covered so far happens on the mindmap -- and the mindmap is a
 | Calendar    | "What is due this week" at a glance                                      |
 | Hill Chart  | Honest status without percent-complete theatre -- are we figuring it out, or executing? |
 | Workload    | Who is overloaded, who has slack, who should take the next item          |
+| Files       | Every file and link hung anywhere in the map, in one list -- and the place to drop what belongs to the map rather than to one node |
 
 A node tagged into V1, assigned to Sprint 3, and living under `Compliance > Reporting` appears everywhere the moment you add the tag. You never file the same work in two places.
+
+### Sharing files
+
+Any node can carry **attachments** -- files you upload, or links to somewhere else -- from the Attachments section of its property panel. The **Files** view collects all of them across the map, newest first, with the node each one hangs on; click the node to jump to it in the mindmap. Filter by files or links, or search titles, URLs and node names.
+
+Files that belong to the plan as a whole (a prospectus, an export, a spec that covers everything) go on the Files view's drop zone. They are stored on the map itself and show up as "Map" in the list. Uploaded images and videos are served under an unguessable link; anyone who has the link can open them. Every other file (PDFs, documents, spreadsheets, exports) belongs to the map it was first attached on and opens only for someone signed in who can see that map. Opening such a link without a session leads through sign-in first. Removing the file from that map makes the link stop working; pasting the link onto another map does not give that map's members access.
+
+AI agents see the same list through the `list_attachments` MCP tool, add to it with `attach_link` and `attach_file`, and read a stored file's contents with `read_attachment` -- text files, source code, CSV/JSON and PDFs. The in-app AI assistant has the same read tool, so it can answer questions about an attached spec. Images, video and office documents are listed but not read.
 
 [screenshot: the view picker in the toolbar with all seven view options]
 
@@ -306,6 +315,20 @@ MindBlown is real-time. Multiple users can edit the same map at the same time, a
 - **Comments** -- every node has a comment thread. Open the Comments panel from the sidebar when a node is selected. You can edit and delete your own comments.
 - **Sharing** -- open the **Share dialog** from the toolbar. Invite people by email with one of three permission levels: **view**, **edit**, or **admin**. You can also generate a **public read-only link** for sharing with non-members -- handy for showing a plan to a client without setting up accounts.
 - **Presence** -- cursors and selections from other users are visible as long as they are on the same map.
+- **Offline (read-only)** -- when the server can't be reached, MindBlown keeps showing the maps and views you last opened, with a notice at the bottom: **Offline — read-only**. Nothing can be saved until the connection is back; **Reload** then fetches the latest data. Only what you opened while online is available, and signing out clears it. Needs an https address (or localhost).
+
+### Fleets: workers on your map
+
+A **fleet** is a group of worker hosts (AI coding agents) that pulls ready tickets from your maps and works on them. One fleet can serve several projects; a map is connected to at most one fleet. A fleet's workers take tickets only from the maps connected to it (a worker set up to pull one map directly still can, within that map's own cap). The workers' account also needs **edit** access to each connected map, and an archived map is skipped until it is unarchived.
+
+- **Connect a map** -- open the **Fleet** tab (or the map's **Settings**), pick a fleet in the **Fleet** picker and click **Connect**. **Create fleet…** makes a new one, owned by you, and connects the map in one step. Choose **No fleet** to disconnect; if workers hold claims on the map right now, you are asked first. Their claims stay on the tickets; the fleet just takes no new ones from this map. Moving the map to another fleet moves its claims too: they count against the new fleet's cap from then on.
+- **Shares** -- when a fleet serves more than one map, each map has a **share**: how often the fleet picks it relative to the others. 1 is an equal turn; 2 means twice as often as a map with 1.
+- **Who may do what** -- connecting and disconnecting needs admin on the map, and connecting needs ownership of the fleet. Only the fleet's owner sets the share; that works with edit access to the map, too. Everyone else, and the Developer and Stakeholder lenses, see which fleet a map is on but get no controls.
+
+The map's own pull-queue knobs on the Fleet tab -- its cap, gate and policy -- still decide which tickets are handed out and how many at once. A cap of 0 holds the map even when it is connected.
+
+- **One fleet, many projects** -- on a connected map the Fleet tab shows the fleet: its cap against the claims held across all its maps, and each map's share. The workers, the Questions and the journal show **this project** by default; switch to **All projects** to see the whole fleet, each entry labelled with its project. A worker busy on a project you can't view shows as such, without its ticket. **Fleet page →** opens the same view without a map (`?fleet=<id>`).
+- **Fleet keys** -- a fleet's workers sign in with a key of the fleet itself (map Settings → Fleet → Fleet keys, fleet owner only). It reaches exactly the maps connected to the fleet, with edit, and loses a map the moment it is disconnected. A key is shown once; to rotate, issue a new one, switch the workers, revoke the old one.
 
 ---
 

@@ -402,8 +402,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
     try {
       const user = await api.getMe();
       set({ user, token });
-    } catch {
-      api.clearToken();
+    } catch (e) {
+      // Unreachable server with nothing cached: keep the token so the
+      // session survives until the connection is back.
+      if (!(e instanceof TypeError)) api.clearToken();
       set({ user: null, token: null });
     }
   },
