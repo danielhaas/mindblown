@@ -83,9 +83,11 @@ function Tail({ nodeId }: Props) {
     return () => clearInterval(timer);
   }, [load]);
 
-  // The newest line is what one looks for: keep the box scrolled to the end.
+  // The newest line is what one looks for: follow the end, unless the
+  // reader scrolled up to older lines — a refresh doesn't yank them back.
+  const atEnd = useRef(true);
   useEffect(() => {
-    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+    if (boxRef.current && atEnd.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
   }, [tail]);
 
   if (!canEdit) return null;
@@ -106,7 +108,15 @@ function Tail({ nodeId }: Props) {
       ) : tail === undefined ? null : tail === null || tail.lines.length === 0 ? (
         <div style={{ fontSize: 11, color: '#94a3b8' }}>No output reported yet — the worker sends it about every 2 minutes.</div>
       ) : (
-        <pre ref={boxRef} data-testid="agent-output-lines" style={boxStyle}>
+        <pre
+          ref={boxRef}
+          data-testid="agent-output-lines"
+          style={boxStyle}
+          onScroll={(e) => {
+            const el = e.currentTarget;
+            atEnd.current = el.scrollHeight - el.scrollTop - el.clientHeight < 8;
+          }}
+        >
           {tail.lines.join('\n')}
         </pre>
       )}

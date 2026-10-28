@@ -303,26 +303,27 @@ export function withoutTails(rollup: FleetRollup): FleetRollup {
 }
 
 /**
- * The agent output last reported for a ticket on `mapId` (#585): the
- * newest rollup that carries a tail for it, and when that rollup was
- * made. A claim without a map belongs to a host serving only this map.
+ * The agent output last reported for a ticket on `mapId` (#585), and when
+ * that rollup was made. The newest rollup that holds the ticket decides,
+ * tail or not: a ticket re-granted elsewhere must not show the dead host's
+ * old run until the new agent prints. A claim without a map belongs to a
+ * host serving only this map.
  */
 export function ticketTail(
   hosts: { generatedAt: string; mapIds: string[]; rollup: FleetRollup }[],
   mapId: string,
   nodeId: string,
 ): { lines: string[]; at: string; host: string; phase: string } | null {
-  let best: { lines: string[]; at: string; host: string; phase: string } | null = null;
+  let best: { claim: FleetClaimPhase; at: string; host: string } | null = null;
   for (const h of hosts) {
     const claim = (h.rollup.claims ?? []).find(
-      (c) => c.nodeId === nodeId && c.tail && (c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId),
+      (c) => c.nodeId === nodeId && (c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId),
     );
-    if (!claim?.tail) continue;
-    if (!best || Date.parse(h.generatedAt) > Date.parse(best.at)) {
-      best = { lines: claim.tail, at: h.generatedAt, host: h.rollup.host, phase: claim.phase };
-    }
+    if (!claim) continue;
+    if (!best || Date.parse(h.generatedAt) > Date.parse(best.at)) best = { claim, at: h.generatedAt, host: h.rollup.host };
   }
-  return best;
+  if (!best?.claim.tail) return null;
+  return { lines: best.claim.tail, at: best.at, host: best.host, phase: best.claim.phase };
 }
 
 /**

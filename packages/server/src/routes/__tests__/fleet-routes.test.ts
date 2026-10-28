@@ -432,6 +432,17 @@ describe('agent output tail (#585)', () => {
     expect(res.json().tail).toEqual({ lines: ['a', 'b'], at: '2026-09-01T10:00:00.000Z', host: 'new', phase: 'fixing' });
   });
 
+  it("a ticket re-granted on another host shows nothing until its new agent prints, not the old host's run", async () => {
+    listRollupsMock.mockResolvedValueOnce([
+      withTail('dead', [MAP_A], '2026-09-01T09:00:00.000Z', [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', tail: ['old run'] }]),
+      withTail('fresh', [MAP_A], '2026-09-01T10:00:00.000Z', [{ nodeId: 'n1', mapId: MAP_A, phase: 'starting' }]),
+    ]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/n1` });
+    await app.close();
+    expect(res.json().tail).toBeNull();
+  });
+
   it('is null for a ticket without output and for a map without a fleet', async () => {
     const app = await buildApp();
     const none = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/n1` });
