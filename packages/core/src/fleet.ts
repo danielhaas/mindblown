@@ -142,7 +142,21 @@ export interface FleetClaimPhase {
   ci?: 'pending' | 'red' | 'conflict' | 'none' | 'manual' | null;
   /** On `fixing`: which fix run this is, from 1. */
   fix_attempt?: number | null;
+  /**
+   * #585: the tail of the running ticket's live view, oldest line first
+   * (at most AGENT_OUTPUT_MAX_LINES). Carries commands, paths and error
+   * snippets, so the regular fleet reads drop it (`withoutClaimOutput`);
+   * it is served on its own route that needs edit on the map.
+   */
+  output?: string[] | null;
+  /** ISO: when the worker read the live view; the rollup's `generated_at` when absent. */
+  output_at?: string | null;
 }
+
+/** #585: lines of a running ticket's live view a rollup keeps — the newest ones. */
+export const AGENT_OUTPUT_MAX_LINES = 100;
+/** A longer line is cut; a minified blob in the live view must not fill the push. */
+export const AGENT_OUTPUT_MAX_LINE_CHARS = 500;
 
 /**
  * One host's rollup (`rollup/<host>.json`). v1 is pushed per map and
@@ -218,12 +232,72 @@ export function parseRollup(x: unknown): FleetRollup | null {
     if (Array.isArray(r.claims)) {
       out.claims = r.claims.filter(
         (c): c is FleetClaimPhase => !!c && typeof c === 'object' && typeof (c as FleetClaimPhase).nodeId === 'string' && typeof (c as FleetClaimPhase).phase === 'string',
-      );
+      ).map(parseClaimOutput);
     } else {
       delete out.claims;
     }
   }
   return out;
+}
+
+/** A claim's live-view tail, bounded: strings only, the newest lines, each cut to length. A malformed one is dropped. */
+function parseClaimOutput(c: FleetClaimPhase): FleetClaimPhase {
+  if (c.output === undefined) return c;
+  const out = { ...c };
+  if (Array.isArray(c.output)) {
+    out.output = c.output
+      .filter((l): l is string => typeof l === 'string')
+      .slice(-AGENT_OUTPUT_MAX_LINES)
+      .map((l) => (l.length > AGENT_OUTPUT_MAX_LINE_CHARS ? `${l.slice(0, AGENT_OUTPUT_MAX_LINE_CHARS)}…` : l));
+  } else {
+    delete out.output;
+  }
+  if (out.output_at != null && (typeof out.output_at !== 'string' || Number.isNaN(Date.parse(out.output_at)))) delete out.output_at;
+  return out;
+}
+
+/** A rollup without the claims' live-view tails (#585) — what every regular fleet read serves. */
+export function withoutClaimOutput(rollup: FleetRollup): FleetRollup {
+  if (!rollup.claims?.some((c) => 'output' in c || 'output_at' in c)) return rollup;
+  return {
+    ...rollup,
+    claims: rollup.claims.map((c) => {
+      const { output: _output, output_at: _outputAt, ...rest } = c;
+      return rest;
+    }),
+  };
+}
+
+/** One ticket's agent output as its own route serves it (#585). */
+export interface AgentOutput {
+  host: string;
+  /** When the worker read the live view. */
+  at: string;
+  lines: string[];
+}
+
+/**
+ * The newest live-view tail a host reports for this ticket on this map —
+ * null when no host reports one. A claim that names no map belongs to the
+ * map only when the host serves that map alone. Stale hosts count: the
+ * report says its time, and an old tail is still the agent's last word.
+ */
+export function claimOutput(
+  hosts: { host: string; generatedAt: string; mapIds: string[]; rollup: FleetRollup }[],
+  mapId: string,
+  nodeId: string,
+): AgentOutput | null {
+  let best: AgentOutput | null = null;
+  for (const h of hosts) {
+    for (const c of h.rollup.claims ?? []) {
+      if (c.nodeId !== nodeId || !Array.isArray(c.output)) continue;
+      const onMap = c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId;
+      if (!onMap) continue;
+      const at = c.output_at ?? h.generatedAt;
+      if (!best || Date.parse(at) > Date.parse(best.at)) best = { host: h.host, at, lines: c.output };
+    }
+  }
+  return best;
 }
 
 /**

@@ -9,6 +9,7 @@ import type {
   RequirementStage,
   FleetRollup,
   FleetTickPayload,
+  AgentOutput,
   AskRow,
   AskCounts,
   AskDocumentMeta,
@@ -1192,6 +1193,11 @@ export function fetchFleet(target: FleetTarget, opts: FleetWindowOptions = {}): 
   if (opts.limit !== undefined) params.set('limit', String(opts.limit));
   const qs = params.toString();
   return request<FleetResponse>(`${fleetBase(target)}/fleet${qs ? `?${qs}` : ''}`);
+}
+
+/** #585: the last live-view tail a fleet worker reported for a running ticket; `output: null` = none. Needs edit on the map. */
+export function fetchAgentOutput(mapId: string, nodeId: string): Promise<{ output: AgentOutput | null; now: string }> {
+  return request(`/api/maps/${mapId}/nodes/${nodeId}/agent-output`);
 }
 
 /** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
