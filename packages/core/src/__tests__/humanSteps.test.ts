@@ -4,7 +4,10 @@ import {
   blockerAnswerAction,
   blockerAskNodeId,
   blockerFleetAction,
+  briefAnswerAction,
+  briefAskNodeId,
   buildBlockerAsk,
+  buildBriefAsk,
   buildStepAsk,
   derivedAnswerPreview,
   derivedAskNodeId,
@@ -177,5 +180,20 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(blockerAnswerAction('Done')).toBe('mark-done');
     expect(blockerAnswerAction('bump webpki on main first')).toBe('needs-human');
     expect(derivedAnswerPreview({ id: 'blocker-n1' }, 'Unblocked')?.[0]).toMatch(/blocker cleared/);
+  });
+});
+
+describe('a ticket that needs a brief (28.10.2026)', () => {
+  it('is a person\'s step: its own id, Done or free text, the text becomes the description', () => {
+    const ask = buildBriefAsk({ id: 'n1', text: 'Show durations', priority: 'P2' }, 'm1');
+    expect(ask).toMatchObject({ id: 'brief-n1', title: 'Show durations', options: ['Done'], priority: 'P2', unblocks: { node_id: 'n1', node_status: 'needs a brief' } });
+    expect(ask.question).toMatch(/^Needs a brief: /);
+    expect(briefAskNodeId('brief-n1')).toBe('n1');
+    expect(derivedAskNodeId('brief-n1')).toBe('n1');
+    expect(isDerivedAsk(ask)).toBe(true);
+    expect(isPersonStepAsk(ask)).toBe(true);
+    expect(briefAnswerAction('Done')).toBe('mark-done');
+    expect(briefAnswerAction('Add a duration column')).toBe('write-brief');
+    expect(derivedAnswerPreview(ask, 'Add a duration column')?.[0]).toBe('Node: "Add a duration column" becomes the description — the fleet takes it on its next pull');
   });
 });

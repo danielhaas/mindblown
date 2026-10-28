@@ -418,8 +418,14 @@ export {
   autoCheckable,
   AUTO_CHECK_BY,
   AUTO_CHECK_GRACE_MINUTES,
+  BRIEF_ASK_PREFIX,
+  BRIEF_ASK_OPTIONS,
+  briefAskId,
+  briefAskNodeId,
+  buildBriefAsk,
+  briefAnswerAction,
 } from './humanSteps.js';
-export type { StepAnswer, StepParts, BlockerAnswer } from './humanSteps.js';
+export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer } from './humanSteps.js';
 
 // Which uploaded files stay public capability URLs (#292, decision D)
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';

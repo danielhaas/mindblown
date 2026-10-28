@@ -15,6 +15,7 @@ const state = vi.hoisted(() => ({
   stored: [] as unknown[],
   nodes: [] as unknown[],
   archived: false,
+  cap: 4,
 }));
 
 const node = (id: string, extra: Record<string, unknown> = {}) => ({
@@ -34,7 +35,7 @@ vi.mock('../../db/maps.js', () => ({
   getMap: vi.fn(async (id: string) =>
     id === 'm1'
       ? {
-          map: { id: 'm1', archivedAt: state.archived ? 'x' : null, statusWorkflow: [{ id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }] },
+          map: { id: 'm1', archivedAt: state.archived ? 'x' : null, maxActiveClaims: state.cap, statusWorkflow: [{ id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }] },
           nodes: state.nodes,
         }
       : null,
@@ -71,6 +72,7 @@ beforeEach(() => {
   ];
   state.stored = [];
   state.archived = false;
+  state.cap = 4;
 });
 
 describe('stalled questions', () => {
@@ -237,5 +239,40 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
       const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW + 25 * 60_000));
       expect(out.sent.map((r) => r.askId)).toEqual(['blocker-timeout', 'blocker-fresh']);
     });
+  });
+});
+
+describe('tickets that need a brief', () => {
+  const ready = (id: string, extra: Record<string, unknown> = {}) =>
+    node(id, { parentId: 'root', status: null, claimedBySession: null, dependencies: [], blockedReason: null, ...extra });
+  const briefKey = { fleetId: 'f1', mapId: 'm1', askId: 'brief-bare' };
+
+  beforeEach(() => {
+    state.stalled = [];
+    state.nodes = [
+      node('root', { parentId: null, childrenIds: ['bare', 'held', 'described'], dependencies: [], claimedBySession: null }),
+      ready('bare', { text: 'Show durations' }),
+      ready('held', { tags: ['needs-human'] }),
+      ready('described', { description: 'Add a duration column to done cards' }),
+    ];
+  });
+
+  it('one row per ready ticket the pull refuses for want of a brief; a held one stays a step', async () => {
+    const rows = await derivedAskRows(['m1']);
+    expect(rows.filter((r) => r.ask.id.startsWith('brief-')).map((r) => r.ask.id)).toEqual(['brief-bare']);
+    expect(rows.map((r) => r.ask.id)).toContain('step-held');
+    expect(rows.find((r) => r.ask.id === 'brief-bare')!.ask).toMatchObject({ title: 'Show durations', options: ['Done'], sources: ['mindblown-brief'] });
+  });
+
+  it('none while the map is on hold (cap 0) — nothing is pulled, so nothing waits on a brief', async () => {
+    state.cap = 0;
+    expect((await derivedAskRows(['m1'])).filter((r) => r.ask.id.startsWith('brief-'))).toEqual([]);
+  });
+
+  it('free text writes the brief, Done finishes', async () => {
+    await answerDerivedAsk(briefKey, { action: 'answered', decision: 'Show on done cards how long they took' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'bare', 'write-brief', 'u1', { note: 'Show on done cards how long they took' });
+    await answerDerivedAsk(briefKey, { action: 'answered', decision: 'Done' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'bare', 'mark-done', 'u1', { note: undefined });
   });
 });

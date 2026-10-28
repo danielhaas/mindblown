@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, prependDecision, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -240,6 +240,17 @@ export async function applyLintFix(
       const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
       input = { tagsRemove: skips, status: todoId, claimedBySession: null };
       changedFields = ['tags', 'status', 'claimedBySession'];
+      break;
+    }
+    case 'write-brief': {
+      // The answer is the brief: it becomes the description, and the
+      // needs-brief trace the pull left goes with it. A description written
+      // since the row was read is kept, the answer on top.
+      const text = opts.note?.trim();
+      if (!text) throw new LintFixError('BAD_ACTION', 'A brief needs text');
+      const empty = proseMirrorToPlainText(before.description).trim() === '';
+      input = { description: (empty ? text : prependDecision(before.description, text)) as nodeDb.UpdateNodeInput['description'], tagsRemove: [NEEDS_BRIEF_TAG] };
+      changedFields = ['description', 'tags'];
       break;
     }
     default:

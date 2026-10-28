@@ -187,6 +187,20 @@ describe('applyLintFix — node-side actions', () => {
     expect(r.changedFields).toEqual(['tags', 'status', 'claimedBySession']);
   });
 
+  it('write-brief writes the text as the description and drops the needs-brief trace; no text is refused', async () => {
+    seed({ id: 'a', status: 'todo', tags: ['needs-brief'] });
+    const r = await applyLintFix('m1', 'a', 'write-brief', 'u1', { note: '  Show on done cards how long they took ' });
+    expect(updateNode).toHaveBeenCalledWith('a', { description: 'Show on done cards how long they took', tagsRemove: ['needs-brief'] });
+    expect(r.changedFields).toEqual(['description', 'tags']);
+    await expect(applyLintFix('m1', 'a', 'write-brief', 'u1', { note: ' ' })).rejects.toMatchObject({ code: 'BAD_ACTION' });
+  });
+
+  it('write-brief keeps a description written since, the answer on top', async () => {
+    seed({ id: 'a', status: 'todo', description: 'Earlier text' });
+    await applyLintFix('m1', 'a', 'write-brief', 'u1', { note: 'The brief' });
+    expect(updateNode).toHaveBeenCalledWith('a', { description: '**The brief**\n\nEarlier text', tagsRemove: ['needs-brief'] });
+  });
+
   it('fleet-fix ("Fleet can fix it") drops the blocker, tags fleet-fix, keeps the claim and progress', async () => {
     seed({ id: 'a', status: 'wip', percentComplete: 90, blockedReason: 'Fleet worker h: CI failed on PR #9 (abc).', tags: ['blocked'], claimedBySession: 'h:slot1:fleet-worker' });
     const r = await applyLintFix('m1', 'a', 'fleet-fix', 'u1');

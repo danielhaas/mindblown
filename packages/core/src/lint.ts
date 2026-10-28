@@ -55,6 +55,7 @@ export const LINT_ACTIONS = {
   'fleet-fix': { label: 'Fleet can fix it (the worker reworks its own PR)', bulk: false },
   'fleet-check': { label: 'Fleet can fix it (the queue hands it out again, blocker in the brief)', bulk: false },
   'needs-human': { label: 'For a person (needs-human; blocker text into the description)', bulk: false },
+  'write-brief': { label: 'Write the brief (the text becomes the description)', bulk: false },
 } as const;
 export type LintActionId = keyof typeof LINT_ACTIONS;
 export const LINT_ACTION_IDS = Object.keys(LINT_ACTIONS) as [LintActionId, ...LintActionId[]];
