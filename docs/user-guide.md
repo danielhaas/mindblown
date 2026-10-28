@@ -315,6 +315,7 @@ MindBlown is real-time. Multiple users can edit the same map at the same time, a
 - **Comments** -- every node has a comment thread. Open the Comments panel from the sidebar when a node is selected. You can edit and delete your own comments.
 - **Sharing** -- open the **Share dialog** from the toolbar. Invite people by email with one of three permission levels: **view**, **edit**, or **admin**. You can also generate a **public read-only link** for sharing with non-members -- handy for showing a plan to a client without setting up accounts.
 - **Presence** -- cursors and selections from other users are visible as long as they are on the same map.
+- **Offline (read-only)** -- when the server can't be reached, MindBlown keeps showing the maps and views you last opened, with a notice at the bottom: **Offline — read-only**. Nothing can be saved until the connection is back; **Reload** then fetches the latest data. Only what you opened while online is available, and signing out clears it. Needs an https address (or localhost).
 
 ### Fleets: workers on your map
 
