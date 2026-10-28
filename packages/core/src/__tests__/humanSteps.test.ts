@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  autoCheckable,
   blockerAnswerAction,
   blockerAskNodeId,
   blockerFleetAction,
@@ -149,6 +150,26 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(released.unblocks.pr).toBe('#9'); // no PR link: the worker's note names it // the worker follows its PR from its claim file, MindBlown's claim or not
     expect(derivedAnswerPreview(conflict, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
     expect(derivedAnswerPreview(vendor, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-check/);
+  });
+
+  it('the automatic check takes only a fleet worker\'s give-up', () => {
+    const w = 'Fleet worker h:slot1:fleet-worker: ';
+    const ask = (blockedReason: string | null, claimedBySession: string | null = null) => buildBlockerAsk({ id: 'n', text: 'x', blockedReason, claimedBySession }, 'm');
+    expect(autoCheckable(ask(`${w}the agent ran past 60 min and was stopped. Partial work: branch b in /w.`))).toBe(true);
+    expect(autoCheckable(ask(`${w}the agent finished without changing anything.`))).toBe(true);
+    // a person's blocker, a Stop, a hold
+    expect(autoCheckable(ask('Waiting for the vendor'))).toBe(false);
+    expect(autoCheckable(ask(null))).toBe(false);
+    // the worker's notes on its PR, and its agent's question
+    expect(autoCheckable(ask(`${w}CI failed on PR #9 (abc).`))).toBe(false);
+    expect(autoCheckable(ask(`${w}PR #9 came from a ticket approved for a PR only. Review it and merge it by hand.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}PR #9 was closed without merging.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}needs a decision: which API version?`))).toBe(false);
+    // an operator's fleet-worker stop on the host; a restart's interruption is a give-up
+    expect(autoCheckable(ask(`${w}rethinking it. Partial work: branch b in /w. Clear the blocker to requeue it.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}interrupted — the worker stopped mid-ticket. Partial work: branch b. Clear the blocker to requeue it.`))).toBe(true);
+    // still claimed: a worker holds it
+    expect(autoCheckable(ask(`${w}the agent exited with 1.`, 'h:slot1:fleet-worker'))).toBe(false);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {

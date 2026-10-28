@@ -72,12 +72,13 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
     if (!req.userId) return unauthorized(reply);
     const owned = await fleetService.requireFleetOwner(req.userId, req.params.id);
     if (isAccessError(owned)) return sendAccessError(reply, owned);
-    const body = (req.body ?? {}) as { name?: unknown; maxActiveClaims?: unknown };
+    const body = (req.body ?? {}) as { name?: unknown; maxActiveClaims?: unknown; autoCheckBlockers?: unknown };
     const invalid = fleetService.validateFleetFields(body, false);
     if (invalid) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: invalid } });
     await fleetDb.updateFleet(req.params.id, {
       name: typeof body.name === 'string' ? body.name.trim() : undefined,
       maxActiveClaims: body.maxActiveClaims as number | undefined,
+      autoCheckBlockers: body.autoCheckBlockers as boolean | undefined,
     });
     const view = await fleetService.getFleetForUser(req.userId, req.params.id);
     return isAccessError(view) ? sendAccessError(reply, view) : reply.send(view);

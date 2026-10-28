@@ -12,7 +12,7 @@
  * while open: the tag is the truth, and answering changes the tag.
  */
 import { questionParts, type Ask, type QuestionParts } from './asks.js';
-import { dispatchSkipTag, fleetFixAction } from './dispatch.js';
+import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
@@ -242,6 +242,36 @@ export function buildBlockerAsk(
 export function blockerFleetAction(a: Pick<Ask, 'question'>): 'fleet-fix' | 'fleet-check' {
   const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
   return fleetFixAction(reason);
+}
+
+/** Who the automatic check answers as — on the answered row, and the loop guard's marker. */
+export const AUTO_CHECK_BY = 'Auto-check';
+
+/** How long a blocker sits before the automatic check takes it — a person can answer it first. */
+export const AUTO_CHECK_GRACE_MINUTES = 30;
+
+/**
+ * A blocker row the automatic check may hand to the fleet: only a fleet
+ * worker's give-up (claude-fleet fleet-worker give_up — the agent timed out,
+ * failed, changed nothing, could not push; the claim is released). Never:
+ *   - a person's blocker (no "Fleet worker …:" prefix) — flag_blocker, the
+ *     Stop button, a deliberate hold;
+ *   - a note on the worker's PR (it names "PR #N": red CI, a conflict, a
+ *     merge by hand, a closed PR) — red CI / a conflict is the worker's own
+ *     auto-fix, and a check run would start over beside the PR;
+ *   - the agent's question ("needs a decision: …") — a person answers it;
+ *   - an operator's `fleet-worker stop` on the host ("<their reason>. …
+ *     Clear the blocker to requeue it.") — a restart's "interrupted — …"
+ *     ends the same way and is a give-up;
+ *   - a ticket still claimed — a worker holds it.
+ */
+export function autoCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
+  const reason = (a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question).trim();
+  const m = WORKER_WAIT_NOTE.exec(reason);
+  if (!m || a.unblocks?.claimed_by) return false;
+  const what = reason.slice(m[0].length);
+  const stopped = /Clear the blocker to requeue it\.$/.test(what) && !/^interrupted\b/.test(what);
+  return !/\bPR #\d+/.test(what) && !/^needs a decision\b/i.test(what) && !stopped;
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */

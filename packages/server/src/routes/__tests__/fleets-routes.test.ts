@@ -174,6 +174,14 @@ describe('PATCH /api/fleets/:id', () => {
     expect(db.updateFleet).toHaveBeenCalledWith(FLEET_ID, { name: 'renamed', maxActiveClaims: 5 });
   });
 
+  it('lets the owner switch the automatic blocker check; refuses a non-boolean', async () => {
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(200);
+    expect(db.updateFleet).toHaveBeenCalledWith(FLEET_ID, expect.objectContaining({ autoCheckBlockers: true }));
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: 'yes' })).statusCode).toBe(400);
+    expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(403);
+    expect(db.updateFleet).toHaveBeenCalledTimes(1);
+  });
+
   it('403s a viewer, 404s a stranger', async () => {
     expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(403);
     expect((await call(STRANGER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(404);

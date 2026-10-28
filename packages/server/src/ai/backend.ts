@@ -231,7 +231,7 @@ export function createChatBackend(userId: string): ToolBackend {
       if ('status' in owned) throw new Error(owned.message);
       const invalid = fleetService.validateFleetFields(fields, false);
       if (invalid) throw new Error(invalid);
-      await fleetEntityDb.updateFleet(fleetId, { name: fields.name?.trim(), maxActiveClaims: fields.maxActiveClaims });
+      await fleetEntityDb.updateFleet(fleetId, { name: fields.name?.trim(), maxActiveClaims: fields.maxActiveClaims, autoCheckBlockers: fields.autoCheckBlockers });
       const view = await fleetService.getFleetForUser(userId, fleetId);
       if ('status' in view) throw new Error(view.message);
       return view;

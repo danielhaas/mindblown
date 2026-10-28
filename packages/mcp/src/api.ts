@@ -548,7 +548,7 @@ export function createFleet(name: string, maxActiveClaims?: number): Promise<Fle
   });
 }
 
-export function updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps> {
+export function updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${encodeURIComponent(fleetId)}`, {
     method: 'PATCH',
     body: JSON.stringify(fields),

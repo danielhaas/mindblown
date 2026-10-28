@@ -51,7 +51,7 @@ vi.mock('../../db/asks.js', () => ({
 }));
 vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
 
-import { answerDerivedAsk, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
+import { answerDerivedAsk, autoCheckBlockers, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
 const scope = { fleetId: 'f1', mapId: 'm1' };
@@ -202,5 +202,40 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     ]);
     expect(out.failed).toEqual([]);
     expect(applyLintFix.mock.calls.map((c) => (c as unknown[]).slice(1, 3))).toEqual([['ci', 'fleet-fix'], ['vendor', 'fleet-check']]);
+  });
+
+  describe('auto-check', () => {
+    const fleetScope = { fleetId: 'f1', visibleMapIds: ['m1'], fleetLevel: false };
+    const gaveUp = 'Fleet worker bb:slot1:fleet-worker: the agent ran past 60 min and was stopped. Partial work: branch b.';
+    beforeEach(() => {
+      state.nodes.push(
+        node('timeout', { blockedReason: gaveUp }),
+        node('fresh', { blockedReason: gaveUp, updatedAt: new Date(NOW - 10 * 60_000).toISOString() }),
+        node('merge', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: PR #7 came from a ticket approved for a PR only. Review it and merge it by hand.' }),
+      );
+    });
+    const ourRow = (writes: unknown[] = [{ done: true }]) => ({ ask: { id: 'blocker-timeout' }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: hoursAgo(1), writes });
+
+    it('checks a fleet give-up that has sat 30 min, as Auto-check; not a fresh one, a person\'s blocker or a PR note', async () => {
+      const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW));
+      expect(out.sent).toEqual([{ askId: 'blocker-timeout', mapId: 'm1', action: 'fleet-check' }]);
+      expect(applyLintFix).toHaveBeenCalledTimes(1);
+      expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'timeout', 'fleet-check', 'owner', { note: undefined });
+      expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ answeredBy: 'Auto-check' }));
+    });
+
+    it('once per ticket: a row last answered by the auto-check stays with a person; a person\'s answer or a failed write re-arms it', async () => {
+      state.stored = [ourRow()];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent).toEqual([]);
+      state.stored = [{ ...ourRow(), answeredBy: 'Dan' }];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-timeout']);
+      state.stored = [ourRow([{ done: false, error: 'db down' }])];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-timeout']);
+    });
+
+    it('the fresh give-up is checked once its 30 min are up', async () => {
+      const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW + 25 * 60_000));
+      expect(out.sent.map((r) => r.askId)).toEqual(['blocker-timeout', 'blocker-fresh']);
+    });
   });
 });

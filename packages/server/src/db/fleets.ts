@@ -43,6 +43,12 @@ export async function getFleet(id: string): Promise<Fleet | null> {
   return row ? dbFleetToCore(row as unknown as Record<string, unknown>) : null;
 }
 
+/** Fleets with the automatic blocker check on — the auto-check timer's work list. */
+export async function listAutoCheckFleets(): Promise<Fleet[]> {
+  const rows = await db.select().from(fleets).where(eq(fleets.autoCheckBlockers, true)).orderBy(asc(fleets.createdAt));
+  return rows.map((r) => dbFleetToCore(r as unknown as Record<string, unknown>));
+}
+
 /** Fleets the user owns plus the given ids (fleets of maps the user can view). */
 export async function listFleetsByOwnerOrIds(ownerId: string, ids: string[]): Promise<Fleet[]> {
   const where = ids.length > 0 ? or(eq(fleets.ownerId, ownerId), inArray(fleets.id, ids)) : eq(fleets.ownerId, ownerId);
@@ -140,11 +146,12 @@ export async function fleetOfServiceUser(userId: string): Promise<{ id: string; 
   return row ?? null;
 }
 
-export async function updateFleet(id: string, input: { name?: string; maxActiveClaims?: number }): Promise<Fleet | null> {
+export async function updateFleet(id: string, input: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<Fleet | null> {
   if (!isFleetId(id)) return null;
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates.name = input.name;
   if (input.maxActiveClaims !== undefined) updates.maxActiveClaims = Math.max(0, Math.floor(input.maxActiveClaims));
+  if (input.autoCheckBlockers !== undefined) updates.autoCheckBlockers = input.autoCheckBlockers;
   const [row] = await db.update(fleets).set(updates).where(eq(fleets.id, id)).returning();
   return row ? dbFleetToCore(row as unknown as Record<string, unknown>) : null;
 }

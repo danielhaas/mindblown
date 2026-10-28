@@ -1140,6 +1140,11 @@ export function renameFleet(fleetId: string, name: string): Promise<FleetWithMap
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ name }) });
 }
 
+/** Switch the automatic blocker check on or off (owner only, PATCH /api/fleets/:id). */
+export function setFleetAutoCheck(fleetId: string, autoCheckBlockers: boolean): Promise<FleetWithMaps> {
+  return request<FleetWithMaps>(`/api/fleets/${fleetId}`, { method: 'PATCH', body: JSON.stringify({ autoCheckBlockers }) });
+}
+
 /** One fleet as this reader sees it — its cap, active claims and connected maps (#480). */
 export function fetchFleetEntity(fleetId: string): Promise<FleetWithMaps> {
   return request<FleetWithMaps>(`/api/fleets/${fleetId}`);

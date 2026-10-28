@@ -16,7 +16,7 @@ import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { getFleetForUser } from './fleets.js';
 import { authorizeTickPush, type TelemetryError } from './fleetTelemetry.js';
-import { openDerivedAsks, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
+import { autoCheckBlockers, openDerivedAsks, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
 import * as nodeDb from '../db/nodes.js';
 
 export interface AskInbox {
@@ -136,4 +136,34 @@ export async function fleetCheckBlockers(userId: string, fleetId: string, by: st
   }
   if (editable.length === 0) return { sent: [], failed: [] };
   return sendBlockersToFleet({ fleetId: view.id, visibleMapIds: editable, fleetLevel: false }, editable, userId, by);
+}
+
+/**
+ * One auto-check round (timer in index.ts): every fleet with
+ * autoCheckBlockers on hands its due blockers to the fleet, as its owner —
+ * the person who switched it on — on the maps they may edit. A map on hold
+ * (ceiling 0) is left out: the queue would not hand a check out there, and
+ * the blocker would only vanish from Your steps.
+ */
+export async function runAutoCheck(now: Date = new Date()): Promise<{ fleets: number; sent: number; errors: string[] }> {
+  const out = { fleets: 0, sent: 0, errors: [] as string[] };
+  for (const fleet of await fleetEntityDb.listAutoCheckFleets()) {
+    try {
+      const view = await getFleetForUser(fleet.ownerId, fleet.id);
+      if ('status' in view) continue;
+      const mapIds: string[] = [];
+      for (const m of view.maps) {
+        if (m.maxActiveClaims === 0 || m.archivedAt) continue;
+        if (permDb.hasPermission(await permDb.getPermission(m.id, fleet.ownerId), 'edit')) mapIds.push(m.id);
+      }
+      out.fleets++;
+      if (mapIds.length === 0) continue;
+      const r = await autoCheckBlockers({ fleetId: fleet.id, visibleMapIds: mapIds, fleetLevel: false }, mapIds, fleet.ownerId, now);
+      out.sent += r.sent.length;
+      for (const f of r.failed) out.errors.push(`fleet ${fleet.id} ${f.askId}: ${f.error}`);
+    } catch (err) {
+      out.errors.push(`fleet ${fleet.id}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  return out;
 }
