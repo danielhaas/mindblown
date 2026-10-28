@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, outsideGate, personHolds, type DoneGroupKey } from '../kanban.js';
+import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, startedLabel, etaLabel, durationLabels, outsideGate, personHolds, type DoneGroupKey } from '../kanban.js';
 import { computeIsBlocked, type NodeMap } from '@mindblown/core';
 import type { MindMap, StatusDef } from '@mindblown/core';
 import type { NodeWithComputed } from '../api.js';
@@ -148,6 +148,7 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
               const inProgress = col.status?.category === 'in_progress';
               const started = inProgress ? startedLabel(n.startedAt) : null;
               const eta = inProgress ? etaLabel(n.expectedDoneAt) : null;
+              const { took, planned, over } = durationLabels(n);
               return (
                 <button
                   key={n.id}
@@ -191,6 +192,8 @@ export function MobileKanbanView({ nodes, map, onSelect }: Props) {
                         · {eta.short}
                       </span>
                     )}
+                    {took && <span style={over ? { color: '#dc2626', fontWeight: 600 } : undefined}>· {took}</span>}
+                    {planned && <span>· {planned}</span>}
                     {n.assigneeIds.length > 0 && (
                       <span>· {n.assigneeIds.length}👤</span>
                     )}

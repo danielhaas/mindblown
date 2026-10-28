@@ -6,7 +6,7 @@ import { isForgeLink } from '@mindblown/core';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { useTicketPhases, type CardPhase } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
-import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
+import { groupDone, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, outsideGate, personHolds, type CardBlock, type DoneGroupKey } from './kanban.js';
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -122,6 +122,7 @@ function Card({
   const githubLink = node.externalLinks.find((l) => isForgeLink(l));
   const started = showStarted ? startedLabel(node.startedAt) : null;
   const eta = showStarted ? etaLabel(node.expectedDoneAt) : null;
+  const { took, planned, over } = durationLabels(node);
   const human = block?.kind === 'human' || block?.kind === 'brief';
   const later = block?.kind === 'later';
   const greyed = block !== null && !human && !later && block.kind !== 'fleet';
@@ -352,6 +353,22 @@ function Card({
             style={{ fontSize: 10, color: eta.overdue ? '#dc2626' : '#64748b', fontWeight: eta.overdue ? 600 : undefined }}
           >
             {eta.short}
+          </span>
+        )}
+
+        {/* How long a done ticket took, and what the worker planned */}
+        {took && (
+          <span
+            data-testid="kanban-card-took"
+            title={planned ? `${took}, ${planned}` : took}
+            style={{ fontSize: 10, color: over ? '#dc2626' : '#64748b', fontWeight: over ? 600 : undefined }}
+          >
+            {took}
+          </span>
+        )}
+        {planned && (
+          <span data-testid="kanban-card-planned" style={{ fontSize: 10, color: '#64748b' }}>
+            {planned}
           </span>
         )}
 
