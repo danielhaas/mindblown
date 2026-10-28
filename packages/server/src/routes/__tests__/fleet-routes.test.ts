@@ -33,6 +33,8 @@ vi.mock('../../db/fleet.js', () => ({
   listTicks: (...args: unknown[]) => listTicksMock(...(args as [])),
 }));
 vi.mock('../../ws.js', () => ({ broadcast: (...args: unknown[]) => broadcastMock(...args) }));
+// Every node id in these tests hangs on MAP_A except `on-b` and `on-lone`.
+vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async (id: string) => (id === 'on-b' ? MAP_B : id === 'on-lone' ? LONE : MAP_A) }));
 
 // One fleet serving maps A and B; LONE has no fleet. The reader sees A
 // (and LONE), not B — B's claims must come back redacted.
@@ -378,6 +380,81 @@ describe('telemetry pushes need a credential with edit on the map (#405)', () =>
     expect(put.statusCode).toBe(403);
     expect(get.statusCode).toBe(200);
     expect(upsertRollupMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('agent output tail (#585)', () => {
+  const v2 = { v: 2, host: 'big', generated_at: '2026-09-01T10:00:00Z', maps: [MAP_A, MAP_B], workers: [] };
+  const withTail = (host: string, mapIds: string[], generatedAt: string, claims: unknown[]) => {
+    const row = statusRow(host, mapIds, []);
+    return { ...row, generatedAt, rollup: { ...row.rollup, generated_at: generatedAt, claims } };
+  };
+
+  it('a pushed tail is kept to the last 100 lines; a non-list tail is dropped, not the phase', async () => {
+    const tail = Array.from({ length: 120 }, (_, i) => `line ${i}`);
+    const claims = [
+      { nodeId: 'n1', mapId: MAP_A, phase: 'working', tail },
+      { nodeId: 'n2', mapId: MAP_A, phase: 'working', tail: 'nope' },
+    ];
+    const app = await buildApp();
+    const res = await app.inject({ method: 'PUT', url: `/api/fleets/${FLEET}/fleet-status/big`, payload: { ...v2, claims } });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    const stored = upsertRollupMock.mock.calls[0][1].claims;
+    expect(stored[0].tail).toHaveLength(100);
+    expect(stored[0].tail[0]).toBe('line 20');
+    expect(stored[1]).toEqual({ nodeId: 'n2', mapId: MAP_A, phase: 'working' });
+  });
+
+  it('the minute-poll fleet read never carries the tail', async () => {
+    listRollupsMock.mockResolvedValueOnce([
+      withTail('big', [MAP_A], '2026-09-01T10:00:00.000Z', [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', tail: ['secret line'] }]),
+    ]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet` });
+    await app.close();
+    expect(res.json().hosts[0].rollup.claims).toEqual([{ nodeId: 'n1', mapId: MAP_A, phase: 'working' }]);
+    expect(res.body).not.toMatch(/secret line/);
+  });
+
+  it('the tail route returns the newest report for the ticket on this map', async () => {
+    listRollupsMock.mockResolvedValueOnce([
+      withTail('old', [MAP_A], '2026-09-01T09:00:00.000Z', [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', tail: ['old'] }]),
+      withTail('new', [MAP_A, MAP_B], '2026-09-01T10:00:00.000Z', [
+        { nodeId: 'n1', mapId: MAP_A, phase: 'fixing', tail: ['a', 'b'] },
+        { nodeId: 'n1', mapId: MAP_B, phase: 'working', tail: ['other map'] },
+      ]),
+    ]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/n1` });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().tail).toEqual({ lines: ['a', 'b'], at: '2026-09-01T10:00:00.000Z', host: 'new', phase: 'fixing' });
+  });
+
+  it('is null for a ticket without output and for a map without a fleet', async () => {
+    const app = await buildApp();
+    const none = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/n1` });
+    const lone = await app.inject({ method: 'GET', url: `/api/maps/${LONE}/fleet/tail/on-lone` });
+    await app.close();
+    expect(none.json().tail).toBeNull();
+    expect(lone.json().tail).toBeNull();
+  });
+
+  it("a node of another map is a 404, like any guarded node route", async () => {
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/on-b` });
+    await app.close();
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('needs edit on the map: a view-only member gets 403', async () => {
+    state.perm[MAP_A] = 'view';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet/tail/n1` });
+    await app.close();
+    expect(res.statusCode).toBe(403);
+    expect(listRollupsMock).not.toHaveBeenCalled();
   });
 });
 

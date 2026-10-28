@@ -12,7 +12,7 @@
  * routes keep asking edit on their map, as before (#405). A per-fleet
  * credential (#481) will replace the membership check.
  */
-import { redactRollup, redactTick, ROLLUP_STALE_MIN } from '@mindblown/core';
+import { redactRollup, redactTick, ROLLUP_STALE_MIN, ticketTail, withoutTails } from '@mindblown/core';
 import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
 import * as fleetDb from '../db/fleet.js';
 import * as fleetEntityDb from '../db/fleets.js';
@@ -49,8 +49,19 @@ export async function readTelemetry(scope: TelemetryScope, window: number | flee
   const [rows, ticks] = await Promise.all([fleetDb.listRollups(fleetId), fleetDb.listTicks(fleetId, window)]);
   const hosts = rows
     .filter((h) => !onlyMapId || h.mapIds.includes(onlyMapId))
-    .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: redactRollup(h.rollup, h.mapIds, visible) }));
+    .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: redactRollup(withoutTails(h.rollup), h.mapIds, visible) }));
   return { fleetId, hosts, ticks: scope.full ? ticks : ticks.map((t) => ({ ...t, payload: redactTick(t.payload) })) };
+}
+
+/**
+ * The agent output last reported for a ticket on this map (#585), or null.
+ * The route guard checked edit on the map: the lines carry the agent's
+ * commands, paths and error snippets, more than a viewer's phase chip.
+ */
+export async function readTicketTail(mapId: string, nodeId: string): Promise<ReturnType<typeof ticketTail>> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return null;
+  return ticketTail(await fleetDb.listRollups(fleetId), mapId, nodeId);
 }
 
 /** The fleet a reader may read, with the connected maps they can view — or why not (404 hides it). */

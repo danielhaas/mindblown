@@ -142,6 +142,11 @@ export interface FleetClaimPhase {
   ci?: 'pending' | 'red' | 'conflict' | 'none' | 'manual' | null;
   /** On `fixing`: which fix run this is, from 1. */
   fix_attempt?: number | null;
+  /**
+   * The last lines of the agent's live view while it runs (#585), oldest
+   * first. Only the tail route hands it out; every other read drops it.
+   */
+  tail?: string[];
 }
 
 /**
@@ -198,6 +203,10 @@ export const ROLLUP_STALE_MIN = 20;
 /** A worker that says "working" but has not moved for this long is dead (status files cannot report their own death). */
 export const WORKER_DEAD_MIN = 30;
 
+/** The most agent-output lines a claim keeps, and the longest line (#585). */
+export const TAIL_MAX_LINES = 100;
+export const TAIL_MAX_LINE = 500;
+
 /** Minimal shape check for an incoming rollup — enough to store and render, nothing more. */
 export function parseRollup(x: unknown): FleetRollup | null {
   if (!x || typeof x !== 'object') return null;
@@ -216,9 +225,23 @@ export function parseRollup(x: unknown): FleetRollup | null {
   // A malformed claims list loses the phases, not the whole rollup.
   if (r.claims !== undefined) {
     if (Array.isArray(r.claims)) {
-      out.claims = r.claims.filter(
-        (c): c is FleetClaimPhase => !!c && typeof c === 'object' && typeof (c as FleetClaimPhase).nodeId === 'string' && typeof (c as FleetClaimPhase).phase === 'string',
-      );
+      out.claims = r.claims
+        .filter(
+          (c): c is FleetClaimPhase => !!c && typeof c === 'object' && typeof (c as FleetClaimPhase).nodeId === 'string' && typeof (c as FleetClaimPhase).phase === 'string',
+        )
+        .map((c) => {
+          if (c.tail === undefined) return c;
+          const { tail, ...rest } = c;
+          // A bad tail loses the output, not the phase.
+          if (!Array.isArray(tail)) return rest;
+          return {
+            ...rest,
+            tail: tail
+              .filter((l): l is string => typeof l === 'string')
+              .slice(-TAIL_MAX_LINES)
+              .map((l) => (l.length > TAIL_MAX_LINE ? `${l.slice(0, TAIL_MAX_LINE - 1)}…` : l)),
+          };
+        });
     } else {
       delete out.claims;
     }
@@ -271,6 +294,35 @@ export function redactRollup(rollup: FleetRollup, served: string[], visible: Rea
   if (rollup.map_id && !visible.has(rollup.map_id)) delete out.map_id;
   if (!seesAll && rollup.blocked) out.blocked = { count: rollup.blocked.count, recent: [] };
   return out;
+}
+
+/** The rollup without the agents' output (#585): the fleet reads poll every minute, the tail has its own route. */
+export function withoutTails(rollup: FleetRollup): FleetRollup {
+  if (!rollup.claims?.some((c) => c.tail !== undefined)) return rollup;
+  return { ...rollup, claims: rollup.claims.map(({ tail: _tail, ...c }) => c) };
+}
+
+/**
+ * The agent output last reported for a ticket on `mapId` (#585): the
+ * newest rollup that carries a tail for it, and when that rollup was
+ * made. A claim without a map belongs to a host serving only this map.
+ */
+export function ticketTail(
+  hosts: { generatedAt: string; mapIds: string[]; rollup: FleetRollup }[],
+  mapId: string,
+  nodeId: string,
+): { lines: string[]; at: string; host: string; phase: string } | null {
+  let best: { lines: string[]; at: string; host: string; phase: string } | null = null;
+  for (const h of hosts) {
+    const claim = (h.rollup.claims ?? []).find(
+      (c) => c.nodeId === nodeId && c.tail && (c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId),
+    );
+    if (!claim?.tail) continue;
+    if (!best || Date.parse(h.generatedAt) > Date.parse(best.at)) {
+      best = { lines: claim.tail, at: h.generatedAt, host: h.rollup.host, phase: claim.phase };
+    }
+  }
+  return best;
 }
 
 /**

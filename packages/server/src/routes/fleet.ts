@@ -12,6 +12,7 @@
  *   POST /api/maps/:id/fleet-ticks         — orchestrator decision (every ~30 min)
  *   GET  /api/maps/:id/fleet               — the map's fleet, hosts narrowed to this map
  *        ?since=<ISO>&until=<ISO>&limit=<n>  — tick history for a window (Verlauf)
+ *   GET  /api/maps/:id/fleet/tail/:nodeId  — a ticket's last agent output (#585), edit only
  *
  * Auth: the map routes stay like every map route — pushes need edit on the
  * map (#405), the read view. The fleet routes take the fleet owner or edit
@@ -26,6 +27,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { parseRollup, parseTick, parseTickWindow } from '@mindblown/core';
 import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
+import * as nodeDb from '../db/nodes.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
 import * as telemetry from '../services/fleetTelemetry.js';
 
@@ -85,8 +87,8 @@ type WindowQuery = { since?: unknown; until?: unknown; limit?: unknown };
 
 /** The deployed satellites' routes, forwarding to the map's fleet. */
 export async function fleetRoutes(app: FastifyInstance): Promise<void> {
-  // Read: view (#403). Pushes: edit (#405).
-  guardMapRoutes(app);
+  // Read: view (#403). Pushes: edit (#405). The tail: edit (#585).
+  guardMapRoutes(app, { nodeMapId: nodeDb.getNodeMapId });
 
   app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     const rollup = readRollup(req, req.params.id);
@@ -122,6 +124,11 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     const scope = await telemetry.mapReadScope(req.userId!, req.params.id);
     const read = 'visible' in scope ? await telemetry.readTelemetry(scope, window, req.params.id) : { fleetId: null, hosts: [], ticks: [] };
     return reply.send(readReply(read, window));
+  });
+
+  app.get<{ Params: { id: string; nodeId: string } }>('/api/maps/:id/fleet/tail/:nodeId', { config: { mapAccess: 'edit' } }, async (req, reply) => {
+    const tail = await telemetry.readTicketTail(req.params.id, req.params.nodeId);
+    return reply.send({ tail, now: new Date().toISOString() });
   });
 }
 

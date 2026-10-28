@@ -11,6 +11,7 @@ import type { EstimateResult } from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { useTicketPhases } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
+import { AgentOutput } from './AgentOutput.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -516,6 +517,9 @@ function PropertyPanelInner({
             </div>
           )}
         </Field>
+
+        {/* What the fleet agent on this ticket printed last (#585) */}
+        <AgentOutput nodeId={nodeId} phase={ticketPhases.get(nodeId)} />
 
         {/* Priority */}
         <Field label="Priority">

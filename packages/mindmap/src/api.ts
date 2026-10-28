@@ -1194,6 +1194,19 @@ export function fetchFleet(target: FleetTarget, opts: FleetWindowOptions = {}): 
   return request<FleetResponse>(`${fleetBase(target)}/fleet${qs ? `?${qs}` : ''}`);
 }
 
+/** A ticket's last agent output (#585): the lines, when the worker reported them, from which host. */
+export interface TicketTail {
+  lines: string[];
+  at: string;
+  host: string;
+  phase: string;
+}
+
+/** Needs edit on the map. `tail` is null when no worker reported output for the ticket. */
+export function fetchTicketTail(mapId: string, nodeId: string): Promise<{ tail: TicketTail | null; now: string }> {
+  return request(`/api/maps/${mapId}/fleet/tail/${nodeId}`);
+}
+
 /** What the fleet did in a window — the Journal section of the Fleet tab. Server defaults to 24 h, caps at 31 days. */
 export function fetchFleetJournal(
   target: FleetTarget,
