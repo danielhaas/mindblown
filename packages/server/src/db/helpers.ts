@@ -10,6 +10,7 @@ export function dbFleetToCore(row: Record<string, unknown>): Fleet {
     name: get('name', 'name') as string,
     ownerId: get('ownerId', 'owner_id') as string,
     maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
+    autoCheckBlockers: (get('autoCheckBlockers', 'auto_check_blockers') as boolean) ?? false,
     createdAt: iso(get('createdAt', 'created_at')),
     updatedAt: iso(get('updatedAt', 'updated_at')),
   };

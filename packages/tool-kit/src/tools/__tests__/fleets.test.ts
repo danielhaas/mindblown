@@ -25,13 +25,13 @@ function memoryBackend() {
   const backend = {
     async createFleet(name: string, maxActiveClaims?: number) {
       const f: FleetWithMaps = {
-        id: FLEET_ID, name, ownerId: 'me', maxActiveClaims: maxActiveClaims ?? 0,
+        id: FLEET_ID, name, ownerId: 'me', maxActiveClaims: maxActiveClaims ?? 0, autoCheckBlockers: false,
         createdAt: '', updatedAt: '', maps: [], hiddenMapCount: 0, isOwner: true,
       };
       fleets.set(f.id, f);
       return view(f);
     },
-    async updateFleet(id: string, fields: { name?: string; maxActiveClaims?: number }) {
+    async updateFleet(id: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }) {
       const f = fleets.get(id);
       if (!f) throw new Error('not found');
       const next = { ...f, ...Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined)) };
@@ -93,6 +93,14 @@ describe('fleet tools — round trip', () => {
     await createFleetTool.handler(backend, { name: 'f' });
     expect(await updateFleetTool.handler(backend, { fleetId: FLEET_ID } as never)).toBe('No fields to update.');
     expect(await updateFleetTool.handler(backend, { fleetId: FLEET_ID, maxActiveClaims: 4 } as never)).toContain('cap 4 active claims');
+  });
+
+  it('update_fleet switches auto-check blockers on and off', async () => {
+    const { backend } = memoryBackend();
+    await createFleetTool.handler(backend, { name: 'f' });
+    expect(await updateFleetTool.handler(backend, { fleetId: FLEET_ID, autoCheckBlockers: true } as never)).toContain('auto-checks blockers');
+    expect(await updateFleetTool.handler(backend, { fleetId: FLEET_ID, autoCheckBlockers: false } as never)).not.toContain('auto-checks blockers');
+    expect(() => z.object(updateFleetTool.schema).parse({ fleetId: FLEET_ID, autoCheckBlockers: 'yes' })).toThrow();
   });
 
   it('list_fleets says how to start when there are none', async () => {

@@ -12,7 +12,7 @@
  * while open: the tag is the truth, and answering changes the tag.
  */
 import { questionParts, type Ask, type QuestionParts } from './asks.js';
-import { dispatchSkipTag, fleetFixAction } from './dispatch.js';
+import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
@@ -242,6 +242,31 @@ export function buildBlockerAsk(
 export function blockerFleetAction(a: Pick<Ask, 'question'>): 'fleet-fix' | 'fleet-check' {
   const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
   return fleetFixAction(reason);
+}
+
+/**
+ * Auto-check blockers (#576, a fleet switch): a blocker row that has sat
+ * AUTO_CHECK_AFTER_MINUTES gets one "Fleet can fix it", answered by
+ * AUTO_CHECK_BY. Not on a fleet worker's own PR note (red CI, a conflict,
+ * waiting for merge — the worker follows its PR) nor on a person's Stop.
+ * Once only: when the stored answer to the row is the auto-check's, the
+ * check run came back with a blocker again and the row stays with a
+ * person; a person's answer overwrites that row and re-arms it.
+ */
+export const AUTO_CHECK_BY = 'Auto-check';
+export const AUTO_CHECK_AFTER_MINUTES = 30;
+
+export function isAutoCheckDue(
+  row: { ask: Pick<Ask, 'id' | 'question'>; firstSeenAt: string },
+  lastAnsweredBy: string | null,
+  now: Date,
+): boolean {
+  if (blockerAskNodeId(row.ask.id) === null) return false;
+  if (lastAnsweredBy === AUTO_CHECK_BY) return false;
+  const reason = (row.ask.question.startsWith(BLOCKED_PREFIX) ? row.ask.question.slice(BLOCKED_PREFIX.length) : row.ask.question).trim();
+  if (WORKER_WAIT_NOTE.test(reason) || /^Stopped by /.test(reason)) return false;
+  const since = Date.parse(row.firstSeenAt);
+  return Number.isFinite(since) && now.getTime() - since >= AUTO_CHECK_AFTER_MINUTES * 60_000;
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */

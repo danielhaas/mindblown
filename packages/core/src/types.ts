@@ -614,6 +614,12 @@ export interface Fleet {
   name: string;
   ownerId: UserId;
   maxActiveClaims: number;
+  /**
+   * Auto-check blockers (#576): a blocker that has sat 30 min on one of the
+   * fleet's maps gets one automatic "Fleet can fix it" (a check run). Off by
+   * default; owner only.
+   */
+  autoCheckBlockers: boolean;
   createdAt: string;
   updatedAt: string;
 }

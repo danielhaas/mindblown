@@ -19,6 +19,7 @@ const fleetRow = () => ({
   name: 'big-blower',
   ownerId: OWNER,
   maxActiveClaims: 3,
+  autoCheckBlockers: false,
   createdAt: '2026-10-17T00:00:00.000Z',
   updatedAt: '2026-10-17T00:00:00.000Z',
 });
@@ -177,6 +178,15 @@ describe('PATCH /api/fleets/:id', () => {
   it('403s a viewer, 404s a stranger', async () => {
     expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(403);
     expect((await call(STRANGER, 'PATCH', `/api/fleets/${FLEET_ID}`, { maxActiveClaims: 9 })).statusCode).toBe(404);
+    expect(db.updateFleet).not.toHaveBeenCalled();
+  });
+
+  it('lets the owner switch auto-check blockers; a viewer gets 403, a non-boolean 400', async () => {
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(200);
+    expect(db.updateFleet).toHaveBeenCalledWith(FLEET_ID, { name: undefined, maxActiveClaims: undefined, autoCheckBlockers: true });
+    db.updateFleet.mockClear();
+    expect((await call(VIEWER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: true })).statusCode).toBe(403);
+    expect((await call(OWNER, 'PATCH', `/api/fleets/${FLEET_ID}`, { autoCheckBlockers: 'on' })).statusCode).toBe(400);
     expect(db.updateFleet).not.toHaveBeenCalled();
   });
 

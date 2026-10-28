@@ -4,7 +4,7 @@
  *   GET    /api/fleets      — fleets the caller owns or whose maps they can view
  *   POST   /api/fleets      — create one; the caller becomes its owner
  *   GET    /api/fleets/:id  — one fleet (owner, or view on a connected map)
- *   PATCH  /api/fleets/:id  — rename / set the fleet cap (owner)
+ *   PATCH  /api/fleets/:id  — rename / set the fleet cap / auto-check blockers (owner)
  *   DELETE /api/fleets/:id  — delete (owner); connected maps are disconnected (audited, broadcast)
  *   POST   /api/fleets/:id/pull-next — next ticket from any connected map the caller may edit (#478)
  *   POST   /api/fleets/:id/credentials        — issue an API key for the fleet's service user (owner, web session)
@@ -72,12 +72,13 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
     if (!req.userId) return unauthorized(reply);
     const owned = await fleetService.requireFleetOwner(req.userId, req.params.id);
     if (isAccessError(owned)) return sendAccessError(reply, owned);
-    const body = (req.body ?? {}) as { name?: unknown; maxActiveClaims?: unknown };
+    const body = (req.body ?? {}) as { name?: unknown; maxActiveClaims?: unknown; autoCheckBlockers?: unknown };
     const invalid = fleetService.validateFleetFields(body, false);
     if (invalid) return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: invalid } });
     await fleetDb.updateFleet(req.params.id, {
       name: typeof body.name === 'string' ? body.name.trim() : undefined,
       maxActiveClaims: body.maxActiveClaims as number | undefined,
+      ...(body.autoCheckBlockers !== undefined ? { autoCheckBlockers: body.autoCheckBlockers as boolean } : {}),
     });
     const view = await fleetService.getFleetForUser(req.userId, req.params.id);
     return isAccessError(view) ? sendAccessError(reply, view) : reply.send(view);

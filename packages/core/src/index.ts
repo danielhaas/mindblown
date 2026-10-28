@@ -414,6 +414,9 @@ export {
   buildBlockerAsk,
   blockerAnswerAction,
   blockerFleetAction,
+  AUTO_CHECK_BY,
+  AUTO_CHECK_AFTER_MINUTES,
+  isAutoCheckDue,
 } from './humanSteps.js';
 export type { StepAnswer, StepParts, BlockerAnswer } from './humanSteps.js';
 

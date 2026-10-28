@@ -208,6 +208,8 @@ export const fleets = pgTable('fleets', {
   name: text('name').notNull(),
   ownerId: uuid('owner_id').notNull().references(() => users.id),
   maxActiveClaims: integer('max_active_claims').notNull().default(0),
+  /** Auto-check blockers (#576): a blocker that sat 30 min gets one automatic "Fleet can fix it". */
+  autoCheckBlockers: boolean('auto_check_blockers').notNull().default(false),
   /** Weighted round-robin credit per connected map id (#478) — internal pull state, not a knob. */
   pullDeficits: jsonb('pull_deficits').$type<Record<string, number>>().notNull().default({}),
   /** The fleet's service user (#481, users.kind = 'fleet') — the identity its API keys act as. */

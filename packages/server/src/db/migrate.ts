@@ -1486,5 +1486,11 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS fleet_can_edit_ci BOOLEAN NOT NULL DEFAULT FALSE
   `);
 
+  // ── fleets.auto_check_blockers (#576) ───────────────────────────
+  // Off for every fleet: the owner switches it on on the fleet page.
+  await db.execute(sql`
+    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT FALSE
+  `);
+
   console.log('[db] Migrations complete.');
 }

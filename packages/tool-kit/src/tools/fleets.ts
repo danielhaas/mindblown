@@ -5,7 +5,8 @@ import { defineTool } from '../spec.js';
 /** One fleet as a few lines: name, id, cap, connected maps. */
 export function renderFleet(f: FleetWithMaps): string {
   const cap = f.maxActiveClaims === 0 ? 'no fleet-wide cap' : `cap ${f.maxActiveClaims} active claims`;
-  const lines = [`- ${f.name} (id: ${f.id}) — ${cap}${f.isOwner ? ', you own it' : ''}`];
+  const auto = f.autoCheckBlockers ? ', auto-checks blockers' : '';
+  const lines = [`- ${f.name} (id: ${f.id}) — ${cap}${auto}${f.isOwner ? ', you own it' : ''}`];
   if (f.maps.length === 0 && f.hiddenMapCount === 0) lines.push('    no maps connected');
   for (const m of f.maps) {
     const ceiling = m.maxActiveClaims === 0 ? 'map on hold' : `map ceiling ${m.maxActiveClaims}`;
@@ -50,15 +51,21 @@ export const createFleetTool = defineTool({
 export const updateFleetTool = defineTool({
   name: 'update_fleet',
   description:
-    "Rename a fleet or set its total claim cap (maxActiveClaims across all connected maps; 0 = no fleet-wide limit). Owner only. Each map's own ceiling (0 = hold) and queue knobs stay on the map (update_map).",
+    "Rename a fleet, set its total claim cap (maxActiveClaims across all connected maps; 0 = no fleet-wide limit), or switch auto-check blockers on or off. Owner only. Each map's own ceiling (0 = hold) and queue knobs stay on the map (update_map).",
   schema: {
     fleetId: z.string().describe('The fleet ID'),
     name: z.string().min(1).max(200).optional().describe('New name'),
     maxActiveClaims: z.number().int().min(0).optional().describe('Total claim cap across all connected maps; 0 = no fleet-wide limit'),
+    autoCheckBlockers: z
+      .boolean()
+      .optional()
+      .describe(
+        "Auto-check blockers: a blocker that has sat 30 min gets one automatic 'Fleet can fix it' (answered as 'Auto-check'). If the check run writes a blocker again it stays with a person until a person answers it. A fleet worker's own PR notes (red CI, conflict, waiting for merge) are left to the worker; maps on hold or archived, and maps the owner can't edit, are skipped. Off by default.",
+      ),
   },
-  handler: async (backend, { fleetId, name, maxActiveClaims }) => {
-    if (name === undefined && maxActiveClaims === undefined) return 'No fields to update.';
-    const f = await backend.updateFleet(fleetId, { name, maxActiveClaims });
+  handler: async (backend, { fleetId, name, maxActiveClaims, autoCheckBlockers }) => {
+    if (name === undefined && maxActiveClaims === undefined && autoCheckBlockers === undefined) return 'No fields to update.';
+    const f = await backend.updateFleet(fleetId, { name, maxActiveClaims, autoCheckBlockers });
     return `Updated fleet:\n${renderFleet(f)}`;
   },
 });

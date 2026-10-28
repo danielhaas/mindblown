@@ -266,6 +266,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         {fleet && (
           <>
             <FleetOverview fleet={fleet} mapId={null} all onRenamed={renamed} />
+            <AutoCheckSwitch fleet={fleet} onChanged={renamed} />
             {fleet.isOwner && <RepairMachine fleetId={fleet.id} />}
             <Card title="Workers">
               <FleetTelemetry />
@@ -281,6 +282,43 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
         )}
       </Shell>
     </FleetScopeContext.Provider>
+  );
+}
+
+/**
+ * Auto-check blockers (#576): the owner switches it; everyone else reads
+ * whether it is on. The server checks ownership again (PATCH /api/fleets/:id).
+ */
+function AutoCheckSwitch({ fleet, onChanged }: { fleet: FleetWithMaps; onChanged: (f: FleetWithMaps) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = fleet.autoCheckBlockers ?? false;
+  if (!fleet.isOwner && !on) return null;
+  const toggle = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      onChanged(await api.setFleetAutoCheck(fleet.id, next));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Saving failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const help =
+    "A blocker that has sat 30 min gets one 'Fleet can fix it' (answered as Auto-check). If the check run writes a blocker again, it stays with you until you answer it. A worker's own PR notes (red CI, conflict, waiting for merge), maps on hold or archived, and maps you can't edit are left out.";
+  return (
+    <div style={{ marginBottom: 16, fontSize: 12, color: '#334155' }} data-testid="fleet-auto-check">
+      {fleet.isOwner ? (
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }} title={help}>
+          <input type="checkbox" checked={on} disabled={busy} onChange={(e) => void toggle(e.target.checked)} data-testid="fleet-auto-check-toggle" />
+          Auto-check blockers — hand a blocked ticket to the fleet after 30 min
+        </label>
+      ) : (
+        <span title={help}>Auto-check blockers is on — a blocked ticket goes to the fleet after 30 min.</span>
+      )}
+      {error && <span style={{ marginLeft: 8, color: '#991b1b' }}>{error}</span>}
+    </div>
   );
 }
 

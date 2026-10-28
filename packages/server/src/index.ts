@@ -51,6 +51,7 @@ import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJou
 import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
+import { runAutoCheckBlockers } from './services/derivedAsks.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -412,6 +413,25 @@ async function main(): Promise<void> {
   // Startup run: clear any stale claims from before the last restart.
   staleClaimTick();
   setInterval(staleClaimTick, STALE_CLAIM_SWEEP_MS);
+
+  // ── Auto-check blockers (#576) ─────────────────────────────────
+  // Fleets with the switch on: a blocker that has sat 30 min gets one
+  // automatic "Fleet can fix it". Every 5 minutes, so a blocker goes out
+  // between 30 and 35 minutes after it was written.
+  const AUTO_CHECK_SWEEP_MS = 5 * 60 * 1000;
+  const autoCheckTick = async (): Promise<void> => {
+    try {
+      for (const r of await runAutoCheckBlockers()) {
+        if (r.sent.length > 0 || r.failed.length > 0) {
+          console.log(`[auto-check] fleet=${r.fleetId} sent=${r.sent.length} failed=${r.failed.length}`);
+        }
+        for (const f of r.failed.slice(0, 5)) console.warn(`[auto-check] ${f.askId}: ${f.error}`);
+      }
+    } catch (err) {
+      console.error('[auto-check] sweep tick caught unexpected error:', err);
+    }
+  };
+  setInterval(autoCheckTick, AUTO_CHECK_SWEEP_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

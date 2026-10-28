@@ -28,6 +28,7 @@
  * clear-blocker, Done = mark-done, free text = needs-human.
  */
 import {
+  AUTO_CHECK_BY,
   blockerAnswerAction,
   blockerFleetAction,
   FLEET_CHECK_TAG,
@@ -39,6 +40,7 @@ import {
   buildStepAsk,
   derivedAskNodeId,
   dispatchSkipTag,
+  isAutoCheckDue,
   isStalledAskDue,
   planAskWrites,
   stalledAskAfterHours,
@@ -51,9 +53,12 @@ import {
 } from '@mindblown/core';
 import type { AskAnswerInput, AskRow, AskWrite, LintActionId } from '@mindblown/core';
 import * as asksDb from '../db/asks.js';
+import * as fleetDb from '../db/fleets.js';
 import * as mapDb from '../db/maps.js';
+import * as permDb from '../db/permissions.js';
 import { stalledForMap } from '../lib/stalled.js';
 import { applyLintFix } from '../lint/fix.js';
+import { broadcast } from '../ws.js';
 import { AskNotFoundError, type AnswerAskOutcome } from './asks.js';
 
 const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
@@ -196,6 +201,49 @@ export async function sendBlockersToFleet(scope: asksDb.AskScope, mapIds: string
     } catch (err) {
       out.failed.push({ askId: r.ask.id, mapId: r.mapId!, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+  return out;
+}
+
+/** What one auto-check sweep did, per fleet with the switch on. */
+export interface AutoCheckOutcome extends FleetCheckOutcome {
+  fleetId: string;
+}
+
+/**
+ * Auto-check blockers (#576): on every fleet with the switch on, each
+ * blocker row due by core isAutoCheckDue is answered "Fleet can fix it"
+ * as AUTO_CHECK_BY, acting as the fleet's owner. Maps on hold (cap 0) or
+ * archived, and maps the owner can't edit, are skipped; rows a collector's
+ * question covers or a person snoozed are not in the set (openDerivedAsks).
+ */
+export async function runAutoCheckBlockers(now: Date = new Date()): Promise<AutoCheckOutcome[]> {
+  const out: AutoCheckOutcome[] = [];
+  for (const fleet of await fleetDb.listAutoCheckFleets()) {
+    const res: AutoCheckOutcome = { fleetId: fleet.id, sent: [], failed: [] };
+    const mapIds: string[] = [];
+    for (const m of await fleetDb.listFleetMaps(fleet.id)) {
+      if (m.archivedAt || m.maxActiveClaims === 0) continue;
+      if (permDb.hasPermission(await permDb.getPermission(m.id, fleet.ownerId), 'edit')) mapIds.push(m.id);
+    }
+    if (mapIds.length > 0) {
+      const scope = { fleetId: fleet.id, visibleMapIds: mapIds, fleetLevel: false };
+      const rows = await openDerivedAsks(scope, mapIds, now);
+      const lastBy = new Map((await asksDb.listAsks(scope, { status: 'all' })).map((r) => [rowKey(r), r.answeredBy]));
+      for (const r of rows) {
+        if (!r.mapId || !isAutoCheckDue(r, lastBy.get(rowKey(r)) ?? null, now)) continue;
+        try {
+          const done = await answerDerivedAsk({ fleetId: fleet.id, mapId: r.mapId, askId: r.ask.id }, { action: 'answered', decision: 'Fleet can fix it', by: AUTO_CHECK_BY }, fleet.ownerId);
+          if (done.node) broadcast(r.mapId, { type: 'node:updated', nodeId: done.node.id, fields: done.changedFields, node: done.node });
+          broadcast(r.mapId, { type: 'asks:updated', kind: 'answer', askId: r.ask.id, status: done.row.status });
+          if (done.ok) res.sent.push({ askId: r.ask.id, mapId: r.mapId, action: blockerFleetAction(r.ask) });
+          else res.failed.push({ askId: r.ask.id, mapId: r.mapId, error: done.row.writes.find((w) => w.error)?.error ?? 'not written' });
+        } catch (err) {
+          res.failed.push({ askId: r.ask.id, mapId: r.mapId, error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+    }
+    out.push(res);
   }
   return out;
 }

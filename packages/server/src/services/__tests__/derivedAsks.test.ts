@@ -50,8 +50,24 @@ vi.mock('../../db/asks.js', () => ({
   recordAnswer: (...a: unknown[]) => recordAnswer(...(a as [never, never, never])),
 }));
 vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
+vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
+vi.mock('../../db/fleets.js', () => ({
+  listAutoCheckFleets: vi.fn(async () => [{ id: 'f1', ownerId: 'owner' }]),
+  listFleetMaps: vi.fn(async () => [
+    { id: 'm1', name: 'A', fleetShare: 1, maxActiveClaims: 2, archivedAt: null },
+    { id: 'hold', name: 'B', fleetShare: 1, maxActiveClaims: 0, archivedAt: null },
+    { id: 'old', name: 'C', fleetShare: 1, maxActiveClaims: 2, archivedAt: '2026-10-01T00:00:00.000Z' },
+    { id: 'viewonly', name: 'D', fleetShare: 1, maxActiveClaims: 2, archivedAt: null },
+  ]),
+}));
+const getPermission = vi.fn(async (mapId: string) => (mapId === 'viewonly' ? 'view' : 'edit'));
+vi.mock('../../db/permissions.js', () => ({
+  getPermission: (...a: unknown[]) => getPermission(...(a as [string])),
+  hasPermission: (actual: string | null, required: string) => actual === 'admin' || actual === required || (required === 'view' && actual === 'edit'),
+}));
 
-import { answerDerivedAsk, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
+import { answerDerivedAsk, openDerivedAsks, derivedAskRows, sendBlockersToFleet, runAutoCheckBlockers } from '../derivedAsks.js';
+import * as mapDbMock from '../../db/maps.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
 const scope = { fleetId: 'f1', mapId: 'm1' };
@@ -202,5 +218,41 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     ]);
     expect(out.failed).toEqual([]);
     expect(applyLintFix.mock.calls.map((c) => (c as unknown[]).slice(1, 3))).toEqual([['ci', 'fleet-fix'], ['vendor', 'fleet-check']]);
+  });
+});
+
+describe('auto-check blockers (#576)', () => {
+  const minutesAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+  beforeEach(() => {
+    state.stalled = [];
+    state.nodes = [
+      node('vendor', { blockedReason: 'Waiting for the vendor' }),
+      node('fresh', { blockedReason: 'Waiting for the vendor', updatedAt: minutesAgo(10) }),
+      node('ci', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: CI failed on PR #995 (445fab60).' }),
+      node('merge', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: PR #996 waits for a merge.' }),
+      node('stopped', { blockedReason: 'Stopped by Dan: wrong approach' }),
+      node('again', { blockedReason: 'Needs the API key' }),
+      node('rearmed', { blockedReason: 'Needs the API key' }),
+    ];
+    state.stored = [
+      { ask: { id: 'blocker-again', unblocks: {} }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: hoursAgo(1) },
+      { ask: { id: 'blocker-rearmed', unblocks: {} }, mapId: 'm1', status: 'answered', answeredBy: 'Dan', answeredAt: hoursAgo(1) },
+    ];
+  });
+
+  it('checks a blocker that sat 30 min once, as Auto-check; worker PR notes, Stops, fresh and already auto-checked rows stay', async () => {
+    const [out] = await runAutoCheckBlockers();
+    expect(out.sent).toEqual([
+      { askId: 'blocker-vendor', mapId: 'm1', action: 'fleet-check' },
+      { askId: 'blocker-rearmed', mapId: 'm1', action: 'fleet-check' },
+    ]);
+    expect(applyLintFix.mock.calls.map((c) => (c as unknown[]).slice(1, 4))).toEqual([['vendor', 'fleet-check', 'owner'], ['rearmed', 'fleet-check', 'owner']]);
+    expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ answeredBy: 'Auto-check' }));
+  });
+
+  it('skips maps on hold, archived, or ones the owner cannot edit', async () => {
+    await runAutoCheckBlockers();
+    expect(getPermission.mock.calls.map((c) => c[0])).toEqual(['m1', 'viewonly']);
+    expect(new Set(vi.mocked(mapDbMock.getMap).mock.calls.map((c) => c[0]))).toEqual(new Set(['m1']));
   });
 });

@@ -7,6 +7,7 @@ import {
   buildStepAsk,
   derivedAnswerPreview,
   derivedAskNodeId,
+  isAutoCheckDue,
   isDerivedAsk,
   isPersonStepAsk,
   nextStepOf,
@@ -156,5 +157,27 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(blockerAnswerAction('Done')).toBe('mark-done');
     expect(blockerAnswerAction('bump webpki on main first')).toBe('needs-human');
     expect(derivedAnswerPreview({ id: 'blocker-n1' }, 'Unblocked')?.[0]).toMatch(/blocker cleared/);
+  });
+});
+
+describe('auto-check blockers (#576)', () => {
+  const now = new Date('2026-10-28T12:00:00Z');
+  const row = (reason: string, minutes: number, id = 'blocker-n1') => ({
+    ask: { id, question: `Blocked: ${reason}` },
+    firstSeenAt: new Date(now.getTime() - minutes * 60_000).toISOString(),
+  });
+  it('due once a blocker has sat 30 min, not before', () => {
+    expect(isAutoCheckDue(row('Waiting for the vendor', 30), null, now)).toBe(true);
+    expect(isAutoCheckDue(row('Waiting for the vendor', 29), null, now)).toBe(false);
+  });
+  it('once: an auto-check answer holds it for a person, a person\'s answer re-arms it', () => {
+    expect(isAutoCheckDue(row('Waiting for the vendor', 60), 'Auto-check', now)).toBe(false);
+    expect(isAutoCheckDue(row('Waiting for the vendor', 60), 'Dan', now)).toBe(true);
+  });
+  it("leaves a worker's own PR notes and a person's Stop alone; only blocker rows", () => {
+    expect(isAutoCheckDue(row('Fleet worker h:s1: CI failed on PR #9 (abc).', 60), null, now)).toBe(false);
+    expect(isAutoCheckDue(row('Fleet worker h:s1: PR #9 waits for a merge.', 60), null, now)).toBe(false);
+    expect(isAutoCheckDue(row('Stopped by Dan: wrong approach', 60), null, now)).toBe(false);
+    expect(isAutoCheckDue(row('Waiting for the vendor', 60, 'step-n1'), null, now)).toBe(false);
   });
 });

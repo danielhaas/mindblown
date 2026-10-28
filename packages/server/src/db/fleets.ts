@@ -68,6 +68,11 @@ export async function getMapFleetState(
   return row ?? null;
 }
 
+/** Fleets with auto-check blockers on (#576), with their owner. */
+export async function listAutoCheckFleets(): Promise<Array<{ id: string; ownerId: string }>> {
+  return db.select({ id: fleets.id, ownerId: fleets.ownerId }).from(fleets).where(eq(fleets.autoCheckBlockers, true));
+}
+
 /** Every map connected to the fleet, oldest first. */
 export async function listFleetMaps(fleetId: string): Promise<FleetMapRow[]> {
   const rows = await db
@@ -140,11 +145,12 @@ export async function fleetOfServiceUser(userId: string): Promise<{ id: string; 
   return row ?? null;
 }
 
-export async function updateFleet(id: string, input: { name?: string; maxActiveClaims?: number }): Promise<Fleet | null> {
+export async function updateFleet(id: string, input: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<Fleet | null> {
   if (!isFleetId(id)) return null;
   const updates: Record<string, unknown> = { updatedAt: new Date() };
   if (input.name !== undefined) updates.name = input.name;
   if (input.maxActiveClaims !== undefined) updates.maxActiveClaims = Math.max(0, Math.floor(input.maxActiveClaims));
+  if (input.autoCheckBlockers !== undefined) updates.autoCheckBlockers = input.autoCheckBlockers;
   const [row] = await db.update(fleets).set(updates).where(eq(fleets.id, id)).returning();
   return row ? dbFleetToCore(row as unknown as Record<string, unknown>) : null;
 }
