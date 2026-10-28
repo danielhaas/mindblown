@@ -5,11 +5,17 @@ import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColu
 describe('needsBriefOnBoard — the pull queue\'s empty-brief guard', () => {
   const issue = { id: 'l', provider: 'github', url: 'https://github.com/o/r/issues/1', externalId: 'o/r#1', isPullRequest: false, syncEnabled: true };
   it('open cards with no description and no issue; a description or an issue is a brief; running work is not checked', () => {
-    expect(needsBriefOnBoard({ description: null, externalLinks: [] }, 'todo')).toBe(true);
-    expect(needsBriefOnBoard({ description: '  ', externalLinks: [] }, null)).toBe(true);
-    expect(needsBriefOnBoard({ description: 'Add a locations table', externalLinks: [] }, 'todo')).toBe(false);
-    expect(needsBriefOnBoard({ description: null, externalLinks: [issue] } as never, 'todo')).toBe(false);
-    expect(needsBriefOnBoard({ description: null, externalLinks: [] }, 'in_progress')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [] }, 'todo')).toBe(true);
+    expect(needsBriefOnBoard({ text: 'Locations', description: '  ', externalLinks: [] }, null)).toBe(true);
+    expect(needsBriefOnBoard({ text: 'Locations', description: 'Add a locations table', externalLinks: [] }, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [issue] } as never, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Locations', description: null, externalLinks: [] }, 'in_progress')).toBe(false);
+  });
+
+  it('a title of ten words or more is a brief on its own', () => {
+    const long = 'Done tickets should show how long they needed, next to the ETA';
+    expect(needsBriefOnBoard({ text: long, description: null, externalLinks: [] }, 'todo')).toBe(false);
+    expect(needsBriefOnBoard({ text: 'Show how long done tickets needed', description: null, externalLinks: [] }, 'todo')).toBe(true);
   });
 
   it('is the weakest state: Later, Waiting and Needs you win', () => {

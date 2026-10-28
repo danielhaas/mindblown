@@ -129,6 +129,7 @@ export {
   GATE_VERSION_PREFIX,
   isBugNode,
   hasBrief,
+  TITLE_BRIEF_MIN_WORDS,
   parseGateEntry,
   gateVersionIds,
   GATE_OR,

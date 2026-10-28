@@ -73,15 +73,25 @@ export function isBugNode(node: Pick<Node, 'tags'>): boolean {
 }
 
 /**
+ * A title this long is a request in itself, not a label: "Done tickets
+ * should show how long they needed …" (28.10.2026) was typed in the app
+ * as a title alone and refused as briefless. The worker prompt carries the
+ * title on its Ticket line, so the text reaches the agent either way.
+ */
+export const TITLE_BRIEF_MIN_WORDS = 10;
+
+/**
  * Empty-brief guard: a ticket is dispatchable only if the worker gets a
- * self-contained brief — a non-empty description, or a linked GitHub
+ * self-contained brief — a non-empty description, a linked GitHub
  * issue it can read (inbound sync copies issue bodies into the
- * description, so a linked node normally carries the text locally too).
+ * description, so a linked node normally carries the text locally too),
+ * or a title of at least TITLE_BRIEF_MIN_WORDS words.
  * This is the predicate; the `needs-brief` TAG is only the trace the pull
  * leaves behind and is never removed when a brief is added later.
  */
-export function hasBrief(node: Pick<Node, 'description' | 'externalLinks'>): boolean {
+export function hasBrief(node: Pick<Node, 'text' | 'description' | 'externalLinks'>): boolean {
   if (proseMirrorToPlainText(node.description).trim() !== '') return true;
+  if ((node.text ?? '').trim().split(/\s+/).filter(Boolean).length >= TITLE_BRIEF_MIN_WORDS) return true;
   return node.externalLinks.some((l) => isForgeLink(l));
 }
 

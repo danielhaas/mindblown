@@ -1054,7 +1054,10 @@ async function claimFromMap(
       id: winner.id,
       mapId,
       text: winner.text,
-      description: proseMirrorToPlainText(winner.description),
+      // A ticket granted on its title alone (TITLE_BRIEF_MIN_WORDS) carries
+      // the title as its brief: the worker prompt reads this field and would
+      // otherwise send the agent to a linked issue that does not exist.
+      description: proseMirrorToPlainText(winner.description).trim() || (winner.externalLinks.some((l) => isForgeLink(l)) ? '' : winner.text),
       priority: winner.priority,
       priorityRank: winner.priorityRank,
       tags: winner.tags,

@@ -215,7 +215,7 @@ export const getNextTicketTool = defineTool({
         );
       }
       lines.push('');
-      lines.push(t.description ? `Brief:\n${t.description}` : 'Brief: (no description — read the linked issue)');
+      lines.push(t.description ? `Brief:\n${t.description}` : t.githubLinks.length > 0 ? 'Brief: (no description — read the linked issue)' : 'Brief: (no description — the title is the brief)');
     } else {
       const fleetPull = fleetId !== undefined;
       const why =
