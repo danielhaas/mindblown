@@ -165,6 +165,9 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(autoCheckable(ask(`${w}PR #9 came from a ticket approved for a PR only. Review it and merge it by hand.`))).toBe(false);
     expect(autoCheckable(ask(`${w}PR #9 was closed without merging.`))).toBe(false);
     expect(autoCheckable(ask(`${w}needs a decision: which API version?`))).toBe(false);
+    // an operator's fleet-worker stop on the host; a restart's interruption is a give-up
+    expect(autoCheckable(ask(`${w}rethinking it. Partial work: branch b in /w. Clear the blocker to requeue it.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}interrupted — the worker stopped mid-ticket. Partial work: branch b. Clear the blocker to requeue it.`))).toBe(true);
     // still claimed: a worker holds it
     expect(autoCheckable(ask(`${w}the agent exited with 1.`, 'h:slot1:fleet-worker'))).toBe(false);
   });

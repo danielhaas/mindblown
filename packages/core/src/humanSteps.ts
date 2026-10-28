@@ -260,6 +260,9 @@ export const AUTO_CHECK_GRACE_MINUTES = 30;
  *     merge by hand, a closed PR) — red CI / a conflict is the worker's own
  *     auto-fix, and a check run would start over beside the PR;
  *   - the agent's question ("needs a decision: …") — a person answers it;
+ *   - an operator's `fleet-worker stop` on the host ("<their reason>. …
+ *     Clear the blocker to requeue it.") — a restart's "interrupted — …"
+ *     ends the same way and is a give-up;
  *   - a ticket still claimed — a worker holds it.
  */
 export function autoCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
@@ -267,7 +270,8 @@ export function autoCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
   const m = WORKER_WAIT_NOTE.exec(reason);
   if (!m || a.unblocks?.claimed_by) return false;
   const what = reason.slice(m[0].length);
-  return !/\bPR #\d+/.test(what) && !/^needs a decision\b/i.test(what);
+  const stopped = /Clear the blocker to requeue it\.$/.test(what) && !/^interrupted\b/.test(what);
+  return !/\bPR #\d+/.test(what) && !/^needs a decision\b/i.test(what) && !stopped;
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
