@@ -17,6 +17,7 @@ import {
   pullableNodes,
   dispatchQueueSnapshot,
   hasBrief,
+  TITLE_BRIEF_MIN_WORDS,
   isBugNode,
   planUnblock,
   MIX_BUGS_PREFIX,
@@ -265,6 +266,17 @@ describe('dispatchQueueSnapshot', () => {
     expect(s.state).toBe('empty');
     expect(s.needsBrief).toBe(1);
     expect(s.pullable).toBe(1);
+  });
+
+  it('a title of TITLE_BRIEF_MIN_WORDS words is a brief; a shorter one is not', () => {
+    const words = (k: number) => Array.from({ length: k }, (_, i) => `w${i}`).join(' ');
+    const long = n({ id: 'long', status: 'todo', externalLinks: [], text: ` ${words(TITLE_BRIEF_MIN_WORDS)} ` });
+    const short = n({ id: 'short', status: 'todo', externalLinks: [], text: words(TITLE_BRIEF_MIN_WORDS - 1) });
+    expect(hasBrief(long)).toBe(true);
+    expect(hasBrief(short)).toBe(false);
+    const s = dispatchQueueSnapshot([root, long, short], { workflow: WORKFLOW, cap: 6, gate: [] });
+    expect(s.inGateIds).toEqual(['long']);
+    expect(s.needsBrief).toBe(1);
   });
 
   it('an ?omit=description,externalLinks payload is UNSAFE input for hasBrief/dispatchQueueSnapshot', () => {

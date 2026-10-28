@@ -110,6 +110,18 @@ beforeEach(() => {
   ];
 });
 
+describe('getNextTicket — the brief on a grant', () => {
+  it('a ticket granted on its title alone carries the title as its brief', async () => {
+    const title = 'Done tickets should show how long they needed, next to the ETA';
+    mocks.nodeRows = [
+      row({ id: 'root', parentId: null, childrenOrder: ['leaf'], status: null, description: null }),
+      row({ id: 'leaf', text: title, description: null }),
+    ];
+    const result = await getNextTicket('map-1', 'njoerd:worker-3:default', 'default');
+    expect(result.ticket?.description).toBe(title);
+  });
+});
+
 describe('getNextTicket — claim trail', () => {
   it('a grant records node.claimed via "pull" for the winner, after the broadcast', async () => {
     const result = await getNextTicket('map-1', 'njoerd:worker-3:default', 'default');
