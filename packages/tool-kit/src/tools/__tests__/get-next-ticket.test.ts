@@ -72,6 +72,18 @@ describe('get_next_ticket handler', () => {
     expect(out).toContain('3/12');
   });
 
+  it('a grant with no description says where the brief is: the linked issue, else the title', async () => {
+    const ticket = {
+      id: 'n2', mapId: 'm1', text: 'Done tickets should show how long they needed, next to the ETA',
+      description: null, priority: null, priorityRank: null, tags: [], scopes: [], versionId: null,
+      effortEstimate: null, githubLinks: [], claimedAt: '2026-10-28T19:30:00Z',
+    };
+    const bare = makeBackend({ granted: true, active: 1, cap: 4, ticket, skipped: [] } as never);
+    expect(await getNextTicketTool.handler(bare.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('Brief: (no description — the title is the brief)');
+    const linked = makeBackend({ granted: true, active: 1, cap: 4, ticket: { ...ticket, githubLinks: [{ externalId: 'o/r#9', url: 'https://github.com/o/r/issues/9' }] }, skipped: [] } as never);
+    expect(await getNextTicketTool.handler(linked.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('read the linked issue');
+  });
+
   it('explains hold / cap / empty refusals', async () => {
     const hold = makeBackend({ granted: false, reason: 'hold', active: 0, cap: 0, skipped: [] });
     expect(await getNextTicketTool.handler(hold.backend, { mapId: 'm1', sessionId: 'w1' } as never)).toContain('hold');

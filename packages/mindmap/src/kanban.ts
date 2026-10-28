@@ -252,16 +252,16 @@ export function cardBlockState(
   return null;
 }
 
-const NEEDS_BRIEF_NOTE = 'Needs a brief — no description and no linked issue, so the fleet will not take it';
+const NEEDS_BRIEF_NOTE = 'Needs a brief — no description, no linked issue and a short title, so the fleet will not take it';
 
 /**
  * An open ticket the pull queue refuses for want of a brief (core
- * `hasBrief`): no description, no linked issue. Only in a todo-category or
+ * `hasBrief`): no description, no linked issue, a short title. Only in a todo-category or
  * the no-status column — running work already has its worker. Needs the
  * full node: a board loaded with `?omit=description` (mobile) cannot tell.
  */
 export function needsBriefOnBoard(
-  node: Pick<Node, 'description' | 'externalLinks'>,
+  node: Pick<Node, 'text' | 'description' | 'externalLinks'>,
   columnCategory: string | null,
 ): boolean {
   if (columnCategory !== null && columnCategory !== 'todo') return false;
