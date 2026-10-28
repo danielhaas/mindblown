@@ -277,27 +277,30 @@ export interface AgentOutput {
 }
 
 /**
- * The newest live-view tail a host reports for this ticket on this map —
- * null when no host reports one. A claim that names no map belongs to the
- * map only when the host serves that map alone. Stale hosts count: the
- * report says its time, and an old tail is still the agent's last word.
+ * The live-view tail of the newest report that holds this ticket on this
+ * map — null when that report carries none. The newest holder decides,
+ * tail or not: a ticket re-granted on another host shows nothing until its
+ * new agent prints, never the dead host's old run. A claim that names no
+ * map belongs to the map only when the host serves that map alone. Stale
+ * hosts count: the report says its time, and an old tail is still the
+ * agent's last word.
  */
 export function claimOutput(
   hosts: { host: string; generatedAt: string; mapIds: string[]; rollup: FleetRollup }[],
   mapId: string,
   nodeId: string,
 ): AgentOutput | null {
-  let best: AgentOutput | null = null;
+  let newest: { host: string; generatedAt: string; claim: FleetClaimPhase } | null = null;
   for (const h of hosts) {
     for (const c of h.rollup.claims ?? []) {
-      if (c.nodeId !== nodeId || !Array.isArray(c.output)) continue;
+      if (c.nodeId !== nodeId) continue;
       const onMap = c.mapId ? c.mapId === mapId : h.mapIds.length === 1 && h.mapIds[0] === mapId;
       if (!onMap) continue;
-      const at = c.output_at ?? h.generatedAt;
-      if (!best || Date.parse(at) > Date.parse(best.at)) best = { host: h.host, at, lines: c.output };
+      if (!newest || Date.parse(h.generatedAt) > Date.parse(newest.generatedAt)) newest = { host: h.host, generatedAt: h.generatedAt, claim: c };
     }
   }
-  return best;
+  if (!newest || !Array.isArray(newest.claim.output)) return null;
+  return { host: newest.host, at: newest.claim.output_at ?? newest.generatedAt, lines: newest.claim.output };
 }
 
 /**
