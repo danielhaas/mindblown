@@ -634,6 +634,11 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_version_id UUID
   `);
+  // The issue author (#492): an operator placing the issue later stamps the
+  // node's approval from it. Older rows stay NULL — placed, they wait.
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS issue_reporter JSONB
+  `);
 
   // ── Triage cost opt (#142) — body-hash idempotency ────────────
   // SHA-256 of the canonical (title + body + sorted labels + state)

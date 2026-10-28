@@ -45,7 +45,7 @@ import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, pickForgeRow, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink, NodeReporter } from '@mindblown/core';
-import { isForgeLink, forgeLabel } from '@mindblown/core';
+import { isForgeLink, forgeLabel, userReporter } from '@mindblown/core';
 import { getMapForgeKind } from '../lib/githubContext.js';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
@@ -300,6 +300,9 @@ export async function ensureInboxNode(
   const inbox = await nodeDb.createNode({
     mapId,
     parentId: mapRow.rootNodeId,
+    // The map owner's container (#492): without a reporter it would be
+    // stamped proposed and hold every issue ingested under it.
+    reportedBy: userReporter(createdBy),
     text: await inboxNodeTitle(mapId),
     createdBy,
   });
@@ -1084,6 +1087,7 @@ async function ensureNodeForIssueViaTriage(
         externalId,
         issueTitle: issue.title,
         issueState: issue.state,
+        issueReporter: issueReporter(issue, ctx),
         decision: decision.decision,
         reason: decision.reason,
         confidence: decision.confidence,
@@ -1100,6 +1104,7 @@ async function ensureNodeForIssueViaTriage(
         set: {
           issueTitle: issue.title,
           issueState: issue.state,
+          issueReporter: issueReporter(issue, ctx),
           decision: decision.decision,
           reason: decision.reason,
           confidence: decision.confidence,
