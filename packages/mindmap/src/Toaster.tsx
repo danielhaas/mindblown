@@ -3,15 +3,15 @@ import { useToasts, dismissToast } from './toast.js';
 /** Renders the toasts from toast.ts, top centre, above every modal. */
 export function Toaster() {
   const toasts = useToasts((s) => s.toasts);
-  if (toasts.length === 0) return null;
 
+  // Always mounted: screen readers only announce a live region that exists before its content.
   return (
     <div
       role="status"
       aria-live="polite"
       style={{
         position: 'fixed',
-        top: 12,
+        top: 'calc(env(safe-area-inset-top, 0px) + 12px)',
         left: 16,
         right: 16,
         zIndex: 10001,
@@ -29,6 +29,8 @@ export function Toaster() {
             display: 'flex',
             alignItems: 'center',
             gap: 10,
+            maxWidth: '100%',
+            overflowWrap: 'anywhere',
             padding: '8px 12px',
             borderRadius: 8,
             background: '#1e293b',
