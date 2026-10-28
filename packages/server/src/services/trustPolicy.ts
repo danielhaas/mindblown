@@ -109,6 +109,7 @@ export async function setTrustPolicy(
   const before = await getTrustPolicy(mapId);
   if (!before) return null;
   await db.update(maps).set({ trustPolicy: policy, updatedAt: new Date() }).where(eq(maps.id, mapId));
+  contextCache.delete(mapId);
   const after = await getTrustPolicy(mapId);
   await recordEvent({
     mapId,
@@ -129,8 +130,23 @@ export interface TrustContext {
   forgeUsers: ForgeUserLink[];
 }
 
+// Every createNode loads the context (#492), so bulk creates and forge
+// catch-up would repeat the same handful of queries per node. A few seconds
+// is short enough that a new member or a linked login shows up almost at
+// once; a saved policy clears the entry (setTrustPolicy).
+const CONTEXT_TTL_MS = 5_000;
+const contextCache = new Map<string, { at: number; ctx: TrustContext }>();
+
 /** null when the map does not exist. */
 export async function loadTrustContext(mapId: string): Promise<TrustContext | null> {
+  const hit = contextCache.get(mapId);
+  if (hit && Date.now() - hit.at < CONTEXT_TTL_MS) return hit.ctx;
+  const ctx = await readTrustContext(mapId);
+  if (ctx) contextCache.set(mapId, { at: Date.now(), ctx });
+  return ctx;
+}
+
+async function readTrustContext(mapId: string): Promise<TrustContext | null> {
   const trust = await getTrustPolicy(mapId);
   if (!trust) return null;
   const memberIds = (

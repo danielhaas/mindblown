@@ -730,6 +730,9 @@ describe('ensureInboxNode', () => {
       parentId: 'root-1',
       text: 'GitHub Inbox',
       createdBy: 'u1',
+      // The owner's container (#492): no reporter would stamp it proposed
+      // and hold every issue ingested under it.
+      reportedBy: { kind: 'user', userId: 'u1' },
     });
     // The mock returns 'node-1' as the first created id.
     expect(id).toBe('node-1');
@@ -1216,6 +1219,8 @@ describe('ensureNodeForIssue — triage fork', () => {
       createdBy: 'u1',
       reportedBy: { kind: 'forge', provider: 'github', login: 'octocat' },
     });
+    // Kept on the row, so an operator placing it later stamps by the author (#492).
+    expect([...dbState.triageDecisions.values()][0].issueReporter).toEqual({ kind: 'forge', provider: 'github', login: 'octocat' });
   });
 
   it('triage_enabled=true + place LOW-confidence → row persisted, node PARKED under the Inbox', async () => {

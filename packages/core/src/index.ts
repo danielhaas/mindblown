@@ -137,6 +137,7 @@ export {
   dispatchQueueSnapshot,
   dispatchSkipTag,
   dispatchHold,
+  approvalHold,
   parentHolds,
   isEpicLeaf,
   EPIC_HOLD_TAG,

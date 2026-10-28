@@ -148,8 +148,9 @@ async function main(): Promise<void> {
   // ── Database setup ─────────────────────────────────────────────
   try {
     await runMigrations();
-    await backfillApprovals();
+    // Seed first: the seed inserts raw rows, and the one-shot backfill must stamp them.
     await seedIfEmpty();
+    await backfillApprovals();
   } catch (err) {
     console.error('[db] Failed to initialize database:', err);
     process.exit(1);

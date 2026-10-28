@@ -36,6 +36,7 @@ import {
   matchesDispatchGate,
   pullableNodes,
   dispatchHold,
+  approvalHold,
   holdsCapSlot,
   parseMixBugs,
   DEFAULT_DISPATCH_POLICY,
@@ -689,7 +690,7 @@ export function selectPullCandidates(
       n.childrenIds.length === 0 &&
       n.parentId !== null &&
       !isDone(n.status) &&
-      n.approval?.state === 'approved',
+      approvalHold(n, ancestors) === null,
   );
   const checkIds = new Set(checks.map((n) => n.id));
 

@@ -108,12 +108,16 @@ describe('"Fleet can fix it" check runs (fleet-check)', () => {
       n({ id: 'checkDone', status: 'done', blockedReason: 'x', tags: ['fleet-check'] }),
       // Not past the approval gate (#492): nobody trusted let this brief through.
       n({ id: 'checkProposed', blockedReason: 'x', tags: ['fleet-check'], approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
+      // …nor under a proposed parent, approved itself or not.
+      n({ id: 'propParent', childrenIds: ['checkUnder'], approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
+      n({ id: 'checkUnder', parentId: 'propParent', blockedReason: 'x', tags: ['fleet-check'] }),
     ];
     const d = selectPullCandidates(nodes, { workflow: WORKFLOW, cap: 10, gate: ['version:v2'], policy: [] });
     expect(d.ranked[0].id).toBe('check');
     expect(d.ranked.map((x) => x.id)).not.toContain('checkClaimed');
     expect(d.ranked.map((x) => x.id)).not.toContain('checkDone');
     expect(d.ranked.map((x) => x.id)).not.toContain('checkProposed');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkUnder');
     expect(d.ranked.filter((x) => x.id === 'check')).toHaveLength(1);
   });
 

@@ -233,6 +233,8 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
           ? <>{snapshot.needsBrief} tickets are inside the gate but have no brief (no description, no linked issue) — the pull refuses them. Write briefs, or nothing moves.</>
           : snapshot.humanOnly > 0
             ? <>{snapshot.humanOnly} tickets inside the gate are held for a person (a needs-human / kira-skip … tag, or a blocker, on the ticket or an open parent) — the fleet never takes them. Someone has to act on them, then remove the tag or clear the blocker.</>
+          : snapshot.awaitingApproval > 0
+            ? <>{snapshot.awaitingApproval} tickets inside the gate wait for approval — they come from someone outside the map's trusted list, and the fleet only takes approved work. A trusted person has to approve them.</>
           : snapshot.pullable > 0
             ? <>{snapshot.pullable} tickets are pullable on the map, none inside the gate. Either the phase is done ({readOnly ? 'the operator switches the gate' : 'switch the gate'}) or the work is unversioned (see Fleet).</>
             : <>Nothing is pullable on the whole map — every todo ticket is claimed, blocked, or waiting on a predecessor.</>}
@@ -626,10 +628,11 @@ function FleetCard({ knobs, writes }: { knobs: KnobState; writes: Writes }) {
 
         <div style={{ marginTop: 4 }}>
           Queue behind the gate: <strong>{snapshot.inGate}</strong> grantable
-          {(snapshot.inGate > 0 || snapshot.needsBrief > 0 || snapshot.humanOnly > 0) && (
+          {(snapshot.inGate > 0 || snapshot.needsBrief > 0 || snapshot.humanOnly > 0 || snapshot.awaitingApproval > 0) && (
             <span style={{ color: '#64748b' }}>
               {' '}— {snapshot.needsBrief} without a brief{snapshot.needsBrief > 0 ? ' (refused until one exists)' : ''}, {snapshot.unestimated} unestimated
               {snapshot.humanOnly > 0 ? `, ${snapshot.humanOnly} held for a person (never pulled)` : ''}
+              {snapshot.awaitingApproval > 0 ? `, ${snapshot.awaitingApproval} awaiting approval` : ''}
             </span>
           )}
         </div>

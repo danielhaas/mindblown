@@ -448,7 +448,8 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     const workflow = [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'done', name: 'Done', category: 'done' }] as never;
     const snap = dispatchQueueSnapshot(nodes, { workflow, cap: 5, gate: [] });
     expect([...snap.inGateIds].sort()).toEqual(['late', 'ok']);
-    expect(snap.humanOnly).toBe(4);
+    expect(snap.awaitingApproval).toBe(4);
+    expect(snap.humanOnly).toBe(0); // approval holds are counted apart
     expect(snap.heldByParents).toEqual([{ id: 'epic', text: 'epic', tag: null, blockedReason: null, approval: 'proposed', count: 1 }]);
     // No stamp on the ticket waits like proposed (fail-closed).
     expect(dispatchHold(nodes[2] as never)).toEqual({ tag: null, blockedReason: null, approval: 'proposed', heldBy: null });

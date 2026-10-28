@@ -380,6 +380,30 @@ export function dispatchHold(
   return null;
 }
 
+/**
+ * The approval part of `dispatchHold` alone (#492): the ticket's own stamp
+ * (no stamp = proposed), else the nearest proposed / rejected open
+ * ancestor. For paths that skip the other holds on purpose — a "Fleet can
+ * fix it" check run goes past its blocker, never past the approval gate.
+ */
+export function approvalHold(
+  node: Pick<Node, 'approval'> & { parentId?: string | null },
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): DispatchHold['approval'] {
+  const own = node.approval?.state ?? 'proposed';
+  if (own !== 'approved') return own;
+  const seen = new Set<string>();
+  for (let id = node.parentId ?? null; id !== null && !seen.has(id); ) {
+    seen.add(id);
+    const a = ancestors.nodeMap.get(id);
+    if (!a) break;
+    const state = a.approval?.state;
+    if (!ancestors.isDone(a.status) && (state === 'proposed' || state === 'rejected')) return state;
+    id = a.parentId;
+  }
+  return null;
+}
+
 /** An open parent whose skip tag or blocker holds tickets below it. */
 export interface ParentHold {
   id: string;
@@ -434,7 +458,9 @@ export interface DispatchQueueSnapshot {
   unestimated: number;
   /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, on it or an open ancestor — `dispatchHold`) — never granted. */
   humanOnly: number;
-  /** The open parents behind `humanOnly` that hold tickets through their subtree, most first. */
+  /** Pullable, inside the gate, but not approved (#492), on it or an open ancestor — never granted until a trusted person approves. Not in `humanOnly`. */
+  awaitingApproval: number;
+  /** The open parents behind `humanOnly` / `awaitingApproval` that hold tickets through their subtree, most first. */
   heldByParents: ParentHold[];
   /**
    * Pullable tickets with NO effective version while the gate fences on a
@@ -474,7 +500,10 @@ export function dispatchQueueSnapshot(
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.
   const ancestors = { nodeMap, isDone: buildIsDonePredicate(opts.workflow) };
-  const gated = gatedAll.filter((n) => dispatchHold(n, ancestors) === null);
+  const holds = new Map(gatedAll.map((n) => [n.id, dispatchHold(n, ancestors)]));
+  const gated = gatedAll.filter((n) => holds.get(n.id) === null);
+  // Same split as the server's skipped[] reasons: any approval hold counts as awaiting approval.
+  const awaitingApproval = gatedAll.filter((n) => holds.get(n.id)?.approval != null).length;
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an
@@ -497,7 +526,8 @@ export function dispatchQueueSnapshot(
     inGate: inGate.length,
     needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
-    humanOnly: gatedAll.length - gated.length,
+    humanOnly: gatedAll.length - gated.length - awaitingApproval,
+    awaitingApproval,
     heldByParents: parentHolds(gatedAll, ancestors),
     unversionedOutsideGate,
     unknownGateEntries,
