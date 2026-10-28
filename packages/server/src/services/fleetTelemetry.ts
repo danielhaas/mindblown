@@ -11,9 +11,13 @@
  * Pushes need the fleet owner or edit on a connected map — the map
  * routes keep asking edit on their map, as before (#405). A per-fleet
  * credential (#481) will replace the membership check.
+ *
+ * A claim's live-view tail (#585) never goes out on these reads — they are
+ * polled every minute by every viewer. It has its own read,
+ * `readAgentOutput`, behind edit on the ticket's map.
  */
-import { redactRollup, redactTick, ROLLUP_STALE_MIN } from '@mindblown/core';
-import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
+import { claimOutput, redactRollup, redactTick, ROLLUP_STALE_MIN, withoutClaimOutput } from '@mindblown/core';
+import type { AgentOutput, FleetRollup, FleetTickPayload } from '@mindblown/core';
 import * as fleetDb from '../db/fleet.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
@@ -49,8 +53,19 @@ export async function readTelemetry(scope: TelemetryScope, window: number | flee
   const [rows, ticks] = await Promise.all([fleetDb.listRollups(fleetId), fleetDb.listTicks(fleetId, window)]);
   const hosts = rows
     .filter((h) => !onlyMapId || h.mapIds.includes(onlyMapId))
-    .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: redactRollup(h.rollup, h.mapIds, visible) }));
+    .map((h) => ({ ...h, mapIds: h.mapIds.filter((id) => visible.has(id)), rollup: withoutClaimOutput(redactRollup(h.rollup, h.mapIds, visible)) }));
   return { fleetId, hosts, ticks: scope.full ? ticks : ticks.map((t) => ({ ...t, payload: redactTick(t.payload) })) };
+}
+
+/**
+ * The agent's last output on one ticket (#585): the newest live-view tail
+ * a host of the map's fleet reports for it, or null. The caller checked
+ * edit on the map — the lines carry commands, paths and error snippets.
+ */
+export async function readAgentOutput(mapId: string, nodeId: string): Promise<AgentOutput | null> {
+  const fleetId = await fleetEntityDb.getMapFleetId(mapId);
+  if (!fleetId) return null;
+  return claimOutput(await fleetDb.listRollups(fleetId), mapId, nodeId);
 }
 
 /** The fleet a reader may read, with the connected maps they can view — or why not (404 hides it). */

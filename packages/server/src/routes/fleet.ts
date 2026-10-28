@@ -12,6 +12,7 @@
  *   POST /api/maps/:id/fleet-ticks         — orchestrator decision (every ~30 min)
  *   GET  /api/maps/:id/fleet               — the map's fleet, hosts narrowed to this map
  *        ?since=<ISO>&until=<ISO>&limit=<n>  — tick history for a window (Verlauf)
+ *   GET  /api/maps/:id/nodes/:nodeId/agent-output — the running ticket's live-view tail (#585), edit
  *
  * Auth: the map routes stay like every map route — pushes need edit on the
  * map (#405), the read view. The fleet routes take the fleet owner or edit
@@ -27,12 +28,17 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { parseRollup, parseTick, parseTickWindow } from '@mindblown/core';
 import type { FleetRollup, FleetTickPayload } from '@mindblown/core';
 import { guardMapRoutes } from '../lib/mapAccess.js';
+import * as nodeDb from '../db/nodes.js';
 import * as telemetry from '../services/fleetTelemetry.js';
 
 /** Hostnames as `hostname -s` / config `host` produce them. The PK is (fleet, host) — no free-form keys. */
 const HOST_RE = /^[A-Za-z0-9._-]{1,64}$/;
-/** A 10-worker rollup is ~15 kB; this leaves room for blocked_nodes histories, not for abuse. */
-const PUSH_BODY_LIMIT = 256 * 1024;
+/**
+ * A 10-worker rollup is ~15 kB; this leaves room for blocked_nodes
+ * histories and each running ticket's live-view tail (#585, ≤ 100 lines
+ * of ≤ 500 chars), not for abuse.
+ */
+const PUSH_BODY_LIMIT = 1024 * 1024;
 
 type Fail = { status: number; code: string; message: string };
 const isFail = (x: unknown): x is Fail => !!x && typeof x === 'object' && 'status' in x && 'code' in x;
@@ -85,8 +91,8 @@ type WindowQuery = { since?: unknown; until?: unknown; limit?: unknown };
 
 /** The deployed satellites' routes, forwarding to the map's fleet. */
 export async function fleetRoutes(app: FastifyInstance): Promise<void> {
-  // Read: view (#403). Pushes: edit (#405).
-  guardMapRoutes(app);
+  // Read: view (#403). Pushes: edit (#405). The agent output: edit (#585).
+  guardMapRoutes(app, { nodeMapId: nodeDb.getNodeMapId });
 
   app.put<{ Params: { id: string; host: string } }>('/api/maps/:id/fleet-status/:host', { bodyLimit: PUSH_BODY_LIMIT }, async (req, reply) => {
     const rollup = readRollup(req, req.params.id);
@@ -122,6 +128,13 @@ export async function fleetRoutes(app: FastifyInstance): Promise<void> {
     const scope = await telemetry.mapReadScope(req.userId!, req.params.id);
     const read = 'visible' in scope ? await telemetry.readTelemetry(scope, window, req.params.id) : { fleetId: null, hosts: [], ticks: [] };
     return reply.send(readReply(read, window));
+  });
+
+  // Edit, not view: the lines carry commands, paths and error snippets.
+  // `output: null` = no host reports any for this ticket (not running, or
+  // a worker that doesn't send it yet).
+  app.get<{ Params: { id: string; nodeId: string } }>('/api/maps/:id/nodes/:nodeId/agent-output', { config: { mapAccess: 'edit' } }, async (req, reply) => {
+    return reply.send({ output: await telemetry.readAgentOutput(req.params.id, req.params.nodeId), now: new Date().toISOString() });
   });
 }
 

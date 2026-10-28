@@ -32,6 +32,8 @@ vi.mock('../../db/fleet.js', () => ({
   listRollups: (...args: unknown[]) => listRollupsMock(...(args as [])),
   listTicks: (...args: unknown[]) => listTicksMock(...(args as [])),
 }));
+// The agent-output route carries :nodeId — n-on-b hangs on MAP_B, n-lone on LONE, the rest on MAP_A.
+vi.mock('../../db/nodes.js', () => ({ getNodeMapId: async (id: string) => (id === 'n-on-b' ? MAP_B : id === 'n-lone' ? LONE : MAP_A) }));
 vi.mock('../../ws.js', () => ({ broadcast: (...args: unknown[]) => broadcastMock(...args) }));
 
 // One fleet serving maps A and B; LONE has no fleet. The reader sees A
@@ -205,7 +207,7 @@ describe('PUT /api/maps/:id/fleet-status/:host', () => {
 
   it('rejects a body over the push limit', async () => {
     const app = await buildApp();
-    const fat = { ...rollup, workers: Array.from({ length: 3000 }, (_, i) => ({ session: `njoerd:worker-${i}:default`, state: 'parked', claim: null, blocked_nodes: [] })) };
+    const fat = { ...rollup, workers: Array.from({ length: 12000 }, (_, i) => ({ session: `njoerd:worker-${i}:default`, state: 'parked', claim: null, blocked_nodes: [] })) };
     const res = await app.inject({ method: 'PUT', url: `/api/maps/${MAP_A}/fleet-status/njoerd`, payload: fat });
     await app.close();
     expect(res.statusCode).toBe(413);
@@ -450,5 +452,64 @@ describe('fleet routes (#479)', () => {
     // A claim without a mapId belongs to the host's only map — B, hidden.
     expect(body.hosts[1].rollup.workers[0].claim).toEqual({ redacted: true });
     expect(JSON.stringify(body)).not.toMatch(/secret/i);
+  });
+});
+
+describe('agent output (#585)', () => {
+  const withOutput = () =>
+    statusRow('njoerd', [MAP_A, MAP_B], [{ session: 's1', state: 'working', claim: { mapId: MAP_A, nodeId: 'n1', title: 'T' } }]);
+
+  it('the regular fleet reads drop the live-view tail, keep the phase', async () => {
+    const row = withOutput();
+    (row.rollup as Record<string, unknown>).claims = [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', output: ['$ cat /etc/secret-path'], output_at: '2026-09-01T09:59:00Z' }];
+    listRollupsMock.mockResolvedValue([row]);
+    state.visibleMaps = [MAP_A, MAP_B];
+    const app = await buildApp();
+    const viaMap = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/fleet` });
+    const viaFleet = await app.inject({ method: 'GET', url: `/api/fleets/${FLEET}/fleet` });
+    await app.close();
+    for (const res of [viaMap, viaFleet]) {
+      expect(res.json().hosts[0].rollup.claims).toEqual([{ nodeId: 'n1', mapId: MAP_A, phase: 'working' }]);
+      expect(res.body).not.toMatch(/secret-path/);
+    }
+  });
+
+  it('a push stores the tail with the rollup', async () => {
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'PUT',
+      url: `/api/fleets/${FLEET}/fleet-status/njoerd`,
+      payload: { ...rollup, v: 2, map_id: undefined, maps: [MAP_A], claims: [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', output: ['● Bash pnpm test', '✓ 12 passed'] }] },
+    });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(upsertRollupMock.mock.calls[0][1].claims[0].output).toEqual(['● Bash pnpm test', '✓ 12 passed']);
+  });
+
+  it('serves the ticket\'s newest tail to an editor of the map', async () => {
+    const row = withOutput();
+    (row.rollup as Record<string, unknown>).claims = [{ nodeId: 'n1', mapId: MAP_A, phase: 'working', output: ['line 1', 'line 2'], output_at: '2026-09-01T09:59:00Z' }];
+    listRollupsMock.mockResolvedValue([row]);
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/nodes/n1/agent-output` });
+    const none = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/nodes/n9/agent-output` });
+    await app.close();
+    expect(res.statusCode).toBe(200);
+    expect(res.json().output).toEqual({ host: 'njoerd', at: '2026-09-01T09:59:00Z', lines: ['line 1', 'line 2'] });
+    expect(none.json().output).toBeNull();
+    expect(listRollupsMock).toHaveBeenCalledWith(FLEET);
+  });
+
+  it('needs edit on the map; a node of another map is a 404; a map without a fleet has none', async () => {
+    state.perm[MAP_A] = 'view';
+    const app = await buildApp();
+    const viewer = await app.inject({ method: 'GET', url: `/api/maps/${MAP_A}/nodes/n1/agent-output` });
+    const foreign = await app.inject({ method: 'GET', url: `/api/maps/${LONE}/nodes/n-on-b/agent-output` });
+    const lone = await app.inject({ method: 'GET', url: `/api/maps/${LONE}/nodes/n-lone/agent-output` });
+    await app.close();
+    expect(viewer.statusCode).toBe(403);
+    expect(foreign.statusCode).toBe(404);
+    expect(lone.statusCode).toBe(200);
+    expect(lone.json().output).toBeNull();
   });
 });

@@ -11,6 +11,7 @@ import type { EstimateResult } from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { useTicketPhases } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
+import { AgentOutputSection } from './AgentOutputSection.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -905,6 +906,9 @@ function PropertyPanelInner({
             Reads the claim events, not claimedBySession: that field is
             nulled on done, so the node alone can't say who delivered it. */}
         <FleetTrailSection node={node} />
+
+        {/* The running agent's last lines (#585) — the card clicked on the Kanban opens here. */}
+        <AgentOutputSection mapId={node.mapId} nodeId={nodeId} phase={ticketPhases.get(nodeId)} />
 
         {/* GitHub section */}
         <GitHubNodeSection mapId={node.mapId} node={node} />
