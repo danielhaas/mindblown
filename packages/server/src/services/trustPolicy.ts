@@ -10,10 +10,19 @@
  * Kept off `MindMap` on purpose: read and write are admin-only, while the
  * map row goes to every viewer (GET /api/maps/:id, map:updated broadcast).
  */
-import { eq } from 'drizzle-orm';
-import { defaultTrustPolicy, parseTrustPolicy, type TrustPolicy } from '@mindblown/core';
+import { eq, inArray } from 'drizzle-orm';
+import {
+  approvalAtCreation,
+  automationFor,
+  defaultTrustPolicy,
+  parseTrustPolicy,
+  type ForgeUserLink,
+  type NodeApproval,
+  type NodeReporter,
+  type TrustPolicy,
+} from '@mindblown/core';
 import { db } from '../db/connection.js';
-import { maps, userGithubIdentities } from '../db/schema.js';
+import { mapPermissions, maps, userGithubIdentities } from '../db/schema.js';
 import { recordEvent } from '../db/events.js';
 import * as permDb from '../db/permissions.js';
 import { getForgeIntegration } from '../lib/githubContext.js';
@@ -111,4 +120,47 @@ export async function setTrustPolicy(
     newValue: policy,
   });
   return after;
+}
+
+/** What core `trustLevel` needs about a map: its policy, its members, and their linked forge logins. */
+export interface TrustContext {
+  policy: TrustPolicy;
+  memberIds: string[];
+  forgeUsers: ForgeUserLink[];
+}
+
+/** null when the map does not exist. */
+export async function loadTrustContext(mapId: string): Promise<TrustContext | null> {
+  const trust = await getTrustPolicy(mapId);
+  if (!trust) return null;
+  const memberIds = (
+    await db.select({ userId: mapPermissions.userId }).from(mapPermissions).where(eq(mapPermissions.mapId, mapId))
+  ).map((r) => r.userId);
+  // A forge author counts as the user whose login it is — a member, or a
+  // trusted user who is not a member.
+  const userIds = [...new Set([...memberIds, ...trust.policy.trustedUserIds])];
+  const forgeUsers =
+    userIds.length === 0
+      ? []
+      : (
+          await db
+            .select({ provider: userGithubIdentities.kind, login: userGithubIdentities.githubLogin, userId: userGithubIdentities.userId })
+            .from(userGithubIdentities)
+            .where(inArray(userGithubIdentities.userId, userIds))
+        );
+  return { policy: trust.policy, memberIds, forgeUsers };
+}
+
+/** The approval stamp (#492) for a node from this reporter, against a loaded context. */
+export function approvalFor(ctx: TrustContext, reportedBy: NodeReporter | null, at: Date): NodeApproval {
+  return approvalAtCreation(automationFor({ reportedBy }, ctx.policy, ctx.memberIds, ctx.forgeUsers), at.toISOString());
+}
+
+/**
+ * The approval stamp a new node gets (#492). A map that cannot be read
+ * stamps nothing: the node then waits like a proposed one.
+ */
+export async function approvalForNewNode(mapId: string, reportedBy: NodeReporter | null, at: Date): Promise<NodeApproval | null> {
+  const ctx = await loadTrustContext(mapId);
+  return ctx ? approvalFor(ctx, reportedBy, at) : null;
 }

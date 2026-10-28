@@ -7,6 +7,7 @@ import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
 import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
+import { approvalForNewNode } from '../services/trustPolicy.js';
 
 // Soft-delete filter shared by every read that returns user-visible nodes.
 // Audit / pre-delete-snapshot paths in routes/nodes.ts deliberately bypass
@@ -314,6 +315,10 @@ export async function createNode(
     if (def?.category === 'in_progress') startedAt = now;
   }
 
+  // The approval stamp (#492), from the reporter against the map's trust
+  // policy — every create path passes through here, so none can skip it.
+  const approval = await approvalForNewNode(input.mapId, input.reportedBy ?? null, now);
+
   // Create the node
   let row;
   try {
@@ -362,6 +367,7 @@ export async function createNode(
       updatedAt: now,
       createdBy: input.createdBy,
       reportedBy: input.reportedBy ?? null,
+      approval,
     }).returning();
   } catch (err) {
     if (isRequirementIdUniqueViolation(err)) {

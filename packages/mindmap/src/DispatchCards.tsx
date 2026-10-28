@@ -246,7 +246,7 @@ function DispatchCard({ knobs, writes, events, auditError, readOnly }: { knobs: 
     <div style={{ ...warnBox, background: '#fffbeb', borderColor: '#fde68a', color: '#92400e' }} data-testid="dispatch-parent-holds">
       {holds.slice(0, 3).map((h) => (
         <div key={h.id}>
-          <strong>{h.text}</strong> holds {h.count} ticket{h.count === 1 ? '' : 's'} below it ({h.tag ? `tag ${h.tag}` : 'a blocker'}).
+          <strong>{h.text}</strong> holds {h.count} ticket{h.count === 1 ? '' : 's'} below it ({h.tag ? `tag ${h.tag}` : h.blockedReason ? 'a blocker' : `${h.approval}, waits for approval`}).
         </div>
       ))}
       {holds.length > 3 && <div>…and {holds.length - 3} more parents.</div>}

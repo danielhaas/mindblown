@@ -245,12 +245,33 @@ describe('cardBlockState — the Blocked panel\'s rule', () => {
 });
 
 describe('personHolds', () => {
+  const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
   const workflow: StatusDef[] = [
     { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
     { id: 'done', name: 'Done', category: 'done', color: '#000', position: 1 },
   ];
   const node = (id: string, extra: Record<string, unknown> = {}) =>
-    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, ...extra }) as unknown as Node;
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, approval: APPROVED, ...extra }) as unknown as Node;
+
+  it('a proposed or rejected stamp, on the ticket or an open parent; not a node without a stamp (#492)', () => {
+    const holds = personHolds(
+      [
+        node('root', { parentId: null, approval: null }),
+        node('prop', { approval: { ...APPROVED, state: 'proposed' } }),
+        node('rej', { approval: { ...APPROVED, state: 'rejected' } }),
+        node('stub', { approval: null }),
+        node('epic', { text: 'Follow-ups', approval: { ...APPROVED, state: 'proposed' } }),
+        node('under', { parentId: 'epic' }),
+      ],
+      workflow,
+    );
+    expect(Object.fromEntries(holds)).toEqual({
+      prop: 'Needs a person: waits for approval',
+      rej: 'Rejected: the fleet will not run it',
+      epic: 'Needs a person: waits for approval',
+      under: 'Needs a person: parent "Follow-ups" is proposed — waits for approval',
+    });
+  });
 
   it('skip tags on the ticket or an open parent; not epics, not plain blockers, not under a done parent', () => {
     const holds = personHolds(

@@ -12,9 +12,9 @@
  * (HTTP status codes for the routes, propagated to the LLM for the chat).
  */
 
-import { eq, and, asc, isNull, isNotNull, sql } from 'drizzle-orm';
+import { eq, and, asc, inArray, isNull, isNotNull, sql } from 'drizzle-orm';
 import { db } from '../db/connection.js';
-import { nodes, maps, cycles, fleets } from '../db/schema.js';
+import { nodes, maps, cycles, fleets, users } from '../db/schema.js';
 import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { holdsCapSlotSql } from '../db/capSlot.js';
@@ -143,12 +143,18 @@ export async function readyNodes(
   // Leaves only (#323): a node with live children is a container — its work
   // is its children, so listing it as pickable handed out whole epics.
   const hasLiveChild = new Set(allNodes.map((n) => n.parentId).filter((p): p is string => p !== null));
-  // Tickets held for a person (#266 skip tag, or a manual blocker — on the
-  // ticket or an open ancestor) are not dev work for anyone pulling from a queue — same rule as get_next_ticket.
-  const candidates = allNodes.filter(
-    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && dispatchHold(n, { nodeMap, isDone }) === null,
+  // Tickets held for a person (#266 skip tag, a manual blocker, or no
+  // approval yet (#492) — on the ticket or an open ancestor) are not dev
+  // work for anyone pulling from a queue — same rule as get_next_ticket.
+  const open = allNodes.filter(
+    (n) => isTodo(n.status) && n.claimedBySession === null && !hasLiveChild.has(n.id) && n.parentId !== null && isReady(n, nodeMap, isDone),
   );
-  const ready = candidates.filter((n) => isReady(n, nodeMap, isDone));
+  const holds = new Map(open.map((n) => [n.id, dispatchHold(n, { nodeMap, isDone })]));
+  const ready = open.filter((n) => holds.get(n.id) === null);
+  const awaitingApproval = open.flatMap((n) => {
+    const hold = holds.get(n.id);
+    return hold?.approval ? [{ id: n.id, text: n.text, approval: hold.approval, heldBy: hold.heldBy }] : [];
+  });
 
   const filtered = scopeFilter
     ? ready.filter((n) => scopeOverlap(n.scopes, scopeFilter).length > 0)
@@ -225,6 +231,7 @@ export async function readyNodes(
     total: sorted.length,
     returned: page.length,
     sprintScope,
+    awaitingApproval,
   };
 }
 
@@ -673,8 +680,16 @@ export function selectPullCandidates(
   // it goes first — past the gate, the blocker and the status rule; the
   // grant clears blocker and tag and hands the reason over (claimFromMap).
   const isDone = buildIsDonePredicate(opts.workflow);
+  // Past everything but the approval gate (#492): a check on work nobody
+  // trusted approved would hand an untrusted brief to the fleet.
   const checks = allNodes.filter(
-    (n) => n.tags.includes(FLEET_CHECK_TAG) && n.claimedBySession === null && n.childrenIds.length === 0 && n.parentId !== null && !isDone(n.status),
+    (n) =>
+      n.tags.includes(FLEET_CHECK_TAG) &&
+      n.claimedBySession === null &&
+      n.childrenIds.length === 0 &&
+      n.parentId !== null &&
+      !isDone(n.status) &&
+      n.approval?.state === 'approved',
   );
   const checkIds = new Set(checks.map((n) => n.id));
 
@@ -995,12 +1010,13 @@ async function evaluateMapPull(
 
   const skipped: SkippedTicket[] = [
     ...decision.skipped.map((n) => ({ id: n.id, text: n.text, reason: 'needs-brief' as const })),
-    ...decision.humanOnly.map(({ node: n, tag, blockedReason, heldBy }) => ({
+    ...decision.humanOnly.map(({ node: n, tag, blockedReason, approval, heldBy }) => ({
       id: n.id,
       text: n.text,
-      reason: 'human-only' as const,
+      reason: approval !== null ? ('awaiting-approval' as const) : ('human-only' as const),
       ...(tag !== null ? { tag } : {}),
       ...(blockedReason !== null ? { blockedReason } : {}),
+      ...(approval !== null ? { approval } : {}),
       ...(heldBy !== null ? { heldBy } : {}),
     })),
   ];
@@ -1066,10 +1082,27 @@ async function claimFromMap(
         .map((l) => ({ externalId: l.externalId, url: l.url })),
       claimedAt: winner.claimedAt,
       ...(check ? { check } : {}),
+      ...(winner.approval?.merge === 'pr-only' ? { approval: await prOnlyApproval(tx, winner) } : {}),
     };
     return { winner, ticket };
   }
   return null;
+}
+
+/** The names a pr-only worker writes on its PR (claude-fleet#70): who asked, who let it through. */
+async function prOnlyApproval(tx: PullTx, node: CoreNode): Promise<NonNullable<TicketBrief['approval']>> {
+  const r = node.reportedBy;
+  const ids = [r?.kind === 'user' ? r.userId : null, node.approval?.by ?? null].filter((x): x is string => x !== null);
+  const names = new Map(
+    ids.length === 0
+      ? []
+      : (await tx.select({ id: users.id, name: users.name }).from(users).where(inArray(users.id, ids))).map((u) => [u.id, u.name]),
+  );
+  return {
+    merge: 'pr-only',
+    reportedBy: !r ? null : r.kind === 'forge' ? r.login : (names.get(r.userId) ?? null),
+    approvedBy: node.approval?.by ? (names.get(node.approval.by) ?? null) : null,
+  };
 }
 
 /** Broadcasts and the claim trail, after commit — mirroring claimNode. */

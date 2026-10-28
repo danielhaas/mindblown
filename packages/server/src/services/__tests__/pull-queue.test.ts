@@ -40,6 +40,7 @@ let seq = 0;
 function makeNode(overrides: Partial<CoreNode> & { id: string }): CoreNode {
   seq += 1;
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'map-1',
     parentId: 'root',
     childrenIds: [],

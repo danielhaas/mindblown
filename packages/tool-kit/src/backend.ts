@@ -229,6 +229,12 @@ export interface ReadyNodesResult {
   total: number;
   returned: number;
   sprintScope?: ReadySprintScope;
+  /**
+   * Ready leaves held by a missing approval (#492), on the ticket or an
+   * open ancestor — work a trusted person still has to let through. Not
+   * counted in `total`.
+   */
+  awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
 }
 
 export interface ClaimNodeResult {
@@ -308,18 +314,32 @@ export interface TicketBrief {
    * must do.
    */
   check?: { blockedReason: string };
+  /**
+   * Approved work that stops at an open PR (#492, claude-fleet#70): the
+   * worker opens the PR, marks the node done and leaves the merge to a
+   * person. Absent = trusted work, merged and deployed as before. Names
+   * are display names (a forge login for a forge author); approvedBy null =
+   * approved by the map's trust policy.
+   */
+  approval?: { merge: 'pr-only'; reportedBy: string | null; approvedBy: string | null };
 }
 
 export interface SkippedTicket {
   id: string;
   text: string;
-  /** needs-brief: no description and no linked issue; human-only: tagged for a person (#266) or flagged with a blocker. */
-  reason: 'needs-brief' | 'human-only';
+  /**
+   * needs-brief: no description and no linked issue; human-only: tagged for
+   * a person (#266) or flagged with a blocker; awaiting-approval: not
+   * approved yet (#492), on the ticket or an open ancestor.
+   */
+  reason: 'needs-brief' | 'human-only' | 'awaiting-approval';
   /** The skip tag, for human-only. */
   tag?: string;
   /** The manual blocker text, for human-only. */
   blockedReason?: string;
-  /** The open ancestor carrying the tag/blocker, when the hold is inherited. */
+  /** The stamp's state, for awaiting-approval. */
+  approval?: 'proposed' | 'rejected';
+  /** The open ancestor carrying the tag/blocker/stamp, when the hold is inherited. */
   heldBy?: { id: string; text: string };
   /** The node's map — set on fleet pulls, which look at several maps. */
   mapId?: string;

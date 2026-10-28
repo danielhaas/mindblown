@@ -7,6 +7,7 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
 import { runMigrations } from './db/migrate.js';
+import { backfillApprovals } from './services/approvalBackfill.js';
 import { seedIfEmpty } from './db/seed.js';
 import { snapshotAllMaps } from './lib/releaseSnapshots.js';
 import { runAllCatchups, getLastHealthyTickAt } from './sync/githubCatchup.js';
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
   // ── Database setup ─────────────────────────────────────────────
   try {
     await runMigrations();
+    await backfillApprovals();
     await seedIfEmpty();
   } catch (err) {
     console.error('[db] Failed to initialize database:', err);

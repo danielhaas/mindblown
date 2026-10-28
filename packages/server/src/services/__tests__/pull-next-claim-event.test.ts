@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   // Rows the fake tx serves; set per test.
   mapRow: null as Record<string, unknown> | null,
   nodeRows: [] as Record<string, unknown>[],
+  userRows: [] as Record<string, unknown>[],
   // Whether the conditional claim UPDATE "wins" (an unclaimed row existed).
   claimWins: true,
   updates: [] as Array<{ table: unknown; values: Record<string, unknown> }>,
@@ -28,7 +29,8 @@ vi.mock('../../db/connection.js', async () => {
     execute: async () => undefined,
     select: () => ({
       from: (table: unknown) => ({
-        where: async () => (table === schema.maps ? (mocks.mapRow ? [mocks.mapRow] : []) : mocks.nodeRows),
+        where: async () =>
+          table === schema.maps ? (mocks.mapRow ? [mocks.mapRow] : []) : table === schema.users ? mocks.userRows : mocks.nodeRows,
       }),
     }),
     update: (table: unknown) => ({
@@ -79,6 +81,7 @@ function row(overrides: Record<string, unknown>): Record<string, unknown> {
     customFields: {},
     claimedBySession: null,
     claimedAt: null,
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     createdAt: new Date('2026-01-01T00:00:00Z'),
     updatedAt: new Date('2026-01-01T00:00:00Z'),
     createdBy: 'test',
@@ -144,5 +147,33 @@ describe('getNextTicket — claim trail', () => {
     const result = await getNextTicket('map-1', 'njoerd:worker-3:default');
     expect(result.granted).toBe(false);
     expect(mocks.recordClaimedMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('getNextTicket — approval gate (#492)', () => {
+  it('reports a proposed ticket as awaiting-approval and grants the approved one, without merge for trusted work', async () => {
+    mocks.nodeRows = [
+      row({ id: 'root', parentId: null, childrenOrder: ['leaf', 'prop'], status: null, description: null }),
+      row({ id: 'leaf', text: 'Ship it' }),
+      row({ id: 'prop', text: 'From a stranger', approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
+    ];
+    const result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    expect(result.ticket?.id).toBe('leaf');
+    expect(result.ticket?.approval).toBeUndefined();
+    expect(result.skipped).toEqual([{ id: 'prop', text: 'From a stranger', reason: 'awaiting-approval', approval: 'proposed' }]);
+  });
+
+  it('hands approved pr-only work out with the names for the PR note', async () => {
+    mocks.nodeRows = [
+      row({ id: 'root', parentId: null, childrenOrder: ['leaf'], status: null, description: null }),
+      row({
+        id: 'leaf',
+        reportedBy: { kind: 'forge', provider: 'github', login: 'octocat' },
+        approval: { state: 'approved', merge: 'pr-only', by: 'u-dan', at: '2026-10-28T00:00:00.000Z' },
+      }),
+    ];
+    mocks.userRows = [{ id: 'u-dan', name: 'Dan' }];
+    const result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    expect(result.ticket?.approval).toEqual({ merge: 'pr-only', reportedBy: 'octocat', approvedBy: 'Dan' });
   });
 });

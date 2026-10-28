@@ -59,6 +59,7 @@ function makeNode(overrides: Partial<Node> & { id: string }): Node {
     updatedAt: '2026-01-01T00:00:00Z',
     createdBy: 'user-1',
     reportedBy: null,
+    approval: null,
     revision: 1,
     deletedAt: null,
     ...overrides,

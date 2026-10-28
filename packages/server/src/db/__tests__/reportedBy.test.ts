@@ -4,7 +4,10 @@
  * created before the column.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+vi.mock('../../services/trustPolicy.js', () => ({ approvalForNewNode: async () => null }));
+
 import { createNode, updateNode, type DbHandle, type UpdateNodeInput } from '../nodes.js';
 import { dbNodeToCore } from '../helpers.js';
 

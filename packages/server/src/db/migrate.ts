@@ -843,6 +843,14 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS reported_by JSONB
   `);
 
+  // approval (#492): the approval stamp the pull queue gates on. The
+  // one-shot backfill needs the trust policy logic, so it runs in TS after
+  // the migrations (services/approvalBackfill.ts, data_migrations
+  // 'backfill_node_approval_v1').
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS approval JSONB
+  `);
+
   // ── Requirements register ──────────────────────────────────────
   // requirement_id: stable business requirement ID (e.g. 'MAN-01');
   // non-null marks the node as a requirement. requirement_priority:
