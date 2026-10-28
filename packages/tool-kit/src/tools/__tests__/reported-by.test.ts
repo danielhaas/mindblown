@@ -104,3 +104,37 @@ describe('reportedBy is not writable over MCP (#490)', () => {
     expect(parsed).not.toHaveProperty('reportedBy');
   });
 });
+
+describe('approval stamp on the MCP surface (#492)', () => {
+  const stamp = (state: 'proposed' | 'approved' | 'rejected', merge: 'auto' | 'pr-only' = 'auto') => ({ state, merge, by: null, at: '2026-10-28T00:00:00Z' });
+  const approvalDetail = {
+    ...detail,
+    nodes: [
+      stubNode({ id: 'root', text: 'Root', childrenIds: ['p', 'r', 'pr', 'ok'] }),
+      stubNode({ id: 'p', parentId: 'root', text: 'Proposed one', approval: stamp('proposed') }),
+      stubNode({ id: 'r', parentId: 'root', text: 'Rejected one', approval: stamp('rejected') }),
+      stubNode({ id: 'pr', parentId: 'root', text: 'Stops at PR', approval: stamp('approved', 'pr-only') }),
+      stubNode({ id: 'ok', parentId: 'root', text: 'Plain approved', approval: stamp('approved') }),
+    ],
+  } as unknown as MapDetail;
+  const approvalBackend = { getMap: async () => approvalDetail } as unknown as ToolBackend;
+
+  it('get_map and search_nodes show it when it changes what the fleet does', async () => {
+    for (const out of [
+      await getMapTool.handler(approvalBackend, { mapId: 'm1' } as never),
+      await searchNodesTool.handler(approvalBackend, { mapId: 'm1', query: 'one' } as never),
+    ]) {
+      expect(lineOf(out, 'Proposed one')).toContain('approval: proposed');
+      expect(lineOf(out, 'Rejected one')).toContain('approval: rejected');
+    }
+    const tree = await getMapTool.handler(approvalBackend, { mapId: 'm1' } as never);
+    expect(lineOf(tree, 'Stops at PR')).toContain('approval: approved (pr-only)');
+    expect(lineOf(tree, 'Plain approved')).not.toContain('approval:');
+  });
+
+  it('create_node and update_node cannot set it — a trusted person approves (#494)', () => {
+    const approval = stamp('approved');
+    expect(z.object(createNodeTool.schema).parse({ mapId: 'm1', parentId: 'p1', text: 't', approval })).not.toHaveProperty('approval');
+    expect(z.object(updateNodeTool.schema).parse({ mapId: 'm1', nodeId: 'n1', approval })).not.toHaveProperty('approval');
+  });
+});

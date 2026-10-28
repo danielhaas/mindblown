@@ -8,8 +8,10 @@
  * handed to the UPDATE — that set is the claim under test.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import type { StatusDef } from '@mindblown/core';
+
+vi.mock('../../services/trustPolicy.js', () => ({ approvalForNewNode: async () => null }));
 import { createNode, updateNode, type CreateNodeInput, type DbHandle, type UpdateNodeInput } from '../nodes.js';
 
 const workflow: StatusDef[] = [

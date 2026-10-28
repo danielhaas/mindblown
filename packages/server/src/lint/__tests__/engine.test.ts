@@ -10,6 +10,7 @@ let seq = 0;
 function makeNode(overrides: Partial<Node> & { id: string }): Node {
   seq++;
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'm1',
     parentId: null,
     childrenIds: [],

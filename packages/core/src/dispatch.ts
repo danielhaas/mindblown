@@ -14,7 +14,7 @@
  * Unknown entries match NOTHING (fail-closed): a typo in the gate empties
  * the queue loudly instead of silently opening the fence.
  */
-import type { Node, NodeMap, StatusDef } from './types.js';
+import type { ApprovalState, Node, NodeMap, StatusDef } from './types.js';
 import { isForgeLink } from './types.js';
 import { effectiveVersionId } from './versions.js';
 import { isReady } from './dependencies.js';
@@ -322,18 +322,29 @@ export function isEpicLeaf(node: Pick<Node, 'tags' | 'text'>): boolean {
   return (node.tags ?? []).some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');
 }
 
-/** Why a ticket waits for a person: a skip tag, a manual blocker, or both. */
+/** Why a ticket waits for a person: a skip tag, a manual blocker, a missing approval, or several. */
 export interface DispatchHold {
   tag: string | null;
   blockedReason: string | null;
+  /** Not approved (#492): `proposed` waits for a trusted person, `rejected` stays out. null = approved. */
+  approval: Exclude<ApprovalState, 'approved'> | null;
   /** The open ancestor that carries the hold, or null when it is on the ticket itself. */
   heldBy: { id: string; text: string } | null;
 }
 
-function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold, 'heldBy'> | null {
+type HoldFields = Pick<Node, 'tags' | 'blockedReason' | 'approval'>;
+
+/**
+ * `self`: the ticket must carry an approved stamp, and no stamp waits like
+ * `proposed` (fail-closed, #492). An ancestor holds only with an explicit
+ * proposed or rejected stamp: the map root carries none.
+ */
+function ownHold(node: HoldFields, self: boolean): Omit<DispatchHold, 'heldBy'> | null {
   const tag = dispatchSkipTag(node);
   const blockedReason = node.blockedReason?.trim() ? node.blockedReason : null;
-  return tag === null && blockedReason === null ? null : { tag, blockedReason };
+  const state = node.approval?.state ?? (self ? 'proposed' : 'approved');
+  const approval = state === 'approved' ? null : state;
+  return tag === null && blockedReason === null && approval === null ? null : { tag, blockedReason, approval };
 }
 
 /**
@@ -352,12 +363,17 @@ function ownHold(node: Pick<Node, 'tags' | 'blockedReason'>): Omit<DispatchHold,
  * An epic leaf (`isEpicLeaf`) is held too, under the tag `epic`, but only
  * on the ticket itself: an epic ancestor with children is the normal tree
  * shape, and its sub-tickets are the work.
+ *
+ * The approval gate (#492): the ticket runs only with an `approved` stamp,
+ * and a proposed or rejected open ancestor holds its subtree.
  */
 export function dispatchHold(
-  node: Pick<Node, 'tags' | 'blockedReason'> & { parentId?: string | null; text?: string },
+  node: HoldFields & { parentId?: string | null; text?: string },
   ancestors?: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
 ): DispatchHold | null {
-  const own = ownHold(node) ?? (isEpicLeaf({ tags: node.tags, text: node.text ?? '' }) ? { tag: EPIC_HOLD_TAG, blockedReason: null } : null);
+  const own =
+    ownHold(node, true) ??
+    (isEpicLeaf({ tags: node.tags, text: node.text ?? '' }) ? { tag: EPIC_HOLD_TAG, blockedReason: null, approval: null } : null);
   if (own) return { ...own, heldBy: null };
   if (!ancestors) return null;
   const seen = new Set<string>();
@@ -366,9 +382,33 @@ export function dispatchHold(
     const a = ancestors.nodeMap.get(id);
     if (!a) break;
     if (!ancestors.isDone(a.status)) {
-      const hold = ownHold(a);
+      const hold = ownHold(a, false);
       if (hold) return { ...hold, heldBy: { id: a.id, text: a.text } };
     }
+    id = a.parentId;
+  }
+  return null;
+}
+
+/**
+ * The approval part of `dispatchHold` alone (#492): the ticket's own stamp
+ * (no stamp = proposed), else the nearest proposed / rejected open
+ * ancestor. For paths that skip the other holds on purpose — a "Fleet can
+ * fix it" check run goes past its blocker, never past the approval gate.
+ */
+export function approvalHold(
+  node: Pick<Node, 'approval'> & { parentId?: string | null },
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): DispatchHold['approval'] {
+  const own = node.approval?.state ?? 'proposed';
+  if (own !== 'approved') return own;
+  const seen = new Set<string>();
+  for (let id = node.parentId ?? null; id !== null && !seen.has(id); ) {
+    seen.add(id);
+    const a = ancestors.nodeMap.get(id);
+    if (!a) break;
+    const state = a.approval?.state;
+    if (!ancestors.isDone(a.status) && (state === 'proposed' || state === 'rejected')) return state;
     id = a.parentId;
   }
   return null;
@@ -380,6 +420,7 @@ export interface ParentHold {
   text: string;
   tag: string | null;
   blockedReason: string | null;
+  approval: DispatchHold['approval'];
   /** Tickets below it that would otherwise be pullable. */
   count: number;
 }
@@ -393,7 +434,7 @@ export interface ParentHold {
  * hold-on-parent lint rule.
  */
 export function parentHolds(
-  tickets: Array<Pick<Node, 'tags' | 'blockedReason' | 'parentId' | 'text'>>,
+  tickets: Array<Pick<Node, 'tags' | 'blockedReason' | 'approval' | 'parentId' | 'text'>>,
   ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
 ): ParentHold[] {
   const byParent = new Map<string, ParentHold>();
@@ -402,7 +443,7 @@ export function parentHolds(
     if (!hold?.heldBy) continue;
     const prev = byParent.get(hold.heldBy.id);
     if (prev) prev.count++;
-    else byParent.set(hold.heldBy.id, { id: hold.heldBy.id, text: hold.heldBy.text, tag: hold.tag, blockedReason: hold.blockedReason, count: 1 });
+    else byParent.set(hold.heldBy.id, { id: hold.heldBy.id, text: hold.heldBy.text, tag: hold.tag, blockedReason: hold.blockedReason, approval: hold.approval, count: 1 });
   }
   return [...byParent.values()].sort((a, b) => b.count - a.count || a.text.localeCompare(b.text));
 }
@@ -427,7 +468,9 @@ export interface DispatchQueueSnapshot {
   unestimated: number;
   /** Pullable, inside the gate, but held for a person (skip tag or manual blocker, on it or an open ancestor — `dispatchHold`) — never granted. */
   humanOnly: number;
-  /** The open parents behind `humanOnly` that hold tickets through their subtree, most first. */
+  /** Pullable, inside the gate, but not approved (#492), on it or an open ancestor — never granted until a trusted person approves. Not in `humanOnly`. */
+  awaitingApproval: number;
+  /** The open parents behind `humanOnly` / `awaitingApproval` that hold tickets through their subtree, most first. */
   heldByParents: ParentHold[];
   /**
    * Pullable tickets with NO effective version while the gate fences on a
@@ -469,7 +512,10 @@ export function dispatchQueueSnapshot(
   const gatedAll = pullable.filter((n) => matchesDispatchGate(n, opts.gate, nodeMap));
   // Tickets held for a person (#266, blockers) are inside the gate but never granted.
   const ancestors = { nodeMap, isDone: buildIsDonePredicate(opts.workflow) };
-  const gated = gatedAll.filter((n) => dispatchHold(n, ancestors) === null);
+  const holds = new Map(gatedAll.map((n) => [n.id, dispatchHold(n, ancestors)]));
+  const gated = gatedAll.filter((n) => holds.get(n.id) === null);
+  // Same split as the server's skipped[] reasons: any approval hold counts as awaiting approval.
+  const awaitingApproval = gatedAll.filter((n) => holds.get(n.id)?.approval != null).length;
   const inGate = gated.filter(hasBrief);
   const gateHasVersion = gateVersionIds(opts.gate).length > 0;
   // Unversioned tickets the gate keeps out — with `type:bug|version:X` an
@@ -492,7 +538,8 @@ export function dispatchQueueSnapshot(
     inGate: inGate.length,
     needsBrief: gated.length - inGate.length,
     unestimated: inGate.filter((n) => n.effortEstimate === null).length,
-    humanOnly: gatedAll.length - gated.length,
+    humanOnly: gatedAll.length - gated.length - awaitingApproval,
+    awaitingApproval,
     heldByParents: parentHolds(gatedAll, ancestors),
     unversionedOutsideGate,
     unknownGateEntries,

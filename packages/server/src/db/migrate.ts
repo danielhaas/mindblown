@@ -634,6 +634,11 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS suggested_version_id UUID
   `);
+  // The issue author (#492): an operator placing the issue later stamps the
+  // node's approval from it. Older rows stay NULL — placed, they wait.
+  await db.execute(sql`
+    ALTER TABLE triage_decisions ADD COLUMN IF NOT EXISTS issue_reporter JSONB
+  `);
 
   // ── Triage cost opt (#142) — body-hash idempotency ────────────
   // SHA-256 of the canonical (title + body + sorted labels + state)
@@ -841,6 +846,14 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   // author was never stored, so existing rows stay NULL (unknown).
   await db.execute(sql`
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS reported_by JSONB
+  `);
+
+  // approval (#492): the approval stamp the pull queue gates on. The
+  // one-shot backfill needs the trust policy logic, so it runs in TS after
+  // the migrations (services/approvalBackfill.ts, data_migrations
+  // 'backfill_node_approval_v1').
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS approval JSONB
   `);
 
   // ── Requirements register ──────────────────────────────────────

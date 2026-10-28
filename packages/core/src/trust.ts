@@ -8,12 +8,13 @@
  *   known     a map member who is not on the lists
  *   external  everyone else, incl. forge authors not mapped to a member
  *
- * `reportedBy = null` (nodes from before #490) counts as trusted, so the
- * existing queue keeps running. Trusted work runs fully automatic; the two
+ * `reportedBy = null` counts as external: an unknown reporter is not a
+ * trusted one (#492, fail-closed). The nodes from before #490 were stamped
+ * by the #492 backfill instead. Trusted work runs fully automatic; the two
  * untrusted levels follow the policy's knobs. Deploy is not a knob — only
  * trusted work is ever deployed automatically.
  */
-import type { NodeReporter } from './types.js';
+import type { NodeApproval, NodeReporter } from './types.js';
 
 export type TrustLevel = 'trusted' | 'known' | 'external';
 export type TrustDispatch = 'auto' | 'approval';
@@ -63,7 +64,7 @@ export function trustLevel(
   forgeUsers: readonly ForgeUserLink[] = [],
 ): TrustLevel {
   const r = node.reportedBy;
-  if (!r) return 'trusted';
+  if (!r) return 'external';
   let userId: string | null;
   if (r.kind === 'user') {
     userId = r.userId;
@@ -91,6 +92,16 @@ export function automationFor(
   const level = trustLevel(node, policy, memberIds, forgeUsers);
   if (level === 'trusted') return { level, dispatch: 'auto', merge: 'auto', deploy: true };
   return { level, ...policy.levels[level], deploy: false };
+}
+
+/**
+ * The approval stamp a new node gets (#492). Trusted work, and work at a
+ * level the policy lets dispatch on its own, is approved by the policy
+ * (`by: null`). Everything else is proposed and waits for a trusted person.
+ * `merge` is what applies once the node is approved.
+ */
+export function approvalAtCreation(automation: TrustAutomation, at: string): NodeApproval {
+  return { state: automation.dispatch === 'auto' ? 'approved' : 'proposed', merge: automation.merge, by: null, at };
 }
 
 /**

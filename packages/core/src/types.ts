@@ -84,6 +84,23 @@ export function userReporter(userId: string | null | undefined): NodeReporter | 
   return userId ? { kind: 'user', userId } : null;
 }
 
+/**
+ * The approval stamp (#492): whether the fleet may run a node. Stamped once
+ * at creation from the map's trust policy (core `approvalAtCreation`); a
+ * trusted person changes it later (#494). Fail-closed: the pull queue runs
+ * only `approved` nodes, so a node without a stamp waits.
+ */
+export type ApprovalState = 'proposed' | 'approved' | 'rejected';
+
+export interface NodeApproval {
+  state: ApprovalState;
+  /** What the fleet may do once approved: merge itself, or stop at an open PR. */
+  merge: 'auto' | 'pr-only';
+  /** The user who decided; null = by the trust policy at creation, or by the #492 backfill. */
+  by: string | null;
+  at: string; // ISO 8601
+}
+
 export interface ForgeProblem {
   kind: 'unbound' | 'refused';
   /** `owner/repo` the map names. */
@@ -482,6 +499,12 @@ export interface Node {
    * before the column existed).
    */
   reportedBy: NodeReporter | null;
+  /**
+   * The approval stamp (#492). Set by the server at creation, never accepted
+   * from callers. null = no stamp (the map root, or a write path that
+   * skipped it) — the pull queue holds it like `proposed`.
+   */
+  approval: NodeApproval | null;
   // Bumps on every successful update. Clients send their last-seen value
   // as expectedRevision so concurrent edits don't silently clobber.
   revision: number;

@@ -358,6 +358,10 @@ export const nodes = pgTable('nodes', {
   // ({kind:'user',userId} | {kind:'forge',provider,login}). Written once
   // on insert, never updated. Null = unknown (pre-#490 rows).
   reportedBy: jsonb('reported_by'),
+  // approval (#492): NodeApproval JSON ({state, merge, by, at}). Stamped on
+  // insert from the map's trust policy; null = no stamp, which the pull
+  // queue holds (fail-closed). Existing rows: services/approvalBackfill.ts.
+  approval: jsonb('approval'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────
@@ -531,6 +535,9 @@ export const triageDecisions = pgTable('triage_decisions', {
   externalId: text('external_id').notNull(), // "owner/repo#NNN"
   issueTitle: text('issue_title').notNull(),
   issueState: text('issue_state').notNull(), // 'open' | 'closed'
+  // NodeReporter of the issue author, so a later operator "place" stamps the
+  // node's approval from the author (#492). Null on operator orphan rows.
+  issueReporter: jsonb('issue_reporter'),
   decision: text('decision').notNull(), // 'skip' | 'place' | 'uncertain'
   reason: text('reason').notNull(),
   confidence: integer('confidence').notNull(), // 0-100

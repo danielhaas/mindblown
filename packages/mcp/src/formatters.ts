@@ -6,7 +6,7 @@
 import type { MapDetail, NodeWithComputed, ScheduleResult, ReleaseTrendRow, ChangeEvent } from './api.js';
 import * as api from './api.js';
 import { makeDayMapper, describeHolidayCalendar } from '@mindblown/core';
-import { formatReporter } from '@mindblown/tool-kit';
+import { formatApproval, formatReporter } from '@mindblown/tool-kit';
 
 // ── Status icons ────────────────────────────────────────────────
 
@@ -77,6 +77,8 @@ function renderTreeNode(
   }
   const reporter = formatReporter(node.reportedBy);
   if (reporter) parts.push(`reported: ${reporter}`);
+  const approval = formatApproval(node.approval);
+  if (approval) parts.push(`approval: ${approval}`);
   if (node.dependencies.length > 0) {
     const depLabels = node.dependencies.map((d) => {
       const target = lookup.get(d.targetNodeId);
@@ -382,6 +384,7 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
   lines.push(`- **Assignees:** ${node.assigneeIds.length > 0 ? node.assigneeIds.join(', ') : 'none'}`);
   lines.push(`- **Sprint:** ${node.cycleId ?? 'unassigned'}`);
   lines.push(`- **Reported by:** ${formatReporter(node.reportedBy) ?? 'unknown'}`);
+  lines.push(`- **Approval:** ${node.approval ? `${node.approval.state} (merge ${node.approval.merge})` : 'none'}`);
 
   lines.push('');
   lines.push('## Computed Values');

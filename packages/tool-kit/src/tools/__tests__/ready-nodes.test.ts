@@ -17,6 +17,7 @@ describe('ready_nodes output (#323)', () => {
       backendWith({
         mapId: 'm', total: 1, returned: 1, ready: [n({ breadcrumb: ['Portal', 'Auth'], dependents: 2 })],
         sprintScope: { mode: 'active', cycles: [{ id: 'c1', name: 'Sprint 7' }] },
+        awaitingApproval: [],
       }, seen),
       { mapId: 'm' } as never,
     );
@@ -27,7 +28,7 @@ describe('ready_nodes output (#323)', () => {
 
   it('an empty sprint points at sprint: "all"; the no-sprint fallback is stated', async () => {
     const empty = await readyNodesTool.handler(
-      backendWith({ mapId: 'm', total: 0, returned: 0, ready: [], sprintScope: { mode: 'active', cycles: [{ id: 'c1', name: 'S7' }] } }),
+      backendWith({ mapId: 'm', total: 0, returned: 0, ready: [], sprintScope: { mode: 'active', cycles: [{ id: 'c1', name: 'S7' }] }, awaitingApproval: [] }),
       { mapId: 'm' } as never,
     );
     expect(empty).toContain('Pass sprint: "all"');
@@ -35,10 +36,28 @@ describe('ready_nodes output (#323)', () => {
       backendWith({
         mapId: 'm', total: 1, returned: 1, ready: [n({})],
         sprintScope: { mode: 'active', cycles: [], note: 'No active sprint on this map — showing the whole map.' },
+        awaitingApproval: [],
       }),
       { mapId: 'm' } as never,
     );
     expect(fallback).toContain('whole map');
     expect(fallback).toContain('No active sprint');
+  });
+
+  it('lists what awaits approval apart, also when nothing is ready (#492)', async () => {
+    const out = await readyNodesTool.handler(
+      backendWith({
+        mapId: 'm', total: 0, returned: 0, ready: [], sprintScope: { mode: 'all', cycles: [] },
+        awaitingApproval: [
+          { id: 'x', text: 'From a stranger', approval: 'proposed', heldBy: null },
+          { id: 'y', text: 'Follow-up', approval: 'rejected', heldBy: { id: 'e', text: 'Epic' } },
+        ],
+      }),
+      { mapId: 'm' } as never,
+    );
+    expect(out).toContain('No ready leaves');
+    expect(out).toContain('Awaiting approval (2)');
+    expect(out).toContain('x "From a stranger" [proposed]');
+    expect(out).toContain('y "Follow-up" [rejected — via parent e "Epic"]');
   });
 });

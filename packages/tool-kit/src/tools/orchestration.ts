@@ -28,6 +28,10 @@ export const readyNodesTool = defineTool({
     '    any not-done ancestor (a held epic holds its subtree)',
     '  - It is not an epic sitting as a leaf (tag epic / type:epic, or a title starting with',
     '    "Epic:" / "[EPIC]") — held under the tag "epic"; its sub-tickets are the work',
+    '  - It is approved (#492): stamped at creation from the map\'s trust policy, so only',
+    '    work from a trusted reporter, or a level the policy lets run, is approved; the rest',
+    '    waits for a trusted person. A proposed/rejected not-done ancestor holds its subtree.',
+    '    These leaves are listed apart under "Awaiting approval"',
     '  - Its status is in the "todo" category (or status is null)',
     '  - It is not currently claimed by any session (claimedBySession = null)',
     '  - Every dependency predecessor (FS/SS/FF/SF) has status in the "done" category',
@@ -68,13 +72,25 @@ export const readyNodesTool = defineTool({
       scope == null || scope.mode === 'all' || scope.cycles.length === 0
         ? 'whole map'
         : `sprint ${scope.cycles.map((c) => `"${c.name}"`).join(', ')}`;
+    // Map-wide: approval is a gate before the sprint and scope filters.
+    const awaiting = result.awaitingApproval ?? [];
+    const awaitingLines =
+      awaiting.length === 0
+        ? []
+        : [
+            '',
+            `Awaiting approval (${awaiting.length}) — not dispatched until a trusted person approves:`,
+            ...awaiting.map(
+              (a) => `  - ${a.id} "${a.text}" [${a.approval}${a.heldBy ? ` — via parent ${a.heldBy.id} "${a.heldBy.text}"` : ''}]`,
+            ),
+          ];
 
     if (result.ready.length === 0) {
       const base = scopeFilter && scopeFilter.length > 0
         ? `No ready leaves in map ${mapId} (${scopeText}) matching scopes [${scopeFilter.join(', ')}].`
         : `No ready leaves in map ${mapId} (${scopeText}). Everything is done, in progress, claimed, or waiting on dependencies.`;
-      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null]
-        .filter(Boolean)
+      return [base, scope?.note, scope?.mode === 'active' && scope.cycles.length > 0 ? 'Pass sprint: "all" to look beyond the sprint.' : null, ...awaitingLines]
+        .filter((l) => l !== null && l !== undefined)
         .join('\n');
     }
 
@@ -90,6 +106,7 @@ export const readyNodesTool = defineTool({
       const waiting = n.dependents ? ` · ${n.dependents} waiting on it` : '';
       lines.push(`  - ${n.id} "${n.text}"${priority}${where}${waiting}${scopes}`);
     }
+    lines.push(...awaitingLines);
     return lines.join('\n');
   },
 });
@@ -128,6 +145,15 @@ export const getNextTicketTool = defineTool({
     '     (heldBy names that ancestor; on the map root it holds the whole map).',
     '     Clear whatever holds it (the blocker via',
     '     clear_blocker, the tag, or both) to put it back.',
+    '  6. Approval gate (#492): only approved tickets are granted. A node is stamped',
+    '     at creation from the map\'s trust policy, so work from an untrusted reporter',
+    '     waits for a trusted person; a proposed/rejected not-done ancestor holds its',
+    '     subtree. Listed in skipped[] with reason "awaiting-approval".',
+    '',
+    'merge: pr-only in the brief: the ticket is approved work from an untrusted',
+    'reporter. Open the PR, mark the node done, then STOP — do not merge, do not',
+    'deploy. Leave the note the brief gives on the PR. No merge line = trusted',
+    'work, merge and deploy as usual.',
     '',
     'On success you get the full self-contained brief: title, plain-text',
     'description, priority, scopes, tags, effective version, issue links.',
@@ -214,6 +240,12 @@ export const getNextTicketTool = defineTool({
             : '  repo: none connected to this map',
         );
       }
+      if (t.approval) {
+        lines.push('  merge: pr-only — open the PR, mark the node done, then stop: no merge, no deploy.');
+        lines.push(
+          `  PR note: "Opened from a ticket by ${t.approval.reportedBy ?? 'an unknown reporter'}, approved by ${t.approval.approvedBy ?? 'the map\'s trust policy'} — needs a human merge."`,
+        );
+      }
       lines.push('');
       lines.push(t.description ? `Brief:\n${t.description}` : t.githubLinks.length > 0 ? 'Brief: (no description — read the linked issue)' : 'Brief: (no description — the title is the brief)');
     } else {
@@ -241,8 +273,9 @@ export const getNextTicketTool = defineTool({
         lines.push('(No connected map you may work on matched — check mapIds and your access.)');
       }
     }
-    const noBrief = result.skipped.filter((s) => s.reason !== 'human-only');
+    const noBrief = result.skipped.filter((s) => s.reason === 'needs-brief');
     const humanOnly = result.skipped.filter((s) => s.reason === 'human-only');
+    const awaiting = result.skipped.filter((s) => s.reason === 'awaiting-approval');
     if (noBrief.length > 0) {
       lines.push('');
       lines.push(`Skipped ${noBrief.length} ready node(s) with no brief (tagged "${'needs-brief'}"):`);
@@ -253,6 +286,15 @@ export const getNextTicketTool = defineTool({
       lines.push(`Skipped ${humanOnly.length} ready node(s) held for a human (tag or blocker) — never granted to a worker:`);
       for (const s of humanOnly) {
         const why = [s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
+          + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
+        lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
+      }
+    }
+    if (awaiting.length > 0) {
+      lines.push('');
+      lines.push(`Skipped ${awaiting.length} ready node(s) awaiting approval by a trusted person — never granted until approved:`);
+      for (const s of awaiting) {
+        const why = [s.approval, s.tag, s.blockedReason ? `blocked: ${s.blockedReason}` : undefined].filter(Boolean).join('; ')
           + (s.heldBy ? ` — via parent ${s.heldBy.id} "${s.heldBy.text}"` : '');
         lines.push(`  - ${s.id} "${s.text}" [${why}]${s.mapId && fleetId !== undefined ? ` (map ${s.mapId})` : ''}`);
       }

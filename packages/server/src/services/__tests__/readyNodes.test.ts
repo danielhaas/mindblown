@@ -27,6 +27,7 @@ function row(p: Record<string, unknown>) {
     dependencies: [], tags: [], customFields: {}, autoProgress: 'off', revision: 1,
     createdAt: new Date(`2026-01-${String(seq).padStart(2, '0')}T00:00:00Z`),
     updatedAt: new Date('2026-01-01T00:00:00Z'), createdBy: 't',
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     ...p,
   };
 }
@@ -36,6 +37,33 @@ const root = () => row({ id: 'root', parentId: null, text: 'Root' });
 beforeEach(() => {
   selects.length = 0;
   seq = 0;
+});
+
+describe('readyNodes — approval gate (#492)', () => {
+  it('lists unapproved ready leaves apart, with the parent that holds them; they are not ready', async () => {
+    const proposed = { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' };
+    const epic = row({ id: 'epic', text: 'Follow-ups', approval: proposed });
+    selects.push(
+      [mapRow],
+      [
+        row({ id: 'root', parentId: null, text: 'Root', approval: null }),
+        row({ id: 'ok' }),
+        row({ id: 'prop', text: 'From a stranger', approval: proposed }),
+        row({ id: 'none', text: 'No stamp', approval: null }),
+        epic,
+        row({ id: 'sub', parentId: 'epic', text: 'Sub' }),
+      ],
+      [],
+    );
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['ok']);
+    expect(r.total).toBe(1);
+    expect(r.awaitingApproval).toEqual([
+      { id: 'prop', text: 'From a stranger', approval: 'proposed', heldBy: null },
+      { id: 'none', text: 'No stamp', approval: 'proposed', heldBy: null },
+      { id: 'sub', text: 'Sub', approval: 'proposed', heldBy: { id: 'epic', text: 'Follow-ups' } },
+    ]);
+  });
 });
 
 describe('readyNodes — developer queue (#323)', () => {

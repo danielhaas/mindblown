@@ -44,7 +44,7 @@ export type {
 } from './types.js';
 
 export { FORGE_LINK_PROVIDERS, isForgeLink, forgeLabel, userReporter } from './types.js';
-export type { ForgeKindName, ForgeProblem, NodeReporter } from './types.js';
+export type { ApprovalState, ForgeKindName, ForgeProblem, NodeApproval, NodeReporter } from './types.js';
 
 // Computation engine
 export {
@@ -138,6 +138,7 @@ export {
   dispatchQueueSnapshot,
   dispatchSkipTag,
   dispatchHold,
+  approvalHold,
   parentHolds,
   isEpicLeaf,
   EPIC_HOLD_TAG,
@@ -431,7 +432,7 @@ export type { StepAnswer, StepParts, BlockerAnswer, BriefAnswer } from './humanS
 export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
 
 // Trust policy: who may run the fleet on a map (#491)
-export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, parseTrustPolicy } from './trust.js';
+export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, approvalAtCreation, parseTrustPolicy } from './trust.js';
 export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';
 
 // Guided onboarding: the project setup checklist

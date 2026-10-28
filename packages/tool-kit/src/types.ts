@@ -57,6 +57,8 @@ export interface NodeWithComputed {
     | { kind: 'user'; userId: string }
     | { kind: 'forge'; provider: string; login: string }
     | null;
+  /** The approval stamp (#492); server-set, read-only. Only approved nodes are dispatched. */
+  approval?: { state: 'proposed' | 'approved' | 'rejected'; merge: 'auto' | 'pr-only'; by: string | null; at: string } | null;
   collapsed: boolean;
   createdAt: string;
   updatedAt: string;

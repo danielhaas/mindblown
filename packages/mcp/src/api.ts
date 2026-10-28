@@ -181,6 +181,8 @@ export interface NodeWithComputed {
     | { kind: 'user'; userId: string }
     | { kind: 'forge'; provider: string; login: string }
     | null;
+  /** The approval stamp (#492); server-set, read-only. Only approved nodes are dispatched. */
+  approval?: { state: 'proposed' | 'approved' | 'rejected'; merge: 'auto' | 'pr-only'; by: string | null; at: string } | null;
   computedEffort: number;
   computedProgress: number;
   healthSignal: string;
@@ -1628,6 +1630,7 @@ export interface ReadyNodesResultApi {
   total: number;
   returned: number;
   sprintScope?: { mode: 'active' | 'all' | 'cycle'; cycles: Array<{ id: string; name: string }>; note?: string };
+  awaitingApproval: Array<{ id: string; text: string; approval: 'proposed' | 'rejected'; heldBy: { id: string; text: string } | null }>;
 }
 
 export interface ClaimNodeResultApi {

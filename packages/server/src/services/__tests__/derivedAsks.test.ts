@@ -244,7 +244,11 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
 
 describe('tickets that need a brief', () => {
   const ready = (id: string, extra: Record<string, unknown> = {}) =>
-    node(id, { parentId: 'root', status: null, claimedBySession: null, dependencies: [], blockedReason: null, ...extra });
+    node(id, {
+      parentId: 'root', status: null, claimedBySession: null, dependencies: [], blockedReason: null,
+      approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
+      ...extra,
+    });
   const briefKey = { fleetId: 'f1', mapId: 'm1', askId: 'brief-bare' };
 
   beforeEach(() => {

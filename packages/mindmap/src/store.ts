@@ -1114,6 +1114,8 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       createdBy: state.user?.id ?? 'user-001',
       // Optimistic stub only — the server sets the real reporter (#490).
       reportedBy: state.user?.id ? { kind: 'user', userId: state.user.id } : null,
+      // The server stamps it from the trust policy (#492).
+      approval: null,
       revision: 1,
       deletedAt: null,
       ...(fields ?? {}),
