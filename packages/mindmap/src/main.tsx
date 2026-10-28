@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { OfflineBanner } from './OfflineBanner.js';
+import { Toaster } from './Toaster.js';
 
 const MOBILE_KEY = 'mb_mobile_override';
 
@@ -46,6 +47,7 @@ void load.then((Component) => {
     <StrictMode>
       <Component />
       <OfflineBanner />
+      <Toaster />
     </StrictMode>,
   );
 });
