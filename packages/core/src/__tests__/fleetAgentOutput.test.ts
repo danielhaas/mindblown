@@ -47,4 +47,18 @@ describe('agent output on a claim (#585)', () => {
     expect(claimOutput(hosts, MAP_B, 'n1')).toBeNull();
     expect(claimOutput(hosts, MAP_A, 'other')).toBeNull();
   });
+
+  it("a ticket re-granted on another host shows nothing until its new agent prints, not the dead host's run", () => {
+    const host = (name: string, at: string, claims: FleetRollup['claims']) => ({
+      host: name,
+      generatedAt: at,
+      mapIds: [MAP_A],
+      rollup: { ...base, host: name, generated_at: at, claims },
+    });
+    const dead = host('dead', '2026-10-28T09:00:00Z', [{ nodeId: 'n1', phase: 'working', output: ['old run'] }]);
+    const fresh = host('fresh', '2026-10-28T10:00:00Z', [{ nodeId: 'n1', phase: 'starting' }]);
+    expect(claimOutput([dead, fresh], MAP_A, 'n1')).toBeNull();
+    const printed = host('fresh', '2026-10-28T10:02:00Z', [{ nodeId: 'n1', phase: 'working', output: ['new run'] }]);
+    expect(claimOutput([dead, printed], MAP_A, 'n1')).toEqual({ host: 'fresh', at: '2026-10-28T10:02:00Z', lines: ['new run'] });
+  });
 });
