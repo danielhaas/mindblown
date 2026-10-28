@@ -206,31 +206,36 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
 
   describe('auto-check', () => {
     const fleetScope = { fleetId: 'f1', visibleMapIds: ['m1'], fleetLevel: false };
+    const gaveUp = 'Fleet worker bb:slot1:fleet-worker: the agent ran past 60 min and was stopped. Partial work: branch b.';
     beforeEach(() => {
       state.nodes.push(
-        node('fresh', { blockedReason: 'Needs the API key', updatedAt: new Date(NOW - 10 * 60_000).toISOString() }),
-        node('merge', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: PR #7 waits for a person to merge.' }),
+        node('timeout', { blockedReason: gaveUp }),
+        node('fresh', { blockedReason: gaveUp, updatedAt: new Date(NOW - 10 * 60_000).toISOString() }),
+        node('merge', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: PR #7 came from a ticket approved for a PR only. Review it and merge it by hand.' }),
       );
     });
+    const ourRow = (writes: unknown[] = [{ done: true }]) => ({ ask: { id: 'blocker-timeout' }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: hoursAgo(1), writes });
 
-    it('checks a blocker that has sat 30 min, as Auto-check; not a fresh one, not a worker\'s own PR note', async () => {
+    it('checks a fleet give-up that has sat 30 min, as Auto-check; not a fresh one, a person\'s blocker or a PR note', async () => {
       const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW));
-      expect(out.sent).toEqual([{ askId: 'blocker-vendor', mapId: 'm1', action: 'fleet-check' }]);
+      expect(out.sent).toEqual([{ askId: 'blocker-timeout', mapId: 'm1', action: 'fleet-check' }]);
       expect(applyLintFix).toHaveBeenCalledTimes(1);
-      expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'vendor', 'fleet-check', 'owner', { note: undefined });
+      expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'timeout', 'fleet-check', 'owner', { note: undefined });
       expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ answeredBy: 'Auto-check' }));
     });
 
-    it('once per blocker: a row whose last answer was the auto-check stays with a person; a person\'s answer re-arms it', async () => {
-      state.stored = [{ ask: { id: 'blocker-vendor' }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: hoursAgo(1) }];
+    it('once per ticket: a row last answered by the auto-check stays with a person; a person\'s answer or a failed write re-arms it', async () => {
+      state.stored = [ourRow()];
       expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent).toEqual([]);
-      state.stored = [{ ask: { id: 'blocker-vendor' }, mapId: 'm1', status: 'answered', answeredBy: 'Dan', answeredAt: hoursAgo(1) }];
-      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-vendor']);
+      state.stored = [{ ...ourRow(), answeredBy: 'Dan' }];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-timeout']);
+      state.stored = [ourRow([{ done: false, error: 'db down' }])];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-timeout']);
     });
 
-    it('the fresh blocker is checked once its 30 min are up', async () => {
+    it('the fresh give-up is checked once its 30 min are up', async () => {
       const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW + 25 * 60_000));
-      expect(out.sent.map((r) => r.askId)).toEqual(['blocker-vendor', 'blocker-fresh']);
+      expect(out.sent.map((r) => r.askId)).toEqual(['blocker-timeout', 'blocker-fresh']);
     });
   });
 });

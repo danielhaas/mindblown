@@ -60,7 +60,7 @@ export const updateFleetTool = defineTool({
       .boolean()
       .optional()
       .describe(
-        'Auto-check: every blocked ticket that has sat 30 min goes to the fleet once, as if someone pressed "Fleet can fix it" (fleet_check_blockers). A blocker the check could not get past stays with a person. Off by default.',
+        'Auto-check: a ticket a fleet worker gave up on (timed out, failed, changed nothing) goes back to the fleet once after 30 min, as if someone pressed "Fleet can fix it". Blockers a person set, notes on a worker\'s PR and the agent\'s questions are never touched; a ticket the check run gives up on again stays with a person. Off by default.',
       ),
   },
   handler: async (backend, { fleetId, name, maxActiveClaims, autoCheckBlockers }) => {

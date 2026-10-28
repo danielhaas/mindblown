@@ -196,7 +196,7 @@ function AutoCheckSwitch({ fleet, onChanged }: { fleet: FleetWithMaps; onChanged
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const on = fleet.autoCheckBlockers;
-  const hint = 'A blocker that has sat 30 minutes goes to the fleet once, as if you pressed Fleet can fix it. If the fleet cannot get past it, it stays with you. A worker\'s own PR notes are left to the worker.';
+  const hint = 'A ticket a fleet worker gave up on (timed out, failed, changed nothing) goes back to the fleet once after 30 minutes, as if you pressed Fleet can fix it. If it gives up again, it stays with you. Blockers you set, notes on a worker\'s PR and the agent\'s questions are never touched.';
   if (!fleet.isOwner || !onChanged) {
     return on ? <div style={{ fontSize: 12, color: '#4338ca', marginTop: 6 }} title={hint} data-testid="fleet-auto-check">Auto-check blockers: on</div> : null;
   }
@@ -217,7 +217,7 @@ function AutoCheckSwitch({ fleet, onChanged }: { fleet: FleetWithMaps; onChanged
         <input type="checkbox" checked={on} disabled={busy} onChange={toggle} data-testid="fleet-auto-check" />
         Auto-check blockers
       </label>
-      <span style={{ color: '#64748b' }}>{on ? 'blocked tickets go to the fleet after 30 min, once each' : 'off — blocked tickets wait for Fleet can fix it'}</span>
+      <span style={{ color: '#64748b' }}>{on ? 'tickets the fleet gave up on get one more try after 30 min' : 'off — tickets the fleet gave up on wait for Fleet can fix it'}</span>
       {error && <span style={{ color: '#b91c1c' }}>{error}</span>}
     </div>
   );

@@ -152,15 +152,21 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(derivedAnswerPreview(vendor, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-check/);
   });
 
-  it('the automatic check takes any blocker but a fleet worker\'s own PR note', () => {
-    const vendor = buildBlockerAsk({ id: 'n3', text: 'x', blockedReason: 'Waiting for the vendor' }, 'm');
-    const red = buildBlockerAsk({ id: 'n4', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: CI failed on PR #9 (abc).' }, 'm');
-    const merge = buildBlockerAsk({ id: 'n5', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: PR #9 waits for a person to merge.' }, 'm');
-    const bare = buildBlockerAsk({ id: 'n6', text: 'x', blockedReason: null }, 'm');
-    expect(autoCheckable(vendor)).toBe(true);
-    expect(autoCheckable(bare)).toBe(true);
-    expect(autoCheckable(red)).toBe(false);
-    expect(autoCheckable(merge)).toBe(false);
+  it('the automatic check takes only a fleet worker\'s give-up', () => {
+    const w = 'Fleet worker h:slot1:fleet-worker: ';
+    const ask = (blockedReason: string | null, claimedBySession: string | null = null) => buildBlockerAsk({ id: 'n', text: 'x', blockedReason, claimedBySession }, 'm');
+    expect(autoCheckable(ask(`${w}the agent ran past 60 min and was stopped. Partial work: branch b in /w.`))).toBe(true);
+    expect(autoCheckable(ask(`${w}the agent finished without changing anything.`))).toBe(true);
+    // a person's blocker, a Stop, a hold
+    expect(autoCheckable(ask('Waiting for the vendor'))).toBe(false);
+    expect(autoCheckable(ask(null))).toBe(false);
+    // the worker's notes on its PR, and its agent's question
+    expect(autoCheckable(ask(`${w}CI failed on PR #9 (abc).`))).toBe(false);
+    expect(autoCheckable(ask(`${w}PR #9 came from a ticket approved for a PR only. Review it and merge it by hand.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}PR #9 was closed without merging.`))).toBe(false);
+    expect(autoCheckable(ask(`${w}needs a decision: which API version?`))).toBe(false);
+    // still claimed: a worker holds it
+    expect(autoCheckable(ask(`${w}the agent exited with 1.`, 'h:slot1:fleet-worker'))).toBe(false);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {

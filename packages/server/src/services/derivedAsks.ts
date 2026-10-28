@@ -195,12 +195,14 @@ export async function sendBlockersToFleet(scope: asksDb.AskScope, mapIds: string
 /**
  * The automatic check (fleet autoCheckBlockers): the same answer as "Let the
  * fleet check all", for fewer rows —
- *   - a blocker that has sat AUTO_CHECK_GRACE_MINUTES, so a person can answer first;
- *   - not a fleet worker's own PR note (core autoCheckable);
- *   - one automatic check per blocker: when the check run could not get past
- *     it and wrote a blocker again, the row's last answer is still ours and
- *     it stays with a person. Any answer a person gives replaces that row
- *     and re-arms the check; so does pruning, ANSWER_RETENTION_DAYS later.
+ *   - only a fleet worker's give-up (core autoCheckable): never a person's
+ *     blocker, a note on the worker's PR, or its agent's question;
+ *   - one that has sat AUTO_CHECK_GRACE_MINUTES, so a person can answer first;
+ *   - once per ticket: when the check run gives up again, the row's last
+ *     answer is still ours and the blocker stays with a person. A person's
+ *     answer on the row replaces it and re-arms the check; otherwise it is
+ *     pruned ANSWER_RETENTION_DAYS later. A check whose write failed does
+ *     not count.
  */
 export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[], userId: string | null, now: Date = new Date()): Promise<FleetCheckOutcome> {
   const due = now.getTime() - AUTO_CHECK_GRACE_MINUTES * 60_000;
@@ -209,7 +211,9 @@ export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[]
   );
   if (open.length === 0) return { sent: [], failed: [] };
   const ours = new Set(
-    (await asksDb.listAsks(scope, { status: 'answered' })).filter((r) => r.answeredBy === AUTO_CHECK_BY && blockerAskNodeId(r.ask.id) !== null).map(rowKey),
+    (await asksDb.listAsks(scope, { status: 'answered' }))
+      .filter((r) => r.answeredBy === AUTO_CHECK_BY && blockerAskNodeId(r.ask.id) !== null && r.writes.every((w) => w.done))
+      .map(rowKey),
   );
   return answerFleetCanFix(scope, open.filter((r) => !ours.has(rowKey(r))), userId, AUTO_CHECK_BY);
 }

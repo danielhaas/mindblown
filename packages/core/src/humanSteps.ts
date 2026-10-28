@@ -251,15 +251,23 @@ export const AUTO_CHECK_BY = 'Auto-check';
 export const AUTO_CHECK_GRACE_MINUTES = 30;
 
 /**
- * A blocker row the automatic check may hand to the fleet: any blocker but a
- * fleet worker's own note on its PR. A red CI run or a conflict there is the
- * worker's own auto-fix (claude-fleet FLEET_WORKER_AUTO_FIX); a wait on a
- * person (review, merge, no CI) sent as a check run would start the ticket
- * over beside its open PR.
+ * A blocker row the automatic check may hand to the fleet: only a fleet
+ * worker's give-up (claude-fleet fleet-worker give_up — the agent timed out,
+ * failed, changed nothing, could not push; the claim is released). Never:
+ *   - a person's blocker (no "Fleet worker …:" prefix) — flag_blocker, the
+ *     Stop button, a deliberate hold;
+ *   - a note on the worker's PR (it names "PR #N": red CI, a conflict, a
+ *     merge by hand, a closed PR) — red CI / a conflict is the worker's own
+ *     auto-fix, and a check run would start over beside the PR;
+ *   - the agent's question ("needs a decision: …") — a person answers it;
+ *   - a ticket still claimed — a worker holds it.
  */
-export function autoCheckable(a: Pick<Ask, 'question'>): boolean {
-  const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
-  return !WORKER_WAIT_NOTE.test(reason.trim());
+export function autoCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
+  const reason = (a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question).trim();
+  const m = WORKER_WAIT_NOTE.exec(reason);
+  if (!m || a.unblocks?.claimed_by) return false;
+  const what = reason.slice(m[0].length);
+  return !/\bPR #\d+/.test(what) && !/^needs a decision\b/i.test(what);
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
