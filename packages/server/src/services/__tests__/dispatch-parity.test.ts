@@ -27,6 +27,7 @@ const WORKFLOW: StatusDef[] = [
 
 function n(p: Partial<CoreNode> & { id: string }): CoreNode {
   return {
+    approval: { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' },
     mapId: 'm',
     parentId: 'root',
     childrenIds: [],
@@ -105,11 +106,14 @@ describe('"Fleet can fix it" check runs (fleet-check)', () => {
       n({ id: 'check', status: 'in_progress', blockedReason: 'agent exited with 1', tags: ['fleet-check'] }),
       n({ id: 'checkClaimed', blockedReason: 'x', tags: ['fleet-check'], claimedBySession: 's2' }),
       n({ id: 'checkDone', status: 'done', blockedReason: 'x', tags: ['fleet-check'] }),
+      // Not past the approval gate (#492): nobody trusted let this brief through.
+      n({ id: 'checkProposed', blockedReason: 'x', tags: ['fleet-check'], approval: { state: 'proposed', merge: 'pr-only', by: null, at: '2026-10-28T00:00:00.000Z' } }),
     ];
     const d = selectPullCandidates(nodes, { workflow: WORKFLOW, cap: 10, gate: ['version:v2'], policy: [] });
     expect(d.ranked[0].id).toBe('check');
     expect(d.ranked.map((x) => x.id)).not.toContain('checkClaimed');
     expect(d.ranked.map((x) => x.id)).not.toContain('checkDone');
+    expect(d.ranked.map((x) => x.id)).not.toContain('checkProposed');
     expect(d.ranked.filter((x) => x.id === 'check')).toHaveLength(1);
   });
 

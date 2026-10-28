@@ -671,6 +671,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
           updatedAt: now,
           createdBy: parent.createdBy,
           reportedBy: null,
+          approval: null,
           revision: 1,
           deletedAt: null,
         };

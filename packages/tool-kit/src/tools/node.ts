@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineTool } from '../spec.js';
-import { formatClaim, formatReporter } from '../formatters.js';
+import { formatApproval, formatClaim, formatReporter } from '../formatters.js';
 
 /** An ETA given as minutes from now, as the ISO timestamp the server stores. */
 export function etaFromMinutes(minutes: number, now: Date = new Date()): string {
@@ -593,12 +593,14 @@ export const searchNodesTool = defineTool({
       const claim = ' ' + formatClaim(n.claimedBySession, n.claimedAt);
       const reporter = formatReporter(n.reportedBy);
       const reported = reporter ? ` reported: ${reporter}` : '';
+      const approval = formatApproval(n.approval);
+      const approvalStr = approval ? ` approval: ${approval}` : '';
       const kids = n.childrenIds?.length ?? 0;
       const kidsStr = kids > 0 ? ` (${kids} child${kids === 1 ? '' : 'ren'})` : '';
       const phase = n.phaseId
         ? ` (phase: ${phaseNameById.get(n.phaseId) ?? n.phaseId})`
         : '';
-      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}${reported}`;
+      return `- "${n.text}" (id: ${n.id}) — ${progress}% ${health}${n.status ? ` [${n.status}]` : ''}${n.priority ? ` ${n.priority}` : ''}${phase}${kidsStr}${links}${claim}${reported}${approvalStr}`;
     });
 
     return `Found ${matches.length} node(s) matching "${query}":\n${lines.join('\n')}`;

@@ -24,8 +24,11 @@ import {
   NEEDS_BRIEF_TAG,
 } from '../dispatch.js';
 
+const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
+
 function n(p: Partial<Node> & { id: string }): Node {
   return {
+    approval: APPROVED,
     mapId: 'm',
     parentId: 'root',
     childrenIds: [],
@@ -345,8 +348,8 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
   it('counted apart, never grantable; only human-only left reads as empty', async () => {
     const { dispatchQueueSnapshot, dispatchSkipTag } = await import('../dispatch.js');
     const node = (id: string, tags: string[]) =>
-      ({ id, parentId: 'root', status: null, claimedBySession: null, dependencies: [], tags, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
-    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, dependencies: [], tags: [], description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
+      ({ id, parentId: 'root', status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
+    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
     const snap = dispatchQueueSnapshot([root, node('a', ['needs-human']), node('b', ['kira-skip'])], { workflow: [], cap: 3, gate: [] });
     expect(snap).toMatchObject({ inGate: 0, humanOnly: 2, needsBrief: 0, state: 'empty' });
     expect(dispatchSkipTag({ tags: ['x', 'NEEDS-RITA-REVIEW'] })).toBe('NEEDS-RITA-REVIEW');
@@ -356,19 +359,20 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
   it('a manual blocker holds a ticket like a skip tag', async () => {
     const { dispatchQueueSnapshot, dispatchHold } = await import('../dispatch.js');
     const node = (id: string, blockedReason: string | null) =>
-      ({ id, parentId: 'root', status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
-    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
+      ({ id, parentId: 'root', status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [] }) as never;
+    const root = { id: 'root', parentId: null, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason: null, description: null, externalLinks: [], versionId: null, effortEstimate: null, childrenIds: ['a', 'b'] } as never;
     const snap = dispatchQueueSnapshot([root, node('a', 'Waiting on Dan'), node('b', null)], { workflow: [], cap: 3, gate: [] });
     expect(snap).toMatchObject({ inGate: 1, humanOnly: 1, inGateIds: ['b'], state: 'running' });
-    expect(dispatchHold({ tags: [], blockedReason: 'x' })).toEqual({ tag: null, blockedReason: 'x', heldBy: null });
-    expect(dispatchHold({ tags: ['kira-skip'], blockedReason: null })).toEqual({ tag: 'kira-skip', blockedReason: null, heldBy: null });
-    expect(dispatchHold({ tags: [], blockedReason: ' ' })).toBeNull();
+    const approval = APPROVED;
+    expect(dispatchHold({ tags: [], blockedReason: 'x', approval })).toEqual({ tag: null, blockedReason: 'x', approval: null, heldBy: null });
+    expect(dispatchHold({ tags: ['kira-skip'], blockedReason: null, approval })).toEqual({ tag: 'kira-skip', blockedReason: null, approval: null, heldBy: null });
+    expect(dispatchHold({ tags: [], blockedReason: ' ', approval })).toBeNull();
   });
 
   it("an open ancestor's hold covers its subtree; a done ancestor's leftover text does not", async () => {
     const { dispatchQueueSnapshot, dispatchHold } = await import('../dispatch.js');
     const n = (id: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
-      ({ id, text: id, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+      ({ id, text: id, parentId, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
     const workflow = [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'done', name: 'Done', category: 'done' }] as never;
     const nodes = [
       n('root', null, { childrenIds: ['epic', 'old'] }),
@@ -383,14 +387,14 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect(snap.humanOnly).toBe(1); // leaf — epic and mid are containers, never pullable
     const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
     const isDone = (st: string | null) => st === 'done';
-    expect(dispatchHold(nodes[3] as never, { nodeMap, isDone })).toEqual({ tag: null, blockedReason: 'Waiting on Dan', heldBy: { id: 'epic', text: 'epic' } });
+    expect(dispatchHold(nodes[3] as never, { nodeMap, isDone })).toEqual({ tag: null, blockedReason: 'Waiting on Dan', approval: null, heldBy: { id: 'epic', text: 'epic' } });
     expect(dispatchHold(nodes[3] as never)).toBeNull(); // without ancestors only the ticket itself counts
   });
 
   it('an epic leaf is held under `epic`; an epic parent does not hold its sub-tickets', async () => {
     const { dispatchQueueSnapshot, dispatchHold, isEpicLeaf } = await import('../dispatch.js');
     const n = (id: string, text: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
-      ({ id, text, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+      ({ id, text, parentId, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
     const nodes = [
       n('root', 'root', null, { childrenIds: ['e1', 'e2', 'e3', 'e4', 'big', 'repo'] }),
       n('e1', '#482 Epic: fleets as their own entity', 'root'),
@@ -405,7 +409,7 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect([...snap.inGateIds].sort()).toEqual(['repo', 'sub']);
     // e1–e4; `big` has a child, so it is a container and not pullable at all.
     expect(snap.humanOnly).toBe(4);
-    expect(dispatchHold(nodes[1] as never)).toEqual({ tag: 'epic', blockedReason: null, heldBy: null });
+    expect(dispatchHold(nodes[1] as never)).toEqual({ tag: 'epic', blockedReason: null, approval: null, heldBy: null });
     const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
     expect(dispatchHold(nodes[6] as never, { nodeMap, isDone: () => false })).toBeNull();
     expect(isEpicLeaf({ text: 'Epics are fun', tags: [] })).toBe(false);
@@ -415,7 +419,7 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
   it('names the parents that hold tickets through their subtree, most first (the Navy audit umbrella)', async () => {
     const { dispatchQueueSnapshot, parentHolds } = await import('../dispatch.js');
     const n = (id: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
-      ({ id, text: id, parentId, status: null, claimedBySession: null, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+      ({ id, text: id, parentId, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
     const nodes = [
       n('root', null, { childrenIds: ['audit', 'epic', 'own'] }),
       n('audit', 'root', { tags: ['needs-human'], status: 'in_progress', childrenIds: ['f1', 'f2', 'f3'] }),
@@ -428,10 +432,38 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     ];
     const snap = dispatchQueueSnapshot(nodes, { workflow: [], cap: 3, gate: [] });
     expect(snap.heldByParents).toEqual([
-      { id: 'audit', text: 'audit', tag: 'needs-human', blockedReason: null, count: 3 },
-      { id: 'epic', text: 'epic', tag: null, blockedReason: 'Waiting on Dan', count: 1 },
+      { id: 'audit', text: 'audit', tag: 'needs-human', blockedReason: null, approval: null, count: 3 },
+      { id: 'epic', text: 'epic', tag: null, blockedReason: 'Waiting on Dan', approval: null, count: 1 },
     ]);
     const nodeMap = new Map((nodes as { id: string }[]).map((x) => [x.id, x])) as never;
     expect(parentHolds([nodes[2], nodes[7]] as never, { nodeMap, isDone: () => false }).map((h) => [h.id, h.count])).toEqual([['audit', 1]]);
+  });
+
+  it('the approval gate (#492): only an approved stamp runs; a proposed or rejected open parent holds its subtree', async () => {
+    const { dispatchQueueSnapshot, dispatchHold } = await import('../dispatch.js');
+    const proposed = { ...APPROVED, state: 'proposed' } as const;
+    const rejected = { ...APPROVED, state: 'rejected' } as const;
+    const n = (id: string, parentId: string | null, extra: Record<string, unknown> = {}) =>
+      ({ id, text: id, parentId, status: null, claimedBySession: null, approval: APPROVED, dependencies: [], tags: [], blockedReason: null, description: 'brief', externalLinks: [], versionId: null, effortEstimate: 1, childrenIds: [], ...extra }) as never;
+    const nodes = [
+      // The root carries no stamp and holds nothing.
+      n('root', null, { approval: null, childrenIds: ['ok', 'unstamped', 'prop', 'rej', 'epic', 'done'] }),
+      n('ok', 'root'),
+      n('unstamped', 'root', { approval: null }),
+      n('prop', 'root', { approval: proposed }),
+      n('rej', 'root', { approval: rejected }),
+      n('epic', 'root', { approval: proposed, childrenIds: ['child'] }),
+      n('child', 'epic'),
+      n('done', 'root', { approval: proposed, status: 'done', childrenIds: ['late'] }),
+      n('late', 'done'),
+    ];
+    const workflow = [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'done', name: 'Done', category: 'done' }] as never;
+    const snap = dispatchQueueSnapshot(nodes, { workflow, cap: 5, gate: [] });
+    expect([...snap.inGateIds].sort()).toEqual(['late', 'ok']);
+    expect(snap.humanOnly).toBe(4);
+    expect(snap.heldByParents).toEqual([{ id: 'epic', text: 'epic', tag: null, blockedReason: null, approval: 'proposed', count: 1 }]);
+    // No stamp on the ticket waits like proposed (fail-closed).
+    expect(dispatchHold(nodes[2] as never)).toEqual({ tag: null, blockedReason: null, approval: 'proposed', heldBy: null });
+    expect(dispatchHold(nodes[4] as never)?.approval).toBe('rejected');
   });
 });

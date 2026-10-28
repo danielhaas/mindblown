@@ -358,6 +358,10 @@ export const nodes = pgTable('nodes', {
   // ({kind:'user',userId} | {kind:'forge',provider,login}). Written once
   // on insert, never updated. Null = unknown (pre-#490 rows).
   reportedBy: jsonb('reported_by'),
+  // approval (#492): NodeApproval JSON ({state, merge, by, at}). Stamped on
+  // insert from the map's trust policy; null = no stamp, which the pull
+  // queue holds (fail-closed). Existing rows: services/approvalBackfill.ts.
+  approval: jsonb('approval'),
 });
 
 // ── Map Permissions ───────────────────────────────────────────────

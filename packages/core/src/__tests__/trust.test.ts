@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { automationFor, defaultTrustPolicy, parseTrustPolicy, trustLevel, type TrustPolicy } from '../index.js';
+import { approvalAtCreation, automationFor, defaultTrustPolicy, parseTrustPolicy, trustLevel, type TrustPolicy } from '../index.js';
 
 const policy: TrustPolicy = {
   ...defaultTrustPolicy('owner', ['dan-bot']),
@@ -13,8 +13,8 @@ const forge = (login: string, provider: 'github' | 'gitea' = 'github') => ({
 });
 
 describe('trustLevel', () => {
-  it('counts an unknown reporter (before #490) as trusted', () => {
-    expect(trustLevel({ reportedBy: null }, policy, members)).toBe('trusted');
+  it('counts an unknown reporter as external (fail-closed, #492)', () => {
+    expect(trustLevel({ reportedBy: null }, policy, members)).toBe('external');
   });
   it('trusts the listed user ids and forge logins (case-insensitive)', () => {
     expect(trustLevel(user('owner'), policy, members)).toBe('trusted');
@@ -50,6 +50,24 @@ describe('automationFor', () => {
     expect(automationFor(forge('random'), allAuto, members)).toEqual({
       level: 'external', dispatch: 'auto', merge: 'auto', deploy: false,
     });
+  });
+});
+
+describe('approvalAtCreation', () => {
+  const at = '2026-10-28T12:00:00.000Z';
+  it('approves trusted work by policy, merge auto', () => {
+    expect(approvalAtCreation(automationFor(user('owner'), policy, members), at)).toEqual({
+      state: 'approved', merge: 'auto', by: null, at,
+    });
+  });
+  it('approves a level on dispatch=auto by policy, but keeps pr-only', () => {
+    expect(approvalAtCreation(automationFor(user('alice'), policy, members), at)).toEqual({
+      state: 'approved', merge: 'pr-only', by: null, at,
+    });
+  });
+  it('proposes a level on dispatch=approval, and an unknown reporter', () => {
+    expect(approvalAtCreation(automationFor(user('stranger'), policy, members), at).state).toBe('proposed');
+    expect(approvalAtCreation(automationFor({ reportedBy: null }, policy, members), at).state).toBe('proposed');
   });
 });
 

@@ -223,8 +223,10 @@ interface BlockableNode {
 /**
  * Tickets held for a person, keyed by id, with the hover text: a skip tag
  * (needs-human, kira-skip …) on the ticket, or a skip tag or manual blocker
- * on an open parent — `dispatchHold`, the rule the pull queue skips by. An
- * epic leaf is held too, but for the fleet, not for a person: left out.
+ * on an open parent — `dispatchHold`, the rule the pull queue skips by —
+ * or a proposed / rejected approval stamp (#492). An epic leaf is held
+ * too, but for the fleet, not for a person: left out. So is a node with no
+ * stamp at all (the root, an optimistic stub before the server answers).
  */
 export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, string> {
   const nodeMap = new Map(nodes.map((n) => [n.id, n]));
@@ -234,10 +236,16 @@ export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, s
     const hold = dispatchHold(n, ancestors);
     if (!hold) continue;
     if (hold.heldBy) {
-      const why = hold.tag ? `is tagged ${hold.tag}` : `is blocked: ${(hold.blockedReason ?? '').trim()}`;
+      const why = hold.tag
+        ? `is tagged ${hold.tag}`
+        : hold.blockedReason
+          ? `is blocked: ${hold.blockedReason.trim()}`
+          : `is ${hold.approval} — waits for approval`;
       holds.set(n.id, `Needs a person: parent "${hold.heldBy.text}" ${why}`);
     } else if (hold.tag && hold.tag !== EPIC_HOLD_TAG) {
       holds.set(n.id, `Needs a person: tagged ${hold.tag}`);
+    } else if (hold.approval && n.approval) {
+      holds.set(n.id, hold.approval === 'rejected' ? 'Rejected: the fleet will not run it' : 'Needs a person: waits for approval');
     }
   }
   return holds;
