@@ -442,7 +442,7 @@ export interface ToolBackend {
   // ── Fleets (#477) — not map-scoped: the server scopes them to the caller ──
   listFleets(): Promise<FleetWithMaps[]>;
   createFleet(name: string, maxActiveClaims?: number): Promise<FleetWithMaps>;
-  updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number }): Promise<FleetWithMaps>;
+  updateFleet(fleetId: string, fields: { name?: string; maxActiveClaims?: number; autoCheckBlockers?: boolean }): Promise<FleetWithMaps>;
   /** Freeze the current projected schedule as a named baseline (#113). */
   freezeBaseline(mapId: string, name?: string): Promise<FrozenBaseline>;
 

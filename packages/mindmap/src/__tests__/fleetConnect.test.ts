@@ -8,6 +8,7 @@ function fleet(id: string, name: string, over: Partial<FleetWithMaps> = {}): Fle
     name,
     ownerId: 'u1',
     maxActiveClaims: 0,
+    autoCheckBlockers: false,
     createdAt: '2026-10-17T00:00:00Z',
     updatedAt: '2026-10-17T00:00:00Z',
     maps: [],

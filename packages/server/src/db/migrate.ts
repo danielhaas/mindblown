@@ -1213,6 +1213,10 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
   await db.execute(sql`
     ALTER TABLE fleets ADD COLUMN IF NOT EXISTS pull_deficits JSONB NOT NULL DEFAULT '{}'::jsonb
   `);
+  // Auto-check: blocked tickets go to the fleet without a click. Off by default.
+  await db.execute(sql`
+    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT false
+  `);
   // One-shot: every map a fleet already works on gets a fleet of its own —
   // a pull cap above hold, or any telemetry row. Named after the map, owned
   // by the oldest admin (the operator who runs the satellites — a map's

@@ -183,7 +183,43 @@ function FleetOverview({ fleet, mapId, all, onAll, onRenamed }: {
         ))}
         {fleet.hiddenMapCount > 0 && ` · +${fleet.hiddenMapCount} map${fleet.hiddenMapCount === 1 ? '' : 's'} you can't view`}
       </div>
+      <AutoCheckSwitch fleet={fleet} onChanged={onRenamed} />
     </section>
+  );
+}
+
+/**
+ * Auto-check: blocked tickets go to the fleet without the "Fleet can fix
+ * it" click. The owner switches it; everyone else sees it only while on.
+ */
+function AutoCheckSwitch({ fleet, onChanged }: { fleet: FleetWithMaps; onChanged?: (f: FleetWithMaps) => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const on = fleet.autoCheckBlockers;
+  const hint = 'A blocker that has sat 30 minutes goes to the fleet once, as if you pressed Fleet can fix it. If the fleet cannot get past it, it stays with you. A worker\'s own PR notes are left to the worker.';
+  if (!fleet.isOwner || !onChanged) {
+    return on ? <div style={{ fontSize: 12, color: '#4338ca', marginTop: 6 }} title={hint} data-testid="fleet-auto-check">Auto-check blockers: on</div> : null;
+  }
+  const toggle = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      onChanged(await api.setFleetAutoCheck(fleet.id, !on));
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Saving failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ fontSize: 12, color: '#334155', marginTop: 6, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: busy ? 'wait' : 'pointer' }} title={hint}>
+        <input type="checkbox" checked={on} disabled={busy} onChange={toggle} data-testid="fleet-auto-check" />
+        Auto-check blockers
+      </label>
+      <span style={{ color: '#64748b' }}>{on ? 'blocked tickets go to the fleet after 30 min, once each' : 'off — blocked tickets wait for Fleet can fix it'}</span>
+      {error && <span style={{ color: '#b91c1c' }}>{error}</span>}
+    </div>
   );
 }
 

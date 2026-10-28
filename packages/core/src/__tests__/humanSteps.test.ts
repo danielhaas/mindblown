@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  autoCheckable,
   blockerAnswerAction,
   blockerAskNodeId,
   blockerFleetAction,
@@ -149,6 +150,17 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(released.unblocks.pr).toBe('#9'); // no PR link: the worker's note names it // the worker follows its PR from its claim file, MindBlown's claim or not
     expect(derivedAnswerPreview(conflict, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-fix/);
     expect(derivedAnswerPreview(vendor, 'Fleet can fix it')?.[0]).toMatch(/tagged fleet-check/);
+  });
+
+  it('the automatic check takes any blocker but a fleet worker\'s own PR note', () => {
+    const vendor = buildBlockerAsk({ id: 'n3', text: 'x', blockedReason: 'Waiting for the vendor' }, 'm');
+    const red = buildBlockerAsk({ id: 'n4', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: CI failed on PR #9 (abc).' }, 'm');
+    const merge = buildBlockerAsk({ id: 'n5', text: 'x', blockedReason: 'Fleet worker h:slot1:fleet-worker: PR #9 waits for a person to merge.' }, 'm');
+    const bare = buildBlockerAsk({ id: 'n6', text: 'x', blockedReason: null }, 'm');
+    expect(autoCheckable(vendor)).toBe(true);
+    expect(autoCheckable(bare)).toBe(true);
+    expect(autoCheckable(red)).toBe(false);
+    expect(autoCheckable(merge)).toBe(false);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {

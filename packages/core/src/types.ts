@@ -614,6 +614,12 @@ export interface Fleet {
   name: string;
   ownerId: UserId;
   maxActiveClaims: number;
+  /**
+   * Hand blocked tickets to the fleet without a click: every blocker that has
+   * sat for a while gets one automatic "Fleet can fix it" (server
+   * services/derivedAsks autoCheckBlockers). Off by default.
+   */
+  autoCheckBlockers: boolean;
   createdAt: string;
   updatedAt: string;
 }

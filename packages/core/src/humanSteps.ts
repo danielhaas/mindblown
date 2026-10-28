@@ -12,7 +12,7 @@
  * while open: the tag is the truth, and answering changes the tag.
  */
 import { questionParts, type Ask, type QuestionParts } from './asks.js';
-import { dispatchSkipTag, fleetFixAction } from './dispatch.js';
+import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
@@ -242,6 +242,24 @@ export function buildBlockerAsk(
 export function blockerFleetAction(a: Pick<Ask, 'question'>): 'fleet-fix' | 'fleet-check' {
   const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
   return fleetFixAction(reason);
+}
+
+/** Who the automatic check answers as — on the answered row, and the loop guard's marker. */
+export const AUTO_CHECK_BY = 'Auto-check';
+
+/** How long a blocker sits before the automatic check takes it — a person can answer it first. */
+export const AUTO_CHECK_GRACE_MINUTES = 30;
+
+/**
+ * A blocker row the automatic check may hand to the fleet: any blocker but a
+ * fleet worker's own note on its PR. A red CI run or a conflict there is the
+ * worker's own auto-fix (claude-fleet FLEET_WORKER_AUTO_FIX); a wait on a
+ * person (review, merge, no CI) sent as a check run would start the ticket
+ * over beside its open PR.
+ */
+export function autoCheckable(a: Pick<Ask, 'question'>): boolean {
+  const reason = a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question;
+  return !WORKER_WAIT_NOTE.test(reason.trim());
 }
 
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */

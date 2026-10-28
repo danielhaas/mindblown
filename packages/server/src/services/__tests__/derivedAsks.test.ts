@@ -51,7 +51,7 @@ vi.mock('../../db/asks.js', () => ({
 }));
 vi.mock('../asks.js', () => ({ AskNotFoundError: class AskNotFoundError extends Error {} }));
 
-import { answerDerivedAsk, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
+import { answerDerivedAsk, autoCheckBlockers, openDerivedAsks, derivedAskRows, sendBlockersToFleet } from '../derivedAsks.js';
 
 const key = { fleetId: 'f1', mapId: 'm1', askId: 'stalled-old' };
 const scope = { fleetId: 'f1', mapId: 'm1' };
@@ -202,5 +202,35 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
     ]);
     expect(out.failed).toEqual([]);
     expect(applyLintFix.mock.calls.map((c) => (c as unknown[]).slice(1, 3))).toEqual([['ci', 'fleet-fix'], ['vendor', 'fleet-check']]);
+  });
+
+  describe('auto-check', () => {
+    const fleetScope = { fleetId: 'f1', visibleMapIds: ['m1'], fleetLevel: false };
+    beforeEach(() => {
+      state.nodes.push(
+        node('fresh', { blockedReason: 'Needs the API key', updatedAt: new Date(NOW - 10 * 60_000).toISOString() }),
+        node('merge', { blockedReason: 'Fleet worker bb:slot1:fleet-worker: PR #7 waits for a person to merge.' }),
+      );
+    });
+
+    it('checks a blocker that has sat 30 min, as Auto-check; not a fresh one, not a worker\'s own PR note', async () => {
+      const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW));
+      expect(out.sent).toEqual([{ askId: 'blocker-vendor', mapId: 'm1', action: 'fleet-check' }]);
+      expect(applyLintFix).toHaveBeenCalledTimes(1);
+      expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'vendor', 'fleet-check', 'owner', { note: undefined });
+      expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ answeredBy: 'Auto-check' }));
+    });
+
+    it('once per blocker: a row whose last answer was the auto-check stays with a person; a person\'s answer re-arms it', async () => {
+      state.stored = [{ ask: { id: 'blocker-vendor' }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: hoursAgo(1) }];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent).toEqual([]);
+      state.stored = [{ ask: { id: 'blocker-vendor' }, mapId: 'm1', status: 'answered', answeredBy: 'Dan', answeredAt: hoursAgo(1) }];
+      expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-vendor']);
+    });
+
+    it('the fresh blocker is checked once its 30 min are up', async () => {
+      const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW + 25 * 60_000));
+      expect(out.sent.map((r) => r.askId)).toEqual(['blocker-vendor', 'blocker-fresh']);
+    });
   });
 });

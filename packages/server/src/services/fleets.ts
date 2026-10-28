@@ -149,7 +149,7 @@ export async function fleetNameOf(fleetId: string | null | undefined): Promise<s
 }
 
 /** Shape check for create/update bodies; a message when invalid. */
-export function validateFleetFields(input: { name?: unknown; maxActiveClaims?: unknown }, requireName: boolean): string | null {
+export function validateFleetFields(input: { name?: unknown; maxActiveClaims?: unknown; autoCheckBlockers?: unknown }, requireName: boolean): string | null {
   if (requireName || input.name !== undefined) {
     if (typeof input.name !== 'string' || input.name.trim() === '') return 'name must be a non-empty string';
     if (input.name.trim().length > 200) return 'name must be at most 200 characters';
@@ -158,5 +158,6 @@ export function validateFleetFields(input: { name?: unknown; maxActiveClaims?: u
     const n = input.maxActiveClaims;
     if (typeof n !== 'number' || !Number.isInteger(n) || n < 0) return 'maxActiveClaims must be an integer ≥ 0';
   }
+  if (input.autoCheckBlockers !== undefined && typeof input.autoCheckBlockers !== 'boolean') return 'autoCheckBlockers must be a boolean';
   return null;
 }

@@ -28,6 +28,9 @@
  * clear-blocker, Done = mark-done, free text = needs-human.
  */
 import {
+  AUTO_CHECK_BY,
+  AUTO_CHECK_GRACE_MINUTES,
+  autoCheckable,
   blockerAnswerAction,
   blockerFleetAction,
   FLEET_CHECK_TAG,
@@ -186,6 +189,32 @@ export interface FleetCheckOutcome {
  */
 export async function sendBlockersToFleet(scope: asksDb.AskScope, mapIds: string[], userId: string | null, by: string): Promise<FleetCheckOutcome> {
   const rows = (await openDerivedAsks(scope, mapIds)).filter((r) => blockerAskNodeId(r.ask.id) !== null && r.mapId);
+  return answerFleetCanFix(scope, rows, userId, by);
+}
+
+/**
+ * The automatic check (fleet autoCheckBlockers): the same answer as "Let the
+ * fleet check all", for fewer rows —
+ *   - a blocker that has sat AUTO_CHECK_GRACE_MINUTES, so a person can answer first;
+ *   - not a fleet worker's own PR note (core autoCheckable);
+ *   - one automatic check per blocker: when the check run could not get past
+ *     it and wrote a blocker again, the row's last answer is still ours and
+ *     it stays with a person. Any answer a person gives replaces that row
+ *     and re-arms the check; so does pruning, ANSWER_RETENTION_DAYS later.
+ */
+export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[], userId: string | null, now: Date = new Date()): Promise<FleetCheckOutcome> {
+  const due = now.getTime() - AUTO_CHECK_GRACE_MINUTES * 60_000;
+  const open = (await openDerivedAsks(scope, mapIds, now)).filter(
+    (r) => blockerAskNodeId(r.ask.id) !== null && r.mapId && autoCheckable(r.ask) && Date.parse(r.firstSeenAt) <= due,
+  );
+  if (open.length === 0) return { sent: [], failed: [] };
+  const ours = new Set(
+    (await asksDb.listAsks(scope, { status: 'answered' })).filter((r) => r.answeredBy === AUTO_CHECK_BY && blockerAskNodeId(r.ask.id) !== null).map(rowKey),
+  );
+  return answerFleetCanFix(scope, open.filter((r) => !ours.has(rowKey(r))), userId, AUTO_CHECK_BY);
+}
+
+async function answerFleetCanFix(scope: asksDb.AskScope, rows: AskRow[], userId: string | null, by: string): Promise<FleetCheckOutcome> {
   const out: FleetCheckOutcome = { sent: [], failed: [] };
   for (const r of rows) {
     const key = { fleetId: scope.fleetId, mapId: r.mapId!, askId: r.ask.id };
