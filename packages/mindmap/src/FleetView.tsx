@@ -199,7 +199,7 @@ function AutoCheckSwitch({ fleet, onChanged }: { fleet: FleetWithMaps; onChanged
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const on = fleet.autoCheckBlockers;
-  const hint = 'A ticket a fleet worker gave up on (timed out, failed, changed nothing) goes back to the fleet once after 30 minutes, as if you pressed Fleet can fix it. If it gives up again, it stays with you. Blockers you set, notes on a worker\'s PR and the agent\'s questions are never touched.';
+  const hint = 'A ticket a fleet worker gave up on (timed out, failed, changed nothing) goes back to the fleet once after 30 minutes, as if you pressed Fleet can fix it. If it gives up again, it stays with you, until a ticket it waits for (#494) is done: then it gets one more try. Blockers you set, notes on a worker\'s PR and the agent\'s questions are never touched.';
   if (!fleet.isOwner || !onChanged) {
     return on ? <div style={{ fontSize: 12, color: '#4338ca', marginTop: 6 }} title={hint} data-testid="fleet-auto-check">Auto-check blockers: on</div> : null;
   }

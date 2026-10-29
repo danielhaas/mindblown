@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   autoCheckable,
+  namedTickets,
+  staleCheckable,
   blockerAnswerAction,
   blockerAskNodeId,
   blockerFleetAction,
@@ -173,6 +175,18 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     expect(autoCheckable(ask(`${w}interrupted — the worker stopped mid-ticket. Partial work: branch b. Clear the blocker to requeue it.`))).toBe(true);
     // still claimed: a worker holds it
     expect(autoCheckable(ask(`${w}the agent exited with 1.`, 'h:slot1:fleet-worker'))).toBe(false);
+  });
+
+  it('a stale check: a fleet give-up or its agent\'s question, never a person\'s blocker or a PR note; it names its tickets', () => {
+    const w = 'Fleet worker h:slot2:fleet-worker: ';
+    const ask = (blockedReason: string, claimedBySession: string | null = null) => buildBlockerAsk({ id: 'n', text: 'x', blockedReason, claimedBySession }, 'm');
+    const question = ask(`${w}needs a decision: #492 is merged (a39fd60). #494 (approve) is still open; PR #590 is a draft. #494 first.`);
+    expect(staleCheckable(question)).toBe(true);
+    expect(namedTickets(question)).toEqual([492, 494]);
+    expect(staleCheckable(ask(`${w}the agent exited with 1.`))).toBe(true);
+    expect(staleCheckable(ask('Waiting for #494'))).toBe(false);
+    expect(staleCheckable(ask(`${w}CI failed on PR #9 (abc).`))).toBe(false);
+    expect(staleCheckable(ask(`${w}needs a decision: wait for #494?`, 'h:slot2:fleet-worker'))).toBe(false);
   });
 
   it('Unblocked clears, Done finishes, text is a person\'s next step', () => {
