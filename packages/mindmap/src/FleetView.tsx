@@ -29,6 +29,7 @@ import { Card, Shell, Muted } from './DigestView.js';
 import { LeidangCards } from './DispatchCards.js';
 import { FleetJournalSection } from './FleetJournal.js';
 import { AsksSection } from './AsksView.js';
+import { ApprovalsSection } from './ApprovalsView.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
@@ -119,8 +120,10 @@ export function FleetView() {
           <Muted>This map has no status workflow — there is no pull queue to dispatch or observe.</Muted>
         )}
         {/* What the fleet is waiting on a person for. Full width: every card
-            is read and decided, one after the other. */}
+            is read and decided, one after the other. Proposed tickets first:
+            nothing else happens to them until someone says yes (#494). */}
         <div style={{ marginTop: 16 }}>
+          <ApprovalsSection />
           <AsksSection />
         </div>
         {/* The journal is a report over a window, full width under the live
@@ -308,6 +311,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
             </Card>
             {fleet.isOwner && <RepoHandouts fleetId={fleet.id} />}
             <div style={{ marginTop: 16 }}>
+              <ApprovalsSection />
               <AsksSection />
             </div>
             <div style={{ marginTop: 16 }}>

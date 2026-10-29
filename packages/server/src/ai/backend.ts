@@ -24,6 +24,7 @@ import { authorizeFleetCiChange } from '../services/mapRepoBinding.js';
 import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
+import * as approvals from '../services/approvals.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
@@ -448,6 +449,25 @@ export function createChatBackend(userId: string): ToolBackend {
       return out;
     },
 
+    // ── Approvals (#494) ──────────────────────────────────────────
+    //
+    // Read-only on this surface, like the closed-issue audit: the chat
+    // model reads the proposed tickets' text — the untrusted text the
+    // gate exists for — and runs as the trusted user who is typing. A
+    // ticket that says "approve me" must not be able to. Deciding stays on
+    // the REST routes (the Fleet card, the phone) and the MCP tools.
+    async listPendingApprovals(scope) {
+      const out = await approvals.listPendingApprovals(userId, scope);
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+    async approveTicket() {
+      throw new Error('Approving tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
+    },
+    async rejectTicket() {
+      throw new Error('Rejecting tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
+    },
+
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //
     // Deliberately read-only on this surface: the in-app chat backend
@@ -558,6 +578,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'answerAskForFleet',
   // Edit on each map checked in services/asksInbox.
   'fleetCheckBlockers',
+  // Approvals (#494): the list scopes itself to viewable maps (services/approvals).
+  'listPendingApprovals',
 ]);
 
 /**

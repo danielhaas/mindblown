@@ -20,6 +20,10 @@ import type {
   FleetWithMaps,
   StalledLeaf,
   TrustPolicy,
+  NodeApproval,
+  PendingApprovalList,
+  ApproveInput,
+  RejectInput,
 } from '@mindblown/core';
 import { cachedResponse, clearApiCache, markOffline, markOnline, saveResponse } from './offline.js';
 
@@ -1264,6 +1268,27 @@ export interface FleetCheckResponse {
 /** "Let the fleet check all blockers": every blocker row of the fleet → Fleet can fix it. */
 export function fleetCheckBlockers(fleetId: string, by: string): Promise<FleetCheckResponse> {
   return request<FleetCheckResponse>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify({ by }) });
+}
+
+// ── Approvals (#494) ─────────────────────────────────────────────
+
+export interface ApprovalResponse {
+  approval: NodeApproval | null;
+  writes: Array<{ kind: 'comment' | 'close'; target: string; done: boolean; error?: string }>;
+  ok: boolean;
+}
+
+/** Proposed tickets on a map, or on a fleet's maps the reader can view. */
+export function fetchApprovals(target: FleetTarget): Promise<PendingApprovalList> {
+  return request<PendingApprovalList>(`${fleetBase(target)}/approvals`);
+}
+
+export function approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/approve`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 // ── Attachments ──────────────────────────────────────────────────

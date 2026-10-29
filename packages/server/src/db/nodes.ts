@@ -5,7 +5,7 @@ import { db } from './connection.js';
 import { nodes, maps, changeEvents, mediaOwners } from './schema.js';
 import { dbNodeToCore } from './helpers.js';
 import { hasCycle, resolveStatusDef, isForgeLink, isPrematureCloseLink } from '@mindblown/core';
-import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
+import type { Node as CoreNode, Dependency, DependencyType, ExternalLink, LinkedPrState, NodeApproval, NodeReporter, Priority, CustomFieldValue, NodeMap, StatusDef } from '@mindblown/core';
 import { invalidateMapContext } from '../sync/mapContext.js';
 import { approvalForNewNode } from '../services/trustPolicy.js';
 
@@ -775,6 +775,44 @@ export async function updateNode(
     if (current) throw new RevisionConflictError(current);
   }
   return null;
+}
+
+/**
+ * Write a node's approval stamp (#494) — the one path that changes it
+ * after creation. Not through updateNode: the stamp is a decision about
+ * the ticket, not its content, so it does not bump `revision` (that
+ * would mark requirement sign-offs stale). Written only while the stamp
+ * is still `fromState` (null = no stamp). Returns the node, or null when
+ * it is gone or someone decided first.
+ */
+export async function setApproval(nodeId: string, approval: NodeApproval, fromState: string | null): Promise<CoreNode | null> {
+  const [row] = await db
+    .update(nodes)
+    .set({ approval, updatedAt: new Date() })
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        fromState === null ? sql`${nodes.approval} IS NULL` : sql`${nodes.approval}->>'state' = ${fromState}`,
+      ),
+    )
+    .returning();
+  return row ? dbNodeToCore(row as unknown as Record<string, unknown>) : null;
+}
+
+/**
+ * Proposed nodes on these maps (#494), oldest first. Archived maps are
+ * on hold — nothing there waits on anyone. Done ones are left to the
+ * caller, which knows each map's workflow.
+ */
+export async function listProposedNodes(mapIds: string[]): Promise<CoreNode[]> {
+  if (mapIds.length === 0) return [];
+  const rows = await db
+    .select()
+    .from(nodes)
+    .where(and(inArray(nodes.mapId, mapIds), notDeleted, onActiveMap, sql`${nodes.approval}->>'state' = 'proposed'`))
+    .orderBy(nodes.createdAt);
+  return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }
 
 /**

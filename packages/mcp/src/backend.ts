@@ -56,6 +56,10 @@ export const httpBackend: ToolBackend = {
   listAsksForFleet: (fleetId, opts) => api.listAsksForFleet(fleetId, opts),
   answerAskForFleet: (fleetId, askId, input, mapId) => api.answerAskForFleet(fleetId, askId, input, mapId),
   fleetCheckBlockers: (fleetId, by) => api.fleetCheckBlockers(fleetId, by),
+  // ── Approvals (#494) ────────────────────────────────────────────
+  listPendingApprovals: (scope) => api.listPendingApprovals(scope),
+  approveTicket: (mapId, nodeId, input) => api.approveTicket(mapId, nodeId, input),
+  rejectTicket: (mapId, nodeId, input) => api.rejectTicket(mapId, nodeId, input),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
   // ── Attachments ─────────────────────────────────────────────────
