@@ -54,6 +54,8 @@ import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { runAutoCheck } from './services/asksInbox.js';
+import { runApprovalNotifications } from './services/approvalNotifications.js';
+import { pushoverConfigured } from './lib/pushover.js';
 import { registerWebSocket } from './ws.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
@@ -435,6 +437,23 @@ async function main(): Promise<void> {
     }
   };
   setInterval(autoCheckTick, AUTO_CHECK_INTERVAL_MS);
+
+  // ── Approval pushes (#493) ───────────────────────────────────
+  // Every 5 min: a map whose proposed tickets wait gets one batched
+  // Pushover push (at most hourly), plus one reminder per ticket after
+  // 24 h. No-op without PUSHOVER_APP_TOKEN / PUSHOVER_USER_KEY.
+  if (pushoverConfigured()) console.log('[approval-push] Pushover configured');
+  const APPROVAL_PUSH_INTERVAL_MS = 5 * 60 * 1000;
+  const approvalPushTick = async (): Promise<void> => {
+    try {
+      const r = await runApprovalNotifications();
+      if (r.pushed > 0) console.log(`[approval-push] pushed=${r.pushed}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[approval-push] ${err}`);
+    } catch (err) {
+      console.error('[approval-push] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(approvalPushTick, APPROVAL_PUSH_INTERVAL_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

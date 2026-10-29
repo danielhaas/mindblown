@@ -1503,5 +1503,21 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS fleet_can_edit_ci BOOLEAN NOT NULL DEFAULT FALSE
   `);
 
+  // ── Approval pushes (#493) ──────────────────────────────────────
+  // Per-map last push and per-node 24 h reminder, so a restart does not
+  // re-send (services/approvalNotifications.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_notifications (
+      map_id UUID PRIMARY KEY REFERENCES maps(id) ON DELETE CASCADE,
+      last_pushed_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_reminders (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      reminded_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+
   console.log('[db] Migrations complete.');
 }
