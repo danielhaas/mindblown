@@ -183,6 +183,7 @@ describe('a blocker as a step (Sonarpipe, 22.10.2026)', () => {
     const question = ask(`${w}needs a decision: #492 is merged (a39fd60). #494 (approve) is still open; PR #590 is a draft. #494 first.`);
     expect(staleCheckable(question)).toBe(true);
     expect(namedTickets(question)).toEqual([492, 494]);
+    expect(namedTickets({ question: 'see claude-fleet#95, PRs #590, o/r#7; waits for #12.' })).toEqual([12]);
     expect(staleCheckable(ask(`${w}the agent exited with 1.`))).toBe(true);
     expect(staleCheckable(ask('Waiting for #494'))).toBe(false);
     expect(staleCheckable(ask(`${w}CI failed on PR #9 (abc).`))).toBe(false);

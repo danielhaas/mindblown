@@ -307,10 +307,13 @@ export function staleCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
   return !!m && !a.unblocks?.claimed_by && /^needs a decision\b/i.test(reason.slice(m[0].length));
 }
 
-/** The tickets a blocker names ("#494"), not its PRs ("PR #590"), in order, once each. */
+/**
+ * The tickets a blocker names ("#494"), in order, once each — not its PRs
+ * ("PR #590", "PRs #590") and not another repo's ("claude-fleet#95").
+ */
 export function namedTickets(a: Pick<Ask, 'question'>): number[] {
   const out: number[] = [];
-  for (const m of a.question.matchAll(/(?<!PR )#(\d+)\b/g)) {
+  for (const m of a.question.matchAll(/(?<![\w/.-])(?<!PRs? )#(\d+)\b/g)) {
     const n = Number(m[1]);
     if (!out.includes(n)) out.push(n);
   }

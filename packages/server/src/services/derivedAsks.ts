@@ -263,14 +263,15 @@ export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[]
     const byNumber = await tickets.get(r.mapId!)!;
     const named = namedTickets(r.ask).map((n) => byNumber.get(n)).filter((t): t is TicketState => !!t && t.nodeId !== r.ask.unblocks.node_id);
     const since = Math.max(Date.parse(r.firstSeenAt), ours ?? 0);
-    if (named.length > 0 && named.every((t) => t.doneAt !== null) && named.some((t) => t.doneAt! > since)) send.push(r);
+    if (named.length > 0 && named.every((t) => t.done) && named.some((t) => t.doneAt !== null && t.doneAt > since)) send.push(r);
   }
   return answerFleetCanFix(scope, send, userId, AUTO_CHECK_BY);
 }
 
 interface TicketState {
   nodeId: string;
-  /** When MindBlown saw it done; null while open (or done at an unknown time). */
+  done: boolean;
+  /** When MindBlown saw it done; null while open, or done at an unknown time (an import that arrived closed). */
   doneAt: number | null;
 }
 
@@ -285,7 +286,7 @@ async function ticketsOf(mapId: string): Promise<Map<number, TicketState>> {
     const doneAt = done && n.completedAt ? Date.parse(n.completedAt) : null;
     for (const l of n.externalLinks ?? []) {
       const num = isForgeLink(l) && !l.isPullRequest ? /#(\d+)$/.exec(l.externalId)?.[1] : undefined;
-      if (num) out.set(Number(num), { nodeId: n.id, doneAt });
+      if (num) out.set(Number(num), { nodeId: n.id, done, doneAt });
     }
   }
   return out;

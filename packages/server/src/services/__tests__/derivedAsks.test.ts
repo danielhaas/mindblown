@@ -267,6 +267,16 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
         expect(await staleSent()).toEqual([]);
       });
 
+      it('a named ticket done at an unknown time counts as done, but does not set it off', async () => {
+        setDeps(minsAgo(40));
+        const t492 = state.nodes.find((n) => (n as { id: string }).id === 't492') as Record<string, unknown>;
+        t492.completedAt = null;
+        expect(await staleSent()).toEqual(['blocker-q']);
+        const t494 = state.nodes.find((n) => (n as { id: string }).id === 't494') as Record<string, unknown>;
+        t494.completedAt = null;
+        expect(await staleSent()).toEqual([]);
+      });
+
       it('never a person\'s blocker that names a ticket', async () => {
         setDeps(minsAgo(40));
         state.nodes.push(node('held', { blockedReason: 'Waiting for #494', updatedAt: minsAgo(60) }));
