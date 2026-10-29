@@ -422,6 +422,8 @@ export {
   blockerAnswerAction,
   blockerFleetAction,
   autoCheckable,
+  staleCheckable,
+  namedTickets,
   AUTO_CHECK_BY,
   AUTO_CHECK_GRACE_MINUTES,
   BRIEF_ASK_PREFIX,

@@ -235,6 +235,55 @@ describe('blockers (a worker\'s red CI, a wait)', () => {
       expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).toEqual(['blocker-timeout']);
     });
 
+    describe('stale: the ticket a blocker waits for is done now (#493 on 29.10.2026)', () => {
+      const minsAgo = (m: number) => new Date(NOW - m * 60_000).toISOString();
+      const link = (n: number) => [{ provider: 'github', externalId: `o/r#${n}`, url: '', syncEnabled: true, lastSyncedAt: null }];
+      const question = 'Fleet worker claudia:slot2:fleet-worker: needs a decision: #492 is merged. #494 is still open. Wait for it?';
+      const ours = (mins: number) => ({ ask: { id: 'blocker-q' }, mapId: 'm1', status: 'answered', answeredBy: 'Auto-check', answeredAt: minsAgo(mins), writes: [{ done: true }] });
+      const staleSent = async () => (await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId).filter((id) => id === 'blocker-q');
+      const setDeps = (done494: string | null) => {
+        state.nodes.push(
+          node('q', { blockedReason: question, updatedAt: minsAgo(60), externalLinks: link(493) }),
+          node('t492', { status: 'done', percentComplete: 100, completedAt: minsAgo(600), externalLinks: link(492) }),
+          node('t494', done494 ? { status: 'done', percentComplete: 100, completedAt: done494, externalLinks: link(494) } : { externalLinks: link(494) }),
+        );
+      };
+
+      it('checks the question again once every named ticket is done and one finished after it', async () => {
+        setDeps(minsAgo(40));
+        state.stored = [ours(61), { ask: { id: 'fleet-q', unblocks: { node_id: 'q' } }, mapId: 'm1', status: 'open', answeredAt: null }];
+        expect(await staleSent()).toEqual(['blocker-q']);
+      });
+
+      it('not while a named ticket is open, nor for one done before the blocker, nor twice', async () => {
+        setDeps(null);
+        expect(await staleSent()).toEqual([]);
+        state.nodes = state.nodes.filter((n) => !['q', 't492', 't494'].includes((n as { id: string }).id));
+        setDeps(minsAgo(90));
+        expect(await staleSent()).toEqual([]);
+        state.nodes = state.nodes.filter((n) => !['q', 't492', 't494'].includes((n as { id: string }).id));
+        setDeps(minsAgo(40));
+        state.stored = [ours(35)];
+        expect(await staleSent()).toEqual([]);
+      });
+
+      it('a named ticket done at an unknown time counts as done, but does not set it off', async () => {
+        setDeps(minsAgo(40));
+        const t492 = state.nodes.find((n) => (n as { id: string }).id === 't492') as Record<string, unknown>;
+        t492.completedAt = null;
+        expect(await staleSent()).toEqual(['blocker-q']);
+        const t494 = state.nodes.find((n) => (n as { id: string }).id === 't494') as Record<string, unknown>;
+        t494.completedAt = null;
+        expect(await staleSent()).toEqual([]);
+      });
+
+      it('never a person\'s blocker that names a ticket', async () => {
+        setDeps(minsAgo(40));
+        state.nodes.push(node('held', { blockedReason: 'Waiting for #494', updatedAt: minsAgo(60) }));
+        expect((await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW))).sent.map((r) => r.askId)).not.toContain('blocker-held');
+      });
+    });
+
     it('the fresh give-up is checked once its 30 min are up', async () => {
       const out = await autoCheckBlockers(fleetScope, ['m1'], 'owner', new Date(NOW + 25 * 60_000));
       expect(out.sent.map((r) => r.askId)).toEqual(['blocker-timeout', 'blocker-fresh']);

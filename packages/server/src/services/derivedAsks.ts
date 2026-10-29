@@ -34,6 +34,9 @@ import {
   AUTO_CHECK_BY,
   AUTO_CHECK_GRACE_MINUTES,
   autoCheckable,
+  isForgeLink,
+  namedTickets,
+  staleCheckable,
   briefAnswerAction,
   briefAskNodeId,
   buildBriefAsk,
@@ -123,18 +126,22 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
 export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], now: Date = new Date()): Promise<AskRow[]> {
   const derived = await derivedAskRows(mapIds, now);
   if (derived.length === 0) return derived;
-  const stored = await asksDb.listAsks(scope, { status: 'all' });
+  const { snoozed, asked } = storedFilters(await asksDb.listAsks(scope, { status: 'all' }), now);
+  return derived.filter((r) => !snoozed.has(rowKey(r)) && !asked(r));
+}
+
+/** Rows snoozed by Later / Delegate, and whether a collector's open question already covers a derived row's node. */
+function storedFilters(stored: AskRow[], now: Date): { snoozed: Set<string>; asked: (r: AskRow) => boolean } {
   const cutoff = now.getTime() - asksDb.ANSWER_RETENTION_DAYS * 86_400_000;
   const snoozed = new Set(
     stored
       .filter((r) => (r.status === 'later' || r.status === 'delegated') && r.answeredAt && Date.parse(r.answeredAt) >= cutoff)
       .map(rowKey),
   );
-  const asked = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
-  return derived.filter((r) => {
-    if (snoozed.has(rowKey(r))) return false;
-    return !((stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || briefAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && asked.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
-  });
+  const open = new Set(stored.filter((r) => r.status === 'open' && r.ask.unblocks?.node_id).map((r) => `${r.mapId ?? ''}|${r.ask.unblocks.node_id}`));
+  const asked = (r: AskRow) =>
+    !!(stepAskNodeId(r.ask.id) || blockerAskNodeId(r.ask.id) || briefAskNodeId(r.ask.id) || stalledAskNodeId(r.ask.id)) && open.has(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`);
+  return { snoozed, asked };
 }
 
 /** Which fix an answer runs, and the note it carries. */
@@ -214,28 +221,75 @@ export async function sendBlockersToFleet(scope: asksDb.AskScope, mapIds: string
 
 /**
  * The automatic check (fleet autoCheckBlockers): the same answer as "Let the
- * fleet check all", for fewer rows —
- *   - only a fleet worker's give-up (core autoCheckable): never a person's
- *     blocker, a note on the worker's PR, or its agent's question;
- *   - one that has sat AUTO_CHECK_GRACE_MINUTES, so a person can answer first;
- *   - once per ticket: when the check run gives up again, the row's last
- *     answer is still ours and the blocker stays with a person. A person's
- *     answer on the row replaces it and re-arms the check; otherwise it is
- *     pruned ANSWER_RETENTION_DAYS later. A check whose write failed does
- *     not count.
+ * fleet check all", for fewer rows, each one that has sat
+ * AUTO_CHECK_GRACE_MINUTES so a person can answer first —
+ *
+ *   - a fleet worker's give-up (core autoCheckable): never a person's
+ *     blocker, a note on the worker's PR, or its agent's question. Once per
+ *     ticket: when the check run gives up again, the row's last answer is
+ *     still ours and the blocker stays with a person. A person's answer on
+ *     the row replaces it and re-arms the check; otherwise it is pruned
+ *     ANSWER_RETENTION_DAYS later. A check whose write failed does not count.
+ *   - a stale one (core staleCheckable — its agent's question included): it
+ *     names tickets ("#494"), every one MindBlown knows is done now, and one
+ *     of them finished after the blocker's last change and after our last
+ *     check. #493 on 29.10.2026 asked whether to wait for #494, which merged
+ *     18 minutes later; nothing looked again. One more check per ticket
+ *     finished, so it cannot loop. A collector's open question on the node
+ *     does not hold it back: that question is the stale one.
  */
 export async function autoCheckBlockers(scope: asksDb.AskScope, mapIds: string[], userId: string | null, now: Date = new Date()): Promise<FleetCheckOutcome> {
   const due = now.getTime() - AUTO_CHECK_GRACE_MINUTES * 60_000;
-  const open = (await openDerivedAsks(scope, mapIds, now)).filter(
-    (r) => blockerAskNodeId(r.ask.id) !== null && r.mapId && autoCheckable(r.ask) && Date.parse(r.firstSeenAt) <= due,
+  const rows = (await derivedAskRows(mapIds, now)).filter((r) => blockerAskNodeId(r.ask.id) !== null && r.mapId && Date.parse(r.firstSeenAt) <= due);
+  if (rows.length === 0) return { sent: [], failed: [] };
+  const stored = await asksDb.listAsks(scope, { status: 'all' });
+  const { snoozed, asked } = storedFilters(stored, now);
+  const lastOurs = new Map(
+    stored
+      .filter((r) => r.status === 'answered' && r.answeredBy === AUTO_CHECK_BY && r.answeredAt && blockerAskNodeId(r.ask.id) !== null && r.writes.every((w) => w.done))
+      .map((r) => [rowKey(r), Date.parse(r.answeredAt!)]),
   );
-  if (open.length === 0) return { sent: [], failed: [] };
-  const ours = new Set(
-    (await asksDb.listAsks(scope, { status: 'answered' }))
-      .filter((r) => r.answeredBy === AUTO_CHECK_BY && blockerAskNodeId(r.ask.id) !== null && r.writes.every((w) => w.done))
-      .map(rowKey),
-  );
-  return answerFleetCanFix(scope, open.filter((r) => !ours.has(rowKey(r))), userId, AUTO_CHECK_BY);
+  const tickets = new Map<string, Promise<Map<number, TicketState>>>();
+  const send: AskRow[] = [];
+  for (const r of rows) {
+    if (snoozed.has(rowKey(r))) continue;
+    const ours = lastOurs.get(rowKey(r));
+    if (ours === undefined && autoCheckable(r.ask) && !asked(r)) {
+      send.push(r);
+      continue;
+    }
+    if (!staleCheckable(r.ask)) continue;
+    if (!tickets.has(r.mapId!)) tickets.set(r.mapId!, ticketsOf(r.mapId!));
+    const byNumber = await tickets.get(r.mapId!)!;
+    const named = namedTickets(r.ask).map((n) => byNumber.get(n)).filter((t): t is TicketState => !!t && t.nodeId !== r.ask.unblocks.node_id);
+    const since = Math.max(Date.parse(r.firstSeenAt), ours ?? 0);
+    if (named.length > 0 && named.every((t) => t.done) && named.some((t) => t.doneAt !== null && t.doneAt > since)) send.push(r);
+  }
+  return answerFleetCanFix(scope, send, userId, AUTO_CHECK_BY);
+}
+
+interface TicketState {
+  nodeId: string;
+  done: boolean;
+  /** When MindBlown saw it done; null while open, or done at an unknown time (an import that arrived closed). */
+  doneAt: number | null;
+}
+
+/** The map's tickets by issue number (its forge links, not PRs). */
+async function ticketsOf(mapId: string): Promise<Map<number, TicketState>> {
+  const out = new Map<number, TicketState>();
+  const data = await mapDb.getMap(mapId);
+  if (!data) return out;
+  const isDone = buildIsDonePredicate(data.map.statusWorkflow ?? []);
+  for (const n of data.nodes) {
+    const done = isDone(n.status) || (n.childrenIds.length === 0 && (n.percentComplete ?? 0) >= 100);
+    const doneAt = done && n.completedAt ? Date.parse(n.completedAt) : null;
+    for (const l of n.externalLinks ?? []) {
+      const num = isForgeLink(l) && !l.isPullRequest ? /#(\d+)$/.exec(l.externalId)?.[1] : undefined;
+      if (num) out.set(Number(num), { nodeId: n.id, done, doneAt });
+    }
+  }
+  return out;
 }
 
 async function answerFleetCanFix(scope: asksDb.AskScope, rows: AskRow[], userId: string | null, by: string): Promise<FleetCheckOutcome> {

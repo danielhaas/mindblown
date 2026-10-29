@@ -294,6 +294,32 @@ export function autoCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
   return !/\bPR #\d+/.test(what) && !/^needs a decision\b/i.test(what) && !stopped;
 }
 
+/**
+ * A fleet worker's blocker that can go stale: a give-up the automatic check
+ * may take, or its agent's question ("needs a decision: …", which names the
+ * ticket it waits for). Same exclusions otherwise: never a person's blocker,
+ * a note on the worker's PR or a claimed ticket.
+ */
+export function staleCheckable(a: Pick<Ask, 'question' | 'unblocks'>): boolean {
+  if (autoCheckable(a)) return true;
+  const reason = (a.question.startsWith(BLOCKED_PREFIX) ? a.question.slice(BLOCKED_PREFIX.length) : a.question).trim();
+  const m = WORKER_WAIT_NOTE.exec(reason);
+  return !!m && !a.unblocks?.claimed_by && /^needs a decision\b/i.test(reason.slice(m[0].length));
+}
+
+/**
+ * The tickets a blocker names ("#494"), in order, once each — not its PRs
+ * ("PR #590", "PRs #590") and not another repo's ("claude-fleet#95").
+ */
+export function namedTickets(a: Pick<Ask, 'question'>): number[] {
+  const out: number[] = [];
+  for (const m of a.question.matchAll(/(?<![\w/.-])(?<!PRs? )#(\d+)\b/g)) {
+    const n = Number(m[1]);
+    if (!out.includes(n)) out.push(n);
+  }
+  return out;
+}
+
 /** Which write an answer to a blocker means: Fleet can fix it, Unblocked, Done, else the text is a person's next step. */
 export function blockerAnswerAction(decision: string): BlockerAnswer {
   const d = decision.trim().toLowerCase();
