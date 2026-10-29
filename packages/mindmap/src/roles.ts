@@ -20,6 +20,7 @@
  * for the occupant; the lens itself stays a client preference.
  */
 import type { ActiveView } from './store.js';
+import { localDay } from './localTime.js';
 
 export type ViewRole = 'stakeholder' | 'pm' | 'developer' | 'all';
 
@@ -160,7 +161,7 @@ export function pickCurrentCycle<C extends { id: string; startDate: string; endD
   cycles: C[],
   today: Date = new Date(),
 ): C | null {
-  const t = today.toISOString().slice(0, 10);
+  const t = localDay(today);
   const containing = cycles
     .filter((c) => c.startDate.slice(0, 10) <= t && t <= c.endDate.slice(0, 10))
     .sort((a, b) => b.startDate.localeCompare(a.startDate) || (a.status === 'active' ? -1 : 1));
