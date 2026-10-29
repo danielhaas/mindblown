@@ -28,6 +28,7 @@ import {
   type NodeMap,
   type StatusDef,
 } from '@mindblown/core';
+import { localDateTime } from './localTime.js';
 
 /**
  * Which column a leaf's card sits in: the workflow step its status names
@@ -142,7 +143,9 @@ export function startedLabel(
 /**
  * The worker's own ETA on an in-progress card (node.expectedDoneAt): "ETA
  * 15:40" today, "ETA Oct 22, 15:40" on another day, "overdue 2h" once
- * past; the exact time for the hover title. null without an ETA.
+ * past; the exact time with its zone for the hover title. All on the
+ * viewer's clock — "today" ends at their midnight, not the server's.
+ * null without an ETA.
  */
 export function etaLabel(
   expectedDoneAt: string | null | undefined,
@@ -151,9 +154,7 @@ export function etaLabel(
   const t = expectedDoneAt ? Date.parse(expectedDoneAt) : NaN;
   if (!Number.isFinite(t)) return null;
   const eta = new Date(t);
-  const full = `ETA ${eta.toLocaleString('en-US', {
-    month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit',
-  })}`;
+  const full = `ETA ${localDateTime(eta)}`;
   if (t < now.getTime()) {
     const minutes = Math.floor((now.getTime() - t) / 60_000);
     const hours = Math.floor(minutes / 60);
@@ -161,7 +162,7 @@ export function etaLabel(
     const late = minutes < 60 ? `${Math.max(1, minutes)}m` : hours < 24 ? `${hours}h` : `${days}d`;
     return { short: `overdue ${late}`, full, overdue: true };
   }
-  const time = eta.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+  const time = eta.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
   const sameDay = eta.toDateString() === now.toDateString();
   const day = sameDay ? '' : `${eta.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}, `;
   return { short: `ETA ${day}${time}`, full, overdue: false };
