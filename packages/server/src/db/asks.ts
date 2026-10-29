@@ -115,12 +115,29 @@ export async function replaceAsks(
     const removed = gone.length;
     let kept = 0;
     for (const { ask: a, mapId: itemMap } of items) {
+      // A collector reuses an id for the next question on the same ticket
+      // (fleet-worker: fleet-<node8>). A different question under an
+      // answered id is a new question: open again, the old answer dropped —
+      // on 29.10.2026 #493's new question sat under Dan's answer from 21.10
+      // and never reached the card. The same text pushed again stays answered.
+      const asked = sql`${asks.status} <> 'open' AND (${asks.payload}->>'question') IS DISTINCT FROM ${a.question ?? null}`;
+      const reopen = (fresh: SQL, kept: unknown) => sql`CASE WHEN ${asked} THEN ${fresh} ELSE ${kept} END`;
       const [row] = await tx
         .insert(asks)
         .values({ fleetId, mapId: itemMap, askId: a.id, payload: a, pushedAt: now, firstSeenAt: now })
         .onConflictDoUpdate({
           target: [asks.fleetId, asks.askId, asks.mapId],
-          set: { payload: a, pushedAt: now },
+          set: {
+            payload: a,
+            pushedAt: now,
+            status: reopen(sql`'open'`, asks.status),
+            answer: reopen(sql`NULL`, asks.answer),
+            answeredBy: reopen(sql`NULL`, asks.answeredBy),
+            answeredAt: reopen(sql`NULL`, asks.answeredAt),
+            writes: reopen(sql`'[]'::jsonb`, asks.writes),
+            workerPending: reopen(sql`false`, asks.workerPending),
+            firstSeenAt: reopen(sql`${now.toISOString()}::timestamptz`, asks.firstSeenAt),
+          },
         })
         .returning({ status: asks.status });
       if (row && row.status !== 'open') kept++;
