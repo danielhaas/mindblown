@@ -49,6 +49,7 @@ import { CockpitView } from './CockpitView.js';
 import { PaceStrip } from './PaceStrip.js';
 import { FleetPage, FleetView } from './FleetView.js';
 import type { ViewRole, PanelKey } from './roles.js';
+import { useHomeWidgetSync } from './homeWidget.js';
 
 // ── Health badge colors ────────────────────────────────────────
 
@@ -1531,6 +1532,7 @@ function MinimisedChip({
 
 export function App() {
   const user = useMindmapStore((s) => s.user);
+  useHomeWidgetSync(user?.id ?? null);
   // A document link opened without a session (a Word export, a mail) is
   // redirected here as ?download=<path> (#292); once signed in, fetch it
   // with the session and drop the parameter.

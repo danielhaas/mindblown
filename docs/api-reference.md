@@ -349,6 +349,28 @@ Returns the computed schedule (start/end dates for each node) and the critical p
 }
 ```
 
+### Get the Board at a Glance
+
+```
+GET /api/maps/:id/board-summary?limit=5
+```
+
+The kanban board in one small read — what the Android home-screen widget shows. Leaves only, the same column rules as the boards. `inProgress` lists open cards in an in-progress status (review statuses counted apart in `inReview`), most recently started first, with the parent's title as `context`. `blocked` lists open blocked cards with the reason: the blocker text, or `Waiting on <predecessor>`. `limit` (1–20, default 5) caps each list; the counts are always the full numbers. Needs view access on the map.
+
+**Response (200):**
+
+```json
+{
+  "mapId": "map-001",
+  "mapName": "Launch",
+  "generatedAt": "2026-10-29T10:00:00.000Z",
+  "inProgress": { "count": 3, "items": [{ "id": "node-005", "title": "Billing", "context": "API" }] },
+  "blocked": { "count": 1, "items": [{ "id": "node-007", "title": "Email", "context": "API", "reason": "Waiting on Dan for the copy" }] },
+  "inReview": 1,
+  "wip": { "count": 4, "limit": 3 }
+}
+```
+
 ---
 
 ## Nodes

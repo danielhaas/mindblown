@@ -27,6 +27,7 @@ import { registerAuthMiddleware } from './middleware/auth.js';
 import { registerArchiveGuard } from './middleware/archiveGuard.js';
 import { mapRoutes } from './routes/maps.js';
 import { lintRoutes } from './routes/lint.js';
+import { boardRoutes } from './routes/board.js';
 import { nodeRoutes } from './routes/nodes.js';
 import { cycleRoutes } from './routes/cycles.js';
 import { versionRoutes } from './routes/versions.js';
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
   // ── Protected Routes ───────────────────────────────────────────
   await app.register(mapRoutes);
   await app.register(lintRoutes);
+  await app.register(boardRoutes);
   await app.register(nodeRoutes);
   await app.register(cycleRoutes);
   await app.register(versionRoutes);
