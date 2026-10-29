@@ -14,8 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, FleetWithMaps, StalledLeaf, TrustPolicy } from '@mindblown/core';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, ApprovalResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
+import type { ApproveInput, AskAnswerInput, FleetWithMaps, PendingApprovalList, RejectInput, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1811,6 +1811,20 @@ export function answerAskForFleet(fleetId: string, askId: string, input: AskAnsw
 /** fleet_check_blockers: every blocker row of the fleet → "Fleet can fix it". */
 export function fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetCheckResult> {
   return request<FleetCheckResult>(`/api/fleets/${fleetId}/asks/fleet-check`, { method: 'POST', body: JSON.stringify(by ? { by } : {}) });
+}
+
+/** list_pending_approvals (#494): one map, a fleet, or every map the key can view. */
+export function listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList> {
+  const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
+  return request<PendingApprovalList>(`${base}/approvals`);
+}
+
+export function approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResult> {
+  return request<ApprovalResult>(`/api/maps/${mapId}/nodes/${nodeId}/approve`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+export function rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResult> {
+  return request<ApprovalResult>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

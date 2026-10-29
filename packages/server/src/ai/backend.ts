@@ -24,6 +24,7 @@ import { authorizeFleetCiChange } from '../services/mapRepoBinding.js';
 import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
+import * as approvals from '../services/approvals.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
@@ -123,6 +124,12 @@ export function createChatBackend(userId: string): ToolBackend {
     if (key.mapId) broadcast(key.mapId, event);
     else for (const m of await fleetEntityDb.listFleetMaps(key.fleetId)) broadcast(m.id, event);
     return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
+  };
+  // What REST's announceApproval does, minus the forge sync — like every other chat write.
+  const announceApproval = (out: approvals.ApprovalOutcome) => {
+    broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
+    broadcast(out.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId: out.node.id });
+    return { approval: out.node.approval, writes: out.writes, ok: out.writes.every((w) => w.done) };
   };
   const backend: ToolBackend = {
     async listMaps(): Promise<MapSummary[]> {
@@ -448,6 +455,23 @@ export function createChatBackend(userId: string): ToolBackend {
       return out;
     },
 
+    // ── Approvals (#494) — the trusted-list check lives in services/approvals ──
+    async listPendingApprovals(scope) {
+      const out = await approvals.listPendingApprovals(userId, scope);
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+    async approveTicket(mapId, nodeId, input) {
+      const out = await approvals.approveTicket(userId, mapId, nodeId, input);
+      if ('status' in out) throw new Error(out.message);
+      return announceApproval(out);
+    },
+    async rejectTicket(mapId, nodeId, input) {
+      const out = await approvals.rejectTicket(userId, mapId, nodeId, input);
+      if ('status' in out) throw new Error(out.message);
+      return announceApproval(out);
+    },
+
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //
     // Deliberately read-only on this surface: the in-app chat backend
@@ -558,6 +582,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'answerAskForFleet',
   // Edit on each map checked in services/asksInbox.
   'fleetCheckBlockers',
+  // Approvals (#494): the list scopes itself to viewable maps (services/approvals).
+  'listPendingApprovals',
 ]);
 
 /**

@@ -17,6 +17,8 @@ export type {
   AskListResult,
   AskAnswerResult,
   FleetCheckResult,
+  // Approvals (#494)
+  ApprovalResult,
   FleetStatusOptions,
   FleetJournalResult,
   FleetJournalOptions,
@@ -65,8 +67,10 @@ import { fleetJournalTools } from './tools/fleetJournal.js';
 import { attachmentTools } from './tools/attachments.js';
 import { fleetTools } from './tools/fleets.js';
 import { docsTools } from './tools/docs.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools };
+import { approvalTools } from './tools/approvals.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools };
 export { renderAskList } from './tools/asks.js';
+export { renderPendingApprovals } from './tools/approvals.js';
 
 export const allTools = [
   ...mapTools,
@@ -77,6 +81,7 @@ export const allTools = [
   ...orchestrationTools,
   ...githubAuditTools,
   ...asksTools,
+  ...approvalTools,
   ...fleetJournalTools,
   ...attachmentTools,
   ...docsTools,

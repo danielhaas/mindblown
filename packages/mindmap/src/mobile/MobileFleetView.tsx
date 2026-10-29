@@ -38,6 +38,7 @@ import { dispatchQueueSnapshot } from '@mindblown/core';
 import type { ChangeEvent, MapMember } from '../api.js';
 import * as api from '../api.js';
 import { MobileFleetSection } from './MobileFleetSection.js';
+import { ApprovalsSection } from '../ApprovalsView.js';
 import {
   AUDIT_LIMIT,
   STATE_WORD,
@@ -234,6 +235,8 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
 
   return (
     <div className="mb-body">
+      {/* Proposed tickets (#494): approving mostly happens here, after a push. */}
+      <ApprovalsSection target={{ mapId }} mobile />
       <div className="mb-card">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
           <div className="mb-card-title">Fleet</div>
