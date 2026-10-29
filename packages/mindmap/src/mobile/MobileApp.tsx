@@ -7,6 +7,7 @@ import { FleetPage } from '../FleetView.js';
 import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
+import { useHomeWidgetSync } from '../homeWidget.js';
 import './mobile.css';
 
 /**
@@ -32,6 +33,7 @@ function writeMapParam(mapId: string | null, replace: boolean): void {
 export function MobileApp() {
   const user = useMindmapStore((s) => s.user);
   const checkAuth = useMindmapStore((s) => s.checkAuth);
+  useHomeWidgetSync(user?.id ?? null);
 
   const [selectedMap, setSelectedMap] = useState<MapSummary | null>(null);
   const hydrateStarted = useRef(false);

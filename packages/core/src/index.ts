@@ -448,3 +448,7 @@ export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput } 
 // Guided onboarding: the project setup checklist
 export { projectSetup } from './setup.js';
 export type { SetupStepId, SetupStep, ProjectSetup } from './setup.js';
+
+// The kanban board at a glance (home-screen widget, #589)
+export { summarizeBoard, BOARD_SUMMARY_DEFAULT_LIMIT } from './boardSummary.js';
+export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boardSummary.js';

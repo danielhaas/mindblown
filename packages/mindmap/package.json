@@ -20,6 +20,7 @@
     "sync-help": "cp ../../docs/user-guide.md public/user-guide.md && pandoc ../../docs/user-guide.md -o public/user-guide.pdf --pdf-engine=weasyprint --metadata title='MindBlown User Guide'"
   },
   "dependencies": {
+    "@capacitor/core": "^8.6.0",
     "@mindblown/core": "workspace:*",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

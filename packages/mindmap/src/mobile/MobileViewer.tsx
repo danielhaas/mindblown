@@ -70,7 +70,15 @@ export function MobileViewer({ map }: Props) {
   const [detail, setDetail] = useState<MapDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<ViewKey>(readDefaultView);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // `?node=` (a home-screen widget row, #589) opens that card's sheet once;
+  // the param is dropped so a reload doesn't reopen it.
+  const [selectedId, setSelectedId] = useState<string | null>(() => parseUrlState(window.location.search).node);
+  useEffect(() => {
+    const state = parseUrlState(window.location.search);
+    if (!state.node) return;
+    const search = serializeUrlState(window.location.search, { ...state, node: null });
+    window.history.replaceState({}, '', window.location.pathname + search + window.location.hash);
+  }, []);
   const [adding, setAdding] = useState(false);
   // Ticket intake (#387): a mode of the add sheet, shown only when the
   // map's AI policy leaves a chat-capable backend (same gate as desktop).
