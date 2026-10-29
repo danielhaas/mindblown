@@ -83,8 +83,24 @@ function keyWhere(k: AskKey): SQL {
 }
 
 /**
+ * Does a changed question text under an answered id mean a new question?
+ * Only for the fleet worker: it keeps one id per ticket (fleet-<node8>) and
+ * pushes a question's text unchanged until the ticket moves on, so new text
+ * is its next question — on 29.10.2026 #493's sat under Dan's answer from
+ * 21.10 and never reached the card. Not for leidang-asks-collect: its text
+ * changes under the same id every tick ("[idle Nh]", the source it ranks
+ * first, a pane capture), and reopening would wipe a Later or an answer
+ * the worker has not been handed yet.
+ */
+export function reopensOnNewText(a: Pick<Ask, 'sources'>): boolean {
+  return (a.sources ?? []).includes('fleet-worker');
+}
+
+/**
  * Replace the open set the push covers: `mapId` = one map's rows (every
- * item belongs to it), null = the whole fleet (each item's own map).
+ * item belongs to it), null = the whole fleet (each item's own map). A
+ * fleet worker's new question under an answered id opens again
+ * (reopensOnNewText); the same text pushed again stays answered.
  */
 export async function replaceAsks(
   fleetId: string,
@@ -115,12 +131,26 @@ export async function replaceAsks(
     const removed = gone.length;
     let kept = 0;
     for (const { ask: a, mapId: itemMap } of items) {
+      const asked = sql`${asks.status} <> 'open' AND (${asks.payload}->>'question') IS DISTINCT FROM ${a.question ?? null}`;
+      const reopen = (fresh: SQL, kept: unknown) => sql`CASE WHEN ${asked} THEN ${fresh} ELSE ${kept} END`;
       const [row] = await tx
         .insert(asks)
         .values({ fleetId, mapId: itemMap, askId: a.id, payload: a, pushedAt: now, firstSeenAt: now })
         .onConflictDoUpdate({
           target: [asks.fleetId, asks.askId, asks.mapId],
-          set: { payload: a, pushedAt: now },
+          set: reopensOnNewText(a)
+            ? {
+                payload: a,
+                pushedAt: now,
+                status: reopen(sql`'open'`, asks.status),
+                answer: reopen(sql`NULL`, asks.answer),
+                answeredBy: reopen(sql`NULL`, asks.answeredBy),
+                answeredAt: reopen(sql`NULL`, asks.answeredAt),
+                writes: reopen(sql`'[]'::jsonb`, asks.writes),
+                workerPending: reopen(sql`false`, asks.workerPending),
+                firstSeenAt: reopen(sql`${now.toISOString()}::timestamptz`, asks.firstSeenAt),
+              }
+            : { payload: a, pushedAt: now },
         })
         .returning({ status: asks.status });
       if (row && row.status !== 'open') kept++;
