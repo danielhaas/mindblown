@@ -23,6 +23,7 @@ const state = vi.hoisted(() => ({
 const setApprovalMock = vi.fn();
 const updateNodeMock = vi.fn();
 const recordEventMock = vi.fn();
+const recordFieldChangesMock = vi.fn();
 const commentMock = vi.fn();
 const closeMock = vi.fn();
 
@@ -56,13 +57,23 @@ vi.mock('../trustPolicy.js', () => ({
   }),
 }));
 vi.mock('../../db/nodes.js', () => ({
+  RevisionConflictError: class RevisionConflictError extends Error {},
   getNode: async (id: string) => state.nodes.get(id) ?? null,
   setApproval: (...a: unknown[]) => setApprovalMock(...a),
   updateNode: (...a: unknown[]) => updateNodeMock(...a),
   listProposedNodes: async () => [...state.nodes.values()],
 }));
-vi.mock('../../db/maps.js', () => ({ listMapsForUser: async () => [{ id: MAP, name: 'Navy App', archivedAt: null }] }));
-vi.mock('../../db/events.js', () => ({ recordEvent: (...a: unknown[]) => recordEventMock(...a) }));
+vi.mock('../../db/maps.js', () => ({
+  listMapsForUser: async () => [{ id: MAP, name: 'Navy App', archivedAt: null }],
+  getStatusWorkflow: async () => [
+    { id: 'todo', name: 'To do', category: 'todo' },
+    { id: 'shipped', name: 'Shipped', category: 'done' },
+  ],
+}));
+vi.mock('../../db/events.js', () => ({
+  recordEvent: (...a: unknown[]) => recordEventMock(...a),
+  recordFieldChanges: (...a: unknown[]) => recordFieldChangesMock(...a),
+}));
 vi.mock('../../lib/githubContext.js', () => ({ getGitHubContextForMap: async () => state.forge }));
 vi.mock('../fleets.js', () => ({ getFleetForUser: async () => ({ maps: [{ id: MAP, name: 'Navy App' }] }) }));
 vi.mock('@mindblown/integrations', () => ({
@@ -88,6 +99,7 @@ function node(over: Partial<Node> = {}): Node {
     approval: proposed,
     externalLinks: [{ provider: 'github', externalId: 'org/navy#12', url: 'https://github.com/org/navy/issues/12', syncEnabled: true, lastSyncedAt: null }],
     createdAt: '2026-10-28T10:00:00.000Z',
+    revision: 4,
     ...over,
   } as Node;
 }
@@ -105,6 +117,7 @@ beforeEach(() => {
   setApprovalMock.mockReset().mockImplementation(async (id: string, approval: NodeApproval) => ({ ...(state.nodes.get(id) as Node), approval }));
   updateNodeMock.mockReset().mockImplementation(async (id: string, patch: Partial<Node>) => ({ ...(state.nodes.get(id) as Node), ...patch }));
   recordEventMock.mockReset();
+  recordFieldChangesMock.mockReset();
   commentMock.mockReset().mockResolvedValue({ id: 1, html_url: 'x' });
   closeMock.mockReset().mockResolvedValue({});
 });
@@ -119,6 +132,8 @@ describe('who may decide', () => {
   it('refuses a fleet key even when an admin put it on the list', async () => {
     state.trusted = [DAN, FLEET];
     expect(await approveTicket(FLEET, MAP, 'n1', {})).toMatchObject({ status: 403, code: 'NOT_TRUSTED', message: expect.stringMatching(/fleet key/) });
+    state.users.find((u) => u.id === FLEET)!.kind = 'fleet_retired';
+    expect(await approveTicket(FLEET, MAP, 'n1', {})).toMatchObject({ status: 403, code: 'NOT_TRUSTED' });
   });
 
   it('refuses a trusted person without edit on the map', async () => {
@@ -138,6 +153,8 @@ describe('approveTicket', () => {
     expect('code' in out).toBe(false);
     const stamp = setApprovalMock.mock.calls[0][1] as NodeApproval;
     expect(stamp).toMatchObject({ state: 'approved', merge: 'pr-only', by: DAN });
+    // Written only while still in the state the decision was made on.
+    expect(setApprovalMock.mock.calls[0][2]).toBe('proposed');
     expect(Date.parse(stamp.at)).not.toBeNaN();
     expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ fieldName: 'approval', oldValue: proposed, newValue: stamp, userId: DAN }));
     expect(updateNodeMock).not.toHaveBeenCalled();
@@ -150,8 +167,21 @@ describe('approveTicket', () => {
 
   it('edit & approve writes the description first', async () => {
     const out = await approveTicket(DAN, MAP, 'n1', { description: '  Add a dark mode toggle in Settings.  ' });
-    expect(updateNodeMock).toHaveBeenCalledWith('n1', { description: 'Add a dark mode toggle in Settings.' });
+    expect(updateNodeMock).toHaveBeenCalledWith('n1', { description: 'Add a dark mode toggle in Settings.' }, 4);
+    expect(recordFieldChangesMock).toHaveBeenCalledWith(MAP, 'n1', DAN, expect.objectContaining({ revision: 4 }), expect.objectContaining({ description: 'Add a dark mode toggle in Settings.' }));
     expect(out).toMatchObject({ changedFields: ['description', 'approval'] });
+  });
+
+  it('refuses when the text changed since the person read it', async () => {
+    expect(await approveTicket(DAN, MAP, 'n1', { expectedRevision: 3 })).toMatchObject({ status: 409, code: 'TEXT_CHANGED' });
+    expect(setApprovalMock).not.toHaveBeenCalled();
+    expect('code' in (await approveTicket(DAN, MAP, 'n1', { expectedRevision: 4 }))).toBe(false);
+  });
+
+  it('409s when someone else decided between the read and the write', async () => {
+    setApprovalMock.mockResolvedValue(null);
+    expect(await approveTicket(DAN, MAP, 'n1', {})).toMatchObject({ status: 409, code: 'DECIDED_ELSEWHERE' });
+    expect(recordEventMock).not.toHaveBeenCalled();
   });
 
   it('leaves the description alone when the text did not change', async () => {
@@ -178,6 +208,21 @@ describe('rejectTicket', () => {
     expect(commentMock).toHaveBeenCalledWith('org', 'navy', 12, expect.stringMatching(/^Rejected \(Daniel, \d{4}-\d{2}-\d{2}\): Not something we build\.$/), expect.anything());
     expect(closeMock).not.toHaveBeenCalled();
     expect(out).toMatchObject({ writes: [{ kind: 'comment', target: 'org/navy#12', done: true }] });
+  });
+
+  it('keeps the note in the change log, also without a forge issue', async () => {
+    state.nodes.set('n1', node({ externalLinks: [] }));
+    const out = await rejectTicket(DAN, MAP, 'n1', { note: 'Duplicate of the export work' });
+    expect(recordEventMock).toHaveBeenCalledWith(expect.objectContaining({ fieldName: 'approval', newValue: expect.objectContaining({ state: 'rejected', note: 'Duplicate of the export work' }) }));
+    expect(out).toMatchObject({ writes: [] });
+  });
+
+  it('rejects only proposed tickets — an approved one may already be running', async () => {
+    state.nodes.set('n1', node({ approval: { ...proposed, state: 'approved' } }));
+    expect(await rejectTicket(DAN, MAP, 'n1', {})).toMatchObject({ status: 409, code: 'NOT_PROPOSED' });
+    state.nodes.set('n1', node({ approval: { ...proposed, state: 'rejected' } }));
+    expect(await rejectTicket(DAN, MAP, 'n1', {})).toMatchObject({ status: 409, code: 'NOT_PROPOSED' });
+    expect(setApprovalMock).not.toHaveBeenCalled();
   });
 
   it('closes the issue as not planned when asked', async () => {
@@ -211,6 +256,13 @@ describe('listPendingApprovals', () => {
 
     const joe = await listPendingApprovals(JOE, {});
     expect('code' in joe ? null : joe.items[0].canApprove).toBe(false);
+  });
+
+  it('leaves out tickets done by the map\'s own workflow', async () => {
+    state.nodes.set('n2', node({ id: 'n2', status: 'shipped' }));
+    state.nodes.set('n3', node({ id: 'n3', status: 'cancelled' }));
+    const out = await listPendingApprovals(DAN, { mapId: MAP });
+    expect('code' in out ? null : out.items.map((i) => i.nodeId)).toEqual(['n1']);
   });
 
   it('refuses a map the reader cannot view', async () => {

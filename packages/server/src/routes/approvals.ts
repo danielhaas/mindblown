@@ -19,7 +19,6 @@ import { approveTicket, listPendingApprovals, rejectTicket } from '../services/a
 import type { ApprovalError, ApprovalOutcome } from '../services/approvals.js';
 import * as nodeDb from '../db/nodes.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
-import { syncNodeToGitHub } from './nodes.js';
 import { broadcast } from '../ws.js';
 
 const fail = (reply: FastifyReply, e: ApprovalError) => reply.status(e.status).send({ error: { code: e.code, message: e.message } });
@@ -28,12 +27,15 @@ function unauthorized(reply: FastifyReply) {
   return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
 }
 
-/** Tell open clients, push an edited description to the forge; the body both surfaces return. */
+/**
+ * Tell open clients; the body both surfaces return. An edited description
+ * is not pushed to the forge: the issue body is the reporter's text, and
+ * the edit is the approver's brief for the fleet.
+ */
 export function announceApproval(out: ApprovalOutcome) {
   broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
   // The approvals list refetches on asks:updated — the row leaves it.
   broadcast(out.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId: out.node.id });
-  if (out.changedFields.includes('description')) syncNodeToGitHub(out.node, out.changedFields).catch(() => {});
   return { approval: out.node.approval, writes: out.writes, ok: out.writes.every((w) => w.done) };
 }
 
@@ -66,7 +68,7 @@ export async function approvalsRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Params: { id: string; nodeId: string }; Body: ApproveInput }>('/api/maps/:id/nodes/:nodeId/approve', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
     const body = (req.body ?? {}) as ApproveInput;
-    return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, { merge: body.merge, description: body.description }));
+    return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, { merge: body.merge, description: body.description, expectedRevision: body.expectedRevision }));
   });
 
   app.post<{ Params: { id: string; nodeId: string }; Body: RejectInput }>('/api/maps/:id/nodes/:nodeId/reject', async (req, reply) => {

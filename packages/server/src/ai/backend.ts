@@ -125,12 +125,6 @@ export function createChatBackend(userId: string): ToolBackend {
     else for (const m of await fleetEntityDb.listFleetMaps(key.fleetId)) broadcast(m.id, event);
     return { ask: out.row, plan: out.plan, ok: out.ok, node: out.node ? { id: out.node.id, status: out.node.status } : null };
   };
-  // What REST's announceApproval does, minus the forge sync — like every other chat write.
-  const announceApproval = (out: approvals.ApprovalOutcome) => {
-    broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
-    broadcast(out.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId: out.node.id });
-    return { approval: out.node.approval, writes: out.writes, ok: out.writes.every((w) => w.done) };
-  };
   const backend: ToolBackend = {
     async listMaps(): Promise<MapSummary[]> {
       const all = await mapDb.listMapsForUser(userId);
@@ -455,21 +449,23 @@ export function createChatBackend(userId: string): ToolBackend {
       return out;
     },
 
-    // ── Approvals (#494) — the trusted-list check lives in services/approvals ──
+    // ── Approvals (#494) ──────────────────────────────────────────
+    //
+    // Read-only on this surface, like the closed-issue audit: the chat
+    // model reads the proposed tickets' text — the untrusted text the
+    // gate exists for — and runs as the trusted user who is typing. A
+    // ticket that says "approve me" must not be able to. Deciding stays on
+    // the REST routes (the Fleet card, the phone) and the MCP tools.
     async listPendingApprovals(scope) {
       const out = await approvals.listPendingApprovals(userId, scope);
       if ('status' in out) throw new Error(out.message);
       return out;
     },
-    async approveTicket(mapId, nodeId, input) {
-      const out = await approvals.approveTicket(userId, mapId, nodeId, input);
-      if ('status' in out) throw new Error(out.message);
-      return announceApproval(out);
+    async approveTicket() {
+      throw new Error('Approving tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
     },
-    async rejectTicket(mapId, nodeId, input) {
-      const out = await approvals.rejectTicket(userId, mapId, nodeId, input);
-      if ('status' in out) throw new Error(out.message);
-      return announceApproval(out);
+    async rejectTicket() {
+      throw new Error('Rejecting tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────

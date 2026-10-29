@@ -12,7 +12,7 @@
  * note on the linked forge issue; the issue stays open unless asked.
  */
 import { eq, inArray } from 'drizzle-orm';
-import { approvalHints, isForgeLink, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
+import { approvalHints, buildIsDonePredicate, isForgeLink, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
 import type { ApproveInput, NodeApproval, Node as CoreNode, PendingApproval, PendingApprovalList, RejectInput } from '@mindblown/core';
 import { closeGitHubIssue, commentOnGitHubIssue, parseExternalId } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
@@ -20,7 +20,7 @@ import { maps, users } from '../db/schema.js';
 import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import * as permDb from '../db/permissions.js';
-import { recordEvent } from '../db/events.js';
+import { recordEvent, recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { getFleetForUser } from './fleets.js';
 import { loadTrustContext } from './trustPolicy.js';
@@ -40,8 +40,9 @@ export interface ApprovalOutcome {
 
 /** May this user decide on this map's proposals? null = yes, else why not. */
 export async function approverRefusal(userId: string, mapId: string): Promise<ApprovalError | null> {
+  // 'fleet' and 'fleet_retired' service users; anything not a person.
   const [user] = await db.select({ kind: users.kind }).from(users).where(eq(users.id, userId));
-  if (user?.kind === 'fleet') return { status: 403, code: 'NOT_TRUSTED', message: 'A fleet key cannot approve or reject tickets' };
+  if (user?.kind !== 'person') return { status: 403, code: 'NOT_TRUSTED', message: 'A fleet key cannot approve or reject tickets' };
   if (!permDb.hasPermission(await permDb.getPermission(mapId, userId), 'edit')) {
     return { status: 403, code: 'FORBIDDEN', message: 'Edit access to the map required' };
   }
@@ -68,8 +69,7 @@ async function mapsInScope(userId: string, scope: { mapId?: string; fleetId?: st
     if ('status' in view) return { status: view.status === 403 ? 403 : 404, code: view.code, message: view.message };
     return view.maps.map((m) => ({ id: m.id, name: m.name }));
   }
-  // Archived maps are on hold: nothing there is waiting on anyone.
-  return (await mapDb.listMapsForUser(userId)).filter((m) => !m.archivedAt).map((m) => ({ id: m.id, name: m.name }));
+  return (await mapDb.listMapsForUser(userId)).map((m) => ({ id: m.id, name: m.name }));
 }
 
 function issueOf(node: CoreNode): PendingApproval['issue'] {
@@ -81,7 +81,13 @@ function issueOf(node: CoreNode): PendingApproval['issue'] {
 export async function listPendingApprovals(userId: string, scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList | ApprovalError> {
   const inScope = await mapsInScope(userId, scope);
   if ('status' in inScope) return inScope;
-  const nodes = await nodeDb.listProposedNodes(inScope.map((m) => m.id));
+  // Done by the map's own workflow (category or name), as the pull queue reads it.
+  const isDone = new Map<string, (status: string | null) => boolean>();
+  const nodes: CoreNode[] = [];
+  for (const n of await nodeDb.listProposedNodes(inScope.map((m) => m.id))) {
+    if (!isDone.has(n.mapId)) isDone.set(n.mapId, buildIsDonePredicate((await mapDb.getStatusWorkflow(n.mapId)) ?? []));
+    if (n.status !== 'done' && n.status !== 'cancelled' && !isDone.get(n.mapId)!(n.status)) nodes.push(n);
+  }
   const names = new Map(inScope.map((m) => [m.id, m.name]));
   const reporterIds = [...new Set(nodes.flatMap((n) => (n.reportedBy?.kind === 'user' ? [n.reportedBy.userId] : [])))];
   const userNames = new Map(
@@ -101,6 +107,7 @@ export async function listPendingApprovals(userId: string, scope: { mapId?: stri
       mapId: node.mapId,
       mapName: names.get(node.mapId) ?? '',
       nodeId: node.id,
+      revision: node.revision,
       title: node.text,
       description,
       reportedBy: r,
@@ -125,17 +132,24 @@ async function decidable(userId: string, mapId: string, nodeId: string): Promise
   return node;
 }
 
-async function writeStamp(userId: string, node: CoreNode, approval: NodeApproval): Promise<CoreNode | ApprovalError> {
-  const saved = await nodeDb.setApproval(node.id, approval);
-  if (!saved) return { status: 404, code: 'NODE_NOT_FOUND', message: `Node ${node.id} not found` };
-  await recordEvent({ mapId: node.mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'approval', oldValue: node.approval, newValue: approval });
+/**
+ * Write the stamp only if the node still carries the state the decision
+ * was made on — two devices deciding at once: the second gets a 409, `by`
+ * does not move. `note` (a reject's) goes into the change log with it.
+ */
+async function writeStamp(userId: string, node: CoreNode, approval: NodeApproval, note?: string): Promise<CoreNode | ApprovalError> {
+  const saved = await nodeDb.setApproval(node.id, approval, node.approval?.state ?? null);
+  if (!saved) return { status: 409, code: 'DECIDED_ELSEWHERE', message: 'Someone decided on this ticket in the meantime — reload' };
+  const newValue = note ? { ...approval, note } : approval;
+  await recordEvent({ mapId: node.mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'approval', oldValue: node.approval, newValue });
   return saved;
 }
 
 /**
  * Approve a proposed (or rejected) ticket. With `description` the text is
- * written first — "edit & approve". Approving approved work is a 409, so
- * a second click from another device does not move `by`.
+ * written first — "edit & approve". `expectedRevision` = the revision the
+ * person read: a ticket whose text changed since (a reporter's edit came
+ * in through the forge) is a 409, so a yes never covers text nobody saw.
  */
 export async function approveTicket(userId: string, mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalOutcome | ApprovalError> {
   if (input.merge !== undefined && input.merge !== 'auto' && input.merge !== 'pr-only') {
@@ -144,15 +158,29 @@ export async function approveTicket(userId: string, mapId: string, nodeId: strin
   if (input.description !== undefined && typeof input.description !== 'string') {
     return { status: 400, code: 'VALIDATION_ERROR', message: 'description must be a string' };
   }
+  if (input.expectedRevision !== undefined && !Number.isInteger(input.expectedRevision)) {
+    return { status: 400, code: 'VALIDATION_ERROR', message: 'expectedRevision must be an integer' };
+  }
   const node = await decidable(userId, mapId, nodeId);
   if ('code' in node) return node;
   if (node.approval?.state === 'approved') return { status: 409, code: 'ALREADY_APPROVED', message: 'This ticket is already approved' };
+  if (input.expectedRevision !== undefined && node.revision !== input.expectedRevision) {
+    return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed since you read it — reload and read it again' };
+  }
 
   const changedFields: string[] = [];
   let current = node;
   if (input.description !== undefined && input.description.trim() !== proseMirrorToPlainText(node.description).trim()) {
-    const edited = await nodeDb.updateNode(node.id, { description: input.description.trim() || null });
+    let edited: CoreNode | null;
+    try {
+      edited = await nodeDb.updateNode(node.id, { description: input.description.trim() || null }, node.revision);
+    } catch (err) {
+      if (err instanceof nodeDb.RevisionConflictError) return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed while you edited it — reload' };
+      throw err;
+    }
     if (!edited) return { status: 404, code: 'NODE_NOT_FOUND', message: `Node ${node.id} not found` };
+    // Who rewrote the ticket just before letting it through belongs in the trail.
+    await recordFieldChanges(mapId, node.id, userId, node, edited);
     current = edited;
     changedFields.push('description');
   }
@@ -172,19 +200,25 @@ function rejectLine(by: string, note: string): string {
   return `Rejected (${by}, ${new Date().toISOString().slice(0, 10)}): ${note}`;
 }
 
-/** Reject a proposed ticket: the queue never runs it. The note goes on the forge issue. */
+/**
+ * Reject a proposed ticket: the queue never runs it. Only proposed — an
+ * approved ticket may already be claimed, and rejecting would not stop
+ * its worker. The note goes into the change log and on the forge issue.
+ */
 export async function rejectTicket(userId: string, mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalOutcome | ApprovalError> {
   if (input.note !== undefined && typeof input.note !== 'string') return { status: 400, code: 'VALIDATION_ERROR', message: 'note must be a string' };
   const node = await decidable(userId, mapId, nodeId);
   if ('code' in node) return node;
-  if (node.approval?.state === 'rejected') return { status: 409, code: 'ALREADY_REJECTED', message: 'This ticket is already rejected' };
+  if (node.approval?.state !== 'proposed') {
+    return { status: 409, code: 'NOT_PROPOSED', message: `Only a proposed ticket can be rejected (this one is ${node.approval?.state ?? 'unstamped'})` };
+  }
 
-  const stamp: NodeApproval = { state: 'rejected', merge: node.approval?.merge ?? 'pr-only', by: userId, at: new Date().toISOString() };
-  const saved = await writeStamp(userId, node, stamp);
+  const note = input.note?.trim() ?? '';
+  const stamp: NodeApproval = { state: 'rejected', merge: node.approval.merge, by: userId, at: new Date().toISOString() };
+  const saved = await writeStamp(userId, node, stamp, note || undefined);
   if ('code' in saved) return saved;
 
   const writes: ApprovalOutcome['writes'] = [];
-  const note = input.note?.trim() ?? '';
   const link = node.externalLinks.find((l) => isForgeLink(l) && !l.isPullRequest);
   if (link && (note || input.closeIssue)) {
     const ctx = await getGitHubContextForMap(mapId);

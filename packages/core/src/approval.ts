@@ -14,6 +14,8 @@ export interface PendingApproval {
   mapId: string;
   mapName: string;
   nodeId: string;
+  /** The node revision this row shows — send it back as `expectedRevision`. */
+  revision: number;
   title: string;
   /** The description as plain text ('' when there is none). */
   description: string;
@@ -41,6 +43,8 @@ export interface ApproveInput {
   merge?: 'auto' | 'pr-only';
   /** Edit & approve: the new description (plain text), written before the stamp. */
   description?: string;
+  /** The revision the person read; a ticket changed since is refused (409). */
+  expectedRevision?: number;
 }
 
 export interface RejectInput {

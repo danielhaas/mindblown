@@ -781,32 +781,36 @@ export async function updateNode(
  * Write a node's approval stamp (#494) — the one path that changes it
  * after creation. Not through updateNode: the stamp is a decision about
  * the ticket, not its content, so it does not bump `revision` (that
- * would mark requirement sign-offs stale). Returns the node, or null
- * when it is gone.
+ * would mark requirement sign-offs stale). Written only while the stamp
+ * is still `fromState` (null = no stamp). Returns the node, or null when
+ * it is gone or someone decided first.
  */
-export async function setApproval(nodeId: string, approval: NodeApproval): Promise<CoreNode | null> {
+export async function setApproval(nodeId: string, approval: NodeApproval, fromState: string | null): Promise<CoreNode | null> {
   const [row] = await db
     .update(nodes)
     .set({ approval, updatedAt: new Date() })
-    .where(and(eq(nodes.id, nodeId), notDeleted))
+    .where(
+      and(
+        eq(nodes.id, nodeId),
+        notDeleted,
+        fromState === null ? sql`${nodes.approval} IS NULL` : sql`${nodes.approval}->>'state' = ${fromState}`,
+      ),
+    )
     .returning();
   return row ? dbNodeToCore(row as unknown as Record<string, unknown>) : null;
 }
 
-/** Open proposed nodes on these maps (#494), oldest first. */
+/**
+ * Proposed nodes on these maps (#494), oldest first. Archived maps are
+ * on hold — nothing there waits on anyone. Done ones are left to the
+ * caller, which knows each map's workflow.
+ */
 export async function listProposedNodes(mapIds: string[]): Promise<CoreNode[]> {
   if (mapIds.length === 0) return [];
   const rows = await db
     .select()
     .from(nodes)
-    .where(
-      and(
-        inArray(nodes.mapId, mapIds),
-        notDeleted,
-        sql`${nodes.approval}->>'state' = 'proposed'`,
-        sql`coalesce(${nodes.status}, '') NOT IN ('done', 'cancelled')`,
-      ),
-    )
+    .where(and(inArray(nodes.mapId, mapIds), notDeleted, onActiveMap, sql`${nodes.approval}->>'state' = 'proposed'`))
     .orderBy(nodes.createdAt);
   return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
 }

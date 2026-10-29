@@ -59,10 +59,15 @@ export function ApprovalsSection({ target: given, mobile = false }: { target?: F
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
   }, [targetKey, asksRev, poll]);
-  useEffect(() => setDone({}), [targetKey]);
+  // A different scope is a different list: the old rows don't stay up under it.
+  useEffect(() => {
+    setDone({});
+    setData(null);
+  }, [targetKey]);
 
-  const rows = data?.items ?? [];
-  const decided = Object.entries(done).filter(([id]) => !rows.some((r) => r.nodeId === id));
+  // A decided row leaves at once — the refetch must not bring back a clickable copy.
+  const rows = (data?.items ?? []).filter((r) => !(r.nodeId in done));
+  const decided = Object.entries(done);
   if (rows.length === 0 && decided.length === 0) return null;
 
   // The stakeholder lens reads; the server still decides who may click.
@@ -81,6 +86,7 @@ export function ApprovalsSection({ target: given, mobile = false }: { target?: F
             setDone((d) => ({ ...d, [r.nodeId]: line }));
             setPoll((t) => t + 1);
           }}
+          onStale={() => setPoll((t) => t + 1)}
         />
       ))}
       {decided.map(([id, line]) => (
@@ -115,16 +121,23 @@ function ApprovalRow({
   readOnly,
   mobile,
   onDone,
+  onStale,
 }: {
   row: PendingApproval;
   project: string | null;
   readOnly: boolean;
   mobile: boolean;
   onDone: (line: string) => void;
+  /** The ticket changed since it was read: refetch, the person reads again. */
+  onStale: () => void;
 }) {
   const [stopAtPr, setStopAtPr] = useState(r.approval.merge === 'pr-only');
   const [mode, setMode] = useState<Mode>('idle');
   const [text, setText] = useState(r.description);
+  // A refetch with newer text: the edit box starts from it next time.
+  useEffect(() => {
+    if (mode !== 'edit') setText(r.description);
+  }, [r.description, mode]);
   const [note, setNote] = useState('');
   const [closeIssue, setCloseIssue] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -139,13 +152,17 @@ function ApprovalRow({
       onDone(line(res));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed');
+      if (e instanceof api.ApiError && e.status === 409) {
+        setMode('idle');
+        onStale();
+      }
     } finally {
       setBusy(false);
     }
   }
   const approve = (description?: string) =>
     run(
-      () => api.approveTicket(r.mapId, r.nodeId, { merge, description }),
+      () => api.approveTicket(r.mapId, r.nodeId, { merge, description, expectedRevision: r.revision }),
       () => `✓ Approved: ${r.title} — ${merge === 'pr-only' ? 'the fleet stops at the PR' : 'full auto'}`,
     );
   const reject = () =>
@@ -193,7 +210,7 @@ function ApprovalRow({
             onChange={(e) => setNote(e.target.value)}
             rows={3}
             style={field}
-            placeholder={r.issue ? `Why — posted on ${r.issue.ref} (optional)` : 'Why (optional)'}
+            placeholder={r.issue ? `Why — posted on ${r.issue.ref} (optional)` : 'Why — kept in the change log (optional)'}
             aria-label="Reject note"
           />
           {r.issue && (

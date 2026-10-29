@@ -93,18 +93,19 @@ describe('approval routes', () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { merge: 'auto', description: 'new', extra: 1 } });
     expect(res.statusCode).toBe(200);
-    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: 'auto', description: 'new' });
+    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: 'auto', description: 'new', expectedRevision: undefined });
     expect(res.json()).toMatchObject({ approval: node.approval, writes: [], ok: true });
     expect(broadcastMock).toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'node:updated', nodeId: 'n1', fields: ['approval'] }));
     expect(broadcastMock).toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'asks:updated', kind: 'approval' }));
     expect(syncMock).not.toHaveBeenCalled();
   });
 
-  it('syncs an edited description to the forge', async () => {
+  it('forwards expectedRevision, and leaves the reporter\'s issue body alone after an edit', async () => {
     approveMock.mockResolvedValue({ node, changedFields: ['description', 'approval'], writes: [] });
     const app = await buildApp();
-    await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { description: 'x' } });
-    expect(syncMock).toHaveBeenCalledWith(node, ['description', 'approval']);
+    await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { description: 'x', expectedRevision: 4 } });
+    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: undefined, description: 'x', expectedRevision: 4 });
+    expect(syncMock).not.toHaveBeenCalled();
   });
 
   it('reject passes note + closeIssue (strictly true) and reports a failed write', async () => {
