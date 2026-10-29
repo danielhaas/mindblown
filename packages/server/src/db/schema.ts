@@ -739,6 +739,19 @@ export const mediaOwners = pgTable('media_owners', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ── Approval pushes (#493) ─────────────────────────────────────────
+// When a map last got a "tickets waiting for approval" push, and which
+// proposed tickets have had their one 24 h reminder.
+export const approvalNotifications = pgTable('approval_notifications', {
+  mapId: uuid('map_id').primaryKey().references(() => maps.id, { onDelete: 'cascade' }),
+  lastPushedAt: timestamp('last_pushed_at', { withTimezone: true }).notNull(),
+});
+
+export const approvalReminders = pgTable('approval_reminders', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  remindedAt: timestamp('reminded_at', { withTimezone: true }).notNull(),
+});
+
 export const asksPushes = pgTable(
   'asks_pushes',
   {
