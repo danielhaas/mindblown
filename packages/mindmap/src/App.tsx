@@ -1656,6 +1656,15 @@ export function App() {
     };
   }, [currentMapId, triagePanelOpen]);
 
+  // ?settings=account (the daily mail's footer, #597) opens the workspace settings.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get('settings') !== 'account') return;
+    url.searchParams.delete('settings');
+    window.history.replaceState({}, '', url.pathname + url.search);
+    setWorkspaceSettingsOpen(true);
+  }, []);
+
   // Handle GitHub OAuth callback redirect (?gh=connected or ?gh=error)
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);

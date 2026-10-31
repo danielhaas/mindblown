@@ -50,12 +50,14 @@ import { fleetEntityRoutes } from './routes/fleets.js';
 import { fleetPairingRoutes } from './routes/fleetPairings.js';
 import { asksRoutes } from './routes/asks.js';
 import { approvalsRoutes } from './routes/approvals.js';
+import { digestMailRoutes } from './routes/digestMail.js';
 import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
 import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
+import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { registerWebSocket } from './ws.js';
 
@@ -144,6 +146,7 @@ async function main(): Promise<void> {
   await app.register(fleetPairingRoutes);
   await app.register(asksRoutes);
   await app.register(approvalsRoutes);
+  await app.register(digestMailRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(fleetJournalByFleetRoutes);
   await app.register(repoDocsRoutes);
@@ -456,6 +459,23 @@ async function main(): Promise<void> {
     }
   };
   setInterval(approvalPushTick, APPROVAL_PUSH_INTERVAL_MS);
+
+  // ── Daily mail with open questions (#597) ─────────────────────
+  // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,
+  // default Europe/Zurich) each person gets the day's mail once
+  // (digest_mails). No-op without SMTP_HOST.
+  const DIGEST_MAIL_INTERVAL_MS = 10 * 60 * 1000;
+  const digestCfg = digestConfig();
+  const digestMailTick = async (): Promise<void> => {
+    try {
+      const r = await runDigestMails(new Date(), digestCfg);
+      if (r.checked > 0) console.log(`[digest-mail] checked=${r.checked} sent=${r.sent} errors=${r.errors.length}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[digest-mail] ${err}`);
+    } catch (err) {
+      console.error('[digest-mail] tick caught unexpected error:', err);
+    }
+  };
+  setInterval(digestMailTick, DIGEST_MAIL_INTERVAL_MS);
 
   // ── Trash garbage collection (#107) ────────────────────────────
   // Soft-deleted nodes get hard-deleted after the retention window. Also

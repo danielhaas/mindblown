@@ -14,6 +14,7 @@ import type { GitHubInstallStatus, GitHubRepoInfo } from './api.js';
 import { useMindmapStore } from './store.js';
 import { RegistrationPolicyPanel } from './RegistrationPolicyPanel.js';
 import { ChangePasswordPanel } from './ChangePasswordPanel.js';
+import { DigestMailPanel } from './DigestMailPanel.js';
 import { AdminPasswordResetPanel } from './AdminPasswordResetPanel.js';
 import { ClaudeConnectPanel } from './ClaudeConnectPanel.js';
 import { SettingsApiKeys } from './SettingsApiKeys.js';
@@ -428,6 +429,9 @@ export function WorkspaceSettings({
 
           {/* Account password — shown only in workspace-wide view */}
           {!mapId && <ChangePasswordPanel />}
+
+          {/* Daily mail with open questions — shown only in workspace-wide view */}
+          {!mapId && <DigestMailPanel />}
 
           {/* Registration policy — shown only in workspace-wide view */}
           {!mapId && <RegistrationPolicyPanel />}

@@ -37,6 +37,11 @@ if (SMTP_HOST) {
 
 // ── Low-level sender ──────────────────────────────────────────────
 
+/** False without SMTP_HOST: sendEmail only logs. */
+export function emailConfigured(): boolean {
+  return transporter !== null;
+}
+
 export interface EmailInput {
   to: string;
   subject: string;
@@ -133,7 +138,7 @@ export async function sendMapInvitationEmail(input: MapInvitationInput): Promise
   await sendEmail({ to: recipientEmail, subject, html, text });
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => {
     switch (c) {
       case '&': return '&amp;';
