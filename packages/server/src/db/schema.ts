@@ -752,6 +752,15 @@ export const approvalReminders = pgTable('approval_reminders', {
   remindedAt: timestamp('reminded_at', { withTimezone: true }).notNull(),
 });
 
+// ── Daily mail with open questions (#597) ──────────────────────────
+// One row per person: the local day of the last digest round (a second
+// tick or a restart on that day sends nothing) and the opt-out switch.
+export const digestMails = pgTable('digest_mails', {
+  userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
+  lastSentOn: date('last_sent_on', { mode: 'string' }),
+  enabled: boolean('enabled').notNull().default(true),
+});
+
 export const asksPushes = pgTable(
   'asks_pushes',
   {

@@ -1519,5 +1519,16 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
     )
   `);
 
+  // ── Daily mail with open questions (#597) ───────────────────────
+  // The day of a person's last digest round, and their opt-out
+  // (services/digestMail.ts). No row = mail on, never sent.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS digest_mails (
+      user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      last_sent_on DATE,
+      enabled BOOLEAN NOT NULL DEFAULT TRUE
+    )
+  `);
+
   console.log('[db] Migrations complete.');
 }

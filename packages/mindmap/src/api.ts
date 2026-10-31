@@ -300,6 +300,18 @@ export async function changePassword(currentPassword: string, newPassword: strin
   setToken(token);
 }
 
+/** The daily mail with open questions (#597): the signed-in person's switch. */
+export function getDigestMail(): Promise<{ enabled: boolean }> {
+  return request<{ enabled: boolean }>('/api/me/digest-mail');
+}
+
+export function setDigestMail(enabled: boolean): Promise<{ enabled: boolean }> {
+  return request<{ enabled: boolean }>('/api/me/digest-mail', {
+    method: 'PUT',
+    body: JSON.stringify({ enabled }),
+  });
+}
+
 export function adminResetPassword(email: string): Promise<{ email: string; tempPassword: string }> {
   return request<{ email: string; tempPassword: string }>('/api/system/reset-password', {
     method: 'POST',
