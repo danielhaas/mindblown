@@ -159,6 +159,25 @@ describe('runTrashGc (#311)', () => {
     expect(s.githubSkipped).toBe(1);
   });
 
+  it('the issue was deleted on the forge (410): nothing to close, the row is deleted', async () => {
+    const { ForgeApiError } = await import('@mindblown/integrations');
+    m.rows = [row('n1', [link('o/r#5')])];
+    m.getIssue.mockRejectedValue(new ForgeApiError(410, '{"message":"This issue was deleted"}'));
+    const s = await runTrashGc(30);
+    expect(m.close).not.toHaveBeenCalled();
+    expect(m.deletedIds).toEqual(['n1']);
+    expect(s).toMatchObject({ githubSkipped: 1, githubFailed: 0 });
+  });
+
+  it('a 404 is not proof of deletion (lost access looks the same): row kept', async () => {
+    const { ForgeApiError } = await import('@mindblown/integrations');
+    m.rows = [row('n1', [link('o/r#5')])];
+    m.getIssue.mockRejectedValue(new ForgeApiError(404, 'Not Found'));
+    const s = await runTrashGc(30);
+    expect(m.deletedIds).toEqual([]);
+    expect(s).toMatchObject({ githubFailed: 1, hardDeleted: 0 });
+  });
+
   it('a forge error: issue untouched, row kept for the next run', async () => {
     m.rows = [row('n1', [link('o/r#5')])];
     m.probe.mockRejectedValue(new Error('502'));

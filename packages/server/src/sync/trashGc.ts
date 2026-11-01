@@ -27,6 +27,7 @@ import { onActiveMap } from '../db/nodes.js';
 import type { ExternalLink, LinkedPrState } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
 import {
+  ForgeApiError,
   closeGitHubIssue,
   getGitHubIssue,
   parseExternalId,
@@ -181,7 +182,15 @@ async function gcVerdict(
   if (!parsed || parsed.owner !== ctx.owner || parsed.repo !== ctx.repo) {
     return { kind: 'leave', because: `not the map's repo (${ctx.owner}/${ctx.repo})` };
   }
-  const issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
+  let issue;
+  try {
+    issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
+  } catch (err) {
+    // 410 = the issue was deleted on the forge: nothing left to close or to
+    // re-import, so the row may go. Retrying kept it in the Trash forever.
+    if (err instanceof ForgeApiError && err.status === 410) return { kind: 'leave', because: 'deleted on the forge' };
+    throw err;
+  }
   if (issue.state === 'closed') return { kind: 'leave', because: 'already closed' };
 
   if (link.mergeCommitSha || (linkedPr?.state === 'merged' && linkedPr.landedOnDefault !== false)) {
