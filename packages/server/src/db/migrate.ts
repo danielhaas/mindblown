@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { DATABASE_URL } from './connection.js';
 
@@ -41,7 +41,13 @@ export async function runMigrations(): Promise<void> {
   }
 }
 
-async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
+/** Anything that can run a raw statement — the node-postgres pool in
+ *  production, an in-process PGlite in tests (src/test/pgliteDb.ts). */
+export interface DdlExecutor {
+  execute(query: SQL): Promise<unknown>;
+}
+
+export async function runDdl(db: DdlExecutor): Promise<void> {
 
   // Create tables using raw SQL (matching the Drizzle schema)
   // This is the pragmatic approach for a dev setup — drizzle-kit push
