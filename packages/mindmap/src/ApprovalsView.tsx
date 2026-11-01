@@ -115,7 +115,8 @@ export function ApprovalsSection({ target: given, mobile = false }: { target?: F
 
 type Mode = 'idle' | 'edit' | 'reject';
 
-function ApprovalRow({
+/** One waiting ticket with its Approve / Edit & approve / Reject — also the Kanban detail view's (#610). */
+export function ApprovalRow({
   row: r,
   project,
   readOnly,

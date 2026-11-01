@@ -234,22 +234,81 @@ export function personHolds(nodes: Node[], workflow: StatusDef[]): Map<string, s
   const ancestors = { nodeMap, isDone: buildIsDonePredicate(workflow) };
   const holds = new Map<string, string>();
   for (const n of nodes) {
-    const hold = dispatchHold(n, ancestors);
-    if (!hold) continue;
-    if (hold.heldBy) {
-      const why = hold.tag
-        ? `is tagged ${hold.tag}`
-        : hold.blockedReason
-          ? `is blocked: ${hold.blockedReason.trim()}`
-          : `is ${hold.approval} — waits for approval`;
-      holds.set(n.id, `Needs a person: parent "${hold.heldBy.text}" ${why}`);
-    } else if (hold.tag && hold.tag !== EPIC_HOLD_TAG) {
-      holds.set(n.id, `Needs a person: tagged ${hold.tag}`);
-    } else if (hold.approval && n.approval) {
-      holds.set(n.id, hold.approval === 'rejected' ? 'Rejected: the fleet will not run it' : 'Needs a person: waits for approval');
-    }
+    const text = personHold(n, ancestors)?.detail;
+    if (text) holds.set(n.id, text);
   }
   return holds;
+}
+
+/** One node's `personHolds` entry, with the open ancestor that carries it (null = the ticket itself). */
+function personHold(
+  n: Node,
+  ancestors: { nodeMap: NodeMap; isDone: (status: string | null) => boolean },
+): { detail: string; heldBy: { id: string; text: string } | null } | null {
+  const hold = dispatchHold(n, ancestors);
+  if (!hold) return null;
+  if (hold.heldBy) {
+    const why = hold.tag
+      ? `is tagged ${hold.tag}`
+      : hold.blockedReason
+        ? `is blocked: ${hold.blockedReason.trim()}`
+        : `is ${hold.approval} — waits for approval`;
+    return { detail: `Needs a person: parent "${hold.heldBy.text}" ${why}`, heldBy: hold.heldBy };
+  }
+  if (hold.tag && hold.tag !== EPIC_HOLD_TAG) return { detail: `Needs a person: tagged ${hold.tag}`, heldBy: null };
+  if (hold.approval && n.approval) {
+    return { detail: hold.approval === 'rejected' ? 'Rejected: the fleet will not run it' : 'Needs a person: waits for approval', heldBy: null };
+  }
+  return null;
+}
+
+/**
+ * What a ticket's detail view puts on top (#610): the things that hold it
+ * for a person, each with the action that resolves it. Same rules as the
+ * card badge (`cardBlockState`, `personHolds`), so the section shows when
+ * — and only when — the card says Blocked, Needs you or Needs brief.
+ *
+ *   - approval: its own stamp is proposed → Approve / Edit & approve / Reject;
+ *   - blocked: a manual blocker (reason, blocked tag or status) → Unblock;
+ *     the reason, '' when only the tag or status says so;
+ *   - brief: the pull queue refuses it for want of a brief → write one.
+ *     Only when the description and links are known (not undefined —
+ *     the mobile board loads nodes without them);
+ *   - other: any other hold for a person (a skip tag, a parent's hold, a
+ *     rejected stamp) — the reason, and the parent that carries it.
+ *
+ * Done work and a ticket the fleet already has back (Fleet fixing /
+ * checking) wait on nobody. Open questions come from the asks inbox, not
+ * from the node — the section fetches those itself.
+ */
+export interface NodeWaits {
+  approval: boolean;
+  blocked: string | null;
+  brief: boolean;
+  other: { detail: string; heldBy: { id: string; text: string } | null } | null;
+}
+
+export function nodeWaits(node: Node, nodes: Node[] | NodeMap, workflow: StatusDef[]): NodeWaits {
+  const none: NodeWaits = { approval: false, blocked: null, brief: false, other: null };
+  const isDone = buildIsDonePredicate(workflow);
+  if (isDone(node.status)) return none;
+  if (node.tags.includes(FLEET_FIX_TAG) || node.tags.includes(FLEET_CHECK_TAG)) return none;
+  const nodeMap: NodeMap = nodes instanceof Map ? nodes : new Map(nodes.map((n) => [n.id, n]));
+  const reason = (node.blockedReason ?? '').trim();
+  const blocked = reason !== '' || node.tags.includes(BLOCKED_TAG) || (node.status ?? '').toLowerCase() === 'blocked' ? reason : null;
+  const approval = node.approval?.state === 'proposed';
+  const hold = personHold(node, { nodeMap, isDone });
+  // The own proposed stamp has its buttons; a blocker held on the ticket itself is `blocked`.
+  const other = hold && !(approval && !hold.heldBy) ? hold : null;
+  const category = node.status ? (workflow.find((w) => w.id === node.status || w.name.toLowerCase() === node.status!.toLowerCase())?.category ?? null) : null;
+  const slim = node as Partial<Node>;
+  const brief = slim.description !== undefined && slim.externalLinks !== undefined && needsBriefOnBoard(node, category);
+  return { approval, blocked, brief, other };
+}
+
+/** Nothing waits on a person: the detail view shows no extra section. */
+export function nothingWaits(w: NodeWaits): boolean {
+  return !w.approval && w.blocked === null && !w.brief && w.other === null;
 }
 
 /**
