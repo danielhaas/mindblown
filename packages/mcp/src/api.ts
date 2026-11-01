@@ -14,8 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, ApprovalResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
-import type { ApproveInput, AskAnswerInput, FleetWithMaps, PendingApprovalList, RejectInput, StalledLeaf, TrustPolicy } from '@mindblown/core';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
+import type { AskAnswerInput, FleetWithMaps, PendingApprovalList, StalledLeaf, TrustPolicy } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1817,14 +1817,6 @@ export function fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetC
 export function listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList> {
   const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
   return request<PendingApprovalList>(`${base}/approvals`);
-}
-
-export function approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResult> {
-  return request<ApprovalResult>(`/api/maps/${mapId}/nodes/${nodeId}/approve`, { method: 'POST', body: JSON.stringify(input) });
-}
-
-export function rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResult> {
-  return request<ApprovalResult>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

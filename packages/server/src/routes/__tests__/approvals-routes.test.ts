@@ -3,7 +3,8 @@
  * route owns: 401 without a user, the map guard (view to list, edit to
  * decide, a node of another map is a 404), which service call each route
  * makes with which body, error → status, and the fan-out after a decision
- * (node:updated + asks:updated, forge sync only for an edited description).
+ * (node:updated + asks:updated, forge sync only for an edited description),
+ * and that only a web session may decide (#606).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
@@ -37,11 +38,12 @@ vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(..
 import { approvalsRoutes } from '../approvals.js';
 
 let userId: string | undefined = 'u1';
+let auth: { authSource: 'jwt' | 'api-key'; actor?: 'person' | 'agent' } = { authSource: 'jwt' };
 
 async function buildApp(): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
   app.addHook('preHandler', async (req) => {
-    Object.assign(req, { userId });
+    Object.assign(req, { userId, ...auth });
   });
   await app.register(approvalsRoutes);
   return app;
@@ -51,6 +53,7 @@ const node = { id: 'n1', mapId: MAP, approval: { state: 'approved', merge: 'pr-o
 
 beforeEach(() => {
   userId = 'u1';
+  auth = { authSource: 'jwt' };
   state.perm = { [MAP]: 'edit' };
   listMock.mockReset().mockResolvedValue({ items: [], now: 'x' });
   approveMock.mockReset().mockResolvedValue({ node, changedFields: ['approval'], writes: [] });
@@ -123,5 +126,40 @@ describe('approval routes', () => {
     expect(res.statusCode).toBe(403);
     expect(res.json()).toEqual({ error: { code: 'NOT_TRUSTED', message: 'nope' } });
     expect(broadcastMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses approve and reject to an API key (mb_…) with 403 APPROVAL_NEEDS_SESSION, writing nothing', async () => {
+    auth = { authSource: 'api-key' };
+    const app = await buildApp();
+    for (const action of ['approve', 'reject']) {
+      const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/${action}`, payload: { merge: 'auto', note: 'pre-approved' } });
+      expect(res.statusCode).toBe(403);
+      expect(res.json()).toMatchObject({ error: { code: 'APPROVAL_NEEDS_SESSION' } });
+    }
+    expect(approveMock).not.toHaveBeenCalled();
+    expect(rejectMock).not.toHaveBeenCalled();
+    expect(broadcastMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a long-lived agent token the same way', async () => {
+    auth = { authSource: 'jwt', actor: 'agent' };
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: {} });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toMatchObject({ error: { code: 'APPROVAL_NEEDS_SESSION' } });
+    expect(approveMock).not.toHaveBeenCalled();
+  });
+
+  it('lets an API key still list, and a web session still decide', async () => {
+    auth = { authSource: 'api-key' };
+    let app = await buildApp();
+    expect((await app.inject({ method: 'GET', url: `/api/maps/${MAP}/approvals` })).statusCode).toBe(200);
+    auth = { authSource: 'jwt', actor: 'person' };
+    app = await buildApp();
+    rejectMock.mockResolvedValue({ node, changedFields: ['approval'], writes: [] });
+    expect((await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: {} })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/reject`, payload: {} })).statusCode).toBe(200);
+    expect(approveMock).toHaveBeenCalledTimes(1);
+    expect(rejectMock).toHaveBeenCalledTimes(1);
   });
 });

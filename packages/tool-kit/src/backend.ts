@@ -9,14 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { ApproveInput, AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, NodeApproval, PendingApprovalList, RejectInput, TrustPolicy } from '@mindblown/core';
-
-/** What an approve / reject wrote (#494): the new stamp, and the forge writes with their outcome. */
-export interface ApprovalResult {
-  approval: NodeApproval | null;
-  writes: Array<{ kind: 'comment' | 'close'; target: string; done: boolean; error?: string }>;
-  ok: boolean;
-}
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, TrustPolicy } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -586,10 +579,7 @@ export interface ToolBackend {
   // ── Approvals (#494) ────────────────────────────────────────────
   /** Proposed tickets: one map, a fleet's maps, or (neither) every map the caller can view. */
   listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList>;
-  /** Approve (or edit & approve) — refused unless the caller is on the map's trusted list. */
-  approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResult>;
-  /** Reject; the note goes on the linked forge issue, which stays open unless closeIssue. */
-  rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResult>;
+  // No approve/reject (#606): deciding happens on the approval card only.
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

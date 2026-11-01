@@ -1,7 +1,6 @@
 /**
  * Approval routes (#494) — the "Waiting for approval" rows on the Fleet
- * tab and the phone, and `list_pending_approvals` / `approve_ticket` /
- * `reject_ticket` for agents.
+ * tab and the phone, and `list_pending_approvals` for agents.
  *
  *   GET  /api/approvals                              — every map the reader can view
  *   GET  /api/maps/:id/approvals                     — one map
@@ -11,7 +10,10 @@
  *
  * Reads need view; each row says whether the reader may decide. A decision
  * needs edit and a place on the map's trusted list, and is refused to a
- * fleet key (services/approvals.ts).
+ * fleet key (services/approvals.ts). It also needs a web session (#606):
+ * an agent must read the reporter's untrusted text to decide, and that
+ * text can talk to it — so an API key or agent token gets 403
+ * APPROVAL_NEEDS_SESSION before anything is read or written.
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { ApproveInput, RejectInput } from '@mindblown/core';
@@ -19,12 +21,19 @@ import { approveTicket, listPendingApprovals, rejectTicket } from '../services/a
 import type { ApprovalError, ApprovalOutcome } from '../services/approvals.js';
 import * as nodeDb from '../db/nodes.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
+import { isAgentRequest } from '../auth.js';
 import { broadcast } from '../ws.js';
 
 const fail = (reply: FastifyReply, e: ApprovalError) => reply.status(e.status).send({ error: { code: e.code, message: e.message } });
 
 function unauthorized(reply: FastifyReply) {
   return reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+}
+
+function needsSession(reply: FastifyReply) {
+  return reply.status(403).send({
+    error: { code: 'APPROVAL_NEEDS_SESSION', message: 'Approving and rejecting need a web session, not an API key — use the approval card on the Fleet tab.' },
+  });
 }
 
 /**
@@ -67,12 +76,14 @@ export async function approvalsRoutes(app: FastifyInstance): Promise<void> {
 
   app.post<{ Params: { id: string; nodeId: string }; Body: ApproveInput }>('/api/maps/:id/nodes/:nodeId/approve', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
+    if (isAgentRequest(req)) return needsSession(reply);
     const body = (req.body ?? {}) as ApproveInput;
     return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, { merge: body.merge, description: body.description, expectedRevision: body.expectedRevision }));
   });
 
   app.post<{ Params: { id: string; nodeId: string }; Body: RejectInput }>('/api/maps/:id/nodes/:nodeId/reject', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
+    if (isAgentRequest(req)) return needsSession(reply);
     const body = (req.body ?? {}) as RejectInput;
     return sendOutcome(reply, await rejectTicket(req.userId, req.params.id, req.params.nodeId, { note: body.note, closeIssue: body.closeIssue === true }));
   });
