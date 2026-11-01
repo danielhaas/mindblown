@@ -325,6 +325,11 @@ export function MobileViewer({ map }: Props) {
           byId={byId}
           onClose={() => setSelectedId(null)}
           onChanged={patchNode}
+          onOpenNode={setSelectedId}
+          onOpenFleet={() => {
+            setSelectedId(null);
+            setViewPersist('fleet');
+          }}
         />
       )}
 

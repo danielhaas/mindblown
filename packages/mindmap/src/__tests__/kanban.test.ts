@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Node, StatusDef } from '@mindblown/core';
-import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, formatSpan, outsideGate, personHolds } from '../kanban.js';
+import { groupDone, doneGroupBounds, cardBlockState, hiddenFromBoard, kanbanColumnId, needsBriefOnBoard, startedLabel, etaLabel, durationLabels, formatSpan, outsideGate, personHolds, nodeWaits, nothingWaits } from '../kanban.js';
 
 describe('needsBriefOnBoard — the pull queue\'s empty-brief guard', () => {
   const issue = { id: 'l', provider: 'github', url: 'https://github.com/o/r/issues/1', externalId: 'o/r#1', isPullRequest: false, syncEnabled: true };
@@ -317,5 +317,53 @@ describe('cards handed back to the fleet', () => {
     expect(check?.detail).toContain('the agent exited with 3.');
     expect(cardBlockState({ status: 'in_progress', blockedReason: null, tags: ['fleet-fix'] }, null, false, (id) => id)?.kind).toBe('fleet');
     expect(cardBlockState({ ...blocked, tags: ['fleet-check'] }, null, true, (id) => id)).toBeNull();
+  });
+});
+
+describe('nodeWaits — what the detail view puts on top (#610)', () => {
+  const APPROVED = { state: 'approved', merge: 'auto', by: null, at: '2026-10-28T00:00:00.000Z' } as const;
+  const workflow: StatusDef[] = [
+    { id: 'todo', name: 'Todo', category: 'todo', color: '#000', position: 0 },
+    { id: 'blocked', name: 'Blocked', category: 'todo', color: '#000', position: 1 },
+    { id: 'done', name: 'Done', category: 'done', color: '#000', position: 2 },
+  ];
+  const node = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, text: id, parentId: 'root', childrenIds: [], status: 'todo', tags: [], blockedReason: null, approval: APPROVED, description: 'A brief', externalLinks: [], ...extra }) as unknown as Node;
+  const root = node('root', { parentId: null, approval: null });
+  const waits = (n: Node, more: Node[] = []) => nodeWaits(n, [root, n, ...more], workflow);
+
+  it('nothing waiting: no section', () => {
+    expect(nothingWaits(waits(node('ok')))).toBe(true);
+  });
+
+  it('a proposed stamp → approval, not also "other"', () => {
+    const w = waits(node('p', { approval: { ...APPROVED, state: 'proposed' } }));
+    expect(w).toEqual({ approval: true, blocked: null, brief: false, other: null });
+  });
+
+  it('a blocker reason, the blocked tag or a blocked status → blocked, with the reason', () => {
+    expect(waits(node('b', { blockedReason: '  Needs a token ' })).blocked).toBe('Needs a token');
+    expect(waits(node('t', { tags: ['blocked'] })).blocked).toBe('');
+    expect(waits(node('s', { status: 'blocked' })).blocked).toBe('');
+  });
+
+  it('no brief → brief; only once the description is loaded', () => {
+    expect(waits(node('n', { description: null })).brief).toBe(true);
+    expect(waits(node('n', { description: undefined })).brief).toBe(false);
+  });
+
+  it('a skip tag or a parent\'s hold → other, with the parent that carries it', () => {
+    expect(waits(node('h', { tags: ['needs-human'] })).other).toEqual({ detail: 'Needs a person: tagged needs-human', heldBy: null });
+    const epic = node('epic', { text: 'Follow-ups', blockedReason: 'Waiting on Dan', childrenIds: ['under'] });
+    const under = node('under', { parentId: 'epic' });
+    expect(nodeWaits(under, [root, epic, under], workflow).other).toEqual({
+      detail: 'Needs a person: parent "Follow-ups" is blocked: Waiting on Dan',
+      heldBy: { id: 'epic', text: 'Follow-ups' },
+    });
+  });
+
+  it('done work and a ticket the fleet has back wait on nobody', () => {
+    expect(nothingWaits(waits(node('d', { status: 'done', blockedReason: 'x', approval: { ...APPROVED, state: 'proposed' } })))).toBe(true);
+    expect(nothingWaits(waits(node('f', { tags: ['fleet-check'], blockedReason: 'x' })))).toBe(true);
   });
 });

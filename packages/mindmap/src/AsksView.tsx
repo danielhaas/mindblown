@@ -39,8 +39,20 @@ import { answerRoute, projectLabel, scopeTarget, useFleetScope } from './fleetSc
 import type { FleetScope } from './fleetScope.js';
 import { projectTag } from './FleetTelemetry.js';
 
+/**
+ * Who an answer is from. First name only — «Decision (Dan, …)» is what the
+ * terminal round writes and what the collector recognises as an
+ * already-taken decision. Dan's account says «Daniel»; he asked for «Dan»
+ * (2026-09-03), same as the skill.
+ */
+const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
+export function answererName(user: { name?: string | null } | null | undefined): string {
+  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Dan';
+  return BY_ALIAS[firstName] ?? firstName;
+}
+
 /** A row's key: two projects of one fleet may carry the same ask id (#480). */
-const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
+export const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
 
 function ProjectTag({ scope, mapId }: { scope: FleetScope | null; mapId: string | null | undefined }) {
   const label = projectLabel(scope, mapId);
@@ -76,7 +88,7 @@ function title(a: Ask): string {
   return r && t.startsWith(r + ' ') ? t.slice(r.length + 1) : t;
 }
 
-type AnswerResult = { ok: boolean; lines: string[] };
+export type AnswerResult = { ok: boolean; lines: string[] };
 
 function fmtTime(iso: string | null): string {
   if (!iso) return '—';
@@ -161,12 +173,7 @@ export function AsksSection() {
 
   // Only the stakeholder lens is read-only; PM, developer and All answer.
   const readOnly = viewRole === 'stakeholder';
-  // First name only — «Decision (Dan, …)» is what the terminal round writes
-  // and what the collector recognises as an already-taken decision. Dan's
-  // account says «Daniel»; he asked for «Dan» (2026-09-03), same as the skill.
-  const BY_ALIAS: Record<string, string> = { Daniel: 'Dan' };
-  const firstName = user?.name?.trim().split(/\s+/)[0] || 'Dan';
-  const by = BY_ALIAS[firstName] ?? firstName;
+  const by = answererName(user);
 
   const groups = useMemo(() => {
     const rows = sortAsks(data?.items ?? []);
@@ -396,7 +403,8 @@ const btn = (kind: 'primary' | 'plain' | 'fleet', disabled: boolean): React.CSSP
   opacity: disabled ? 0.5 : 1,
 });
 
-function AskCard({
+/** One question with its answer box — also the Kanban detail view's (#610). */
+export function AskCard({
   row,
   mapId,
   scope,

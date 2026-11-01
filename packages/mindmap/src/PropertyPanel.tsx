@@ -12,6 +12,7 @@ import { useAiCapabilities } from './aiCapabilities.js';
 import { useTicketPhases } from './useTicketPhases.js';
 import { StopTicketButton } from './StopTicketButton.js';
 import { AgentOutputSection } from './AgentOutputSection.js';
+import { NeedsYouSection } from './NeedsYouSection.js';
 
 // ── Styles ───────────────────────────────────────────────────────
 
@@ -278,6 +279,11 @@ function PropertyPanelInner({
   const predecessorTitles = (computedValues?.blockedBy?.predecessorIds ?? [])
     .map((pid) => allNodes[pid]?.text ?? pid);
 
+  const workflow = useMindmapStore((s) => s.currentMap?.statusWorkflow);
+  const nodeMap = useMemo(() => new Map(Object.entries(allNodes)), [allNodes]);
+  const selectNode = useMindmapStore((s) => s.selectNode);
+  const setActiveView = useMindmapStore((s) => s.setActiveView);
+
   const health = computedValues?.healthSignal ?? 'on_track';
   const healthInfo = HEALTH_LABELS[health];
 
@@ -368,6 +374,27 @@ function PropertyPanelInner({
           gap: 14,
         }}
       >
+        {/* What the ticket waits on, with the action that resolves it (#610). */}
+        <NeedsYouSection
+          mapId={node.mapId}
+          node={node}
+          nodes={nodeMap}
+          workflow={workflow ?? []}
+          onUnblock={async () => {
+            debouncedUpdate.cancelField('blockedReason');
+            const ok = await unblockNode(nodeId);
+            if (ok) setBlockedReason('');
+            return ok;
+          }}
+          onSaveBrief={async (text) => {
+            setDescription(text);
+            directUpdate(nodeId, { description: text });
+            return true;
+          }}
+          onOpenNode={selectNode}
+          onOpenFleet={() => setActiveView('fleet')}
+        />
+
         {/* Computed values (read-only) */}
         <div style={{ display: 'flex', gap: 8 }}>
           {/* Health badge */}
