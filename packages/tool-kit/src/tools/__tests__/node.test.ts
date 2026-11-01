@@ -110,8 +110,6 @@ function makeRecordingBackend(): {
     answerAskForFleet: async () => { throw new Error('not implemented'); },
     fleetCheckBlockers: async () => { throw new Error('not implemented'); },
     listPendingApprovals: async () => { throw new Error('not implemented'); },
-    approveTicket: async () => { throw new Error('not implemented'); },
-    rejectTicket: async () => { throw new Error('not implemented'); },
     auditClosedIssues: async () => { throw new Error('not implemented'); },
     listAsks: async () => { throw new Error('not implemented'); },
     answerAsk: async () => { throw new Error('not implemented'); },

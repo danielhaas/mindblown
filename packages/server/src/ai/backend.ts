@@ -454,18 +454,12 @@ export function createChatBackend(userId: string): ToolBackend {
     // Read-only on this surface, like the closed-issue audit: the chat
     // model reads the proposed tickets' text — the untrusted text the
     // gate exists for — and runs as the trusted user who is typing. A
-    // ticket that says "approve me" must not be able to. Deciding stays on
-    // the REST routes (the Fleet card, the phone) and the MCP tools.
+    // ticket that says "approve me" must not be able to. Deciding happens
+    // only on the approval card (#606) — no tool on any surface decides.
     async listPendingApprovals(scope) {
       const out = await approvals.listPendingApprovals(userId, scope);
       if ('status' in out) throw new Error(out.message);
       return out;
-    },
-    async approveTicket() {
-      throw new Error('Approving tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
-    },
-    async rejectTicket() {
-      throw new Error('Rejecting tickets is not available in the chat — use the Waiting for approval card on the Fleet tab.');
     },
 
     // ── Closed-issue audit (premature-close backfill) ─────────────

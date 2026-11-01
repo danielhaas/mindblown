@@ -18,7 +18,6 @@ export type {
   AskAnswerResult,
   FleetCheckResult,
   // Approvals (#494)
-  ApprovalResult,
   FleetStatusOptions,
   FleetJournalResult,
   FleetJournalOptions,
