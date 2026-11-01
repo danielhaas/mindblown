@@ -311,13 +311,13 @@ const EPIC_TAGS = new Set(['epic', 'type:epic']);
 // "#482 Epic: …", "Epic – …", "[EPIC] Source & Ingestion", "epic(compliance): …".
 // Needs the colon, dash or brackets: "epic (danielhaas/epic)" is a repo name,
 // not an epic — a scope must touch "epic" with no space.
-const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic(\([^)]*\))?\s*[:\-–—])/i;
+const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic(\([^)]*\))?!?\s*[:\-–—])/i;
 
 /**
  * An epic sitting in the map as a leaf: its work lives in other issues or
  * sub-issues, not in the node. The pull handed #482 to an agent as if it
  * were a ticket (20.10.2026). Tag `epic` / `type:epic`, or a title that
- * starts with "Epic:" or "[EPIC]".
+ * starts with "Epic:", "epic(scope):" or "[EPIC]".
  */
 export function isEpicLeaf(node: Pick<Node, 'tags' | 'text'>): boolean {
   return (node.tags ?? []).some((t) => EPIC_TAGS.has(t.toLowerCase())) || EPIC_TITLE.test(node.text ?? '');

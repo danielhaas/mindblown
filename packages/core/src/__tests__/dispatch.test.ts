@@ -417,6 +417,7 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     // Conventional-commit style, as on Fulcrum #8974.
     expect(isEpicLeaf({ text: '#8974 epic(compliance): SPG für Bestandsmandate', tags: [] })).toBe(true);
     expect(isEpicLeaf({ text: 'Epic(auth) – OIDC replumb', tags: [] })).toBe(true);
+    expect(isEpicLeaf({ text: 'epic(auth)!: drop sessions', tags: [] })).toBe(true);
     expect(isEpicLeaf({ text: 'epic(compliance) cleanup', tags: [] })).toBe(false);
   });
 
