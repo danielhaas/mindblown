@@ -11,6 +11,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { GitHubIssue } from '@mindblown/integrations';
+import { defaultTrustPolicy } from '@mindblown/core';
+import type { TrustContext } from '../../services/trustPolicy.js';
 
 // ── Module mocks (declared before SUT import for vitest hoisting) ──
 
@@ -646,6 +648,20 @@ vi.mock('../../db/nodes.js', () => ({
 
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 
+// Trust (#599): null = map unreadable → nobody trusted, so every other
+// test keeps the untrusted behaviour. Core `trustLevel` runs for real.
+let trustContextMock: TrustContext | null = null;
+vi.mock('../../services/trustPolicy.js', () => ({
+  loadTrustContext: async () => trustContextMock,
+}));
+
+// The repo's forge kind decides the reporter's provider (GitHub / Gitea).
+let forgeKindMock: 'github' | 'gitea' = 'github';
+vi.mock('../../lib/forge.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/forge.js')>();
+  return { ...actual, forgeKindForRepoCached: () => forgeKindMock };
+});
+
 // ── SUT import (must be after mocks) ──────────────────────────────
 
 import {
@@ -698,6 +714,8 @@ function resetState() {
   updateNodeThrowOnNthCall = null;
   updateNodeMockShouldThrow = null;
   triageMockMidCallHook = null;
+  trustContextMock = null;
+  forgeKindMock = 'github';
   // #142 cost-opt — clear debounce state between tests so a stamp
   // from one case doesn't leak into the next.
   _testResetDebounceState();
@@ -2217,5 +2235,111 @@ describe('outside-author hold (#489)', () => {
     dbState.nodes.set('n31', { id: 'n31', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['needs-human'] });
     await syncIssueLabelsToNodes('owner/repo#31', [], { user: { login: 'owner' } });
     expect(tagsWritten()).toEqual([[]]);
+  });
+});
+
+describe('trusted reporter is never auto-skipped (#599)', () => {
+  const ctx = { owner: 'owner', repo: 'repo', createdBy: 'u1' };
+
+  function setupMap() {
+    dbState.maps.set('m1', { rootNodeId: 'root-1', inboxId: 'inbox-1', createdBy: 'u1', triageEnabled: true });
+    dbState.nodes.set('inbox-1', { id: 'inbox-1', mapId: 'm1', parentId: 'root-1', externalLinks: [] });
+    // u1 owns the map; "danielhaas" is the trusted forge login, and u1
+    // also has "dan-gitea" linked on Gitea.
+    trustContextMock = {
+      policy: defaultTrustPolicy('u1', ['danielhaas']),
+      memberIds: ['u1'],
+      forgeUsers: [{ provider: 'gitea', login: 'dan-gitea', userId: 'u1' }],
+    };
+    triageMockResponse = { decision: 'skip', reason: 'no matching epic exists', confidence: 80 };
+  }
+
+  it('GitHub: a trusted login\'s skip is parked under the Inbox, the reason kept on the row', async () => {
+    setupMap();
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(597, { user: { login: 'DanielHaas' } }), ctx);
+
+    expect(result.status).toBe('created');
+    expect(result.triage?.decision).toBe('skip');
+    expect(createNodeCalls).toHaveLength(1);
+    expect(createNodeCalls[0]).toMatchObject({ parentId: 'inbox-1', text: '#597 Issue 597' });
+    const [row] = [...dbState.triageDecisions.values()];
+    expect(row).toMatchObject({ decision: 'skip', reason: 'no matching epic exists', reviewed: false });
+    expect(row.placedNodeId).toBe(result.nodeId);
+  });
+
+  it('GitHub: an untrusted login\'s skip is still skipped', async () => {
+    setupMap();
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(598, { user: { login: 'stranger' } }), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls).toHaveLength(0);
+    expect([...dbState.triageDecisions.values()][0]).toMatchObject({ decision: 'skip', placedNodeId: null });
+  });
+
+  it('Gitea: a trusted user\'s linked login parks the skip under the Inbox', async () => {
+    setupMap();
+    forgeKindMock = 'gitea';
+    triageMockResponse = { decision: 'skip', reason: 'a status report rather than a work item', confidence: 95 };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(12, { user: { login: 'dan-gitea' } }), ctx);
+
+    expect(result.status).toBe('created');
+    expect(createNodeCalls[0]).toMatchObject({
+      parentId: 'inbox-1',
+      reportedBy: { kind: 'forge', provider: 'gitea', login: 'dan-gitea' },
+    });
+    expect([...dbState.triageDecisions.values()][0]).toMatchObject({
+      decision: 'skip',
+      reason: 'a status report rather than a work item',
+    });
+  });
+
+  it('Gitea: an untrusted login is still skipped — the GitHub link of the same name does not count', async () => {
+    setupMap();
+    forgeKindMock = 'gitea';
+    trustContextMock!.forgeUsers = [{ provider: 'github', login: 'dan-gitea', userId: 'u1' }];
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(13, { user: { login: 'dan-gitea' } }), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls).toHaveLength(0);
+  });
+
+  it('an issue with no author is not trusted', async () => {
+    setupMap();
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(14), ctx);
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls).toHaveLength(0);
+  });
+
+  it('a closed issue from a trusted reporter is still auto-confirmed as skipped', async () => {
+    setupMap();
+    triageMockResponse = { decision: 'skip', reason: 'shipped long ago', confidence: 96 };
+
+    const result = await ensureNodeForIssue(
+      'm1',
+      'inbox-1',
+      issue(15, { state: 'closed', closed_at: new Date().toISOString(), user: { login: 'danielhaas' } }),
+      ctx,
+      { allowClosedWithinDays: 30 },
+    );
+
+    expect(result.status).toBe('triaged_skip');
+    expect(createNodeCalls).toHaveLength(0);
+    expect([...dbState.triageDecisions.values()][0]).toMatchObject({ decision: 'skip', reviewed: true });
+  });
+
+  it('a trusted reporter\'s uncertain call is parked as today', async () => {
+    setupMap();
+    triageMockResponse = { decision: 'uncertain', reason: 'unclear fit', confidence: 40 };
+
+    const result = await ensureNodeForIssue('m1', 'inbox-1', issue(16, { user: { login: 'danielhaas' } }), ctx);
+
+    expect(result.status).toBe('created');
+    expect(createNodeCalls[0]).toMatchObject({ parentId: 'inbox-1' });
   });
 });

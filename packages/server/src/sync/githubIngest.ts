@@ -45,7 +45,8 @@ import type { GitHubIssue } from '@mindblown/integrations';
 import { extractVersionFromMilestone, importGitHubIssues, type ForgeClient } from '@mindblown/integrations';
 import { forgeFromInstallation, forgeFromIntegration, forgeKindForRepo, forgeKindForRepoCached, isServableIntegrationConfig, pickForgeRow, FORGE_PROVIDERS } from '../lib/forge.js';
 import type { ExternalLink, NodeReporter } from '@mindblown/core';
-import { isForgeLink, forgeLabel, userReporter } from '@mindblown/core';
+import { isForgeLink, forgeLabel, trustLevel, userReporter } from '@mindblown/core';
+import { loadTrustContext } from '../services/trustPolicy.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
 
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
@@ -365,6 +366,25 @@ function issueReporter(issue: GitHubIssue, ctx: IngestContext): NodeReporter | n
   const login = issue.user?.login;
   if (!login) return null;
   return { kind: 'forge', provider: forgeKindForRepoCached(ctx.owner, ctx.repo), login };
+}
+
+/**
+ * Whether the issue author is trusted on the map (#599) — the same check
+ * the approval stamp uses (#492). An unknown author is not trusted.
+ */
+async function isTrustedReporter(mapId: string, reporter: NodeReporter | null): Promise<boolean> {
+  const trust = await loadTrustContext(mapId);
+  if (!trust) return false;
+  return trustLevel({ reportedBy: reporter }, trust.policy, trust.memberIds, trust.forgeUsers) === 'trusted';
+}
+
+/**
+ * The label a parked node's issue gets. A parked skip (#599) is not
+ * skipped — writing `triage:skipped` would tell the reporter otherwise —
+ * so it labels like an uncertain call (clears both labels).
+ */
+function parkedLabelDecision(decision: TriageDecision['decision']): TriageDecision['decision'] {
+  return decision === 'skip' ? 'uncertain' : decision;
 }
 
 /**
@@ -903,6 +923,14 @@ async function ensureNodeForIssueViaTriage(
     decision.confidence >= autoApplyThreshold(decision) &&
     decision.parentNodeId != null;
 
+  // #599: an open issue a trusted person filed is never skipped — the
+  // model's skip parks it under the Inbox like an uncertain call, and
+  // the row keeps the model's reason so a person can still move it.
+  const parkTrustedSkip =
+    decision.decision === 'skip' &&
+    issue.state === 'open' &&
+    (await isTrustedReporter(mapId, issueReporter(issue, ctx)));
+
   // Persist the decision first, then (if auto-apply) create the node
   // and update placed_node_id. We do this in a single tx (and re-take
   // the advisory lock on the externalId for the duration of this tx)
@@ -1137,8 +1165,8 @@ async function ensureNodeForIssueViaTriage(
       // the map, movable, and findable by the housekeeping sweeps.
       // So: uncertain and low-confidence places PARK a node under the
       // Inbox instead. `skip` stays node-less (the junk filter is the
-      // point of triage), and closed issues stay node-less too
-      // (history needs no parking).
+      // point of triage) unless a trusted person filed the issue (#599),
+      // and closed issues stay node-less too (history needs no parking).
       //
       // Lane: NONE — parked nodes are strictly unversioned. An
       // uncertain issue hasn't had its lane call made; any lane stamp
@@ -1148,7 +1176,7 @@ async function ensureNodeForIssueViaTriage(
       // would make the node-existence precheck skip every future
       // triage of the issue, freezing the transient error in place.
       if (
-        decision.decision === 'skip' ||
+        (decision.decision === 'skip' && !parkTrustedSkip) ||
         issue.state !== 'open' ||
         decision.reason.startsWith('triage_error')
       ) {
@@ -1417,11 +1445,15 @@ async function ensureNodeForIssueViaTriage(
     await applyTriageLabel({
       mapId,
       externalId,
-      decision: decision.decision,
+      decision: parkedLabelDecision(decision.decision),
       placedNodeId: null,
     });
     const stillStatus: IngestResult['status'] =
-      decision.decision === 'uncertain' ? 'triaged_uncertain' : 'triaged_low_confidence';
+      decision.decision === 'uncertain'
+        ? 'triaged_uncertain'
+        : decision.decision === 'skip'
+          ? 'triaged_skip'
+          : 'triaged_low_confidence';
     return {
       status: stillStatus,
       nodeId: result.nodeId,
@@ -1499,7 +1531,7 @@ async function ensureNodeForIssueViaTriage(
     await applyTriageLabel({
       mapId,
       externalId,
-      decision: decision.decision,
+      decision: parkedLabelDecision(decision.decision),
       placedNodeId: null,
     });
     // Reported as 'created' — a node exists and callers count it as

@@ -570,8 +570,9 @@ export async function triageRoutes(app: FastifyInstance): Promise<void> {
           // IS in the map (parked under the Inbox) — listing it here
           // would break this endpoint's contract ("every GitHub
           // ticket that is NOT currently a node in this map") and
-          // point remediation at already-linked issues.
-          if (row.decision === 'uncertain' && row.placedNodeId != null) continue;
+          // point remediation at already-linked issues. A trusted
+          // reporter's skip is parked the same way (#599).
+          if (row.placedNodeId != null) continue;
           let kind: DecisionItem['kind'];
           if (row.decision === 'uncertain') {
             kind = 'uncertain';
