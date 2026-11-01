@@ -414,6 +414,11 @@ describe('human-only tickets in the dispatch snapshot (#266)', () => {
     expect(dispatchHold(nodes[6] as never, { nodeMap, isDone: () => false })).toBeNull();
     expect(isEpicLeaf({ text: 'Epics are fun', tags: [] })).toBe(false);
     expect(isEpicLeaf({ text: 'Fix the epic import', tags: ['EPIC'] })).toBe(true);
+    // Conventional-commit style, as on Fulcrum #8974.
+    expect(isEpicLeaf({ text: '#8974 epic(compliance): SPG für Bestandsmandate', tags: [] })).toBe(true);
+    expect(isEpicLeaf({ text: 'Epic(auth) – OIDC replumb', tags: [] })).toBe(true);
+    expect(isEpicLeaf({ text: 'epic(auth)!: drop sessions', tags: [] })).toBe(true);
+    expect(isEpicLeaf({ text: 'epic(compliance) cleanup', tags: [] })).toBe(false);
   });
 
   it('names the parents that hold tickets through their subtree, most first (the Navy audit umbrella)', async () => {
