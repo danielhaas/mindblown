@@ -186,9 +186,13 @@ async function gcVerdict(
   try {
     issue = await getGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, ctx.forge);
   } catch (err) {
-    // 410 = the issue was deleted on the forge: nothing left to close or to
+    // GitHub 410 = the issue was deleted: nothing left to close or to
     // re-import, so the row may go. Retrying kept it in the Trash forever.
-    if (err instanceof ForgeApiError && err.status === 410) return { kind: 'leave', because: 'deleted on the forge' };
+    // "Issues are disabled" is a 410 too, but the issue still exists and
+    // comes back with the setting — that one is retried as before.
+    if (err instanceof ForgeApiError && err.status === 410 && !/disabled/i.test(err.body)) {
+      return { kind: 'leave', because: 'deleted on the forge' };
+    }
     throw err;
   }
   if (issue.state === 'closed') return { kind: 'leave', because: 'already closed' };
