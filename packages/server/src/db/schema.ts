@@ -754,11 +754,14 @@ export const approvalReminders = pgTable('approval_reminders', {
 
 // ── Daily mail with open questions (#597) ──────────────────────────
 // One row per person: the local day of the last digest round (a second
-// tick or a restart on that day sends nothing) and the opt-out switch.
+// tick or a restart on that day sends nothing), the opt-out switch, and
+// the failed sends of `failedOn` (#602: retried up to a cap per day).
 export const digestMails = pgTable('digest_mails', {
   userId: uuid('user_id').primaryKey().references(() => users.id, { onDelete: 'cascade' }),
   lastSentOn: date('last_sent_on', { mode: 'string' }),
   enabled: boolean('enabled').notNull().default(true),
+  failedOn: date('failed_on', { mode: 'string' }),
+  failures: integer('failures').notNull().default(0),
 });
 
 export const asksPushes = pgTable(
