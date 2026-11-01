@@ -9,13 +9,22 @@ import type { AskRow, PendingApproval } from '@mindblown/core';
 
 const state = vi.hoisted(() => ({
   smtp: true,
-  recipients: [] as Array<{ id: string; email: string; name: string; enabled: boolean; lastSentOn: string | null }>,
+  recipients: [] as Array<{
+    id: string;
+    email: string;
+    name: string;
+    enabled: boolean;
+    lastSentOn: string | null;
+    failedOn?: string | null;
+    failures?: number;
+  }>,
   maps: {} as Record<string, Array<{ id: string; name: string; archivedAt: string | null }>>,
   fleets: {} as Record<string, Array<{ id: string; name: string }>>,
   asks: {} as Record<string, AskRow[]>,
   approvals: {} as Record<string, PendingApproval[]>,
 }));
-const sendEmail = vi.hoisted(() => vi.fn(async () => {}));
+type SendResult = { ok: true } | { ok: false; error: string };
+const sendEmail = vi.hoisted(() => vi.fn(async (): Promise<SendResult> => ({ ok: true })));
 
 vi.mock('../../lib/email.js', () => ({
   emailConfigured: () => state.smtp,
@@ -29,6 +38,14 @@ vi.mock('../../db/digestMails.js', () => ({
     if (!r.enabled || r.lastSentOn === day) return false;
     r.lastSentOn = day;
     return true;
+  },
+  // Same rule as the SQL: count today's failure, give the day back below the cap.
+  releaseDigestDay: async (userId: string, day: string, previous: string | null, max: number) => {
+    const r = state.recipients.find((x) => x.id === userId)!;
+    r.failures = r.failedOn === day ? (r.failures ?? 0) + 1 : 1;
+    r.failedOn = day;
+    if (r.failures < max) r.lastSentOn = previous;
+    return { attempts: r.failures, released: r.lastSentOn !== day };
   },
 }));
 vi.mock('../../db/maps.js', () => ({ listMapsForUser: async (u: string) => state.maps[u] ?? [] }));
@@ -48,6 +65,7 @@ import {
   localDay,
   runDigestMails,
   waitingFor,
+  DIGEST_MAX_ATTEMPTS,
   type DigestItem,
 } from '../digestMail.js';
 
@@ -102,7 +120,8 @@ function approval(nodeId: string, mapId: string): PendingApproval {
 }
 
 beforeEach(() => {
-  sendEmail.mockClear();
+  sendEmail.mockReset();
+  sendEmail.mockImplementation(async () => ({ ok: true }));
   state.smtp = true;
   state.recipients = [{ id: 'u1', email: 'u1@example.com', name: 'U1', enabled: true, lastSentOn: null }];
   state.maps = { u1: [{ id: 'm1', name: 'Alpha', archivedAt: null }, { id: 'm2', name: 'Beta', archivedAt: null }] };
@@ -255,6 +274,57 @@ describe('once a day', () => {
     state.asks['u1|f1'] = [ask('a', 'm1')];
     await runDigestMails(MORNING, CFG);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('a failed send is an error, not sent, and the next tick tries again (#602)', async () => {
+    state.asks['u1|f1'] = [ask('a', 'm1')];
+    sendEmail.mockResolvedValueOnce({ ok: false, error: 'getaddrinfo ENOTFOUND smtp.example' });
+    const first = await runDigestMails(MORNING, CFG);
+    expect(first.sent).toBe(0);
+    expect(first.errors).toHaveLength(1);
+    expect(first.errors[0]).toContain('user u1');
+    expect(first.errors[0]).toContain('ENOTFOUND');
+    expect(state.recipients[0].lastSentOn).toBeNull();
+
+    const second = await runDigestMails(new Date(MORNING.getTime() + 10 * 60_000), CFG);
+    expect(second).toMatchObject({ sent: 1, errors: [] });
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+
+    // Sent: the rest of the day nothing more goes.
+    await runDigestMails(new Date(MORNING.getTime() + 20 * 60_000), CFG);
+    expect(sendEmail).toHaveBeenCalledTimes(2);
+  });
+
+  it('after DIGEST_MAX_ATTEMPTS failures nothing more is tried that day; tomorrow starts fresh', async () => {
+    state.recipients[0].lastSentOn = '2026-10-30';
+    state.asks['u1|f1'] = [ask('a', 'm1')];
+    sendEmail.mockImplementation(async () => ({ ok: false, error: 'connection refused' }));
+    const tick = (min: number) => runDigestMails(new Date(MORNING.getTime() + min * 60_000), CFG);
+
+    for (let i = 0; i < DIGEST_MAX_ATTEMPTS; i++) {
+      const r = await tick(i * 10);
+      expect(r.sent).toBe(0);
+      expect(r.errors).toHaveLength(1);
+    }
+    expect(sendEmail).toHaveBeenCalledTimes(DIGEST_MAX_ATTEMPTS);
+    expect(state.recipients[0].lastSentOn).toBe('2026-10-31');
+
+    expect(await tick(DIGEST_MAX_ATTEMPTS * 10)).toMatchObject({ checked: 0, sent: 0, errors: [] });
+    expect(sendEmail).toHaveBeenCalledTimes(DIGEST_MAX_ATTEMPTS);
+
+    // Next morning, with SMTP back: one mail.
+    sendEmail.mockImplementation(async () => ({ ok: true }));
+    expect(await tick(24 * 60)).toMatchObject({ sent: 1, errors: [] });
+    expect(await tick(24 * 60 + 10)).toMatchObject({ sent: 0 });
+    expect(sendEmail).toHaveBeenCalledTimes(DIGEST_MAX_ATTEMPTS + 1);
+  });
+
+  it('a failure while released keeps the previous day, so the person stays due', async () => {
+    state.recipients[0].lastSentOn = '2026-10-30';
+    state.asks['u1|f1'] = [ask('a', 'm1')];
+    sendEmail.mockResolvedValueOnce({ ok: false, error: 'boom' });
+    await runDigestMails(MORNING, CFG);
+    expect(state.recipients[0].lastSentOn).toBe('2026-10-30');
   });
 
   it('no SMTP: nothing sent, nothing fails, the day is not used up', async () => {

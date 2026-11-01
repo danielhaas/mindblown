@@ -12,6 +12,8 @@
  * The first tick at or after the hour takes the day per person
  * (db/digestMails claimDigestDay) — a second tick or a restart that day
  * sends nothing, and a question arriving later waits for tomorrow's mail.
+ * A send that fails gives the day back (releaseDigestDay) so the next tick
+ * tries again, up to DIGEST_MAX_ATTEMPTS per day (#602).
  * Without SMTP_HOST the round does nothing.
  */
 import { isNoQuestion } from '@mindblown/core';
@@ -191,6 +193,9 @@ export async function openItemsForUser(userId: string): Promise<DigestItem[]> {
   return items;
 }
 
+/** Sends tried per person and day before a failing mail waits for tomorrow (#602). */
+export const DIGEST_MAX_ATTEMPTS = 3;
+
 export interface DigestRunResult {
   checked: number;
   sent: number;
@@ -210,8 +215,15 @@ export async function runDigestMails(now: Date = new Date(), cfg: DigestConfig =
       if (!(await digestDb.claimDigestDay(r.id, day))) continue;
       out.checked++;
       if (items.length === 0) continue;
-      await sendEmail({ to: r.email, ...buildDigestMail(items, now) });
-      out.sent++;
+      const res = await sendEmail({ to: r.email, ...buildDigestMail(items, now) });
+      if (res.ok) {
+        out.sent++;
+        continue;
+      }
+      const { attempts, released } = await digestDb.releaseDigestDay(r.id, day, r.lastSentOn, DIGEST_MAX_ATTEMPTS);
+      out.errors.push(
+        `user ${r.id}: send failed (attempt ${attempts}/${DIGEST_MAX_ATTEMPTS}${released ? ', retry next tick' : ', giving up for today'}): ${res.error}`,
+      );
     } catch (err) {
       out.errors.push(`user ${r.id}: ${err instanceof Error ? err.message : String(err)}`);
     }

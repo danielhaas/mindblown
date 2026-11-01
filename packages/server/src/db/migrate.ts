@@ -1529,6 +1529,10 @@ async function runDdl(db: ReturnType<typeof drizzle>): Promise<void> {
       enabled BOOLEAN NOT NULL DEFAULT TRUE
     )
   `);
+  // Failed sends on `failed_on` (#602): a failed mail is retried on the
+  // next tick, up to a cap per day.
+  await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failed_on DATE`);
+  await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failures INTEGER NOT NULL DEFAULT 0`);
 
   console.log('[db] Migrations complete.');
 }

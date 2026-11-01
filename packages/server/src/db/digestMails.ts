@@ -39,6 +39,32 @@ export async function claimDigestDay(userId: string, day: string): Promise<boole
   return rows.length > 0;
 }
 
+/**
+ * The day's mail failed to send (#602): count the failure, and unless this
+ * was attempt `maxAttempts` give the day back (last_sent_on → `previous`),
+ * so the next tick tries again. Returns the attempts made today and whether
+ * the day was released.
+ */
+export async function releaseDigestDay(
+  userId: string,
+  day: string,
+  previous: string | null,
+  maxAttempts: number,
+): Promise<{ attempts: number; released: boolean }> {
+  const attempts = sql`CASE WHEN ${digestMails.failedOn} = ${day} THEN ${digestMails.failures} + 1 ELSE 1 END`;
+  const [row] = await db
+    .update(digestMails)
+    .set({
+      failures: attempts,
+      failedOn: day,
+      lastSentOn: sql`CASE WHEN ${attempts} < ${maxAttempts} THEN ${previous}::date ELSE ${digestMails.lastSentOn} END`,
+    })
+    .where(eq(digestMails.userId, userId))
+    .returning({ attempts: digestMails.failures, lastSentOn: digestMails.lastSentOn });
+  if (!row) return { attempts: 0, released: false };
+  return { attempts: row.attempts, released: row.lastSentOn !== day };
+}
+
 export async function getDigestMailEnabled(userId: string): Promise<boolean> {
   const [row] = await db.select({ enabled: digestMails.enabled }).from(digestMails).where(eq(digestMails.userId, userId));
   return row?.enabled ?? true;

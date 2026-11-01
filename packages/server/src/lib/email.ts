@@ -1,7 +1,7 @@
 /**
- * Transactional email over SMTP via nodemailer. Fires-and-forgets from the
- * caller's perspective — errors are logged, never propagated — so share
- * flows are never blocked by the mail server. When SMTP_HOST is unset
+ * Transactional email over SMTP via nodemailer. Never throws — errors are
+ * logged and returned as `{ ok: false }` — so share flows are never blocked
+ * by the mail server, and callers that care can see a failure. When SMTP_HOST is unset
  * (dev), logs what would have been sent and skips the connection.
  */
 
@@ -49,12 +49,19 @@ export interface EmailInput {
   text?: string;
 }
 
-export async function sendEmail(input: EmailInput): Promise<void> {
+export type SendEmailResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Never throws: a failed send is logged and comes back as `{ ok: false }`,
+ * so fire-and-forget callers can ignore the result and callers that care
+ * (the daily mail, #602) can react. Dev mode (no SMTP_HOST) counts as ok.
+ */
+export async function sendEmail(input: EmailInput): Promise<SendEmailResult> {
   if (!transporter) {
     console.log(
       `[email] (dev mode, no SMTP_HOST) would send to ${input.to}: ${input.subject}`,
     );
-    return;
+    return { ok: true };
   }
   try {
     const info = await transporter.sendMail({
@@ -65,8 +72,10 @@ export async function sendEmail(input: EmailInput): Promise<void> {
       text: input.text,
     });
     console.log(`[email] sent to ${input.to} (messageId=${info.messageId})`);
+    return { ok: true };
   } catch (err) {
     console.warn('[email] Send failed:', err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
 }
 
