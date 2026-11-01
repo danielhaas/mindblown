@@ -69,6 +69,7 @@ import {
 } from '../lib/forge.js';
 import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js';
 import { onRepoPush } from '../services/repoDocs.js';
+import { reproposeOnIssueEdit } from '../services/editReapproval.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
 
 // ── Helper: a workspace's row for one repo (PAT) ──────────────────
@@ -2438,9 +2439,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     // Title edits keep the `#NNNN ` prefix convention: ingest titles
     // nodes as `#N <title>`, and search/auto-link parse that marker —
     // the raw payload title would silently strip it.
+    let reproposed = false;
     if (payloadAction === 'edited' && issuePayload?.number != null) {
       const node = await nodeDb.getNode(nodeId);
       if (node) {
+        // An untrusted edit to an approved ticket's text sends it back
+        // for approval (#605) — compared against the text stored BEFORE
+        // this edit lands.
+        const back = await reproposeOnIssueEdit(node, payload as never, forgeKind);
+        if (back.reproposed) {
+          reproposed = true;
+          // As announceApproval does: the node, then the approval card
+          // (and #493's push) — the row comes back on asks:updated.
+          broadcast(back.node.mapId, { type: 'node:updated', nodeId, fields: ['approval'], node: back.node, source: 'github_webhook' });
+          broadcast(back.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId });
+        }
         if ('description' in nodeUpdates) {
           const changes = payload.changes as
             | { body?: { from?: string | null } }
@@ -2518,6 +2531,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         matched: true,
         nodeId,
         skipped: 'no_change',
+        ...(reproposed ? { reproposed } : {}),
       });
     }
 
@@ -2538,6 +2552,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       action: result.action,
       matched: true,
       nodeId,
+      ...(reproposed ? { reproposed } : {}),
     });
   });
 
