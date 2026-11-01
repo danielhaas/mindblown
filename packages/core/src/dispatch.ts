@@ -308,9 +308,10 @@ export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
 export const EPIC_HOLD_TAG = 'epic';
 
 const EPIC_TAGS = new Set(['epic', 'type:epic']);
-// "#482 Epic: …", "Epic – …", "[EPIC] Source & Ingestion". Needs the colon,
-// dash or brackets: "epic (danielhaas/epic)" is a repo name, not an epic.
-const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic\s*[:\-–—])/i;
+// "#482 Epic: …", "Epic – …", "[EPIC] Source & Ingestion", "epic(compliance): …".
+// Needs the colon, dash or brackets: "epic (danielhaas/epic)" is a repo name,
+// not an epic — a scope must touch "epic" with no space.
+const EPIC_TITLE = /^\s*(#\d+\s+)?(\[epic\]|epic(\([^)]*\))?\s*[:\-–—])/i;
 
 /**
  * An epic sitting in the map as a leaf: its work lives in other issues or
