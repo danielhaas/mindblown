@@ -34,7 +34,9 @@ export function WorkspaceSettings({
   mapId?: string | null;
 }) {
   const [status, setStatus] = useState<GitHubInstallStatus | null>(null);
-  const [repos, setRepos] = useState<GitHubRepoInfo[]>([]);
+  // Every installation's repos, each tagged with the installation that
+  // reaches it — a repo is saved with its own installation, not the first.
+  const [repos, setRepos] = useState<(GitHubRepoInfo & { installationId: string })[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [disconnecting, setDisconnecting] = useState(false);
@@ -61,12 +63,16 @@ export function WorkspaceSettings({
       setStatus(s);
 
       if (s.connected && s.installations.length > 0) {
-        try {
-          const r = await getGitHubRepositories(s.installations[0].installationId);
-          setRepos(r.repositories);
-        } catch {
-          // Repos may fail but connection status is still valid
-        }
+        const lists = await Promise.all(s.installations.map(async (inst) => {
+          try {
+            const r = await getGitHubRepositories(inst.installationId);
+            return r.repositories.map((repo) => ({ ...repo, installationId: inst.installationId }));
+          } catch {
+            // One installation's repos may fail; the others still list.
+            return [];
+          }
+        }));
+        setRepos(lists.flat());
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load status');
@@ -108,8 +114,9 @@ export function WorkspaceSettings({
     setSaving(true);
     setError(null);
     try {
-      const installationId = status?.installations[0]?.installationId ?? null;
       if (selectedRepo) {
+        const installationId = repos.find((r) => r.fullName === selectedRepo)?.installationId
+          ?? map?.githubInstallationId ?? null;
         const [owner, name] = selectedRepo.split('/');
         await updateMap(mapId, {
           githubInstallationId: installationId,
@@ -131,7 +138,7 @@ export function WorkspaceSettings({
     } finally {
       setSaving(false);
     }
-  }, [mapId, selectedRepo, status, onClose]);
+  }, [mapId, selectedRepo, repos, map, onClose]);
 
   return (
     <div
