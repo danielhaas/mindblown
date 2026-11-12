@@ -103,8 +103,14 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
           updatedAt: now,
         })
         // Only the claim we judged: a re-claim since the SELECT must survive.
+        // Compared at ms precision — the JS Date we read carries no microseconds.
         .where(
-          and(eq(nodes.id, id), eq(nodes.claimedBySession, session), eq(nodes.claimedAt, claimedAt), notDeleted),
+          and(
+            eq(nodes.id, id),
+            eq(nodes.claimedBySession, session),
+            sql`date_trunc('milliseconds', ${nodes.claimedAt}) = ${claimedAt.toISOString()}::timestamptz`,
+            notDeleted,
+          ),
         )
         .returning();
 
