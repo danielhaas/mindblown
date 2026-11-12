@@ -20,6 +20,7 @@ import * as api from './api.js';
 import { useAiCapabilities } from './aiCapabilities.js';
 import { AIBraindumpModal } from './AIBraindumpModal.js';
 import { PairMachine } from './PairMachine.js';
+import { RepoCombobox } from './RepoCombobox.js';
 
 /** 'new' = the describe step before the map exists. */
 export type SetupWizardStep = SetupStepId | 'new';
@@ -403,20 +404,20 @@ function RepoStep({ onNext }: { onNext: () => void }) {
       {(ghReady || giteaReady) && (
         <>
           <label style={label}>Repository</label>
-          <select
-            data-testid="setup-repo-select"
+          <RepoCombobox
+            testId="setup-repo-select"
+            options={(repos ?? []).map((r) => ({
+              value: `${r.kind}:${r.fullName}`,
+              fullName: r.fullName,
+              group: `${r.fullName.split('/')[0]}${ghReady && giteaReady ? ` (${r.kind === 'github' ? 'GitHub' : 'Gitea'})` : ''}`,
+            }))}
             value={selected}
-            onChange={(e) => setSelected(e.target.value)}
+            onChange={setSelected}
+            placeholder={repos === null ? 'Loading repositories…' : 'Search repositories…'}
             disabled={repos === null || !!busy}
-            style={{ ...input, marginBottom: 6 }}
-          >
-            <option value="">{repos === null ? 'Loading repositories…' : 'Pick a repository'}</option>
-            {(repos ?? []).map((r) => (
-              <option key={`${r.kind}:${r.fullName}`} value={`${r.kind}:${r.fullName}`}>
-                {r.fullName}{ghReady && giteaReady ? ` (${r.kind === 'github' ? 'GitHub' : 'Gitea'})` : ''}
-              </option>
-            ))}
-          </select>
+            installHint={ghReady}
+            style={{ marginBottom: 6 }}
+          />
           <div style={{ ...hint, marginBottom: 12 }}>
             Connecting imports every open issue and keeps new ones coming in.
             {ghReady && (

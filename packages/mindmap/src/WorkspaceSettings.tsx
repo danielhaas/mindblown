@@ -25,6 +25,7 @@ import { MapAiPolicyPanel } from './MapAiPolicyPanel.js';
 import { MapArchivePanel } from './MapArchivePanel.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { MapTrustPolicyPanel } from './MapTrustPolicyPanel.js';
+import { RepoCombobox } from './RepoCombobox.js';
 
 export function WorkspaceSettings({
   onClose,
@@ -328,27 +329,17 @@ export function WorkspaceSettings({
                       Repository for this map
                     </h4>
                     <div style={{ display: 'flex', gap: 8 }}>
-                      <select
+                      <RepoCombobox
+                        options={repos.map((repo) => ({
+                          value: repo.fullName,
+                          fullName: repo.fullName,
+                          suffix: repo.private ? '(private)' : undefined,
+                        }))}
                         value={selectedRepo}
-                        onChange={(e) => setSelectedRepo(e.target.value)}
-                        style={{
-                          flex: 1,
-                          padding: '8px 12px',
-                          borderRadius: 8,
-                          border: '1px solid #e2e8f0',
-                          fontSize: 13,
-                          fontFamily: 'inherit',
-                          color: '#1e293b',
-                          background: '#fff',
-                        }}
-                      >
-                        <option value="">No repo linked</option>
-                        {repos.map((repo) => (
-                          <option key={repo.id} value={repo.fullName}>
-                            {repo.fullName}{repo.private ? ' (private)' : ''}
-                          </option>
-                        ))}
-                      </select>
+                        onChange={setSelectedRepo}
+                        noneLabel="No repo linked"
+                        style={{ flex: 1 }}
+                      />
                       <button
                         onClick={handleSaveRepo}
                         disabled={saving || selectedRepo === currentRepo}

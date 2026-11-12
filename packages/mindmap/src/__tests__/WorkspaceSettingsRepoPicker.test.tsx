@@ -5,7 +5,7 @@
  * repo with the installation that reaches it — not the first one.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 
 vi.mock('../api.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api.js')>();
@@ -59,11 +59,21 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
+/** Waits for the picker, opens its list and returns the search box. */
+async function openPicker() {
+  const box = await screen.findByRole('combobox');
+  fireEvent.focus(box);
+  return box;
+}
+
 describe('WorkspaceSettings repo picker', () => {
-  it('lists repos from every installation', async () => {
+  it('lists repos from every installation, grouped by owner', async () => {
     render(<WorkspaceSettings onClose={() => {}} mapId="map1" />);
-    await screen.findByRole('option', { name: /LOKE-Future\/loke-support/ });
+    await openPicker();
+    expect(screen.getByRole('option', { name: /LOKE-Future\/loke-support/ })).toBeTruthy();
     expect(screen.getByRole('option', { name: /dan\/own/ })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'No repo linked' })).toBeTruthy();
+    expect(within(screen.getByRole('group', { name: 'LOKE-Future' })).getByRole('option').textContent).toMatch(/loke-support/);
     expect(m.getGitHubRepositories).toHaveBeenCalledWith('11');
     expect(m.getGitHubRepositories).toHaveBeenCalledWith('22');
   });
@@ -71,8 +81,8 @@ describe('WorkspaceSettings repo picker', () => {
   it('saves an org repo with the org installation', async () => {
     const onClose = vi.fn();
     render(<WorkspaceSettings onClose={onClose} mapId="map1" />);
-    await screen.findByRole('option', { name: /LOKE-Future\/loke-support/ });
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'LOKE-Future/loke-support' } });
+    await openPicker();
+    fireEvent.mouseDown(screen.getByRole('option', { name: /LOKE-Future\/loke-support/ }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(m.updateMap).toHaveBeenCalledWith('map1', {
       githubInstallationId: '22',
@@ -81,12 +91,49 @@ describe('WorkspaceSettings repo picker', () => {
     }));
   });
 
+  it('filters by owner/name as you type, case-insensitively', async () => {
+    render(<WorkspaceSettings onClose={() => {}} mapId="map1" />);
+    const box = await openPicker();
+    fireEvent.change(box, { target: { value: 'loke-SUP' } });
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['LOKE-Future/loke-support (private)']);
+    fireEvent.change(box, { target: { value: 'dan/' } });
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['dan/own (private)']);
+  });
+
+  it('picks with arrow keys and Enter, closes with Esc', async () => {
+    render(<WorkspaceSettings onClose={() => {}} mapId="map1" />);
+    const box = await openPicker();
+    fireEvent.change(box, { target: { value: 'o' } });
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    fireEvent.keyDown(box, { key: 'Enter' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect((box as HTMLInputElement).value).toBe('LOKE-Future/loke-support');
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(m.updateMap).toHaveBeenCalledWith('map1', expect.objectContaining({ githubInstallationId: '22' })));
+
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    expect(screen.getByRole('listbox')).toBeTruthy();
+    fireEvent.keyDown(box, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('hints at installing the App when nothing matches', async () => {
+    render(<WorkspaceSettings onClose={() => {}} mapId="map1" />);
+    const box = await openPicker();
+    fireEvent.change(box, { target: { value: 'acme/' } });
+    expect(screen.queryAllByRole('option')).toHaveLength(0);
+    expect(screen.getByText(/No repo matches — is the MindBlown GitHub App installed on that org\?/)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Install the App' }).getAttribute('href'))
+      .toBe('https://github.com/apps/mindblown-by-project-li/installations/new');
+  });
+
   it('still lists the other installations when one fails', async () => {
     m.getGitHubRepositories.mockImplementation(async (id?: string) => {
       if (id === '11') throw new Error('boom');
       return { installationId: id!, repositories: [repo(2, 'LOKE-Future', 'loke-support')] };
     });
     render(<WorkspaceSettings onClose={() => {}} mapId="map1" />);
-    await screen.findByRole('option', { name: /LOKE-Future\/loke-support/ });
+    await openPicker();
+    expect(screen.getByRole('option', { name: /LOKE-Future\/loke-support/ })).toBeTruthy();
   });
 });
