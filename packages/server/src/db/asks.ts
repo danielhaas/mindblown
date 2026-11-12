@@ -53,6 +53,8 @@ export interface AskPushResult {
   removed: number;
   /** Rows that keep an answer state from an earlier round. */
   kept: number;
+  /** Asks this push opened — new, or a fleet worker's next question (reopensOnNewText). */
+  opened: Array<{ mapId: string | null; ask: Ask }>;
 }
 
 export interface AskPushMeta {
@@ -130,6 +132,7 @@ export async function replaceAsks(
       .returning({ askId: asks.askId });
     const removed = gone.length;
     let kept = 0;
+    const opened: AskPushResult['opened'] = [];
     for (const { ask: a, mapId: itemMap } of items) {
       const asked = sql`${asks.status} <> 'open' AND (${asks.payload}->>'question') IS DISTINCT FROM ${a.question ?? null}`;
       const reopen = (fresh: SQL, kept: unknown) => sql`CASE WHEN ${asked} THEN ${fresh} ELSE ${kept} END`;
@@ -152,14 +155,16 @@ export async function replaceAsks(
               }
             : { payload: a, pushedAt: now },
         })
-        .returning({ status: asks.status });
+        .returning({ status: asks.status, firstSeenAt: asks.firstSeenAt });
       if (row && row.status !== 'open') kept++;
+      // first_seen_at is `now` exactly when the row was inserted or reopened by this push.
+      else if (row && new Date(row.firstSeenAt).getTime() === now.getTime()) opened.push({ mapId: itemMap, ask: a });
     }
     await tx
       .insert(asksPushes)
       .values({ fleetId, mapId, pushedAt: now, meta })
       .onConflictDoUpdate({ target: [asksPushes.fleetId, asksPushes.mapId], set: { pushedAt: now, meta } });
-    return { pushedAt: now.toISOString(), received: items.length, removed, kept };
+    return { pushedAt: now.toISOString(), received: items.length, removed, kept, opened };
   });
 }
 

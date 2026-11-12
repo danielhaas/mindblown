@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, TrustPolicy } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -608,6 +608,44 @@ export interface ToolBackend {
   readRepoDoc(mapId: string, path: string): Promise<RepoDocText>;
   /** Branch + commit + pull request with the new text — `POST /api/maps/:id/docs/propose` (#552). Throws on a stale `baseSha`. */
   proposeRepoDocEdit(mapId: string, input: ProposeDocEditInput): Promise<ProposeDocEditResult>;
+
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  /** The map's subscriptions and its workspace's — `GET /api/maps/:id/webhooks`. Never the secret. */
+  listWebhooks(mapId: string): Promise<WebhookSubscription[]>;
+  /** Subscribe a URL — `POST /api/maps/:id/webhooks`. The answer carries the signing secret, this once. */
+  createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }>;
+  /** `PATCH /api/maps/:id/webhooks/:webhookId`. */
+  updateWebhook(mapId: string, webhookId: string, patch: UpdateWebhookInput): Promise<WebhookSubscription>;
+  /** `DELETE /api/maps/:id/webhooks/:webhookId`. */
+  deleteWebhook(mapId: string, webhookId: string): Promise<{ deleted: boolean; id: string }>;
+  /** One signed `ping` now, no retries — `POST …/webhooks/:webhookId/ping`. */
+  pingWebhook(mapId: string, webhookId: string): Promise<WebhookPingResult>;
+}
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+
+export interface CreateWebhookInput {
+  url: string;
+  /** Empty / absent = every event. */
+  events?: WebhookEvent[];
+  /** 'workspace' = every map of the map's workspace (workspace owner only). Default 'map'. */
+  scope?: 'map' | 'workspace';
+  description?: string;
+  /** Bring your own signing secret (≥ 16 chars); else the server generates one. */
+  secret?: string;
+}
+
+export interface UpdateWebhookInput {
+  url?: string;
+  events?: WebhookEvent[];
+  active?: boolean;
+  description?: string | null;
+}
+
+export interface WebhookPingResult {
+  delivered: boolean;
+  status: number | null;
+  error: string | null;
 }
 
 // ── Repo docs ──────────────────────────────────────────────────────

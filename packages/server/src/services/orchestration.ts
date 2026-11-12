@@ -21,6 +21,7 @@ import { holdsCapSlotSql } from '../db/capSlot.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
 import { getForgeRepoForMap } from '../lib/githubContext.js';
+import { noteQueueState } from './webhooks.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
@@ -1114,6 +1115,7 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
   for (const { mapId, nodes: tagged } of outcome.tagged) {
     for (const n of tagged) broadcast(mapId, { type: 'node:updated', nodeId: n.id, fields: ['tags'], node: n });
   }
+  noteQueueStates(outcome.result);
   const w = outcome.winner;
   if (!w) return;
   broadcast(w.mapId, {
@@ -1127,6 +1129,17 @@ function announcePull(outcome: PullOutcome, sessionId: string): void {
   events
     .recordClaimed(w.mapId, w.node.id, null, buildClaimedEvent(sessionId, 'pull', null))
     .catch(() => {});
+}
+
+/** queue.empty webhooks: which maps this pull found dry, and which gave a ticket. */
+function noteQueueStates(r: GetNextTicketResult): void {
+  if (r.granted && r.mapId) noteQueueState(r.mapId, false);
+  const skipped = (mapId: string) => r.skipped.filter((s) => (s.mapId ?? r.mapId) === mapId).length;
+  if (r.maps) {
+    for (const m of r.maps) if (m.reason === 'empty') noteQueueState(m.mapId, true, { mapName: m.name, skipped: skipped(m.mapId) });
+  } else if (!r.granted && r.reason === 'empty' && r.mapId) {
+    noteQueueState(r.mapId, true, { mapName: r.mapName ?? null, active: r.active, cap: r.cap, skipped: r.skipped.length });
+  }
 }
 
 // ── conflictScan ────────────────────────────────────────────────

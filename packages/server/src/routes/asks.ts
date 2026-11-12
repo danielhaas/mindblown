@@ -32,6 +32,7 @@ import { fleetCheckBlockers, fleetInbox, mapInbox, resolveFleetAnswer } from '..
 import { authorizeTickPush } from '../services/fleetTelemetry.js';
 import { syncNodeToGitHub } from './nodes.js';
 import { broadcast } from '../ws.js';
+import { emitOpenedAsks } from '../services/webhooks.js';
 
 /** 135 items × ~2 kB today; room for the whole backlog, not for abuse. */
 const PUSH_BODY_LIMIT = 4 * 1024 * 1024;
@@ -120,7 +121,8 @@ export async function asksRoutes(app: FastifyInstance): Promise<void> {
       return fail(reply, 409, 'NO_FLEET', `Map ${req.params.id} is not connected to a fleet. Connect it first (map Settings → Fleet, or update_map fleetId), then push again.`);
     }
     // Through a map route every item belongs to that map.
-    const result = await asksDb.replaceAsks(fleetId, req.params.id, doc.items.map((ask) => ({ ask, mapId: req.params.id })), doc.meta);
+    const { opened, ...result } = await asksDb.replaceAsks(fleetId, req.params.id, doc.items.map((ask) => ({ ask, mapId: req.params.id })), doc.meta);
+    emitOpenedAsks(opened);
     broadcast(req.params.id, { type: 'asks:updated', kind: 'push', pushedAt: result.pushedAt });
     return reply.send({ ...result, fleetId });
   });
@@ -163,7 +165,8 @@ export async function asksRoutes(app: FastifyInstance): Promise<void> {
     const connected = new Set((await fleetEntityDb.listFleetMaps(req.params.id)).map((m) => m.id));
     const stray = [...new Set(doc.items.map((a) => a.map_id).filter((m): m is string => !!m && !connected.has(m)))];
     if (stray.length > 0) return fail(reply, 400, 'VALIDATION_ERROR', `Items name maps not connected to this fleet: ${stray.join(', ')}`);
-    const result = await asksDb.replaceAsks(req.params.id, null, doc.items.map((ask) => ({ ask, mapId: ask.map_id ?? null })), doc.meta);
+    const { opened, ...result } = await asksDb.replaceAsks(req.params.id, null, doc.items.map((ask) => ({ ask, mapId: ask.map_id ?? null })), doc.meta);
+    emitOpenedAsks(opened);
     await broadcastFleetMaps(req.params.id, { type: 'asks:updated', kind: 'push', pushedAt: result.pushedAt });
     return reply.send({ ...result, fleetId: req.params.id });
   });

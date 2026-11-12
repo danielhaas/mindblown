@@ -452,3 +452,7 @@ export type { SetupStepId, SetupStep, ProjectSetup } from './setup.js';
 // The kanban board at a glance (home-screen widget, #589)
 export { summarizeBoard, BOARD_SUMMARY_DEFAULT_LIMIT } from './boardSummary.js';
 export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boardSummary.js';
+
+// Outgoing webhooks: per map/workspace event subscriptions
+export { WEBHOOK_EVENTS, WEBHOOK_PING_EVENT, isWebhookEvent, statusCategory, webhookNodeRef, webhookEventsForNodeUpdate } from './webhooks.js';
+export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef } from './webhooks.js';

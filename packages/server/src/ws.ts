@@ -30,10 +30,26 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
  */
 const rooms = new Map<string, Set<ConnectedClient>>();
 
+/** In-process subscribers to every broadcast, viewers or not (outgoing webhooks). */
+const listeners = new Set<(mapId: string, message: unknown) => void>();
+
+/** Hear every broadcast; returns the unsubscribe. */
+export function onBroadcast(listener: (mapId: string, message: unknown) => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
 /**
  * Broadcast a message to all clients connected to a specific map.
  */
 export function broadcast(mapId: string, message: unknown, excludeWs?: WS): void {
+  for (const listener of listeners) {
+    try {
+      listener(mapId, message);
+    } catch {
+      // A listener never costs the viewers their update.
+    }
+  }
   const clients = rooms.get(mapId);
   if (!clients) return;
 

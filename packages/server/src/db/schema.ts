@@ -786,3 +786,24 @@ export const fleetRepoHandouts = pgTable('fleet_repo_handouts', {
   repo: text('repo').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+// A URL subscribed to a map's events (map_id set) or to every map of a
+// workspace (map_id null). `secret` signs each delivery (HMAC-SHA256);
+// encrypted at rest when ENCRYPTION_KEY is set. `events` empty = all.
+// last_* = the outcome of the latest delivery attempt, for the owner.
+export const webhookSubscriptions = pgTable('webhook_subscriptions', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspaces.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').references(() => maps.id, { onDelete: 'cascade' }),
+  url: text('url').notNull(),
+  secret: text('secret').notNull(),
+  events: jsonb('events').notNull().default([]),
+  active: boolean('active').notNull().default(true),
+  description: text('description'),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  lastDeliveryAt: timestamp('last_delivery_at', { withTimezone: true }),
+  lastStatus: integer('last_status'),
+  lastError: text('last_error'),
+});
