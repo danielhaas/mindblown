@@ -77,6 +77,16 @@ describe('answer_ask', () => {
     expect(out).toContain('FAILED: mb-put n1n1n1n1 — status → todo (boom)');
   });
 
+  it('a step row\'s free-text decision forwards its follow-up (#619)', async () => {
+    const calls: unknown[][] = [];
+    const result: AskAnswerResult = { ask: row(ask({ id: 'step-n1' }), { status: 'answered', answeredBy: 'Dan' }), plan: { github: null, node: null, worker: null, skip: null }, ok: true, node: null };
+    const backend = { answerAsk: async (...a: unknown[]) => { calls.push(a); return result; } } as unknown as ToolBackend;
+    await answerAskTool.handler(backend, { mapId: 'm1', askId: 'step-n1', action: 'answered', decision: 'yes', next: 'mine' } as never);
+    expect(calls[0][2]).toMatchObject({ decision: 'yes', next: 'mine' });
+    expect(answerAskTool.schema.next.safeParse('fleet').success).toBe(true);
+    expect(answerAskTool.schema.next.safeParse('later').success).toBe(false);
+  });
+
   it('with fleetId answers through the fleet, passing askMapId (#479)', async () => {
     const calls: unknown[][] = [];
     const result: AskAnswerResult = { ask: row(ask(), { status: 'later' }), plan: { github: null, node: null, worker: null, skip: null }, ok: true, node: null };

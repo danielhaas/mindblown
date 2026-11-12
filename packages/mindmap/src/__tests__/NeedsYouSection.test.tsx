@@ -107,6 +107,24 @@ describe('NeedsYouSection', () => {
     await screen.findByText(/answered \(Dan\)/);
   });
 
+  it('a step answered with free text is a decision: handed to the fleet by default, "Still mine" on request (#619)', async () => {
+    const step = { ...ASK, ask: { ...ASK.ask, id: 'step-question', sources: ['mindblown-step'], question: 'Next step: allow it?', options: ['Done', 'Fleet can do it'] } };
+    m.fetchAsks.mockResolvedValue({ items: [step], counts: {} as never, pushedAt: ASK.pushedAt, meta: null, now: ASK.pushedAt });
+    m.answerAsk.mockResolvedValue({ ask: { ...step, status: 'answered', answeredBy: 'Dan', writes: [] }, plan: {} as never, ok: true, node: null });
+    section(QUESTION);
+    await screen.findByText(/allow it\?/);
+    expect(screen.queryByTestId('step-next')).toBeNull();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'yes, keep a dry-run option' } });
+    expect(screen.getByTestId('step-next').textContent).toContain('Hand to fleet');
+    expect(screen.getByText(/Decision \(…\): yes, keep a dry-run option/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Still mine' }));
+    expect(screen.getByText(/the step stays yours/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Hand to fleet' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Answer' }));
+    await waitFor(() => expect(m.answerAsk).toHaveBeenCalled());
+    expect(m.answerAsk).toHaveBeenCalledWith(MAP_ID, 'step-question', expect.objectContaining({ decision: 'yes, keep a dry-run option', next: 'fleet' }));
+  });
+
   it('a question about another ticket is not shown here', async () => {
     section(PLAIN);
     await waitFor(() => expect(m.fetchAsks).toHaveBeenCalled());

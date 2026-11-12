@@ -25,8 +25,12 @@
  *
  * The answers are lint fixes (lint/fix.ts). Stalled: Done = mark-done,
  * Back to the queue = requeue, For a person / free text = needs-human.
- * Step: Done = mark-done, Fleet can do it = to-fleet, free text =
- * needs-human with the text as the new next step. Blocker: Unblocked =
+ * Step: Done = mark-done, Fleet can do it = to-fleet, free text = a
+ * decision (#619): "Decision (by, date): …" in place of the next step and
+ * as a comment on the linked issue, then `next` — to-fleet (default),
+ * mark-done, or needs-human with the text as the new next step ("Still
+ * mine", which writes no decision). A hand-back takes the hold labels
+ * (blocked, the skip tags) off the linked issue too. Blocker: Unblocked =
  * clear-blocker, Done = mark-done, free text = needs-human. Brief: Done =
  * mark-done, free text = write-brief.
  */
@@ -50,7 +54,11 @@ import {
   buildIsDonePredicate,
   buildStalledAsk,
   buildStepAsk,
+  BLOCKED_TAG,
+  decisionCommentBody,
+  decisionLine,
   derivedAskNodeId,
+  DISPATCH_SKIP_TAGS,
   dispatchSkipTag,
   isStalledAskDue,
   planAskWrites,
@@ -59,14 +67,17 @@ import {
   stalledAnswerNote,
   stalledAskNodeId,
   STEP_ASK_OPTIONS,
+  isStepOption,
   stepAnswerAction,
   stepAskNodeId,
 } from '@mindblown/core';
-import type { AskAnswerInput, AskRow, AskWrite, LintActionId } from '@mindblown/core';
+import type { AskAnswerInput, AskRow, AskWrite, LintActionId, Node as CoreNode } from '@mindblown/core';
+import { ForgeApiError, commentOnGitHubIssue } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
 import * as mapDb from '../db/maps.js';
+import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { stalledForMap } from '../lib/stalled.js';
-import { applyLintFix } from '../lint/fix.js';
+import { applyLintFix, issueLinkOf } from '../lint/fix.js';
 import { AskNotFoundError, type AnswerAskOutcome } from './asks.js';
 
 const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
@@ -144,19 +155,75 @@ function storedFilters(stored: AskRow[], now: Date): { snoozed: Set<string>; ask
   return { snoozed, asked };
 }
 
-/** Which fix an answer runs, and the note it carries. */
-function plannedFix(ask: AskRow['ask'], decision: string): { action: LintActionId; note: string | undefined } {
+/** Which fix an answer runs, the note it carries, and whether the text is a step's decision. */
+function plannedFix(ask: AskRow['ask'], input: AskAnswerInput, decision: string): { action: LintActionId; note: string | undefined; decided: boolean } {
   const askId = ask.id;
-  if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined };
+  if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined, decided: false };
   if (briefAskNodeId(askId)) {
     const brief = briefAnswerAction(decision);
-    return { action: brief, note: brief === 'write-brief' ? decision : undefined };
+    return { action: brief, note: brief === 'write-brief' ? decision : undefined, decided: false };
   }
-  const blocker = blockerAskNodeId(askId) !== null;
-  let action: LintActionId = blocker ? blockerAnswerAction(decision) : stepAnswerAction(decision);
+  if (stepAskNodeId(askId)) {
+    // noRequeue (answer_ask's "a human step still precedes the fleet") keeps the step.
+    const next = input.next ?? (input.noRequeue ? 'mine' : 'fleet');
+    const action = stepAnswerAction(decision, next);
+    const free = !!decision && !isStepOption(decision);
+    return { action, note: action === 'needs-human' && free ? decision : undefined, decided: free && action !== 'needs-human' };
+  }
+  let action: LintActionId = blockerAnswerAction(decision);
   if (action === 'fleet-fix') action = blockerFleetAction(ask);
   const isOption = [...STEP_ASK_OPTIONS, ...BLOCKER_ASK_OPTIONS].some((o) => o.toLowerCase() === decision.toLowerCase());
-  return { action, note: action === 'needs-human' && !isOption && decision ? decision : undefined };
+  return { action, note: action === 'needs-human' && !isOption && decision ? decision : undefined, decided: false };
+}
+
+/** Labels a hand-back takes off the linked issue: the hold the node just left. */
+const HOLD_LABELS = [BLOCKED_TAG, ...DISPATCH_SKIP_TAGS];
+
+/**
+ * The linked issue's side of a step answer (#619): the decision as a
+ * comment, the way a collector ask's answer is posted, and on a hand-back
+ * the hold labels off — the outbound sync rewrites labels only on a link
+ * with sync on, so on 12.11.2026 they stayed after the node was released.
+ */
+async function stepIssueWrites(
+  mapId: string,
+  node: CoreNode,
+  opts: { comment: string | null; line: string | null; dropLabels: boolean },
+  writes: AskWrite[],
+): Promise<void> {
+  if (!opts.comment && !opts.dropLabels) return;
+  const link = issueLinkOf({ externalLinks: node.externalLinks ?? [] });
+  const num = link ? Number(/#(\d+)$/.exec(link.externalId)?.[1]) : NaN;
+  if (!link || !Number.isInteger(num)) return;
+  const target = `#${num}`;
+  const ctx = await getGitHubContextForMap(mapId).catch(() => null);
+  if (opts.comment) {
+    const w: AskWrite = { kind: 'gh-comment', target, detail: opts.line ?? '', done: false };
+    writes.push(w);
+    if (!ctx) w.error = 'map has no issue tracker connected — comment not posted';
+    else {
+      try {
+        await commentOnGitHubIssue(ctx.owner, ctx.repo, num, opts.comment, ctx.forge);
+        w.done = true;
+      } catch (err) {
+        w.error = err instanceof Error ? err.message : String(err);
+      }
+    }
+  }
+  if (opts.dropLabels && ctx) {
+    const w: AskWrite = { kind: 'gh-edit', target, detail: `--remove-label ${HOLD_LABELS.join(',')}`, done: false };
+    writes.push(w);
+    try {
+      for (const label of HOLD_LABELS) {
+        const res = await ctx.forge.removeIssueLabel(ctx.owner, ctx.repo, num, label);
+        // 404 = the label was not on the issue; nothing to remove.
+        if (res.status !== 404 && (res.status < 200 || res.status >= 300)) throw new ForgeApiError(res.status, res.bodyText, ctx.forge.endpoint.kind);
+      }
+      w.done = true;
+    } catch (err) {
+      w.error = err instanceof Error ? err.message : String(err);
+    }
+  }
 }
 
 /**
@@ -180,16 +247,25 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
 
   if (input.action === 'answered') {
     const decision = (input.decision ?? '').trim();
-    const { action, note } = plannedFix(row.ask, decision);
-    const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — Decision (${by}, ${date}): ${decision}`, done: false };
+    const { action, note, decided } = plannedFix(row.ask, input, decision);
+    const line = decisionLine(by, decision, date);
+    const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${line}`, done: false };
     writes.push(w);
     try {
-      const out = await applyLintFix(key.mapId, nodeId, action, userId, { note });
+      const out = await applyLintFix(key.mapId, nodeId, action, userId, decided ? { note, decision: line } : { note });
       node = out.node;
       changedFields = out.changedFields;
       w.done = true;
     } catch (err) {
       w.error = err instanceof Error ? err.message : String(err);
+    }
+    if (node && stepAskNodeId(key.askId)) {
+      await stepIssueWrites(
+        key.mapId,
+        node,
+        { comment: decided ? decisionCommentBody(by, decision, date) : null, line, dropLabels: action === 'to-fleet' },
+        writes,
+      );
     }
   } else {
     writes.push({ kind: 'ledger-only', target: row.ask.id, detail: input.action + (input.delegateTo ? ` → ${input.delegateTo}` : ''), done: true });

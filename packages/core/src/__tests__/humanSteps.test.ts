@@ -15,6 +15,7 @@ import {
   derivedAskNodeId,
   isDerivedAsk,
   isPersonStepAsk,
+  isStepOption,
   nextStepOf,
   stepAnswerAction,
   stepAskNodeId,
@@ -102,10 +103,15 @@ describe('a person\'s steps', () => {
     expect(stepAskNodeId('#12')).toBeNull();
   });
 
-  it('answers map to fixes; free text is the new next step', () => {
+  it('answers map to fixes; free text is a decision that hands the ticket back unless kept (#619)', () => {
     expect(stepAnswerAction('Done')).toBe('mark-done');
     expect(stepAnswerAction('Fleet can do it')).toBe('to-fleet');
-    expect(stepAnswerAction('waiting for the key from Thomas')).toBe('needs-human');
+    expect(stepAnswerAction('yes, allow it. But keep a dry-run option')).toBe('to-fleet');
+    expect(stepAnswerAction('yes', 'done')).toBe('mark-done');
+    expect(stepAnswerAction('waiting for the key from Thomas', 'mine')).toBe('needs-human');
+    expect(stepAnswerAction('Done', 'mine')).toBe('mark-done');
+    expect(isStepOption('Fleet can do it')).toBe(true);
+    expect(isStepOption('yes')).toBe(false);
   });
 
   it('derived rows preview their own writes; collector rows are not derived', () => {
@@ -113,7 +119,12 @@ describe('a person\'s steps', () => {
     expect(isDerivedAsk({ id: 'step-n1' })).toBe(true);
     expect(isDerivedAsk({ id: 'fleet-50c69fc2' })).toBe(false);
     expect(derivedAnswerPreview({ id: 'step-n1' }, 'Fleet can do it')?.[0]).toMatch(/back to the queue/);
-    expect(derivedAnswerPreview({ id: 'step-n1' }, 'ask Thomas')?.[0]).toBe('Node: "Next step (a person): ask Thomas" at the top of the description — the step stays yours');
+    expect(derivedAnswerPreview({ id: 'step-n1' }, 'ask Thomas', 'mine')?.[0]).toBe('Node: "Next step (a person): ask Thomas" at the top of the description — the step stays yours');
+    expect(derivedAnswerPreview({ id: 'step-n1' }, 'yes')).toEqual([
+      'Node: "Decision (…): yes" in place of the next step, and as a comment on the linked issue',
+      expect.stringMatching(/back to the queue/),
+    ]);
+    expect(derivedAnswerPreview({ id: 'step-n1' }, 'yes', 'done')?.[1]).toMatch(/done, 100 %/);
     expect(derivedAnswerPreview({ id: 'stalled-n1' }, 'Back to the queue')?.[0]).toMatch(/progress kept/);
     expect(derivedAnswerPreview({ id: 'stalled-n1' }, 'For a person')?.[0]).toMatch(/Your steps/);
     expect(derivedAnswerPreview({ id: 'fleet-1' }, 'Done')).toBeNull();

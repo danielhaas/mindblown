@@ -23,14 +23,17 @@ import {
   isDerivedAsk,
   isNoQuestion,
   isPersonStepAsk,
+  isStepOption,
   isVersionOnly,
   planAskWrites,
   proseMirrorToPlainText,
   questionParts,
   sortAsks,
+  STEP_FOLLOW_UPS,
+  stepAskNodeId,
   stepParts,
 } from '@mindblown/core';
-import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node } from '@mindblown/core';
+import type { Ask, AskAnswerInput, AskRow, AskWritePlan, Node, StepFollowUp } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { AsksResponse } from './api.js';
@@ -428,6 +431,8 @@ export function AskCard({
   const [decision, setDecision] = useState('');
   const [milestone, setMilestone] = useState('');
   const [noRequeue, setNoRequeue] = useState(false);
+  // A step row's free text is a decision (#619); then the ticket goes to the fleet unless Dan says otherwise.
+  const [next, setNext] = useState<StepFollowUp>('fleet');
   const [delegateTo, setDelegateTo] = useState('');
   const [delegateOther, setDelegateOther] = useState('');
   const [busy, setBusy] = useState(false);
@@ -457,7 +462,8 @@ export function AskCard({
   const today = new Date().toISOString().slice(0, 10);
   // MindBlown's own rows write through a fix, not the collector's plan.
   const derived = isDerivedAsk(a);
-  const derivedPreview = derived ? derivedAnswerPreview(a, decision) : null;
+  const stepDecision = stepAskNodeId(a.id) !== null && decision.trim() !== '' && !isStepOption(decision);
+  const derivedPreview = derived ? derivedAnswerPreview(a, decision, next) : null;
   const preview: AskWritePlan = planAskWrites(
     a,
     { action: 'answered', decision: decision || '…', by, milestone: milestone || undefined, noRequeue },
@@ -589,11 +595,27 @@ export function AskCard({
             value={decision}
             onChange={(e) => setDecision(e.target.value)}
             placeholder={
-              briefAskNodeId(a.id) ? 'Write the brief — what is to be done…' : isPersonStepAsk(a) ? 'Pick an option above, or write the next step…' : 'Decision (free text, or pick an option above)…'
+              briefAskNodeId(a.id)
+                ? 'Write the brief — what is to be done…'
+                : stepAskNodeId(a.id)
+                  ? 'Pick an option above, or write your answer (a decision)…'
+                  : isPersonStepAsk(a)
+                    ? 'Pick an option above, or write the next step…'
+                    : 'Decision (free text, or pick an option above)…'
             }
             rows={2}
             style={{ width: '100%', boxSizing: 'border-box', fontSize: 13, padding: 6, border: '1px solid #cbd5e1', borderRadius: 6 }}
           />
+          {stepDecision && (
+            <div data-testid="step-next" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12, color: '#475569' }}>
+              <span>Then:</span>
+              {STEP_FOLLOW_UPS.map((f) => (
+                <Chip key={f.id} active={next === f.id} onClick={() => setNext(f.id)}>
+                  {f.label}
+                </Chip>
+              ))}
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginTop: 6, fontSize: 12, color: '#475569' }}>
             {a.needs_version && (
               <label>
@@ -641,7 +663,9 @@ export function AskCard({
             <button
               disabled={!canAnswer}
               style={btn('primary', !canAnswer)}
-              onClick={() => submit({ action: 'answered', decision: decision.trim(), by, milestone: milestone.trim() || undefined, noRequeue })}
+              onClick={() =>
+                submit({ action: 'answered', decision: decision.trim(), by, milestone: milestone.trim() || undefined, noRequeue, ...(stepDecision ? { next } : {}) })
+              }
             >
               Answer
             </button>

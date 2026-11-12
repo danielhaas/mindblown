@@ -11,7 +11,7 @@
  * Like stalled asks (stalled.ts) they are derived on read, never stored
  * while open: the tag is the truth, and answering changes the tag.
  */
-import { questionParts, type Ask, type QuestionParts } from './asks.js';
+import { questionParts, type Ask, type QuestionParts, type StepFollowUp } from './asks.js';
 import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
@@ -20,10 +20,21 @@ import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './st
 export const STEP_ASK_PREFIX = 'step-';
 export const STEP_ASK_OPTIONS = ['Done', 'Fleet can do it'] as const;
 /**
- * What an answer does — the lint fix of the same name. Free text runs
- * needs-human with the text as the note: it becomes the new next step.
+ * What an answer does — the lint fix of the same name. Free text is a
+ * decision (#619): on 12.11.2026 three decision tickets answered "yes"
+ * stayed held, the answer written over the question as the next step. It
+ * is recorded as "Decision (by, date): …" and the ticket then goes where
+ * the follow-up says — to the fleet by default, so answering is enough;
+ * "Still mine" (needs-human, the text as the next step) is the explicit choice.
  */
 export type StepAnswer = 'mark-done' | 'to-fleet' | 'needs-human';
+
+/** The follow-ups of a free-text answer, as the row offers them — the first is the default. */
+export const STEP_FOLLOW_UPS: ReadonlyArray<{ id: StepFollowUp; label: string }> = [
+  { id: 'fleet', label: 'Hand to fleet' },
+  { id: 'done', label: 'Close as done' },
+  { id: 'mine', label: 'Still mine' },
+];
 
 export function stepAskId(nodeId: string): string {
   return STEP_ASK_PREFIX + nodeId;
@@ -329,12 +340,22 @@ export function blockerAnswerAction(decision: string): BlockerAnswer {
   return 'needs-human';
 }
 
-/** Which write an answer to a step means: Done, Fleet can do it, else the text is the new next step. */
-export function stepAnswerAction(decision: string): StepAnswer {
+/** True for a step row's own options (Done, Fleet can do it) — anything else is a decision. */
+export function isStepOption(decision: string): boolean {
+  const d = decision.trim().toLowerCase();
+  return ['done', 'mark done', 'mark-done', 'fleet can do it', 'to-fleet', 'fleet'].includes(d);
+}
+
+/**
+ * Which write an answer to a step means: Done, Fleet can do it; free text
+ * is a decision and `next` says what follows — fleet (default), done, or
+ * still a person's step (the text the new next step).
+ */
+export function stepAnswerAction(decision: string, next: StepFollowUp = 'fleet'): StepAnswer {
   const d = decision.trim().toLowerCase();
   if (d === 'done' || d === 'mark done' || d === 'mark-done') return 'mark-done';
   if (d === 'fleet can do it' || d === 'to-fleet' || d === 'fleet') return 'to-fleet';
-  return 'needs-human';
+  return next === 'done' ? 'mark-done' : next === 'mine' ? 'needs-human' : 'to-fleet';
 }
 
 /** The row of a ticket the pull queue refuses for want of a brief. */
@@ -364,7 +385,11 @@ export function briefAnswerAction(decision: string): BriefAnswer {
  * What answering a derived row writes, for the card's preview — the
  * collector's rows preview through planAskWrites instead.
  */
-export function derivedAnswerPreview(a: Pick<Ask, 'id'> & Partial<Pick<Ask, 'question' | 'unblocks'>>, decision: string): string[] | null {
+export function derivedAnswerPreview(
+  a: Pick<Ask, 'id'> & Partial<Pick<Ask, 'question' | 'unblocks'>>,
+  decision: string,
+  next: StepFollowUp = 'fleet',
+): string[] | null {
   const d = decision.trim();
   if (stalledAskNodeId(a.id)) {
     switch (stalledAnswerAction(d)) {
@@ -381,11 +406,12 @@ export function derivedAnswerPreview(a: Pick<Ask, 'id'> & Partial<Pick<Ask, 'que
     }
   }
   if (stepAskNodeId(a.id)) {
-    switch (stepAnswerAction(d)) {
+    const decided = d && !isStepOption(d) && next !== 'mine' ? [`Node: "Decision (…): ${d}" in place of the next step, and as a comment on the linked issue`] : [];
+    switch (stepAnswerAction(d, next)) {
       case 'mark-done':
-        return ['Node: done, 100 % (the linked issue closes via sync)'];
+        return [...decided, 'Node: done, 100 % (the linked issue closes via sync)'];
       case 'to-fleet':
-        return ['Node: needs-human (and other skip tags) removed, back to the queue as todo — the fleet takes it'];
+        return [...decided, 'Node: needs-human (and other skip tags) and blocked removed, labels too, back to the queue as todo — the fleet takes it'];
       default:
         return [`Node: "Next step (a person): ${d || '…'}" at the top of the description — the step stays yours`];
     }

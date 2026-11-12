@@ -131,6 +131,11 @@ export const answerAskTool = defineTool({
     'decision from the human — the tool records decisions, it does not make them.',
     'Pass `mapId`, or `fleetId` for an ask from a fleet-wide list_asks (add',
     '`askMapId` when two maps share the ask id; "" for a fleet-level ask).',
+    'A step row (id "step-<nodeId>", Your steps): "Done" / "Fleet can do it",',
+    'or free text = a decision — «Decision (by, date): …» in place of the next',
+    'step and as a comment on the linked issue, then `next`: fleet (default —',
+    'skip tags and blocked off, labels too, status todo), done, or mine (the',
+    'step stays a person\'s, the text its new next step).',
   ].join('\n'),
   schema: {
     mapId: z.string().optional().describe('The ask\'s map — one of mapId / fleetId'),
@@ -143,10 +148,11 @@ export const answerAskTool = defineTool({
     milestone: z.string().optional().describe('Milestone title to set on the ticket when it carried NEEDS-VERSION'),
     noRequeue: z.boolean().optional().describe('Record the answer but keep the node status — a human step still precedes the fleet'),
     delegateTo: z.string().trim().min(1).max(100).optional().describe('For delegate: who takes it — a person on the map (name) or any name'),
+    next: z.enum(['fleet', 'done', 'mine']).optional().describe('Step rows, free-text decision: hand to fleet (default), close as done, or still mine'),
   },
-  handler: async (backend, { mapId, fleetId, askMapId, askId, action, decision, by, milestone, noRequeue, delegateTo }) => {
+  handler: async (backend, { mapId, fleetId, askMapId, askId, action, decision, by, milestone, noRequeue, delegateTo, next }) => {
     if (!mapId === !fleetId) throw new Error('Pass exactly one of mapId or fleetId');
-    const input = { action, decision, by, milestone, noRequeue, delegateTo };
+    const input = { action, decision, by, milestone, noRequeue, delegateTo, ...(next ? { next } : {}) };
     const r = fleetId ? await backend.answerAskForFleet(fleetId, askId, input, askMapId) : await backend.answerAsk(mapId!, askId, input);
     const lines: string[] = [];
     lines.push(`${askId}: ${r.ask.status}${r.ask.answeredBy ? ` by ${r.ask.answeredBy}` : ''}${r.ok ? '' : ' — SOME WRITES FAILED'}`);
