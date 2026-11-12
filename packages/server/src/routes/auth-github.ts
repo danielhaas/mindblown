@@ -112,33 +112,23 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
 
     const state = signState(userId);
 
-    // Check if user already has an installation but no identity (failed callback recovery)
+    // Connected already = a stored GitHub identity.
     const [existingIdentity] = await db.select({ id: userGithubIdentities.id })
       .from(userGithubIdentities)
       .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
       .limit(1);
 
     if (existingIdentity) {
-      // Already fully connected — shouldn't be here, but return install URL anyway
-      const installUrl = buildInstallUrl(state);
-      return reply.send({ installUrl });
+      // Already connected: the install page adds the App to another account.
+      return reply.send({ installUrl: buildInstallUrl(state) });
     }
 
-    // Check if app is installed but identity is missing (failed callback scenario)
-    const [existingInstall] = await db.select({ id: githubInstallations.id })
-      .from(githubInstallations)
-      .where(eq(githubInstallations.userId, userId))
-      .limit(1);
-
-    if (existingInstall) {
-      // App installed but OAuth failed — use OAuth-only flow
-      const installUrl = buildOAuthAuthorizeUrl(state);
-      return reply.send({ installUrl });
-    }
-
-    // Fresh install
-    const installUrl = buildInstallUrl(state);
-    return reply.send({ installUrl });
+    // Not connected: sign in first. GitHub's install page only offers to
+    // install on one account and leaves an already-installed account on its
+    // settings page, so a returning user would never come back. The sign-in
+    // callback syncs every installation the user reaches and sends a user
+    // with none on to the install page.
+    return reply.send({ installUrl: buildOAuthAuthorizeUrl(state) });
   });
 
   // ── GET /api/auth/github/install/callback ────────────────────────
@@ -221,31 +211,31 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         return reply.redirect(buildOAuthAuthorizeUrl(signState(userId)));
       }
 
-      if (query.installation_id) {
-        const reachable = await listUserInstallations(userToken);
-        const inst = reachable.find((i) => String(i.id) === query.installation_id);
-        if (!inst) {
-          return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=installation_not_yours`);
-        }
-        await upsertInstallation(userId, inst);
-      } else {
-        // OAuth-only flow: sync the full list, and drop rows the user can
-        // no longer reach (uninstalled, or access removed on GitHub). The
-        // identity is saved already; a failed listing keeps the old rows.
-        let reachable: Awaited<ReturnType<typeof listUserInstallations>>;
-        try {
-          reachable = await listUserInstallations(userToken);
-        } catch (syncErr) {
-          console.warn('[github] Failed to sync installations:', syncErr);
-          return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
-        }
-        for (const inst of reachable) await upsertInstallation(userId, inst);
-        const keep = reachable.map((i) => String(i.id));
-        await db.delete(githubInstallations).where(and(
-          eq(githubInstallations.userId, userId),
-          keep.length ? notInArray(githubInstallations.installationId, keep) : undefined,
-        ));
+      // Sync the full list the user's token reaches, and drop rows they can
+      // no longer reach (uninstalled, or access removed on GitHub). An org
+      // approved after the last connect shows up here too.
+      let reachable: Awaited<ReturnType<typeof listUserInstallations>>;
+      try {
+        reachable = await listUserInstallations(userToken);
+      } catch (syncErr) {
+        if (query.installation_id) throw syncErr;
+        // The identity is saved already; a failed listing keeps the old rows.
+        console.warn('[github] Failed to sync installations:', syncErr);
+        return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
       }
+      if (query.installation_id && !reachable.some((i) => String(i.id) === query.installation_id)) {
+        return reply.redirect(`${FRONTEND_URL}/?gh=error&reason=installation_not_yours`);
+      }
+      if (reachable.length === 0) {
+        // Signed in, but the App is on none of their accounts yet.
+        return reply.redirect(buildInstallUrl(signState(userId)));
+      }
+      for (const inst of reachable) await upsertInstallation(userId, inst);
+      const keep = reachable.map((i) => String(i.id));
+      await db.delete(githubInstallations).where(and(
+        eq(githubInstallations.userId, userId),
+        notInArray(githubInstallations.installationId, keep),
+      ));
 
       return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
     } catch (err) {

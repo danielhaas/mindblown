@@ -12,6 +12,8 @@ import jwt from 'jsonwebtoken';
 const calls = vi.hoisted(() => ({
   inserts: [] as Array<{ table: string; values: Record<string, unknown> }>,
   deletes: [] as Array<{ table: string; where: unknown }>,
+  /** What every `select … limit()` answers (a stored identity, say). */
+  selectRows: [] as Array<{ id: string }>,
 }));
 const tables = vi.hoisted(() => ({
   githubInstallations: { _: 'githubInstallations', installationId: 'installation_id', userId: 'user_id', id: 'id' },
@@ -20,7 +22,7 @@ const tables = vi.hoisted(() => ({
 
 vi.mock('../../db/connection.js', () => {
   const selectChain = () => {
-    const chain = { from: () => chain, where: () => chain, limit: async () => [] };
+    const chain = { from: () => chain, where: () => chain, limit: async () => calls.selectRows };
     return chain;
   };
   return {
@@ -101,6 +103,7 @@ const installationInserts = () => calls.inserts.filter((c) => c.table === 'githu
 beforeEach(() => {
   calls.inserts = [];
   calls.deletes = [];
+  calls.selectRows = [];
   identity.row = null;
   identity.owned = new Set();
   gh.userInstallations = [ALICE_ORG];
@@ -161,6 +164,40 @@ describe('GitHub install callback — installation ownership', () => {
         where: ['and', ['eq', 'user_id', 'u1'], ['notIn', 'installation_id', ['111']]],
       },
     ]);
+  });
+
+  it('install flow syncs every installation the user reaches, not just the one installed', async () => {
+    // An org approved after the last connect shows up whichever account
+    // the user picked on GitHub's install page.
+    gh.userInstallations = [ALICE_ORG, { id: 222, account: { login: 'alice', type: 'User', id: 7 } }];
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: `/api/auth/github/install/callback?state=${state}&code=c&installation_id=222` });
+    expect(res.headers.location).toMatch(/gh=connected/);
+    expect(installationInserts().map((c) => c.values.installationId)).toEqual(['111', '222']);
+  });
+
+  it('a user with no installation is sent on to the install page, rows untouched', async () => {
+    gh.userInstallations = [];
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: `/api/auth/github/install/callback?state=${state}&code=c` });
+    expect(res.headers.location).toBe('https://github.test/install');
+    expect(installationInserts()).toEqual([]);
+    expect(calls.deletes).toEqual([]);
+  });
+});
+
+describe('GET /api/auth/github/install — where Connect sends the user', () => {
+  it('not connected: GitHub sign-in, never the install page', async () => {
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/github/install' });
+    expect(res.json()).toEqual({ installUrl: 'https://github.test/oauth' });
+  });
+
+  it('connected: the install page, to add the App to another account', async () => {
+    calls.selectRows = [{ id: 'ident-1' }];
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/github/install' });
+    expect(res.json()).toEqual({ installUrl: 'https://github.test/install' });
   });
 });
 
