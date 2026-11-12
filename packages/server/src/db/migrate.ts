@@ -1240,9 +1240,15 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   await db.execute(sql`
     ALTER TABLE fleets ADD COLUMN IF NOT EXISTS pull_deficits JSONB NOT NULL DEFAULT '{}'::jsonb
   `);
-  // Auto-check: blocked tickets go to the fleet without a click. Off by default.
+  // Auto-check: blocked tickets go to the fleet without a click. On by
+  // default for a new fleet since 12.11.2026 (gamora-loke was created with it
+  // off and an interrupted ticket sat blocked); existing rows keep their value,
+  // so the column is added as false and only the default moves to true.
   await db.execute(sql`
     ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT false
+  `);
+  await db.execute(sql`
+    ALTER TABLE fleets ALTER COLUMN auto_check_blockers SET DEFAULT true
   `);
   // One-shot: every map a fleet already works on gets a fleet of its own —
   // a pull cap above hold, or any telemetry row. Named after the map, owned

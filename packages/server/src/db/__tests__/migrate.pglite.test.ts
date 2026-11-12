@@ -21,4 +21,20 @@ describe('runDdl on Postgres (PGlite)', () => {
       await client.close();
     }
   });
+
+  it('gives a new fleet auto-check blockers on, also on a schema that had the old default', async () => {
+    const { db, client } = await createPgliteDb();
+    try {
+      await runDdl(db);
+      // A database migrated before 12.11.2026 carries DEFAULT false.
+      await db.execute(sql`ALTER TABLE fleets ALTER COLUMN auto_check_blockers SET DEFAULT false`);
+      await runDdl(db);
+      const { rows } = await db.execute<{ d: string }>(
+        sql`SELECT column_default AS d FROM information_schema.columns WHERE table_name = 'fleets' AND column_name = 'auto_check_blockers'`,
+      );
+      expect(rows[0].d).toBe('true');
+    } finally {
+      await client.close();
+    }
+  });
 });

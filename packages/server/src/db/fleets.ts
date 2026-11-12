@@ -105,6 +105,7 @@ export async function createFleet(input: { name: string; ownerId: string; maxAct
         name: input.name,
         ownerId: input.ownerId,
         maxActiveClaims: Math.max(0, Math.floor(input.maxActiveClaims ?? 0)),
+        autoCheckBlockers: true,
       })
       .returning();
     const [user] = await tx
