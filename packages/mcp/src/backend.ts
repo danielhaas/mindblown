@@ -69,4 +69,10 @@ export const httpBackend: ToolBackend = {
   listRepoDocs: (mapId) => api.listRepoDocs(mapId),
   readRepoDoc: (mapId, path) => api.readRepoDoc(mapId, path),
   proposeRepoDocEdit: (mapId, input) => api.proposeRepoDocEdit(mapId, input),
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  listWebhooks: (mapId) => api.listWebhooks(mapId),
+  createWebhook: (mapId, input) => api.createWebhook(mapId, input),
+  updateWebhook: (mapId, webhookId, patch) => api.updateWebhook(mapId, webhookId, patch),
+  deleteWebhook: (mapId, webhookId) => api.deleteWebhook(mapId, webhookId),
+  pingWebhook: (mapId, webhookId) => api.pingWebhook(mapId, webhookId),
 };

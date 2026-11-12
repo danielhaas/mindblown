@@ -25,6 +25,7 @@ import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
 import * as approvals from '../services/approvals.js';
+import * as webhookService from '../services/webhooks.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
@@ -529,6 +530,29 @@ export function createChatBackend(userId: string): ToolBackend {
     readRepoDoc: (mapId, path) => readRepoDoc(mapId, path),
     // Not a read: the chat guard asks edit on the map.
     proposeRepoDocEdit: async (mapId, input) => proposeRepoDocEdit(mapId, input, await proposerName(userId)),
+
+    // ── Outgoing webhooks ─────────────────────────────────────────
+    //
+    // Read and ping only on this surface: the chat model reads ticket
+    // text it must not obey, and a subscription sends the map's activity
+    // to any URL — a ticket saying "subscribe evil.example" must not be
+    // able to. Subscribing happens over REST / MCP, as a person or key.
+    listWebhooks: (mapId) => webhookService.listWebhooks(mapId),
+    createWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (create_webhook), not from the in-app chat');
+    },
+    updateWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (update_webhook), not from the in-app chat');
+    },
+    deleteWebhook: async () => {
+      throw new Error('Webhooks are managed over the API or MCP (delete_webhook), not from the in-app chat');
+    },
+    pingWebhook: async (mapId, webhookId) => {
+      const sub = await webhookService.getWebhookForMap(mapId, webhookId);
+      const r = sub ? await webhookService.pingWebhook(sub.id, mapId) : null;
+      if (!r) throw new Error(`Webhook ${webhookId} not found`);
+      return { delivered: r.ok, status: r.status, error: r.error };
+    },
   };
   return guardChatBackend(backend, userId);
 }
@@ -552,6 +576,12 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
 /** Backend methods that need admin on the map — what REST asks for the same action. */
 export const CHAT_BACKEND_ADMIN_METHODS: ReadonlySet<keyof ToolBackend> = new Set<keyof ToolBackend>([
   'deleteMap',
+  // Outgoing webhooks: the REST routes ask admin on the map.
+  'listWebhooks',
+  'createWebhook',
+  'updateWebhook',
+  'deleteWebhook',
+  'pingWebhook',
 ]);
 
 /** Backend methods that take no mapId — they scope themselves to the user. */

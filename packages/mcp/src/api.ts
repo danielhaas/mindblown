@@ -14,8 +14,8 @@
 
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
-import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, FleetWithMaps, PendingApprovalList, StalledLeaf, TrustPolicy } from '@mindblown/core';
+import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
+import type { AskAnswerInput, FleetWithMaps, PendingApprovalList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1968,4 +1968,34 @@ export function auditClosedIssues(
       body: JSON.stringify({ ...rest, dryRun: true }),
     },
   );
+}
+
+// ── Outgoing webhooks ──────────────────────────────────────────────
+
+export async function listWebhooks(mapId: string): Promise<WebhookSubscription[]> {
+  return (await request<{ webhooks: WebhookSubscription[] }>(`/api/maps/${mapId}/webhooks`)).webhooks;
+}
+
+export async function createWebhook(mapId: string, input: CreateWebhookInput): Promise<WebhookSubscription & { secret: string }> {
+  const res = await request<{ webhook: WebhookSubscription & { secret: string } }>(`/api/maps/${mapId}/webhooks`, {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+  return res.webhook;
+}
+
+export async function updateWebhook(mapId: string, webhookId: string, patch: UpdateWebhookInput): Promise<WebhookSubscription> {
+  const res = await request<{ webhook: WebhookSubscription }>(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+  return res.webhook;
+}
+
+export function deleteWebhook(mapId: string, webhookId: string): Promise<{ deleted: boolean; id: string }> {
+  return request(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}`, { method: 'DELETE' });
+}
+
+export function pingWebhook(mapId: string, webhookId: string): Promise<WebhookPingResult> {
+  return request(`/api/maps/${mapId}/webhooks/${encodeURIComponent(webhookId)}/ping`, { method: 'POST' });
 }

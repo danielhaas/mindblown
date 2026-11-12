@@ -1540,5 +1540,29 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failed_on DATE`);
   await db.execute(sql`ALTER TABLE digest_mails ADD COLUMN IF NOT EXISTS failures INTEGER NOT NULL DEFAULT 0`);
 
+  // ── Outgoing webhooks ───────────────────────────────────────────
+  // A URL subscribed to one map's events (map_id) or a whole workspace's
+  // (map_id NULL), HMAC-signed with `secret` (services/webhooks.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS webhook_subscriptions (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+      map_id UUID REFERENCES maps(id) ON DELETE CASCADE,
+      url TEXT NOT NULL,
+      secret TEXT NOT NULL,
+      events JSONB NOT NULL DEFAULT '[]'::jsonb,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      description TEXT,
+      created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_delivery_at TIMESTAMPTZ,
+      last_status INTEGER,
+      last_error TEXT
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS webhook_subscriptions_scope_idx ON webhook_subscriptions (workspace_id, map_id)
+  `);
+
   console.log('[db] Migrations complete.');
 }

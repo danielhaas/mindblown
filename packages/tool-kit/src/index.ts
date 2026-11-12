@@ -46,6 +46,10 @@ export type {
   RepoDocText,
   ProposeDocEditInput,
   ProposeDocEditResult,
+  // Outgoing webhooks
+  CreateWebhookInput,
+  UpdateWebhookInput,
+  WebhookPingResult,
 } from './backend.js';
 export type { ToolSpec } from './spec.js';
 export { defineTool } from './spec.js';
@@ -67,7 +71,8 @@ import { attachmentTools } from './tools/attachments.js';
 import { fleetTools } from './tools/fleets.js';
 import { docsTools } from './tools/docs.js';
 import { approvalTools } from './tools/approvals.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools };
+import { webhookTools } from './tools/webhooks.js';
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, webhookTools };
 export { renderAskList } from './tools/asks.js';
 export { renderPendingApprovals } from './tools/approvals.js';
 
@@ -84,4 +89,5 @@ export const allTools = [
   ...fleetJournalTools,
   ...attachmentTools,
   ...docsTools,
+  ...webhookTools,
 ];

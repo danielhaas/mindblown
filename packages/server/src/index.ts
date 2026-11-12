@@ -59,7 +59,9 @@ import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
 import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
-import { registerWebSocket } from './ws.js';
+import { onBroadcast, registerWebSocket } from './ws.js';
+import { webhookRoutes } from './routes/webhooks.js';
+import { handleBroadcast, startWebhooks } from './services/webhooks.js';
 
 const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
@@ -151,6 +153,7 @@ async function main(): Promise<void> {
   await app.register(fleetJournalByFleetRoutes);
   await app.register(repoDocsRoutes);
   await app.register(prRoutes);
+  await app.register(webhookRoutes);
   await app.register(systemRoutes);
   await registerWebSocket(app);
 
@@ -170,6 +173,9 @@ async function main(): Promise<void> {
     await app.listen({ port: PORT, host: '0.0.0.0' });
     console.log(`[server] MindBlown API listening on http://localhost:${PORT}`);
     console.log(`[server] WebSocket available at ws://localhost:${PORT}/ws/maps/:id`);
+    // Outgoing webhooks: every broadcast is a possible event; delivery on from here.
+    onBroadcast((mapId, message) => void handleBroadcast(mapId, message));
+    startWebhooks();
   } catch (err) {
     app.log.error(err);
     process.exit(1);
