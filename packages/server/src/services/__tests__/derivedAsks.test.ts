@@ -43,7 +43,15 @@ vi.mock('../../db/maps.js', () => ({
 }));
 vi.mock('../../lib/stalled.js', () => ({ stalledForMap: vi.fn(async () => state.stalled) }));
 const applyLintFix = vi.fn(async (_m: string, id: string) => ({ action: 'x', node: { id, mapId: 'm1' }, changedFields: ['percentComplete'] }));
-vi.mock('../../lint/fix.js', () => ({ applyLintFix: (...a: unknown[]) => applyLintFix(...(a as [string, string])) }));
+vi.mock('../../lint/fix.js', () => ({
+  applyLintFix: (...a: unknown[]) => applyLintFix(...(a as [string, string])),
+  issueLinkOf: (n: { externalLinks: Array<{ isPullRequest?: boolean }> }) => n.externalLinks.find((l) => !l.isPullRequest) ?? null,
+}));
+const forge = vi.hoisted(() => ({ removeIssueLabel: vi.fn(async () => ({ status: 404, bodyText: '' })), endpoint: { kind: 'github' } }));
+const ghCtx = vi.hoisted(() => ({ value: null as unknown }));
+vi.mock('../../lib/githubContext.js', () => ({ getGitHubContextForMap: vi.fn(async () => ghCtx.value) }));
+const commentOnGitHubIssue = vi.hoisted(() => vi.fn(async () => ({ id: 1, html_url: 'x' })));
+vi.mock('@mindblown/integrations', () => ({ commentOnGitHubIssue, ForgeApiError: class extends Error {} }));
 const recordAnswer = vi.fn(async (k: { askId: string; mapId: string }, ask: unknown, p: { status: string }) => ({ ask, mapId: k.mapId, status: p.status }));
 vi.mock('../../db/asks.js', () => ({
   ANSWER_RETENTION_DAYS: 14,
@@ -143,13 +151,41 @@ describe('a person\'s steps', () => {
     expect((await openDerivedAsks(scope, ['m1'])).map((r) => r.ask.id)).toEqual(['step-phone']);
   });
 
-  it('Done / Fleet can do it / free text = the new next step', async () => {
+  it('Done / Fleet can do it; free text is a decision, handed to the fleet unless kept (#619)', async () => {
     await answerDerivedAsk(stepKey, { action: 'answered', decision: 'Done' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'mark-done', 'u1', { note: undefined });
     await answerDerivedAsk(stepKey, { action: 'answered', decision: 'Fleet can do it' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'to-fleet', 'u1', { note: undefined });
-    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'waiting for Thomas to send the key' }, 'u1');
+    const date = new Date().toISOString().slice(0, 10);
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'yes, allow it' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'to-fleet', 'u1', { note: undefined, decision: `Decision (Dan, ${date}): yes, allow it` });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'yes', next: 'done' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'mark-done', 'u1', { note: undefined, decision: `Decision (Dan, ${date}): yes` });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'waiting for Thomas to send the key', next: 'mine' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'needs-human', 'u1', { note: 'waiting for Thomas to send the key' });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'ask Rita', noRequeue: true }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'phone', 'needs-human', 'u1', { note: 'ask Rita' });
+  });
+
+  it('the decision goes on the linked issue and a hand-back takes the hold labels off', async () => {
+    ghCtx.value = { owner: 'o', repo: 'r', forge };
+    const issue = { provider: 'github', externalId: 'o/r#619', isPullRequest: false };
+    applyLintFix.mockResolvedValueOnce({ action: 'to-fleet', node: { id: 'phone', mapId: 'm1', externalLinks: [issue] } as never, changedFields: ['tags'] });
+    const out = await answerDerivedAsk(stepKey, { action: 'answered', decision: 'yes' }, 'u1');
+    expect(commentOnGitHubIssue).toHaveBeenCalledWith('o', 'r', 619, expect.stringContaining('Decision (Dan, '), forge);
+    expect(forge.removeIssueLabel.mock.calls.map((c) => (c as unknown[])[3])).toEqual(['blocked', 'kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review']);
+    expect(out.ok).toBe(true);
+    const writes = (recordAnswer.mock.calls.at(-1)![2] as unknown as { writes: Array<{ kind: string; done: boolean }> }).writes;
+    expect(writes.map((w) => [w.kind, w.done])).toEqual([['mb-put', true], ['gh-comment', true], ['gh-edit', true]]);
+
+    // Still mine: no decision, no comment, the labels stay.
+    commentOnGitHubIssue.mockClear();
+    forge.removeIssueLabel.mockClear();
+    applyLintFix.mockResolvedValueOnce({ action: 'needs-human', node: { id: 'phone', mapId: 'm1', externalLinks: [issue] } as never, changedFields: ['tags'] });
+    await answerDerivedAsk(stepKey, { action: 'answered', decision: 'later this week', next: 'mine' }, 'u1');
+    expect(commentOnGitHubIssue).not.toHaveBeenCalled();
+    expect(forge.removeIssueLabel).not.toHaveBeenCalled();
+    ghCtx.value = null;
   });
 });
 

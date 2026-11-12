@@ -9,6 +9,7 @@ import {
   parseAskDocument,
   planAskWrites,
   prependDecision,
+  replaceNextStep,
   decisionLine,
   decisionCommentBody,
   sortAsks,
@@ -92,6 +93,16 @@ describe('decision text', () => {
     expect(prependDecision('old text', 'L')).toBe('**L**\n\nold text');
     expect(prependDecision(null, 'L')).toBe('**L**');
     expect(prependDecision('', 'L')).toBe('**L**');
+  });
+
+  it('a step\'s decision takes the place of its next-step lines at the top (#619)', () => {
+    const desc = '**Next step (a person): allow it?**\n\n**Next step (a person): older**\n\nBody.\n\n**Next step (a person): further down stays**';
+    expect(replaceNextStep(desc, 'D')).toBe('**D**\n\nBody.\n\n**Next step (a person): further down stays**');
+    expect(replaceNextStep('**Next step (a person): x**', 'D')).toBe('**D**');
+    expect(replaceNextStep(null, 'D')).toBe('**D**');
+    const p = (text: string) => ({ type: 'paragraph', content: [{ type: 'text', text }] });
+    const out = replaceNextStep({ type: 'doc', content: [p('Next step (a person): x'), p('Body')] }, 'D') as { content: unknown[] };
+    expect(out.content).toEqual([{ type: 'paragraph', content: [{ type: 'text', text: 'D', marks: [{ type: 'bold' }] }] }, p('Body')]);
   });
 
   it('inserts a bold paragraph into a ProseMirror doc instead of corrupting it', () => {

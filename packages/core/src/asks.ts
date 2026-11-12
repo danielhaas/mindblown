@@ -92,7 +92,16 @@ export interface AskAnswerInput {
   milestone?: string;
   noRequeue?: boolean;
   delegateTo?: string;
+  /**
+   * A step row's free-text answer is a decision (#619); this is what
+   * happens to the ticket after it: `fleet` (default) hands it back,
+   * `done` closes it, `mine` keeps the step with the text as its next step.
+   */
+  next?: StepFollowUp;
 }
+
+/** What a decision on a step row does to the ticket — see AskAnswerInput.next. */
+export type StepFollowUp = 'fleet' | 'done' | 'mine';
 
 /** One planned or executed write, as the ledger records it. */
 export interface AskWrite {
@@ -240,6 +249,35 @@ export function prependDecision(description: unknown, line: string): unknown {
     }
   }
   return `**${line}**`;
+}
+
+const NEXT_STEP_LINE = /^\*\*Next step \(a person\):[^\n]*\*\*[ \t]*(?:\n[ \t]*)*/;
+
+function pmText(node: unknown): string {
+  const n = node as { text?: unknown; content?: unknown[] };
+  return typeof n?.text === 'string' ? n.text : Array.isArray(n?.content) ? n.content.map(pmText).join('') : '';
+}
+
+/**
+ * Put a decision where the step's "Next step (a person): …" lines were
+ * (#619): the step is answered, so its lines at the top go and the
+ * decision takes their place. Lines further down are the node's text.
+ */
+export function replaceNextStep(description: unknown, line: string): unknown {
+  if (typeof description === 'string') {
+    let rest = description;
+    while (NEXT_STEP_LINE.test(rest)) rest = rest.replace(NEXT_STEP_LINE, '');
+    return prependDecision(rest, line);
+  }
+  if (description && typeof description === 'object') {
+    const doc = description as { type?: string; content?: unknown[] };
+    if (doc.type === 'doc' && Array.isArray(doc.content)) {
+      let i = 0;
+      while (i < doc.content.length && /^\s*Next step \(a person\):/.test(pmText(doc.content[i]))) i++;
+      return prependDecision({ ...doc, content: doc.content.slice(i) }, line);
+    }
+  }
+  return prependDecision(description, line);
 }
 
 // ── the write plan ─────────────────────────────────────────────────

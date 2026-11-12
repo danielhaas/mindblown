@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, replaceNextStep, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -76,7 +76,12 @@ export async function applyLintFix(
   nodeId: string,
   action: LintActionId,
   userId: string | null,
-  opts: { note?: string } = {},
+  /**
+   * note: the text a fix carries (needs-human's next step, write-brief's brief).
+   * decision: a "Decision (by, date): …" line that takes the place of the
+   * step's next-step lines — with mark-done and to-fleet (#619).
+   */
+  opts: { note?: string; decision?: string } = {},
 ): Promise<LintFixOutcome> {
   const before = await nodeDb.getNode(nodeId);
   if (!before || before.mapId !== mapId) throw new LintFixError('NODE_NOT_FOUND', `Node ${nodeId} not found`);
@@ -234,12 +239,17 @@ export async function applyLintFix(
       break;
     }
     case 'to-fleet': {
-      // "Fleet can do it": every skip tag off and back to the queue as it
-      // stands (todo, progress kept), so the next pull may take it.
-      const skips = before.tags.filter((t) => (DISPATCH_SKIP_TAGS as readonly string[]).includes(t.toLowerCase()));
+      // "Fleet can do it": every skip tag and the blocker off and back to
+      // the queue as it stands (todo, progress kept), so the next pull may
+      // take it. A blocker left on would keep it out of the queue (#619).
+      const skips = before.tags.filter((t) => (DISPATCH_SKIP_TAGS as readonly string[]).includes(t.toLowerCase()) || t.toLowerCase() === BLOCKED_TAG);
       const todoId = [...buildTodoIds(workflow)][0] ?? 'todo';
       input = { tagsRemove: skips, status: todoId, claimedBySession: null };
       changedFields = ['tags', 'status', 'claimedBySession'];
+      if (before.blockedReason) {
+        input.blockedReason = null;
+        changedFields.push('blockedReason');
+      }
       break;
     }
     case 'write-brief': {
@@ -255,6 +265,11 @@ export async function applyLintFix(
     }
     default:
       throw new LintFixError('BAD_ACTION', `Unknown fix "${String(action)}"`);
+  }
+
+  if (opts.decision?.trim() && (action === 'mark-done' || action === 'to-fleet')) {
+    input.description = replaceNextStep(before.description, opts.decision.trim()) as nodeDb.UpdateNodeInput['description'];
+    changedFields.push('description');
   }
 
   if (changedFields.length === 0) return { action, node: before, changedFields };
