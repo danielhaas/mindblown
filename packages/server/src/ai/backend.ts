@@ -380,6 +380,7 @@ export function createChatBackend(userId: string): ToolBackend {
       return {
         node: { id: result.node.id, text: result.node.text, status: result.node.status, claimedBySession: result.node.claimedBySession },
         statusReset: result.statusReset,
+        ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
       };
     },
     conflictScan: (mapId, candidateNodeId?) => orchestrationService.conflictScan(mapId, candidateNodeId),

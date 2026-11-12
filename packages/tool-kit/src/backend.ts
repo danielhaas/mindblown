@@ -265,6 +265,11 @@ export interface UnblockNodeResult {
    * claimed by a session, or already in todo.
    */
   statusReset: boolean;
+  /**
+   * Set when the `blocked` label could not be taken off the linked issue
+   * (#622). The node is unblocked regardless.
+   */
+  labelError?: string;
 }
 
 export interface ConflictEntry {

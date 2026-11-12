@@ -888,7 +888,11 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
           node: result.node,
         });
         syncNodeToGitHub(result.node, result.changedFields).catch(() => {});
-        return reply.send({ node: result.node, statusReset: result.statusReset });
+        return reply.send({
+          node: result.node,
+          statusReset: result.statusReset,
+          ...(result.labelWrite?.error ? { labelError: result.labelWrite.error } : {}),
+        });
       } catch (err) {
         if (err instanceof UnblockNotFoundError) {
           return reply.status(404).send({ error: { code: 'NODE_NOT_FOUND', message: err.message } });

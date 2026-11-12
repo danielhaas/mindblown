@@ -11,11 +11,13 @@
  * status rule in core (`planUnblock`) so the cockpit button, the MCP tool
  * and the chat tool agree.
  */
-import { planUnblock } from '@mindblown/core';
-import type { Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, planUnblock } from '@mindblown/core';
+import type { AskWrite, Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordFieldChanges } from '../db/events.js';
+import { getGitHubContextForMap } from '../lib/githubContext.js';
+import { issueLinkOf, issueNumberOf, removeIssueLabels } from './issueLabels.js';
 
 export interface UnblockOutcome {
   node: CoreNode;
@@ -23,6 +25,12 @@ export interface UnblockOutcome {
   statusReset: boolean;
   /** Fields the write touched — for broadcast/sync fan-out. */
   changedFields: string[];
+  /**
+   * The `blocked` label taken off the linked issue (#622) — set when the
+   * tag came off and the map has a forge connected. `done: false` with an
+   * `error` when the forge refused; the node write stands either way.
+   */
+  labelWrite?: AskWrite;
 }
 
 export class UnblockNotFoundError extends Error {
@@ -57,5 +65,21 @@ export async function unblockNode(mapId: string, nodeId: string, userId: string 
   if (!updated) throw new UnblockNotFoundError(`Node ${nodeId}`);
   await recordFieldChanges(mapId, nodeId, userId, before, updated);
 
-  return { node: updated, statusReset: plan.status !== undefined, changedFields };
+  // Only `blocked`: a skip tag (needs-human …) is a person's step still to
+  // do, and lifting a blocker must not hand that to the fleet.
+  const labelWrite = plan.tagsRemove.includes(BLOCKED_TAG) ? await dropBlockedLabel(mapId, updated) : undefined;
+
+  return { node: updated, statusReset: plan.status !== undefined, changedFields, ...(labelWrite ? { labelWrite } : {}) };
+}
+
+/**
+ * The outbound sync rewrites labels only on a link with sync on, so on
+ * 12.11.2026 a cleared ticket kept `blocked` on its issue (#622).
+ */
+async function dropBlockedLabel(mapId: string, node: CoreNode): Promise<AskWrite | undefined> {
+  const num = issueNumberOf(issueLinkOf(node));
+  if (num === null) return undefined;
+  const ctx = await getGitHubContextForMap(mapId).catch(() => null);
+  if (!ctx) return undefined;
+  return removeIssueLabels(ctx, num, [BLOCKED_TAG]);
 }
