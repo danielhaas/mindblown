@@ -1242,9 +1242,10 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   `);
   // Auto-check: blocked tickets go to the fleet without a click. On by
   // default for a new fleet since 12.11.2026 (gamora-loke was created with it
-  // off and an interrupted ticket sat blocked); existing rows keep their value.
+  // off and an interrupted ticket sat blocked); existing rows keep their value,
+  // so the column is added as false and only the default moves to true.
   await db.execute(sql`
-    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT true
+    ALTER TABLE fleets ADD COLUMN IF NOT EXISTS auto_check_blockers BOOLEAN NOT NULL DEFAULT false
   `);
   await db.execute(sql`
     ALTER TABLE fleets ALTER COLUMN auto_check_blockers SET DEFAULT true
