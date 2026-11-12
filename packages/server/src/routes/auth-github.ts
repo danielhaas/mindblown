@@ -69,6 +69,19 @@ async function upsertInstallation(
   }
 }
 
+/** Make the user's stored rows exactly the installations their token reaches. */
+async function replaceInstallations(
+  userId: string,
+  reachable: Array<{ id: number; account: { login: string; type: string; id: number } }>,
+): Promise<void> {
+  for (const inst of reachable) await upsertInstallation(userId, inst);
+  const keep = reachable.map((i) => String(i.id));
+  await db.delete(githubInstallations).where(and(
+    eq(githubInstallations.userId, userId),
+    keep.length ? notInArray(githubInstallations.installationId, keep) : undefined,
+  ));
+}
+
 /** GitHub's repository-name alphabet. */
 const REPO_NAME = /^[A-Za-z0-9._-]{1,100}$/;
 /** Pause between looks for a just-created repo in the installation (tests set 0). */
@@ -230,12 +243,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         // Signed in, but the App is on none of their accounts yet.
         return reply.redirect(buildInstallUrl(signState(userId)));
       }
-      for (const inst of reachable) await upsertInstallation(userId, inst);
-      const keep = reachable.map((i) => String(i.id));
-      await db.delete(githubInstallations).where(and(
-        eq(githubInstallations.userId, userId),
-        notInArray(githubInstallations.installationId, keep),
-      ));
+      await replaceInstallations(userId, reachable);
 
       return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
     } catch (err) {
@@ -262,6 +270,18 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       .from(userGithubIdentities)
       .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
       .limit(1);
+
+    // Re-read the installations from GitHub, so an org that approved the
+    // App since the last connect shows up without connecting again. The
+    // pickers call this when they open. A failed listing keeps the rows.
+    if (identity) {
+      try {
+        const stored = await findGithubIdentity(userId);
+        if (stored) await replaceInstallations(userId, await listUserInstallations(await githubAccessTokenFor(stored)));
+      } catch (err) {
+        console.warn('[github] Refreshing installations failed; showing the stored list:', err);
+      }
+    }
 
     const installations = await db.select({
       installationId: githubInstallations.installationId,
