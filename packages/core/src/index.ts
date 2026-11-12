@@ -174,6 +174,7 @@ export {
   estimateServerNow,
   ticketPhase,
   ticketPhases,
+  liveClaimedNodeIds,
   stopBlockerReason,
   ticketPhaseText,
   TICK_WINDOW_DEFAULT_LIMIT,

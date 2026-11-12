@@ -73,6 +73,12 @@ export async function listRollups(fleetId: string): Promise<FleetStatusRow[]> {
   return rows.map(toStatusRow).sort((a, b) => a.host.localeCompare(b.host));
 }
 
+/** Every host's last rollup, across all fleets — the stale-claim sweeper's liveness input. */
+export async function listAllRollups(): Promise<FleetStatusRow[]> {
+  const rows = await db.select().from(fleetStatus);
+  return rows.map(toStatusRow);
+}
+
 /**
  * Ordering and retention go by `received_at` (server clock), never by the
  * caller's `tick_at`: an orchestrator with a wrong clock could otherwise

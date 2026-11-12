@@ -607,6 +607,24 @@ export function ticketPhases(
   return out;
 }
 
+/**
+ * Node ids that a fresh host still reports holding — in its #546 claims list
+ * or on a worker. The stale-claim sweeper leaves these alone: a live worker
+ * is still on the ticket even when the node itself has not changed.
+ */
+export function liveClaimedNodeIds(
+  hosts: { generatedAt: string; receivedAt: string; rollup: FleetRollup }[],
+  now: Date,
+): Set<string> {
+  const out = new Set<string>();
+  for (const h of hosts) {
+    if (hostFreshness(h.generatedAt, h.receivedAt, now).stale) continue;
+    for (const c of h.rollup.claims ?? []) if (c.nodeId) out.add(c.nodeId);
+    for (const w of h.rollup.workers ?? []) if (w.claim?.nodeId) out.add(w.claim.nodeId);
+  }
+  return out;
+}
+
 /** "Waiting for CI · 12m": the label and how long the ticket has been in it. */
 export function ticketPhaseText(p: TicketPhase, now: Date): string {
   const t = p.since ? Date.parse(p.since) : NaN;

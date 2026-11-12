@@ -4,8 +4,13 @@
  * Runs on a configurable interval and clears claims on nodes where:
  *   - claimed_by_session IS NOT NULL (the node is claimed)
  *   - claimed_at < NOW() - staleClaimHours (the claim is older than the threshold)
- *   - There has been no progress update since the claim was set
- *     (we use `updated_at <= claimed_at` as a proxy for "no activity since claim").
+ *   - the node has had no activity for that long either: its newest
+ *     change_event (progress, status, notes, …) is older than the threshold.
+ *     The change log, not updated_at — internal writes bump updated_at.
+ *   - and no fresh fleet rollup still reports the claim. A worker on a live
+ *     host is on the ticket even when the node has not changed; a host that
+ *     went to sleep goes stale after ROLLUP_STALE_MIN and stops protecting
+ *     its claims.
  *
  * The stale threshold is configurable per map via `maps.stale_claim_hours`
  * (default 4h, set in migrations). This lets short-lived session pools use
@@ -27,7 +32,8 @@ import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
-import { buildReleasedEvent } from '@mindblown/core';
+import { buildReleasedEvent, liveClaimedNodeIds } from '@mindblown/core';
+import { listAllRollups } from '../db/fleet.js';
 
 export interface StaleClaimSweepResult {
   inspected: number;
@@ -62,17 +68,31 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
   result.inspected = claimedRows.length;
 
   const now = new Date();
+  const thresholdHours = (h: unknown) => (h as number) ?? 4;
+  const idleFor = (since: Date) => now.getTime() - since.getTime();
 
-  for (const { node: row, staleClaimHours } of claimedRows) {
+  // Only claims older than the threshold can be stale — activity only makes them younger.
+  const candidates = claimedRows.filter(({ node: row, staleClaimHours }) => {
+    const claimedAt = row.claimedAt as Date | null;
+    return claimedAt !== null && idleFor(claimedAt) >= thresholdHours(staleClaimHours) * 3_600_000;
+  });
+  if (candidates.length === 0) return result;
+
+  const [lastChange, live] = await Promise.all([
+    events.lastChangeAtByNode(candidates.map((c) => c.node.id as string)),
+    listAllRollups().then((hosts) => liveClaimedNodeIds(hosts, now)),
+  ]);
+
+  for (const { node: row, staleClaimHours } of candidates) {
     try {
-      const threshold = (staleClaimHours as number) ?? 4;
-      const claimedAt = row.claimedAt as Date | null;
-      if (!claimedAt) continue;
+      const threshold = thresholdHours(staleClaimHours);
+      const claimedAt = row.claimedAt as Date;
+      const id = row.id as string;
 
-      const ageMs = now.getTime() - claimedAt.getTime();
-      const thresholdMs = threshold * 60 * 60 * 1000;
-
-      if (ageMs < thresholdMs) continue; // Not yet stale
+      if (live.has(id)) continue; // a live host still reports this claim
+      const changedAt = lastChange.get(id);
+      const lastActivity = changedAt && changedAt > claimedAt ? changedAt : claimedAt;
+      if (idleFor(lastActivity) < threshold * 3_600_000) continue; // recent activity
 
       // Stale: clear the claim
       const [updated] = await db
