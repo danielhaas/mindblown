@@ -35,7 +35,10 @@ vi.mock('../../db/connection.js', () => {
     db: {
       select: () => selectChain(),
       insert: (table: { _: string }) => ({
-        values: async (values: Record<string, unknown>) => { calls.inserts.push({ table: table._, values }); },
+        values: (values: Record<string, unknown>) => {
+          calls.inserts.push({ table: table._, values });
+          return { onConflictDoUpdate: async () => {}, then: (resolve: () => void) => resolve() };
+        },
       }),
       update: () => ({ set: () => ({ where: async () => {} }) }),
       delete: (table: { _: string }) => ({

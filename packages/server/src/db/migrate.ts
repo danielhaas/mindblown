@@ -430,6 +430,14 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
 
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_user_id ON github_installations(user_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_github_installations_installation_id ON github_installations(installation_id)`);
+  // One row per (user, installation): the status refresh upserts on it, and
+  // two overlapping refreshes must not both insert. Drop old duplicates first.
+  await db.execute(sql`
+    DELETE FROM github_installations a USING github_installations b
+    WHERE a.user_id = b.user_id AND a.installation_id = b.installation_id
+      AND (a.updated_at, a.id) < (b.updated_at, b.id)
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS uq_github_installations_user_installation ON github_installations(user_id, installation_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS idx_user_github_identities_user_id ON user_github_identities(user_id)`);
   // #369: one identity per (user, forge kind). The original one-per-user
   // unique constraint gives way to a composite unique index.

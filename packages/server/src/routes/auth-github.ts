@@ -58,15 +58,14 @@ async function upsertInstallation(
     accountType: inst.account.type,
     accountId: String(inst.account.id),
   };
-  const [existing] = await db.select({ id: githubInstallations.id })
-    .from(githubInstallations)
-    .where(and(eq(githubInstallations.userId, userId), eq(githubInstallations.installationId, String(inst.id))))
-    .limit(1);
-  if (existing) {
-    await db.update(githubInstallations).set({ ...values, updatedAt: new Date() }).where(eq(githubInstallations.id, existing.id));
-  } else {
-    await db.insert(githubInstallations).values({ userId, installationId: String(inst.id), ...values });
-  }
+  // One statement on the (user, installation) unique index, so overlapping
+  // refreshes cannot both insert.
+  await db.insert(githubInstallations)
+    .values({ userId, installationId: String(inst.id), ...values })
+    .onConflictDoUpdate({
+      target: [githubInstallations.userId, githubInstallations.installationId],
+      set: { ...values, updatedAt: new Date() },
+    });
 }
 
 /** Make the user's stored rows exactly the installations their token reaches. */
@@ -277,7 +276,16 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
     if (identity) {
       try {
         const stored = await findGithubIdentity(userId);
-        if (stored) await replaceInstallations(userId, await listUserInstallations(await githubAccessTokenFor(stored)));
+        if (stored) {
+          // A slow GitHub must not hold up the pickers: past 5 s, show the stored list.
+          const listing = githubAccessTokenFor(stored).then(listUserInstallations);
+          let timer: NodeJS.Timeout | undefined;
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('GitHub took longer than 5 s')), 5000);
+          });
+          const reachable = await Promise.race([listing, timeout]).finally(() => clearTimeout(timer));
+          await replaceInstallations(userId, reachable);
+        }
       } catch (err) {
         console.warn('[github] Refreshing installations failed; showing the stored list:', err);
       }
