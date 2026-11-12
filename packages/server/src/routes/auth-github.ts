@@ -58,15 +58,27 @@ async function upsertInstallation(
     accountType: inst.account.type,
     accountId: String(inst.account.id),
   };
-  const [existing] = await db.select({ id: githubInstallations.id })
-    .from(githubInstallations)
-    .where(and(eq(githubInstallations.userId, userId), eq(githubInstallations.installationId, String(inst.id))))
-    .limit(1);
-  if (existing) {
-    await db.update(githubInstallations).set({ ...values, updatedAt: new Date() }).where(eq(githubInstallations.id, existing.id));
-  } else {
-    await db.insert(githubInstallations).values({ userId, installationId: String(inst.id), ...values });
-  }
+  // One statement on the (user, installation) unique index, so overlapping
+  // refreshes cannot both insert.
+  await db.insert(githubInstallations)
+    .values({ userId, installationId: String(inst.id), ...values })
+    .onConflictDoUpdate({
+      target: [githubInstallations.userId, githubInstallations.installationId],
+      set: { ...values, updatedAt: new Date() },
+    });
+}
+
+/** Make the user's stored rows exactly the installations their token reaches. */
+async function replaceInstallations(
+  userId: string,
+  reachable: Array<{ id: number; account: { login: string; type: string; id: number } }>,
+): Promise<void> {
+  for (const inst of reachable) await upsertInstallation(userId, inst);
+  const keep = reachable.map((i) => String(i.id));
+  await db.delete(githubInstallations).where(and(
+    eq(githubInstallations.userId, userId),
+    keep.length ? notInArray(githubInstallations.installationId, keep) : undefined,
+  ));
 }
 
 /** GitHub's repository-name alphabet. */
@@ -230,12 +242,7 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
         // Signed in, but the App is on none of their accounts yet.
         return reply.redirect(buildInstallUrl(signState(userId)));
       }
-      for (const inst of reachable) await upsertInstallation(userId, inst);
-      const keep = reachable.map((i) => String(i.id));
-      await db.delete(githubInstallations).where(and(
-        eq(githubInstallations.userId, userId),
-        notInArray(githubInstallations.installationId, keep),
-      ));
+      await replaceInstallations(userId, reachable);
 
       return reply.redirect(`${FRONTEND_URL}/?gh=connected`);
     } catch (err) {
@@ -262,6 +269,27 @@ export async function githubAuthRoutes(app: FastifyInstance): Promise<void> {
       .from(userGithubIdentities)
       .where(and(eq(userGithubIdentities.userId, userId), eq(userGithubIdentities.kind, 'github')))
       .limit(1);
+
+    // Re-read the installations from GitHub, so an org that approved the
+    // App since the last connect shows up without connecting again. The
+    // pickers call this when they open. A failed listing keeps the rows.
+    if (identity) {
+      try {
+        const stored = await findGithubIdentity(userId);
+        if (stored) {
+          // A slow GitHub must not hold up the pickers: past 5 s, show the stored list.
+          const listing = githubAccessTokenFor(stored).then(listUserInstallations);
+          let timer: NodeJS.Timeout | undefined;
+          const timeout = new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('GitHub took longer than 5 s')), 5000);
+          });
+          const reachable = await Promise.race([listing, timeout]).finally(() => clearTimeout(timer));
+          await replaceInstallations(userId, reachable);
+        }
+      } catch (err) {
+        console.warn('[github] Refreshing installations failed; showing the stored list:', err);
+      }
+    }
 
     const installations = await db.select({
       installationId: githubInstallations.installationId,

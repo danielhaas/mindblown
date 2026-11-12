@@ -22,14 +22,23 @@ const tables = vi.hoisted(() => ({
 
 vi.mock('../../db/connection.js', () => {
   const selectChain = () => {
-    const chain = { from: () => chain, where: () => chain, limit: async () => calls.selectRows };
+    const chain = {
+      from: () => chain,
+      where: () => chain,
+      limit: async () => calls.selectRows,
+      // A select awaited without limit() (the stored installation list).
+      then: (resolve: (rows: unknown[]) => void) => resolve([]),
+    };
     return chain;
   };
   return {
     db: {
       select: () => selectChain(),
       insert: (table: { _: string }) => ({
-        values: async (values: Record<string, unknown>) => { calls.inserts.push({ table: table._, values }); },
+        values: (values: Record<string, unknown>) => {
+          calls.inserts.push({ table: table._, values });
+          return { onConflictDoUpdate: async () => {}, then: (resolve: () => void) => resolve() };
+        },
       }),
       update: () => ({ set: () => ({ where: async () => {} }) }),
       delete: (table: { _: string }) => ({
@@ -183,6 +192,46 @@ describe('GitHub install callback — installation ownership', () => {
     expect(res.headers.location).toBe('https://github.test/install');
     expect(installationInserts()).toEqual([]);
     expect(calls.deletes).toEqual([]);
+  });
+});
+
+describe('GET /api/auth/github/status — installations refreshed from GitHub', () => {
+  it('connected: syncs the list the stored token reaches (an org approved later included)', async () => {
+    calls.selectRows = [{ id: 'ident-1' }];
+    identity.row = { id: 'ident-1' };
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/github/status' });
+    expect(res.statusCode).toBe(200);
+    expect(gh.tokenSeen).toEqual(['stored-token']);
+    expect(calls.deletes).toEqual([
+      { table: 'githubInstallations', where: ['and', ['eq', 'user_id', 'u1'], ['notIn', 'installation_id', ['111']]] },
+    ]);
+  });
+
+  it('connected, App uninstalled everywhere: drops every row', async () => {
+    calls.selectRows = [{ id: 'ident-1' }];
+    identity.row = { id: 'ident-1' };
+    gh.userInstallations = [];
+    const app = await build();
+    await app.inject({ method: 'GET', url: '/api/auth/github/status' });
+    expect(calls.deletes).toEqual([{ table: 'githubInstallations', where: ['and', ['eq', 'user_id', 'u1'], undefined] }]);
+  });
+
+  it('GitHub fails to list: answers with the stored rows, deletes nothing', async () => {
+    calls.selectRows = [{ id: 'ident-1' }];
+    identity.row = { id: 'ident-1' };
+    gh.listFails = true;
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/github/status' });
+    expect(res.statusCode).toBe(200);
+    expect(calls.deletes).toEqual([]);
+  });
+
+  it('not connected: never asks GitHub', async () => {
+    const app = await build();
+    const res = await app.inject({ method: 'GET', url: '/api/auth/github/status' });
+    expect(res.json().connected).toBe(false);
+    expect(gh.tokenSeen).toEqual([]);
   });
 });
 
