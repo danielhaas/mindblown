@@ -387,11 +387,6 @@ export async function getLastActorByNode(
   }));
 }
 
-/**
- * The change-log half of the stalled rule (core findStalled): per node, the
- * latest event of any type and the latest `node.released` row. Called with
- * the candidates only — in-progress unclaimed leaves, a handful per map.
- */
 /** Newest change_event per node, across maps — the stale-claim sweeper's activity clock. */
 export async function lastChangeAtByNode(nodeIds: string[]): Promise<Map<string, Date>> {
   const out = new Map<string, Date>();
@@ -405,6 +400,11 @@ export async function lastChangeAtByNode(nodeIds: string[]): Promise<Map<string,
   return out;
 }
 
+/**
+ * The change-log half of the stalled rule (core findStalled): per node, the
+ * latest event of any type and the latest `node.released` row. Called with
+ * the candidates only — in-progress unclaimed leaves, a handful per map.
+ */
 export async function loadStalledActivity(mapId: string, nodeIds: string[]): Promise<StalledActivity> {
   const activity: StalledActivity = { lastChangeAt: new Map(), lastRelease: new Map() };
   if (nodeIds.length === 0) return activity;

@@ -7,10 +7,9 @@
  *   - the node has had no activity for that long either: its newest
  *     change_event (progress, status, notes, …) is older than the threshold.
  *     The change log, not updated_at — internal writes bump updated_at.
- *   - and no fresh fleet rollup still reports the claim. A worker on a live
- *     host is on the ticket even when the node has not changed; a host that
- *     went to sleep goes stale after ROLLUP_STALE_MIN and stops protecting
- *     its claims.
+ *   - and no live worker reports running on it under the same session
+ *     (core liveWorkerClaims). A host that went to sleep goes stale after
+ *     ROLLUP_STALE_MIN and stops protecting its claims.
  *
  * The stale threshold is configurable per map via `maps.stale_claim_hours`
  * (default 4h, set in migrations). This lets short-lived session pools use
@@ -32,7 +31,7 @@ import { dbNodeToCore } from '../db/helpers.js';
 import { notDeleted } from '../db/nodes.js';
 import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
-import { buildReleasedEvent, liveClaimedNodeIds } from '@mindblown/core';
+import { buildReleasedEvent, liveClaimKey, liveWorkerClaims } from '@mindblown/core';
 import { listAllRollups } from '../db/fleet.js';
 
 export interface StaleClaimSweepResult {
@@ -80,7 +79,7 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
 
   const [lastChange, live] = await Promise.all([
     events.lastChangeAtByNode(candidates.map((c) => c.node.id as string)),
-    listAllRollups().then((hosts) => liveClaimedNodeIds(hosts, now)),
+    listAllRollups().then((hosts) => liveWorkerClaims(hosts, now)),
   ]);
 
   for (const { node: row, staleClaimHours } of candidates) {
@@ -88,8 +87,9 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
       const threshold = thresholdHours(staleClaimHours);
       const claimedAt = row.claimedAt as Date;
       const id = row.id as string;
+      const session = row.claimedBySession as string;
 
-      if (live.has(id)) continue; // a live host still reports this claim
+      if (live.has(liveClaimKey(row.mapId as string, id, session))) continue; // a live worker is on it
       const changedAt = lastChange.get(id);
       const lastActivity = changedAt && changedAt > claimedAt ? changedAt : claimedAt;
       if (idleFor(lastActivity) < threshold * 3_600_000) continue; // recent activity
@@ -102,7 +102,10 @@ export async function runStaleClaimSweep(): Promise<StaleClaimSweepResult> {
           claimedAt: null,
           updatedAt: now,
         })
-        .where(and(eq(nodes.id, row.id as string), notDeleted))
+        // Only the claim we judged: a re-claim since the SELECT must survive.
+        .where(
+          and(eq(nodes.id, id), eq(nodes.claimedBySession, session), eq(nodes.claimedAt, claimedAt), notDeleted),
+        )
         .returning();
 
       if (updated) {
