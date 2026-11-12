@@ -1823,6 +1823,8 @@ export function listPendingApprovals(scope: { mapId?: string; fleetId?: string }
 export interface UnblockNodeResultApi {
   node: { id: string; text: string; status: string | null; claimedBySession: string | null };
   statusReset: boolean;
+  /** Set when the `blocked` label could not be taken off the linked issue (#622). */
+  labelError?: string;
 }
 
 export async function unblockNode(mapId: string, nodeId: string): Promise<UnblockNodeResultApi> {
@@ -1833,6 +1835,7 @@ export async function unblockNode(mapId: string, nodeId: string): Promise<Unbloc
   return {
     node: { id: res.node.id, text: res.node.text, status: res.node.status, claimedBySession: res.node.claimedBySession ?? null },
     statusReset: res.statusReset,
+    ...(res.labelError ? { labelError: res.labelError } : {}),
   };
 }
 

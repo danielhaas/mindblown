@@ -392,7 +392,8 @@ export const clearBlockerTool = defineTool({
       : result.node.claimedBySession
         ? `status left at ${result.node.status ?? 'none'} — still claimed by "${result.node.claimedBySession}", so NOT pullable; release_node first if that worker is gone`
         : `status left at ${result.node.status ?? 'none'}`;
-    return `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
+    const done = `Released "${result.node.text}" (${nodeId}): blockedReason cleared, "blocked" tag removed, ${status}.`;
+    return result.labelError ? `${done}\nWarning: the "blocked" label is still on the linked issue — removing it failed: ${result.labelError}` : done;
   },
 });
 

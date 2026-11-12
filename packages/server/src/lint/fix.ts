@@ -11,7 +11,7 @@
  * stamp the stored link state so the finding clears immediately instead
  * of after the next catch-up poll, and leave an `issueState` change event.
  */
-import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, isForgeLink, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, replaceNextStep, type ExternalLink, type LintActionId, type Node as CoreNode } from '@mindblown/core';
+import { BLOCKED_TAG, buildTodoIds, DISPATCH_SKIP_TAGS, FLEET_CHECK_TAG, FLEET_FIX_TAG, NEEDS_BRIEF_TAG, prependDecision, proseMirrorToPlainText, replaceNextStep, type AskWrite, type LintActionId, type Node as CoreNode } from '@mindblown/core';
 import * as nodeDb from '../db/nodes.js';
 import * as mapDb from '../db/maps.js';
 import { recordClaimTransition, recordEvent, recordFieldChanges } from '../db/events.js';
@@ -19,6 +19,7 @@ import { broadcast } from '../ws.js';
 import { syncNodeToGitHub } from '../routes/nodes.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { unblockNode, UnblockNotFoundError } from '../services/unblock.js';
+import { issueLinkOf } from '../services/issueLabels.js';
 import { buildDonePredicate } from './engine.js';
 
 export type LintFixErrorCode = 'NODE_NOT_FOUND' | 'NO_FORGE_LINK' | 'NO_FORGE' | 'BAD_ACTION';
@@ -40,20 +41,14 @@ export interface LintFixOutcome {
   changedFields: string[];
   /** Set when the fix wrote to the forge. */
   issue?: { externalId: string; state: 'open' | 'closed' };
+  /** clear-blocker: the `blocked` label taken off the linked issue (#622). */
+  labelWrite?: AskWrite;
 }
 
 const PARK_REASON = 'Parked from Plan health';
 const NEEDS_HUMAN_TAG = 'needs-human';
 
-/**
- * The link a finding is about — the same choice the engine's forgeLinkOf
- * makes (first issue link with a synced state), falling back to any issue
- * link so a fix still works on a link that never synced a state.
- */
-export function issueLinkOf(node: Pick<CoreNode, 'externalLinks'>): ExternalLink | null {
-  const issues = (node.externalLinks ?? []).filter((l) => isForgeLink(l) && !l.isPullRequest);
-  return issues.find((l) => l.state != null) ?? issues[0] ?? null;
-}
+export { issueLinkOf } from '../services/issueLabels.js';
 
 /** The hand-edit fan-out: history, claim trail, live update, outbound sync. */
 async function fanOut(
@@ -92,7 +87,7 @@ export async function applyLintFix(
       const r = await unblockNode(mapId, nodeId, userId);
       broadcast(mapId, { type: 'node:updated', nodeId, fields: r.changedFields, node: r.node });
       syncNodeToGitHub(r.node, r.changedFields).catch(() => {});
-      return { action, node: r.node, changedFields: r.changedFields };
+      return { action, node: r.node, changedFields: r.changedFields, ...(r.labelWrite ? { labelWrite: r.labelWrite } : {}) };
     } catch (err) {
       if (err instanceof UnblockNotFoundError) throw new LintFixError('NODE_NOT_FOUND', err.message);
       throw err;

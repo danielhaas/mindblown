@@ -72,13 +72,14 @@ import {
   stepAskNodeId,
 } from '@mindblown/core';
 import type { AskAnswerInput, AskRow, AskWrite, LintActionId, Node as CoreNode } from '@mindblown/core';
-import { ForgeApiError, commentOnGitHubIssue } from '@mindblown/integrations';
+import { commentOnGitHubIssue } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
 import * as mapDb from '../db/maps.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { stalledForMap } from '../lib/stalled.js';
 import { applyLintFix, issueLinkOf } from '../lint/fix.js';
 import { AskNotFoundError, type AnswerAskOutcome } from './asks.js';
+import { removeIssueLabels } from './issueLabels.js';
 
 const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
 
@@ -210,20 +211,7 @@ async function stepIssueWrites(
       }
     }
   }
-  if (opts.dropLabels && ctx) {
-    const w: AskWrite = { kind: 'gh-edit', target, detail: `--remove-label ${HOLD_LABELS.join(',')}`, done: false };
-    writes.push(w);
-    try {
-      for (const label of HOLD_LABELS) {
-        const res = await ctx.forge.removeIssueLabel(ctx.owner, ctx.repo, num, label);
-        // 404 = the label was not on the issue; nothing to remove.
-        if (res.status !== 404 && (res.status < 200 || res.status >= 300)) throw new ForgeApiError(res.status, res.bodyText, ctx.forge.endpoint.kind);
-      }
-      w.done = true;
-    } catch (err) {
-      w.error = err instanceof Error ? err.message : String(err);
-    }
-  }
+  if (opts.dropLabels && ctx) writes.push(await removeIssueLabels(ctx, num, HOLD_LABELS));
 }
 
 /**
@@ -256,6 +244,7 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
       node = out.node;
       changedFields = out.changedFields;
       w.done = true;
+      if (out.labelWrite) writes.push(out.labelWrite);
     } catch (err) {
       w.error = err instanceof Error ? err.message : String(err);
     }

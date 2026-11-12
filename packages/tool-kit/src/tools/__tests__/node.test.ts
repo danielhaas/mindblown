@@ -1327,6 +1327,25 @@ describe('clear_blocker tool', () => {
     expect(out).toContain('status reset to todo');
     expect(out).toContain('"blocked" tag removed');
   });
+
+  it('returns its normal message when the issue label came off, and warns when it did not (#622)', async () => {
+    const rec = makeRecordingBackend();
+    const out = await clearBlockerTool.handler(rec.backend, { mapId: 'm1', nodeId: 'n-blocked' } as never);
+    expect(out).toBe('Released "stub" (n-blocked): blockedReason cleared, "blocked" tag removed, status reset to todo — pullable again.');
+
+    const failing = {
+      ...rec.backend,
+      unblockNode: async (_m: string, nodeId: string) => ({
+        node: { id: nodeId, text: 'stub', status: 'todo', claimedBySession: null },
+        statusReset: true,
+        labelError: 'Forge API error 500',
+      }),
+    } as ToolBackend;
+    const warned = await clearBlockerTool.handler(failing, { mapId: 'm1', nodeId: 'n-blocked' } as never);
+    expect(warned.split('\n')[0]).toBe(out);
+    expect(warned).toContain('the "blocked" label is still on the linked issue');
+    expect(warned).toContain('Forge API error 500');
+  });
 });
 
 describe('flag_blocker tool', () => {
