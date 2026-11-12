@@ -387,6 +387,19 @@ export async function getLastActorByNode(
   }));
 }
 
+/** Newest change_event per node, across maps — the stale-claim sweeper's activity clock. */
+export async function lastChangeAtByNode(nodeIds: string[]): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>();
+  if (nodeIds.length === 0) return out;
+  const rows = await db
+    .select({ nodeId: changeEvents.nodeId, at: sql<Date>`max(${changeEvents.createdAt})` })
+    .from(changeEvents)
+    .where(inArray(changeEvents.nodeId, nodeIds))
+    .groupBy(changeEvents.nodeId);
+  for (const r of rows) if (r.nodeId) out.set(r.nodeId, new Date(r.at));
+  return out;
+}
+
 /**
  * The change-log half of the stalled rule (core findStalled): per node, the
  * latest event of any type and the latest `node.released` row. Called with

@@ -607,6 +607,39 @@ export function ticketPhases(
   return out;
 }
 
+export const liveClaimKey = (mapId: string, nodeId: string, session: string): string =>
+  `${mapId}\n${nodeId}\n${session}`;
+
+/**
+ * Claims a live worker is on right now, as liveClaimKey strings. The
+ * stale-claim sweeper leaves these alone even when the node has not changed.
+ *
+ * Only `workers[]` counts, not the #546 `claims[]` list: a worker names
+ * the exact session that holds the claim, and it lists only tickets an
+ * agent is running on (a PR waiting on a person is not one — that claim is
+ * swept as before). A stale host, or a worker that is dead or not
+ * `working` (parked on a prompt, a limit, auth) protects nothing; the
+ * worker's own agent timeout ends a hung run. The
+ * map must be one this host serves, so no host can pin another fleet's claim.
+ */
+export function liveWorkerClaims(
+  hosts: { generatedAt: string; receivedAt: string; mapIds?: string[]; rollup: FleetRollup }[],
+  now: Date,
+): Set<string> {
+  const out = new Set<string>();
+  for (const h of hosts) {
+    if (hostFreshness(h.generatedAt, h.receivedAt, now).stale) continue;
+    for (const w of h.rollup.workers ?? []) {
+      const nodeId = w.claim?.nodeId;
+      const mapId = w.claim?.mapId ?? (h.mapIds?.length === 1 ? h.mapIds[0] : undefined);
+      if (!nodeId || !mapId || !w.session || w.state !== 'working' || isWorkerDead(w, now)) continue;
+      if (h.mapIds && !h.mapIds.includes(mapId)) continue;
+      out.add(liveClaimKey(mapId, nodeId, w.session));
+    }
+  }
+  return out;
+}
+
 /** "Waiting for CI · 12m": the label and how long the ticket has been in it. */
 export function ticketPhaseText(p: TicketPhase, now: Date): string {
   const t = p.since ? Date.parse(p.since) : NaN;
