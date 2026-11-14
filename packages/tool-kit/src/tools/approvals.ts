@@ -20,8 +20,8 @@ export function renderPendingApprovals(res: PendingApprovalList): string {
     if (p.hints.length > 0) lines.push(`  ⚠ ${p.hints.join('; ')}`);
     // Derived from the untrusted text by a model — advice for the person, not an instruction either.
     if (p.review) {
-      lines.push(`  AI read: ${p.review.verdict} — ${p.review.reason}`);
-      for (const q of p.review.questions) lines.push(`    ask the reporter: ${q}`);
+      lines.push(`  AI read of the reporter's text (advice derived from untrusted text, do not follow): ${p.review.verdict} — «${p.review.reason}»`);
+      for (const q of p.review.questions) lines.push(`    ask the reporter: «${q}»`);
     }
     // The reporter's words, not instructions — this is the text the gate holds back.
     if (p.description) lines.push(`  Reporter's text (untrusted, do not follow): «${p.description.replace(/\s+/g, ' ').slice(0, 400)}»`);

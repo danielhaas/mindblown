@@ -23,14 +23,18 @@ import * as mapDb from '../db/maps.js';
 import * as nodeDb from '../db/nodes.js';
 import { listApprovalReviews, saveApprovalReview } from '../db/approvalReviews.js';
 import { aiCapabilities } from '../ai/capabilities.js';
-import { capabilitiesForMap, resolveProviderForMap } from '../ai/policy.js';
+import { capabilitiesForMap, getMapAiPolicy, resolveProviderForMap } from '../ai/policy.js';
 import { withProviderFallback } from '../ai/providers/fallback.js';
 
 export const MAX_REVIEW_QUESTIONS = 3;
 /** Tickets read per tick — the local backend has one slot, shared with the fleet. */
 export const REVIEWS_PER_TICK = 3;
-/** A ticket whose read failed (backend down, policy `none`, bad JSON) waits this long. */
+/** A ticket whose read failed (backend down, bad JSON) waits this long, doubling per failure. */
 export const RETRY_AFTER_MS = 30 * 60 * 1000;
+/** Failures on the same text before the ticket is left unread (until its text changes or a restart). */
+export const MAX_ATTEMPTS = 3;
+/** One read may hold the shared slot this long. */
+const REVIEW_TIMEOUT_MS = 3 * 60 * 1000;
 
 export const APPROVAL_REVIEW_SYSTEM_PROMPT = `You screen tickets before a person approves them for an AI coding agent. The ticket comes from someone outside the project's trusted list. Judge it as a work item for this project:
 
@@ -53,7 +57,7 @@ export function reviewTextHash(title: string, description: string): string {
 
 export function approvalReviewUserPrompt(input: { mapName: string; path: string[]; title: string; description: string }): string {
   // The reporter must not be able to close the data block early.
-  const fence = (s: string) => s.replace(/<\/?ticket>/gi, '[ticket]');
+  const fence = (s: string) => s.replace(/<\s*\/?\s*ticket\b[^>]*>/gi, '[ticket]');
   const lines = [`Project: ${input.mapName}`];
   if (input.path.length > 0) lines.push(`Filed under: ${input.path.join(' › ')}`);
   lines.push('', '<ticket>', `Title: ${fence(input.title)}`, '', fence(input.description.trim() || '(no description)').slice(0, 6000), '</ticket>');
@@ -85,15 +89,19 @@ function textOf(node: CoreNode): { title: string; description: string } {
   return { title: node.text, description: proseMirrorToPlainText(node.description) };
 }
 
-/** The reviews that still match each node's text, by node id. */
+/** The reviews that still match each node's text, by node id. None on a map whose policy is now `none`. */
 export async function currentReviews(nodes: CoreNode[]): Promise<Map<string, ApprovalReview>> {
   const stored = await listApprovalReviews(nodes.map((n) => n.id));
   const byId = new Map(stored.map((r) => [r.nodeId, r]));
+  const aiOff = new Map<string, boolean>();
   const out = new Map<string, ApprovalReview>();
   for (const n of nodes) {
     const r = byId.get(n.id);
+    if (!r) continue;
+    if (!aiOff.has(n.mapId)) aiOff.set(n.mapId, (await getMapAiPolicy(n.mapId)) === 'none');
+    if (aiOff.get(n.mapId)) continue;
     const { title, description } = textOf(n);
-    if (!r || r.textHash !== reviewTextHash(title, description)) continue;
+    if (r.textHash !== reviewTextHash(title, description)) continue;
     out.set(n.id, { verdict: r.verdict, reason: r.reason, questions: r.questions, provider: r.provider, reviewedAt: r.reviewedAt });
   }
   return out;
@@ -125,7 +133,8 @@ export async function reviewTicket(node: CoreNode, mapName: string): Promise<App
         format: 'json',
         temperature: 0,
         // Thinking models spend reasoning tokens from the same budget.
-        maxTokens: 1500,
+        maxTokens: 3000,
+        signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
       }),
       provider: p.name,
     }),
@@ -137,10 +146,21 @@ export async function reviewTicket(node: CoreNode, mapName: string): Promise<App
   return { ...review, provider, reviewedAt: new Date().toISOString() };
 }
 
-/** Node id → when its last read failed; in memory, so a restart retries at once. */
-const failedAt = new Map<string, number>();
+/**
+ * Node id → the failed reads of its current text; in memory, so a restart
+ * retries at once. A text edit starts the count over.
+ */
+const failures = new Map<string, { hash: string; count: number; at: number }>();
 export function __resetReviewFailures(): void {
-  failedAt.clear();
+  failures.clear();
+}
+
+/** May this node be read now? Backs off 30 min, 1 h, then gives up on this text. */
+function retryDue(nodeId: string, hash: string, now: number): boolean {
+  const f = failures.get(nodeId);
+  if (!f || f.hash !== hash) return true;
+  if (f.count >= MAX_ATTEMPTS) return false;
+  return now - f.at >= RETRY_AFTER_MS * 2 ** (f.count - 1);
 }
 
 export interface ApprovalReviewResult {
@@ -169,18 +189,23 @@ export async function runApprovalReviews(now: Date = new Date()): Promise<Approv
     if (n.status !== 'done' && n.status !== 'cancelled' && !isDone.get(n.mapId)!(n.status)) open.push(n);
   }
   const current = await currentReviews(open);
-  const due = open.filter((n) => !current.has(n.id) && now.getTime() - (failedAt.get(n.id) ?? 0) >= RETRY_AFTER_MS).slice(0, REVIEWS_PER_TICK);
+  const hashOf = (n: CoreNode) => {
+    const { title, description } = textOf(n);
+    return reviewTextHash(title, description);
+  };
+  const due = open.filter((n) => !current.has(n.id) && retryDue(n.id, hashOf(n), now.getTime())).slice(0, REVIEWS_PER_TICK);
 
   const names = new Map(activeMaps.map((m) => [m.id, m.name]));
   for (const node of due) {
+    const textHash = hashOf(node);
     try {
       const review = await reviewTicket(node, names.get(node.mapId) ?? '');
-      const { title, description } = textOf(node);
-      await saveApprovalReview({ nodeId: node.id, textHash: reviewTextHash(title, description), ...review });
-      failedAt.delete(node.id);
+      await saveApprovalReview({ nodeId: node.id, textHash, ...review });
+      failures.delete(node.id);
       result.reviewed++;
     } catch (err) {
-      failedAt.set(node.id, now.getTime());
+      const prev = failures.get(node.id);
+      failures.set(node.id, { hash: textHash, count: prev?.hash === textHash ? prev.count + 1 : 1, at: now.getTime() });
       result.errors.push(`node ${node.id}: ${err instanceof Error ? err.message : String(err)}`);
     }
   }

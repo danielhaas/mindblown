@@ -89,6 +89,7 @@ const storedReviews = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../db/approvalReviews.js', () => ({
   listApprovalReviews: async (ids: string[]) => storedReviews.filter((r) => ids.includes(r.nodeId as string)),
 }));
+vi.mock('../../ai/policy.js', () => ({ getMapAiPolicy: async () => 'any' }));
 
 import { approveTicket, listPendingApprovals, rejectTicket } from '../approvals.js';
 import { reviewTextHash } from '../approvalReview.js';
