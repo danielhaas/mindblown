@@ -771,6 +771,25 @@ export function extractClosingIssueRefs(text: string): number[] {
   return [...refs];
 }
 
+/**
+ * Non-closing issue references from PR body/title text: `Refs #42`,
+ * `Ref #42`, `References #42` (case-insensitive, optional colon). The
+ * fleet's own convention is "Refs #N, not Closes #N" — the worker closes
+ * the issue itself — so a merged PR carrying only `Refs` is still the
+ * delivery of that ticket and the merge handler attributes it to the
+ * node (node.pr_merged) without transitioning or closing anything. A
+ * bare `#42` mention is not a reference.
+ */
+export function extractReferencedIssueRefs(text: string): number[] {
+  const pattern = /\bref(?:s|erences?)?:?\s+#(\d+)\b/gi;
+  const refs = new Set<number>();
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    refs.add(parseInt(match[1], 10));
+  }
+  return [...refs];
+}
+
 // ── Label helpers ────────────────────────────────────────────────
 
 /**

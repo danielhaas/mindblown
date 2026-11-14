@@ -1261,3 +1261,122 @@ describe('webhook: Gitea deliveries (#368)', () => {
     expect(mocks.verifySignatureMock).toHaveBeenCalledWith(expect.any(String), 'sha256=deadbeef', expect.any(String));
   });
 });
+
+// ── "Refs #N" merges are attributed, not transitioned ────────────
+//
+// Repro: dan/Sonarpipe PR #1198 ("Refs #1196") merged to main on Gitea;
+// the fleet worker had marked the node done. The handler only read
+// closing keywords, so no node.pr_merged and the journal said "no PR on
+// record".
+
+function giteaRefsMerge(number: number, body: string): Record<string, unknown> {
+  return {
+    action: 'closed',
+    commit_id: '',
+    pull_request: {
+      number,
+      title: 'fix(sonar): tighten the pipeline',
+      body,
+      state: 'closed',
+      merged: true,
+      merge_commit_sha: '2ae96f2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      html_url: `https://git.example/dan/forge-test/pulls/${number}`,
+      base: { ref: 'main', sha: 'd179e75', label: 'main' },
+      head: { ref: 'fleet/x', sha: '0cd8f91', label: 'fleet/x' },
+      user: { id: 1, login: 'dan' },
+    },
+    repository: GITEA_REPO,
+    sender: { id: 1, login: 'dan' },
+  };
+}
+
+describe('webhook: merged PR with only "Refs #N"', () => {
+  it('records node.pr_merged on the delivered (done) node and stamps the merge — no status write, no close', async () => {
+    const node = seedGiteaNode('n-1196', 'dan/forge-test#1196');
+    node.status = 'done';
+    node.percentComplete = 100;
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('pull_request'),
+      payload: giteaRefsMerge(1198, 'Refs #1196'),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ action: 'pull_request.merged', prNumber: 1198, matched: true });
+    expect(res.json().transitions).toEqual([{ externalId: 'dan/forge-test#1196', nodeId: 'n-1196', status: 'referenced' }]);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledTimes(1);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledWith('map-1', 'n-1196', null, {
+      prNumber: 1198,
+      repo: 'dan/forge-test',
+      url: 'https://git.example/dan/forge-test/pulls/1198',
+      mergeCommitSha: '2ae96f2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      externalId: 'dan/forge-test#1196',
+      alreadyDone: true,
+    });
+    const writes = mocks.updateNodeMock.mock.calls.filter((c: unknown[]) => c[0] === 'n-1196');
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]).toEqual({
+      externalLinks: [expect.objectContaining({ mergedPrNumber: 1198, mergeCommitSha: '2ae96f2aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })],
+    });
+    expect(mocks.closeGitHubIssueMock).not.toHaveBeenCalled();
+  });
+
+  it('records the event when the merge lands before the done-write — without the close evidence or a transition', async () => {
+    const node = seedGiteaNode('n-1197', 'dan/forge-test#1197');
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.updateNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('pull_request'),
+      payload: giteaRefsMerge(1199, 'Refs #1197'),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(mocks.recordPrMergedMock).toHaveBeenCalledWith(
+      'map-1',
+      'n-1197',
+      null,
+      expect.objectContaining({ prNumber: 1199, alreadyDone: false }),
+    );
+    const writes = mocks.updateNodeMock.mock.calls.filter((c: unknown[]) => c[0] === 'n-1197');
+    expect(writes).toHaveLength(1);
+    expect(writes[0][1]).not.toHaveProperty('status');
+    const link = (writes[0][1] as { externalLinks: Array<Record<string, unknown>> }).externalLinks[0];
+    expect(link.mergedPrNumber).toBe(1199);
+    expect(link.mergeCommitSha).toBeUndefined();
+  });
+
+  it('a replay records nothing twice', async () => {
+    const node = seedGiteaNode('n-1196', 'dan/forge-test#1196');
+    node.status = 'done';
+    node.percentComplete = 100;
+    node.externalLinks[0].mergedPrNumber = 1198;
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+
+    const app = await buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/webhooks/github',
+      headers: giteaHeaders('pull_request'),
+      payload: giteaRefsMerge(1198, 'Refs #1196'),
+    });
+    await app.close();
+
+    expect(res.statusCode).toBe(200);
+    expect(mocks.recordPrMergedMock).not.toHaveBeenCalled();
+    expect(mocks.updateNodeMock.mock.calls.filter((c: unknown[]) => c[0] === 'n-1196')).toHaveLength(0);
+  });
+});
