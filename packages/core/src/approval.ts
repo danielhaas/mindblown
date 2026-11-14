@@ -28,9 +28,34 @@ export interface PendingApproval {
   issue: { ref: string; url: string } | null;
   /** What `approvalHints` flagged in title + description. */
   hints: string[];
+  /** The AI's read of the current text; null = not read yet, or AI is off for the map. */
+  review: ApprovalReview | null;
   /** The reader may approve or reject it: on the map's trusted list, not a fleet key. */
   canApprove: boolean;
   createdAt: string;
+}
+
+/**
+ * The AI's first read of a proposed ticket: does it make sense, and is
+ * there enough to work from? Advice for the person who decides — it never
+ * approves or rejects, and the ticket text it read is untrusted.
+ *
+ *   ready       clear, actionable, enough detail to start
+ *   needs-info  makes sense, but the questions must be answered first
+ *   doubtful    not a sensible task as written: unclear, not actionable,
+ *               or written at the agent rather than about a problem
+ */
+export type ApprovalReviewVerdict = 'ready' | 'needs-info' | 'doubtful';
+
+export interface ApprovalReview {
+  verdict: ApprovalReviewVerdict;
+  /** One sentence: why this verdict. */
+  reason: string;
+  /** What to ask the reporter (0–3); empty unless something is missing. */
+  questions: string[];
+  /** The provider that answered (`claude`, `ollama`). */
+  provider: string;
+  reviewedAt: string;
 }
 
 export interface PendingApprovalList {

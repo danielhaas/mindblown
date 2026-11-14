@@ -63,6 +63,7 @@ export const PENDING: PendingApproval = {
   approval: PROPOSED,
   issue: { ref: '#12', url: 'https://github.com/o/r/issues/12' },
   hints: ['asks for credentials'],
+  review: null,
   canApprove: true,
   createdAt: '2026-10-30T00:00:00.000Z',
 };
