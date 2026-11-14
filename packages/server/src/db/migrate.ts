@@ -1539,6 +1539,20 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     )
   `);
 
+  // ── AI read of proposed tickets ─────────────────────────────────
+  // The verdict on the text with this hash (services/approvalReview.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS approval_reviews (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      text_hash TEXT NOT NULL,
+      verdict TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      questions JSONB NOT NULL,
+      provider TEXT NOT NULL,
+      reviewed_at TIMESTAMPTZ NOT NULL
+    )
+  `);
+
   // ── Daily mail with open questions (#597) ───────────────────────
   // The day of a person's last digest round, and their opt-out
   // (services/digestMail.ts). No row = mail on, never sent.

@@ -752,6 +752,20 @@ export const approvalReminders = pgTable('approval_reminders', {
   remindedAt: timestamp('reminded_at', { withTimezone: true }).notNull(),
 });
 
+// ── AI read of proposed tickets ─────────────────────────────────────
+// One row per node: the AI's verdict on the text whose hash it carries
+// (services/approvalReview.ts). A text edit changes the hash, so the
+// row goes stale and the next tick reads the ticket again.
+export const approvalReviews = pgTable('approval_reviews', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  textHash: text('text_hash').notNull(),
+  verdict: text('verdict').notNull(),
+  reason: text('reason').notNull(),
+  questions: jsonb('questions').$type<string[]>().notNull(),
+  provider: text('provider').notNull(),
+  reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull(),
+});
+
 // ── Daily mail with open questions (#597) ──────────────────────────
 // One row per person: the local day of the last digest round (a second
 // tick or a restart on that day sends nothing), the opt-out switch, and

@@ -13,7 +13,7 @@
  * happens there after a push (#493).
  */
 import React, { useEffect, useState } from 'react';
-import type { PendingApproval, PendingApprovalList } from '@mindblown/core';
+import type { ApprovalReview, PendingApproval, PendingApprovalList } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetTarget } from './api.js';
@@ -189,6 +189,7 @@ export function ApprovalRow({
       <div style={{ fontSize: 12, color: '#64748b', marginTop: 2 }}>
         from {r.reporterLabel} · {LEVEL_LABEL[r.trustLevel]} · {new Date(r.createdAt).toLocaleDateString()}
       </div>
+      {r.review && <ReviewNote review={r.review} />}
       {r.hints.length > 0 && (
         <div style={{ fontSize: 12, color: '#92400e', background: '#fffbeb', borderRadius: 4, padding: '4px 8px', marginTop: 6 }} data-testid="approval-hints">
           Read twice: {r.hints.join('; ')}. A hint, not a verdict.
@@ -268,6 +269,30 @@ export function ApprovalRow({
         <div style={{ fontSize: 12, color: '#94a3b8', marginTop: 4 }}>Only people on the map's trusted list can decide.</div>
       )}
       {error && <div style={{ fontSize: 12, color: '#b91c1c', marginTop: 4 }}>{error}</div>}
+    </div>
+  );
+}
+
+const VERDICT_STYLE: Record<ApprovalReview['verdict'], { label: string; color: string; background: string }> = {
+  ready: { label: 'Looks ready', color: '#166534', background: '#f0fdf4' },
+  'needs-info': { label: 'Needs more information', color: '#92400e', background: '#fffbeb' },
+  doubtful: { label: 'Doubtful', color: '#991b1b', background: '#fef2f2' },
+};
+
+/** The AI's read of the ticket (verdict, why, what to ask the reporter) — advice beside the text. */
+function ReviewNote({ review }: { review: ApprovalReview }) {
+  const s = VERDICT_STYLE[review.verdict];
+  return (
+    <div style={{ fontSize: 12, color: s.color, background: s.background, borderRadius: 4, padding: '4px 8px', marginTop: 6 }} data-testid="approval-review">
+      <b>AI: {s.label}</b>
+      {review.reason && <> — {review.reason}</>}
+      {review.questions.length > 0 && (
+        <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+          {review.questions.map((q) => (
+            <li key={q}>{q}</li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

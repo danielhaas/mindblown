@@ -449,7 +449,7 @@ export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, approv
 export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';
 // Deciding on proposed tickets (#494)
 export { approvalHints } from './approval.js';
-export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput } from './approval.js';
+export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
 
 // Guided onboarding: the project setup checklist
 export { projectSetup } from './setup.js';

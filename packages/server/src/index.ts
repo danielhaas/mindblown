@@ -57,6 +57,7 @@ import { prRoutes } from './routes/prs.js';
 import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
+import { runApprovalReviews } from './services/approvalReview.js';
 import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
@@ -465,6 +466,28 @@ async function main(): Promise<void> {
     }
   };
   setInterval(approvalPushTick, APPROVAL_PUSH_INTERVAL_MS);
+
+  // ── AI read of proposed tickets ──────────────────────────────
+  // Every 2 min: up to 3 proposed tickets without a current verdict get
+  // one (ready / needs-info / doubtful + questions for the reporter), shown
+  // on the approval card. Advice only. No-op without an LLM; a slow model
+  // never runs two ticks at once.
+  const APPROVAL_REVIEW_INTERVAL_MS = 2 * 60 * 1000;
+  let approvalReviewRunning = false;
+  const approvalReviewTick = async (): Promise<void> => {
+    if (approvalReviewRunning) return;
+    approvalReviewRunning = true;
+    try {
+      const r = await runApprovalReviews();
+      if (r.reviewed > 0) console.log(`[approval-review] reviewed=${r.reviewed}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[approval-review] ${err}`);
+    } catch (err) {
+      console.error('[approval-review] tick caught unexpected error:', err);
+    } finally {
+      approvalReviewRunning = false;
+    }
+  };
+  setInterval(approvalReviewTick, APPROVAL_REVIEW_INTERVAL_MS);
 
   // ── Daily mail with open questions (#597) ─────────────────────
   // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,

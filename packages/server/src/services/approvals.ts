@@ -24,6 +24,7 @@ import { recordEvent, recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { getFleetForUser } from './fleets.js';
 import { loadTrustContext } from './trustPolicy.js';
+import { currentReviews } from './approvalReview.js';
 
 export interface ApprovalError {
   status: 400 | 403 | 404 | 409;
@@ -97,6 +98,7 @@ export async function listPendingApprovals(userId: string, scope: { mapId?: stri
   );
   const items: PendingApproval[] = [];
   const mayDecide = new Map<string, boolean>();
+  const reviews = await currentReviews(nodes);
   for (const node of nodes) {
     const ctx = await loadTrustContext(node.mapId);
     if (!ctx || !node.approval) continue;
@@ -116,6 +118,7 @@ export async function listPendingApprovals(userId: string, scope: { mapId?: stri
       approval: node.approval,
       issue: issueOf(node),
       hints: approvalHints(`${node.text}\n${description}`),
+      review: reviews.get(node.id) ?? null,
       canApprove: mayDecide.get(node.mapId)!,
       createdAt: node.createdAt,
     });
