@@ -14,6 +14,8 @@ import {
   importGitHubIssues,
   _clearIssueListCacheForTests,
   parseLinkNext,
+  extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   type IssueLandingProbe,
 } from './github.js';
 import { GitHubForge } from './forge/github.js';
@@ -1321,5 +1323,20 @@ describe('forge request timeout (#312)', () => {
     } finally {
       timeout.mockRestore();
     }
+  });
+});
+
+describe('extractReferencedIssueRefs', () => {
+  it('reads the fleet convention "Refs #N" and its variants', () => {
+    expect(extractReferencedIssueRefs('fix(x): y\n\nRefs #1196')).toEqual([1196]);
+    expect(extractReferencedIssueRefs('Ref #3, refs: #4, References #5')).toEqual([3, 4, 5]);
+  });
+
+  it('ignores bare mentions and words merely containing "ref"', () => {
+    expect(extractReferencedIssueRefs('Also mentions #2. Prefs #7')).toEqual([]);
+  });
+
+  it('is not a closing keyword', () => {
+    expect(extractClosingIssueRefs('Refs #1196')).toEqual([]);
   });
 });

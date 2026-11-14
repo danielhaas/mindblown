@@ -11,6 +11,7 @@ import {
   importGitHubIssues,
   extractVersionFromMilestone,
   extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   processWebhook,
   verifyWebhookSignature,
   readWebhookHeaders,
@@ -2246,7 +2247,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       const transitions: Array<{
         externalId: string;
         nodeId: string;
-        status: 'transitioned' | 'already_done' | 'not_linked';
+        status: 'transitioned' | 'already_done' | 'referenced' | 'not_linked';
       }> = [];
 
       for (const issueNumber of refs) {
@@ -2352,6 +2353,50 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         transitions.push({ externalId, nodeId, status: 'transitioned' });
       }
 
+      // `Refs #N` (no closing keyword) — the fleet's own convention, its
+      // workers close the issue themselves. The PR still delivered that
+      // ticket, so it is attributed to the node: node.pr_merged plus the
+      // PR number on the link. Never a status change or an issue close —
+      // a reference does not promise the work is finished. The node may
+      // not be done yet (the worker's done-write can land after the
+      // merge), so the event is recorded either way; the merge commit is
+      // stamped only on a done node, since it is close evidence for the
+      // outbound sync. `mergedPrNumber` is the replay guard.
+      const referenceOnly = extractReferencedIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`).filter(
+        (n) => !refs.includes(n),
+      );
+      for (const issueNumber of referenceOnly) {
+        const externalId = `${repoFullName}#${issueNumber}`;
+        const nodeId = await findNodeByExternalId(externalId);
+        const node = nodeId ? await nodeDb.getNode(nodeId) : null;
+        if (!nodeId || !node) {
+          transitions.push({ externalId, nodeId: nodeId ?? '', status: 'not_linked' });
+          continue;
+        }
+        const links = node.externalLinks.map((l) => ({ ...l }));
+        const idx = links.findIndex((l) => isForgeLink(l) && l.externalId === externalId);
+        if (idx >= 0 && links[idx].mergedPrNumber !== pr.number) {
+          const done = node.status === 'done' && node.percentComplete === 100;
+          links[idx] = {
+            ...links[idx],
+            mergedPrNumber: pr.number,
+            ...(done && mergeCommitSha ? { mergeCommitSha } : {}),
+          };
+          await nodeDb.updateNode(nodeId, { externalLinks: links });
+          events
+            .recordPrMerged(node.mapId, nodeId, null, {
+              prNumber: pr.number,
+              repo: repoFullName,
+              url: pr.html_url ?? null,
+              mergeCommitSha,
+              externalId,
+              alreadyDone: done,
+            })
+            .catch(() => {});
+        }
+        transitions.push({ externalId, nodeId, status: 'referenced' });
+      }
+
       // GitHub's own auto-close honors closing keywords only in the PR
       // BODY. Title-only refs leave the issue open after the merge —
       // and since handlePrClosed just cleared the mirror and the node
@@ -2392,7 +2437,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         received: true,
         action: 'pull_request.merged',
         prNumber: pr.number,
-        matched: transitions.some((t) => t.status === 'transitioned' || t.status === 'already_done'),
+        matched: transitions.some((t) => t.status !== 'not_linked'),
         transitions,
       });
     }

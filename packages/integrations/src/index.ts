@@ -87,6 +87,7 @@ export {
   closeGitHubIssue,
   processWebhook,
   extractClosingIssueRefs,
+  extractReferencedIssueRefs,
   importGitHubIssues,
   _clearIssueListCacheForTests,
   fetchChangedIssues,
