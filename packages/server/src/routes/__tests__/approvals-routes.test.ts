@@ -15,6 +15,7 @@ const OTHER = 'oooo-oooo';
 const listMock = vi.fn();
 const approveMock = vi.fn();
 const rejectMock = vi.fn();
+const askMock = vi.fn();
 const syncMock = vi.fn(async () => {});
 const broadcastMock = vi.fn();
 const state = vi.hoisted(() => ({ perm: {} as Record<string, string | null> }));
@@ -23,6 +24,7 @@ vi.mock('../../services/approvals.js', () => ({
   listPendingApprovals: (...a: unknown[]) => listMock(...a),
   approveTicket: (...a: unknown[]) => approveMock(...a),
   rejectTicket: (...a: unknown[]) => rejectMock(...a),
+  askReporter: (...a: unknown[]) => askMock(...a),
 }));
 vi.mock('../../db/permissions.js', () => ({
   getPermission: async (mapId: string) => state.perm[mapId] ?? null,
@@ -148,6 +150,37 @@ describe('approval routes', () => {
     expect(res.statusCode).toBe(403);
     expect(res.json()).toMatchObject({ error: { code: 'APPROVAL_NEEDS_SESSION' } });
     expect(approveMock).not.toHaveBeenCalled();
+  });
+
+  describe('ask-reporter', () => {
+    const url = `/api/maps/${MAP}/nodes/n1/ask-reporter`;
+    beforeEach(() => askMock.mockReset().mockResolvedValue({ node, changedFields: [], writes: [{ kind: 'comment', target: 'o/r#1', done: true }] }));
+
+    it('forwards questions + expectedRevision, refetches the cards, no node:updated', async () => {
+      const app = await buildApp();
+      const res = await app.inject({ method: 'POST', url, payload: { questions: ['Which?'], expectedRevision: 4, extra: 1 } });
+      expect(res.statusCode).toBe(200);
+      expect(askMock).toHaveBeenCalledWith('u1', MAP, 'n1', { questions: ['Which?'], expectedRevision: 4 });
+      expect(res.json()).toMatchObject({ ok: true });
+      expect(broadcastMock).toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'asks:updated', kind: 'approval', nodeId: 'n1' }));
+      expect(broadcastMock).not.toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'node:updated' }));
+    });
+
+    it('needs edit and a web session; maps a refusal to its status', async () => {
+      state.perm = { [MAP]: 'view' };
+      let app = await buildApp();
+      expect((await app.inject({ method: 'POST', url, payload: { questions: ['x'] } })).statusCode).toBe(403);
+      state.perm = { [MAP]: 'edit' };
+      auth = { authSource: 'api-key' };
+      app = await buildApp();
+      const keyed = await app.inject({ method: 'POST', url, payload: { questions: ['x'] } });
+      expect(keyed.json()).toMatchObject({ error: { code: 'APPROVAL_NEEDS_SESSION' } });
+      expect(askMock).not.toHaveBeenCalled();
+      auth = { authSource: 'jwt' };
+      askMock.mockResolvedValue({ status: 400, code: 'NO_ISSUE', message: 'no issue' });
+      app = await buildApp();
+      expect((await app.inject({ method: 'POST', url, payload: { questions: ['x'] } })).statusCode).toBe(400);
+    });
   });
 
   it('lets an API key still list, and a web session still decide', async () => {

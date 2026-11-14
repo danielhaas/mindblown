@@ -12,8 +12,8 @@
  * note on the linked forge issue; the issue stays open unless asked.
  */
 import { eq, inArray } from 'drizzle-orm';
-import { approvalHints, buildIsDonePredicate, isForgeLink, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
-import type { ApproveInput, NodeApproval, Node as CoreNode, PendingApproval, PendingApprovalList, RejectInput } from '@mindblown/core';
+import { approvalHints, buildIsDonePredicate, isForgeLink, MAX_ASK_QUESTIONS, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
+import type { ApproveInput, AskReporterInput, NodeApproval, Node as CoreNode, PendingApproval, PendingApprovalList, RejectInput } from '@mindblown/core';
 import { closeGitHubIssue, commentOnGitHubIssue, parseExternalId } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { maps, users } from '../db/schema.js';
@@ -24,7 +24,8 @@ import { recordEvent, recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { getFleetForUser } from './fleets.js';
 import { loadTrustContext } from './trustPolicy.js';
-import { currentReviews } from './approvalReview.js';
+import { currentReviews, reviewTextHash, textOf } from './approvalReview.js';
+import { markReporterAsked } from '../db/approvalReviews.js';
 
 export interface ApprovalError {
   status: 400 | 403 | 404 | 409;
@@ -252,4 +253,58 @@ export async function rejectTicket(userId: string, mapId: string, nodeId: string
     }
   }
   return { node: saved, changedFields: ['approval'], writes };
+}
+
+export function askReporterComment(by: string, questions: string[]): string {
+  return [
+    `Before this can be approved, a few questions (${by}, ${new Date().toISOString().slice(0, 10)}):`,
+    '',
+    ...questions.map((q) => `- ${q}`),
+    '',
+    'Please answer here or edit the issue description.',
+  ].join('\n');
+}
+
+/**
+ * Ask the reporter: post the questions (the AI read's, as the person
+ * edited them) on the linked forge issue. The ticket stays proposed; the
+ * review row of the text the person read is marked asked, so the card
+ * shows it and doesn't invite a second post. Same rights as a decision.
+ */
+export async function askReporter(
+  userId: string,
+  mapId: string,
+  nodeId: string,
+  input: AskReporterInput & { expectedRevision?: number },
+): Promise<ApprovalOutcome | ApprovalError> {
+  if (!Array.isArray(input.questions)) return { status: 400, code: 'VALIDATION_ERROR', message: 'questions must be a list of strings' };
+  const questions = [...new Set(input.questions.filter((q): q is string => typeof q === 'string').map((q) => q.replace(/\s+/g, ' ').trim()).filter(Boolean))];
+  if (questions.length === 0) return { status: 400, code: 'VALIDATION_ERROR', message: 'At least one question is required' };
+  if (questions.length > MAX_ASK_QUESTIONS || questions.some((q) => q.length > 500)) {
+    return { status: 400, code: 'VALIDATION_ERROR', message: `At most ${MAX_ASK_QUESTIONS} questions of up to 500 characters` };
+  }
+  const node = await decidable(userId, mapId, nodeId);
+  if ('code' in node) return node;
+  if (node.approval?.state !== 'proposed') {
+    return { status: 409, code: 'NOT_PROPOSED', message: `Only a proposed ticket waits for answers (this one is ${node.approval?.state ?? 'unstamped'})` };
+  }
+  if (input.expectedRevision !== undefined && node.revision !== input.expectedRevision) {
+    return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed since you read it — reload and read it again' };
+  }
+  const link = node.externalLinks.find((l) => isForgeLink(l) && !l.isPullRequest);
+  const parsed = link ? parseExternalId(link.externalId) : null;
+  if (!link || !parsed) return { status: 400, code: 'NO_ISSUE', message: 'This ticket has no linked issue to ask on' };
+  const ctx = await getGitHubContextForMap(mapId);
+  if (!ctx) return { status: 400, code: 'NO_ISSUE', message: 'The map has no issue tracker connected' };
+
+  const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId));
+  try {
+    await commentOnGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, askReporterComment(me?.name.split(/\s+/)[0] || 'a trusted user', questions), ctx.forge);
+  } catch (err) {
+    return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: false, error: err instanceof Error ? err.message : String(err) }] };
+  }
+  const { title, description } = textOf(node);
+  await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
+  await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: link.externalId } });
+  return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: true }] };
 }

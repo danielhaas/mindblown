@@ -1552,6 +1552,8 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
       reviewed_at TIMESTAMPTZ NOT NULL
     )
   `);
+  // Ask the reporter: when the questions went on the issue.
+  await db.execute(sql`ALTER TABLE approval_reviews ADD COLUMN IF NOT EXISTS asked_at TIMESTAMPTZ`);
 
   // ── Daily mail with open questions (#597) ───────────────────────
   // The day of a person's last digest round, and their opt-out

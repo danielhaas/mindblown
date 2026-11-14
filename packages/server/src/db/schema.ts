@@ -764,6 +764,8 @@ export const approvalReviews = pgTable('approval_reviews', {
   questions: jsonb('questions').$type<string[]>().notNull(),
   provider: text('provider').notNull(),
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull(),
+  // A trusted person posted the questions on the issue (Ask the reporter).
+  askedAt: timestamp('asked_at', { withTimezone: true }),
 });
 
 // ── Daily mail with open questions (#597) ──────────────────────────

@@ -448,8 +448,8 @@ export { PUBLIC_MEDIA_EXTENSIONS, isPublicMediaFileName } from './media.js';
 export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, approvalAtCreation, parseTrustPolicy } from './trust.js';
 export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';
 // Deciding on proposed tickets (#494)
-export { approvalHints } from './approval.js';
-export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
+export { approvalHints, MAX_ASK_QUESTIONS } from './approval.js';
+export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, AskReporterInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
 
 // Guided onboarding: the project setup checklist
 export { projectSetup } from './setup.js';
