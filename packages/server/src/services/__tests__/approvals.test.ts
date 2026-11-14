@@ -88,10 +88,14 @@ vi.mock('@mindblown/integrations', () => ({
 const storedReviews = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 vi.mock('../../db/approvalReviews.js', () => ({
   listApprovalReviews: async (ids: string[]) => storedReviews.filter((r) => ids.includes(r.nodeId as string)),
-  markReporterAsked: (...a: unknown[]) => markAskedMock(...a),
+  markReporterAsked: async (...a: unknown[]) => {
+    markAskedMock(...a);
+    if (markFails.on) throw new Error('db blip');
+  },
 }));
 vi.mock('../../ai/policy.js', () => ({ getMapAiPolicy: async () => 'any' }));
 const markAskedMock = vi.hoisted(() => vi.fn());
+const markFails = vi.hoisted(() => ({ on: false }));
 
 import { approveTicket, askReporter, listPendingApprovals, rejectTicket } from '../approvals.js';
 import { reviewTextHash } from '../approvalReview.js';
@@ -309,29 +313,43 @@ describe('askReporter', () => {
     expect(setApprovalMock).not.toHaveBeenCalled();
   });
 
+  const why = { questions: ['Why?'], expectedRevision: 4 };
+
   it('needs the same rights as a decision', async () => {
-    expect(await askReporter(JOE, MAP, 'n1', { questions: ['Why?'] })).toMatchObject({ status: 403, code: 'NOT_TRUSTED' });
+    expect(await askReporter(JOE, MAP, 'n1', why)).toMatchObject({ status: 403, code: 'NOT_TRUSTED' });
     expect(commentMock).not.toHaveBeenCalled();
   });
 
-  it('refuses without questions, too many, a decided ticket, changed text, or no issue', async () => {
-    expect(await askReporter(DAN, MAP, 'n1', { questions: [' '] })).toMatchObject({ status: 400 });
-    expect(await askReporter(DAN, MAP, 'n1', { questions: ['a', 'b', 'c', 'd', 'e', 'f'] })).toMatchObject({ status: 400 });
-    expect(await askReporter(DAN, MAP, 'n1', { questions: 'Why?' as never })).toMatchObject({ status: 400 });
-    expect(await askReporter(DAN, MAP, 'n1', { questions: ['Why?'], expectedRevision: 3 })).toMatchObject({ status: 409, code: 'TEXT_CHANGED' });
+  it('refuses without the read revision, without questions, too many, a decided ticket, changed text, or no issue', async () => {
+    expect(await askReporter(DAN, MAP, 'n1', { questions: ['Why?'] })).toMatchObject({ status: 400, code: 'VALIDATION_ERROR' });
+    expect(await askReporter(DAN, MAP, 'n1', { ...why, questions: [' '] })).toMatchObject({ status: 400 });
+    expect(await askReporter(DAN, MAP, 'n1', { ...why, questions: ['a', 'b', 'c', 'd', 'e', 'f'] })).toMatchObject({ status: 400 });
+    expect(await askReporter(DAN, MAP, 'n1', { ...why, questions: 'Why?' as never })).toMatchObject({ status: 400 });
+    expect(await askReporter(DAN, MAP, 'n1', { ...why, expectedRevision: 3 })).toMatchObject({ status: 409, code: 'TEXT_CHANGED' });
     state.nodes.set('n1', node({ approval: { ...proposed, state: 'approved' } }));
-    expect(await askReporter(DAN, MAP, 'n1', { questions: ['Why?'] })).toMatchObject({ status: 409, code: 'NOT_PROPOSED' });
+    expect(await askReporter(DAN, MAP, 'n1', why)).toMatchObject({ status: 409, code: 'NOT_PROPOSED' });
     state.nodes.set('n1', node({ externalLinks: [] }));
-    expect(await askReporter(DAN, MAP, 'n1', { questions: ['Why?'] })).toMatchObject({ status: 400, code: 'NO_ISSUE' });
+    expect(await askReporter(DAN, MAP, 'n1', why)).toMatchObject({ status: 400, code: 'NO_ISSUE' });
     state.nodes.set('n1', node());
     state.forge = null;
-    expect(await askReporter(DAN, MAP, 'n1', { questions: ['Why?'] })).toMatchObject({ status: 400, code: 'NO_ISSUE' });
+    expect(await askReporter(DAN, MAP, 'n1', why)).toMatchObject({ status: 400, code: 'NO_ISSUE' });
     expect(commentMock).not.toHaveBeenCalled();
+  });
+
+  it('a posted comment stays reported as posted when the bookkeeping after it fails', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    markFails.on = true;
+    const out = await askReporter(DAN, MAP, 'n1', why);
+    markFails.on = false;
+    expect(out).toMatchObject({ writes: [{ kind: 'comment', done: true }] });
+    expect(commentMock).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('posted on org/navy#12 but could not record it'), expect.any(Error));
+    warn.mockRestore();
   });
 
   it('a failed post is reported and nothing is marked asked', async () => {
     commentMock.mockRejectedValue(new Error('403 from forge'));
-    const out = await askReporter(DAN, MAP, 'n1', { questions: ['Why?'] });
+    const out = await askReporter(DAN, MAP, 'n1', why);
     expect(out).toMatchObject({ writes: [{ kind: 'comment', done: false, error: '403 from forge' }] });
     expect(markAskedMock).not.toHaveBeenCalled();
     expect(recordEventMock).not.toHaveBeenCalled();

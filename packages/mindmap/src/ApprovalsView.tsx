@@ -291,8 +291,8 @@ export function ApprovalRow({
           )}
           {mode === 'ask' && (
             <>
-              <button disabled={busy || !askText.trim()} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
-                Post on {r.issue!.ref}
+              <button disabled={busy || !askText.trim() || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
+                Post on {r.issue?.ref ?? 'the issue'}
               </button>
               <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>
                 Cancel

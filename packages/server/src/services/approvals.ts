@@ -277,6 +277,7 @@ export async function askReporter(
   nodeId: string,
   input: AskReporterInput & { expectedRevision?: number },
 ): Promise<ApprovalOutcome | ApprovalError> {
+  if (!Number.isInteger(input.expectedRevision)) return { status: 400, code: 'VALIDATION_ERROR', message: 'expectedRevision (the revision you read) is required' };
   if (!Array.isArray(input.questions)) return { status: 400, code: 'VALIDATION_ERROR', message: 'questions must be a list of strings' };
   const questions = [...new Set(input.questions.filter((q): q is string => typeof q === 'string').map((q) => q.replace(/\s+/g, ' ').trim()).filter(Boolean))];
   if (questions.length === 0) return { status: 400, code: 'VALIDATION_ERROR', message: 'At least one question is required' };
@@ -288,7 +289,8 @@ export async function askReporter(
   if (node.approval?.state !== 'proposed') {
     return { status: 409, code: 'NOT_PROPOSED', message: `Only a proposed ticket waits for answers (this one is ${node.approval?.state ?? 'unstamped'})` };
   }
-  if (input.expectedRevision !== undefined && node.revision !== input.expectedRevision) {
+  // Required here: the mark lands on the review of the text the person read, never on a newer one.
+  if (node.revision !== input.expectedRevision) {
     return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed since you read it — reload and read it again' };
   }
   const link = node.externalLinks.find((l) => isForgeLink(l) && !l.isPullRequest);
@@ -303,8 +305,13 @@ export async function askReporter(
   } catch (err) {
     return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: false, error: err instanceof Error ? err.message : String(err) }] };
   }
-  const { title, description } = textOf(node);
-  await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
-  await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: link.externalId } });
+  // The comment is out: a bookkeeping failure must not read as "not posted" and invite a second post.
+  try {
+    const { title, description } = textOf(node);
+    await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
+    await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: link.externalId } });
+  } catch (err) {
+    console.warn(`[ask-reporter] posted on ${link.externalId} but could not record it:`, err);
+  }
   return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: true }] };
 }
