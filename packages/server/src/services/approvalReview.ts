@@ -85,7 +85,7 @@ export function sanitizeApprovalReview(value: unknown): Pick<ApprovalReview, 've
   return { verdict: verdict as ApprovalReviewVerdict, reason, questions };
 }
 
-function textOf(node: CoreNode): { title: string; description: string } {
+export function textOf(node: CoreNode): { title: string; description: string } {
   return { title: node.text, description: proseMirrorToPlainText(node.description) };
 }
 
@@ -102,7 +102,7 @@ export async function currentReviews(nodes: CoreNode[]): Promise<Map<string, App
     if (aiOff.get(n.mapId)) continue;
     const { title, description } = textOf(n);
     if (r.textHash !== reviewTextHash(title, description)) continue;
-    out.set(n.id, { verdict: r.verdict, reason: r.reason, questions: r.questions, provider: r.provider, reviewedAt: r.reviewedAt });
+    out.set(n.id, { verdict: r.verdict, reason: r.reason, questions: r.questions, provider: r.provider, reviewedAt: r.reviewedAt, askedAt: r.askedAt });
   }
   return out;
 }
@@ -143,7 +143,7 @@ export async function reviewTicket(node: CoreNode, mapName: string): Promise<App
   const json = cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1);
   const review = sanitizeApprovalReview(JSON.parse(json));
   if (!review) throw new Error('model returned no valid verdict');
-  return { ...review, provider, reviewedAt: new Date().toISOString() };
+  return { ...review, provider, reviewedAt: new Date().toISOString(), askedAt: null };
 }
 
 /**

@@ -1303,6 +1303,11 @@ export function rejectTicket(mapId: string, nodeId: string, input: RejectInput):
   return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
 }
 
+/** Post the questions on the linked issue; the ticket stays proposed. */
+export function askReporter(mapId: string, nodeId: string, input: { questions: string[]; expectedRevision?: number }): Promise<ApprovalResponse> {
+  return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/ask-reporter`, { method: 'POST', body: JSON.stringify(input) });
+}
+
 // ── Attachments ──────────────────────────────────────────────────
 
 export interface NewAttachment {

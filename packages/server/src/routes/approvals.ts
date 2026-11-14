@@ -7,6 +7,7 @@
  *   GET  /api/fleets/:id/approvals                   — a fleet's maps the reader can view
  *   POST /api/maps/:id/nodes/:nodeId/approve         — { merge?, description? }
  *   POST /api/maps/:id/nodes/:nodeId/reject          — { note?, closeIssue? }
+ *   POST /api/maps/:id/nodes/:nodeId/ask-reporter    — { questions, expectedRevision? } → comment on the issue
  *
  * Reads need view; each row says whether the reader may decide. A decision
  * needs edit and a place on the map's trusted list, and is refused to a
@@ -16,8 +17,8 @@
  * APPROVAL_NEEDS_SESSION before anything is read or written.
  */
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import type { ApproveInput, RejectInput } from '@mindblown/core';
-import { approveTicket, listPendingApprovals, rejectTicket } from '../services/approvals.js';
+import type { ApproveInput, AskReporterInput, RejectInput } from '@mindblown/core';
+import { approveTicket, askReporter, listPendingApprovals, rejectTicket } from '../services/approvals.js';
 import type { ApprovalError, ApprovalOutcome } from '../services/approvals.js';
 import * as nodeDb from '../db/nodes.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
@@ -79,6 +80,17 @@ export async function approvalsRoutes(app: FastifyInstance): Promise<void> {
     if (isAgentRequest(req)) return needsSession(reply);
     const body = (req.body ?? {}) as ApproveInput;
     return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, { merge: body.merge, description: body.description, expectedRevision: body.expectedRevision }));
+  });
+
+  app.post<{ Params: { id: string; nodeId: string }; Body: AskReporterInput & { expectedRevision?: number } }>('/api/maps/:id/nodes/:nodeId/ask-reporter', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    if (isAgentRequest(req)) return needsSession(reply);
+    const body = (req.body ?? {}) as AskReporterInput & { expectedRevision?: number };
+    const out = await askReporter(req.userId, req.params.id, req.params.nodeId, { questions: body.questions, expectedRevision: body.expectedRevision });
+    if ('status' in out) return fail(reply, out);
+    // The ticket stays proposed; the cards refetch to show "asked".
+    broadcast(out.node.mapId, { type: 'asks:updated', kind: 'approval', nodeId: out.node.id });
+    return reply.send({ approval: out.node.approval, writes: out.writes, ok: out.writes.every((w) => w.done) });
   });
 
   app.post<{ Params: { id: string; nodeId: string }; Body: RejectInput }>('/api/maps/:id/nodes/:nodeId/reject', async (req, reply) => {

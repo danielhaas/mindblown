@@ -113,7 +113,7 @@ export function ApprovalsSection({ target: given, mobile = false }: { target?: F
   );
 }
 
-type Mode = 'idle' | 'edit' | 'reject';
+type Mode = 'idle' | 'edit' | 'reject' | 'ask';
 
 /** One waiting ticket with its Approve / Edit & approve / Reject — also the Kanban detail view's (#610). */
 export function ApprovalRow({
@@ -140,6 +140,7 @@ export function ApprovalRow({
     if (mode !== 'edit') setText(r.description);
   }, [r.description, mode]);
   const [note, setNote] = useState('');
+  const [askText, setAskText] = useState('');
   const [closeIssue, setCloseIssue] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -166,6 +167,28 @@ export function ApprovalRow({
       () => api.approveTicket(r.mapId, r.nodeId, { merge, description, expectedRevision: r.revision }),
       () => `✓ Approved: ${r.title} — ${merge === 'pr-only' ? 'the fleet stops at the PR' : 'full auto'}`,
     );
+  // Not a decision: the row stays, refetched to show "asked".
+  const canAsk = !readOnly && !!r.issue && r.review?.verdict === 'needs-info' && r.review.questions.length > 0;
+  async function ask() {
+    setBusy(true);
+    setError(null);
+    try {
+      const questions = askText.split('\n').map((q) => q.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim()).filter(Boolean);
+      const res = await api.askReporter(r.mapId, r.nodeId, { questions, expectedRevision: r.revision });
+      const failed = res.writes.filter((w) => !w.done);
+      if (failed.length > 0) setError(`Not posted: ${failed.map((w) => w.error).join('; ')}`);
+      else setMode('idle');
+      onStale();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'failed');
+      if (e instanceof api.ApiError && e.status === 409) {
+        setMode('idle');
+        onStale();
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
   const reject = () =>
     run(
       () => api.rejectTicket(r.mapId, r.nodeId, { note: note.trim() || undefined, closeIssue }),
@@ -205,6 +228,16 @@ export function ApprovalRow({
       {!readOnly && mode === 'edit' && (
         <textarea value={text} onChange={(e) => setText(e.target.value)} rows={mobile ? 6 : 8} style={field} aria-label="Description" />
       )}
+      {!readOnly && mode === 'ask' && (
+        <textarea
+          value={askText}
+          onChange={(e) => setAskText(e.target.value)}
+          rows={4}
+          style={field}
+          aria-label="Questions for the reporter, one per line"
+          placeholder="One question per line — posted as a comment on the issue"
+        />
+      )}
       {!readOnly && mode === 'reject' && (
         <div style={{ marginTop: 6 }}>
           <textarea
@@ -225,7 +258,7 @@ export function ApprovalRow({
 
       {!readOnly && (
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
-          {mode !== 'reject' && (
+          {mode !== 'reject' && mode !== 'ask' && (
             <label style={{ fontSize: 12, color: '#475569', display: 'flex', gap: 6, alignItems: 'center' }}>
               <input type="checkbox" checked={stopAtPr} onChange={(e) => setStopAtPr(e.target.checked)} /> Stop at PR
             </label>
@@ -238,8 +271,31 @@ export function ApprovalRow({
               <button disabled={busy} onClick={() => setMode('edit')} style={btn('plain', busy)}>
                 Edit & approve
               </button>
+              {canAsk && (
+                <button
+                  disabled={busy}
+                  onClick={() => {
+                    setAskText(r.review!.questions.join('\n'));
+                    setMode('ask');
+                  }}
+                  style={btn('plain', busy)}
+                  data-testid="ask-reporter"
+                >
+                  {r.review!.askedAt ? 'Ask again' : 'Ask the reporter'}
+                </button>
+              )}
               <button disabled={busy} onClick={() => setMode('reject')} style={btn('danger', busy)}>
                 Reject
+              </button>
+            </>
+          )}
+          {mode === 'ask' && (
+            <>
+              <button disabled={busy || !askText.trim() || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
+                Post on {r.issue?.ref ?? 'the issue'}
+              </button>
+              <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>
+                Cancel
               </button>
             </>
           )}
@@ -292,6 +348,11 @@ function ReviewNote({ review }: { review: ApprovalReview }) {
             <li key={q}>{q}</li>
           ))}
         </ul>
+      )}
+      {review.askedAt && (
+        <div style={{ marginTop: 4 }} data-testid="reporter-asked">
+          Asked the reporter on {new Date(review.askedAt).toLocaleDateString()} — waiting for an answer on the issue.
+        </div>
       )}
     </div>
   );

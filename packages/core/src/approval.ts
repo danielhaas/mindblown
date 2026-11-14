@@ -56,6 +56,8 @@ export interface ApprovalReview {
   /** The provider that answered (`claude`, `ollama`). */
   provider: string;
   reviewedAt: string;
+  /** When a trusted person posted the questions on the issue; null = not asked for this text. */
+  askedAt: string | null;
 }
 
 export interface PendingApprovalList {
@@ -78,6 +80,13 @@ export interface RejectInput {
   /** Close the forge issue as not planned. Default: it stays open. */
   closeIssue?: boolean;
 }
+
+/** Ask the reporter: the questions (the AI's, as the person edited them), posted on the linked issue. */
+export interface AskReporterInput {
+  questions: string[];
+}
+
+export const MAX_ASK_QUESTIONS = 5;
 
 const HINTS: Array<[RegExp, string]> = [
   [/\b(ignore|disregard|forget)\b.{0,30}\b(previous|prior|above|earlier|all|your)\b.{0,20}\b(instructions?|rules|prompt)/i, 'tells the agent to ignore its instructions'],
