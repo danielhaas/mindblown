@@ -4,10 +4,13 @@
  * merges.
  *
  *   1. A ticket a person approved (it went through the gate, #492) whose
- *      issue closed on the merge gets a row, `waiting-deploy`.
+ *      issue closed or whose merge is recorded gets a row, `waiting-deploy`
+ *      — cheap signals; a pr-only worker marks the node done at PR open.
  *   2. A deploy signal (the card's button, POST /api/maps/:id/deployed,
- *      mark_deployed) reopens each waiting issue and asks the reporter to
- *      close it if the fix works, or to say what is still wrong.
+ *      mark_deployed) asks the forge whether the work really landed (a
+ *      merged closing PR, none in flight) and only then reopens the issue
+ *      and asks the reporter to close it if the fix works, or to say what
+ *      is still wrong. Not landed yet: the row keeps waiting.
  *   3. The timer polls the asked issues: closed by the reporter =
  *      confirmed; closed by anyone else = closed; a comment by the
  *      reporter = `replied`, for a person to decide. No answer: one
@@ -17,13 +20,14 @@
  *      or close the issue.
  *
  * While a check is open MindBlown's own issue sync holds the close
- * (`issueCloseHeld`), and the inbound reopen of an issue we reopened does
- * not roll the node back off done.
+ * (`issueCloseHeld`); the inbound reopen of an issue we reopened neither
+ * rolls the node back off done nor re-triages it (`askingOnIssue`). A row
+ * whose node is no longer done is dropped: the work is back in the queue.
  */
 import { eq } from 'drizzle-orm';
 import { REPORTER_CLOSE_AFTER_DAYS, REPORTER_REMIND_AFTER_DAYS, isForgeLink, proseMirrorToPlainText } from '@mindblown/core';
 import type { DeployedResult, Node as CoreNode, ReopenAfterCheckInput, ReporterCheck, ReporterCheckList } from '@mindblown/core';
-import { commentOnGitHubIssue, parseExternalId, reopenGitHubIssue } from '@mindblown/integrations';
+import { commentOnGitHubIssue, parseExternalId, probeIssueLanded, reopenGitHubIssue } from '@mindblown/integrations';
 import type { ForgeClient } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
 import { users } from '../db/schema.js';
@@ -36,8 +40,12 @@ import { approverRefusal, mapsInScope } from './approvals.js';
 import type { ApprovalError } from './approvals.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** Tickets finished longer ago than this are not asked about (the feature's start, and stale work). */
-export const DISCOVER_WINDOW_DAYS = 7;
+/** Tickets finished longer ago than this are not asked about (a slow review still fits). */
+export const DISCOVER_WINDOW_DAYS = 30;
+/** Nothing finished before the feature went live is asked about — settled issues stay settled. */
+export const DISCOVER_FROM = new Date('2026-11-15T12:00:00.000Z');
+/** A row asked this recently is left to the deploy that is still reopening it. */
+const ASKING_GRACE_MS = 2 * 60 * 1000;
 /** The issue label while the reporter is asked. */
 export const WAITING_LABEL = 'waiting-for-reporter';
 const EXCERPT_CHARS = 300;
@@ -82,16 +90,21 @@ const TIMEOUT_COMMENT = "Closing this since we haven't heard back — reopen it 
 
 /** Start a check for each finished ticket that owes one. Returns how many were started. */
 export async function discoverChecks(now: Date = new Date()): Promise<number> {
-  const candidates = (await nodeDb.listReporterCheckCandidates(new Date(now.getTime() - DISCOVER_WINDOW_DAYS * DAY_MS))).filter(
-    (n) => needsReporterCheck(n) && looksDone(n),
-  );
+  const since = new Date(Math.max(now.getTime() - DISCOVER_WINDOW_DAYS * DAY_MS, DISCOVER_FROM.getTime()));
+  const candidates = (await nodeDb.listReporterCheckCandidates(since)).filter((n) => needsReporterCheck(n) && looksDone(n));
   if (candidates.length === 0) return 0;
-  const known = await checkDb.nodesWithCheck(candidates.map((n) => n.id));
+  const known = await checkDb.checksOf(candidates.map((n) => n.id));
   let started = 0;
   for (const n of candidates) {
-    if (known.has(n.id)) continue;
+    const had = known.get(n.id);
+    if (had) {
+      // Finished again after its check ended (reopened by hand, by the reporter): a new round.
+      const again = had.state === 'done' && had.doneAt && n.completedAt && new Date(n.completedAt) > had.doneAt;
+      if (!again) continue;
+      await checkDb.deleteCheck(n.id);
+    }
     const link = issueLinkOf(n)!;
-    // Landed: the merge closed the issue, or MindBlown recorded the merge commit.
+    // A cheap first signal; the deploy asks the forge for the real merge before anyone is asked.
     if (link.state !== 'closed' && !link.mergeCommitSha) continue;
     if (n.reportedBy?.kind !== 'forge') continue;
     if (await checkDb.insertCheck({ nodeId: n.id, mapId: n.mapId, issueRef: link.externalId, issueUrl: link.url, reporter: n.reportedBy.login })) started++;
@@ -128,17 +141,52 @@ async function setWaitingLabel(t: Target, on: boolean): Promise<void> {
   }
 }
 
+/** The label on the issue and the tag on the node together: the outbound sync pushes labels = tags. */
+async function markWaiting(t: Target, nodeId: string, on: boolean): Promise<void> {
+  await setWaitingLabel(t, on);
+  try {
+    await nodeDb.updateNode(nodeId, on ? { tagsAppend: [WAITING_LABEL] } : { tagsRemove: [WAITING_LABEL] });
+  } catch (err) {
+    console.warn(`[reporter-check] tag ${on ? 'add' : 'remove'} failed on ${nodeId}:`, errText(err));
+  }
+}
+
+/** The work is back in the queue (rolled off done, reopened by hand): its check is void. */
+async function dropIfNotDone(row: ReporterCheckRow): Promise<boolean> {
+  const node = await nodeDb.getNode(row.nodeId);
+  if (node && looksDone(node)) return false;
+  await checkDb.deleteCheck(row.nodeId);
+  if (node && row.state !== 'waiting-deploy') {
+    const t = await targetOf(row);
+    if (typeof t !== 'string') await markWaiting(t, row.nodeId, false);
+  }
+  return true;
+}
+
 // ── Asking (deploy signal) ───────────────────────────────────────────
 
-/** Reopen the issue and ask the reporter. The row is moved first, so a second signal never asks twice. */
-async function askOne(row: ReporterCheckRow, now: Date): Promise<string | null> {
-  if (!(await checkDb.updateCheck(row.nodeId, ['waiting-deploy'], { state: 'asked', askedAt: now }))) return null; // asked elsewhere
+type AskResult = { kind: 'asked' } | { kind: 'not-landed' } | { kind: 'skipped' } | { kind: 'failed'; error: string };
+
+/**
+ * Reopen the issue and ask the reporter — only for work that landed: a
+ * merged closing PR on the default branch and none still open. The row is
+ * moved first, so a second signal never asks twice.
+ */
+async function askOne(row: ReporterCheckRow, now: Date): Promise<AskResult> {
+  if (await dropIfNotDone(row)) return { kind: 'skipped' };
   const t = await targetOf(row);
-  const undo = async (error: string) => {
+  if (typeof t === 'string') return { kind: 'failed', error: t };
+  try {
+    const probe = await probeIssueLanded(t.owner, t.repo, t.number, t.forge);
+    if (!probe.landed || probe.inFlight) return { kind: 'not-landed' };
+  } catch (err) {
+    return { kind: 'failed', error: `could not check the merge: ${errText(err)}` };
+  }
+  if (!(await checkDb.updateCheck(row.nodeId, ['waiting-deploy'], { state: 'asked', askedAt: now }))) return { kind: 'skipped' }; // asked elsewhere
+  const undo = async (error: string): Promise<AskResult> => {
     await checkDb.updateCheck(row.nodeId, ['asked'], { state: 'waiting-deploy', askedAt: null });
-    return error;
+    return { kind: 'failed', error };
   };
-  if (typeof t === 'string') return undo(t);
   const link = { externalId: row.issueRef };
   try {
     await reopenGitHubIssue(link, t.forge);
@@ -151,9 +199,9 @@ async function askOne(row: ReporterCheckRow, now: Date): Promise<string | null> 
     // Reopened but not asked: the row stays asked (the issue is open), the timer's reminder asks again.
     console.warn(`[reporter-check] ${row.issueRef} reopened, but the question could not be posted:`, errText(err));
   }
-  await setWaitingLabel(t, true);
+  await markWaiting(t, row.nodeId, true);
   await recordEvent({ mapId: row.mapId, nodeId: row.nodeId, userId: null, eventType: 'node.field_changed', fieldName: 'reporter_check', oldValue: 'waiting-deploy', newValue: 'asked' }); // recordEvent swallows its own failures
-  return null;
+  return { kind: 'asked' };
 }
 
 /**
@@ -163,12 +211,14 @@ async function askOne(row: ReporterCheckRow, now: Date): Promise<string | null> 
 export async function markDeployed(mapId: string, now: Date = new Date()): Promise<DeployedResult> {
   // A ticket that finished since the last tick is part of this deploy too.
   await discoverChecks(now).catch((err) => console.warn('[reporter-check] discovery failed:', errText(err)));
-  const out: DeployedResult = { asked: [], failed: [] };
+  const out: DeployedResult = { asked: [], notLanded: [], failed: [] };
   for (const row of await checkDb.listOpenChecks([mapId])) {
-    if (row.state !== 'waiting-deploy' || row.createdAt > now) continue;
-    const error = await askOne(row, now);
-    if (error) out.failed.push({ nodeId: row.nodeId, issue: row.issueRef, error });
-    else out.asked.push({ nodeId: row.nodeId, issue: row.issueRef });
+    if (row.state !== 'waiting-deploy') continue;
+    const r = await askOne(row, now);
+    const at = { nodeId: row.nodeId, issue: row.issueRef };
+    if (r.kind === 'asked') out.asked.push(at);
+    else if (r.kind === 'not-landed') out.notLanded.push(at);
+    else if (r.kind === 'failed') out.failed.push({ ...at, error: r.error });
   }
   return out;
 }
@@ -215,16 +265,20 @@ export async function runReporterChecks(now: Date = new Date()): Promise<Reporte
     tick.errors.push(`discovery: ${errText(err)}`);
   }
   for (const row of await checkDb.listAllOpenChecks()) {
-    if (row.state !== 'asked' && row.state !== 'replied') continue;
     try {
+      if (await dropIfNotDone(row)) continue;
+      if (row.state === 'waiting-deploy') continue;
+      // A deploy that just moved this row may still be reopening the issue.
+      if (row.askedAt && now.getTime() - row.askedAt.getTime() < ASKING_GRACE_MS) continue;
       const t = await targetOf(row);
       if (typeof t === 'string') throw new Error(t);
       const issue = await t.forge.requestJson<{ state?: string }>(`/repos/${t.owner}/${t.repo}/issues/${t.number}`);
       if (issue.state === 'closed') {
         const close = await t.forge.getLatestCloseEvent(t.owner, t.repo, t.number);
-        const byReporter = close?.actor?.toLowerCase() === row.reporter.toLowerCase();
+        // The reporter closing as completed confirms; not-planned, or anyone else, is a plain close.
+        const byReporter = close?.actor?.toLowerCase() === row.reporter.toLowerCase() && close?.stateReason !== 'not_planned';
         if (await checkDb.updateCheck(row.nodeId, ['asked', 'replied'], { state: 'done', outcome: byReporter ? 'confirmed' : 'closed', doneAt: now })) {
-          await setWaitingLabel(t, false);
+          await markWaiting(t, row.nodeId, false);
           if (byReporter) tick.confirmed++;
           else tick.closed++;
         }
@@ -239,10 +293,11 @@ export async function runReporterChecks(now: Date = new Date()): Promise<Reporte
       const askedAt = row.askedAt!.getTime();
       const closesAt = new Date(askedAt + REPORTER_CLOSE_AFTER_DAYS * DAY_MS);
       if (now >= closesAt) {
+        // Close first: a failed close leaves the row asked and the next tick tries again.
+        await t.forge.updateIssue(t.owner, t.repo, t.number, { state: 'closed', state_reason: 'completed' });
         if (await checkDb.updateCheck(row.nodeId, ['asked'], { state: 'done', outcome: 'timeout', doneAt: now })) {
           await commentOnGitHubIssue(t.owner, t.repo, t.number, TIMEOUT_COMMENT, t.forge).catch((err) => tick.errors.push(`${row.issueRef} timeout comment: ${errText(err)}`));
-          await t.forge.updateIssue(t.owner, t.repo, t.number, { state: 'closed', state_reason: 'completed' });
-          await setWaitingLabel(t, false);
+          await markWaiting(t, row.nodeId, false);
           tick.timedOut++;
         }
         continue;
@@ -330,21 +385,29 @@ export async function reopenAfterCheck(userId: string, mapId: string, nodeId: st
   const found = await decidableCheck(userId, mapId, nodeId);
   if ('status' in found) return found;
   const { row, node } = found;
-  // The conditional move is the guard against a second click; then the row goes, so the next finish starts a fresh check.
+  // The conditional move is the guard against a second click.
   if (!(await checkDb.updateCheck(row.nodeId, ['asked', 'replied'], { state: 'done', outcome: 'reopened', doneAt: new Date() }))) {
     return { status: 409, code: 'DECIDED_ELSEWHERE', message: 'Someone decided on this in the meantime — reload' };
   }
-  await checkDb.deleteCheck(row.nodeId);
   const by = await firstName(userId);
   const old = proseMirrorToPlainText(node.description).trim();
   const brief = `Reopened after the reporter's check (${by}, ${date(new Date())}): ${note}`;
+  // The first fix's merge evidence goes: the next round must prove its own merge, or the
+  // issue would close (and the reporter be asked) as soon as the new PR opens.
+  const externalLinks = node.externalLinks.map((l) =>
+    l.externalId === row.issueRef && isForgeLink(l) ? { ...l, mergeCommitSha: null, mergedPrNumber: null, closeCheckedForPr: null } : l,
+  );
   const updated = await nodeDb.updateNode(node.id, {
     status: 'todo',
     percentComplete: 0,
     description: old ? `${brief}\n\n${old}` : brief,
     tagsRemove: [WAITING_LABEL],
+    externalLinks,
+    linkedPr: null,
   });
   if (!updated) return { status: 404, code: 'NODE_NOT_FOUND', message: `Node ${node.id} not found` };
+  // Then the row goes, so the next finish starts a fresh check.
+  await checkDb.deleteCheck(row.nodeId);
   await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_check', oldValue: row.state, newValue: { outcome: 'reopened', note } });
   const writes: CheckOutcome['writes'] = [];
   const t = await targetOf(row);
@@ -365,25 +428,25 @@ export async function closeAfterCheck(userId: string, mapId: string, nodeId: str
   const found = await decidableCheck(userId, mapId, nodeId);
   if ('status' in found) return found;
   const { row, node } = found;
+  const t = await targetOf(row);
+  if (typeof t === 'string') return { status: 409, code: 'NO_ISSUE', message: t };
+  // Close first: if the forge refuses, the check stays open and nothing is marked.
+  try {
+    await t.forge.updateIssue(t.owner, t.repo, t.number, { state: 'closed', state_reason: 'completed' });
+  } catch (err) {
+    return { node, changedFields: [], writes: [{ kind: 'close', target: row.issueRef, done: false, error: errText(err) }] };
+  }
   if (!(await checkDb.updateCheck(row.nodeId, ['asked', 'replied'], { state: 'done', outcome: 'closed', doneAt: new Date() }))) {
     return { status: 409, code: 'DECIDED_ELSEWHERE', message: 'Someone decided on this in the meantime — reload' };
   }
   await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_check', oldValue: row.state, newValue: { outcome: 'closed' } });
-  const writes: CheckOutcome['writes'] = [];
-  const t = await targetOf(row);
-  if (typeof t === 'string') return { node, changedFields: [], writes: [{ kind: 'close', target: row.issueRef, done: false, error: t }] };
+  const writes: CheckOutcome['writes'] = [{ kind: 'close', target: row.issueRef, done: true }];
   try {
     await commentOnGitHubIssue(t.owner, t.repo, t.number, `Closing — thanks (${await firstName(userId)}).`, t.forge);
     writes.push({ kind: 'comment', target: row.issueRef, done: true });
   } catch (err) {
     writes.push({ kind: 'comment', target: row.issueRef, done: false, error: errText(err) });
   }
-  try {
-    await t.forge.updateIssue(t.owner, t.repo, t.number, { state: 'closed', state_reason: 'completed' });
-    writes.push({ kind: 'close', target: row.issueRef, done: true });
-  } catch (err) {
-    writes.push({ kind: 'close', target: row.issueRef, done: false, error: errText(err) });
-  }
-  await setWaitingLabel(t, false);
+  await markWaiting(t, row.nodeId, false);
   return { node, changedFields: [], writes };
 }

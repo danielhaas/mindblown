@@ -52,5 +52,7 @@ export interface ReopenAfterCheckInput {
 /** What one deploy signal did: the reporters asked, and the ones that could not be. */
 export interface DeployedResult {
   asked: Array<{ nodeId: string; issue: string }>;
+  /** Merged-looking but not landed per the forge (PR still open, never merged): still waiting. */
+  notLanded: Array<{ nodeId: string; issue: string }>;
   failed: Array<{ nodeId: string; issue: string; error: string }>;
 }

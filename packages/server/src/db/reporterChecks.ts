@@ -1,8 +1,8 @@
 /** Rows of reporter_checks — the reporter's check of a deployed fix (services/reporterCheck.ts). */
-import { and, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 import type { ReporterCheckOutcome, ReporterCheckState } from '@mindblown/core';
 import { db } from './connection.js';
-import { reporterChecks } from './schema.js';
+import { maps, reporterChecks } from './schema.js';
 
 export interface ReporterCheckRow {
   nodeId: string;
@@ -31,9 +31,14 @@ export async function listOpenChecks(mapIds: string[]): Promise<ReporterCheckRow
   return rows.map(toRow);
 }
 
-/** Every open check, for the timer. */
+/** Every open check on a map that is not archived (on hold = no forge writes), for the timer. */
 export async function listAllOpenChecks(): Promise<ReporterCheckRow[]> {
-  return (await db.select().from(reporterChecks).where(ne(reporterChecks.state, 'done'))).map(toRow);
+  const rows = await db
+    .select({ r: reporterChecks })
+    .from(reporterChecks)
+    .innerJoin(maps, eq(maps.id, reporterChecks.mapId))
+    .where(and(ne(reporterChecks.state, 'done'), isNull(maps.archivedAt)));
+  return rows.map((x) => toRow(x.r));
 }
 
 export async function getCheck(nodeId: string): Promise<ReporterCheckRow | null> {
@@ -41,11 +46,32 @@ export async function getCheck(nodeId: string): Promise<ReporterCheckRow | null>
   return r ? toRow(r) : null;
 }
 
-/** Node ids that already have a row, any state — a ticket is checked once per finish. */
-export async function nodesWithCheck(nodeIds: string[]): Promise<Set<string>> {
-  if (nodeIds.length === 0) return new Set();
-  const rows = await db.select({ nodeId: reporterChecks.nodeId }).from(reporterChecks).where(inArray(reporterChecks.nodeId, nodeIds));
-  return new Set(rows.map((r) => r.nodeId));
+/** The rows these nodes already have, any state — by node id. */
+export async function checksOf(nodeIds: string[]): Promise<Map<string, Pick<ReporterCheckRow, 'state' | 'doneAt'>>> {
+  if (nodeIds.length === 0) return new Map();
+  const rows = await db
+    .select({ nodeId: reporterChecks.nodeId, state: reporterChecks.state, doneAt: reporterChecks.doneAt })
+    .from(reporterChecks)
+    .where(inArray(reporterChecks.nodeId, nodeIds));
+  return new Map(rows.map((r) => [r.nodeId, { state: r.state as ReporterCheckState, doneAt: r.doneAt }]));
+}
+
+/**
+ * Is this issue open because we reopened it to ask its reporter? The
+ * webhook then skips what a reopen normally triggers (rollback off done,
+ * re-triage, inbox ingest).
+ */
+export async function askingOnIssue(issueRef: string): Promise<boolean> {
+  try {
+    const [r] = await db
+      .select({ n: sql<number>`1` })
+      .from(reporterChecks)
+      .where(and(eq(reporterChecks.issueRef, issueRef), inArray(reporterChecks.state, ['asked', 'replied'])));
+    return !!r;
+  } catch (err) {
+    console.warn(`[reporter-check] could not read the check of ${issueRef}:`, err instanceof Error ? err.message : err);
+    return false;
+  }
 }
 
 /** Start a check; a node that already has one keeps it. True when a row was written. */

@@ -25,7 +25,7 @@ const mocks = vi.hoisted(() => ({
   verifySignatureMock: vi.fn(async () => true),
   openCheck: false,
 }));
-vi.mock('../../db/reporterChecks.js', () => ({ hasOpenCheck: async () => mocks.openCheck }));
+vi.mock('../../db/reporterChecks.js', () => ({ askingOnIssue: async () => mocks.openCheck }));
 
 vi.mock('@mindblown/integrations', async () => {
   const actual = await vi.importActual<typeof import('@mindblown/integrations')>(

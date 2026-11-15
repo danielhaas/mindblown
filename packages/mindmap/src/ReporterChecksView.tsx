@@ -100,7 +100,8 @@ function DeployRow({ rows, project, readOnly, onDone }: { rows: ReporterCheck[];
       const res = await api.markDeployed(rows[0].mapId);
       const failed = res.failed.map((f) => `${f.issue}: ${f.error}`).join('; ');
       if (failed) setError(`Not asked: ${failed}`);
-      onDone(`✓ Asked ${res.asked.length} reporter(s) to check the fix${failed ? ` — ${res.failed.length} failed` : ''}`);
+      const waiting = res.notLanded.length ? ` — not merged yet, still waiting: ${res.notLanded.map((n) => n.issue).join(', ')}` : '';
+      if (res.asked.length > 0 || waiting) onDone(`${res.asked.length > 0 ? '✓' : '⚠'} Asked ${res.asked.length} reporter(s) to check the fix${waiting}`);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'failed');
     } finally {

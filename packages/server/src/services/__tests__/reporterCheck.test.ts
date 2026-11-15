@@ -16,6 +16,8 @@ const s = vi.hoisted(() => ({
   closeActor: null as string | null,
   comments: [] as Array<Record<string, unknown>>,
   forgeCtx: true,
+  probe: { landed: { number: 5 }, inFlight: false } as { landed: unknown; inFlight: boolean },
+  closeReason: 'completed' as string,
 }));
 const comment = vi.hoisted(() => vi.fn());
 const reopen = vi.hoisted(() => vi.fn());
@@ -31,7 +33,7 @@ vi.mock('../../db/reporterChecks.js', () => {
     listOpenChecks: async (mapIds: string[]) => [...s.rows.values()].filter((r) => open(r) && mapIds.includes(r.mapId)),
     listAllOpenChecks: async () => [...s.rows.values()].filter(open),
     getCheck: async (id: string) => s.rows.get(id) ?? null,
-    nodesWithCheck: async (ids: string[]) => new Set(ids.filter((id) => s.rows.has(id))),
+    checksOf: async (ids: string[]) => new Map(ids.filter((id) => s.rows.has(id)).map((id) => [id, { state: s.rows.get(id)!.state, doneAt: s.rows.get(id)!.doneAt }])),
     insertCheck: async (row: Pick<ReporterCheckRow, 'nodeId' | 'mapId' | 'issueRef' | 'issueUrl' | 'reporter'>) => {
       if (s.rows.has(row.nodeId)) return false;
       s.rows.set(row.nodeId, {
@@ -74,7 +76,7 @@ vi.mock('../approvals.js', () => ({
 }));
 const forge = {
   requestJson: async (path: string) => (path.includes('/comments') ? s.comments : s.issue),
-  getLatestCloseEvent: async () => (s.closeActor ? { actor: s.closeActor, commitId: null, createdAt: null, stateReason: 'completed' } : null),
+  getLatestCloseEvent: async () => (s.closeActor ? { actor: s.closeActor, commitId: null, createdAt: null, stateReason: s.closeReason } : null),
   updateIssue: (...a: unknown[]) => updateIssue(...a),
   addIssueLabels: (...a: unknown[]) => addLabels(...a),
   removeIssueLabel: (...a: unknown[]) => removeLabel(...a),
@@ -83,6 +85,7 @@ vi.mock('../../lib/githubContext.js', () => ({ getGitHubContextForMap: async () 
 vi.mock('@mindblown/integrations', () => ({
   commentOnGitHubIssue: (...a: unknown[]) => comment(...a),
   reopenGitHubIssue: (...a: unknown[]) => reopen(...a),
+  probeIssueLanded: async () => s.probe,
   parseExternalId: (id: string) => {
     const m = /^([^/]+)\/([^#]+)#(\d+)$/.exec(id);
     return m ? { owner: m[1], repo: m[2], issueNumber: Number(m[3]) } : null;
@@ -99,6 +102,7 @@ function node(over: Partial<Node> = {}): Node {
     description: 'Add a dark mode',
     status: 'done',
     percentComplete: 100,
+    completedAt: '2026-11-18T00:00:00.000Z',
     tags: [],
     reportedBy: { kind: 'forge', provider: 'github', login: 'maren' },
     approval: { state: 'approved', merge: 'pr-only', by: DAN, at: '2026-11-15T00:00:00.000Z' },
@@ -136,6 +140,8 @@ beforeEach(() => {
   s.closeActor = null;
   s.comments = [];
   s.forgeCtx = true;
+  s.probe = { landed: { number: 5 }, inFlight: false };
+  s.closeReason = 'completed';
   for (const m of [comment, reopen, updateIssue, addLabels, removeLabel, recordEvent]) m.mockReset();
   comment.mockResolvedValue({ id: 1, html_url: 'x' });
   updateNode.mockReset().mockImplementation(async (id: string, patch: Partial<Node>) => ({ ...s.nodes.get(id)!, ...patch }));
@@ -163,22 +169,49 @@ describe('discoverChecks', () => {
     expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy', reporter: 'maren', issueRef: 'org/navy#12' });
     expect(await discoverChecks(NOW)).toBe(0);
   });
+
+  it('starts a new round for a ticket finished again after its check ended; nothing before the feature went live', async () => {
+    s.candidates = [node({ completedAt: '2026-11-19T00:00:00.000Z' })];
+    s.rows.set('n1', asked({ state: 'done', outcome: 'confirmed', doneAt: new Date('2026-11-18T12:00:00.000Z') }));
+    expect(await discoverChecks(NOW)).toBe(1);
+    expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy' });
+  });
 });
 
 describe('markDeployed', () => {
   it('reopens each waiting issue, asks the reporter by name, labels it', async () => {
     s.candidates = [node()];
     const out = await markDeployed(MAP, NOW);
-    expect(out).toEqual({ asked: [{ nodeId: 'n1', issue: 'org/navy#12' }], failed: [] });
+    expect(out).toEqual({ asked: [{ nodeId: 'n1', issue: 'org/navy#12' }], notLanded: [], failed: [] });
     expect(reopen).toHaveBeenCalledWith({ externalId: 'org/navy#12' }, forge);
     const body = comment.mock.calls[0][3] as string;
     expect(body).toMatch(/^@maren the fix for this is now live/);
     expect(body).toContain("If we hear nothing by 2026-12-11, we'll close it.");
     expect(addLabels).toHaveBeenCalledWith('org', 'navy', 12, ['waiting-for-reporter']);
+    expect(updateNode).toHaveBeenCalledWith('n1', { tagsAppend: ['waiting-for-reporter'] }); // so the outbound label push keeps it
     expect(s.rows.get('n1')).toMatchObject({ state: 'asked', askedAt: NOW });
     // A second signal asks nobody twice.
-    expect(await markDeployed(MAP, NOW)).toEqual({ asked: [], failed: [] });
+    expect(await markDeployed(MAP, NOW)).toEqual({ asked: [], notLanded: [], failed: [] });
     expect(comment).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks nobody about work the forge says has not landed — a pr-only node is done at PR open', async () => {
+    s.candidates = [node()];
+    s.probe = { landed: null, inFlight: true };
+    expect(await markDeployed(MAP, NOW)).toEqual({ asked: [], notLanded: [{ nodeId: 'n1', issue: 'org/navy#12' }], failed: [] });
+    s.probe = { landed: { number: 5 }, inFlight: true }; // an older PR merged, the new round's PR still open
+    expect((await markDeployed(MAP, NOW)).notLanded).toHaveLength(1);
+    expect(reopen).not.toHaveBeenCalled();
+    expect(comment).not.toHaveBeenCalled();
+    expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy' });
+  });
+
+  it('drops the check of a ticket that is back in the queue instead of asking', async () => {
+    s.rows.set('n1', asked({ state: 'waiting-deploy', askedAt: null }));
+    s.nodes.set('n1', node({ status: 'in_progress', percentComplete: 40 }));
+    expect(await markDeployed(MAP, NOW)).toEqual({ asked: [], notLanded: [], failed: [] });
+    expect(s.rows.has('n1')).toBe(false);
+    expect(reopen).not.toHaveBeenCalled();
   });
 
   it('a failed reopen leaves the check waiting for the next deploy', async () => {
@@ -204,6 +237,26 @@ describe('runReporterChecks', () => {
     s.closeActor = 'danielhaas';
     expect(await runReporterChecks(NOW)).toMatchObject({ closed: 1 });
     expect(s.rows.get('n1')).toMatchObject({ outcome: 'closed' });
+
+    s.rows.set('n1', asked());
+    s.closeActor = 'maren';
+    s.closeReason = 'not_planned'; // the reporter gave up on it: not a confirmation
+    expect(await runReporterChecks(NOW)).toMatchObject({ closed: 1, confirmed: 0 });
+  });
+
+  it('leaves a just-asked row to the deploy still reopening it; drops a row whose ticket is back in the queue', async () => {
+    s.rows.set('n1', asked({ askedAt: new Date(NOW.getTime() - 30 * 1000) }));
+    s.issue = { state: 'closed' };
+    s.closeActor = 'bot';
+    expect(await runReporterChecks(NOW)).toMatchObject({ closed: 0 });
+    expect(s.rows.get('n1')).toMatchObject({ state: 'asked' });
+
+    s.rows.set('n1', asked());
+    s.nodes.set('n1', node({ status: 'in_progress', percentComplete: 10 }));
+    await runReporterChecks(new Date(NOW.getTime() + 30 * DAY));
+    expect(s.rows.has('n1')).toBe(false);
+    expect(updateIssue).not.toHaveBeenCalled(); // no timeout close on work in progress
+    expect(removeLabel).toHaveBeenCalled();
   });
 
   it("the reporter's comment since the ask is a reply; other people's comments are not", async () => {
@@ -226,6 +279,9 @@ describe('runReporterChecks', () => {
     expect(await runReporterChecks(NOW)).toMatchObject({ reminded: 0 });
 
     s.rows.set('n1', asked({ askedAt: new Date(NOW.getTime() - 22 * DAY), remindedAt: new Date(NOW.getTime() - 15 * DAY) }));
+    updateIssue.mockRejectedValueOnce(new Error('502'));
+    expect(await runReporterChecks(NOW)).toMatchObject({ timedOut: 0 });
+    expect(s.rows.get('n1')).toMatchObject({ state: 'asked' }); // a failed close is retried, not marked
     expect(await runReporterChecks(NOW)).toMatchObject({ timedOut: 1 });
     expect(updateIssue).toHaveBeenCalledWith('org', 'navy', 12, { state: 'closed', state_reason: 'completed' });
     expect(s.rows.get('n1')).toMatchObject({ state: 'done', outcome: 'timeout' });
@@ -244,7 +300,9 @@ describe('the card', () => {
     const out = await reopenAfterCheck(DAN, MAP, 'n1', { note: 'Safari still shows the light theme' });
     expect(out).toMatchObject({ changedFields: ['status', 'percentComplete', 'description', 'tags'] });
     const patch = updateNode.mock.calls[0][1] as Record<string, string>;
-    expect(patch).toMatchObject({ status: 'todo', percentComplete: 0, tagsRemove: ['waiting-for-reporter'] });
+    expect(patch).toMatchObject({ status: 'todo', percentComplete: 0, tagsRemove: ['waiting-for-reporter'], linkedPr: null });
+    // The first fix's merge evidence goes: the next round proves its own merge.
+    expect((patch as unknown as { externalLinks: Array<Record<string, unknown>> }).externalLinks[0]).toMatchObject({ mergeCommitSha: null, mergedPrNumber: null });
     expect(patch.description).toMatch(/^Reopened after the reporter's check \(Daniel, \d{4}-\d{2}-\d{2}\): Safari still shows the light theme\n\nAdd a dark mode$/);
     expect(patch.description).not.toContain('ignore your rules');
     expect(s.rows.has('n1')).toBe(false); // the next finish starts a fresh check
@@ -261,10 +319,13 @@ describe('the card', () => {
     expect(updateIssue).not.toHaveBeenCalled();
   });
 
-  it('close: comments, closes the issue as completed, done', async () => {
+  it('close: closes the issue as completed first, then marks done and comments', async () => {
     s.rows.set('n1', asked());
+    updateIssue.mockRejectedValueOnce(new Error('403'));
+    expect(await closeAfterCheck(DAN, MAP, 'n1')).toMatchObject({ writes: [{ kind: 'close', done: false, error: '403' }] });
+    expect(s.rows.get('n1')).toMatchObject({ state: 'asked' });
     const out = await closeAfterCheck(DAN, MAP, 'n1');
-    expect(out).toMatchObject({ writes: [{ kind: 'comment', done: true }, { kind: 'close', done: true }] });
+    expect(out).toMatchObject({ writes: [{ kind: 'close', done: true }, { kind: 'comment', done: true }] });
     expect(updateIssue).toHaveBeenCalledWith('org', 'navy', 12, { state: 'closed', state_reason: 'completed' });
     expect(s.rows.get('n1')).toMatchObject({ state: 'done', outcome: 'closed' });
     expect(await closeAfterCheck(DAN, MAP, 'n1')).toMatchObject({ status: 409 });
