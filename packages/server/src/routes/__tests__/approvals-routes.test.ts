@@ -98,7 +98,7 @@ describe('approval routes', () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { merge: 'auto', description: 'new', extra: 1 } });
     expect(res.statusCode).toBe(200);
-    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: 'auto', description: 'new', expectedRevision: undefined });
+    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: 'auto', description: 'new', expectedRevision: undefined, askQuestions: undefined });
     expect(res.json()).toMatchObject({ approval: node.approval, writes: [], ok: true });
     expect(broadcastMock).toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'node:updated', nodeId: 'n1', fields: ['approval'] }));
     expect(broadcastMock).toHaveBeenCalledWith(MAP, expect.objectContaining({ type: 'asks:updated', kind: 'approval' }));
@@ -109,8 +109,16 @@ describe('approval routes', () => {
     approveMock.mockResolvedValue({ node, changedFields: ['description', 'approval'], writes: [] });
     const app = await buildApp();
     await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { description: 'x', expectedRevision: 4 } });
-    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: undefined, description: 'x', expectedRevision: 4 });
+    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: undefined, description: 'x', expectedRevision: 4, askQuestions: undefined });
     expect(syncMock).not.toHaveBeenCalled();
+  });
+
+  it('approve & ask forwards the questions and reports a post that failed', async () => {
+    approveMock.mockResolvedValue({ node, changedFields: ['approval'], writes: [{ kind: 'comment', target: 'o/r#1', done: false, error: 'boom' }] });
+    const app = await buildApp();
+    const res = await app.inject({ method: 'POST', url: `/api/maps/${MAP}/nodes/n1/approve`, payload: { expectedRevision: 4, askQuestions: ['Which?'] } });
+    expect(approveMock).toHaveBeenCalledWith('u1', MAP, 'n1', { merge: undefined, description: undefined, expectedRevision: 4, askQuestions: ['Which?'] });
+    expect(res.json()).toMatchObject({ ok: false, writes: [{ done: false }] });
   });
 
   it('reject passes note + closeIssue (strictly true) and reports a failed write', async () => {

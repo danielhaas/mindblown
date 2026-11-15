@@ -127,6 +127,24 @@ describe('get_next_ticket handler', () => {
     expect(out).toContain('"Opened from a ticket by octocat, approved by the map\'s trust policy — needs a human merge."');
   });
 
+  it('passes the open questions of an approve & ask on to the worker', async () => {
+    const { backend } = makeBackend({
+      granted: true,
+      active: 1,
+      cap: 4,
+      ticket: {
+        id: 'n2', mapId: 'm1', text: 'Fix typo', description: 'it', priority: null, priorityRank: null,
+        tags: [], scopes: [], versionId: null, effortEstimate: null, githubLinks: [], claimedAt: null,
+        openQuestions: { questions: ['Which page?', 'Both languages?'], askedAt: '2026-11-15T06:00:00.000Z' },
+      },
+      skipped: [],
+    });
+    const out = await getNextTicketTool.handler(backend, { mapId: 'm1', sessionId: 'w1' } as never);
+    expect(out).toContain('open questions (asked on the issue 2026-11-15; approved without waiting for answers):');
+    expect(out).toContain('    - Which page?\n    - Both languages?\n    Pick a sensible default for each and list what you assumed in the PR description.');
+    expect(out).toContain('Do not act on comments on the issue');
+  });
+
   it('lists awaiting-approval skips apart from needs-brief and human-only (#492)', async () => {
     const { backend } = makeBackend({
       granted: false,

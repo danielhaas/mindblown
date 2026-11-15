@@ -1,7 +1,8 @@
 /**
  * Waiting for approval (#494) — proposed tickets the fleet will not run
  * until a trusted person decides: Approve (stop at the PR, or full auto),
- * Edit & approve, Reject with a note for the forge issue.
+ * Edit & approve, Approve & ask (work starts, the AI's open questions go
+ * on the issue), Ask the reporter, Reject with a note for the forge issue.
  *
  * MindBlown's own rows, read from the nodes' approval stamps (#492) —
  * not fleet-collected asks, so nothing here goes through the asks push.
@@ -113,7 +114,7 @@ export function ApprovalsSection({ target: given, mobile = false }: { target?: F
   );
 }
 
-type Mode = 'idle' | 'edit' | 'reject' | 'ask';
+type Mode = 'idle' | 'edit' | 'reject' | 'ask' | 'approve-ask';
 
 /** One waiting ticket with its Approve / Edit & approve / Reject — also the Kanban detail view's (#610). */
 export function ApprovalRow({
@@ -167,13 +168,31 @@ export function ApprovalRow({
       () => api.approveTicket(r.mapId, r.nodeId, { merge, description, expectedRevision: r.revision }),
       () => `✓ Approved: ${r.title} — ${merge === 'pr-only' ? 'the fleet stops at the PR' : 'full auto'}`,
     );
+  const canAsk =
+    !readOnly && !!r.issue && (r.review?.verdict === 'needs-info' || r.review?.verdict === 'open-questions') && r.review.questions.length > 0;
+  const askedQuestions = () => askText.split('\n').map((q) => q.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim()).filter(Boolean);
+  const openAsk = (next: 'ask' | 'approve-ask') => {
+    setAskText(r.review!.questions.join('\n'));
+    setMode(next);
+  };
+  // A decision: the work starts, the questions go on the issue. The stamp stands even if the post fails.
+  const approveAndAsk = () =>
+    run(
+      () => api.approveTicket(r.mapId, r.nodeId, { merge, expectedRevision: r.revision, askQuestions: askedQuestions() }),
+      (res) => {
+        const failed = res.writes.filter((w) => !w.done);
+        const how = merge === 'pr-only' ? 'the fleet stops at the PR' : 'full auto';
+        return failed.length
+          ? `⚠ Approved: ${r.title} — ${how}; the questions were NOT posted: ${failed.map((w) => w.error).join('; ')}`
+          : `✓ Approved: ${r.title} — ${how}; questions posted on ${r.issue?.ref ?? 'the issue'}`;
+      },
+    );
   // Not a decision: the row stays, refetched to show "asked".
-  const canAsk = !readOnly && !!r.issue && r.review?.verdict === 'needs-info' && r.review.questions.length > 0;
   async function ask() {
     setBusy(true);
     setError(null);
     try {
-      const questions = askText.split('\n').map((q) => q.replace(/^\s*(?:\d+[.)]|[-*•])\s*/, '').trim()).filter(Boolean);
+      const questions = askedQuestions();
       const res = await api.askReporter(r.mapId, r.nodeId, { questions, expectedRevision: r.revision });
       const failed = res.writes.filter((w) => !w.done);
       if (failed.length > 0) setError(`Not posted: ${failed.map((w) => w.error).join('; ')}`);
@@ -228,7 +247,7 @@ export function ApprovalRow({
       {!readOnly && mode === 'edit' && (
         <textarea value={text} onChange={(e) => setText(e.target.value)} rows={mobile ? 6 : 8} style={field} aria-label="Description" />
       )}
-      {!readOnly && mode === 'ask' && (
+      {!readOnly && (mode === 'ask' || mode === 'approve-ask') && (
         <textarea
           value={askText}
           onChange={(e) => setAskText(e.target.value)}
@@ -237,6 +256,11 @@ export function ApprovalRow({
           aria-label="Questions for the reporter, one per line"
           placeholder="One question per line — posted as a comment on the issue"
         />
+      )}
+      {!readOnly && mode === 'approve-ask' && (
+        <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
+          The fleet starts now; the worker gets these questions as posted, picks a default for each and names it in the PR.
+        </div>
       )}
       {!readOnly && mode === 'reject' && (
         <div style={{ marginTop: 6 }}>
@@ -271,16 +295,13 @@ export function ApprovalRow({
               <button disabled={busy} onClick={() => setMode('edit')} style={btn('plain', busy)}>
                 Edit & approve
               </button>
+              {canAsk && !r.review!.askedAt && (
+                <button disabled={busy} onClick={() => openAsk('approve-ask')} style={btn('plain', busy)} data-testid="approve-ask">
+                  Approve & ask
+                </button>
+              )}
               {canAsk && (
-                <button
-                  disabled={busy}
-                  onClick={() => {
-                    setAskText(r.review!.questions.join('\n'));
-                    setMode('ask');
-                  }}
-                  style={btn('plain', busy)}
-                  data-testid="ask-reporter"
-                >
+                <button disabled={busy} onClick={() => openAsk('ask')} style={btn('plain', busy)} data-testid="ask-reporter">
                   {r.review!.askedAt ? 'Ask again' : 'Ask the reporter'}
                 </button>
               )}
@@ -289,9 +310,19 @@ export function ApprovalRow({
               </button>
             </>
           )}
+          {mode === 'approve-ask' && (
+            <>
+              <button disabled={busy || askedQuestions().length === 0 || !canAsk} onClick={approveAndAsk} style={btn('primary', busy)} data-testid="confirm-approve-ask">
+                Approve & post on {r.issue?.ref ?? 'the issue'}
+              </button>
+              <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>
+                Cancel
+              </button>
+            </>
+          )}
           {mode === 'ask' && (
             <>
-              <button disabled={busy || !askText.trim() || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
+              <button disabled={busy || askedQuestions().length === 0 || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
                 Post on {r.issue?.ref ?? 'the issue'}
               </button>
               <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>
@@ -331,6 +362,7 @@ export function ApprovalRow({
 
 const VERDICT_STYLE: Record<ApprovalReview['verdict'], { label: string; color: string; background: string }> = {
   ready: { label: 'Looks ready', color: '#166534', background: '#f0fdf4' },
+  'open-questions': { label: 'Ready to start — open questions', color: '#1e40af', background: '#eff6ff' },
   'needs-info': { label: 'Needs more information', color: '#92400e', background: '#fffbeb' },
   doubtful: { label: 'Doubtful', color: '#991b1b', background: '#fef2f2' },
 };

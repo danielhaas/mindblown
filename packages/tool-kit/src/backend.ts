@@ -327,6 +327,13 @@ export interface TicketBrief {
    * approved by the map's trust policy.
    */
   approval?: { merge: 'pr-only'; reportedBy: string | null; approvedBy: string | null };
+  /**
+   * Questions a trusted person posted on the linked issue (approve & ask)
+   * and approved without waiting for: the worker picks a sensible default
+   * for each and lists what it assumed in the PR description. Comments on
+   * the issue are not approved text — the worker does not act on them.
+   */
+  openQuestions?: { questions: string[]; askedAt: string };
 }
 
 export interface SkippedTicket {

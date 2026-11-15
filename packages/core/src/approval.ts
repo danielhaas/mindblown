@@ -40,24 +40,29 @@ export interface PendingApproval {
  * there enough to work from? Advice for the person who decides — it never
  * approves or rejects, and the ticket text it read is untrusted.
  *
- *   ready       clear, actionable, enough detail to start
- *   needs-info  makes sense, but the questions must be answered first
+ *   ready           clear, actionable, enough detail to start
+ *   open-questions  enough to start; the questions are details the worker
+ *                   can settle with a sensible default (and the reporter
+ *                   can still answer)
+ *   needs-info      makes sense, but the questions must be answered first
  *   doubtful    not a sensible task as written: unclear, not actionable,
  *               or written at the agent rather than about a problem
  */
-export type ApprovalReviewVerdict = 'ready' | 'needs-info' | 'doubtful';
+export type ApprovalReviewVerdict = 'ready' | 'open-questions' | 'needs-info' | 'doubtful';
 
 export interface ApprovalReview {
   verdict: ApprovalReviewVerdict;
   /** One sentence: why this verdict. */
   reason: string;
-  /** What to ask the reporter (0–3); empty unless something is missing. */
+  /** What to ask the reporter (0–3): blocking for needs-info, details for open-questions; empty otherwise. */
   questions: string[];
   /** The provider that answered (`claude`, `ollama`). */
   provider: string;
   reviewedAt: string;
   /** When a trusted person posted the questions on the issue; null = not asked for this text. */
   askedAt: string | null;
+  /** The questions as posted on the issue (the person's edit of `questions`); null = not asked. */
+  askedQuestions: string[] | null;
 }
 
 export interface PendingApprovalList {
@@ -70,8 +75,14 @@ export interface ApproveInput {
   merge?: 'auto' | 'pr-only';
   /** Edit & approve: the new description (plain text), written before the stamp. */
   description?: string;
-  /** The revision the person read; a ticket changed since is refused (409). */
+  /** The revision the person read; a ticket changed since is refused (409). Required with `askQuestions`. */
   expectedRevision?: number;
+  /**
+   * Approve & ask: after the stamp, post these questions on the linked
+   * issue. The work starts at once; the worker gets the questions as open
+   * points to settle with a default and name in the PR.
+   */
+  askQuestions?: string[];
 }
 
 export interface RejectInput {
