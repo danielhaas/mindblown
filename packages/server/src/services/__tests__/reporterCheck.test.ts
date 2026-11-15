@@ -213,6 +213,35 @@ describe('markDeployed', () => {
     expect((await markDeployed(MAP, NOW)).asked).toHaveLength(1);
   });
 
+  it('a deploy that knows its commit asks only about merges inside it', async () => {
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergeCommitSha: 'abc1234' }] })];
+    s.nodes.set('n1', s.candidates[0]);
+    const notIn = async (): Promise<boolean> => false;
+    expect(await markDeployed(MAP, NOW, { contains: notIn })).toEqual({ asked: [], notLanded: [{ nodeId: 'n1', issue: 'org/navy#12' }], failed: [] });
+    expect(reopen).not.toHaveBeenCalled();
+    const seen: string[] = [];
+    const isIn = async (sha: string): Promise<boolean> => (seen.push(sha), true);
+    expect((await markDeployed(MAP, NOW, { contains: isIn })).asked).toHaveLength(1);
+    expect(seen).toEqual(['abc1234']);
+  });
+
+  it('a pr# merge key carries no commit, so the commit check is skipped', async () => {
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergedPrNumber: 77 }] })];
+    s.nodes.set('n1', s.candidates[0]);
+    const notIn = async (): Promise<boolean> => false;
+    expect((await markDeployed(MAP, NOW, { contains: notIn })).asked).toHaveLength(1);
+  });
+
+  it('with no merge on the link, the closing PR the forge reports is checked against the deploy', async () => {
+    s.candidates = [node()];
+    s.probe = { landed: { number: 5, mergeCommitSha: 'def5678' }, inFlight: false };
+    const seen: string[] = [];
+    const notIn = async (sha: string): Promise<boolean> => (seen.push(sha), false);
+    expect((await markDeployed(MAP, NOW, { contains: notIn })).notLanded).toHaveLength(1);
+    expect(seen).toEqual(['def5678']);
+    expect(reopen).not.toHaveBeenCalled();
+  });
+
   it('a Refs PR merged before the node was done left only its number on the link — that counts too', async () => {
     s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergedPrNumber: 77 }] })];
     s.nodes.set('n1', s.candidates[0]);

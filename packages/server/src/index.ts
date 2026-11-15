@@ -60,6 +60,7 @@ import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
 import { runApprovalReviews } from './services/approvalReview.js';
 import { runReporterChecks } from './services/reporterCheck.js';
+import { pinnedGit, signalSelfDeploy } from './services/selfDeploy.js';
 import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
@@ -497,11 +498,42 @@ async function main(): Promise<void> {
   // asked issues — closed by the reporter, a reply, a reminder due, the
   // timeout. Asking itself waits for a deploy signal (POST /deployed).
   const REPORTER_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+
+  // Our own deploy is a deploy signal: a start on a new commit asks the
+  // reporters on the maps bound to this checkout's own repo. HEAD is read
+  // now, so a later git pull isn't taken for the code that runs. The first
+  // try is a minute in (forge contexts warm); one with a failed ask is
+  // retried every tick, at most 6 times (~1 h). Prod only: a dev server in a worktree must never
+  // ask real reporters.
+  const selfGit = process.env.NODE_ENV === 'production' ? pinnedGit() : null;
+  let selfDeploySettled = selfGit === null;
+  let selfDeployTries = 0;
+  const selfDeployTick = async (): Promise<void> => {
+    if (selfDeploySettled || !selfGit) return;
+    if (++selfDeployTries >= 6) selfDeploySettled = true; // the last try
+    try {
+      const r = await signalSelfDeploy(selfGit);
+      if (!r) {
+        selfDeploySettled = true;
+        return;
+      }
+      const asked = r.maps.reduce((n, m) => n + m.result.asked.length, 0);
+      const notLanded = r.maps.reduce((n, m) => n + m.result.notLanded.length, 0);
+      console.log(`[self-deploy] ${r.repo} @ ${r.sha.slice(0, 8)}: maps=${r.maps.length} asked=${asked} notLanded=${notLanded}`);
+      const failed = r.maps.flatMap((m) => m.result.failed);
+      for (const f of failed.slice(0, 5)) console.warn(`[self-deploy] ${f.issue}: ${f.error}`);
+      if (failed.length === 0) selfDeploySettled = true;
+    } catch (err) {
+      console.error('[self-deploy] signal failed:', err);
+    }
+  };
+
   let reporterCheckRunning = false;
   const reporterCheckTick = async (): Promise<void> => {
     if (reporterCheckRunning) return;
     reporterCheckRunning = true;
     try {
+      await selfDeployTick();
       const r = await runReporterChecks();
       const moved = r.started + r.confirmed + r.closed + r.replied + r.reminded + r.timedOut + r.expired;
       if (moved > 0) {
@@ -514,6 +546,7 @@ async function main(): Promise<void> {
       reporterCheckRunning = false;
     }
   };
+  setTimeout(reporterCheckTick, 60 * 1000);
   setInterval(reporterCheckTick, REPORTER_CHECK_INTERVAL_MS);
 
   // ── Daily mail with open questions (#597) ─────────────────────

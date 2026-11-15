@@ -201,17 +201,30 @@ type AskResult = { kind: 'asked' } | { kind: 'not-landed' } | { kind: 'skipped' 
  * or a merged closing PR, and no closing PR still open. The row is moved
  * first, so a second signal never asks twice.
  */
-async function askOne(row: ReporterCheckRow, now: Date, isDone: (n: CoreNode) => Promise<boolean>): Promise<AskResult> {
+async function askOne(row: ReporterCheckRow, now: Date, isDone: (n: CoreNode) => Promise<boolean>, opts: DeployedOptions): Promise<AskResult> {
   const node = await dropIfNotDone(row, isDone);
   if (!node) return { kind: 'skipped' };
   const t = await targetOf(row);
   if (typeof t === 'string') return { kind: 'failed', error: t };
   const recorded = mergeKeyOf(node.externalLinks.find((l) => isForgeLink(l) && l.externalId === row.issueRef));
+  let landedSha: string | null = null;
   try {
     const probe = await probeIssueLanded(t.owner, t.repo, t.number, t.forge);
     if (probe.inFlight || (!recorded && !probe.landed)) return { kind: 'not-landed' };
+    landedSha = probe.landed?.mergeCommitSha ?? null;
   } catch (err) {
     return { kind: 'failed', error: `could not check the merge: ${errText(err)}` };
+  }
+  // A deploy that knows its commit asks only about merges inside it: the
+  // recorded merge, else the closing PR the forge reports. A "pr#N" key
+  // carries no commit (the closing PR may be an older round's) and counts.
+  const sha = recorded ? (recorded.startsWith('pr#') ? null : recorded) : landedSha;
+  if (sha && opts.contains) {
+    try {
+      if (!(await opts.contains(sha))) return { kind: 'not-landed' };
+    } catch (err) {
+      return { kind: 'failed', error: `could not check the deployed commit: ${errText(err)}` };
+    }
   }
   if (!(await checkDb.updateCheck(row.nodeId, ['waiting-deploy'], { state: 'asked', askedAt: now }))) return { kind: 'skipped' }; // asked elsewhere
   const undo = async (error: string): Promise<AskResult> => {
@@ -235,18 +248,23 @@ async function askOne(row: ReporterCheckRow, now: Date, isDone: (n: CoreNode) =>
   return { kind: 'asked' };
 }
 
+export interface DeployedOptions {
+  /** True when the deployed code contains this merge commit. Unset: every recorded merge counts. */
+  contains?: (sha: string) => Promise<boolean>;
+}
+
 /**
  * The map was deployed: ask the reporter of every ticket merged before
  * now. Edit on the map is checked by the caller (route guard / backend).
  */
-export async function markDeployed(mapId: string, now: Date = new Date()): Promise<DeployedResult> {
+export async function markDeployed(mapId: string, now: Date = new Date(), opts: DeployedOptions = {}): Promise<DeployedResult> {
   // A ticket that finished since the last tick is part of this deploy too.
   await discoverChecks(now).catch((err) => console.warn('[reporter-check] discovery failed:', errText(err)));
   const out: DeployedResult = { asked: [], notLanded: [], failed: [] };
   const isDone = doneCheck();
   for (const row of await checkDb.listOpenChecks([mapId])) {
     if (row.state !== 'waiting-deploy') continue;
-    const r = await askOne(row, now, isDone);
+    const r = await askOne(row, now, isDone, opts);
     const at = { nodeId: row.nodeId, issue: row.issueRef };
     if (r.kind === 'asked') out.asked.push(at);
     else if (r.kind === 'not-landed') out.notLanded.push(at);
