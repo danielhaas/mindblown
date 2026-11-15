@@ -95,7 +95,16 @@ describe('sanitizeApprovalReview', () => {
     expect(sanitizeApprovalReview({ verdict: 'ready', reason: 'Clear.', questions: ['stray?'] })).toEqual({ verdict: 'ready', reason: 'Clear.', questions: [] });
   });
 
-  it('refuses anything that is not one of the three verdicts', () => {
+  it('keeps the questions of open-questions; with none named it reads as ready', () => {
+    expect(sanitizeApprovalReview({ verdict: 'open questions', reason: 'Clear enough.', questions: ['Which colour?'] })).toEqual({
+      verdict: 'open-questions',
+      reason: 'Clear enough.',
+      questions: ['Which colour?'],
+    });
+    expect(sanitizeApprovalReview({ verdict: 'open-questions', reason: 'Clear.', questions: [] })).toEqual({ verdict: 'ready', reason: 'Clear.', questions: [] });
+  });
+
+  it('refuses anything that is not one of the four verdicts', () => {
     expect(sanitizeApprovalReview({ verdict: 'approve' })).toBeNull();
     expect(sanitizeApprovalReview({ reason: 'x' })).toBeNull();
     expect(sanitizeApprovalReview(null)).toBeNull();

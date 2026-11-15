@@ -1,5 +1,7 @@
 /**
- * Deciding on proposed tickets (#494): approve, edit & approve, reject.
+ * Deciding on proposed tickets (#494): approve, edit & approve, approve &
+ * ask (the AI read's open questions go on the issue as the work starts),
+ * reject.
  *
  * Who may decide: a person on the map's trusted list (trust_policy
  * trustedUserIds, the same list that approves at creation, #492) with
@@ -165,12 +167,24 @@ export async function approveTicket(userId: string, mapId: string, nodeId: strin
   if (input.expectedRevision !== undefined && !Number.isInteger(input.expectedRevision)) {
     return { status: 400, code: 'VALIDATION_ERROR', message: 'expectedRevision must be an integer' };
   }
+  let askQuestions: string[] | null = null;
+  if (input.askQuestions !== undefined) {
+    // Approve & ask: the mark lands on the review of the text the person read.
+    if (!Number.isInteger(input.expectedRevision)) return { status: 400, code: 'VALIDATION_ERROR', message: 'expectedRevision (the revision you read) is required with askQuestions' };
+    if (input.description !== undefined) return { status: 400, code: 'VALIDATION_ERROR', message: 'Edit & approve and approve & ask are separate steps' };
+    const q = cleanQuestions(input.askQuestions);
+    if ('code' in q) return q;
+    askQuestions = q;
+  }
   const node = await decidable(userId, mapId, nodeId);
   if ('code' in node) return node;
   if (node.approval?.state === 'approved') return { status: 409, code: 'ALREADY_APPROVED', message: 'This ticket is already approved' };
   if (input.expectedRevision !== undefined && node.revision !== input.expectedRevision) {
     return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed since you read it — reload and read it again' };
   }
+  // Refused before the stamp: a yes that was meant to come with questions must not go out without them.
+  const target = askQuestions ? await askTarget(node) : null;
+  if (target && 'code' in target) return target;
 
   const changedFields: string[] = [];
   let current = node;
@@ -197,7 +211,8 @@ export async function approveTicket(userId: string, mapId: string, nodeId: strin
   const saved = await writeStamp(userId, current, stamp);
   if ('code' in saved) return saved;
   changedFields.push('approval');
-  return { node: saved, changedFields, writes: [] };
+  const writes = askQuestions && target ? [await postQuestions(userId, node, target, askQuestions, 'approved')] : [];
+  return { node: saved, changedFields, writes };
 }
 
 function rejectLine(by: string, note: string): string {
@@ -255,14 +270,64 @@ export async function rejectTicket(userId: string, mapId: string, nodeId: string
   return { node: saved, changedFields: ['approval'], writes };
 }
 
-export function askReporterComment(by: string, questions: string[]): string {
+export function askReporterComment(by: string, questions: string[], approved = false): string {
+  const date = new Date().toISOString().slice(0, 10);
   return [
-    `Before this can be approved, a few questions (${by}, ${new Date().toISOString().slice(0, 10)}):`,
+    approved
+      ? `Approved — work on this starts now. A few open points (${by}, ${date}); until you answer, the agent picks a sensible default for each and says so in the pull request:`
+      : `Before this can be approved, a few questions (${by}, ${date}):`,
     '',
     ...questions.map((q) => `- ${q}`),
     '',
-    'Please answer here or edit the issue description.',
+    approved ? 'Please answer here.' : 'Please answer here or edit the issue description.',
   ].join('\n');
+}
+
+/** The questions as posted: trimmed, deduplicated, 1–MAX_ASK_QUESTIONS of up to 500 characters. */
+function cleanQuestions(raw: unknown): string[] | ApprovalError {
+  if (!Array.isArray(raw)) return { status: 400, code: 'VALIDATION_ERROR', message: 'questions must be a list of strings' };
+  const questions = [...new Set(raw.filter((q): q is string => typeof q === 'string').map((q) => q.replace(/\s+/g, ' ').trim()).filter(Boolean))];
+  if (questions.length === 0) return { status: 400, code: 'VALIDATION_ERROR', message: 'At least one question is required' };
+  if (questions.length > MAX_ASK_QUESTIONS || questions.some((q) => q.length > 500)) {
+    return { status: 400, code: 'VALIDATION_ERROR', message: `At most ${MAX_ASK_QUESTIONS} questions of up to 500 characters` };
+  }
+  return questions;
+}
+
+interface AskTarget {
+  ref: string;
+  issue: NonNullable<ReturnType<typeof parseExternalId>>;
+  forge: NonNullable<Awaited<ReturnType<typeof getGitHubContextForMap>>>['forge'];
+}
+
+/** Where the questions go: the linked issue on the map's connected forge. */
+async function askTarget(node: CoreNode): Promise<AskTarget | ApprovalError> {
+  const link = node.externalLinks.find((l) => isForgeLink(l) && !l.isPullRequest);
+  const issue = link ? parseExternalId(link.externalId) : null;
+  if (!link || !issue) return { status: 400, code: 'NO_ISSUE', message: 'This ticket has no linked issue to ask on' };
+  const ctx = await getGitHubContextForMap(node.mapId);
+  if (!ctx) return { status: 400, code: 'NO_ISSUE', message: 'The map has no issue tracker connected' };
+  return { ref: link.externalId, issue, forge: ctx.forge };
+}
+
+/** Post the questions and mark the review of `node`'s text asked. A failed post marks nothing. */
+async function postQuestions(userId: string, node: CoreNode, target: AskTarget, questions: string[], state: 'proposed' | 'approved'): Promise<ApprovalOutcome['writes'][number]> {
+  const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId));
+  const { owner, repo, issueNumber } = target.issue;
+  try {
+    await commentOnGitHubIssue(owner, repo, issueNumber, askReporterComment(me?.name.split(/\s+/)[0] || 'a trusted user', questions, state === 'approved'), target.forge);
+  } catch (err) {
+    return { kind: 'comment', target: target.ref, done: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  // The comment is out: a bookkeeping failure must not read as "not posted" and invite a second post.
+  try {
+    const { title, description } = textOf(node);
+    await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
+    await recordEvent({ mapId: node.mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: target.ref, approved: state === 'approved' } });
+  } catch (err) {
+    console.warn(`[ask-reporter] posted on ${target.ref} but could not record it:`, err);
+  }
+  return { kind: 'comment', target: target.ref, done: true };
 }
 
 /**
@@ -278,12 +343,8 @@ export async function askReporter(
   input: AskReporterInput & { expectedRevision?: number },
 ): Promise<ApprovalOutcome | ApprovalError> {
   if (!Number.isInteger(input.expectedRevision)) return { status: 400, code: 'VALIDATION_ERROR', message: 'expectedRevision (the revision you read) is required' };
-  if (!Array.isArray(input.questions)) return { status: 400, code: 'VALIDATION_ERROR', message: 'questions must be a list of strings' };
-  const questions = [...new Set(input.questions.filter((q): q is string => typeof q === 'string').map((q) => q.replace(/\s+/g, ' ').trim()).filter(Boolean))];
-  if (questions.length === 0) return { status: 400, code: 'VALIDATION_ERROR', message: 'At least one question is required' };
-  if (questions.length > MAX_ASK_QUESTIONS || questions.some((q) => q.length > 500)) {
-    return { status: 400, code: 'VALIDATION_ERROR', message: `At most ${MAX_ASK_QUESTIONS} questions of up to 500 characters` };
-  }
+  const questions = cleanQuestions(input.questions);
+  if ('code' in questions) return questions;
   const node = await decidable(userId, mapId, nodeId);
   if ('code' in node) return node;
   if (node.approval?.state !== 'proposed') {
@@ -293,25 +354,7 @@ export async function askReporter(
   if (node.revision !== input.expectedRevision) {
     return { status: 409, code: 'TEXT_CHANGED', message: 'The ticket changed since you read it — reload and read it again' };
   }
-  const link = node.externalLinks.find((l) => isForgeLink(l) && !l.isPullRequest);
-  const parsed = link ? parseExternalId(link.externalId) : null;
-  if (!link || !parsed) return { status: 400, code: 'NO_ISSUE', message: 'This ticket has no linked issue to ask on' };
-  const ctx = await getGitHubContextForMap(mapId);
-  if (!ctx) return { status: 400, code: 'NO_ISSUE', message: 'The map has no issue tracker connected' };
-
-  const [me] = await db.select({ name: users.name }).from(users).where(eq(users.id, userId));
-  try {
-    await commentOnGitHubIssue(parsed.owner, parsed.repo, parsed.issueNumber, askReporterComment(me?.name.split(/\s+/)[0] || 'a trusted user', questions), ctx.forge);
-  } catch (err) {
-    return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: false, error: err instanceof Error ? err.message : String(err) }] };
-  }
-  // The comment is out: a bookkeeping failure must not read as "not posted" and invite a second post.
-  try {
-    const { title, description } = textOf(node);
-    await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
-    await recordEvent({ mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: link.externalId } });
-  } catch (err) {
-    console.warn(`[ask-reporter] posted on ${link.externalId} but could not record it:`, err);
-  }
-  return { node, changedFields: [], writes: [{ kind: 'comment', target: link.externalId, done: true }] };
+  const target = await askTarget(node);
+  if ('code' in target) return target;
+  return { node, changedFields: [], writes: [await postQuestions(userId, node, target, questions, 'proposed')] };
 }

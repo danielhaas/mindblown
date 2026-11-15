@@ -22,6 +22,7 @@ import { broadcast } from '../ws.js';
 import * as events from '../db/events.js';
 import { getForgeRepoForMap } from '../lib/githubContext.js';
 import { noteQueueState } from './webhooks.js';
+import { ASKS_QUESTIONS, currentReviews } from './approvalReview.js';
 import {
   buildClaimedEvent,
   buildReleasedEvent,
@@ -1088,10 +1089,24 @@ async function claimFromMap(
       claimedAt: winner.claimedAt,
       ...(check ? { check } : {}),
       ...(winner.approval?.merge === 'pr-only' ? { approval: await prOnlyApproval(tx, winner) } : {}),
+      ...(await openQuestionsOf(winner)),
     };
     return { winner, ticket };
   }
   return null;
+}
+
+/**
+ * The AI read's open points on the text a person approved: the worker
+ * settles each with a default and names it in the PR. Only for ticket text
+ * that went through the approval gate, and only while the read still
+ * matches the text.
+ */
+async function openQuestionsOf(node: CoreNode): Promise<Pick<TicketBrief, 'openQuestions'>> {
+  if (node.approval?.state !== 'approved' || !node.approval.by) return {};
+  const review = (await currentReviews([node])).get(node.id);
+  if (!review || !ASKS_QUESTIONS.has(review.verdict) || review.questions.length === 0) return {};
+  return { openQuestions: { questions: review.questions, askedAt: review.askedAt } };
 }
 
 /** The names a pr-only worker writes on its PR (claude-fleet#70): who asked, who let it through. */

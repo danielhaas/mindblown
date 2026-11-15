@@ -21,6 +21,8 @@ const mocks = vi.hoisted(() => ({
   // Whether the conditional claim UPDATE "wins" (an unclaimed row existed).
   claimWins: true,
   updates: [] as Array<{ table: unknown; values: Record<string, unknown> }>,
+  // The AI reads that still match a node's text (services/approvalReview.ts).
+  reviews: new Map<string, Record<string, unknown>>(),
 }));
 
 vi.mock('../../db/connection.js', async () => {
@@ -53,6 +55,11 @@ vi.mock('../../ws.js', () => ({ broadcast: mocks.broadcastMock }));
 vi.mock('../../db/events.js', () => ({
   recordClaimed: mocks.recordClaimedMock,
   recordReleased: mocks.recordReleasedMock,
+}));
+
+vi.mock('../approvalReview.js', () => ({
+  ASKS_QUESTIONS: new Set(['open-questions', 'needs-info']),
+  currentReviews: async (nodes: Array<{ id: string }>) => new Map(nodes.flatMap((n) => (mocks.reviews.has(n.id) ? [[n.id, mocks.reviews.get(n.id)]] : []))),
 }));
 
 import { getNextTicket } from '../orchestration.js';
@@ -187,5 +194,26 @@ describe('getNextTicket — approval gate (#492)', () => {
     mocks.userRows = [{ id: 'u-dan', name: 'Dan' }];
     const result = await getNextTicket('map-1', 'njoerd:worker-3:default');
     expect(result.ticket?.approval).toEqual({ merge: 'pr-only', reportedBy: 'octocat', approvedBy: 'Dan' });
+  });
+
+  it('hands a person-approved ticket out with the AI read\'s open questions, and nothing else does', async () => {
+    const approved = { state: 'approved', merge: 'auto', by: 'u-dan', at: '2026-10-28T00:00:00.000Z' };
+    mocks.nodeRows = [
+      row({ id: 'root', parentId: null, childrenOrder: ['leaf'], status: null, description: null }),
+      row({ id: 'leaf', approval: approved }),
+    ];
+    mocks.reviews = new Map([['leaf', { verdict: 'open-questions', reason: 'x', questions: ['Which colour?'], askedAt: '2026-11-15T06:00:00.000Z' }]]);
+    let result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    expect(result.ticket?.openQuestions).toEqual({ questions: ['Which colour?'], askedAt: '2026-11-15T06:00:00.000Z' });
+
+    // A ready read carries no questions; approved by the policy never went through the card.
+    mocks.reviews = new Map([['leaf', { verdict: 'ready', reason: 'x', questions: [], askedAt: null }]]);
+    result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    expect(result.ticket?.openQuestions).toBeUndefined();
+    mocks.reviews = new Map([['leaf', { verdict: 'needs-info', reason: 'x', questions: ['Which?'], askedAt: null }]]);
+    mocks.nodeRows[1] = row({ id: 'leaf', approval: { ...approved, by: null } });
+    result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    expect(result.ticket?.openQuestions).toBeUndefined();
+    mocks.reviews = new Map();
   });
 });

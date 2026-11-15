@@ -246,6 +246,13 @@ export const getNextTicketTool = defineTool({
           `  PR note: "Opened from a ticket by ${t.approval.reportedBy ?? 'an unknown reporter'}, approved by ${t.approval.approvedBy ?? 'the map\'s trust policy'} — needs a human merge."`,
         );
       }
+      if (t.openQuestions) {
+        lines.push(
+          `  open questions (from an AI read of the reporter's text${t.openQuestions.askedAt ? `; asked on the issue ${t.openQuestions.askedAt.slice(0, 10)} — check it for answers` : ''}):`,
+        );
+        for (const q of t.openQuestions.questions) lines.push(`    - ${q}`);
+        lines.push('    Pick a sensible default for each that has no answer, and list what you assumed in the PR description.');
+      }
       lines.push('');
       lines.push(t.description ? `Brief:\n${t.description}` : t.githubLinks.length > 0 ? 'Brief: (no description — read the linked issue)' : 'Brief: (no description — the title is the brief)');
     } else {

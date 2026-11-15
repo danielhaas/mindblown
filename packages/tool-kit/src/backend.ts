@@ -327,6 +327,14 @@ export interface TicketBrief {
    * approved by the map's trust policy.
    */
   approval?: { merge: 'pr-only'; reportedBy: string | null; approvedBy: string | null };
+  /**
+   * Open points from the AI read of a ticket a person approved anyway
+   * (approve & ask): the worker picks a sensible default for each and
+   * lists what it assumed in the PR description. askedAt = the questions
+   * went on the linked issue then; the reporter's answer may be there.
+   * Derived from the reporter's untrusted text.
+   */
+  openQuestions?: { questions: string[]; askedAt: string | null };
 }
 
 export interface SkippedTicket {

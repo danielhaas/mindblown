@@ -5,7 +5,7 @@
  *   GET  /api/approvals                              — every map the reader can view
  *   GET  /api/maps/:id/approvals                     — one map
  *   GET  /api/fleets/:id/approvals                   — a fleet's maps the reader can view
- *   POST /api/maps/:id/nodes/:nodeId/approve         — { merge?, description? }
+ *   POST /api/maps/:id/nodes/:nodeId/approve         — { merge?, description?, expectedRevision?, askQuestions? }
  *   POST /api/maps/:id/nodes/:nodeId/reject          — { note?, closeIssue? }
  *   POST /api/maps/:id/nodes/:nodeId/ask-reporter    — { questions, expectedRevision? } → comment on the issue
  *
@@ -79,7 +79,12 @@ export async function approvalsRoutes(app: FastifyInstance): Promise<void> {
     if (!req.userId) return unauthorized(reply);
     if (isAgentRequest(req)) return needsSession(reply);
     const body = (req.body ?? {}) as ApproveInput;
-    return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, { merge: body.merge, description: body.description, expectedRevision: body.expectedRevision }));
+    return sendOutcome(reply, await approveTicket(req.userId, req.params.id, req.params.nodeId, {
+        merge: body.merge,
+        description: body.description,
+        expectedRevision: body.expectedRevision,
+        askQuestions: body.askQuestions,
+      }));
   });
 
   app.post<{ Params: { id: string; nodeId: string }; Body: AskReporterInput & { expectedRevision?: number } }>('/api/maps/:id/nodes/:nodeId/ask-reporter', async (req, reply) => {
