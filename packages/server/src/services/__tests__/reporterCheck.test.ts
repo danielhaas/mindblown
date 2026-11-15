@@ -33,8 +33,8 @@ vi.mock('../../db/reporterChecks.js', () => {
     listOpenChecks: async (mapIds: string[]) => [...s.rows.values()].filter((r) => open(r) && mapIds.includes(r.mapId)),
     listAllOpenChecks: async () => [...s.rows.values()].filter(open),
     getCheck: async (id: string) => s.rows.get(id) ?? null,
-    checksOf: async (ids: string[]) => new Map(ids.filter((id) => s.rows.has(id)).map((id) => [id, { state: s.rows.get(id)!.state, doneAt: s.rows.get(id)!.doneAt }])),
-    insertCheck: async (row: Pick<ReporterCheckRow, 'nodeId' | 'mapId' | 'issueRef' | 'issueUrl' | 'reporter'>) => {
+    checksOf: async (ids: string[]) => new Map(ids.filter((id) => s.rows.has(id)).map((id) => [id, { state: s.rows.get(id)!.state, mergeSha: s.rows.get(id)!.mergeSha }])),
+    insertCheck: async (row: Pick<ReporterCheckRow, 'nodeId' | 'mapId' | 'issueRef' | 'issueUrl' | 'reporter' | 'mergeSha'>) => {
       if (s.rows.has(row.nodeId)) return false;
       s.rows.set(row.nodeId, {
         ...row,
@@ -66,6 +66,7 @@ vi.mock('../../db/nodes.js', () => ({
   getNode: async (id: string) => s.nodes.get(id) ?? null,
   updateNode: (...a: unknown[]) => updateNode(...a),
 }));
+vi.mock('../../db/maps.js', () => ({ getStatusWorkflow: async () => [{ id: 'released', name: 'Released', category: 'done', color: '#000', position: 9 }] }));
 vi.mock('../../db/events.js', () => ({ recordEvent: (...a: unknown[]) => recordEvent(...a) }));
 vi.mock('../../db/connection.js', () => ({
   db: { select: () => ({ from: () => ({ where: async () => [{ name: 'Daniel Haas' }] }) }) },
@@ -127,6 +128,7 @@ function asked(over: Partial<ReporterCheckRow> = {}): ReporterCheckRow {
     replyUrl: null,
     replyExcerpt: null,
     doneAt: null,
+    mergeSha: 'sha1',
     ...over,
   };
 }
@@ -170,11 +172,20 @@ describe('discoverChecks', () => {
     expect(await discoverChecks(NOW)).toBe(0);
   });
 
-  it('starts a new round for a ticket finished again after its check ended; nothing before the feature went live', async () => {
-    s.candidates = [node({ completedAt: '2026-11-19T00:00:00.000Z' })];
-    s.rows.set('n1', asked({ state: 'done', outcome: 'confirmed', doneAt: new Date('2026-11-18T12:00:00.000Z') }));
+  it('starts a new round only on a new merge — writing done again asks nobody twice', async () => {
+    const link = node().externalLinks[0];
+    s.rows.set('n1', asked({ state: 'done', outcome: 'confirmed', doneAt: NOW, mergeSha: 'sha1' }));
+    s.candidates = [node({ externalLinks: [{ ...link, mergeCommitSha: 'sha1' }] })];
+    expect(await discoverChecks(NOW)).toBe(0);
+    s.candidates = [node({ externalLinks: [{ ...link, mergeCommitSha: 'sha2' }] })];
     expect(await discoverChecks(NOW)).toBe(1);
-    expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy' });
+    expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy', mergeSha: 'sha2' });
+  });
+
+  it("counts a map's own done status, never a cancelled ticket", async () => {
+    s.candidates = [node({ status: 'released', percentComplete: 80 }), node({ id: 'n9', status: 'cancelled' })];
+    expect(await discoverChecks(NOW)).toBe(1);
+    expect([...s.rows.keys()]).toEqual(['n1']);
   });
 });
 
@@ -193,6 +204,21 @@ describe('markDeployed', () => {
     // A second signal asks nobody twice.
     expect(await markDeployed(MAP, NOW)).toEqual({ asked: [], notLanded: [], failed: [] });
     expect(comment).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks on the merge MindBlown recorded, also for the fleet's \"Refs #N\" PRs the closing-keyword probe cannot see", async () => {
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergeCommitSha: 'sha1' }] })];
+    s.nodes.set('n1', s.candidates[0]);
+    s.probe = { landed: null, inFlight: false };
+    expect((await markDeployed(MAP, NOW)).asked).toHaveLength(1);
+  });
+
+  it('a Refs PR merged before the node was done left only its number on the link — that counts too', async () => {
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergedPrNumber: 77 }] })];
+    s.nodes.set('n1', s.candidates[0]);
+    s.probe = { landed: null, inFlight: false };
+    expect((await markDeployed(MAP, NOW)).asked).toHaveLength(1);
+    expect(s.rows.get('n1')).toMatchObject({ mergeSha: 'pr#77' });
   });
 
   it('asks nobody about work the forge says has not landed — a pr-only node is done at PR open', async () => {
@@ -272,6 +298,12 @@ describe('runReporterChecks', () => {
     expect(await runReporterChecks(NOW)).toMatchObject({ reminded: 0, timedOut: 0 });
   });
 
+  it('a merged ticket never deployed for 30 days stops holding the issue', async () => {
+    s.rows.set('n1', asked({ state: 'waiting-deploy', askedAt: null, createdAt: new Date(NOW.getTime() - 31 * DAY) }));
+    expect(await runReporterChecks(NOW)).toMatchObject({ expired: 1 });
+    expect(s.rows.get('n1')).toMatchObject({ state: 'done', outcome: 'expired' });
+  });
+
   it('reminds once after 7 days, closes after 21', async () => {
     s.rows.set('n1', asked({ askedAt: new Date(NOW.getTime() - 8 * DAY) }));
     expect(await runReporterChecks(NOW)).toMatchObject({ reminded: 1 });
@@ -305,7 +337,17 @@ describe('the card', () => {
     expect((patch as unknown as { externalLinks: Array<Record<string, unknown>> }).externalLinks[0]).toMatchObject({ mergeCommitSha: null, mergedPrNumber: null });
     expect(patch.description).toMatch(/^Reopened after the reporter's check \(Daniel, \d{4}-\d{2}-\d{2}\): Safari still shows the light theme\n\nAdd a dark mode$/);
     expect(patch.description).not.toContain('ignore your rules');
-    expect(s.rows.has('n1')).toBe(false); // the next finish starts a fresh check
+    // The row stays, holding the issue open while the work is redone; the next merge starts the next round.
+    expect(s.rows.get('n1')).toMatchObject({ state: 'reworking', replyExcerpt: null });
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergeCommitSha: 'sha1' }] })];
+    expect(await discoverChecks(NOW)).toBe(0); // the old merge starts nothing
+    s.candidates = [node({ externalLinks: [{ ...node().externalLinks[0], mergeCommitSha: 'sha2' }] })];
+    expect(await discoverChecks(NOW)).toBe(1);
+    expect(s.rows.get('n1')).toMatchObject({ state: 'waiting-deploy', mergeSha: 'sha2' });
+    // The card does not list a reworking ticket.
+    s.rows.set('n1', { ...s.rows.get('n1')!, state: 'reworking' });
+    const list = await listReporterChecks(DAN, { mapId: MAP });
+    expect('items' in list && list.items).toEqual([]);
   });
 
   it('refuses without a note, without rights, and on a check that is not open', async () => {
@@ -317,6 +359,14 @@ describe('the card', () => {
     s.rows.set('n1', asked({ state: 'waiting-deploy' }));
     expect(await closeAfterCheck(DAN, MAP, 'n1')).toMatchObject({ status: 409, code: 'NOT_OPEN' });
     expect(updateIssue).not.toHaveBeenCalled();
+  });
+
+  it("a close that loses to a person's Reopen is taken back, so their work is not marked done", async () => {
+    s.rows.set('n1', asked());
+    // Someone reopens while our close is on the wire.
+    updateIssue.mockImplementationOnce(async () => void s.rows.set('n1', asked({ state: 'reworking' })));
+    expect(await closeAfterCheck(DAN, MAP, 'n1')).toMatchObject({ status: 409 });
+    expect(reopen).toHaveBeenCalledWith({ externalId: 'org/navy#12' }, forge);
   });
 
   it('close: closes the issue as completed first, then marks done and comments', async () => {

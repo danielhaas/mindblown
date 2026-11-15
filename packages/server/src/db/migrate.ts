@@ -1575,7 +1575,8 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
       reply_at TIMESTAMPTZ,
       reply_url TEXT,
       reply_excerpt TEXT,
-      done_at TIMESTAMPTZ
+      done_at TIMESTAMPTZ,
+      merge_sha TEXT
     )
   `);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS reporter_checks_open_idx ON reporter_checks (map_id) WHERE state <> 'done'`);

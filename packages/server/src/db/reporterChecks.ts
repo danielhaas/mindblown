@@ -19,6 +19,7 @@ export interface ReporterCheckRow {
   replyUrl: string | null;
   replyExcerpt: string | null;
   doneAt: Date | null;
+  mergeSha: string | null;
 }
 
 type Raw = typeof reporterChecks.$inferSelect;
@@ -47,13 +48,13 @@ export async function getCheck(nodeId: string): Promise<ReporterCheckRow | null>
 }
 
 /** The rows these nodes already have, any state — by node id. */
-export async function checksOf(nodeIds: string[]): Promise<Map<string, Pick<ReporterCheckRow, 'state' | 'doneAt'>>> {
+export async function checksOf(nodeIds: string[]): Promise<Map<string, Pick<ReporterCheckRow, 'state' | 'mergeSha'>>> {
   if (nodeIds.length === 0) return new Map();
   const rows = await db
-    .select({ nodeId: reporterChecks.nodeId, state: reporterChecks.state, doneAt: reporterChecks.doneAt })
+    .select({ nodeId: reporterChecks.nodeId, state: reporterChecks.state, mergeSha: reporterChecks.mergeSha })
     .from(reporterChecks)
     .where(inArray(reporterChecks.nodeId, nodeIds));
-  return new Map(rows.map((r) => [r.nodeId, { state: r.state as ReporterCheckState, doneAt: r.doneAt }]));
+  return new Map(rows.map((r) => [r.nodeId, { state: r.state as ReporterCheckState, mergeSha: r.mergeSha }]));
 }
 
 /**
@@ -75,7 +76,7 @@ export async function askingOnIssue(issueRef: string): Promise<boolean> {
 }
 
 /** Start a check; a node that already has one keeps it. True when a row was written. */
-export async function insertCheck(row: Pick<ReporterCheckRow, 'nodeId' | 'mapId' | 'issueRef' | 'issueUrl' | 'reporter'>): Promise<boolean> {
+export async function insertCheck(row: Pick<ReporterCheckRow, 'nodeId' | 'mapId' | 'issueRef' | 'issueUrl' | 'reporter' | 'mergeSha'>): Promise<boolean> {
   const out = await db
     .insert(reporterChecks)
     .values({ ...row, state: 'waiting-deploy' })

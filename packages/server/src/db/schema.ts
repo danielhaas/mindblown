@@ -790,6 +790,8 @@ export const reporterChecks = pgTable('reporter_checks', {
   replyUrl: text('reply_url'),
   replyExcerpt: text('reply_excerpt'),
   doneAt: timestamp('done_at', { withTimezone: true }),
+  // The merge commit this round is about: a new one starts the next round.
+  mergeSha: text('merge_sha'),
 });
 
 // ── Daily mail with open questions (#597) ──────────────────────────

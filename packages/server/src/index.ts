@@ -503,9 +503,9 @@ async function main(): Promise<void> {
     reporterCheckRunning = true;
     try {
       const r = await runReporterChecks();
-      const moved = r.started + r.confirmed + r.closed + r.replied + r.reminded + r.timedOut;
+      const moved = r.started + r.confirmed + r.closed + r.replied + r.reminded + r.timedOut + r.expired;
       if (moved > 0) {
-        console.log(`[reporter-check] started=${r.started} confirmed=${r.confirmed} closed=${r.closed} replied=${r.replied} reminded=${r.reminded} timedOut=${r.timedOut}`);
+        console.log(`[reporter-check] started=${r.started} confirmed=${r.confirmed} closed=${r.closed} replied=${r.replied} reminded=${r.reminded} timedOut=${r.timedOut} expired=${r.expired}`);
       }
       for (const err of r.errors.slice(0, 5)) console.warn(`[reporter-check] ${err}`);
     } catch (err) {

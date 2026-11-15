@@ -9,11 +9,13 @@
  *                   REMIND_AFTER_DAYS, closed after CLOSE_AFTER_DAYS
  *   replied         the reporter answered without closing — a person
  *                   decides: reopen the ticket, or close the issue
- *   done            closed by the reporter (confirmed), by a person,
- *                   on the timeout, or reopened as work
+ *   reworking       a person reopened it after the check; the issue stays
+ *                   held until the next merge starts the next round
+ *   done            closed by the reporter (confirmed), by a person, on
+ *                   the timeout, or never deployed (expired)
  */
-export type ReporterCheckState = 'waiting-deploy' | 'asked' | 'replied' | 'done';
-export type ReporterCheckOutcome = 'confirmed' | 'closed' | 'timeout' | 'reopened';
+export type ReporterCheckState = 'waiting-deploy' | 'asked' | 'replied' | 'reworking' | 'done';
+export type ReporterCheckOutcome = 'confirmed' | 'closed' | 'timeout' | 'expired';
 
 export const REPORTER_REMIND_AFTER_DAYS = 7;
 export const REPORTER_CLOSE_AFTER_DAYS = 21;
