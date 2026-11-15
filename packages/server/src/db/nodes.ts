@@ -816,6 +816,28 @@ export async function listProposedNodes(mapIds: string[]): Promise<CoreNode[]> {
 }
 
 /**
+ * Finished tickets that may owe their reporter a check (services/reporterCheck.ts):
+ * reported on a forge, let through by a person (the approval gate), finished
+ * since `since`. Done-ness and the issue's state are read by the caller.
+ */
+export async function listReporterCheckCandidates(since: Date): Promise<CoreNode[]> {
+  const rows = await db
+    .select()
+    .from(nodes)
+    .where(
+      and(
+        notDeleted,
+        onActiveMap,
+        sql`${nodes.reportedBy}->>'kind' = 'forge'`,
+        sql`${nodes.approval}->>'state' = 'approved'`,
+        sql`${nodes.approval}->>'by' IS NOT NULL`,
+        sql`${nodes.completedAt} >= ${since}`,
+      ),
+    );
+  return rows.map((r) => dbNodeToCore(r as unknown as Record<string, unknown>));
+}
+
+/**
  * Refresh the cached open/closed `state` on a single GitHub external link
  * without touching anything else on the node.
  *

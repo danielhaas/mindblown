@@ -60,7 +60,7 @@ export async function approverRefusal(userId: string, mapId: string): Promise<Ap
 }
 
 /** Which maps a list covers: one map, a fleet's maps the reader can view, or all of the reader's maps. */
-async function mapsInScope(userId: string, scope: { mapId?: string; fleetId?: string }): Promise<Array<{ id: string; name: string }> | ApprovalError> {
+export async function mapsInScope(userId: string, scope: { mapId?: string; fleetId?: string }): Promise<Array<{ id: string; name: string }> | ApprovalError> {
   if (scope.mapId) {
     if (!permDb.hasPermission(await permDb.getPermission(scope.mapId, userId), 'view')) {
       return { status: 403, code: 'FORBIDDEN', message: 'View access required' };

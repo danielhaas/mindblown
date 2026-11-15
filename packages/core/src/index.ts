@@ -449,6 +449,8 @@ export { SAFE_TRUST_LEVEL, defaultTrustPolicy, trustLevel, automationFor, approv
 export type { TrustLevel, TrustDispatch, TrustMerge, TrustLevelPolicy, TrustPolicy, TrustAutomation, ForgeUserLink } from './trust.js';
 // Deciding on proposed tickets (#494)
 export { approvalHints, MAX_ASK_QUESTIONS } from './approval.js';
+export { REPORTER_REMIND_AFTER_DAYS, REPORTER_CLOSE_AFTER_DAYS } from './reporterCheck.js';
+export type { ReporterCheck, ReporterCheckList, ReporterCheckState, ReporterCheckOutcome, ReopenAfterCheckInput, DeployedResult } from './reporterCheck.js';
 export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, AskReporterInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
 
 // Guided onboarding: the project setup checklist

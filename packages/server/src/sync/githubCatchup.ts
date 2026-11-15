@@ -50,6 +50,7 @@ import { handlePrClosed, type GhPrPayload } from './prSync.js';
 import { pushKumaHeartbeat } from './kumaPush.js';
 import { sdNotifyWatchdog } from './sdNotify.js';
 import { appBindingKey, clearForgeRefusal, noteForgeRefusal, refusalStatus, rowBindingKey } from './forgeRefusals.js';
+import { issueCloseHeld } from '../db/reporterChecks.js';
 
 // ── Per-repo auth-failure tracking (#75) ─────────────────────────
 //
@@ -529,7 +530,7 @@ export async function resolveHeldCloses(
           links = node.externalLinks.map((l) => (l === link ? stamped : l));
           await nodeDb.updateNode(c.nodeId, { externalLinks: links });
         }
-        const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge);
+        const result = await updateGitHubIssue({ ...node, externalLinks: links }, stamped, forge, { holdClose: await issueCloseHeld(node.id) });
         if (result.stateAction !== 'closed_completed') continue; // retried next round, mirror still armed
         await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
         await replay(defaultBranch);
@@ -569,7 +570,7 @@ export async function resolveHeldCloses(
       // claim wins (livelock rule) — let the outbound decision close it.
       const link = node.externalLinks.find((l) => isForgeLink(l) && l.externalId === c.externalId);
       if (!link) continue;
-      const result = await updateGitHubIssue(node, link, forge);
+      const result = await updateGitHubIssue(node, link, forge, { holdClose: await issueCloseHeld(node.id) });
       if (result.stateAction === 'closed_completed') {
         await nodeDb.setExternalLinkState(c.nodeId, c.externalId, 'closed');
         closed++;
@@ -838,7 +839,10 @@ export async function reconcileRepo(target: RepoTarget): Promise<ReconcileResult
       const node = await nodeDb.getNode(hit.nodeId);
       if (!node) { skipped++; continue; }
 
-      const updates = computeStateUpdates(node, issue, externalId);
+      // An issue the reporter's check reopened to ask is open on purpose while the node stays done.
+      const askingReporter =
+        issue.state !== 'closed' && (node.status === 'done' || node.percentComplete === 100) && (await issueCloseHeld(node.id));
+      const updates = askingReporter ? null : computeStateUpdates(node, issue, externalId);
       if (!updates) {
         // No progress/status transition, but the link's cached open/closed
         // mirror may still be absent (most links were created without it)

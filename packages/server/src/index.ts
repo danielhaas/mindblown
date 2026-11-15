@@ -50,6 +50,7 @@ import { fleetEntityRoutes } from './routes/fleets.js';
 import { fleetPairingRoutes } from './routes/fleetPairings.js';
 import { asksRoutes } from './routes/asks.js';
 import { approvalsRoutes } from './routes/approvals.js';
+import { reporterChecksRoutes } from './routes/reporterChecks.js';
 import { digestMailRoutes } from './routes/digestMail.js';
 import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
 import { repoDocsRoutes } from './routes/repoDocs.js';
@@ -58,6 +59,7 @@ import { runStaleClaimSweep } from './sync/staleClaimSweeper.js';
 import { runAutoCheck } from './services/asksInbox.js';
 import { runApprovalNotifications } from './services/approvalNotifications.js';
 import { runApprovalReviews } from './services/approvalReview.js';
+import { runReporterChecks } from './services/reporterCheck.js';
 import { digestConfig, runDigestMails } from './services/digestMail.js';
 import { pushoverConfigured } from './lib/pushover.js';
 import { onBroadcast, registerWebSocket } from './ws.js';
@@ -149,6 +151,7 @@ async function main(): Promise<void> {
   await app.register(fleetPairingRoutes);
   await app.register(asksRoutes);
   await app.register(approvalsRoutes);
+  await app.register(reporterChecksRoutes);
   await app.register(digestMailRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(fleetJournalByFleetRoutes);
@@ -488,6 +491,30 @@ async function main(): Promise<void> {
     }
   };
   setInterval(approvalReviewTick, APPROVAL_REVIEW_INTERVAL_MS);
+
+  // ── The reporter's check ─────────────────────────────────────
+  // Every 10 min: start checks for finished outside tickets, and read the
+  // asked issues — closed by the reporter, a reply, a reminder due, the
+  // timeout. Asking itself waits for a deploy signal (POST /deployed).
+  const REPORTER_CHECK_INTERVAL_MS = 10 * 60 * 1000;
+  let reporterCheckRunning = false;
+  const reporterCheckTick = async (): Promise<void> => {
+    if (reporterCheckRunning) return;
+    reporterCheckRunning = true;
+    try {
+      const r = await runReporterChecks();
+      const moved = r.started + r.confirmed + r.closed + r.replied + r.reminded + r.timedOut;
+      if (moved > 0) {
+        console.log(`[reporter-check] started=${r.started} confirmed=${r.confirmed} closed=${r.closed} replied=${r.replied} reminded=${r.reminded} timedOut=${r.timedOut}`);
+      }
+      for (const err of r.errors.slice(0, 5)) console.warn(`[reporter-check] ${err}`);
+    } catch (err) {
+      console.error('[reporter-check] tick caught unexpected error:', err);
+    } finally {
+      reporterCheckRunning = false;
+    }
+  };
+  setInterval(reporterCheckTick, REPORTER_CHECK_INTERVAL_MS);
 
   // ── Daily mail with open questions (#597) ─────────────────────
   // Every 10 min: from DIGEST_MAIL_HOUR (default 08:00 in DIGEST_MAIL_TZ,

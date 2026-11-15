@@ -30,6 +30,7 @@ import { LeidangCards } from './DispatchCards.js';
 import { FleetJournalSection } from './FleetJournal.js';
 import { AsksSection } from './AsksView.js';
 import { ApprovalsSection } from './ApprovalsView.js';
+import { ReporterChecksSection } from './ReporterChecksView.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
 import { FleetScopeContext } from './fleetScope.js';
@@ -125,6 +126,7 @@ export function FleetView() {
         <div style={{ marginTop: 16 }}>
           <ApprovalsSection />
           <AsksSection />
+          <ReporterChecksSection />
         </div>
         {/* The journal is a report over a window, full width under the live
             cards: "what did the fleet do last night?" is read top to bottom,
@@ -313,6 +315,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
             <div style={{ marginTop: 16 }}>
               <ApprovalsSection />
               <AsksSection />
+              <ReporterChecksSection />
             </div>
             <div style={{ marginTop: 16 }}>
               <FleetJournalSection />

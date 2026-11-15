@@ -376,7 +376,9 @@ export type IssueStateHoldReason =
   /** The landing probe found an open PR that claims to close this issue. */
   | 'pr_in_flight'
   /** The landing probe itself failed — we refuse to close on no evidence. */
-  | 'probe_failed';
+  | 'probe_failed'
+  /** The reporter is checking the fix; they (or a person) close the issue. */
+  | 'reporter_check';
 
 export interface UpdateIssueResult {
   issue: GitHubIssue;
@@ -400,6 +402,12 @@ export interface UpdateIssueResult {
 }
 
 export interface UpdateIssueOptions {
+  /**
+   * The reporter is checking the deployed fix (server services/reporterCheck.ts):
+   * a done node does not close the issue — the reporter or a person does.
+   * The state is left out of the patch, as for any other hold.
+   */
+  holdClose?: boolean;
   /**
    * Injection seam for the landing probe (tests, and callers that
    * already hold the answer). Defaults to the live
@@ -494,6 +502,8 @@ export async function updateGitHubIssue(
   if (!looksDone) {
     patchBody.state = 'open';
     stateAction = 'reopened';
+  } else if (options.holdClose) {
+    holdReason = 'reporter_check';
   } else {
     const action = issueCloseAction(node.linkedPr, externalLink, node.completedAt);
     if (action.kind === 'close') {

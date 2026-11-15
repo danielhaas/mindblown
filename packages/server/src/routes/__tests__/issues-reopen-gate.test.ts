@@ -23,7 +23,9 @@ const mocks = vi.hoisted(() => ({
   selectNodesMock: vi.fn(),
   broadcastMock: vi.fn(),
   verifySignatureMock: vi.fn(async () => true),
+  openCheck: false,
 }));
+vi.mock('../../db/reporterChecks.js', () => ({ hasOpenCheck: async () => mocks.openCheck }));
 
 vi.mock('@mindblown/integrations', async () => {
   const actual = await vi.importActual<typeof import('@mindblown/integrations')>(
@@ -310,6 +312,18 @@ describe('issues.reopened × in-flight PR (prBlocksNodeReopen parity with catchu
     const fields = mocks.updateNodeMock.mock.calls[0][1] as Record<string, unknown>;
     expect(fields.percentComplete).toBe(40);
     expect(fields.status).toBe('in_progress');
+  });
+
+  it("does not reset a done node whose issue the reporter's check reopened to ask", async () => {
+    const node = doneNode({}, null);
+    mocks.selectNodesMock.mockResolvedValue([{ id: node.id, externalLinks: node.externalLinks }]);
+    mocks.getNodeMock.mockResolvedValue(node);
+    mocks.openCheck = true;
+    const res = await postReopen();
+    mocks.openCheck = false;
+    expect(res.json()).toMatchObject({ skipped: 'reporter_check' });
+    expect(mocks.updateNodeMock).not.toHaveBeenCalled();
+    expect(mocks.setExternalLinkStateMock).toHaveBeenCalledWith(node.id, expect.any(String), 'open');
   });
 
   it('resets with the fallback when no PR is linked (legacy behavior)', async () => {

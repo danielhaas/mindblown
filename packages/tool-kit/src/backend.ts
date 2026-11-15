@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, DeployedResult, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -592,6 +592,13 @@ export interface ToolBackend {
   /** Proposed tickets: one map, a fleet's maps, or (neither) every map the caller can view. */
   listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList>;
   // No approve/reject (#606): deciding happens on the approval card only.
+
+  // ── The reporter's check ────────────────────────────────────────
+  /** Outside reporters checking a deployed fix: one map, a fleet's maps, or every map the caller can view. */
+  listReporterChecks(scope: { mapId?: string; fleetId?: string }): Promise<ReporterCheckList>;
+  /** The map was deployed: reopen each waiting issue and ask its reporter (edit on the map). */
+  markDeployed(mapId: string): Promise<DeployedResult>;
+  // No reopen/close: deciding a reply means reading the reporter's untrusted text — the card only.
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(
