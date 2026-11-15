@@ -177,9 +177,16 @@ describe('approveTicket', () => {
     const forgeAuthor = { kind: 'forge', provider: 'github', login: 'stranger' } as Node['reportedBy'];
     state.nodes.set('n1', node({ reportedBy: forgeAuthor, tags: ['bug', 'needs-human'] }));
     const out = await approveTicket(DAN, MAP, 'n1', {});
-    expect(out).toMatchObject({ changedFields: ['approval', 'tags'], node: { tags: ['bug'] } });
-    expect(updateNodeMock).toHaveBeenCalledWith('n1', { tags: ['bug'] });
+    expect(out).toMatchObject({ changedFields: ['approval', 'tags'] });
+    // Remove-only: a tag edit landing at the same moment is not overwritten.
+    expect(updateNodeMock).toHaveBeenCalledWith('n1', { tagsRemove: ['needs-human'] });
     expect(recordFieldChangesMock).toHaveBeenCalledTimes(1);
+
+    // A person made it theirs (Your steps, plan_fix): that needs-human is not the ingest's.
+    updateNodeMock.mockClear();
+    state.nodes.set('n1', node({ reportedBy: forgeAuthor, tags: ['needs-human'], description: 'Next step (a person): call the vendor\n\nDo it.' }));
+    expect(await approveTicket(DAN, MAP, 'n1', {})).toMatchObject({ changedFields: ['approval'] });
+    expect(updateNodeMock).not.toHaveBeenCalled();
 
     // A person's needs-human on a ticket a user reported stays.
     updateNodeMock.mockClear();

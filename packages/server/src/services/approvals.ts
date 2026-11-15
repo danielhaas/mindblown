@@ -14,7 +14,7 @@
  * note on the linked forge issue; the issue stays open unless asked.
  */
 import { eq, inArray } from 'drizzle-orm';
-import { approvalHints, buildIsDonePredicate, isForgeLink, MAX_ASK_QUESTIONS, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
+import { approvalHints, buildIsDonePredicate, isForgeLink, MAX_ASK_QUESTIONS, nextStepOf, proseMirrorToPlainText, trustLevel } from '@mindblown/core';
 import type { ApproveInput, AskReporterInput, NodeApproval, Node as CoreNode, PendingApproval, PendingApprovalList, RejectInput } from '@mindblown/core';
 import { closeGitHubIssue, commentOnGitHubIssue, parseExternalId } from '@mindblown/integrations';
 import { db } from '../db/connection.js';
@@ -226,15 +226,18 @@ export async function approveTicket(userId: string, mapId: string, nodeId: strin
  * (lib/forgeTrust.ts, older than the approval gate) as well as proposed.
  * The approval is the decision that hold waits for — keeping the tag
  * would leave an approved ticket skipped as human-only. Only on a ticket
- * a forge author reported: a person's own needs-human on other tickets
- * stays. Best effort: the approval stands if this write fails.
+ * a forge author reported, and not when a person made the ticket theirs
+ * ("Next step (a person): …", written with every deliberate needs-human):
+ * that hold is a person's, not the ingest's. Remove-only, so a tag edit
+ * landing at the same moment survives. Best effort: the approval stands
+ * if this write fails.
  */
 async function releaseIngestHold(userId: string, node: CoreNode): Promise<CoreNode | null> {
-  if (node.reportedBy?.kind !== 'forge') return null;
-  const tags = node.tags.filter((t) => t.toLowerCase() !== OUTSIDE_AUTHOR_HOLD_TAG);
-  if (tags.length === node.tags.length) return null;
+  if (node.reportedBy?.kind !== 'forge' || nextStepOf(node.description) !== null) return null;
+  const hold = node.tags.filter((t) => t.toLowerCase() === OUTSIDE_AUTHOR_HOLD_TAG);
+  if (hold.length === 0) return null;
   try {
-    const updated = await nodeDb.updateNode(node.id, { tags });
+    const updated = await nodeDb.updateNode(node.id, { tagsRemove: hold });
     if (updated) await recordFieldChanges(node.mapId, node.id, userId, node, updated);
     return updated;
   } catch (err) {
