@@ -173,6 +173,37 @@ describe('approveTicket', () => {
     expect(updateNodeMock).not.toHaveBeenCalled();
   });
 
+  it('releases the needs-human ingest hold of an outside forge author, and only that', async () => {
+    const forgeAuthor = { kind: 'forge', provider: 'github', login: 'stranger' } as Node['reportedBy'];
+    state.nodes.set('n1', node({ reportedBy: forgeAuthor, tags: ['bug', 'needs-human'] }));
+    const out = await approveTicket(DAN, MAP, 'n1', {});
+    expect(out).toMatchObject({ changedFields: ['approval', 'tags'] });
+    // Remove-only: a tag edit landing at the same moment is not overwritten.
+    expect(updateNodeMock).toHaveBeenCalledWith('n1', { tagsRemove: ['needs-human'] });
+    expect(recordFieldChangesMock).toHaveBeenCalledTimes(1);
+
+    // A person made it theirs (Your steps, plan_fix): that needs-human is not the ingest's.
+    updateNodeMock.mockClear();
+    state.nodes.set('n1', node({ reportedBy: forgeAuthor, tags: ['needs-human'], description: 'Next step (a person): call the vendor\n\nDo it.' }));
+    expect(await approveTicket(DAN, MAP, 'n1', {})).toMatchObject({ changedFields: ['approval'] });
+    expect(updateNodeMock).not.toHaveBeenCalled();
+
+    // A person's needs-human on a ticket a user reported stays.
+    updateNodeMock.mockClear();
+    state.nodes.set('n1', node({ tags: ['needs-human'] }));
+    expect(await approveTicket(DAN, MAP, 'n1', {})).toMatchObject({ changedFields: ['approval'] });
+    expect(updateNodeMock).not.toHaveBeenCalled();
+  });
+
+  it('the approval stands when the hold cannot be removed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    state.nodes.set('n1', node({ reportedBy: { kind: 'forge', provider: 'github', login: 'stranger' } as Node['reportedBy'], tags: ['needs-human'] }));
+    updateNodeMock.mockRejectedValue(new Error('db blip'));
+    expect(await approveTicket(DAN, MAP, 'n1', {})).toMatchObject({ changedFields: ['approval'], node: { approval: { state: 'approved' } } });
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it('takes full auto when asked', async () => {
     await approveTicket(DAN, MAP, 'n1', { merge: 'auto' });
     expect(setApprovalMock.mock.calls[0][1]).toMatchObject({ merge: 'auto' });
