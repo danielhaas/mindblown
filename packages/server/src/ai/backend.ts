@@ -25,6 +25,7 @@ import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
 import * as approvals from '../services/approvals.js';
+import * as reporterChecks from '../services/reporterCheck.js';
 import * as webhookService from '../services/webhooks.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
@@ -464,6 +465,19 @@ export function createChatBackend(userId: string): ToolBackend {
       return out;
     },
 
+    // ── The reporter's check ──────────────────────────────────────
+    // The list carries the reporters' replies (untrusted); this surface
+    // only reads. A deploy is signalled from the card, MCP or REST — a
+    // chat model that just read a reply does not post on issues.
+    async listReporterChecks(scope) {
+      const out = await reporterChecks.listReporterChecks(userId, scope);
+      if ('status' in out) throw new Error(out.message);
+      return out;
+    },
+    async markDeployed() {
+      throw new Error('mark_deployed is not available in the in-app chat — use the Deployed button on the Fleet tab.');
+    },
+
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //
     // Deliberately read-only on this surface: the in-app chat backend
@@ -605,6 +619,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'fleetCheckBlockers',
   // Approvals (#494): the list scopes itself to viewable maps (services/approvals).
   'listPendingApprovals',
+  // The reporter's check: the list scopes itself like approvals.
+  'listReporterChecks',
 ]);
 
 /**

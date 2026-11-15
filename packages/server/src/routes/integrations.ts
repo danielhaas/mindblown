@@ -72,6 +72,7 @@ import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js'
 import { onRepoPush } from '../services/repoDocs.js';
 import { reproposeOnIssueEdit } from '../services/editReapproval.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
+import { askingOnIssue } from '../db/reporterChecks.js';
 
 // ── Helper: a workspace's row for one repo (PAT) ──────────────────
 
@@ -1661,12 +1662,21 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         return changes.title === undefined && changes.body === undefined;
       })();
 
+    // Our own reopen to ask the reporter (services/reporterCheck.ts): the
+    // work is done, so nothing a reopen normally sets off — inbox ingest,
+    // re-triage, the rollback off done — applies to it.
+    const reopenedToAskReporter =
+      event === 'issues' && payloadAction === 'reopened' && issuePayload?.number != null && !!repoFullName
+        ? await askingOnIssue(`${repoFullName}#${issuePayload.number}`)
+        : false;
+
     if (
       event === 'issues' &&
       issuePayload?.number != null &&
       repoFullName &&
       (payloadAction === 'opened' || payloadAction === 'reopened' || payloadAction === 'edited') &&
-      !isMetadataOnlyEdit
+      !isMetadataOnlyEdit &&
+      !reopenedToAskReporter
     ) {
       const slashIdx = repoFullName.indexOf('/');
       if (slashIdx > 0) {
@@ -1744,7 +1754,8 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
       event === 'issues' &&
       issuePayload?.number != null &&
       repoFullName &&
-      payloadAction === 'reopened'
+      payloadAction === 'reopened' &&
+      !reopenedToAskReporter
     ) {
       try {
         const externalId = `${repoFullName}#${issuePayload.number}`;
@@ -1917,6 +1928,12 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         // `issues-reopen-gate.test.ts` → "resets with the fallback when no
         // PR is linked (legacy behavior)" (around :252). Read that test
         // before touching this branch.
+        if (looksDoneInMB && reopenedToAskReporter) {
+          // The reporter's check reopened the issue to ask (services/reporterCheck.ts):
+          // the work is done and stays done until the reporter or a person says otherwise.
+          await nodeDb.setExternalLinkState(nodeId, externalId, 'open');
+          return reply.send({ received: true, action: actionLabel, matched: true, nodeId, skipped: 'reporter_check' });
+        }
         if (!looksDoneInMB) {
           // Echo of our own reopen (or a redundant one): the node already
           // reflects "open" — a person or the intake put it back to work.

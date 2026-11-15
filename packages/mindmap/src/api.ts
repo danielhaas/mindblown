@@ -22,6 +22,8 @@ import type {
   TrustPolicy,
   NodeApproval,
   PendingApprovalList,
+  ReporterCheckList,
+  DeployedResult,
   ApproveInput,
   RejectInput,
 } from '@mindblown/core';
@@ -1301,6 +1303,30 @@ export function approveTicket(mapId: string, nodeId: string, input: ApproveInput
 
 export function rejectTicket(mapId: string, nodeId: string, input: RejectInput): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reject`, { method: 'POST', body: JSON.stringify(input) });
+}
+
+// ── The reporter's check ─────────────────────────────────────────
+
+export function fetchReporterChecks(target: FleetTarget): Promise<ReporterCheckList> {
+  return request<ReporterCheckList>(`${fleetBase(target)}/reporter-checks`);
+}
+
+/** The project was deployed: reopen the waiting issues and ask their reporters. */
+export function markDeployed(mapId: string): Promise<DeployedResult & { ok: boolean }> {
+  return request<DeployedResult & { ok: boolean }>(`/api/maps/${mapId}/deployed`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+export interface CheckResponse {
+  writes: Array<{ kind: 'comment' | 'close'; target: string; done: boolean; error?: string }>;
+  ok: boolean;
+}
+
+export function reopenAfterCheck(mapId: string, nodeId: string, note: string): Promise<CheckResponse> {
+  return request<CheckResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reporter-check/reopen`, { method: 'POST', body: JSON.stringify({ note }) });
+}
+
+export function closeAfterCheck(mapId: string, nodeId: string): Promise<CheckResponse> {
+  return request<CheckResponse>(`/api/maps/${mapId}/nodes/${nodeId}/reporter-check/close`, { method: 'POST', body: JSON.stringify({}) });
 }
 
 /** Post the questions on the linked issue; the ticket stays proposed. */

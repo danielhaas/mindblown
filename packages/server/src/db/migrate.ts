@@ -1557,6 +1557,30 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
   // The questions as posted; the worker gets these, not the AI's draft.
   await db.execute(sql`ALTER TABLE approval_reviews ADD COLUMN IF NOT EXISTS asked_questions JSONB`);
 
+  // ── The reporter's check ────────────────────────────────────────
+  // An outside reporter checks the deployed fix before the issue closes
+  // (services/reporterCheck.ts).
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS reporter_checks (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      map_id UUID NOT NULL REFERENCES maps(id) ON DELETE CASCADE,
+      issue_ref TEXT NOT NULL,
+      issue_url TEXT NOT NULL,
+      reporter TEXT NOT NULL,
+      state TEXT NOT NULL,
+      outcome TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      asked_at TIMESTAMPTZ,
+      reminded_at TIMESTAMPTZ,
+      reply_at TIMESTAMPTZ,
+      reply_url TEXT,
+      reply_excerpt TEXT,
+      done_at TIMESTAMPTZ,
+      merge_sha TEXT
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS reporter_checks_open_idx ON reporter_checks (map_id) WHERE state <> 'done'`);
+
   // ── Daily mail with open questions (#597) ───────────────────────
   // The day of a person's last digest round, and their opt-out
   // (services/digestMail.ts). No row = mail on, never sent.

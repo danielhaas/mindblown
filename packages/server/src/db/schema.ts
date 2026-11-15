@@ -770,6 +770,30 @@ export const approvalReviews = pgTable('approval_reviews', {
   askedQuestions: jsonb('asked_questions').$type<string[]>(),
 });
 
+// ── The reporter's check ────────────────────────────────────────────
+// One row per ticket an outside reporter filed and a person approved: after
+// the merge and the next deploy the reporter is asked on the issue to check
+// the fix (services/reporterCheck.ts). `state` / `outcome` as core
+// ReporterCheckState / ReporterCheckOutcome.
+export const reporterChecks = pgTable('reporter_checks', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  mapId: uuid('map_id').notNull().references(() => maps.id, { onDelete: 'cascade' }),
+  issueRef: text('issue_ref').notNull(),
+  issueUrl: text('issue_url').notNull(),
+  reporter: text('reporter').notNull(),
+  state: text('state').notNull(),
+  outcome: text('outcome'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  askedAt: timestamp('asked_at', { withTimezone: true }),
+  remindedAt: timestamp('reminded_at', { withTimezone: true }),
+  replyAt: timestamp('reply_at', { withTimezone: true }),
+  replyUrl: text('reply_url'),
+  replyExcerpt: text('reply_excerpt'),
+  doneAt: timestamp('done_at', { withTimezone: true }),
+  // The merge commit this round is about: a new one starts the next round.
+  mergeSha: text('merge_sha'),
+});
+
 // ── Daily mail with open questions (#597) ──────────────────────────
 // One row per person: the local day of the last digest round (a second
 // tick or a restart on that day sends nothing), the opt-out switch, and

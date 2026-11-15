@@ -314,6 +314,25 @@ describe('updateGitHubIssue — the close needs evidence, not a done-flag', () =
     expect(result.holdReason).toBe('pr_in_flight');
   });
 
+  it("holds the close while the reporter checks the fix — without even probing", async () => {
+    const probe = vi.fn();
+    const result = await updateGitHubIssue(
+      node({ status: 'done', percentComplete: 100, linkedPr: null }),
+      { ...LINK, mergeCommitSha: 'deadbeefcafe' },
+      FORGE,
+      { probe, holdClose: true },
+    );
+    expect(sentPatch()).not.toHaveProperty('state');
+    expect(result).toMatchObject({ stateAction: 'held', holdReason: 'reporter_check' });
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it('a not-done node still reopens under holdClose', async () => {
+    const result = await updateGitHubIssue(node({ status: 'todo', percentComplete: 0 }), LINK, FORGE, { holdClose: true });
+    expect(sentPatch()).toMatchObject({ state: 'open' });
+    expect(result.stateAction).toBe('reopened');
+  });
+
   it('does NOT close when the probe itself fails — no evidence, no close', async () => {
     const result = await updateGitHubIssue(
       node({ status: 'done', percentComplete: 100, linkedPr: null }),

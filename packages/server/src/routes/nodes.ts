@@ -25,6 +25,7 @@ import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { discardStoredMedia, mediaDir, storeMediaBytes } from '../lib/media.js';
 import { readAttachmentText } from '../lib/attachmentText.js';
 import { guardMapRoutes } from '../lib/mapAccess.js';
+import { issueCloseHeld } from '../db/reporterChecks.js';
 
 /**
  * Ceiling for a file sent inline as base64 (`…/attachments/file`). 8 MB
@@ -156,7 +157,7 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
 
   for (const link of githubLinks) {
     try {
-      const result = await updateGitHubIssue(node, link, ghCtx.forge);
+      const result = await updateGitHubIssue(node, link, ghCtx.forge, { holdClose: await issueCloseHeld(node.id) });
       if (result.holdReason) {
         console.log(
           `[github-sync] node ${node.id} → ${link.externalId}: issue state held (${result.holdReason})` +
