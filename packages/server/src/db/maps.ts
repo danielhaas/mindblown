@@ -103,6 +103,19 @@ export async function listMaps(): Promise<MindMap[]> {
   return rows.map((r) => dbMapToCore(r as unknown as Record<string, unknown>));
 }
 
+/** Ids of the live (not archived) maps bound to this GitHub repo; case-insensitive. */
+export async function listMapIdsBoundToRepo(owner: string, repo: string): Promise<string[]> {
+  const rows = await db
+    .select({ id: maps.id })
+    .from(maps)
+    .where(and(
+      sql`lower(${maps.githubRepoOwner}) = ${owner.toLowerCase()}`,
+      sql`lower(${maps.githubRepoName}) = ${repo.toLowerCase()}`,
+      sql`${maps.archivedAt} is null`,
+    ));
+  return rows.map((r) => r.id);
+}
+
 /**
  * Lists maps a user can see: ones they created plus ones explicitly shared
  * via mapPermissions. The detail/update/delete routes already enforce ACL
