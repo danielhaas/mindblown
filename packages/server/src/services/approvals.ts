@@ -28,6 +28,7 @@ import { getFleetForUser } from './fleets.js';
 import { loadTrustContext } from './trustPolicy.js';
 import { currentReviews, reviewTextHash, textOf } from './approvalReview.js';
 import { markReporterAsked } from '../db/approvalReviews.js';
+import { OUTSIDE_AUTHOR_HOLD_TAG } from '../lib/forgeTrust.js';
 
 export interface ApprovalError {
   status: 400 | 403 | 404 | 409;
@@ -208,11 +209,38 @@ export async function approveTicket(userId: string, mapId: string, nodeId: strin
     by: userId,
     at: new Date().toISOString(),
   };
-  const saved = await writeStamp(userId, current, stamp);
+  let saved = await writeStamp(userId, current, stamp);
   if ('code' in saved) return saved;
   changedFields.push('approval');
+  const released = await releaseIngestHold(userId, saved);
+  if (released) {
+    saved = released;
+    changedFields.push('tags');
+  }
   const writes = askQuestions && target ? [await postQuestions(userId, node, target, askQuestions, 'approved')] : [];
   return { node: saved, changedFields, writes };
+}
+
+/**
+ * An issue from an outside author lands with the `needs-human` hold
+ * (lib/forgeTrust.ts, older than the approval gate) as well as proposed.
+ * The approval is the decision that hold waits for — keeping the tag
+ * would leave an approved ticket skipped as human-only. Only on a ticket
+ * a forge author reported: a person's own needs-human on other tickets
+ * stays. Best effort: the approval stands if this write fails.
+ */
+async function releaseIngestHold(userId: string, node: CoreNode): Promise<CoreNode | null> {
+  if (node.reportedBy?.kind !== 'forge') return null;
+  const tags = node.tags.filter((t) => t.toLowerCase() !== OUTSIDE_AUTHOR_HOLD_TAG);
+  if (tags.length === node.tags.length) return null;
+  try {
+    const updated = await nodeDb.updateNode(node.id, { tags });
+    if (updated) await recordFieldChanges(node.mapId, node.id, userId, node, updated);
+    return updated;
+  } catch (err) {
+    console.warn(`[approve] ${node.id} approved, but the needs-human hold could not be removed:`, err);
+    return null;
+  }
 }
 
 function rejectLine(by: string, note: string): string {
