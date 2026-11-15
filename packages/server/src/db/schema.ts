@@ -766,6 +766,8 @@ export const approvalReviews = pgTable('approval_reviews', {
   reviewedAt: timestamp('reviewed_at', { withTimezone: true }).notNull(),
   // A trusted person posted the questions on the issue (Ask the reporter).
   askedAt: timestamp('asked_at', { withTimezone: true }),
+  // The questions as posted (the person's edit of the AI's) — what the worker gets.
+  askedQuestions: jsonb('asked_questions').$type<string[]>(),
 });
 
 // ── Daily mail with open questions (#597) ──────────────────────────

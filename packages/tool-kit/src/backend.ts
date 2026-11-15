@@ -328,13 +328,12 @@ export interface TicketBrief {
    */
   approval?: { merge: 'pr-only'; reportedBy: string | null; approvedBy: string | null };
   /**
-   * Open points from the AI read of a ticket a person approved anyway
-   * (approve & ask): the worker picks a sensible default for each and
-   * lists what it assumed in the PR description. askedAt = the questions
-   * went on the linked issue then; the reporter's answer may be there.
-   * Derived from the reporter's untrusted text.
+   * Questions a trusted person posted on the linked issue (approve & ask)
+   * and approved without waiting for: the worker picks a sensible default
+   * for each and lists what it assumed in the PR description. Comments on
+   * the issue are not approved text — the worker does not act on them.
    */
-  openQuestions?: { questions: string[]; askedAt: string | null };
+  openQuestions?: { questions: string[]; askedAt: string };
 }
 
 export interface SkippedTicket {

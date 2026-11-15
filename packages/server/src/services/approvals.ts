@@ -322,7 +322,7 @@ async function postQuestions(userId: string, node: CoreNode, target: AskTarget, 
   // The comment is out: a bookkeeping failure must not read as "not posted" and invite a second post.
   try {
     const { title, description } = textOf(node);
-    await markReporterAsked(node.id, reviewTextHash(title, description), new Date());
+    await markReporterAsked(node.id, reviewTextHash(title, description), new Date(), questions);
     await recordEvent({ mapId: node.mapId, nodeId: node.id, userId, eventType: 'node.field_changed', fieldName: 'reporter_asked', oldValue: null, newValue: { questions, issue: target.ref, approved: state === 'approved' } });
   } catch (err) {
     console.warn(`[ask-reporter] posted on ${target.ref} but could not record it:`, err);

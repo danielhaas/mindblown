@@ -108,7 +108,7 @@ vi.mock('@mindblown/core', async () => {
 });
 
 // The pull's AI-read lookup is not under test here (pull-next-claim-event.test.ts pins it).
-vi.mock('../approvalReview.js', () => ({ ASKS_QUESTIONS: new Set(), currentReviews: async () => new Map() }));
+vi.mock('../approvalReview.js', () => ({ currentReviews: async () => new Map() }));
 
 import { claimNode, releaseNode } from '../orchestration.js';
 

@@ -183,7 +183,7 @@ export function ApprovalRow({
         const failed = res.writes.filter((w) => !w.done);
         const how = merge === 'pr-only' ? 'the fleet stops at the PR' : 'full auto';
         return failed.length
-          ? `✓ Approved: ${r.title} — ${how}; questions NOT posted: ${failed.map((w) => w.error).join('; ')}`
+          ? `⚠ Approved: ${r.title} — ${how}; the questions were NOT posted: ${failed.map((w) => w.error).join('; ')}`
           : `✓ Approved: ${r.title} — ${how}; questions posted on ${r.issue?.ref ?? 'the issue'}`;
       },
     );
@@ -259,7 +259,7 @@ export function ApprovalRow({
       )}
       {!readOnly && mode === 'approve-ask' && (
         <div style={{ fontSize: 12, color: '#475569', marginTop: 4 }}>
-          The fleet starts now; the worker picks a default for each question and names it in the PR.
+          The fleet starts now; the worker gets these questions as posted, picks a default for each and names it in the PR.
         </div>
       )}
       {!readOnly && mode === 'reject' && (
@@ -312,7 +312,7 @@ export function ApprovalRow({
           )}
           {mode === 'approve-ask' && (
             <>
-              <button disabled={busy || !askText.trim() || !canAsk} onClick={approveAndAsk} style={btn('primary', busy)} data-testid="confirm-approve-ask">
+              <button disabled={busy || askedQuestions().length === 0 || !canAsk} onClick={approveAndAsk} style={btn('primary', busy)} data-testid="confirm-approve-ask">
                 Approve & post on {r.issue?.ref ?? 'the issue'}
               </button>
               <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>
@@ -322,7 +322,7 @@ export function ApprovalRow({
           )}
           {mode === 'ask' && (
             <>
-              <button disabled={busy || !askText.trim() || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
+              <button disabled={busy || askedQuestions().length === 0 || !canAsk} onClick={ask} style={btn('primary', busy)} data-testid="confirm-ask">
                 Post on {r.issue?.ref ?? 'the issue'}
               </button>
               <button disabled={busy} onClick={() => setMode('idle')} style={btn('plain', busy)}>

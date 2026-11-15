@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   updates: [] as Array<{ table: unknown; values: Record<string, unknown> }>,
   // The AI reads that still match a node's text (services/approvalReview.ts).
   reviews: new Map<string, Record<string, unknown>>(),
+  reviewsFail: false,
 }));
 
 vi.mock('../../db/connection.js', async () => {
@@ -58,9 +59,13 @@ vi.mock('../../db/events.js', () => ({
 }));
 
 vi.mock('../approvalReview.js', () => ({
-  ASKS_QUESTIONS: new Set(['open-questions', 'needs-info']),
-  currentReviews: async (nodes: Array<{ id: string }>) => new Map(nodes.flatMap((n) => (mocks.reviews.has(n.id) ? [[n.id, mocks.reviews.get(n.id)]] : []))),
+  currentReviews: async (nodes: Array<{ id: string }>) => {
+    if (mocks.reviewsFail) throw new Error('db blip');
+    return reviewsFor(nodes);
+  },
 }));
+const reviewsFor = (nodes: Array<{ id: string }>) =>
+  new Map(nodes.flatMap((n) => (mocks.reviews.has(n.id) ? [[n.id, mocks.reviews.get(n.id)]] : [])));
 
 import { getNextTicket } from '../orchestration.js';
 
@@ -196,24 +201,40 @@ describe('getNextTicket — approval gate (#492)', () => {
     expect(result.ticket?.approval).toEqual({ merge: 'pr-only', reportedBy: 'octocat', approvedBy: 'Dan' });
   });
 
-  it('hands a person-approved ticket out with the AI read\'s open questions, and nothing else does', async () => {
+  it('hands a person-approved ticket out with the questions as posted, and nothing else does', async () => {
     const approved = { state: 'approved', merge: 'auto', by: 'u-dan', at: '2026-10-28T00:00:00.000Z' };
     mocks.nodeRows = [
       row({ id: 'root', parentId: null, childrenOrder: ['leaf'], status: null, description: null }),
       row({ id: 'leaf', approval: approved }),
     ];
-    mocks.reviews = new Map([['leaf', { verdict: 'open-questions', reason: 'x', questions: ['Which colour?'], askedAt: '2026-11-15T06:00:00.000Z' }]]);
+    const asked = { verdict: 'open-questions', reason: 'x', questions: ['AI draft?', 'Which colour?'], askedAt: '2026-11-15T06:00:00.000Z', askedQuestions: ['Which colour?'] };
+    mocks.reviews = new Map([['leaf', asked]]);
     let result = await getNextTicket('map-1', 'njoerd:worker-3:default');
     expect(result.ticket?.openQuestions).toEqual({ questions: ['Which colour?'], askedAt: '2026-11-15T06:00:00.000Z' });
 
-    // A ready read carries no questions; approved by the policy never went through the card.
-    mocks.reviews = new Map([['leaf', { verdict: 'ready', reason: 'x', questions: [], askedAt: null }]]);
+    // Never asked (plain Approve): the AI's draft questions do not reach the worker.
+    mocks.reviews = new Map([['leaf', { ...asked, askedAt: null, askedQuestions: null }]]);
     result = await getNextTicket('map-1', 'njoerd:worker-3:default');
     expect(result.ticket?.openQuestions).toBeUndefined();
-    mocks.reviews = new Map([['leaf', { verdict: 'needs-info', reason: 'x', questions: ['Which?'], askedAt: null }]]);
+    // Approved by the policy, not a person.
+    mocks.reviews = new Map([['leaf', asked]]);
     mocks.nodeRows[1] = row({ id: 'leaf', approval: { ...approved, by: null } });
     result = await getNextTicket('map-1', 'njoerd:worker-3:default');
     expect(result.ticket?.openQuestions).toBeUndefined();
     mocks.reviews = new Map();
+  });
+
+  it('a failed lookup of the questions never fails the pull', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mocks.nodeRows = [
+      row({ id: 'root', parentId: null, childrenOrder: ['leaf'], status: null, description: null }),
+      row({ id: 'leaf', approval: { state: 'approved', merge: 'auto', by: 'u-dan', at: '2026-10-28T00:00:00.000Z' } }),
+    ];
+    mocks.reviewsFail = true;
+    const result = await getNextTicket('map-1', 'njoerd:worker-3:default');
+    mocks.reviewsFail = false;
+    expect(result.ticket?.id).toBe('leaf');
+    expect(result.ticket?.openQuestions).toBeUndefined();
+    warn.mockRestore();
   });
 });

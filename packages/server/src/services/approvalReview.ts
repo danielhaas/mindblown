@@ -109,7 +109,7 @@ export async function currentReviews(nodes: CoreNode[]): Promise<Map<string, App
     if (aiOff.get(n.mapId)) continue;
     const { title, description } = textOf(n);
     if (r.textHash !== reviewTextHash(title, description)) continue;
-    out.set(n.id, { verdict: r.verdict, reason: r.reason, questions: r.questions, provider: r.provider, reviewedAt: r.reviewedAt, askedAt: r.askedAt });
+    out.set(n.id, { verdict: r.verdict, reason: r.reason, questions: r.questions, provider: r.provider, reviewedAt: r.reviewedAt, askedAt: r.askedAt, askedQuestions: r.askedQuestions });
   }
   return out;
 }
@@ -150,7 +150,7 @@ export async function reviewTicket(node: CoreNode, mapName: string): Promise<App
   const json = cleaned.slice(cleaned.indexOf('{'), cleaned.lastIndexOf('}') + 1);
   const review = sanitizeApprovalReview(JSON.parse(json));
   if (!review) throw new Error('model returned no valid verdict');
-  return { ...review, provider, reviewedAt: new Date().toISOString(), askedAt: null };
+  return { ...review, provider, reviewedAt: new Date().toISOString(), askedAt: null, askedQuestions: null };
 }
 
 /**

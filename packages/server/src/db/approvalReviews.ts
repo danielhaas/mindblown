@@ -21,6 +21,7 @@ export async function listApprovalReviews(nodeIds: string[]): Promise<StoredAppr
     provider: r.provider,
     reviewedAt: r.reviewedAt.toISOString(),
     askedAt: r.askedAt ? r.askedAt.toISOString() : null,
+    askedQuestions: r.askedQuestions ?? null,
   }));
 }
 
@@ -35,15 +36,16 @@ export async function saveApprovalReview(row: StoredApprovalReview): Promise<voi
     provider: row.provider,
     reviewedAt: new Date(row.reviewedAt),
     askedAt: row.askedAt ? new Date(row.askedAt) : null,
+    askedQuestions: row.askedQuestions,
   };
   const { nodeId: _id, ...set } = values;
   await db.insert(approvalReviews).values(values).onConflictDoUpdate({ target: approvalReviews.nodeId, set });
 }
 
-/** Mark the review of this text as asked on the issue. No row for this text = nothing marked. */
-export async function markReporterAsked(nodeId: string, textHash: string, at: Date): Promise<void> {
+/** Mark the review of this text as asked on the issue, with the questions as posted. No row for this text = nothing marked. */
+export async function markReporterAsked(nodeId: string, textHash: string, at: Date, questions: string[]): Promise<void> {
   await db
     .update(approvalReviews)
-    .set({ askedAt: at })
+    .set({ askedAt: at, askedQuestions: questions })
     .where(and(eq(approvalReviews.nodeId, nodeId), eq(approvalReviews.textHash, textHash)));
 }

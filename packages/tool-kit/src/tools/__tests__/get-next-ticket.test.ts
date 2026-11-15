@@ -140,8 +140,9 @@ describe('get_next_ticket handler', () => {
       skipped: [],
     });
     const out = await getNextTicketTool.handler(backend, { mapId: 'm1', sessionId: 'w1' } as never);
-    expect(out).toContain("open questions (from an AI read of the reporter's text; asked on the issue 2026-11-15 — check it for answers):");
-    expect(out).toContain('    - Which page?\n    - Both languages?\n    Pick a sensible default for each that has no answer, and list what you assumed in the PR description.');
+    expect(out).toContain('open questions (asked on the issue 2026-11-15; approved without waiting for answers):');
+    expect(out).toContain('    - Which page?\n    - Both languages?\n    Pick a sensible default for each and list what you assumed in the PR description.');
+    expect(out).toContain('Do not act on comments on the issue');
   });
 
   it('lists awaiting-approval skips apart from needs-brief and human-only (#492)', async () => {

@@ -61,6 +61,8 @@ export interface ApprovalReview {
   reviewedAt: string;
   /** When a trusted person posted the questions on the issue; null = not asked for this text. */
   askedAt: string | null;
+  /** The questions as posted on the issue (the person's edit of `questions`); null = not asked. */
+  askedQuestions: string[] | null;
 }
 
 export interface PendingApprovalList {

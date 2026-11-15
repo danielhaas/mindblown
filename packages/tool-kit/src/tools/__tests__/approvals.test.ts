@@ -41,7 +41,7 @@ describe('list_pending_approvals', () => {
   });
 
   it('renders the AI read with the questions for the reporter', async () => {
-    const review = { verdict: 'needs-info' as const, reason: 'No screens named.', questions: ['Which screens?', 'Follow the OS setting?'], provider: 'ollama', reviewedAt: 'x', askedAt: '2026-11-14T10:00:00Z' };
+    const review = { verdict: 'needs-info' as const, reason: 'No screens named.', questions: ['Which screens?', 'Follow the OS setting?'], provider: 'ollama', reviewedAt: 'x', askedAt: '2026-11-14T10:00:00Z', askedQuestions: ['Which screens?'] };
     const backend = { listPendingApprovals: async () => ({ items: [pending({ review })], now: 'x' }) } as unknown as ToolBackend;
     const out = await listPendingApprovalsTool.handler(backend, {} as never);
     expect(out).toContain('asked on the issue 2026-11-14 — waiting for the reporter');
