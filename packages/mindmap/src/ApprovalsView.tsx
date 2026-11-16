@@ -46,9 +46,17 @@ function useApprovalList(target: FleetTarget | null): { data: PendingApprovalLis
   const [data, setData] = useState<PendingApprovalList | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [poll, setPoll] = useState(0);
+  // Every open browser tab polls; a hidden one waits and catches up when it is shown again.
   useEffect(() => {
-    const p = setInterval(() => setPoll((t) => t + 1), POLL_MS);
-    return () => clearInterval(p);
+    const tick = () => {
+      if (!document.hidden) setPoll((t) => t + 1);
+    };
+    const p = setInterval(tick, POLL_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      clearInterval(p);
+      document.removeEventListener('visibilitychange', tick);
+    };
   }, []);
   useEffect(() => {
     let cancelled = false;
@@ -86,17 +94,16 @@ export function groupApprovals(items: PendingApproval[]): { mapId: string; mapNa
 export function ApprovalsPage({ mobile = false }: { mobile?: boolean }) {
   const { data, error, refetch } = useApprovalList(null);
   // Decided rows leave at once — the refetch must not bring back a clickable copy —
-  // and what was written stays on screen under the project until a reload.
-  const [done, setDone] = useState<Record<string, { mapId: string; line: string }>>({});
-  const rows = (data?.items ?? []).filter((r) => !(r.nodeId in done));
+  // and what was written stays on screen under the project until a reload. A
+  // ticket proposed again later (#605) comes back with a newer revision.
+  const [done, setDone] = useState<Record<string, { mapId: string; mapName: string; revision: number; line: string }>>({});
+  const rows = (data?.items ?? []).filter((r) => done[r.nodeId]?.revision !== r.revision);
   const groups = groupApprovals(rows);
   // A project whose last row was just decided keeps its card, to show what happened.
-  for (const [, d] of Object.entries(done)) {
-    if (!groups.some((g) => g.mapId === d.mapId)) {
-      const name = data?.items.find((r) => r.mapId === d.mapId)?.mapName ?? 'Project';
-      groups.push({ mapId: d.mapId, mapName: name, rows: [] });
-    }
+  for (const d of Object.values(done)) {
+    if (!groups.some((g) => g.mapId === d.mapId)) groups.push({ mapId: d.mapId, mapName: d.mapName, rows: [] });
   }
+  groups.sort((a, b) => a.mapName.localeCompare(b.mapName));
   const waiting = rows.filter((r) => r.canApprove).length;
 
   const status = error && !data ? (
@@ -119,7 +126,7 @@ export function ApprovalsPage({ mobile = false }: { mobile?: boolean }) {
             readOnly={!r.canApprove}
             mobile={mobile}
             onDone={(line) => {
-              setDone((d) => ({ ...d, [r.nodeId]: { mapId: r.mapId, line } }));
+              setDone((d) => ({ ...d, [r.nodeId]: { mapId: r.mapId, mapName: r.mapName, revision: r.revision, line } }));
               refetch();
             }}
             onStale={refetch}

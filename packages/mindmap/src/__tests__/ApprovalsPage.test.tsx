@@ -82,6 +82,27 @@ describe('ApprovalsPage', () => {
     expect(within(beta).queryByTestId('approve')).toBeNull();
   });
 
+  it('a project whose last ticket was decided keeps its name after the refetch drops it', async () => {
+    m.approveTicket.mockResolvedValue({ approval: null, writes: [], ok: true });
+    render(<ApprovalsPage />);
+    const beta = (await screen.findAllByTestId('approval-group'))[1];
+    m.fetchAllApprovals.mockResolvedValue(list([ALPHA_1, ALPHA_2]));
+    fireEvent.click(within(beta).getByTestId('approve'));
+    await waitFor(() => expect(m.fetchAllApprovals).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText('Beta (0)')).toBeTruthy();
+    expect(screen.getByText(/✓ Approved: Ticket b1/)).toBeTruthy();
+    expect(screen.queryByText(/Project \(0\)/)).toBeNull();
+  });
+
+  it('a ticket proposed again (newer revision) comes back', async () => {
+    m.approveTicket.mockResolvedValue({ approval: null, writes: [], ok: true });
+    render(<ApprovalsPage />);
+    const beta = (await screen.findAllByTestId('approval-group'))[1];
+    m.fetchAllApprovals.mockResolvedValue(list([ALPHA_1, ALPHA_2, { ...BETA_1, revision: 9 }]));
+    fireEvent.click(within(beta).getByTestId('approve'));
+    await waitFor(() => expect(within(screen.getAllByTestId('approval-group')[1]).getByTestId('approve')).toBeTruthy());
+  });
+
   it('says so when nothing waits', async () => {
     m.fetchAllApprovals.mockResolvedValue(list([]));
     render(<ApprovalsPage />);

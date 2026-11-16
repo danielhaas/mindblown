@@ -5,8 +5,8 @@
  * Whatever puts the "Needs you" / "Blocked" / "Needs brief" badge on the
  * card (kanban.ts `nodeWaits`, the badge's own rules) is shown here with
  * the action that resolves it, so nobody has to hunt for the ticket on the
- * Fleet tab:
- *   - waiting for approval → the Fleet tab's ApprovalRow (#494);
+ * Fleet tab or the Approvals page:
+ *   - waiting for approval → the Approvals page's ApprovalRow (#494);
  *   - an open question on the ticket → the Questions card's AskCard, the
  *     same answer_ask path (#401);
  *   - a manual blocker → the reason and Unblock;
@@ -25,7 +25,7 @@ import { blockerAskNodeId, briefAskNodeId, derivedAskNodeId } from '@mindblown/c
 import type { AskRow, Node, NodeMap, PendingApproval, StatusDef } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
-import { ApprovalRow } from './ApprovalsView.js';
+import { APPROVALS_HREF, ApprovalRow } from './ApprovalsView.js';
 import { AskCard, answererName, rowKey, type AnswerResult } from './AsksView.js';
 import { nodeWaits, nothingWaits } from './kanban.js';
 
@@ -84,7 +84,7 @@ export function NeedsYouSection(props: NeedsYouProps) {
   const [answered, setAnswered] = useState<Record<string, AskRow>>({});
   const questions = [...asks, ...Object.values(answered).filter((r) => !asks.some((a) => rowKey(a) === rowKey(r)))];
 
-  // ── Approval: the Fleet tab's row for this ticket ──
+  // ── Approval: the Approvals page's row for this ticket ──
   const [approval, setApproval] = useState<PendingApproval | null | 'loading'>(null);
   const [approvalPoll, setApprovalPoll] = useState(0);
   const [decided, setDecided] = useState<string | null>(null);
@@ -135,7 +135,9 @@ export function NeedsYouSection(props: NeedsYouProps) {
               onStale={() => setApprovalPoll((t) => t + 1)}
             />
           ) : (
-            <Muted>Not in this map's approval list for you — decide it on the Fleet tab.</Muted>
+            <Muted>
+              Not in this map's approval list for you — see the <a href={APPROVALS_HREF}>Approvals page</a>.
+            </Muted>
           )}
         </div>
       )}

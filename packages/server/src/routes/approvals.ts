@@ -33,7 +33,7 @@ function unauthorized(reply: FastifyReply) {
 
 function needsSession(reply: FastifyReply) {
   return reply.status(403).send({
-    error: { code: 'APPROVAL_NEEDS_SESSION', message: 'Approving and rejecting need a web session, not an API key — use the approval card on the Fleet tab.' },
+    error: { code: 'APPROVAL_NEEDS_SESSION', message: 'Approving and rejecting need a web session, not an API key — use the Approvals page (/?approvals).' },
   });
 }
 
