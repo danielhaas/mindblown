@@ -157,11 +157,11 @@ describe('selection', () => {
     expect(it.title).toBe('Node T');
   });
 
-  it('approvals: only on visible maps, linked to the approvals card', () => {
+  it('approvals: only on visible maps, linked to the Approvals page', () => {
     const items = approvalItems([approval('n1', 'm1'), approval('n2', 'secret')], maps);
     expect(items).toHaveLength(1);
     expect(items[0]).toMatchObject({ groupName: 'Alpha', title: 'Proposed n1', since: '2026-10-30T19:10:00Z' });
-    expect(items[0].url).toContain('#approvals');
+    expect(items[0].url).toMatch(/\/\?approvals$/);
   });
 });
 

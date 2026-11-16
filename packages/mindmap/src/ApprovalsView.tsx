@@ -1,28 +1,37 @@
 /**
- * Waiting for approval (#494) — proposed tickets the fleet will not run
- * until a trusted person decides: Approve (stop at the PR, or full auto),
- * Edit & approve, Approve & ask (work starts, the AI's open questions go
- * on the issue), Ask the reporter, Reject with a note for the forge issue.
+ * Approvals (#494) — proposed tickets the fleet will not run until a
+ * trusted person decides: Approve (stop at the PR, or full auto), Edit &
+ * approve, Approve & ask (work starts, the AI's open questions go on the
+ * issue), Ask the reporter, Reject with a note for the forge issue.
  *
  * MindBlown's own rows, read from the nodes' approval stamps (#492) —
  * not fleet-collected asks, so nothing here goes through the asks push.
  * Each row says whether the reader may decide (the map's trusted list,
- * never a fleet key); everyone else sees the list read-only.
+ * never a fleet key); everyone else sees it read-only.
  *
- * Desktop renders it as a Fleet-tab card above Questions; the phone
- * renders the same rows as a mobile card, because approving mostly
- * happens there after a push (#493).
+ * They have their own page (`/?approvals`): every map the reader can see,
+ * grouped by project — a gate to clear, not a question to answer, so it
+ * no longer shares the Fleet tab with Questions. The Fleet tab keeps a
+ * one-line pointer, the header a count, and pushes / digest mails land
+ * on the page. The ticket's detail view (#610) still renders its own row.
  */
 import React, { useEffect, useState } from 'react';
 import type { ApprovalReview, PendingApproval, PendingApprovalList } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import * as api from './api.js';
 import type { FleetTarget } from './api.js';
-import { Card } from './DigestView.js';
-import { projectLabel, scopeTarget, useFleetScope } from './fleetScope.js';
+import { Card, Shell, Muted } from './DigestView.js';
+import { scopeTarget, useFleetScope } from './fleetScope.js';
 import { projectTag } from './FleetTelemetry.js';
 
 const POLL_MS = 60_000;
+
+/** The Approvals page. A plain link: it is its own page, outside any map. */
+export const APPROVALS_HREF = '/?approvals';
+
+export function isApprovalsPage(search: string): boolean {
+  return new URLSearchParams(search).has('approvals');
+}
 
 const LEVEL_LABEL: Record<PendingApproval['trustLevel'], string> = {
   trusted: 'trusted',
@@ -30,86 +39,215 @@ const LEVEL_LABEL: Record<PendingApproval['trustLevel'], string> = {
   external: 'outside',
 };
 
-/**
- * `target` = what to list; without it, the Fleet tab's scope (this
- * project or the whole fleet). Renders nothing while nothing waits.
- */
-export function ApprovalsSection({ target: given, mobile = false }: { target?: FleetTarget; mobile?: boolean }) {
-  const currentMapId = useMindmapStore((s) => s.currentMapId);
+/** `/api/approvals` (null = every map) or one target, refetched every minute and on `asks:updated`. */
+function useApprovalList(target: FleetTarget | null): { data: PendingApprovalList | null; error: string | null; refetch: () => void } {
   const asksRev = useMindmapStore((s) => s.asksRev);
-  const viewRole = useMindmapStore((s) => s.viewRole);
-  const scope = useFleetScope();
-  const target = given ?? scopeTarget(scope, currentMapId);
-  const targetKey = target ? JSON.stringify(target) : '';
+  const key = target ? JSON.stringify(target) : 'all';
   const [data, setData] = useState<PendingApprovalList | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [poll, setPoll] = useState(0);
-  // Decided rows stay on screen with what was written until the next scope change.
-  const [done, setDone] = useState<Record<string, string>>({});
-
   useEffect(() => {
     const p = setInterval(() => setPoll((t) => t + 1), POLL_MS);
     return () => clearInterval(p);
   }, []);
   useEffect(() => {
-    if (!target) return;
     let cancelled = false;
-    // An older server or no access: no section, the rest of the page is unaffected.
-    api.fetchApprovals(target).then((r) => !cancelled && setData(r), () => !cancelled && setData(null));
+    (target ? api.fetchApprovals(target) : api.fetchAllApprovals()).then(
+      (r) => {
+        if (cancelled) return;
+        setData(r);
+        setError(null);
+      },
+      (e: unknown) => !cancelled && setError(e instanceof Error ? e.message : 'unavailable'),
+    );
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- targetKey is `target` by value
-  }, [targetKey, asksRev, poll]);
-  // A different scope is a different list: the old rows don't stay up under it.
-  useEffect(() => {
-    setDone({});
-    setData(null);
-  }, [targetKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- key is `target` by value
+  }, [key, asksRev, poll]);
+  return { data, error, refetch: () => setPoll((t) => t + 1) };
+}
 
-  // A decided row leaves at once — the refetch must not bring back a clickable copy.
+/** Rows grouped by project, projects by name. */
+export function groupApprovals(items: PendingApproval[]): { mapId: string; mapName: string; rows: PendingApproval[] }[] {
+  const byMap = new Map<string, { mapId: string; mapName: string; rows: PendingApproval[] }>();
+  for (const r of items) {
+    const g = byMap.get(r.mapId) ?? { mapId: r.mapId, mapName: r.mapName, rows: [] };
+    g.rows.push(r);
+    byMap.set(r.mapId, g);
+  }
+  return [...byMap.values()].sort((a, b) => a.mapName.localeCompare(b.mapName));
+}
+
+/**
+ * The Approvals page (`/?approvals`): everything waiting on every map the
+ * reader can view, one card per project. Desktop and phone.
+ */
+export function ApprovalsPage({ mobile = false }: { mobile?: boolean }) {
+  const { data, error, refetch } = useApprovalList(null);
+  // Decided rows leave at once — the refetch must not bring back a clickable copy —
+  // and what was written stays on screen under the project until a reload.
+  const [done, setDone] = useState<Record<string, { mapId: string; line: string }>>({});
   const rows = (data?.items ?? []).filter((r) => !(r.nodeId in done));
-  const decided = Object.entries(done);
-  if (rows.length === 0 && decided.length === 0) return null;
+  const groups = groupApprovals(rows);
+  // A project whose last row was just decided keeps its card, to show what happened.
+  for (const [, d] of Object.entries(done)) {
+    if (!groups.some((g) => g.mapId === d.mapId)) {
+      const name = data?.items.find((r) => r.mapId === d.mapId)?.mapName ?? 'Project';
+      groups.push({ mapId: d.mapId, mapName: name, rows: [] });
+    }
+  }
+  const waiting = rows.filter((r) => r.canApprove).length;
 
-  // The stakeholder lens reads; the server still decides who may click.
-  const readOnly = viewRole === 'stakeholder';
-  const title = `Waiting for approval — the fleet runs these only after a yes (${rows.length})`;
-  const body = (
-    <div data-testid="approvals" id="approvals">
-      {rows.map((r) => (
-        <ApprovalRow
-          key={r.nodeId}
-          row={r}
-          project={projectLabel(scope, r.mapId)}
-          readOnly={readOnly || !r.canApprove}
-          mobile={mobile}
-          onDone={(line) => {
-            setDone((d) => ({ ...d, [r.nodeId]: line }));
-            setPoll((t) => t + 1);
-          }}
-          onStale={() => setPoll((t) => t + 1)}
-        />
-      ))}
-      {decided.map(([id, line]) => (
-        <div key={id} style={{ fontSize: 13, color: '#166534', padding: '6px 0' }}>
-          {line}
+  const status = error && !data ? (
+    <Muted>Approvals unavailable: {error} — retrying every minute.</Muted>
+  ) : !data ? (
+    <Muted>Loading…</Muted>
+  ) : groups.length === 0 ? (
+    <Muted>Nothing is waiting for approval.</Muted>
+  ) : null;
+
+  const cards = groups.map((g) => {
+    const decided = Object.entries(done).filter(([, d]) => d.mapId === g.mapId);
+    const body = (
+      <div data-testid="approval-group" data-map-id={g.mapId}>
+        {g.rows.map((r) => (
+          <ApprovalRow
+            key={r.nodeId}
+            row={r}
+            project={null}
+            readOnly={!r.canApprove}
+            mobile={mobile}
+            onDone={(line) => {
+              setDone((d) => ({ ...d, [r.nodeId]: { mapId: r.mapId, line } }));
+              refetch();
+            }}
+            onStale={refetch}
+          />
+        ))}
+        {decided.map(([id, d]) => (
+          <div key={id} style={{ fontSize: 13, color: '#166534', padding: '6px 0' }}>
+            {d.line}
+          </div>
+        ))}
+      </div>
+    );
+    const title = `${g.mapName} (${g.rows.length})`;
+    const open = (
+      <a href={`/?map=${encodeURIComponent(g.mapId)}&view=fleet`} style={{ fontSize: 12, color: '#4f46e5' }}>
+        Open project →
+      </a>
+    );
+    if (mobile) {
+      return (
+        <div className="mb-card" key={g.mapId}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+            <div className="mb-card-title">{title}</div>
+            {open}
+          </div>
+          {body}
         </div>
-      ))}
-    </div>
-  );
+      );
+    }
+    return (
+      <div key={g.mapId} style={{ marginBottom: 16 }}>
+        <Card title={title} accent="#fcd34d">
+          <div style={{ marginBottom: 8 }}>{open}</div>
+          {body}
+        </Card>
+      </div>
+    );
+  });
+
+  const intro = `Proposed tickets the fleet runs only after a yes${data ? ` — ${waiting} for you to decide` : ''}. Worker questions stay on each project's Fleet tab.`;
+
   if (mobile) {
     return (
-      <div className="mb-card">
-        <div className="mb-card-title">{title}</div>
-        {body}
+      <div className="mb-mobile">
+        <div className="mb-topbar">
+          <a className="mb-topbar-btn" href="/" style={{ textDecoration: 'none' }}>
+            ← Maps
+          </a>
+          <div className="mb-topbar-title">Approvals</div>
+          <span style={{ width: 60 }} />
+        </div>
+        <div className="mb-body" data-testid="approvals-page">
+          <div style={{ fontSize: 13, color: '#64748b', padding: '0 4px 8px' }}>{intro}</div>
+          {status}
+          {cards}
+        </div>
       </div>
     );
   }
   return (
-    <div style={{ marginBottom: 16 }}>
-      <Card title={title} accent="#fcd34d">
-        {body}
-      </Card>
+    <Shell>
+      <div data-testid="approvals-page" id="approvals">
+        <div style={{ marginBottom: 12, fontSize: 12 }}>
+          <a href="/" style={{ color: '#4f46e5' }}>
+            ← All maps
+          </a>
+        </div>
+        <h1 style={{ margin: '0 0 4px', fontSize: 20, fontWeight: 700, color: '#1e293b' }}>Approvals</h1>
+        <p style={{ margin: '0 0 16px', fontSize: 13, color: '#64748b' }}>{intro}</p>
+        {status}
+        {cards}
+      </div>
+    </Shell>
+  );
+}
+
+/**
+ * Header count: tickets the reader may decide, on every map — a link to
+ * the page. Nothing while none wait (or the server doesn't answer).
+ */
+export function ApprovalsBadge({ mobile = false }: { mobile?: boolean }) {
+  const { data } = useApprovalList(null);
+  const n = data?.items.filter((r) => r.canApprove).length ?? 0;
+  if (n === 0) return null;
+  const label = `${n} to approve`;
+  return (
+    <a
+      href={APPROVALS_HREF}
+      data-testid="approvals-badge"
+      title="Proposed tickets waiting for your yes — open Approvals"
+      style={{
+        fontSize: 12,
+        fontWeight: 600,
+        whiteSpace: 'nowrap',
+        textDecoration: 'none',
+        color: '#92400e',
+        background: '#fef3c7',
+        border: '1px solid #fcd34d',
+        borderRadius: 999,
+        padding: mobile ? '2px 8px' : '3px 10px',
+      }}
+    >
+      {label}
+    </a>
+  );
+}
+
+/**
+ * The Fleet tab's pointer (desktop and phone): how many tickets of its
+ * scope wait for approval, and the way to the page. Nothing while none do.
+ */
+export function ApprovalsLink({ target: given, mobile = false }: { target?: FleetTarget; mobile?: boolean }) {
+  const currentMapId = useMindmapStore((s) => s.currentMapId);
+  const scope = useFleetScope();
+  const target = given ?? scopeTarget(scope, currentMapId);
+  const { data } = useApprovalList(target);
+  const n = data?.items.length ?? 0;
+  if (!target || n === 0) return null;
+  return (
+    <div
+      className={mobile ? 'mb-card' : undefined}
+      data-testid="approvals-link"
+      style={mobile ? { fontSize: 14 } : { marginBottom: 16, padding: '10px 14px', fontSize: 13, background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 12 }}
+    >
+      {n === 1 ? '1 proposed ticket waits' : `${n} proposed tickets wait`} for approval — the fleet runs them only after a yes.{' '}
+      <a href={APPROVALS_HREF} style={{ color: '#4f46e5', fontWeight: 600 }}>
+        Open Approvals →
+      </a>
     </div>
   );
 }

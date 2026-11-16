@@ -4,6 +4,7 @@ import { AuthScreen } from '../AuthScreen.js';
 import { MobileMapList } from './MobileMapList.js';
 import { MobileViewer } from './MobileViewer.js';
 import { FleetPage } from '../FleetView.js';
+import { ApprovalsBadge, ApprovalsPage, isApprovalsPage } from '../ApprovalsView.js';
 import * as api from '../api.js';
 import type { MapSummary } from '../api.js';
 import { parseUrlState, serializeUrlState } from '../urlState.js';
@@ -120,12 +121,17 @@ export function MobileApp() {
   if (fleetPageId) {
     return <FleetPage fleetId={fleetPageId} />;
   }
+  if (!selectedMap && isApprovalsPage(window.location.search)) {
+    return <ApprovalsPage mobile />;
+  }
 
   if (!selectedMap) {
     return (
       <div className="mb-mobile">
         <div className="mb-topbar">
-          <span style={{ width: 60 }} />
+          <span style={{ minWidth: 60 }}>
+            <ApprovalsBadge mobile />
+          </span>
           <div className="mb-topbar-title">MindBlown</div>
           <button
             className="mb-topbar-btn"
@@ -149,7 +155,9 @@ export function MobileApp() {
           ← Maps
         </button>
         <div className="mb-topbar-title">{selectedMap.name}</div>
-        <span style={{ width: 60 }} />
+        <span style={{ minWidth: 60, textAlign: 'right' }}>
+          <ApprovalsBadge mobile />
+        </span>
       </div>
       <MobileViewer map={selectedMap} />
     </div>

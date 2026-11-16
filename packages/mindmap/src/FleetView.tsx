@@ -9,6 +9,9 @@
  * the knobs render read-only (LeidangCards readOnly) — a developer checks
  * whether the queue is alive, the PM/operator steers it.
  *
+ * Proposed tickets waiting for approval are not here: they have their
+ * own page (`/?approvals`, ApprovalsView) — the tab only points to it.
+ *
  * Questions (the fleet's open human questions, `/leidang-asks` in the
  * browser) sit here too, between the live cards and the journal: they come
  * from the fleet and the answers go back to it, so they belong on the
@@ -29,7 +32,7 @@ import { Card, Shell, Muted } from './DigestView.js';
 import { LeidangCards } from './DispatchCards.js';
 import { FleetJournalSection } from './FleetJournal.js';
 import { AsksSection } from './AsksView.js';
-import { ApprovalsSection } from './ApprovalsView.js';
+import { ApprovalsLink } from './ApprovalsView.js';
 import { ReporterChecksSection } from './ReporterChecksView.js';
 import { MapFleetPanel } from './MapFleetPanel.js';
 import { FleetTelemetry } from './FleetTelemetry.js';
@@ -121,10 +124,10 @@ export function FleetView() {
           <Muted>This map has no status workflow — there is no pull queue to dispatch or observe.</Muted>
         )}
         {/* What the fleet is waiting on a person for. Full width: every card
-            is read and decided, one after the other. Proposed tickets first:
-            nothing else happens to them until someone says yes (#494). */}
+            is read and decided, one after the other. Proposed tickets are
+            decided on the Approvals page — here only a pointer to it. */}
         <div style={{ marginTop: 16 }}>
-          <ApprovalsSection />
+          <ApprovalsLink />
           <AsksSection />
           <ReporterChecksSection />
         </div>
@@ -313,7 +316,7 @@ export function FleetPage({ fleetId }: { fleetId: string }) {
             </Card>
             {fleet.isOwner && <RepoHandouts fleetId={fleet.id} />}
             <div style={{ marginTop: 16 }}>
-              <ApprovalsSection />
+              <ApprovalsLink />
               <AsksSection />
               <ReporterChecksSection />
             </div>
