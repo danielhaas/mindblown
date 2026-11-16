@@ -98,7 +98,7 @@ export async function runApprovalNotifications(now: Date = new Date()): Promise<
       const sent = await sendPush({
         title: 'MindBlown',
         message: approvalPushMessage(plan, names.get(mapId) ?? 'a map'),
-        url: `${FRONTEND_URL}/?map=${mapId}&view=fleet#approvals`,
+        url: `${FRONTEND_URL}/?approvals`,
         urlTitle: 'Open approvals',
       });
       if (!sent) {

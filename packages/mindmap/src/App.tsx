@@ -48,6 +48,7 @@ import { DigestView } from './DigestView.js';
 import { CockpitView } from './CockpitView.js';
 import { PaceStrip } from './PaceStrip.js';
 import { FleetPage, FleetView } from './FleetView.js';
+import { ApprovalsBadge, ApprovalsPage, isApprovalsPage } from './ApprovalsView.js';
 import type { ViewRole, PanelKey } from './roles.js';
 import { useHomeWidgetSync } from './homeWidget.js';
 
@@ -589,6 +590,7 @@ function MapList({
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <ApprovalsBadge />
             <button
               onClick={onHelp}
               title="Help / User Guide"
@@ -1811,6 +1813,10 @@ export function App() {
   if (fleetPageId) {
     return <FleetPage fleetId={fleetPageId} />;
   }
+  // ?approvals without a map: every proposed ticket waiting for a yes, across projects.
+  if (!currentMapId && isApprovalsPage(window.location.search)) {
+    return <ApprovalsPage />;
+  }
 
   // ── Map list view ────────────────────────────────────────────
 
@@ -2296,6 +2302,8 @@ export function App() {
             )}
           </button>
           )}
+
+          <ApprovalsBadge />
 
           <div style={{ width: 1, height: 20, background: '#e2e8f0' }} />
 

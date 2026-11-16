@@ -1297,6 +1297,11 @@ export function fetchApprovals(target: FleetTarget): Promise<PendingApprovalList
   return request<PendingApprovalList>(`${fleetBase(target)}/approvals`);
 }
 
+/** Every ticket waiting for approval on a map the reader can view — the Approvals page. */
+export function fetchAllApprovals(): Promise<PendingApprovalList> {
+  return request<PendingApprovalList>('/api/approvals');
+}
+
 export function approveTicket(mapId: string, nodeId: string, input: ApproveInput): Promise<ApprovalResponse> {
   return request<ApprovalResponse>(`/api/maps/${mapId}/nodes/${nodeId}/approve`, { method: 'POST', body: JSON.stringify(input) });
 }

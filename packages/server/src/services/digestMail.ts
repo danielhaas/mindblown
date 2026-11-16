@@ -67,7 +67,7 @@ export interface DigestItem {
   url: string;
 }
 
-const fleetTab = (mapId: string, hash = '') => `${FRONTEND_URL}/?map=${mapId}&view=fleet${hash}`;
+const fleetTab = (mapId: string) => `${FRONTEND_URL}/?map=${mapId}&view=fleet`;
 
 /**
  * The open questions of one fleet inbox the reader may see: open, a real
@@ -102,7 +102,7 @@ export function approvalItems(list: PendingApproval[], maps: Map<string, string>
       question: 'Approve this ticket?',
       title: p.title,
       since: p.approval.at ?? null,
-      url: fleetTab(p.mapId, '#approvals'),
+      url: `${FRONTEND_URL}/?approvals`,
     }));
 }
 
