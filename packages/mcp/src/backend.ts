@@ -60,6 +60,10 @@ export const httpBackend: ToolBackend = {
   listPendingApprovals: (scope) => api.listPendingApprovals(scope),
   listReporterChecks: (scope) => api.listReporterChecks(scope),
   markDeployed: (mapId) => api.markDeployed(mapId),
+  // ── A person merges a fleet PR ──────────────────────────────────
+  prSummary: (mapId, nodeId) => api.prSummary(mapId, nodeId),
+  mergePr: (mapId, nodeId, input) => api.mergePr(mapId, nodeId, input),
+  prsWaiting: (scope) => api.prsWaiting(scope),
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues: (mapId, opts) => api.auditClosedIssues(mapId, opts),
   // ── Attachments ─────────────────────────────────────────────────

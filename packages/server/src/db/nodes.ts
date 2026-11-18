@@ -1282,6 +1282,19 @@ export async function findMapNodesLinkingIssue(
     .map((r) => ({ id: r.id as string, text: r.text as string }));
 }
 
+/** A map's nodes whose PR mirror is open (prs_waiting). */
+export async function listOpenLinkedPrNodes(
+  mapId: string,
+): Promise<Array<{ id: string; text: string; linkedPr: LinkedPrState }>> {
+  const rows = await db
+    .select({ id: nodes.id, text: nodes.text, linkedPr: nodes.linkedPr })
+    .from(nodes)
+    .where(and(eq(nodes.mapId, mapId), notDeleted, sql`${nodes.linkedPr}->>'state' = 'open'`));
+  return rows
+    .filter((r) => r.linkedPr != null)
+    .map((r) => ({ id: r.id as string, text: r.text as string, linkedPr: r.linkedPr as LinkedPrState }));
+}
+
 export async function findNodeIdByExternalId(
   externalId: string,
 ): Promise<string | null> {

@@ -53,10 +53,16 @@ import {
   type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
+  type ForgeCheck,
+  type ForgePullRequestDetail,
+  type ForgePullRequestFile,
+  type MergePullRequestInput,
+  type RepoMergeSettings,
 } from './types.js';
 import { blobBytes, contentsPath, encodeRef, toBase64, treeFiles, type RawBlob, type RawPutFile, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS } from './constants.js';
 import { walkIssueScan } from './pagination.js';
+import { commitStatusCheck, giteaMergeMethod, pullRequestDetail, pullRequestFiles, type RawCommitStatus, type RawPullRequest } from './pullRequests.js';
 
 /** 20 pages × 1000 entries — beyond that the Docs tab reports a partial listing. */
 const TREE_MAX_PAGES = 20;
@@ -511,6 +517,35 @@ export class GiteaForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  async getPullRequestDetail(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestDetail> {
+    return pullRequestDetail(await this.requestJson<RawPullRequest>(`/repos/${owner}/${repo}/pulls/${prNumber}`));
+  }
+
+  async listPullRequestFileStats(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestFile[]> {
+    return pullRequestFiles(
+      await this.requestList<{ filename: string; additions: number; deletions: number }>(`/repos/${owner}/${repo}/pulls/${prNumber}/files?limit=100`),
+    );
+  }
+
+  /** Gitea / Forgejo Actions report as commit statuses; the combined read keeps the latest per context. */
+  async listCommitChecks(owner: string, repo: string, sha: string): Promise<ForgeCheck[]> {
+    const combined = await this.requestJson<{ statuses: RawCommitStatus[] | null } | null>(`/repos/${owner}/${repo}/commits/${sha}/status`);
+    return (combined?.statuses ?? []).map(commitStatusCheck);
+  }
+
+  async getRepoMergeSettings(owner: string, repo: string): Promise<RepoMergeSettings> {
+    const raw = await this.requestJson<{ default_branch: string; default_merge_style?: string | null }>(`/repos/${owner}/${repo}`);
+    return { defaultBranch: raw.default_branch, defaultMethod: giteaMergeMethod(raw.default_merge_style) };
+  }
+
+  /** Gitea: POST with `Do` + `head_commit_id`; a moved head is a 409 as on GitHub. */
+  async mergePullRequest(owner: string, repo: string, prNumber: number, input: MergePullRequestInput): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
+      method: 'POST',
+      body: { Do: input.method, head_commit_id: input.headSha },
+    });
   }
 
   // ── Repo contents ───────────────────────────────────────────────

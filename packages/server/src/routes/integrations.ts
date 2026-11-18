@@ -39,6 +39,7 @@ import {
   syncIssueLabelsToNodes,
 } from '../sync/githubIngest.js';
 import * as PrSync from '../sync/prSync.js';
+import { applyMergedPr } from '../sync/prMerged.js';
 import { handleAbandonedPr } from '../sync/prAbandon.js';
 import { auditClosedIssues } from '../sync/closedIssueAudit.js';
 import { markWorkStarted } from '../sync/workStartSync.js';
@@ -2253,209 +2254,19 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
         merge_commit_sha?: string | null;
         html_url?: string | null;
       };
-      // The one piece of durable proof that this issue's work shipped.
-      // Stamped onto the link so the outbound sync can close the issue as
-      // COMPLETED later on local evidence — without it, a done-node whose
-      // mirror was already cleared looks exactly like a node that never
-      // had a PR, which is how the premature-close incident got its
-      // COMPLETED/commit_id=null closes.
-      const mergeCommitSha = pr.merge_commit_sha ?? null;
-      const refs = extractClosingIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`);
-      const transitions: Array<{
-        externalId: string;
-        nodeId: string;
-        status: 'transitioned' | 'already_done' | 'referenced' | 'not_linked';
-      }> = [];
-
-      for (const issueNumber of refs) {
-        const externalId = `${repoFullName}#${issueNumber}`;
-        const nodeId = await findNodeByExternalId(externalId);
-        if (!nodeId) {
-          transitions.push({ externalId, nodeId: '', status: 'not_linked' });
-          continue;
-        }
-        const node = await nodeDb.getNode(nodeId);
-        if (!node) {
-          transitions.push({ externalId, nodeId, status: 'not_linked' });
-          continue;
-        }
-        // Idempotency: replay → no second transition.
-        //
-        // The node is normally ALREADY done here — the coding agent marks
-        // it done when it opens the PR — so this is the branch the merge
-        // evidence has to be recorded on, not an edge case. Guarded on
-        // "sha not yet stored" so a webhook replay still writes nothing.
-        if (node.status === 'done' && node.percentComplete === 100) {
-          if (mergeCommitSha) {
-            const links = node.externalLinks.map((l) => ({ ...l }));
-            const idx = links.findIndex(
-              (l) => isForgeLink(l) && l.externalId === externalId,
-            );
-            if (idx >= 0 && links[idx].mergeCommitSha !== mergeCommitSha) {
-              links[idx] = {
-                ...links[idx],
-                mergeCommitSha,
-                mergedPrNumber: pr.number,
-              };
-              await nodeDb.updateNode(nodeId, { externalLinks: links });
-              // Same replay guard as the stamp: the delivery row lands once.
-              events
-                .recordPrMerged(node.mapId, nodeId, null, {
-                  prNumber: pr.number,
-                  repo: repoFullName,
-                  url: pr.html_url ?? null,
-                  mergeCommitSha,
-                  externalId,
-                  alreadyDone: true,
-                })
-                .catch(() => {});
-            }
-          }
-          transitions.push({ externalId, nodeId, status: 'already_done' });
-          continue;
-        }
-        const links = node.externalLinks.map((l) => ({ ...l }));
-        const linkIdx = links.findIndex(
-          (l) => isForgeLink(l) && l.externalId === externalId,
-        );
-        if (linkIdx >= 0) {
-          links[linkIdx] = {
-            ...links[linkIdx],
-            previousPercentComplete: node.percentComplete,
-            previousStatus: node.status,
-            lastSyncedAt: new Date().toISOString(),
-            ...(mergeCommitSha
-              ? { mergeCommitSha, mergedPrNumber: pr.number }
-              : {}),
-          };
-        }
-        const updates: nodeDb.UpdateNodeInput = {
-          percentComplete: 100,
-          status: 'done',
-          externalLinks: links,
-        };
-        const updated = await nodeDb.updateNode(nodeId, updates);
-        if (updated) {
-          broadcast(updated.mapId, {
-            type: 'node:updated',
-            nodeId,
-            fields: Object.keys(updates),
-            node: updated,
-            source: 'github_webhook_pr_merge',
-          });
-          // This write bypasses the PUT route, so the history it keeps has
-          // to be written here too: the status/percent change, the claim
-          // the DB layer just cleared, and the merge itself.
-          events.recordFieldChanges(updated.mapId, nodeId, null, node, updated).catch(() => {});
-          events
-            .recordClaimTransition(updated.mapId, nodeId, null, node, updated, {
-              reason: 'done',
-              note: `PR #${pr.number} merged`,
-            })
-            .catch(() => {});
-          events
-            .recordPrMerged(updated.mapId, nodeId, null, {
-              prNumber: pr.number,
-              repo: repoFullName,
-              url: pr.html_url ?? null,
-              mergeCommitSha,
-              externalId,
-              alreadyDone: false,
-            })
-            .catch(() => {});
-        }
-        console.log(
-          `[gh-webhook] PR #${pr.number} merged → transitioned node ${nodeId} (${externalId}) to done`,
-        );
-        transitions.push({ externalId, nodeId, status: 'transitioned' });
-      }
-
-      // `Refs #N` (no closing keyword) — the fleet's own convention, its
-      // workers close the issue themselves. The PR still delivered that
-      // ticket, so it is attributed to the node: node.pr_merged plus the
-      // PR number on the link. Never a status change or an issue close —
-      // a reference does not promise the work is finished. The node may
-      // not be done yet (the worker's done-write can land after the
-      // merge), so the event is recorded either way; the merge commit is
-      // stamped only on a done node, since it is close evidence for the
-      // outbound sync. `mergedPrNumber` is the replay guard.
-      const referenceOnly = extractReferencedIssueRefs(`${pr.title ?? ''} ${pr.body ?? ''}`).filter(
-        (n) => !refs.includes(n),
-      );
-      for (const issueNumber of referenceOnly) {
-        const externalId = `${repoFullName}#${issueNumber}`;
-        const nodeId = await findNodeByExternalId(externalId);
-        const node = nodeId ? await nodeDb.getNode(nodeId) : null;
-        if (!nodeId || !node) {
-          transitions.push({ externalId, nodeId: nodeId ?? '', status: 'not_linked' });
-          continue;
-        }
-        const links = node.externalLinks.map((l) => ({ ...l }));
-        const idx = links.findIndex((l) => isForgeLink(l) && l.externalId === externalId);
-        if (idx >= 0 && links[idx].mergedPrNumber !== pr.number) {
-          const done = node.status === 'done' && node.percentComplete === 100;
-          links[idx] = {
-            ...links[idx],
-            mergedPrNumber: pr.number,
-            ...(done && mergeCommitSha ? { mergeCommitSha } : {}),
-          };
-          await nodeDb.updateNode(nodeId, { externalLinks: links });
-          events
-            .recordPrMerged(node.mapId, nodeId, null, {
-              prNumber: pr.number,
-              repo: repoFullName,
-              url: pr.html_url ?? null,
-              mergeCommitSha,
-              externalId,
-              alreadyDone: done,
-            })
-            .catch(() => {});
-        }
-        transitions.push({ externalId, nodeId, status: 'referenced' });
-      }
-
-      // GitHub's own auto-close honors closing keywords only in the PR
-      // BODY. Title-only refs leave the issue open after the merge —
-      // and since handlePrClosed just cleared the mirror and the node
-      // is now done, the next catchup tick would read "issue open +
-      // node done + no PR" as a reopen and revert the shipped work.
-      // Close those issues ourselves, best-effort (the catchup is the
-      // backstop if this fetch fails).
-      const bodyRefs = new Set(extractClosingIssueRefs(pr.body ?? ''));
-      const titleOnlyRefs = refs.filter((n) => !bodyRefs.has(n));
-      if (titleOnlyRefs.length > 0) {
-        (async () => {
-          const ctx = await getGitHubContextForRepo(repoFullName);
-          if (!ctx) return;
-          for (const n of titleOnlyRefs) {
-            try {
-              await closeGitHubIssue(
-                {
-                  provider: ctx.forge.endpoint.kind,
-                  externalId: `${repoFullName}#${n}`,
-                  url: ctx.forge.issueWebUrl(ctx.owner, ctx.repo, n),
-                  syncEnabled: true,
-                  lastSyncedAt: null,
-                },
-                ctx.forge,
-                'completed',
-              );
-            } catch (err) {
-              console.warn(
-                `[gh-webhook] closing title-only ref ${repoFullName}#${n} after merge failed:`,
-                err instanceof Error ? err.message : err,
-              );
-            }
-          }
-        })().catch(() => {});
-      }
+      // The post-merge flow is shared with a person's merge through
+      // MindBlown (merge_pr): sync/prMerged.ts.
+      const transitions = await applyMergedPr(repoFullName, pr, {
+        actorUserId: null,
+        resolveForge: () => getGitHubContextForRepo(repoFullName),
+      });
 
       return reply.send({
         received: true,
         action: 'pull_request.merged',
         prNumber: pr.number,
         matched: transitions.some((t) => t.status !== 'not_linked'),
-        transitions,
+        transitions: transitions.map(({ recorded: _recorded, ...t }) => t),
       });
     }
 

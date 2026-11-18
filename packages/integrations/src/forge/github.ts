@@ -28,10 +28,16 @@ import {
   type RepoTree,
   type RequestOptions,
   type UpdateIssueInput,
+  type ForgeCheck,
+  type ForgePullRequestDetail,
+  type ForgePullRequestFile,
+  type MergePullRequestInput,
+  type RepoMergeSettings,
 } from './types.js';
 import { blobBytes, contentsPath, encodeRef, toBase64, treeFiles, type RawBlob, type RawPutFile, type RawTree } from './contents.js';
 import { FORGE_REQUEST_TIMEOUT_MS, GITHUB_API_BASE, GITHUB_WEB_BASE } from './constants.js';
 import { walkIssueScan } from './pagination.js';
+import { checkRunCheck, commitStatusCheck, githubMergeMethod, pullRequestDetail, pullRequestFiles, type RawCheckRun, type RawCommitStatus, type RawPullRequest } from './pullRequests.js';
 
 export { GITHUB_API_BASE, GITHUB_WEB_BASE, GITHUB_ENDPOINT } from './constants.js';
 
@@ -280,6 +286,37 @@ export class GitHubForge implements ForgeClient {
       `/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`,
     );
     return rows.map((f) => f.filename);
+  }
+
+  async getPullRequestDetail(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestDetail> {
+    return pullRequestDetail(await this.requestJson<RawPullRequest>(`/repos/${owner}/${repo}/pulls/${prNumber}`));
+  }
+
+  async listPullRequestFileStats(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestFile[]> {
+    return pullRequestFiles(
+      await this.requestJson<Array<{ filename: string; additions: number; deletions: number }>>(`/repos/${owner}/${repo}/pulls/${prNumber}/files?per_page=100`),
+    );
+  }
+
+  /** Check runs (Actions and other apps) plus classic commit statuses — GitHub keeps them apart. */
+  async listCommitChecks(owner: string, repo: string, sha: string): Promise<ForgeCheck[]> {
+    const [runs, combined] = await Promise.all([
+      this.requestJson<{ check_runs: RawCheckRun[] }>(`/repos/${owner}/${repo}/commits/${sha}/check-runs?per_page=100`),
+      this.requestJson<{ statuses: RawCommitStatus[] | null }>(`/repos/${owner}/${repo}/commits/${sha}/status?per_page=100`),
+    ]);
+    return [...(runs.check_runs ?? []).map(checkRunCheck), ...(combined.statuses ?? []).map(commitStatusCheck)];
+  }
+
+  async getRepoMergeSettings(owner: string, repo: string): Promise<RepoMergeSettings> {
+    const raw = await this.requestJson<{ default_branch: string; allow_squash_merge?: boolean; allow_merge_commit?: boolean; allow_rebase_merge?: boolean }>(`/repos/${owner}/${repo}`);
+    return { defaultBranch: raw.default_branch, defaultMethod: githubMergeMethod(raw) };
+  }
+
+  async mergePullRequest(owner: string, repo: string, prNumber: number, input: MergePullRequestInput): Promise<void> {
+    await this.requestJson(`/repos/${owner}/${repo}/pulls/${prNumber}/merge`, {
+      method: 'PUT',
+      body: { merge_method: input.method, sha: input.headSha },
+    });
   }
 
   // ── Repo contents ───────────────────────────────────────────────

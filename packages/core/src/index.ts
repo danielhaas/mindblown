@@ -453,6 +453,10 @@ export { REPORTER_REMIND_AFTER_DAYS, REPORTER_CLOSE_AFTER_DAYS } from './reporte
 export type { ReporterCheck, ReporterCheckList, ReporterCheckState, ReporterCheckOutcome, ReopenAfterCheckInput, DeployedResult } from './reporterCheck.js';
 export type { PendingApproval, PendingApprovalList, ApproveInput, RejectInput, AskReporterInput, ApprovalReview, ApprovalReviewVerdict } from './approval.js';
 
+// A person merges a fleet PR through MindBlown (pr_summary / merge_pr / prs_waiting)
+export { PR_SUMMARY_FILES, WAITS_ON_PERSON, waitsOnPerson, ciResult, snapshotCi, waitLabel, mergeRefusal } from './prMerge.js';
+export type { PrSummary, PrCheck, PrCheckState, PrCiResult, PrFileStat, MergeRefusal, MergeRefusalCode, MergePrResult, PrWaiting, PrsWaitingList } from './prMerge.js';
+
 // Guided onboarding: the project setup checklist
 export { projectSetup } from './setup.js';
 export type { SetupStepId, SetupStep, ProjectSetup } from './setup.js';

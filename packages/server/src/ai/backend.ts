@@ -26,6 +26,7 @@ import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
 import * as approvals from '../services/approvals.js';
 import * as reporterChecks from '../services/reporterCheck.js';
+import * as prMerge from '../services/prMerge.js';
 import * as webhookService from '../services/webhooks.js';
 import type { AskAnswerInput } from '@mindblown/core';
 import { loadFleetJournal, mapJournalScope, parseJournalWindow } from '../services/fleetJournal.js';
@@ -478,6 +479,25 @@ export function createChatBackend(userId: string): ToolBackend {
       throw new Error('mark_deployed is not available in the in-app chat — use the Deployed button on the Fleet tab.');
     },
 
+    // ── A person merges a fleet PR ────────────────────────────────
+    // Reads only: the chat model reads the PR's text (untrusted) and runs
+    // as whoever is typing — it must not be the one that merges. A merge
+    // is a person's explicit decision (MCP with their key, after they said
+    // yes, or the forge itself).
+    async prSummary(mapId, nodeId) {
+      const out = await prMerge.prSummary(mapId, nodeId);
+      if ('code' in out) throw new Error(out.message);
+      return out;
+    },
+    async mergePr() {
+      throw new Error('merge_pr is not available in the in-app chat — merge on the forge, or through MCP on your own explicit decision.');
+    },
+    async prsWaiting(scope) {
+      const out = await prMerge.prsWaiting(userId, scope);
+      if ('code' in out) throw new Error(out.message);
+      return out;
+    },
+
     // ── Closed-issue audit (premature-close backfill) ─────────────
     //
     // Deliberately read-only on this surface: the in-app chat backend
@@ -586,6 +606,7 @@ export const CHAT_BACKEND_READ_METHODS: ReadonlySet<keyof ToolBackend> = new Set
   'readAttachment',
   'listRepoDocs',
   'readRepoDoc',
+  'prSummary',
 ]);
 
 /** Backend methods that need admin on the map — what REST asks for the same action. */
@@ -621,6 +642,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'listPendingApprovals',
   // The reporter's check: the list scopes itself like approvals.
   'listReporterChecks',
+  // prs_waiting: scoped like approvals (services/approvals mapsInScope).
+  'prsWaiting',
 ]);
 
 /**

@@ -72,8 +72,9 @@ import { fleetTools } from './tools/fleets.js';
 import { docsTools } from './tools/docs.js';
 import { approvalTools } from './tools/approvals.js';
 import { reporterCheckTools } from './tools/reporterChecks.js';
+import { prMergeTools } from './tools/prMerge.js';
 import { webhookTools } from './tools/webhooks.js';
-export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, reporterCheckTools, webhookTools };
+export { mapTools, nodeTools, bulkTools, triageTools, orchestrationTools, githubAuditTools, asksTools, fleetJournalTools, attachmentTools, fleetTools, docsTools, approvalTools, reporterCheckTools, prMergeTools, webhookTools };
 export { renderAskList } from './tools/asks.js';
 export { renderPendingApprovals } from './tools/approvals.js';
 
@@ -88,6 +89,7 @@ export const allTools = [
   ...asksTools,
   ...approvalTools,
   ...reporterCheckTools,
+  ...prMergeTools,
   ...fleetJournalTools,
   ...attachmentTools,
   ...docsTools,

@@ -197,6 +197,55 @@ export interface CreatePullRequestInput {
   base: string;
 }
 
+/** One PR read in full — what a person needs before merging it (#pr_summary). */
+export interface ForgePullRequestDetail {
+  number: number;
+  title: string;
+  state: 'open' | 'closed';
+  merged: boolean;
+  draft: boolean;
+  url: string;
+  author: string | null;
+  base: string;
+  head: string;
+  headSha: string;
+  /** null while the forge is still computing it. */
+  mergeable: boolean | null;
+  /** Diff stat; null when the forge did not say. */
+  additions: number | null;
+  deletions: number | null;
+  changedFiles: number | null;
+  mergeCommitSha: string | null;
+}
+
+export interface ForgePullRequestFile {
+  path: string;
+  additions: number;
+  deletions: number;
+}
+
+/** One CI check on a commit: a GitHub check run or a commit status (both forges). */
+export interface ForgeCheck {
+  name: string;
+  state: 'success' | 'failure' | 'pending' | 'neutral';
+  url: string | null;
+}
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+export const MERGE_METHODS: readonly MergeMethod[] = ['merge', 'squash', 'rebase'];
+
+/** What a merge needs from the repo: where "shipped" is, and how it merges by default. */
+export interface RepoMergeSettings {
+  defaultBranch: string;
+  defaultMethod: MergeMethod;
+}
+
+export interface MergePullRequestInput {
+  method: MergeMethod;
+  /** The forge refuses (409) when the head moved past this commit. */
+  headSha: string;
+}
+
 // ── Transport ─────────────────────────────────────────────────────
 
 /**
@@ -326,6 +375,19 @@ export interface ForgeClient {
   pullRequestsListPath(owner: string, repo: string, query: ListPullRequestsQuery): string;
   /** Paths of the files a PR touches (first 100). */
   listPullRequestFiles(owner: string, repo: string, prNumber: number): Promise<string[]>;
+  /** The PR with head sha, mergeable and diff stat. */
+  getPullRequestDetail(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestDetail>;
+  /** Files a PR touches with their +/- (first 100). */
+  listPullRequestFileStats(owner: string, repo: string, prNumber: number): Promise<ForgePullRequestFile[]>;
+  /** Every CI check reported on a commit. Throws when the forge cannot be read — a caller gating a merge must not read that as "no CI". */
+  listCommitChecks(owner: string, repo: string, sha: string): Promise<ForgeCheck[]>;
+  getRepoMergeSettings(owner: string, repo: string): Promise<RepoMergeSettings>;
+  /**
+   * Merge, pinned to `headSha`. Refusals are `ForgeApiError`s: 409 = the
+   * head moved (Gitea's 409 too), 405 = not mergeable / protected, 403 = no
+   * permission.
+   */
+  mergePullRequest(owner: string, repo: string, prNumber: number, input: MergePullRequestInput): Promise<void>;
 
   // Repo contents (#550)
   /** Every file under `ref` (a branch name or sha), recursively. */
