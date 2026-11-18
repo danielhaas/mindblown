@@ -12,6 +12,8 @@
  *   DELETE /api/fleets/:id/credentials/:keyId — revoke one
  *   POST   /api/fleets/:id/repo-credentials   — a connected project's repo + token (the fleet's own key, #507)
  *   GET    /api/fleets/:id/repo-handouts      — which projects' credentials it fetched, last 7 days (owner)
+ *   GET    /api/fleets/:id/waiting-on-humans  — is the fleet idle, and what waits on whom (fleet read rule)
+ *   GET    /api/waiting-on-humans             — the same for every fleet the caller can see
  *
  * A map connects through PUT /api/maps/:id { fleetId } — see routes/maps.ts;
  * connecting grants the fleet's service user edit there (#481).
@@ -26,6 +28,7 @@ import { broadcast } from '../ws.js';
 import { pullFleetTicket, OrchestrationNotFoundError } from '../services/orchestration.js';
 import { issueRepoCredentials } from '../services/fleetRepoAccess.js';
 import { summarizeHandouts } from '../db/fleetRepoHandouts.js';
+import { waitingOnHumansForUser } from '../services/waitingOnHumans.js';
 
 const unauthorized = (reply: FastifyReply) =>
   reply.status(401).send({ error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
@@ -39,6 +42,19 @@ export async function fleetEntityRoutes(app: FastifyInstance): Promise<void> {
   app.get('/api/fleets', async (req, reply) => {
     if (!req.userId) return unauthorized(reply);
     return reply.send(await fleetService.listFleetsForUser(req.userId));
+  });
+
+  // waiting_on_humans: idle state + what people hold up, per fleet.
+  app.get('/api/waiting-on-humans', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    const fleets = await waitingOnHumansForUser(req.userId);
+    return isAccessError(fleets) ? sendAccessError(reply, fleets) : reply.send({ fleets, now: new Date().toISOString() });
+  });
+
+  app.get<{ Params: { id: string } }>('/api/fleets/:id/waiting-on-humans', async (req, reply) => {
+    if (!req.userId) return unauthorized(reply);
+    const fleets = await waitingOnHumansForUser(req.userId, req.params.id);
+    return isAccessError(fleets) ? sendAccessError(reply, fleets) : reply.send({ fleets, now: new Date().toISOString() });
   });
 
   app.post('/api/fleets', async (req, reply) => {

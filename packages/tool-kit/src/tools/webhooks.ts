@@ -1,7 +1,7 @@
 /**
  * Outgoing webhook tools — subscribe a URL to a map's (or its workspace's)
  * events: status changed / done, claimed / released, question, blocked,
- * behind, queue empty. Admin on the map; a workspace-wide one needs the
+ * behind, queue empty, fleet waiting on a human. Admin on the map; a workspace-wide one needs the
  * workspace owner. Deliveries are HMAC-signed (see create_webhook).
  */
 import { z } from 'zod';
@@ -48,6 +48,10 @@ export const createWebhookTool = defineTool({
     `Events: ${WEBHOOK_EVENTS.join(', ')}. None given = all.`,
     'queue.empty fires once when a pull finds nothing claimable, again only after a grant.',
     'node.question = a session or AI asked a person (a new open ask). node.behind = a leaf\'s health turned behind.',
+    'fleet.waiting_on_human = the map\'s fleet stands idle (no active claims, workers parked) while decisions, steps,',
+    'PR merges or approvals wait on a person: one per person, again when the counts grow, at most every 2 h, never while',
+    'the fleet works. data: { fleetId, fleetName, person, idleSince, workers, decisions, steps, prs, approvals, unblocks,',
+    'top: { decisions, steps, prs, approvals: [{ ref, title, mapId, nodeId, since, url }] } } (waiting_on_humans reads the same).',
     SIGNING,
     'The answer shows the signing secret ONCE — store it at the receiver.',
   ].join('\n'),

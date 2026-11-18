@@ -147,6 +147,7 @@ function makeRecorder(): Recorder {
     fleetCheckBlockers: async () => { throw new Error('not used'); },
     listPendingApprovals: async () => { throw new Error('not used'); },
     listReporterChecks: async () => { throw new Error('not used'); },
+    waitingOnHumans: async () => { throw new Error('not used'); },
     markDeployed: async () => { throw new Error('not used'); },
     auditClosedIssues: async () => { throw new Error('not used'); },
     listAsks: async () => { throw new Error('not used'); },
