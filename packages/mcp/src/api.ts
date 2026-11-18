@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, DeployedResult, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1833,6 +1833,29 @@ export function listReporterChecks(scope: { mapId?: string; fleetId?: string }):
 /** mark_deployed: the map's project went live — ask the waiting reporters. */
 export function markDeployed(mapId: string): Promise<DeployedResult> {
   return request<DeployedResult>(`/api/maps/${mapId}/deployed`, { method: 'POST', body: JSON.stringify({}) });
+}
+
+/** pr_summary: the node's PR, read live from the map's forge. */
+export function prSummary(mapId: string, nodeId: string): Promise<PrSummary> {
+  return request<PrSummary>(`/api/maps/${mapId}/nodes/${nodeId}/pr`);
+}
+
+/** merge_pr: a refusal is a 409 — returned as `merged: false`, not thrown. */
+export async function mergePr(mapId: string, nodeId: string, input: { expectedHeadSha: string; method?: string }): Promise<MergePrResult> {
+  try {
+    return await request<MergePrResult>(`/api/maps/${mapId}/nodes/${nodeId}/pr/merge`, { method: 'POST', body: JSON.stringify(input) });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 409 && err.code) {
+      return { merged: false, code: err.code as Extract<MergePrResult, { merged: false }>['code'], message: err.message };
+    }
+    throw err;
+  }
+}
+
+/** prs_waiting: one map, a fleet, or every map the key can view. */
+export function prsWaiting(scope: { mapId?: string; fleetId?: string }): Promise<PrsWaitingList> {
+  const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
+  return request<PrsWaitingList>(`${base}/prs/waiting`);
 }
 
 /** Release a parked ticket back into the queue (clear_blocker). */

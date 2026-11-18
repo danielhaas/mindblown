@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -603,6 +603,14 @@ export interface ToolBackend {
   /** The map was deployed: reopen each waiting issue and ask its reporter (edit on the map). */
   markDeployed(mapId: string): Promise<DeployedResult>;
   // No reopen/close: deciding a reply means reading the reporter's untrusted text — the card only.
+
+  // ── A person merges a fleet PR (Tracer's voice merges) ──────────
+  /** The node's PR, read live from the map's forge (view on the map). */
+  prSummary(mapId: string, nodeId: string): Promise<PrSummary>;
+  /** Merge it — only on a person's explicit decision; refusals come back as `merged: false`. */
+  mergePr(mapId: string, nodeId: string, input: { expectedHeadSha: string; method?: 'merge' | 'squash' | 'rebase' }): Promise<MergePrResult>;
+  /** Open PRs waiting on a person: one map, a fleet's maps, or every map the caller can view. */
+  prsWaiting(scope: { mapId?: string; fleetId?: string }): Promise<PrsWaitingList>;
 
   // ── Closed-issue audit (premature-close backfill) ───────────────
   auditClosedIssues(

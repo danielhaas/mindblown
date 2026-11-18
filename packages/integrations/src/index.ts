@@ -44,6 +44,7 @@ export {
   githubForge,
   readWebhookHeaders,
   verifyWebhookSignature,
+  MERGE_METHODS,
 } from './forge/index.js';
 
 export type {
@@ -77,6 +78,12 @@ export type {
   GiteaUser,
   GiteaRepo,
   WebhookHeaders,
+  ForgePullRequestDetail,
+  ForgePullRequestFile,
+  ForgeCheck,
+  MergeMethod,
+  MergePullRequestInput,
+  RepoMergeSettings,
 } from './forge/index.js';
 
 // ── Sync operations ──────────────────────────────────────────────
