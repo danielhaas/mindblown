@@ -18,6 +18,13 @@
  *     compares each watched map's leaves against the last sweep. The first
  *     sweep after a start only seeds — a restart does not re-announce
  *     every overdue ticket.
+ *   fleet.waiting_on_human — the same sweep timer (`runWaitingOnHumanSweep`)
+ *     reads every fleet a subscription hears (services/waitingOnHumans):
+ *     idle (no active claims, every worker parked or idle) and something
+ *     waits on a person → one event per person to the fleet maps'
+ *     webhooks; again when the counts grow; at most once per 2 h per fleet
+ *     and person (core waitingAlertDue). The memory lives in this process —
+ *     a restart may announce an idle stretch once more.
  *
  * Delivery: POST JSON, headers
  *   X-MindBlown-Event, X-MindBlown-Delivery (payload id, stable across
@@ -32,10 +39,33 @@
  * the emitters are no-ops.
  */
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { buildIsDonePredicate, isWebhookEvent, leafHealth, webhookEventsForNodeUpdate, webhookNodeRef, WEBHOOK_EVENTS, WEBHOOK_PING_EVENT } from '@mindblown/core';
-import type { Ask, Node as CoreNode, StatusDef, WebhookEvent, WebhookPayload, WebhookSubscription } from '@mindblown/core';
+import {
+  buildIsDonePredicate,
+  isWebhookEvent,
+  leafHealth,
+  summarizeWaiting,
+  waitingAlertDue,
+  webhookEventsForNodeUpdate,
+  webhookNodeRef,
+  WEBHOOK_EVENTS,
+  WEBHOOK_PING_EVENT,
+} from '@mindblown/core';
+import type {
+  Ask,
+  FleetWaitingOnHumanData,
+  FleetWaitingOnHumans,
+  Node as CoreNode,
+  PersonWaiting,
+  StatusDef,
+  WaitingAlertState,
+  WaitingItem,
+  WebhookEvent,
+  WebhookPayload,
+  WebhookSubscription,
+} from '@mindblown/core';
 import * as hookDb from '../db/webhooks.js';
 import * as mapDb from '../db/maps.js';
+import * as fleetEntityDb from '../db/fleets.js';
 import { decrypt, encrypt, isEncrypted } from '../crypto.js';
 
 export const RETRY_DELAYS_MS = [10_000, 60_000, 5 * 60_000, 30 * 60_000];
@@ -53,6 +83,7 @@ export function startWebhooks(opts: { sweepMs?: number } = {}): void {
   if (ms > 0) {
     sweepTimer = setInterval(() => {
       runBehindSweep().catch((err) => console.warn('[webhooks] behind sweep failed:', err instanceof Error ? err.message : err));
+      runWaitingOnHumanSweep().catch((err) => console.warn('[webhooks] waiting-on-human sweep failed:', err instanceof Error ? err.message : err));
     }, ms);
     sweepTimer.unref?.();
   }
@@ -66,6 +97,7 @@ export function resetWebhooksForTests(): void {
   scopeCache = null;
   emptyQueues.clear();
   behindByMap.clear();
+  waitingAlerts.clear();
 }
 
 // ── Subscriptions ───────────────────────────────────────────────
@@ -419,6 +451,106 @@ export async function runBehindSweep(now = new Date()): Promise<number> {
       mapId,
       fresh.map((n) => ({ event: 'node.behind' as const, data: { node: webhookNodeRef(n), dueDate: n.dueDate } })),
     );
+  }
+  return sent;
+}
+
+// ── fleet.waiting_on_human ──────────────────────────────────────
+
+/** Per `fleetId|person`: what the last alert sent, and whether this idle stretch was announced. */
+const waitingAlerts = new Map<string, WaitingAlertState>();
+
+const wantsEvent = (events: WebhookEvent[], e: WebhookEvent) => events.length === 0 || events.includes(e);
+
+/** The fleets whose maps a subscription for fleet.waiting_on_human hears. */
+async function watchedFleets(): Promise<string[]> {
+  const scopes = (await hookDb.activeScopes()).filter((s) => wantsEvent(s.events, 'fleet.waiting_on_human'));
+  const mapIds = new Set(scopes.filter((s) => s.mapId).map((s) => s.mapId!));
+  for (const id of await hookDb.mapsOfWorkspaces([...new Set(scopes.filter((s) => !s.mapId).map((s) => s.workspaceId))])) mapIds.add(id);
+  const fleets = new Set<string>();
+  for (const id of mapIds) {
+    const f = await fleetEntityDb.getMapFleetId(id);
+    if (f) fleets.add(f);
+  }
+  return [...fleets];
+}
+
+function waitingData(fleet: FleetWaitingOnHumans, p: PersonWaiting, top: PersonWaiting['top']): FleetWaitingOnHumanData {
+  const strip = (list: WaitingItem[]) => list.map(({ ref, title, mapId, nodeId, since, url }) => ({ ref, title, mapId, nodeId, since, url }));
+  return {
+    fleetId: fleet.fleetId,
+    fleetName: fleet.fleetName,
+    person: p.person,
+    idleSince: fleet.idleSince,
+    workers: fleet.workers,
+    decisions: p.decisions,
+    steps: p.steps,
+    prs: p.prs,
+    approvals: p.approvals,
+    unblocks: p.unblocks,
+    top: { decisions: strip(top.decisions), steps: strip(top.steps), prs: strip(top.prs), approvals: strip(top.approvals) },
+  };
+}
+
+/**
+ * One person's alert to every subscription that hears a map of the fleet,
+ * once per subscription (a workspace-wide one hears several). The counts
+ * are the fleet's; `top` names only items on maps that subscription hears.
+ */
+async function emitWaitingOnHuman(fleet: FleetWaitingOnHumans, mapIds: string[], p: PersonWaiting, items: WaitingItem[]): Promise<number> {
+  const targets = new Map<string, { target: hookDb.DeliveryTarget; workspaceId: string; mapId: string; hears: Set<string> }>();
+  for (const mapId of mapIds) {
+    const workspaceId = await listened(mapId);
+    if (!workspaceId) continue;
+    for (const t of await hookDb.getDeliveryTargets(mapId, workspaceId)) {
+      if (!wantsEvent(t.events, 'fleet.waiting_on_human')) continue;
+      const seen = targets.get(t.id);
+      if (seen) seen.hears.add(mapId);
+      else targets.set(t.id, { target: t, workspaceId, mapId, hears: new Set([mapId]) });
+    }
+  }
+  const occurredAt = new Date().toISOString();
+  for (const { target, workspaceId, mapId, hears } of targets.values()) {
+    const mine = items.filter((i) => i.person === p.person && i.mapId !== null && hears.has(i.mapId));
+    const top = summarizeWaiting(mine).people[0]?.top ?? { decisions: [], steps: [], prs: [], approvals: [] };
+    const payload: WebhookPayload = {
+      id: randomUUID(),
+      event: 'fleet.waiting_on_human',
+      occurredAt,
+      workspaceId,
+      mapId,
+      data: waitingData(fleet, p, top) as unknown as Record<string, unknown>,
+    };
+    void deliver(target, payload).catch(() => {});
+  }
+  return targets.size;
+}
+
+/**
+ * One pass over every fleet someone listens to for fleet.waiting_on_human.
+ * Returns the number of (person, subscription) deliveries started. Exported for tests.
+ */
+export async function runWaitingOnHumanSweep(now = new Date()): Promise<number> {
+  if (!started) return 0;
+  const { readFleetWaiting } = await import('./waitingOnHumans.js');
+  let sent = 0;
+  for (const fleetId of await watchedFleets()) {
+    const fleet = await fleetEntityDb.getFleet(fleetId);
+    if (!fleet) continue;
+    const mapIds = (await fleetEntityDb.listFleetMaps(fleetId)).filter((m) => !m.archivedAt).map((m) => m.id);
+    const { summary, items } = await readFleetWaiting({ fleetId, fleetName: fleet.name, mapIds, fleetLevel: true }, now);
+    if (!summary.idle) {
+      // The fleet works again: the next idle stretch is news.
+      for (const [key, st] of waitingAlerts) if (key.startsWith(`${fleetId}|`)) waitingAlerts.set(key, { ...st, notifiedThisIdle: false });
+      continue;
+    }
+    for (const p of summary.people) {
+      const key = `${fleetId}|${p.person}`;
+      const counts = { decisions: p.decisions, steps: p.steps, prs: p.prs, approvals: p.approvals };
+      if (!waitingAlertDue(waitingAlerts.get(key), summary.idle, counts, now)) continue;
+      waitingAlerts.set(key, { sentAt: now.toISOString(), counts, notifiedThisIdle: true });
+      sent += await emitWaitingOnHuman(summary, mapIds, p, items);
+    }
   }
   return sent;
 }

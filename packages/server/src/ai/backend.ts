@@ -25,6 +25,7 @@ import type { AskKey } from '../db/asks.js';
 import { answerAsk as answerAskService } from '../services/asks.js';
 import * as asksInbox from '../services/asksInbox.js';
 import * as approvals from '../services/approvals.js';
+import { waitingOnHumansForUser } from '../services/waitingOnHumans.js';
 import * as reporterChecks from '../services/reporterCheck.js';
 import * as prMerge from '../services/prMerge.js';
 import * as webhookService from '../services/webhooks.js';
@@ -466,6 +467,13 @@ export function createChatBackend(userId: string): ToolBackend {
       return out;
     },
 
+    // ── Waiting on humans ─────────────────────────────────────────
+    async waitingOnHumans(fleetId) {
+      const fleets = await waitingOnHumansForUser(userId, fleetId);
+      if ('status' in fleets) throw new Error(fleets.message);
+      return { fleets, now: new Date().toISOString() };
+    },
+
     // ── The reporter's check ──────────────────────────────────────
     // The list carries the reporters' replies (untrusted); this surface
     // only reads. A deploy is signalled from the card, MCP or REST — a
@@ -640,6 +648,8 @@ export const CHAT_BACKEND_UNSCOPED_METHODS: ReadonlySet<keyof ToolBackend> = new
   'fleetCheckBlockers',
   // Approvals (#494): the list scopes itself to viewable maps (services/approvals).
   'listPendingApprovals',
+  // Waiting on humans: the fleet read rule (services/waitingOnHumans).
+  'waitingOnHumans',
   // The reporter's check: the list scopes itself like approvals.
   'listReporterChecks',
   // prs_waiting: scoped like approvals (services/approvals mapsInScope).

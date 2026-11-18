@@ -9,7 +9,7 @@
  */
 
 import type { MapDetail, MapSummary, NodeWithComputed, PhaseDef, ProfilePolicy } from './types.js';
-import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, AskCounts, AskDocumentMeta, AskRow, AskStatus, AskWritePlan, FleetJournal, FleetRollup, FleetTickPayload, FleetWithMaps, PendingApprovalList, ReporterCheckList, WaitingOnHumansResult, DeployedResult, PrSummary, MergePrResult, PrsWaitingList, TrustPolicy, WebhookEvent, WebhookSubscription } from '@mindblown/core';
 
 /** What MindBlown last received from the Leidang fleet (GET /api/maps/:id/fleet, /api/fleets/:id/fleet). */
 export interface FleetStatusResult {
@@ -591,6 +591,10 @@ export interface ToolBackend {
   // ── Approvals (#494) ────────────────────────────────────────────
   /** Proposed tickets: one map, a fleet's maps, or (neither) every map the caller can view. */
   listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList>;
+
+  // ── Waiting on humans ───────────────────────────────────────────
+  /** Is the fleet idle, and what waits on whom — one fleet, or (none) every fleet the caller can see. */
+  waitingOnHumans(fleetId?: string): Promise<WaitingOnHumansResult>;
   // No approve/reject (#606): deciding happens on the approval card only.
 
   // ── The reporter's check ────────────────────────────────────────

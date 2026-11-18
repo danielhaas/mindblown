@@ -111,6 +111,7 @@ function makeRecordingBackend(): {
     fleetCheckBlockers: async () => { throw new Error('not implemented'); },
     listPendingApprovals: async () => { throw new Error('not implemented'); },
     listReporterChecks: async () => { throw new Error('not used'); },
+    waitingOnHumans: async () => { throw new Error('not used'); },
     markDeployed: async () => { throw new Error('not used'); },
     prSummary: async () => { throw new Error('not used'); },
     mergePr: async () => { throw new Error('not used'); },

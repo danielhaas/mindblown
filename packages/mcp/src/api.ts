@@ -15,7 +15,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { RequirementGate } from '@mindblown/core';
 import type { FleetJournalResult, FleetStatusResult, AskListOptions, AskListResult, AskAnswerResult, FleetCheckResult, AttachmentText, ReadAttachmentOptions, GetNextTicketResult, RepoDocsList, RepoDocText, ProposeDocEditInput, ProposeDocEditResult, CreateWebhookInput, UpdateWebhookInput, WebhookPingResult } from '@mindblown/tool-kit';
-import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
+import type { AskAnswerInput, DeployedResult, MergePrResult, PrSummary, PrsWaitingList, FleetWithMaps, PendingApprovalList, WaitingOnHumansResult, ReporterCheckList, StalledLeaf, TrustPolicy, WebhookSubscription } from '@mindblown/core';
 
 /**
  * Light-weight shape of a Fastify `app.inject(...)` response. We only
@@ -1817,6 +1817,11 @@ export function fleetCheckBlockers(fleetId: string, by?: string): Promise<FleetC
 export function listPendingApprovals(scope: { mapId?: string; fleetId?: string }): Promise<PendingApprovalList> {
   const base = scope.mapId ? `/api/maps/${scope.mapId}` : scope.fleetId ? `/api/fleets/${scope.fleetId}` : '/api';
   return request<PendingApprovalList>(`${base}/approvals`);
+}
+
+/** waiting_on_humans: one fleet, or every fleet the key can see. */
+export function waitingOnHumans(fleetId?: string): Promise<WaitingOnHumansResult> {
+  return request<WaitingOnHumansResult>(fleetId ? `/api/fleets/${fleetId}/waiting-on-humans` : '/api/waiting-on-humans');
 }
 
 /** list_reporter_checks: one map, a fleet, or every map the key can view. */
