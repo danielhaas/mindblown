@@ -18,6 +18,12 @@ function ref(r: AskRow): string {
   return a.ticket != null ? `#${a.ticket}` : (a.requirement ?? a.id);
 }
 
+/** The ask id, then its ticket/requirement ref when that differs (a step or node ask's ref is its id). */
+function ids(r: AskRow): string {
+  const x = ref(r);
+  return x === r.ask.id ? x : `${r.ask.id} · ${x}`;
+}
+
 function title(r: AskRow): string {
   const t = (r.ask.title ?? '').trim();
   const x = ref(r);
@@ -63,11 +69,11 @@ export function renderAskList(res: AskListResult, scopeLabel: string): string {
     if (a.moot) bits.push('MOOT');
     if (a.stale) bits.push('STALE (ticket closed)');
     if (r.workerPending) bits.push('worker note pending');
-    lines.push(`- ${projectOf(r, names)}${a.id} · ${ref(r)} ${title(r).slice(0, 80)} · ${bits.join(' · ')}`);
+    lines.push(`- ${projectOf(r, names)}${ids(r)} ${title(r).slice(0, 80)} · ${bits.join(' · ')}`);
     lines.push(`  Question (${a.question_author ?? '?'}): ${a.question.slice(0, 400)}`);
     if (a.options.length > 0) lines.push(`  Options: ${a.options.join(' | ')}`);
     const unb: string[] = [];
-    if (a.unblocks.node_id) unb.push(`node ${a.unblocks.node_id.slice(0, 8)}${a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}`);
+    if (a.unblocks.node_id) unb.push(`node ${a.unblocks.node_id}${a.unblocks.node_status ? ` (${a.unblocks.node_status})` : ''}`);
     if (a.unblocks.worker) unb.push(`worker ${a.unblocks.worker}`);
     if (a.unblocks.pr) unb.push(`PR ${a.unblocks.pr}${a.unblocks.pr_state ? ` ${a.unblocks.pr_state}` : ''}`);
     if (a.url) unb.push(a.url);
@@ -76,11 +82,11 @@ export function renderAskList(res: AskListResult, scopeLabel: string): string {
   }
   if (noQuestion.length > 0) {
     lines.push('', `## No question — parked plan items / the text already is the decision (${noQuestion.length})`);
-    for (const r of noQuestion) lines.push(`- ${projectOf(r, names)}${r.ask.id} · ${ref(r)} [${r.ask.hint}] ${title(r).slice(0, 90)}`);
+    for (const r of noQuestion) lines.push(`- ${projectOf(r, names)}${ids(r)} [${r.ask.hint}] ${title(r).slice(0, 90)}`);
   }
   if (versionOnly.length > 0) {
     lines.push('', `## Only the version is missing — NEEDS-VERSION (${versionOnly.length}, answer = milestone)`);
-    for (const r of versionOnly) lines.push(`- ${projectOf(r, names)}${r.ask.id} · ${ref(r)} ${title(r).slice(0, 90)}${r.ask.priority ? ` · ${r.ask.priority}` : ''}`);
+    for (const r of versionOnly) lines.push(`- ${projectOf(r, names)}${ids(r)} ${title(r).slice(0, 90)}${r.ask.priority ? ` · ${r.ask.priority}` : ''}`);
   }
   return lines.join('\n');
 }

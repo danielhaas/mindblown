@@ -46,11 +46,11 @@ describe('list_asks', () => {
     expect(out.indexOf('## Dan')).toBeLessThan(out.indexOf('## Rita'));
     expect(out).toContain('#6823 Avione Migrationsskript · P1 · idle 30h · [decision]');
     expect(out).toContain('Options: skip | keep');
-    expect(out).toContain('unblocks: node n1n1n1n1 (blocked)');
+    expect(out).toContain('unblocks: node n1n1n1n1-0000 (blocked)');
     expect(out).toContain('## No question');
-    expect(out).toContain('#8 · #8 [parked-plan] Wochenplan');
+    expect(out).toContain('- #8 [parked-plan] Wochenplan');
     expect(out).toContain('## Only the version is missing');
-    expect(out).toContain('#9 · #9 Version?');
+    expect(out).toContain('- #9 Version?');
   });
 });
 
