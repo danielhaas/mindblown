@@ -463,4 +463,28 @@ export type { BoardSummary, BoardSummaryItem, BoardSummaryBlocked } from './boar
 
 // Outgoing webhooks: per map/workspace event subscriptions
 export { WEBHOOK_EVENTS, WEBHOOK_PING_EVENT, isWebhookEvent, statusCategory, webhookNodeRef, webhookEventsForNodeUpdate } from './webhooks.js';
-export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef } from './webhooks.js';
+export type { WebhookEvent, WebhookSubscription, WebhookPayload, WebhookNodeRef, FleetWaitingOnHumanData } from './webhooks.js';
+
+// Waiting on humans: is a fleet idle, and what do people hold up
+export {
+  fleetIdleState,
+  isWaitingWorkerState,
+  waitingItemsFromAsks,
+  ownerPerson,
+  summarizeWaiting,
+  waitingCountsGrew,
+  waitingAlertDue,
+  WAITING_TOP_N,
+  DEFAULT_WAITING_PERSON,
+  WAITING_ALERT_THROTTLE_MS,
+} from './waitingOnHumans.js';
+export type {
+  WaitingKind,
+  WaitingItem,
+  WaitingCounts,
+  PersonWaiting,
+  FleetIdleState,
+  FleetWaitingOnHumans,
+  WaitingOnHumansResult,
+  WaitingAlertState,
+} from './waitingOnHumans.js';

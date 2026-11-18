@@ -49,7 +49,8 @@ async function derivedRows(scope: asksDb.AskScope, mapIds: string[], f: asksDb.A
   );
 }
 
-async function inbox(scope: asksDb.AskScope, filters: asksDb.AskListFilters, full: boolean): Promise<AskInbox> {
+/** Exported for services/waitingOnHumans — a scope it built itself. */
+export async function inbox(scope: asksDb.AskScope, filters: asksDb.AskListFilters, full: boolean): Promise<AskInbox> {
   const mapIds = 'mapId' in scope ? [scope.mapId] : scope.visibleMapIds;
   const [rows, push, derived] = await Promise.all([
     asksDb.listAsks(scope, filters),

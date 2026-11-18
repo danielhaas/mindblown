@@ -27,6 +27,15 @@ export const WEBHOOK_EVENTS = [
   'node.behind',
   /** A pull found nothing claimable left on the map. Fires once per run-dry, again after a grant. */
   'queue.empty',
+  /**
+   * A fleet stands idle (no active claims, every worker parked or idle)
+   * while decisions, steps, PR merges or approvals wait on a person. One
+   * event per fleet and person, to every fleet map's webhooks: when the
+   * idle stretch starts, again when the counts grow — at most once per 2 h,
+   * never while the fleet works. `mapId` is a map of the fleet the
+   * subscription hears; `data` is the person's summary (see FleetWaitingOnHumanData).
+   */
+  'fleet.waiting_on_human',
 ] as const;
 
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
@@ -65,6 +74,28 @@ export interface WebhookPayload<D = Record<string, unknown>> {
   workspaceId: string;
   mapId: string;
   data: D;
+}
+
+/**
+ * `data` of a `fleet.waiting_on_human` delivery. Counts are fleet-wide;
+ * `top` lists only items on maps the subscription hears (fleet-level asks
+ * and other projects' items count but are not named).
+ */
+export interface FleetWaitingOnHumanData {
+  fleetId: string;
+  fleetName: string;
+  /** Who is waited on: an ask's answerer, or the map owner for PR merges and approvals. */
+  person: string;
+  idleSince: string | null;
+  workers: { total: number; working: number; waiting: number };
+  decisions: number;
+  steps: number;
+  prs: number;
+  approvals: number;
+  /** Distinct tickets these would unblock. */
+  unblocks: number;
+  /** The oldest three of each kind: `ref` = ask id, node id (approval) or `owner/repo#n` (PR). */
+  top: Record<'decisions' | 'steps' | 'prs' | 'approvals', Array<{ ref: string; title: string; mapId: string | null; nodeId: string | null; since: string | null; url: string | null }>>;
 }
 
 /** The node fields a delivery carries — enough to act on without a refetch. */

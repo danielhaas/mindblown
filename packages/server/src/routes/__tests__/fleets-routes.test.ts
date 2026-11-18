@@ -70,6 +70,9 @@ vi.mock('../../lib/apiKeys.js', () => ({
 const broadcastMock = vi.hoisted(() => vi.fn());
 vi.mock('../../ws.js', () => ({ broadcast: (...a: unknown[]) => broadcastMock(...a) }));
 
+const waiting = vi.hoisted(() => vi.fn());
+vi.mock('../../services/waitingOnHumans.js', () => ({ waitingOnHumansForUser: (...a: unknown[]) => waiting(...a) }));
+
 import { fleetEntityRoutes } from '../fleets.js';
 
 async function call(
@@ -249,5 +252,26 @@ describe('fleet credentials (#481)', () => {
     const res = await call(SERVICE_USER, 'POST', '/api/fleets', { name: 'mine' }, 'api-key');
     expect(res.statusCode).toBe(403);
     expect(db.createFleet).not.toHaveBeenCalled();
+  });
+});
+
+describe('waiting on humans', () => {
+  it('reads every fleet of the caller, or one fleet; maps a hidden fleet to its 404', async () => {
+    waiting.mockReset();
+    waiting.mockResolvedValue([{ fleetId: FLEET_ID, idle: true }]);
+    const all = await call(OWNER, 'GET', '/api/waiting-on-humans');
+    expect(all.statusCode).toBe(200);
+    expect(all.json().fleets).toEqual([{ fleetId: FLEET_ID, idle: true }]);
+    expect(waiting).toHaveBeenLastCalledWith(OWNER);
+
+    expect((await call(VIEWER, 'GET', `/api/fleets/${FLEET_ID}/waiting-on-humans`)).statusCode).toBe(200);
+    expect(waiting).toHaveBeenLastCalledWith(VIEWER, FLEET_ID);
+
+    waiting.mockResolvedValue({ status: 404, code: 'FLEET_NOT_FOUND', message: 'no' });
+    const hidden = await call(STRANGER, 'GET', `/api/fleets/${FLEET_ID}/waiting-on-humans`);
+    expect(hidden.statusCode).toBe(404);
+    expect(hidden.json().error.code).toBe('FLEET_NOT_FOUND');
+
+    expect((await call(null, 'GET', '/api/waiting-on-humans')).statusCode).toBe(401);
   });
 });

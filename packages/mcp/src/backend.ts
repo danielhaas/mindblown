@@ -58,6 +58,7 @@ export const httpBackend: ToolBackend = {
   fleetCheckBlockers: (fleetId, by) => api.fleetCheckBlockers(fleetId, by),
   // ── Approvals (#494) ────────────────────────────────────────────
   listPendingApprovals: (scope) => api.listPendingApprovals(scope),
+  waitingOnHumans: (fleetId) => api.waitingOnHumans(fleetId),
   listReporterChecks: (scope) => api.listReporterChecks(scope),
   markDeployed: (mapId) => api.markDeployed(mapId),
   // ── Closed-issue audit (premature-close backfill) ───────────────
