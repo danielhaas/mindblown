@@ -68,7 +68,12 @@ vi.mock('../../db/maps.js', () => ({
 vi.mock('../../db/versions.js', () => ({ listVersions: vi.fn(async () => state.versions) }));
 vi.mock('../../db/connection.js', () => ({ db: { select: () => ({ from: () => ({ where: async () => [{ name: 'Dan Haas' }] }) }) } }));
 const updateNode = vi.hoisted(() => vi.fn(async (id: string, input: Record<string, unknown>) => ({ id, ...input })));
-vi.mock('../../db/nodes.js', () => ({ updateNode }));
+vi.mock('../../db/nodes.js', () => ({ updateNode, getNode: vi.fn(async (id: string) => (state.nodes as Array<{ id: string }>).find((n) => n.id === id) ?? null) }));
+// The brief-draft job's view of each briefless ticket: by default drafting is off (the generic row).
+const briefRows = vi.hoisted(() => ({ value: new Map<string, { ask: false } | { ask: true; question: string | null }>() }));
+vi.mock('../briefDrafts.js', () => ({
+  briefRowState: vi.fn(async (_map: unknown, nodes: Array<{ id: string }>) => new Map(nodes.map((n) => [n.id, briefRows.value.get(n.id) ?? { ask: true, question: null }]))),
+}));
 vi.mock('../../db/events.js', () => ({ recordFieldChanges: vi.fn(async () => {}) }));
 vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../lib/stalled.js', () => ({ stalledForMap: vi.fn(async () => state.stalled) }));
@@ -440,6 +445,27 @@ describe('tickets that need a brief', () => {
   it('none while the map is on hold (cap 0) — nothing is pulled, so nothing waits on a brief', async () => {
     state.cap = 0;
     expect((await derivedAskRows(['m1'])).filter((r) => r.ask.id.startsWith('brief-'))).toEqual([]);
+  });
+
+  it('while the AI drafts it, nobody is asked; when the AI could not, the row asks its question', async () => {
+    briefRows.value = new Map([['bare', { ask: false }]]);
+    expect((await derivedAskRows(['m1'])).filter((r) => r.ask.id.startsWith('brief-'))).toEqual([]);
+    briefRows.value = new Map([['bare', { ask: true, question: 'Which durations — lead time or cycle time?' }]]);
+    const row = (await derivedAskRows(['m1'])).find((r) => r.ask.id === 'brief-bare')!;
+    expect(row.ask.question).toContain('Which durations — lead time or cycle time?');
+    expect(row.ask.question).not.toMatch(/^Needs a brief/);
+    // The answer is written with the question.
+    await answerDerivedAsk(briefKey, { action: 'answered', decision: 'Cycle time' }, 'u1');
+    expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'bare', 'write-brief', 'u1', { note: 'Which durations — lead time or cycle time?\nCycle time' });
+    briefRows.value = new Map();
+  });
+
+  it('a needs-dan ticket is held for Dan: a step row with Dan as answerer, no brief row', async () => {
+    state.nodes = [...(state.nodes as unknown[]), ready('live', { text: 'Test live: login', tags: ['needs-dan'] })];
+    (state.nodes[0] as { childrenIds: string[] }).childrenIds.push('live');
+    const rows = await derivedAskRows(['m1']);
+    expect(rows.map((r) => r.ask.id)).not.toContain('brief-live');
+    expect(rows.find((r) => r.ask.id === 'step-live')!.ask.answerer).toBe('Dan');
   });
 
   it('free text writes the brief, Done finishes', async () => {

@@ -18,6 +18,7 @@ import { runCanary } from './sync/canary.js';
 import { runWebhookAuthCheck } from './sync/webhookAuthCheck.js';
 import { runTrashGc } from './sync/trashGc.js';
 import { runSprintAutomation } from './sync/sprintAutomation.js';
+import { runBriefDrafts } from './services/briefDrafts.js';
 import { runEstimateDrafts } from './sync/estimateDrafts.js';
 import { runTriageLifecycle } from './sync/triageLifecycle.js';
 import { sdNotifyReady, sdNotifyWatchdog } from './sync/sdNotify.js';
@@ -528,6 +529,29 @@ async function main(): Promise<void> {
     }
   };
   setInterval(approvalReviewTick, APPROVAL_REVIEW_INTERVAL_MS);
+
+  // ── AI brief drafts ──────────────────────────────────────────
+  // Every 5 min: ready tickets the pull refuses for want of a brief get one
+  // drafted by the map's AI (services/briefDrafts), or the AI's question on
+  // the Questions card when it cannot write one. Per-map switch
+  // aiBriefDrafts; aiPolicy none = never. A slow model never stacks runs.
+  const BRIEF_DRAFTS_INTERVAL_MS = 5 * 60 * 1000;
+  let briefDraftsRunning = false;
+  const briefDraftsTick = async (): Promise<void> => {
+    if (briefDraftsRunning) return;
+    briefDraftsRunning = true;
+    try {
+      const r = await runBriefDrafts();
+      if (r.drafted > 0 || r.asked > 0 || r.errors.length > 0) console.log(`[brief-drafts] drafted=${r.drafted} asked=${r.asked} errors=${r.errors.length}`);
+      for (const err of r.errors.slice(0, 5)) console.warn(`[brief-drafts] ${err}`);
+    } catch (err) {
+      console.error('[brief-drafts] tick caught unexpected error:', err);
+    } finally {
+      briefDraftsRunning = false;
+    }
+  };
+  setTimeout(briefDraftsTick, 90_000); // after the AI health probe has answered once
+  setInterval(briefDraftsTick, BRIEF_DRAFTS_INTERVAL_MS);
 
   // ── The reporter's check ─────────────────────────────────────
   // Every 10 min: start checks for finished outside tickets, and read the

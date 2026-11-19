@@ -122,6 +122,8 @@ export interface NodeWithComputed {
   effortEstimate: number | null;
   /** 'ai' = an AI draft estimate (#318); null/absent = a person's. */
   estimateSource?: 'ai' | null;
+  /** 'ai' = the description is a brief drafted by AI; null/absent = a person's. */
+  descriptionSource?: 'ai' | null;
   /** Parked branch (#655): not scheduled, not pulled by the fleet. */
   parked?: boolean;
   actualEffort: number | null;
@@ -562,6 +564,7 @@ export function updateMap(
     githubRepoName?: string | null;
     aiPolicy?: 'any' | 'local' | 'none';
     aiEstimateDrafts?: boolean;
+    aiBriefDrafts?: boolean;
     lintAutoFix?: Partial<Record<string, boolean>>;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };

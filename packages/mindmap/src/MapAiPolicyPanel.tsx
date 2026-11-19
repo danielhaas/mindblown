@@ -120,6 +120,31 @@ export function MapAiPolicyPanel() {
           </span>
         </span>
       </label>
+      <label
+        style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 14, cursor: saving ? 'wait' : 'pointer' }}
+      >
+        <input
+          type="checkbox"
+          data-testid="map-ai-brief-drafts"
+          checked={current !== 'none' && (map.aiBriefDrafts ?? true)}
+          disabled={saving || current === 'none'}
+          onChange={async (e) => {
+            setSaving(true);
+            const ok = await updateMapSettings({ aiBriefDrafts: e.target.checked });
+            setSaving(false);
+            if (ok) setSavedAt(Date.now());
+          }}
+          style={{ marginTop: 3 }}
+        />
+        <span style={{ flex: 1 }}>
+          <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: '#1e293b' }}>AI brief drafts</span>
+          <span style={{ display: 'block', fontSize: 11, color: '#64748b', marginTop: 2 }}>
+            A ready ticket the fleet refuses for want of a brief gets one drafted by the AI, marked &ldquo;Brief drafted by
+            AI&rdquo; until someone edits or accepts it. When the AI cannot write one, you are asked its question instead.
+            Tickets held for a person (needs-&lt;name&gt;) are left alone.
+          </span>
+        </span>
+      </label>
     </div>
   );
 }

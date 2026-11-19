@@ -12,7 +12,7 @@
  * while open: the tag is the truth, and answering changes the tag.
  */
 import { questionParts, type Ask, type QuestionParts, type StepFollowUp } from './asks.js';
-import { dispatchSkipTag, fleetFixAction, WORKER_WAIT_NOTE } from './dispatch.js';
+import { dispatchSkipTag, fleetFixAction, holdTagPerson, WORKER_WAIT_NOTE } from './dispatch.js';
 import { proseMirrorToPlainText } from './richtext.js';
 import { isForgeLink, type ExternalLink } from './types.js';
 import { STALLED_ASK_OPTIONS, stalledAnswerAction, stalledAskNodeId } from './stalled.js';
@@ -231,7 +231,8 @@ export function buildStepAsk(
         : `Tagged ${tag} — the fleet leaves it to a person. Open the node for what is left.`,
     question_author: 'MindBlown',
     options: [...STEP_ASK_OPTIONS],
-    answerer: 'Dan',
+    // `needs-<name>` holds the ticket for that person (needs-dan → Dan).
+    answerer: holdTagPerson(tag) ?? 'Dan',
     hint: 'ops-task',
     priority: node.priority ?? null,
     milestone: null,
@@ -369,20 +370,49 @@ export function stepAnswerAction(decision: string, next: StepFollowUp = 'fleet')
   return next === 'done' ? 'mark-done' : next === 'mine' ? 'needs-human' : 'to-fleet';
 }
 
-/** The row of a ticket the pull queue refuses for want of a brief. */
+/** How a brief row reads when the AI could not draft one and asked instead. */
+const BRIEF_AI_PREFIX = 'The AI could not write the brief and asks: ';
+const BRIEF_AI_SUFFIX = ' — your answer becomes the description.';
+
+/**
+ * The row of a ticket the pull queue refuses for want of a brief. With
+ * `aiQuestion` (server briefDrafts: the AI answered with a question instead
+ * of a brief) the row asks that question, not a generic "write a brief".
+ */
 export function buildBriefAsk(
   node: { id: string; text: string; priority?: string | null; externalLinks?: ExternalLink[]; percentComplete?: number | null },
   mapId: string,
+  aiQuestion?: string | null,
 ): Ask {
   const step = buildStepAsk({ ...node, tags: [], description: null }, mapId);
   return {
     ...step,
     id: briefAskId(node.id),
     sources: ['mindblown-brief'],
-    question: `${BRIEF_PREFIX}the fleet will not take it until it says what is to be done. Your text becomes the description.`,
+    question: aiQuestion?.trim()
+      ? `${BRIEF_AI_PREFIX}${aiQuestion.trim()}${BRIEF_AI_SUFFIX}`
+      : `${BRIEF_PREFIX}the fleet will not take it until it says what is to be done. Your text becomes the description.`,
     options: [...BRIEF_ASK_OPTIONS],
     unblocks: { ...step.unblocks, node_status: 'needs a brief' },
   };
+}
+
+/** The AI's question a brief row asks, or null for the generic row. */
+export function briefAskAiQuestion(a: Pick<Ask, 'question'>): string | null {
+  if (!a.question.startsWith(BRIEF_AI_PREFIX)) return null;
+  const q = a.question.slice(BRIEF_AI_PREFIX.length);
+  return (q.endsWith(BRIEF_AI_SUFFIX) ? q.slice(0, -BRIEF_AI_SUFFIX.length) : q).trim() || null;
+}
+
+/**
+ * The description an answer to a brief row writes: the text itself, or —
+ * when the row asked the AI's question — question and answer together, so
+ * the worker reads what the answer is about.
+ */
+export function briefFromAnswer(a: Pick<Ask, 'question'>, decision: string): string {
+  const q = briefAskAiQuestion(a);
+  const text = decision.trim();
+  return q ? `${q}\n${text}` : text;
 }
 
 /** Which write an answer to a brief row means: Done, else the text is the brief. */
@@ -468,7 +498,9 @@ export function derivedAnswerPreview(
     // A linked issue would be a brief, so there is none to close here.
     return briefAnswerAction(d) === 'mark-done'
       ? ['Node: done, 100 %']
-      : [`Node: "${d || '…'}" becomes the description — the fleet takes it on its next pull`];
+      : a.question && briefAskAiQuestion({ question: a.question })
+        ? [`Node: the question and "${d || '…'}" become the description — the fleet takes it on its next pull`]
+        : [`Node: "${d || '…'}" becomes the description — the fleet takes it on its next pull`];
   }
   if (deployProbeAskMapId(a.id)) {
     const probe = deployProbeFromAnswer(d);

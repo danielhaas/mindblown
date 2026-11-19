@@ -80,6 +80,7 @@ import {
   deployProbeAskMapId,
   deployProbeFromAnswer,
   buildBriefAsk,
+  briefFromAnswer,
   dispatchQueueSnapshot,
   buildGateAsk,
   defaultVersionForNewLeaf,
@@ -107,6 +108,7 @@ import {
   derivedAskNodeId,
   DISPATCH_SKIP_TAGS,
   dispatchSkipTag,
+  isDispatchSkipTag,
   isOrphanRequeueable,
   isStalledAskDue,
   planAskWrites,
@@ -140,6 +142,7 @@ import { removeIssueLabels } from './issueLabels.js';
 import { latestDeployDrift } from './deployDrift.js';
 import { syncNodeToGitHub } from '../routes/nodes.js';
 import { mapOwnerAnswerer } from './flagBlocker.js';
+import { briefRowState } from './briefDrafts.js';
 
 const rowKey = (r: { mapId?: string | null; ask: { id: string } }) => `${r.mapId ?? ''}|${r.ask.id}`;
 
@@ -201,9 +204,13 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     // blocker row. A map on hold (cap 0) pulls nothing, so nothing waits on a brief.
     const cap = data.map.maxActiveClaims ?? 0;
     const queue = cap > 0 ? dispatchQueueSnapshot(data.nodes, { workflow: data.map.statusWorkflow ?? [], cap, gate: data.map.dispatchGate ?? [] }) : null;
-    for (const id of queue?.needsBriefIds ?? []) {
-      const node = byId.get(id);
-      if (node) out.push(openRow(buildBriefAsk(node, mapId), mapId, now, node.updatedAt));
+    // While the AI drafts briefs for this map, a person is asked only when it
+    // could not write one — with its question (services/briefDrafts).
+    const briefless = (queue?.needsBriefIds ?? []).map((id) => byId.get(id)).filter((n): n is CoreNode => !!n);
+    const briefState = await briefRowState(data.map, briefless).catch(() => null);
+    for (const node of briefless) {
+      const state = briefState?.get(node.id) ?? { ask: true as const, question: null };
+      if (state.ask) out.push(openRow(buildBriefAsk(node, mapId, state.question), mapId, now, node.updatedAt));
     }
 
     // The daily check's findings for a person — one row per finding, none
@@ -305,7 +312,7 @@ function plannedFix(ask: AskRow['ask'], input: AskAnswerInput, decision: string)
   if (stalledAskNodeId(askId)) return { action: stalledAnswerAction(decision), note: stalledAnswerNote(decision) ?? undefined, decided: false };
   if (briefAskNodeId(askId)) {
     const brief = briefAnswerAction(decision);
-    return { action: brief, note: brief === 'write-brief' ? decision : undefined, decided: false };
+    return { action: brief, note: brief === 'write-brief' ? briefFromAnswer(ask, decision) : undefined, decided: false };
   }
   if (stepAskNodeId(askId)) {
     // noRequeue (answer_ask's "a human step still precedes the fleet") keeps the step.
@@ -332,7 +339,7 @@ const HOLD_LABELS = [BLOCKED_TAG, ...DISPATCH_SKIP_TAGS];
 async function stepIssueWrites(
   mapId: string,
   node: CoreNode,
-  opts: { comment: string | null; line: string | null; dropLabels: boolean },
+  opts: { comment: string | null; line: string | null; dropLabels: boolean; heldTags?: string[] },
   writes: AskWrite[],
 ): Promise<void> {
   if (!opts.comment && !opts.dropLabels) return;
@@ -354,7 +361,9 @@ async function stepIssueWrites(
       }
     }
   }
-  if (opts.dropLabels && ctx) writes.push(await removeIssueLabels(ctx, num, HOLD_LABELS));
+  // The node's own needs-<person> tags (read before the answer took them off) are hold labels too.
+  const labels = [...new Set([...HOLD_LABELS, ...(opts.heldTags ?? []).filter(isDispatchSkipTag)])];
+  if (opts.dropLabels && ctx) writes.push(await removeIssueLabels(ctx, num, labels));
 }
 
 /**
@@ -392,6 +401,7 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
     const line = decisionLine(by, decision, date);
     const w: AskWrite = { kind: 'mb-put', target: nodeId.slice(0, 8), detail: `${action} — ${line}`, done: false };
     writes.push(w);
+    const heldTags = stepAskNodeId(key.askId) ? ((await nodeDb.getNode(nodeId).catch(() => null))?.tags ?? []) : [];
     try {
       const out = await applyLintFix(key.mapId, nodeId, action, userId, decided ? { note, decision: line } : { note });
       node = out.node;
@@ -405,7 +415,7 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
       await stepIssueWrites(
         key.mapId,
         node,
-        { comment: decided ? decisionCommentBody(by, decision, date) : null, line, dropLabels: action === 'to-fleet' },
+        { comment: decided ? decisionCommentBody(by, decision, date) : null, line, dropLabels: action === 'to-fleet', heldTags },
         writes,
       );
     }

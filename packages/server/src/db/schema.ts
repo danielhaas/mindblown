@@ -139,6 +139,8 @@ export const maps = pgTable('maps', {
   aiPolicy: text('ai_policy').notNull().default('any'),
   // Draft estimates for committed work (#318).
   aiEstimateDrafts: boolean('ai_estimate_drafts').notNull().default(true),
+  // Draft briefs for briefless ready tickets (services/briefDrafts.ts).
+  aiBriefDrafts: boolean('ai_brief_drafts').notNull().default(true),
   // Daily self-check (lint/daily.ts): rule id → false switches that rule's
   // auto-fix off. {} = every safe fix on.
   lintAutoFix: jsonb('lint_auto_fix').notNull().default({}),
@@ -276,6 +278,7 @@ export const nodes = pgTable('nodes', {
   collapsed: boolean('collapsed').notNull().default(false),
   effortEstimate: real('effort_estimate'),
   estimateSource: text('estimate_source'), // 'ai' = draft (#318); null = person
+  descriptionSource: text('description_source'), // 'ai' = brief drafted by AI; null = person
   actualEffort: real('actual_effort'),
   percentComplete: real('percent_complete'),
   status: text('status'),
@@ -807,6 +810,20 @@ export const approvalReviews = pgTable('approval_reviews', {
   askedAt: timestamp('asked_at', { withTimezone: true }),
   // The questions as posted (the person's edit of the AI's) — what the worker gets.
   askedQuestions: jsonb('asked_questions').$type<string[]>(),
+});
+
+// ── AI brief drafts ─────────────────────────────────────────────────
+// One row per node the brief-draft job tried (services/briefDrafts.ts),
+// keyed by a hash of the title it read: `drafted` (the brief is in the
+// description) or `question` (the AI could not write one — its question
+// goes to the brief row). A title edit makes the row stale: tried again.
+export const briefDrafts = pgTable('brief_drafts', {
+  nodeId: uuid('node_id').primaryKey().references(() => nodes.id, { onDelete: 'cascade' }),
+  textHash: text('text_hash').notNull(),
+  outcome: text('outcome').notNull(),
+  question: text('question'),
+  provider: text('provider'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 // ── The reporter's check ────────────────────────────────────────────

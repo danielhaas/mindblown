@@ -331,6 +331,14 @@ export interface Node {
    * draft never masquerades as a real estimate once someone touches it.
    */
   estimateSource?: 'ai' | null;
+  /**
+   * Who wrote the description (19.11.2026): 'ai' = a brief the brief-draft
+   * job wrote for a ticket that had none, so the fleet could take it — shown
+   * as "Brief drafted by AI — edit or accept" until a person edits or
+   * accepts it. null / absent = a person or agent wrote it. Any write of
+   * description without this field clears it.
+   */
+  descriptionSource?: 'ai' | null;
   actualEffort: number | null; // leaf-only input; null = unrecorded. Same unit as effortEstimate. Used to compute estimation accuracy.
   percentComplete: number | null; // leaf-only input; 0–100; null = unset
   status: string | null; // references a status from Map.statusWorkflow
@@ -969,6 +977,15 @@ export interface MindMap {
    * Server source: `maps.ai_estimate_drafts`.
    */
   aiEstimateDrafts?: boolean;
+  /**
+   * Draft briefs (19.11.2026): when true (the default), a ready, approved
+   * leaf with no brief (core hasBrief) and no person hold gets a
+   * description drafted by the map's AI, marked `descriptionSource: 'ai'`,
+   * so the fleet can take it; when the AI cannot, its question goes to the
+   * brief row on the Questions card. Off when `aiPolicy` is none.
+   * Server source: `maps.ai_brief_drafts`.
+   */
+  aiBriefDrafts?: boolean;
   /**
    * The daily self-check's auto-fixes (server lint/daily.ts), opt-in: rule
    * id → true switches that rule's safe fix on; missing or false = off, its

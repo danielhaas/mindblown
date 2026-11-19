@@ -17,7 +17,7 @@ const { STAMP, approvalForNewNode } = vi.hoisted(() => {
 });
 vi.mock('../../services/trustPolicy.js', () => ({ approvalForNewNode }));
 
-import { createNode, estimateSourceUpdate, type DbHandle } from '../nodes.js';
+import { createNode, descriptionSourceUpdate, estimateSourceUpdate, type DbHandle } from '../nodes.js';
 
 function stubHandle(): { handle: DbHandle; inserted: () => Record<string, unknown> | null } {
   let inserted: Record<string, unknown> | null = null;
@@ -101,5 +101,23 @@ describe('estimate drafts (#318): the source marker', () => {
     expect(estimateSourceUpdate({ effortEstimate: 4, estimateSource: 'ai' })).toBe('ai');
     expect(estimateSourceUpdate({ estimateSource: null })).toBeNull(); // "Accept" keeps the number
     expect(estimateSourceUpdate({})).toBeUndefined();
+  });
+});
+
+describe('AI brief drafts: the description source marker', () => {
+  it('create keeps an AI marker only alongside a description', async () => {
+    const a = stubHandle();
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', description: 'Brief.', descriptionSource: 'ai' }, a.handle);
+    expect(a.inserted()).toMatchObject({ descriptionSource: 'ai' });
+    const b = stubHandle();
+    await createNode({ mapId: 'm1', parentId: 'p1', text: 't', createdBy: 'u1', descriptionSource: 'ai' }, b.handle);
+    expect(b.inserted()).toMatchObject({ descriptionSource: null });
+  });
+
+  it("update: a description written without a source is a person's; explicit values win; untouched otherwise", () => {
+    expect(descriptionSourceUpdate({ description: 'edited' })).toBeNull();
+    expect(descriptionSourceUpdate({ description: 'drafted', descriptionSource: 'ai' })).toBe('ai');
+    expect(descriptionSourceUpdate({ descriptionSource: null })).toBeNull(); // "Accept" keeps the text
+    expect(descriptionSourceUpdate({})).toBeUndefined();
   });
 });

@@ -287,6 +287,8 @@ export interface CreateNodeInput {
   effortEstimate?: number;
   /** 'ai' = the estimate is an AI draft (#318). */
   estimateSource?: 'ai' | null;
+  /** 'ai' = the description is a brief drafted by AI. */
+  descriptionSource?: 'ai' | null;
   percentComplete?: number;
   status?: string;
   priority?: Priority;
@@ -431,6 +433,7 @@ export async function createNode(
       y: input.y ?? null,
       effortEstimate: input.effortEstimate ?? null,
       estimateSource: input.effortEstimate != null && input.estimateSource === 'ai' ? 'ai' : null,
+      descriptionSource: input.description != null && input.descriptionSource === 'ai' ? 'ai' : null,
       percentComplete,
       status: input.status ?? null,
       priority: input.priority ?? null,
@@ -568,6 +571,17 @@ export function estimateSourceUpdate(input: Pick<UpdateNodeInput, 'effortEstimat
   return undefined;
 }
 
+/**
+ * The description_source an update writes, or undefined for "leave it".
+ * Same rule as the estimate: an explicit value wins; otherwise writing a
+ * description makes it a person's (null), so an AI brief never outlives an edit.
+ */
+export function descriptionSourceUpdate(input: Pick<UpdateNodeInput, 'description' | 'descriptionSource'>): 'ai' | null | undefined {
+  if (input.descriptionSource !== undefined) return input.descriptionSource === 'ai' ? 'ai' : null;
+  if (input.description !== undefined) return null;
+  return undefined;
+}
+
 export interface UpdateNodeInput {
   text?: string;
   description?: unknown;
@@ -581,6 +595,11 @@ export interface UpdateNodeInput {
    * an estimate owns it.
    */
   estimateSource?: 'ai' | null;
+  /**
+   * 'ai' marks the description as a brief drafted by AI; null accepts it
+   * as a person's. Omitted while description is written = null.
+   */
+  descriptionSource?: 'ai' | null;
   actualEffort?: number | null;
   percentComplete?: number | null;
   status?: string | null;
@@ -766,6 +785,8 @@ export async function updateNode(
   if (input.effortEstimate !== undefined) updates.effortEstimate = input.effortEstimate;
   const source = estimateSourceUpdate(input);
   if (source !== undefined) updates.estimateSource = source;
+  const descSource = descriptionSourceUpdate(input);
+  if (descSource !== undefined) updates.descriptionSource = descSource;
   if (input.actualEffort !== undefined) updates.actualEffort = input.actualEffort;
   if (input.percentComplete !== undefined) updates.percentComplete = input.percentComplete;
   if (input.status !== undefined) updates.status = input.status;
