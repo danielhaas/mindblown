@@ -28,7 +28,13 @@
  *   lint-<rule>-<node> a finding the daily self-check (lint/daily.ts) left
  *                   for a person — read from the map's newest run, so it
  *                   stays the same row while the finding stays; a node
- *                   with any other row here gets none (that row is the ask)
+ *                   with any other row here gets none (that row is the ask).
+ *                   Re-checked live against the node (lintFindingHolds):
+ *                   a finding that no longer holds, or a node with any
+ *                   other ask answered since the run, shows no row
+ *
+ * A node in a parked branch (#655, itself or an ancestor parked) gets no
+ * stalled, step, blocker, question or external row: it is "later".
  *
  * Nothing is stored while a row is open, so a fleet push (which replaces
  * the open set) cannot wipe it and there is no second list to keep in step:
@@ -120,8 +126,10 @@ import {
   stepAnswerAction,
   stepAskNodeId,
   lintDailyOptedIn,
+  isUnkindedBlocker,
+  parkedNodeIds,
 } from '@mindblown/core';
-import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, MindMap, Node as CoreNode, Version } from '@mindblown/core';
+import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, LintRunAsk, MindMap, Node as CoreNode, Version } from '@mindblown/core';
 import { commentOnGitHubIssue } from '@mindblown/integrations';
 import * as asksDb from '../db/asks.js';
 import * as lintRunsDb from '../db/lintRuns.js';
@@ -170,11 +178,14 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     if (!data || data.map.archivedAt) continue;
     const mapStart = out.length;
     const byId = new Map(data.nodes.map((n) => [n.id, n]));
+    // A parked branch (#655) is "later": no step, stalled or blocker row on it
+    // or below it — the same hold the dispatch snapshot applies (PARKED_HOLD_TAG).
+    const parked = parkedNodeIds(data.nodes);
 
     const stalled = await stalledForMap(data.map, data.nodes, now).catch(() => []);
     for (const s of stalled) {
       const node = byId.get(s.nodeId);
-      if (!node || !isStalledAskDue(s, now, node.text)) continue;
+      if (!node || parked.has(node.id) || !isStalledAskDue(s, now, node.text)) continue;
       const seen = new Date(Date.parse(s.lastChangeAt) + stalledAskAfterHours(node.text) * 3_600_000).toISOString();
       out.push(openRow(buildStalledAsk(node, s, mapId, now), mapId, now, seen));
     }
@@ -184,6 +195,7 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     const answerer = async () => (owner ??= await mapOwnerAnswerer(data.map));
     for (const node of data.nodes) {
       if (isDone(node.status) || (node.childrenIds.length === 0 && (node.percentComplete ?? 0) >= 100)) continue;
+      if (parked.has(node.id)) continue;
       const kind = node.blockedReason?.trim() ? node.blockerInfo?.kind : undefined;
       if (dispatchSkipTag(node) !== null) out.push(openRow(buildStepAsk(node, mapId), mapId, now, node.updatedAt));
       // A blocker with a kind reaches its person as a question — on a parent too.
@@ -217,11 +229,15 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     if (run && run.asked.length > 0) {
       const covered = new Set(out.slice(mapStart).map((r) => r.ask.unblocks.node_id));
       const seen = new Set<string>();
+      const stalledIds = new Set(stalled.map((s) => s.nodeId));
       for (const a of run.asked) {
         const id = `${a.ruleId}|${a.nodeId}`;
         if (!byId.has(a.nodeId) || covered.has(a.nodeId) || seen.has(id)) continue;
+        // The run is from this morning: show the finding only while it still holds.
+        if (!lintFindingHolds(a, byId.get(a.nodeId)!, isDone, stalledIds)) continue;
         seen.add(id);
-        out.push(openRow(buildLintAsk(a, mapId, await answerer(), now), mapId, now, a.firstSeenAt));
+        // pushedAt = the run that found it: an answer on the node after that settles it (openDerivedAsks).
+        out.push({ ...openRow(buildLintAsk(a, mapId, await answerer(), now), mapId, now, a.firstSeenAt), pushedAt: run.ranAt });
       }
     }
 
@@ -240,6 +256,36 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     }
   }
   return out;
+}
+
+/**
+ * Whether a stored daily-check finding still holds for the node as it is
+ * now — the rule's cheap per-node condition (lint/engine.ts), re-checked
+ * live so an answer or edit since the run drops the row without a new run.
+ * Rules with no per-node condition (map-level, forge-backed) keep the run's word.
+ */
+function lintFindingHolds(a: LintRunAsk, node: CoreNode, isDone: (status: string | null) => boolean, stalledIds: Set<string>): boolean {
+  const done = isDone(node.status);
+  const leaf = node.childrenIds.length === 0;
+  const pct = node.percentComplete ?? 0;
+  switch (a.ruleId) {
+    case 'blocker-without-question':
+      return isUnkindedBlocker(node) && !done;
+    case 'stale-blocked-reason':
+      return (node.blockedReason ?? '').trim() !== '' && done;
+    case 'status-progress-mismatch':
+      return leaf && ((done && pct < 100) || (pct >= 100 && node.status != null && !done));
+    case 'done-parent-open-child':
+      return !leaf && done;
+    case 'stalled-unclaimed':
+      return stalledIds.has(node.id);
+    case 'issue-state-mismatch': {
+      const link = (node.externalLinks ?? []).find((l) => isForgeLink(l) && !l.isPullRequest && l.state != null);
+      return !!link && ((done && link.state === 'open') || (!done && link.state === 'closed'));
+    }
+    default:
+      return true;
+  }
 }
 
 /** The gate row of a map, or null when no ready ticket is outside its gate. */
@@ -276,8 +322,24 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
   );
   // A gate row answered for this gated-out set stays answered until the set changes (its id).
   const answered = new Set(stored.filter((r) => r.status !== 'open' && gateAskMapId(r.ask.id)).map(rowKey));
+  // Any other ask on the node answered since the run that found a lint
+  // finding settles that finding too: the person has looked at the node.
+  const nodeAnsweredAt = new Map<string, number>();
+  for (const r of stored) {
+    const nodeId = r.ask.unblocks?.node_id;
+    if (r.status !== 'answered' || !r.answeredAt || !nodeId || parseLintAskId(r.ask.id)) continue;
+    const k = `${r.mapId ?? ''}|${nodeId}`;
+    nodeAnsweredAt.set(k, Math.max(nodeAnsweredAt.get(k) ?? 0, Date.parse(r.answeredAt)));
+  }
+  const answeredSinceRun = (r: AskRow) =>
+    !!parseLintAskId(r.ask.id) && (nodeAnsweredAt.get(`${r.mapId ?? ''}|${r.ask.unblocks.node_id}`) ?? 0) >= Date.parse(r.pushedAt);
   return derived.filter(
-    (r) => !snoozed.has(rowKey(r)) && !asked(r) && !answered.has(rowKey(r)) && !settled.has(`${rowKey(r)}|${r.ask.question}`),
+    (r) =>
+      !snoozed.has(rowKey(r)) &&
+      !asked(r) &&
+      !answered.has(rowKey(r)) &&
+      !settled.has(`${rowKey(r)}|${r.ask.question}`) &&
+      !answeredSinceRun(r),
   );
 }
 
