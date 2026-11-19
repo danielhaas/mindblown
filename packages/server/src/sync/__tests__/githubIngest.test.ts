@@ -2230,6 +2230,21 @@ describe('outside-author hold (#489)', () => {
     expect(tagsWritten()).toEqual([['bug', 'triage:placed']]);
   });
 
+  it('label sync never drops or adds fleet-fix / fleet-check — the node keeps its own', async () => {
+    // Placet #64 (19.11.2026): the outbound label write 409'd on Gitea, the
+    // issue never got fleet-fix, and the next label sync stripped the tag.
+    const owner = { user: { login: 'owner' } };
+    const link = { provider: 'gitea', externalId: 'owner/repo#32' };
+    dbState.nodes.set('n32', { id: 'n32', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['bug', 'fleet-fix'] });
+    await syncIssueLabelsToNodes('owner/repo#32', [{ name: 'bug' }], owner);
+    expect(updateNodeCalls).toHaveLength(0); // nothing to change: the tag stays
+
+    // A stale fleet-check label on the issue does not put the tag back.
+    dbState.nodes.set('n32', { id: 'n32', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['bug'] });
+    await syncIssueLabelsToNodes('owner/repo#32', [{ name: 'bug' }, { name: 'fleet-check' }, { name: 'ux' }], owner);
+    expect(tagsWritten()).toEqual([['bug', 'ux']]);
+  });
+
   it('label sync mirrors labels as before for a trusted author', async () => {
     const link = { provider: 'github', externalId: 'owner/repo#31' };
     dbState.nodes.set('n31', { id: 'n31', mapId: 'm1', parentId: 'inbox-1', externalLinks: [link], tags: ['needs-human'] });

@@ -185,6 +185,15 @@ export function fleetCanFix(blockedReason: string | null | undefined): boolean {
 export const FLEET_CHECK_TAG = 'fleet-check';
 
 /**
+ * Tags only MindBlown sets and only MindBlown (the fleet worker) drops.
+ * The inbound label mirror never adds or removes them — the node's own
+ * value wins — so a failed outbound label write (Gitea 409, 19.11.2026)
+ * can't make the next label sync strip "Fleet can fix it" before the
+ * worker saw it, and a stale label left on the issue can't re-arm it.
+ */
+export const MINDBLOWN_LOCAL_TAGS: readonly string[] = [FLEET_FIX_TAG, FLEET_CHECK_TAG];
+
+/**
  * Which fix "Fleet can fix it" means: the worker's red-CI / conflict note →
  * the worker reworks its PR; else a check run. Not the MindBlown claim: the
  * worker follows its PR from its own claim file, and the node's claim can

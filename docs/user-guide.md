@@ -346,6 +346,8 @@ MindBlown lives alongside your ticket system, not instead of it. Here is how to 
 
 When a linked issue is closed, the node's progress goes to 100% automatically and rolls up through its ancestors. When you move an issue between columns in a linked GitHub Project, the node's status follows. The integration is bidirectional but opinionated -- MindBlown is the planning layer, GitHub is the execution layer.
 
+Tags and labels mirror each other: a node's tags are pushed to the issue as labels, and a label change on the issue replaces the node's tags. The fleet's control tags -- `fleet-fix` and `fleet-check`, set by **Fleet can fix it** -- are MindBlown-local in the inbound direction: a label sync never removes them from a node and a label of that name never adds them; only the fleet worker drops them. So a label write the forge refused (Gitea answers 409 "the issue is already changed" when our own comment just changed the issue; MindBlown sends that write again up to three times) can no longer undo "Fleet can fix it". The same holds on Gitea and GitHub.
+
 ---
 
 ## 13. Keyboard shortcuts reference
