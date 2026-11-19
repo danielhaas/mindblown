@@ -578,7 +578,7 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
       expect(ids).toEqual(['b1', 'b2', 'epicA', 'epicB', 'root']); // a1/a2 hidden
     });
 
-    it('respects drill-down focus by default (incl. dimmed context siblings)', () => {
+    it('respects drill-down focus by default, with the ancestor trail back (not siblings) dimmed', () => {
       useMindmapStore.setState({ focusNodeId: 'epicA' });
       const vns = useMindmapStore.getState().getVisibleNodes();
       expect(
@@ -587,7 +587,14 @@ describe('scope-only getVisibleNodes as the data basis for HillChart/WorkloadVie
           .map((v) => v.node.id)
           .sort(),
       ).toEqual(['a1', 'a2', 'epicA']);
-      expect(vns.filter((v) => v.isDimmed).map((v) => v.node.id)).toEqual(['epicB']);
+      expect(vns.filter((v) => v.isDimmed).map((v) => [v.node.id, v.depth])).toEqual([['root', -1]]);
+    });
+
+    it('a deeper focus trails root first, each ancestor once, none counted as hidden', () => {
+      useMindmapStore.setState({ focusNodeId: 'a1' });
+      const dimmed = useMindmapStore.getState().getVisibleNodes().filter((v) => v.isDimmed);
+      expect(dimmed.map((v) => [v.node.id, v.depth])).toEqual([['root', -2], ['epicA', -1]]);
+      expect(dimmed.every((v) => !v.hasHiddenChildren && v.hiddenDescendantCount === 0)).toBe(true);
     });
   });
 });
