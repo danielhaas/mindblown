@@ -270,6 +270,42 @@ export function resolvedSiblingOrder(children: Node[]): Node[] {
 }
 
 /**
+ * Depth-first (pre-order) position of every node in the tree (#646): a
+ * node's children follow its `childrenIds` order. Nodes whose parent is not
+ * in the set are roots; roots, and children missing from their parent's
+ * `childrenIds`, are ordered by `createdAt` (so a flat set keeps the old
+ * creation-time order).
+ */
+function treeOrderIndex(nodes: Node[]): Map<NodeId, number> {
+  const byId = new Map<NodeId, Node>(nodes.map((n) => [n.id, n]));
+  const byAge = [...nodes].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const unlisted = new Map<NodeId, Node[]>();
+  const roots: Node[] = [];
+  for (const n of byAge) {
+    const parent = n.parentId !== null ? byId.get(n.parentId) : undefined;
+    if (!parent) roots.push(n);
+    else if (!parent.childrenIds.includes(n.id)) {
+      if (!unlisted.has(parent.id)) unlisted.set(parent.id, []);
+      unlisted.get(parent.id)!.push(n);
+    }
+  }
+  const index = new Map<NodeId, number>();
+  const visit = (n: Node): void => {
+    if (index.has(n.id)) return;
+    index.set(n.id, index.size);
+    for (const childId of n.childrenIds) {
+      const child = byId.get(childId);
+      if (child && child.parentId === n.id) visit(child);
+    }
+    for (const child of unlisted.get(n.id) ?? []) visit(child);
+  };
+  for (const r of roots) visit(r);
+  // Anything unreachable (a parent cycle in bad data) goes last.
+  for (const n of byAge) visit(n);
+  return index;
+}
+
+/**
  * Kahn's algorithm with a priority queue: every node comes after all of its
  * in-set dependencies, and whenever several nodes are ready the one `compare`
  * ranks first goes next (ties: input order). `dependents` maps a target id to
@@ -439,7 +475,10 @@ export function schedule(
 
   // Step 5: Build the global ordered queue: a topological order that, among
   // the nodes whose deps are all placed, always takes the best one by
-  // effective priority → priorityRank ASC NULLS LAST → createdAt ASC.
+  // effective priority → priorityRank ASC NULLS LAST → tree order →
+  // createdAt ASC. Tree order (#646) is the depth-first position, so a map
+  // laid out as milestones gets them scheduled in that order; creation time
+  // is close to random on an imported, reorganised map.
   // A plain sort by those keys is NOT enough (#636): a blocker inherits its
   // dependent's priority tier but not its rank or age, so a dependent that is
   // older (e.g. moved into place) or ranked higher sorted ahead of its
@@ -457,8 +496,12 @@ export function schedule(
     } else if (rb !== null) {
       return 1;
     }
+    const ta = treeIndex.get(a.id)!;
+    const tb = treeIndex.get(b.id)!;
+    if (ta !== tb) return ta - tb;
     return a.createdAt.localeCompare(b.createdAt);
   };
+  const treeIndex = treeOrderIndex(expanded);
   const queue = priorityTopologicalOrder(expanded, dependents, byPriority);
 
   // Step 6: Schedule the leaves linearly. Parents derive from rollup.
