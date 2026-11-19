@@ -111,6 +111,66 @@ function Field({
   );
 }
 
+/**
+ * The node title: wraps onto as many lines as it needs instead of being
+ * cut at the panel edge (an <input> can't wrap). Still one line of data —
+ * Enter commits (blurs) instead of inserting a newline, and pasted line
+ * breaks become spaces. Height follows the text and the panel's width.
+ */
+export function TitleField({ value, onChange, onBlur }: { value: string; onChange: (v: string) => void; onBlur: () => void }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const fit = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = `${el.scrollHeight}px`;
+  }, []);
+  useEffect(fit, [value, fit]);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    let width = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== width) {
+        width = el.clientWidth;
+        fit();
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [fit]);
+  return (
+    <textarea
+      ref={ref}
+      data-testid="node-title"
+      rows={1}
+      value={value}
+      onChange={(e) => onChange(e.target.value.replace(/\s*[\r\n]+\s*/g, ' '))}
+      onBlur={onBlur}
+      onKeyDown={(e) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.currentTarget.blur();
+        }
+      }}
+      style={{
+        ...inputStyle,
+        fontSize: 15,
+        fontWeight: 600,
+        lineHeight: 1.35,
+        border: 'none',
+        padding: '4px 0',
+        resize: 'none',
+        overflow: 'hidden',
+        overflowWrap: 'anywhere',
+        display: 'block',
+      }}
+      placeholder="Node title"
+    />
+  );
+}
+
 const inputStyle: React.CSSProperties = {
   width: '100%',
   padding: '7px 10px',
@@ -339,11 +399,11 @@ function PropertyPanelInner({
             ×
           </button>
         </div>
-        <input
+        <TitleField
           value={title}
-          onChange={(e) => {
-            setTitle(e.target.value);
-            debouncedUpdate({ text: e.target.value });
+          onChange={(v) => {
+            setTitle(v);
+            debouncedUpdate({ text: v });
           }}
           onBlur={() => {
             const trimmed = title.trim();
@@ -351,15 +411,6 @@ function PropertyPanelInner({
               directUpdate(nodeId, { text: trimmed });
             }
           }}
-          onKeyDown={(e) => e.stopPropagation()}
-          style={{
-            ...inputStyle,
-            fontSize: 15,
-            fontWeight: 600,
-            border: 'none',
-            padding: '4px 0',
-          }}
-          placeholder="Node title"
         />
       </div>
 
