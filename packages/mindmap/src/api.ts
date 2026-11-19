@@ -1539,6 +1539,19 @@ export function deleteBaseline(mapId: string, baselineId: string): Promise<MindM
   return request<MindMap>(`/api/maps/${mapId}/baseline/${baselineId}`, { method: 'DELETE' });
 }
 
+/** Merged, not deployed — only for a map bound to the repo the server runs from. */
+export interface DeployDrift {
+  sha: string;
+  undeployed: number;
+  undeployedSince: string | null;
+  checkedAt: string;
+  commits: Array<{ sha: string; at: string; subject: string }>;
+}
+
+export async function fetchDeployDrift(mapId: string): Promise<DeployDrift | null> {
+  return (await request<{ drift: DeployDrift | null }>(`/api/maps/${mapId}/deploy-drift`)).drift;
+}
+
 export function fetchSchedule(mapId: string): Promise<ScheduleResponse> {
   return request<ScheduleResponse>(`/api/maps/${mapId}/schedule`);
 }
