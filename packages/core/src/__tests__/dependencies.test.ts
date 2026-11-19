@@ -714,6 +714,42 @@ describe('priority-inheritance schedule', () => {
     expect(byId.get('b')!.computedStart).toBe(2);
   });
 
+  describe('tree order breaks ties before createdAt (#646)', () => {
+    // Sibling parents A then B; B's leaves are older than A's.
+    function build(overrides: Record<string, Partial<Node>> = {}) {
+      const leaf = (id: string, parentId: string, createdAt: string) =>
+        makeNode({ id, parentId, effortEstimate: 2, createdAt, ...overrides[id] });
+      return [
+        makeNode({ id: 'root', childrenIds: ['A', 'B'] }),
+        makeNode({ id: 'A', parentId: 'root', childrenIds: ['a1', 'a2'], createdAt: '2026-03-01T00:00:00Z' }),
+        makeNode({ id: 'B', parentId: 'root', childrenIds: ['b1', 'b2'], createdAt: '2026-01-01T00:00:00Z' }),
+        leaf('b1', 'B', '2026-01-02T00:00:00Z'),
+        leaf('b2', 'B', '2026-01-03T00:00:00Z'),
+        leaf('a1', 'A', '2026-03-02T00:00:00Z'),
+        leaf('a2', 'A', '2026-03-03T00:00:00Z'),
+      ];
+    }
+    const starts = (nodes: Node[]) =>
+      Object.fromEntries(schedule(nodes).map((s) => [s.nodeId, s.computedStart]));
+
+    it("schedules A's leaves first, in sibling order", () => {
+      expect(starts(build())).toMatchObject({ a1: 0, a2: 2, b1: 4, b2: 6 });
+    });
+
+    it('priority still wins over tree order', () => {
+      expect(starts(build({ b2: { priority: 'P0' } }))).toMatchObject({ b2: 0, a1: 2 });
+    });
+
+    it('priorityRank still wins over tree order', () => {
+      expect(starts(build({ b1: { priorityRank: 1 } }))).toMatchObject({ b1: 0, a1: 2 });
+    });
+
+    it('a dependency still wins over tree order', () => {
+      const s = starts(build({ a1: { dependencies: [{ targetNodeId: 'b2', type: 'FS', lag: 0 }] } }));
+      expect(s.a1).toBeGreaterThanOrEqual(s.b2 + 2);
+    });
+  });
+
   describe('dependent before its blocker in tree/creation order (#636)', () => {
     // M1 holds an old node (moved in, created first) that depends on the
     // last link of a chain under M2, all created later. Same priority, so
