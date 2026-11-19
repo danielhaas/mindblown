@@ -15,6 +15,7 @@ import * as asksDb from '../db/asks.js';
 import * as fleetEntityDb from '../db/fleets.js';
 import * as permDb from '../db/permissions.js';
 import { getFleetForUser } from './fleets.js';
+import { waitingMaps } from '../lib/waitingMaps.js';
 import { authorizeTickPush, type TelemetryError } from './fleetTelemetry.js';
 import { autoCheckBlockers, openDerivedAsks, requeueOrphans, sendBlockersToFleet, type FleetCheckOutcome } from './derivedAsks.js';
 import * as nodeDb from '../db/nodes.js';
@@ -84,8 +85,10 @@ export async function fleetInbox(userId: string, fleetId: string, filters: asksD
   const view = await getFleetForUser(userId, fleetId);
   if ('status' in view) return view;
   const full = view.isOwner || view.hiddenMapCount === 0;
-  const scope = { fleetId: view.id, visibleMapIds: view.maps.map((m) => m.id), fleetLevel: full };
-  return { ...(await inbox(scope, filters, full)), maps: view.maps.map((m) => ({ id: m.id, name: m.name })) };
+  // An archived map's asks wait on no one: read them through the map (mapInbox).
+  const live = waitingMaps(view.maps);
+  const scope = { fleetId: view.id, visibleMapIds: live.map((m) => m.id), fleetLevel: full };
+  return { ...(await inbox(scope, filters, full)), maps: live.map((m) => ({ id: m.id, name: m.name })) };
 }
 
 /**

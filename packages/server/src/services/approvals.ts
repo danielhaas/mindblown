@@ -25,6 +25,7 @@ import * as permDb from '../db/permissions.js';
 import { recordEvent, recordFieldChanges } from '../db/events.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { getFleetForUser } from './fleets.js';
+import { waitingMaps } from '../lib/waitingMaps.js';
 import { loadTrustContext } from './trustPolicy.js';
 import { currentReviews, reviewTextHash, textOf } from './approvalReview.js';
 import { markReporterAsked } from '../db/approvalReviews.js';
@@ -59,22 +60,34 @@ export async function approverRefusal(userId: string, mapId: string): Promise<Ap
   return null;
 }
 
-/** Which maps a list covers: one map, a fleet's maps the reader can view, or all of the reader's maps. */
-export async function mapsInScope(userId: string, scope: { mapId?: string; fleetId?: string }): Promise<Array<{ id: string; name: string }> | ApprovalError> {
+/**
+ * Which maps a list covers: one map, a fleet's maps the reader can view, or
+ * all of the reader's maps. A list over several maps leaves archived maps
+ * out (lib/waitingMaps) unless `includeArchived`; a named map
+ * answers even when archived, flagged `archived`.
+ */
+export async function mapsInScope(
+  userId: string,
+  scope: { mapId?: string; fleetId?: string },
+  opts: { includeArchived?: boolean } = {},
+): Promise<Array<{ id: string; name: string; archived: boolean }> | ApprovalError> {
   if (scope.mapId) {
     if (!permDb.hasPermission(await permDb.getPermission(scope.mapId, userId), 'view')) {
       return { status: 403, code: 'FORBIDDEN', message: 'View access required' };
     }
-    const [map] = await db.select({ id: maps.id, name: maps.name }).from(maps).where(eq(maps.id, scope.mapId));
+    const [map] = await db.select({ id: maps.id, name: maps.name, archivedAt: maps.archivedAt }).from(maps).where(eq(maps.id, scope.mapId));
     if (!map) return { status: 404, code: 'MAP_NOT_FOUND', message: `Map ${scope.mapId} not found` };
-    return [map];
+    return [{ id: map.id, name: map.name, archived: map.archivedAt != null }];
   }
+  let all: Array<{ id: string; name: string; archivedAt: string | Date | null }>;
   if (scope.fleetId) {
     const view = await getFleetForUser(userId, scope.fleetId);
     if ('status' in view) return { status: view.status === 403 ? 403 : 404, code: view.code, message: view.message };
-    return view.maps.map((m) => ({ id: m.id, name: m.name }));
+    all = view.maps;
+  } else {
+    all = await mapDb.listMapsForUser(userId);
   }
-  return (await mapDb.listMapsForUser(userId)).map((m) => ({ id: m.id, name: m.name }));
+  return (opts.includeArchived ? all : waitingMaps(all)).map((m) => ({ id: m.id, name: m.name, archived: m.archivedAt != null }));
 }
 
 function issueOf(node: CoreNode): PendingApproval['issue'] {

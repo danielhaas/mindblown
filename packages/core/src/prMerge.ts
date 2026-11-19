@@ -94,6 +94,8 @@ export type MergePrResult =
 export interface PrWaiting {
   mapId: string;
   mapName: string;
+  /** The map is archived (on hold) — only a read naming that map lists it. */
+  mapArchived?: boolean;
   nodeId: string;
   ticket: string;
   repo: string;

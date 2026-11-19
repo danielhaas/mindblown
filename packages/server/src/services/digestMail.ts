@@ -30,6 +30,7 @@ import { checkMapAccess } from '../lib/mapAccess.js';
 import { listPendingApprovals } from './approvals.js';
 import { fleetInbox } from './asksInbox.js';
 import { listFleetsForUser } from './fleets.js';
+import { waitingMaps } from '../lib/waitingMaps.js';
 
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5180';
 
@@ -351,7 +352,7 @@ export async function openItemsForUser(
   now: Date = new Date(),
   cache: DigestRunCache = newDigestRunCache(),
 ): Promise<DigestItem[]> {
-  const liveMaps = (await mapDb.listMapsForUser(userId)).filter((m) => !m.archivedAt);
+  const liveMaps = waitingMaps(await mapDb.listMapsForUser(userId));
   const live = new Map(liveMaps.map((m) => [m.id, m.name]));
   const items: DigestItem[] = [];
   for (const fleet of await listFleetsForUser(userId)) {
