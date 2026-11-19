@@ -7,7 +7,9 @@ import {
   blockerAskNodeId,
   blockerFleetAction,
   briefAnswerAction,
+  briefAskAiQuestion,
   briefAskNodeId,
+  briefFromAnswer,
   buildBlockerAsk,
   buildBriefAsk,
   buildStepAsk,
@@ -22,6 +24,7 @@ import {
   stepParts,
   stepSummaryOf,
 } from '../humanSteps.js';
+import { dispatchHold, dispatchSkipTag, holdTagPerson } from '../dispatch.js';
 
 describe('a step for reading', () => {
   it('without a next-step line the row shows the description\'s first paragraph, headings skipped', () => {
@@ -221,5 +224,49 @@ describe('a ticket that needs a brief (28.10.2026)', () => {
     expect(briefAnswerAction('Done')).toBe('mark-done');
     expect(briefAnswerAction('Add a duration column')).toBe('write-brief');
     expect(derivedAnswerPreview(ask, 'Add a duration column')?.[0]).toBe('Node: "Add a duration column" becomes the description — the fleet takes it on its next pull');
+  });
+});
+
+describe('a brief the AI could not write (19.11.2026)', () => {
+  it('the row asks the AI\'s question, not a generic "write a brief"', () => {
+    const ask = buildBriefAsk({ id: 'n1', text: 'Persona files' }, 'm1', 'Which characters need a persona file?');
+    expect(ask.id).toBe('brief-n1');
+    expect(ask.question).toContain('Which characters need a persona file?');
+    expect(ask.question).not.toMatch(/^Needs a brief: /);
+    expect(briefAskAiQuestion(ask)).toBe('Which characters need a persona file?');
+    // The answer is written with the question, so the worker reads what it is about.
+    expect(briefFromAnswer(ask, 'Avatar and Narrator')).toBe('Which characters need a persona file?\nAvatar and Narrator');
+  });
+
+  it('the generic row keeps the answer as it is', () => {
+    const ask = buildBriefAsk({ id: 'n1', text: 'Show durations' }, 'm1', null);
+    expect(briefAskAiQuestion(ask)).toBeNull();
+    expect(briefFromAnswer(ask, ' Add a duration column ')).toBe('Add a duration column');
+  });
+});
+
+describe('needs-<person> holds the ticket for that person (19.11.2026)', () => {
+  const approved = { state: 'approved', merge: 'auto', by: null, at: '2026-11-19T00:00:00.000Z' } as const;
+
+  it('needs-dan is a skip tag, held, and the step row goes to Dan', () => {
+    expect(holdTagPerson('needs-dan')).toBe('Dan');
+    expect(holdTagPerson('needs-rita')).toBe('Rita');
+    expect(dispatchSkipTag({ tags: ['ui', 'needs-dan'] })).toBe('needs-dan');
+    expect(dispatchHold({ tags: ['needs-dan'], blockedReason: null, approval: approved })).toMatchObject({ tag: 'needs-dan' });
+    const ask = buildStepAsk({ id: 'n1', text: 'Test live: login', tags: ['needs-dan'] }, 'm1');
+    expect(ask.answerer).toBe('Dan');
+    expect(buildStepAsk({ id: 'n2', text: 'Ship it', tags: ['needs-mia-review'] }, 'm1').answerer).toBe('Mia');
+  });
+
+  it('needs-brief is no person — the pull\'s own trace does not hold', () => {
+    expect(holdTagPerson('needs-brief')).toBeNull();
+    expect(dispatchSkipTag({ tags: ['needs-brief'] })).toBeNull();
+    expect(dispatchHold({ tags: ['needs-brief'], blockedReason: null, approval: approved })).toBeNull();
+  });
+
+  it('the fixed list keeps its rows with Dan; needs-human names nobody', () => {
+    expect(holdTagPerson('needs-human')).toBeNull();
+    expect(dispatchSkipTag({ tags: ['needs-human'] })).toBe('needs-human');
+    expect(buildStepAsk({ id: 'n3', text: 'x', tags: ['needs-human'] }, 'm1').answerer).toBe('Dan');
   });
 });

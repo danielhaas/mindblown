@@ -190,6 +190,8 @@ export interface UpdateMapInput {
   aiPolicy?: AiPolicy;
   /** Draft estimates for committed work (#318). */
   aiEstimateDrafts?: boolean;
+  /** Draft briefs for briefless ready tickets. */
+  aiBriefDrafts?: boolean;
   /** Daily self-check auto-fixes per rule (core LintAutoFix) — full replacement. */
   lintAutoFix?: LintAutoFix;
   /**
@@ -284,6 +286,7 @@ export async function updateMap(
   if (input.triageLabelWriteback !== undefined) updates.triageLabelWriteback = input.triageLabelWriteback;
   if (input.aiPolicy !== undefined && isAiPolicy(input.aiPolicy)) updates.aiPolicy = input.aiPolicy;
   if (typeof input.aiEstimateDrafts === 'boolean') updates.aiEstimateDrafts = input.aiEstimateDrafts;
+  if (typeof input.aiBriefDrafts === 'boolean') updates.aiBriefDrafts = input.aiBriefDrafts;
   if (input.lintAutoFix !== undefined) updates.lintAutoFix = sanitizeLintAutoFix(input.lintAutoFix);
   // CI access was granted for one repo; another repo may hold secrets.
   if (typeof input.fleetCanEditCi === 'boolean') updates.fleetCanEditCi = input.fleetCanEditCi;

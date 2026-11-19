@@ -1211,6 +1211,28 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS ai_estimate_drafts BOOLEAN NOT NULL DEFAULT TRUE
   `);
 
+  // ── AI brief drafts (19.11.2026) ────────────────────────────────
+  // nodes.description_source: 'ai' marks a brief the draft job wrote;
+  // maps.ai_brief_drafts: the per-map switch (default on);
+  // brief_drafts: one row per node the job tried, keyed by the title it
+  // read — drafted, or the AI's question when it could not write one.
+  await db.execute(sql`
+    ALTER TABLE nodes ADD COLUMN IF NOT EXISTS description_source TEXT
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS ai_brief_drafts BOOLEAN NOT NULL DEFAULT TRUE
+  `);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS brief_drafts (
+      node_id UUID PRIMARY KEY REFERENCES nodes(id) ON DELETE CASCADE,
+      text_hash TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      question TEXT,
+      provider TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
   // ── Public holidays (#110) ──────────────────────────────────────
   // NULL jurisdiction + empty overrides = no working calendar, so every
   // existing map schedules exactly as before.

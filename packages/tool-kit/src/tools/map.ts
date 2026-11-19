@@ -207,6 +207,10 @@ export const updateMapTool = defineTool({
       .boolean()
       .optional()
       .describe("Draft estimates for committed work (#318, default true): unestimated leaves in a todo/in-progress status or in the active version get an AI estimate from the local model, marked as a draft (estimateSource 'ai') until someone sets or accepts it. false switches it off for this map. Never runs when aiPolicy is none."),
+    aiBriefDrafts: z
+      .boolean()
+      .optional()
+      .describe("Draft briefs (default true): a ready, approved ticket the pull refuses for want of a brief (no description, no linked issue, a short title) and held for no person gets a description drafted by the map's AI, marked as an AI draft (descriptionSource 'ai'), so the fleet can take it. When the AI cannot write one it asks its question on the Questions card instead. false switches it off for this map — the brief stays a person's step. Never runs when aiPolicy is none."),
     lintAutoFix: z
       .record(z.enum(LINT_AUTO_RULES as [LintRuleId, ...LintRuleId[]]), z.boolean())
       .optional()
@@ -279,7 +283,7 @@ export const updateMapTool = defineTool({
       .optional()
       .describe('Who may run the fleet on this map (#491), REPLACE mode — send the whole policy; null goes back to the defaults. A ticket\'s reporter decides its level: trusted (on the lists, or reporter unknown) runs fully automatic and is the only work ever deployed automatically; known and external follow their dispatch ("auto" | "approval") and merge ("auto" | "pr-only") knobs. Safe default for both: approval + pr-only. Needs admin on the map.'),
   },
-  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, lintAutoFix, holidayJurisdiction, holidayOverrides, workers, deployProbe, phases, archived, setupCompleted, trustPolicy }) => {
+  handler: async (backend, { mapId, name, description, wipLimit, projectStartDate, hoursPerDay, workerCount, focusFactor, maxActiveClaims, dispatchGate, dispatchPolicy, profilePolicy, fleetId, fleetShare, fleetCanEditCi, autoImportNewIssues, aiPolicy, aiEstimateDrafts, aiBriefDrafts, lintAutoFix, holidayJurisdiction, holidayOverrides, workers, deployProbe, phases, archived, setupCompleted, trustPolicy }) => {
     const fields: {
       name?: string;
       description?: string | null;
@@ -298,6 +302,7 @@ export const updateMapTool = defineTool({
       autoImportNewIssues?: boolean;
       aiPolicy?: 'any' | 'local' | 'none';
       aiEstimateDrafts?: boolean;
+      aiBriefDrafts?: boolean;
       lintAutoFix?: Partial<Record<LintRuleId, boolean>>;
       holidayJurisdiction?: string | null;
       holidayOverrides?: { add: string[]; remove: string[] };
@@ -325,6 +330,7 @@ export const updateMapTool = defineTool({
     if (autoImportNewIssues !== undefined) fields.autoImportNewIssues = autoImportNewIssues;
     if (aiPolicy !== undefined) fields.aiPolicy = aiPolicy;
     if (aiEstimateDrafts !== undefined) fields.aiEstimateDrafts = aiEstimateDrafts;
+    if (aiBriefDrafts !== undefined) fields.aiBriefDrafts = aiBriefDrafts;
     if (lintAutoFix !== undefined) fields.lintAutoFix = lintAutoFix;
     if (holidayJurisdiction !== undefined) fields.holidayJurisdiction = holidayJurisdiction;
     if (holidayOverrides !== undefined) fields.holidayOverrides = holidayOverrides;

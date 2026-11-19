@@ -299,11 +299,31 @@ export function pullableNodes(nodes: Node[], workflow: StatusDef[]): { pullable:
  */
 export const DISPATCH_SKIP_TAGS = ['kira-skip', 'needs-human', 'needs-daniel-input', 'needs-rita-review', MISFILED_TAG] as const;
 
+/**
+ * Any other `needs-<name>` tag holds the ticket for that person too
+ * (19.11.2026): "Test live: …" tickets tagged `needs-dan` were held only by
+ * their missing brief, so a drafted brief would have handed them to the
+ * fleet. `needs-brief` is not a person — it is the pull's own trace.
+ */
+const PERSON_HOLD_TAG = /^needs-([a-z0-9][a-z0-9_]*)(?:-[a-z0-9_-]+)?$/;
+
+/** The person a `needs-<name>` hold tag names ("needs-dan" → "Dan"), or null — null for needs-human and the fixed list. */
+export function holdTagPerson(tag: string): string | null {
+  const t = tag.toLowerCase();
+  if (t === NEEDS_BRIEF_TAG || (DISPATCH_SKIP_TAGS as readonly string[]).includes(t)) return null;
+  const m = PERSON_HOLD_TAG.exec(t);
+  return m ? m[1].charAt(0).toUpperCase() + m[1].slice(1) : null;
+}
+
+/** A tag that holds a ticket for a person: the fixed list, or `needs-<name>`. Case-insensitive. */
+export function isDispatchSkipTag(tag: string): boolean {
+  return (DISPATCH_SKIP_TAGS as readonly string[]).includes(tag.toLowerCase()) || holdTagPerson(tag) !== null;
+}
+
 /** The skip tag a node carries, or null — the first match, as written on the node. */
 export function dispatchSkipTag(node: Pick<Node, 'tags'>): string | null {
-  const skip = new Set<string>(DISPATCH_SKIP_TAGS);
   // `?? []`: lint and test fixtures build nodes without tags.
-  return (node.tags ?? []).find((t) => skip.has(t.toLowerCase())) ?? null;
+  return (node.tags ?? []).find(isDispatchSkipTag) ?? null;
 }
 
 /** The tag a parked branch is held under (#655) — it shows where a skip tag would. */

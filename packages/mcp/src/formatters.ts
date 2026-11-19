@@ -481,6 +481,7 @@ export function formatNodeDetail(node: NodeWithComputed, mapData: MapDetail): st
   if (node.description) {
     lines.push('');
     lines.push('## Description');
+    if (node.descriptionSource === 'ai') lines.push('_Brief drafted by AI — edit it, or accept it with update_node descriptionSource: null._', '');
     lines.push(node.description);
   }
 

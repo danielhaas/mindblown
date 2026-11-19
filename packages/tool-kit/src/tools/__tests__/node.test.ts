@@ -1556,6 +1556,23 @@ describe('estimateSource round trip (#318)', () => {
   });
 });
 
+describe('descriptionSource round trip (AI brief drafts)', () => {
+  it('create_node and update_node accept it and forward it', async () => {
+    for (const tool of [createNodeTool, updateNodeTool]) {
+      const schema = z.object(tool.schema);
+      expect(schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', descriptionSource: 'ai' }).descriptionSource).toBe('ai');
+      expect(schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', descriptionSource: null }).descriptionSource).toBeNull();
+      expect(() => schema.parse({ mapId: 'm', nodeId: 'n', parentId: 'p', text: 't', descriptionSource: 'human' })).toThrow();
+    }
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'x', description: 'Do it.', descriptionSource: 'ai' } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ description: 'Do it.', descriptionSource: 'ai' });
+    // "Accept" on an AI brief.
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', descriptionSource: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ descriptionSource: null });
+  });
+});
+
 describe('expectedDoneAt / etaMinutes — the worker\'s ETA', () => {
   it('create_node and update_node accept an ISO timestamp with offset and forward it', async () => {
     for (const tool of [createNodeTool, updateNodeTool]) {

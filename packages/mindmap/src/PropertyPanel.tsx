@@ -529,6 +529,24 @@ function PropertyPanelInner({
             }}
             placeholder="Add a description..."
           />
+          {node.descriptionSource === 'ai' && (
+            <div
+              data-testid="brief-ai-draft"
+              style={{ marginTop: 4, display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: '#6d28d9' }}
+              title="The ticket had no brief, so the map's AI drafted one and the fleet can take it. Edit the text or accept it."
+            >
+              <span style={{ padding: '1px 6px', borderRadius: 999, background: '#ede9fe', fontWeight: 600 }}>
+                Brief drafted by AI — edit or accept
+              </span>
+              <button
+                type="button"
+                onClick={() => directUpdate(nodeId, { descriptionSource: null })}
+                style={acceptEstimateBtnStyle}
+              >
+                Accept
+              </button>
+            </div>
+          )}
         </Field>
 
         {/* Status */}

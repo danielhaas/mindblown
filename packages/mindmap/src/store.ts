@@ -208,7 +208,7 @@ export interface MindmapState {
    * write moves the fleet within ~2 min, so callers apply explicitly, never
    * on-change.
    */
-  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues' | 'deployProbe'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
+  updateMapSettings: (fields: Partial<Pick<MindMap, 'name' | 'description' | 'maxActiveClaims' | 'dispatchGate' | 'dispatchPolicy' | 'aiPolicy' | 'aiEstimateDrafts' | 'aiBriefDrafts' | 'fleetId' | 'fleetShare' | 'fleetCanEditCi' | 'githubInstallationId' | 'githubRepoOwner' | 'githubRepoName' | 'autoImportNewIssues' | 'deployProbe'>> & { archived?: boolean; setupCompleted?: boolean }) => Promise<boolean>;
   /**
    * Append a new phase (PhaseDef) to the current map's phases list and
    * persist via PUT /api/maps/:id. Returns the new phase's id (so callers
@@ -1131,6 +1131,7 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       collapsed: false,
       effortEstimate: null,
       estimateSource: null,
+      descriptionSource: null,
       actualEffort: null,
       percentComplete: null,
       status: null,
