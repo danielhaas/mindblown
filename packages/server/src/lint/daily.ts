@@ -1,6 +1,7 @@
 /**
  * The daily self-check (docs/plan-linter.md, "Daily self-check"): once a
- * day — and on demand — plan_lint (scope all) runs on every active map,
+ * day — and on demand — plan_lint (scope all) runs on every active map
+ * that opted in (map.lintAutoFix, at least one rule on),
  * and each finding is handled the way its rule declares it (core
  * LINT_DAILY):
  *
