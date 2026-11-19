@@ -313,3 +313,19 @@ describe('update_map tool — holiday calendar (#110)', () => {
     });
   });
 });
+
+// Personal leave (#664): who does the map's work, through the MCP surface.
+describe('update_map tool — workers', () => {
+  it('forwards the workers list to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    const ids = ['11111111-1111-4111-8111-111111111111'];
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', workers: ids } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ workers: ids });
+  });
+
+  it('accepts an empty list (nobody\'s leave applies) and rejects a non-list', () => {
+    const schema = z.object(updateMapTool.schema);
+    expect(schema.parse({ mapId: 'm1', workers: [] }).workers).toEqual([]);
+    expect(() => schema.parse({ mapId: 'm1', workers: 'dan' })).toThrow();
+  });
+});

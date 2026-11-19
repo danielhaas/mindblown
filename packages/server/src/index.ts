@@ -54,6 +54,7 @@ import { approvalsRoutes } from './routes/approvals.js';
 import { reporterChecksRoutes } from './routes/reporterChecks.js';
 import { prMergeRoutes } from './routes/prMerge.js';
 import { digestMailRoutes } from './routes/digestMail.js';
+import { leaveRoutes } from './routes/leave.js';
 import { fleetJournalRoutes, fleetJournalByFleetRoutes } from './routes/fleetJournal.js';
 import { repoDocsRoutes } from './routes/repoDocs.js';
 import { prRoutes } from './routes/prs.js';
@@ -165,6 +166,7 @@ async function main(): Promise<void> {
   await app.register(reporterChecksRoutes);
   await app.register(prMergeRoutes);
   await app.register(digestMailRoutes);
+  await app.register(leaveRoutes);
   await app.register(fleetJournalRoutes);
   await app.register(fleetJournalByFleetRoutes);
   await app.register(repoDocsRoutes);

@@ -1698,5 +1698,26 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE nodes ADD COLUMN IF NOT EXISTS blocker_info JSONB
   `);
 
+  // ── Personal leave (#664) ──────────────────────────────────────
+  // user_leave: a person's days off; maps.workers: who does the map's
+  // work, one user id per worker track. Empty = nobody's leave applies,
+  // so every existing map schedules exactly as before.
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS user_leave (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      start_date DATE NOT NULL,
+      end_date DATE NOT NULL,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await db.execute(sql`
+    CREATE INDEX IF NOT EXISTS user_leave_user_idx ON user_leave (user_id, start_date)
+  `);
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS workers JSONB NOT NULL DEFAULT '[]'::jsonb
+  `);
+
   console.log('[db] Migrations complete.');
 }

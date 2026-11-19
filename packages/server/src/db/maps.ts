@@ -1,4 +1,5 @@
 import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { withMapLeave } from './leave.js';
 import { buildBaseline, capBaselines } from '../lib/mapSchedule.js';
 import { db } from './connection.js';
 import { maps, mapPermissions, nodes } from './schema.js';
@@ -156,6 +157,8 @@ export interface UpdateMapInput {
   projectStartDate?: string | null;
   hoursPerDay?: number;
   workerCount?: number;
+  /** #664 — who does the map's work, one user id per worker track. Validated by the route / tool. */
+  workers?: string[];
   focusFactor?: number;
   /** Pull-queue claim cap (int ≥ 0; 0 = hold). */
   maxActiveClaims?: number;
@@ -258,6 +261,7 @@ export async function updateMap(
   if (input.projectStartDate !== undefined) updates.projectStartDate = input.projectStartDate;
   if (input.hoursPerDay !== undefined) updates.hoursPerDay = input.hoursPerDay;
   if (input.workerCount !== undefined) updates.workerCount = input.workerCount;
+  if (input.workers !== undefined) updates.workers = input.workers;
   if (input.focusFactor !== undefined) updates.focusFactor = clampFocusFactor(input.focusFactor);
   if (input.maxActiveClaims !== undefined) updates.maxActiveClaims = Math.max(0, Math.floor(input.maxActiveClaims));
   if (input.dispatchGate !== undefined) updates.dispatchGate = input.dispatchGate;
@@ -376,7 +380,7 @@ export async function createBaseline(mapId: string, name: string): Promise<{ map
   const data = await getMap(mapId);
   if (!data) return null;
 
-  const baseline = buildBaseline(data, name);
+  const baseline = buildBaseline(await withMapLeave(data), name);
 
   const { kept, dropped } = capBaselines([...(data.map.baselines ?? []), baseline]);
 

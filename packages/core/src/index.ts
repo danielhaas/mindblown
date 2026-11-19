@@ -84,7 +84,12 @@ export {
   isReady,
   scopeOverlap,
 } from './dependencies.js';
-export type { ScheduleConstraint, ScheduleContext } from './dependencies.js';
+export type { ScheduleConstraint, ScheduleContext, ScheduleCalendars, DaysOff } from './dependencies.js';
+export { endOverDaysOff } from './dependencies.js';
+
+// Personal leave (#664)
+export { leaveDaysOff, isFleetBuilt, formatLeaveRange, describeLeave, validateLeaveInput, MAX_LEAVE_DAYS } from './leave.js';
+export type { LeaveRange, PersonLeave } from './leave.js';
 
 // Business-day calendar helpers
 export {
@@ -92,7 +97,7 @@ export {
   businessDaysBetween,
   hoursToBusinessDays,
 } from './calendar.js';
-export { makeDayMapper, applyHolidayOverrides, hasWorkingCalendar, isIsoDate, describeHolidayCalendar } from './workCalendar.js';
+export { makeDayMapper, applyHolidayOverrides, hasWorkingCalendar, isIsoDate, isWorkingDate, describeHolidayCalendar } from './workCalendar.js';
 export type { DayMapper, OffsetRounding } from './workCalendar.js';
 
 // Status-workflow helpers (#119)

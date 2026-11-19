@@ -172,6 +172,8 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    /** #664 — who does the map's work, one user id per worker track. */
+    workers?: string[];
     /** #477 — the fleet the map is connected to; null/absent = none. */
     fleetId?: string | null;
     fleetName?: string | null;

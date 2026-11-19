@@ -127,6 +127,10 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     projectStartDate: (get('projectStartDate', 'project_start_date') as string) ?? null,
     hoursPerDay: (get('hoursPerDay', 'hours_per_day') as number) ?? 8,
     workerCount: (get('workerCount', 'worker_count') as number) ?? 1,
+    workers: (() => {
+      const v = get('workers', 'workers');
+      return Array.isArray(v) ? v.filter((u): u is string => typeof u === 'string') : [];
+    })(),
     focusFactor: (get('focusFactor', 'focus_factor') as number) ?? 1,
     maxActiveClaims: (get('maxActiveClaims', 'max_active_claims') as number) ?? 0,
     dispatchGate: (get('dispatchGate', 'dispatch_gate') as string[]) ?? [],

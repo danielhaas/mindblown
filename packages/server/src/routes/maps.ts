@@ -16,6 +16,7 @@ import * as versionDb from '../db/versions.js';
 import * as cycleDb from '../db/cycles.js';
 import { computeReleaseForecast } from '../lib/releaseForecast.js';
 import { computeMapSchedule } from '../lib/mapSchedule.js';
+import * as leaveDb from '../db/leave.js';
 import { getMapForgeKind } from '../lib/githubContext.js';
 import { forgeProblemForMap } from '../lib/forgeProblem.js';
 import { stalledOrEmpty } from '../lib/stalled.js';
@@ -32,7 +33,7 @@ import {
   type CalendarIcsView,
 } from '../lib/calendarIcs.js';
 import { db } from '../db/connection.js';
-import { normalizeHolidaySettings, mapDayMapper } from '../lib/holidays.js';
+import { normalizeHolidaySettings, normalizeWorkers, mapDayMapper } from '../lib/holidays.js';
 import { workspaces, users, releaseSnapshots } from '../db/schema.js';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'mindblown-dev-secret-change-in-production';
@@ -426,7 +427,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       }
       let markdown: string;
       try {
-        markdown = buildTimelineMarkdown(data, { rootNodeId: req.query.root, detail: req.query.detail, timeZone: req.query.tz });
+        markdown = buildTimelineMarkdown(await leaveDb.withMapLeave(data), { rootNodeId: req.query.root, detail: req.query.detail, timeZone: req.query.tz });
       } catch (err) {
         if (err instanceof TimelineOptionError) {
           return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: err.message } });
@@ -450,7 +451,7 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
     }
 
     const body = req.body as mapDb.UpdateMapInput;
-    const holidayError = normalizeHolidaySettings(body);
+    const holidayError = normalizeHolidaySettings(body) ?? normalizeWorkers(body);
     if (holidayError) {
       return reply.status(400).send({ error: { code: 'VALIDATION_ERROR', message: holidayError } });
     }
@@ -746,7 +747,8 @@ export async function mapRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { barDates: _barDates, ...result } = computeMapSchedule(data, req.query);
+    // Personal leave (#664): the workers' and assignees' days off.
+    const { barDates: _barDates, barSpan: _barSpan, ...result } = computeMapSchedule(await leaveDb.withMapLeave(data), req.query);
     return reply.send(result);
   });
 

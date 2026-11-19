@@ -3463,7 +3463,7 @@ toolWithAlias(
 
 server.tool(
   'get_schedule',
-  'Get computed schedule and critical path for a map, plus every node whose projected end lands after its due date (a due date is a deadline: it never moves or stretches the bar). The critical path is capacity-aware: the chain that decides the projected end under the map\'s workerCount — a task is on it when it waited for a dependency OR for a free worker. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies.',
+  'Get computed schedule and critical path for a map, plus every node whose projected end lands after its due date (a due date is a deadline: it never moves or stretches the bar). The critical path is capacity-aware: the chain that decides the projected end under the map\'s workerCount — a task is on it when it waited for a dependency OR for a free worker. Pass versionId to scope the schedule to a single release — the scheduler runs only on nodes in that version (via ancestor inheritance) and any dependencies that cross the version boundary are reported in crossVersionDependencies. Personal leave (#664) of the people who do the work (update_map workers, node assignees; add_leave) is already in the dates; the report names it and lists the leave days per track.',
   {
     mapId: z.string().describe('The map ID'),
     versionId: z
