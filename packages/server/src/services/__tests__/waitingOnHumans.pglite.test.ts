@@ -18,6 +18,7 @@ import { replaceAsks } from '../../db/asks.js';
 import { upsertRollup } from '../../db/fleet.js';
 import { createWebhook, resetWebhooksForTests, runWaitingOnHumanSweep, startWebhooks } from '../webhooks.js';
 import { readFleetWaiting, waitingOnHumansForUser } from '../waitingOnHumans.js';
+import { setLatestProbeResult } from '../deployProbe.js';
 import type { Ask, FleetRollup, FleetWorkerStatus } from '@mindblown/core';
 
 interface Sent {
@@ -43,13 +44,14 @@ function ask(id: string, over: Partial<Ask> = {}): Ask {
   };
 }
 
-async function seed() {
+async function seed(probe: string | null = 'none') {
   const [owner] = await db.insert(users).values({ email: 'r@example.com', name: 'Rita Muster' }).returning();
   const [ws] = await db.insert(workspaces).values({ name: 'W', slug: `w-${Math.random()}`, ownerId: owner.id }).returning();
   const [fleet] = await db.insert(fleets).values({ name: 'claudia', ownerId: owner.id }).returning();
   const [map] = await db
     .insert(maps)
-    .values({ workspaceId: ws.id, name: 'M', createdBy: owner.id, fleetId: fleet.id, githubRepoOwner: 'acme', githubRepoName: 'app' })
+    // A probe set (here: not deployed) keeps the deploy-probe question out of the counts.
+    .values({ workspaceId: ws.id, name: 'M', createdBy: owner.id, fleetId: fleet.id, githubRepoOwner: 'acme', githubRepoName: 'app', deployProbe: probe })
     .returning();
   const [root] = await db.insert(nodes).values({ mapId: map.id, text: 'root', createdBy: owner.id }).returning();
   const leaf = async (over: Partial<typeof nodes.$inferInsert> = {}) => {
@@ -112,6 +114,26 @@ describe('waiting on humans', () => {
     // Through the reader's scope (the REST / MCP path).
     const all = await waitingOnHumansForUser(owner.id);
     expect(Array.isArray(all) && all[0].total.decisions).toBe(2);
+  });
+
+  it('merged, not live: a step for the map owner past the threshold; no probe: the setup question for Dan', async () => {
+    const { fleet, map } = await seed(null);
+    const scope = { fleetId: fleet.id, fleetName: 'claudia', mapIds: [map.id], fleetLevel: true };
+    const before = await readFleetWaiting(scope, T0);
+    const setup = before.items.find((i) => i.ref === `deploy-probe-${map.id}`);
+    expect(setup).toMatchObject({ kind: 'decision', person: 'Dan', title: 'How is M deployed?' });
+
+    const commit = (h: number) => ({ sha: `c${h}`, at: new Date(T0.getTime() - h * 3_600_000).toISOString(), subject: `feat ${h}` });
+    setLatestProbeResult(map.id, { drift: { sha: 'a'.repeat(40), repo: 'acme/app', undeployed: [commit(19), commit(1)], checkedAt: T0.toISOString() } });
+    try {
+      const { items } = await readFleetWaiting(scope, T0);
+      expect(items.find((i) => i.ref === `deploy-${map.id}`)).toMatchObject({ kind: 'step', person: 'Rita', title: '2 merges not live on M for 19 h' });
+      // Under the threshold: nothing yet.
+      setLatestProbeResult(map.id, { drift: { sha: 'a'.repeat(40), repo: 'acme/app', undeployed: [commit(1)], checkedAt: T0.toISOString() } });
+      expect((await readFleetWaiting(scope, T0)).items.some((i) => i.ref === `deploy-${map.id}`)).toBe(false);
+    } finally {
+      setLatestProbeResult(map.id, undefined);
+    }
   });
 
   it('fires one signed event per person when the fleet goes idle; nothing while workers work or claims are active', async () => {

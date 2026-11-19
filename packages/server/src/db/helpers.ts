@@ -161,6 +161,7 @@ export function dbMapToCore(row: Record<string, unknown>): MindMap {
     aiEstimateDrafts: (get('aiEstimateDrafts', 'ai_estimate_drafts') as boolean) ?? true,
     lintAutoFix: sanitizeLintAutoFix(get('lintAutoFix', 'lint_auto_fix')),
     holidayJurisdiction: (get('holidayJurisdiction', 'holiday_jurisdiction') as string | null) ?? null,
+    deployProbe: (get('deployProbe', 'deploy_probe') as string | null) ?? null,
     holidayOverrides: (() => {
       const v = get('holidayOverrides', 'holiday_overrides') as { add?: unknown; remove?: unknown } | null;
       const list = (x: unknown) => (Array.isArray(x) ? x.filter((d): d is string => typeof d === 'string') : []);

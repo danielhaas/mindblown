@@ -229,6 +229,7 @@ export interface MapDetail {
     /** #110 — public-holiday calendar; null/absent = every day counts. */
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    deployProbe?: string | null;
   };
   nodes: NodeWithComputed[];
   /** In-progress leaves nobody is working on (core findStalled); absent on older servers. */
@@ -550,6 +551,7 @@ export function updateMap(
     lintAutoFix?: Partial<Record<string, boolean>>;
     holidayJurisdiction?: string | null;
     holidayOverrides?: { add: string[]; remove: string[] };
+    deployProbe?: string | null;
     phases?: PhaseDef[];
     archived?: boolean;
     setupCompleted?: boolean;

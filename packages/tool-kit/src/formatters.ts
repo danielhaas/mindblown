@@ -199,6 +199,9 @@ export function formatMapTree(data: MapDetail): string {
     lines.push(`Fleet: ${data.map.fleetName ?? 'unnamed'} (fleetId: ${data.map.fleetId}${share})`);
   }
   if (data.map.fleetCanEditCi) lines.push('Fleet may change CI workflows (fleetCanEditCi)');
+  if (data.map.deployProbe) {
+    lines.push(data.map.deployProbe === 'none' ? 'Deploy probe: none (not deployed)' : `Deploy probe: ${data.map.deployProbe}`);
+  }
   const orderedPhases = [...(data.map.phases ?? [])].sort((a, b) => a.position - b.position);
   if (orderedPhases.length > 0) {
     lines.push(

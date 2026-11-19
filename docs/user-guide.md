@@ -51,6 +51,7 @@ The editor is built for the keyboard. With the root node selected, press `Tab`. 
 - Arrow keys -- move the selection left (parent), right (first child), up and down (siblings)
 - `Cmd/Ctrl+A` -- select all nodes
 - `Cmd/Ctrl+0` -- fit the map to the screen
+- `Cmd/Ctrl+Shift+Up` / `Cmd/Ctrl+Shift+Down` -- collapse all / expand all (the **Collapse all** / **Expand all** toolbar buttons); drilled into a subtree, only that subtree changes
 - `Escape` -- if you are drilled into a subtree, go back up one level; otherwise clear selection
 
 A typical first pass: top-level branches for the functional areas of the project ("Design", "Backend", "Frontend", "Launch"), then one more level of specifics under each. You are not trying to estimate anything yet. You are thinking out loud with structure.
@@ -365,6 +366,8 @@ Shortcuts that apply on the mindmap canvas (when a node is selected and you are 
 | Arrow Down      | Select next sibling                            |
 | `Cmd/Ctrl+A`    | Select all nodes                               |
 | `Cmd/Ctrl+0`    | Fit the map to the screen                      |
+| `Cmd/Ctrl+Shift+Up`   | Collapse all — only the first level stays open |
+| `Cmd/Ctrl+Shift+Down` | Expand all                              |
 
 Global shortcuts (work anywhere in the app):
 

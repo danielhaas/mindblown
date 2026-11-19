@@ -32,6 +32,12 @@ const state = vi.hoisted(() => ({
   hang: new Set<string>(),
   /** map id → newest daily-check run (lint/daily.ts). */
   lintRuns: {} as Record<string, LintRun>,
+  /** map id → its deploy probe's drift (services/deployProbe). */
+  drift: {} as Record<string, { sha: string; repo: string | null; undeployed: Array<{ sha: string; at: string; subject: string }>; checkedAt: string }>,
+}));
+vi.mock('../deployProbe.js', () => ({
+  latestProbeResult: (mapId: string) => (state.drift[mapId] ? { drift: state.drift[mapId] } : undefined),
+  overThreshold: (d: { undeployed: Array<{ at: string }> }, now: Date) => d.undeployed.length > 0 && now.getTime() - Date.parse(d.undeployed[0].at) >= 2 * 3_600_000,
 }));
 const forgeCalls = vi.hoisted(() => [] as string[]);
 type SendResult = { ok: true } | { ok: false; error: string };
@@ -98,6 +104,7 @@ vi.mock('../approvals.js', () => ({ listPendingApprovals: async (u: string) => (
 import {
   askItems,
   approvalItems,
+  notLiveItem,
   buildDigestMail,
   digestConfig,
   hygieneLines,
@@ -536,5 +543,32 @@ describe('plan hygiene (daily self-check)', () => {
     expect(hygieneLines([run('m1', { 'unestimated-leaf': 2 }, '2026-10-20T05:00:00Z')], maps, MORNING)).toEqual([]);
     expect(hygieneLines([{ ...run('m1', { 'unestimated-leaf': 2 }), error: 'boom' }], maps, MORNING)).toEqual([]);
     expect(hygieneLines([run('m1', {})], maps, MORNING)).toEqual([]);
+  });
+});
+
+describe('merged, not live (deploy probe)', () => {
+  const NOW = new Date('2026-11-19T12:00:00Z');
+  const drift = (hoursAgo: number, n = 2) => ({
+    sha: 'a'.repeat(40),
+    repo: 'danielhaas/navy',
+    undeployed: Array.from({ length: n }, (_, i) => ({ sha: String(i), at: new Date(NOW.getTime() - (hoursAgo - i) * 3_600_000).toISOString(), subject: `feat: ${i}` })),
+    checkedAt: NOW.toISOString(),
+  });
+
+  it('a line once the oldest is past the threshold, none before', () => {
+    const item = notLiveItem({ id: 'navy', name: 'Navy' }, drift(19), NOW);
+    expect(item?.question).toBe('2 merges not live on Navy for 19 h — deploy?');
+    expect(item?.url).toContain('map=navy&view=fleet');
+    expect(notLiveItem({ id: 'navy', name: 'Navy' }, drift(1, 1), NOW)).toBeNull();
+    expect(notLiveItem({ id: 'navy', name: 'Navy' }, undefined, NOW)).toBeNull();
+  });
+
+  it("goes to the map's admins only", async () => {
+    state.maps = { u1: [{ id: 'navy', name: 'Navy', archivedAt: null }], u2: [{ id: 'navy', name: 'Navy', archivedAt: null }] };
+    state.role = { 'u2|navy': 'edit' };
+    state.drift = { navy: drift(19) };
+    expect((await openItemsForUser('u1', NOW)).map((i) => i.question)).toEqual(['2 merges not live on Navy for 19 h — deploy?']);
+    expect(await openItemsForUser('u2', NOW)).toEqual([]);
+    state.drift = {};
   });
 });

@@ -329,3 +329,21 @@ describe('update_map tool — lintAutoFix', () => {
     expect(() => schema.parse({ mapId: 'm1', lintAutoFix: { 'unestimated-leaf': false } })).toThrow();
   });
 });
+
+// Merged, not live — the deploy probe must reach the backend through the MCP surface.
+describe('update_map tool — deploy probe', () => {
+  it('accepts a URL, "none" and null', () => {
+    const schema = z.object(updateMapTool.schema);
+    expect(schema.parse({ mapId: 'm1', deployProbe: 'https://navy.example/api/version' }).deployProbe).toBe('https://navy.example/api/version');
+    expect(schema.parse({ mapId: 'm1', deployProbe: 'none' }).deployProbe).toBe('none');
+    expect(schema.parse({ mapId: 'm1', deployProbe: null }).deployProbe).toBeNull();
+  });
+
+  it('forwards it to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', deployProbe: 'https://navy.example/api/version' } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ deployProbe: 'https://navy.example/api/version' });
+    await updateMapTool.handler(recorder.backend, { mapId: 'm1', deployProbe: null } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ deployProbe: null });
+  });
+});

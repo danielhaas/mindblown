@@ -7,6 +7,8 @@
  *                      rows, services/asksInbox) — hint decision / ops-task
  *   PRs                fresh rollup claims at phase `pr`, ci `manual`
  *   approvals          proposed tickets not done (services/approvals' list)
+ *   not live           a map's deploy probe: merges waiting past the
+ *                      threshold (services/deployProbe) — a step
  *   idle               countActiveClaims + the fresh hosts' workers
  *
  * PR merges and approvals wait on the map owner (first name), or Dan.
@@ -19,6 +21,7 @@ import {
   fleetIdleState,
   hostFreshness,
   isForgeLink,
+  notLiveLabel,
   ownerPerson,
   summarizeWaiting,
   waitingItemsFromAsks,
@@ -33,6 +36,7 @@ import * as nodeDb from '../db/nodes.js';
 import { inbox } from './asksInbox.js';
 import { getFleetForUser, listFleetsForUser, type FleetAccessError } from './fleets.js';
 import { waitingMaps } from '../lib/waitingMaps.js';
+import { overThreshold, probeDrifts } from './deployProbe.js';
 
 export interface WaitingScope {
   fleetId: string;
@@ -44,6 +48,7 @@ export interface WaitingScope {
 }
 
 interface MapInfo {
+  name: string;
   person: string;
   repo: string | null;
 }
@@ -51,11 +56,11 @@ interface MapInfo {
 async function mapInfo(mapIds: string[]): Promise<Map<string, MapInfo>> {
   if (mapIds.length === 0) return new Map();
   const rows = await db
-    .select({ id: maps.id, owner: users.name, repoOwner: maps.githubRepoOwner, repoName: maps.githubRepoName })
+    .select({ id: maps.id, name: maps.name, owner: users.name, repoOwner: maps.githubRepoOwner, repoName: maps.githubRepoName })
     .from(maps)
     .leftJoin(users, eq(users.id, maps.createdBy))
     .where(inArray(maps.id, mapIds));
-  return new Map(rows.map((r) => [r.id, { person: ownerPerson(r.owner), repo: r.repoOwner && r.repoName ? `${r.repoOwner}/${r.repoName}` : null }]));
+  return new Map(rows.map((r) => [r.id, { name: r.name, person: ownerPerson(r.owner), repo: r.repoOwner && r.repoName ? `${r.repoOwner}/${r.repoName}` : null }]));
 }
 
 /** `owner/repo#12`: the map's repo, else the repo of the node's forge link. */
@@ -120,6 +125,23 @@ export async function readFleetWaiting(scope: WaitingScope, now: Date = new Date
       mapId: n.mapId,
       nodeId: n.id,
       since: n.createdAt,
+      url: null,
+    });
+  }
+
+  // Merged, not live: the deploy is a step for the map owner.
+  for (const { mapId, drift } of probeDrifts()) {
+    if (!visible.has(mapId) || !overThreshold(drift, now)) continue;
+    const m = info.get(mapId);
+    const since = drift.undeployed[0].at;
+    items.push({
+      kind: 'step',
+      person: m?.person ?? ownerPerson(null),
+      ref: `deploy-${mapId}`,
+      title: notLiveLabel(drift.undeployed.length, m?.name ?? 'this map', since, now),
+      mapId,
+      nodeId: null,
+      since,
       url: null,
     });
   }

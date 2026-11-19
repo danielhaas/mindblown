@@ -1221,6 +1221,12 @@ export async function runDdl(db: DdlExecutor): Promise<void> {
     ALTER TABLE maps ADD COLUMN IF NOT EXISTS holiday_overrides JSONB NOT NULL DEFAULT '{"add":[],"remove":[]}'::jsonb
   `);
 
+  // ── Deploy probe (merged, not live) ─────────────────────────────
+  // URL returning the deployed commit, 'none', or NULL = not set yet.
+  await db.execute(sql`
+    ALTER TABLE maps ADD COLUMN IF NOT EXISTS deploy_probe TEXT
+  `);
+
   // ── Fleets (#477) ───────────────────────────────────────────────
   // A fleet is the capacity several maps share; a map connects to 0..1.
   await db.execute(sql`
