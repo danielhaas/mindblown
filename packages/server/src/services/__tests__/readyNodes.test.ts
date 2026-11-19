@@ -157,6 +157,25 @@ describe('readyNodes — the pull queue\'s own fences: gate and brief (19.11.202
     ]);
   });
 
+  it('milestone:current (#675): a later milestone\'s leaf waits outside the gate while the current one has work', async () => {
+    selects.push(
+      [{ id: 'm1', statusWorkflow: [], dispatchGate: ['milestone:current'] }],
+      [
+        row({ id: 'root', parentId: null, text: 'Root', childrenOrder: ['ms1', 'ms2'] }),
+        row({ id: 'ms1', text: 'M1 test VM' }),
+        row({ id: 'ms2', text: 'M2 pilot' }),
+        row({ id: 'a', parentId: 'ms1', text: 'Set up VM' }),
+        row({ id: 'b', parentId: 'ms2', text: 'Pilot rollout' }),
+      ],
+      [],
+    );
+    const r = await readyNodes('m1', { sprint: 'all' });
+    expect(r.ready.map((n) => n.id)).toEqual(['a']);
+    expect(r.outsideGate).toEqual([
+      { id: 'b', text: 'Pilot rollout', missedGate: ['milestone:current'], reason: 'gate wants the current milestone "M1 test VM" — this leaf is in "M2 pilot"' },
+    ]);
+  });
+
   it('no gate: nothing is outside it; a long title is a brief', async () => {
     selects.push([mapRow], [
       root(),

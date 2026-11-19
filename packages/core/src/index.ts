@@ -134,6 +134,9 @@ export type { CalibrationSample, CalibrationAssessment } from './calibration.js'
 // server's get_next_ticket and the cockpit's Dispatch card.
 export {
   DEFAULT_DISPATCH_POLICY,
+  PHASED_DISPATCH_POLICY,
+  defaultDispatchPolicy,
+  hasMilestoneRoots,
   DISPATCH_POLICY_KEYS,
   MIX_BUGS_PREFIX,
   MIX_BUGS_REGEX,
@@ -141,6 +144,10 @@ export {
   NEEDS_BRIEF_TAG,
   GATE_BUGS_ONLY,
   GATE_VERSION_PREFIX,
+  GATE_MILESTONE_CURRENT,
+  milestoneOrder,
+  milestoneFence,
+  hasMilestoneGate,
   isBugNode,
   hasBrief,
   TITLE_BRIEF_MIN_WORDS,
@@ -170,7 +177,7 @@ export {
   fleetFixAction,
   planUnblock,
 } from './dispatch.js';
-export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan, GatedOutReady } from './dispatch.js';
+export type { DispatchPolicyKey, GateEntry, GateTerm, DispatchState, DispatchQueueSnapshot, DispatchHold, ParentHold, UnblockPlan, GatedOutReady, MilestoneRef, MilestoneFence } from './dispatch.js';
 
 // Wrong-map guard — a ticket that names another map's repo
 export { MISFILED_TAG, namedRepos, parseRepoRef, findMisfiledRepo, misfiledHint } from './misfiled.js';

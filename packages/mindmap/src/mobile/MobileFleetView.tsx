@@ -188,9 +188,9 @@ export function MobileFleetView({ mapId, map, versions, onChanged }: Props) {
   const snapshot = useMemo(
     () =>
       hasWorkflow && snapshotNodes
-        ? dispatchQueueSnapshot(snapshotNodes, { workflow: map.statusWorkflow, cap, gate: map.dispatchGate })
+        ? dispatchQueueSnapshot(snapshotNodes, { workflow: map.statusWorkflow, cap, gate: map.dispatchGate, phases: map.phases })
         : null,
-    [hasWorkflow, snapshotNodes, map.statusWorkflow, cap, map.dispatchGate],
+    [hasWorkflow, snapshotNodes, map.statusWorkflow, cap, map.dispatchGate, map.phases],
   );
 
   if (!hasWorkflow) {
