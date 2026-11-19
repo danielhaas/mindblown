@@ -306,6 +306,8 @@ export async function ensureInboxNode(
     reportedBy: userReporter(createdBy),
     text: await inboxNodeTitle(mapId),
     createdBy,
+    // A container: a version here would pin every import below it (the gate default is for leaves).
+    versionId: null,
   });
   await db
     .update(maps)

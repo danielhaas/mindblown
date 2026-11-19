@@ -107,9 +107,9 @@ export function derivedAskNodeId(askId: string): string | null {
   );
 }
 
-/** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs) — not the collector's. */
+/** Rows MindBlown derives itself (stalled work, a person's steps, blockers, briefs, gated-out work) — not the collector's. */
 export function isDerivedAsk(a: Pick<Ask, 'id'>): boolean {
-  return derivedAskNodeId(a.id) !== null || deployProbeAskMapId(a.id) !== null;
+  return derivedAskNodeId(a.id) !== null || gateAskMapId(a.id) !== null || deployProbeAskMapId(a.id) !== null;
 }
 
 /** Rows for the "Your steps" card: steps, blockers and missing briefs. */
@@ -441,6 +441,16 @@ export function derivedAnswerPreview(
         return [`Node: blocker becomes "Next step (a person): …" plus your note "${d || '…'}", tagged needs-human`];
     }
   }
+  if (gateAskMapId(a.id)) {
+    switch (gateAnswerAction(d)) {
+      case 'version-them':
+        return ['Nodes: the unversioned ready tickets get the active version — inside the gate, the fleet takes them'];
+      case 'widen-gate':
+        return ["Map: the gate's version entry also lets in the versions of the gated-out tickets (unversioned ones stay out)"];
+      default:
+        return ['Nothing written — not asked again until the ready tickets outside the gate change'];
+    }
+  }
   if (questionAskNodeId(a.id)) {
     return [`Node: "Decision (…): ${d || '…'}" at the top of the description, blocker cleared, back to the queue unless done or claimed`];
   }
@@ -467,4 +477,103 @@ export function derivedAnswerPreview(
     return ['Answer with the probe URL (returns the deployed commit) or "none"'];
   }
   return null;
+}
+
+/**
+ * Ready work outside the dispatch gate (core gatedOutReady), one row per
+ * map: the fleet is idle on the map — nothing grantable inside the gate —
+ * while ready tickets sit outside it. "empty" looked like "nothing to do"
+ * on Navy (19.11.2026) with 10 ready tickets gated out.
+ *
+ * The id carries a fingerprint of the gated-out set: an answered row
+ * (Leave it, Version them, Widen the gate) stays answered while the set is
+ * the same, and a changed set is a new row — asked once, not again until
+ * it changes.
+ */
+export const GATE_ASK_PREFIX = 'gate-';
+export const GATE_ASK_OPTIONS = ['Version them', 'Widen the gate', 'Leave it'] as const;
+export type GateAnswer = 'version-them' | 'widen-gate' | 'leave-it';
+const UUID_LEN = 36;
+
+/** FNV-1a over the sorted ids, 8 hex digits — stable for the same set. */
+function setFingerprint(ids: string[]): string {
+  let h = 0x811c9dc5;
+  for (const ch of [...ids].sort().join(',')) {
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h.toString(16).padStart(8, '0');
+}
+
+export function gateAskId(mapId: string, gatedOutIds: string[]): string {
+  return `${GATE_ASK_PREFIX}${mapId}-${setFingerprint(gatedOutIds)}`;
+}
+
+/** The map a gate row is about, or null for any other ask id. */
+export function gateAskMapId(askId: string): string | null {
+  if (!askId.startsWith(GATE_ASK_PREFIX)) return null;
+  const rest = askId.slice(GATE_ASK_PREFIX.length);
+  return rest.length > UUID_LEN + 1 && rest[UUID_LEN] === '-' ? rest.slice(0, UUID_LEN) : null;
+}
+
+/** "4 unversioned, 6 in V3/V4" — the split of the gated-out tickets. */
+export function gatedOutSplit(g: { unversioned: number; byVersion: Record<string, number> }, versionName: (id: string) => string): string {
+  const versioned = Object.values(g.byVersion).reduce((a, b) => a + b, 0);
+  const names = Object.keys(g.byVersion).map(versionName).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  return [g.unversioned > 0 ? `${g.unversioned} unversioned` : null, versioned > 0 ? `${versioned} in ${names.join('/')}` : null]
+    .filter(Boolean)
+    .join(', ');
+}
+
+/** The gate row of a map whose fleet is idle while ready tickets are outside the gate. */
+export function buildGateAsk(
+  map: { id: string; name: string },
+  gated: { ids: string[]; unversioned: number; byVersion: Record<string, number> },
+  opts: { versionName: (id: string) => string; activeVersion: string | null; answerer: string },
+): Ask {
+  const n = gated.ids.length;
+  const versionHint =
+    gated.unversioned > 0
+      ? opts.activeVersion
+        ? ` Version them puts the ${gated.unversioned} unversioned into ${opts.activeVersion}, the active version.`
+        : ' Version them needs an active version — the map has none.'
+      : '';
+  return {
+    id: gateAskId(map.id, gated.ids),
+    map_id: map.id,
+    ticket: null,
+    requirement: null,
+    title: `${map.name}: ready work outside the dispatch gate`,
+    url: null,
+    sources: ['mindblown-gate'],
+    question:
+      `${map.name}: the fleet is idle, ${n} ready ticket${n === 1 ? ' is' : 's are'} outside the gate (${gatedOutSplit(gated, opts.versionName)}). ` +
+      `Version them / widen the gate / leave it.${versionHint}`,
+    question_author: 'MindBlown',
+    options: [...GATE_ASK_OPTIONS],
+    answerer: opts.answerer,
+    hint: 'decision',
+    priority: null,
+    milestone: null,
+    needs_version: false,
+    idle_hours: null,
+    unblocks: {
+      node_id: null,
+      node_title: null,
+      node_status: `${n} ready outside the gate`,
+      claimed_by: null,
+      worker: null,
+      pr: null,
+      pr_state: null,
+    },
+    moot: false,
+  };
+}
+
+/** Which write an answer to a gate row means: Version them, Widen the gate, else leave it. */
+export function gateAnswerAction(decision: string): GateAnswer {
+  const d = decision.trim().toLowerCase();
+  if (d === 'version them' || d === 'version-them') return 'version-them';
+  if (d === 'widen the gate' || d === 'widen-gate' || d === 'widen') return 'widen-gate';
+  return 'leave-it';
 }

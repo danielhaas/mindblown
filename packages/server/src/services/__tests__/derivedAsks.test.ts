@@ -16,10 +16,13 @@ const state = vi.hoisted(() => ({
   nodes: [] as unknown[],
   archived: false,
   cap: 4,
+  gate: [] as string[],
+  versions: [] as Array<{ id: string; name: string; status: string; sortOrder: number }>,
   /** In a fleet with a repo — the deploy-probe question's precondition. */
   fleetRepo: false,
   probe: null as string | null,
 }));
+const NAVY = '11111111-2222-3333-4444-555555555555';
 
 const node = (id: string, extra: Record<string, unknown> = {}) => ({
   id,
@@ -34,17 +37,25 @@ const node = (id: string, extra: Record<string, unknown> = {}) => ({
   ...extra,
 });
 
+const updateMap = vi.hoisted(() =>
+  vi.fn(async (id: string, input: { dispatchGate?: string[]; deployProbe?: string | null }) => {
+    if ('deployProbe' in input) state.probe = input.deployProbe ?? null;
+    return { id, dispatchGate: input.dispatchGate };
+  }),
+);
 vi.mock('../../db/maps.js', () => ({
   getMap: vi.fn(async (id: string) =>
-    id === 'm1'
+    id === 'm1' || id === NAVY
       ? {
           map: {
-            id: 'm1',
-            name: 'Navy',
+            id,
+            name: id === NAVY ? 'Navy App' : 'Navy',
+            createdBy: 'u-owner',
             createdAt: hoursAgo(24 * 30),
             archivedAt: state.archived ? 'x' : null,
             maxActiveClaims: state.cap,
-            statusWorkflow: [{ id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }],
+            dispatchGate: state.gate,
+            statusWorkflow: [{ id: 'todo', name: 'Todo', category: 'todo' }, { id: 'wip', name: 'In progress', category: 'in_progress' }, { id: 'done', name: 'Done', category: 'done' }],
             ...(state.fleetRepo ? { fleetId: 'f1', githubRepoOwner: 'danielhaas', githubRepoName: 'navy' } : {}),
             deployProbe: state.probe,
           },
@@ -52,11 +63,14 @@ vi.mock('../../db/maps.js', () => ({
         }
       : null,
   ),
-  updateMap: vi.fn(async (_id: string, input: { deployProbe?: string | null }) => {
-    state.probe = input.deployProbe ?? null;
-    return { id: 'm1' };
-  }),
+  updateMap,
 }));
+vi.mock('../../db/versions.js', () => ({ listVersions: vi.fn(async () => state.versions) }));
+vi.mock('../../db/connection.js', () => ({ db: { select: () => ({ from: () => ({ where: async () => [{ name: 'Dan Haas' }] }) }) } }));
+const updateNode = vi.hoisted(() => vi.fn(async (id: string, input: Record<string, unknown>) => ({ id, ...input })));
+vi.mock('../../db/nodes.js', () => ({ updateNode }));
+vi.mock('../../db/events.js', () => ({ recordFieldChanges: vi.fn(async () => {}) }));
+vi.mock('../../ws.js', () => ({ broadcast: vi.fn() }));
 vi.mock('../../lib/stalled.js', () => ({ stalledForMap: vi.fn(async () => state.stalled) }));
 const applyLintFix = vi.fn(async (_m: string, id: string) => ({ action: 'x', node: { id, mapId: 'm1' }, changedFields: ['percentComplete'] }));
 vi.mock('../../lint/fix.js', () => ({
@@ -101,6 +115,8 @@ beforeEach(() => {
   state.stored = [];
   state.archived = false;
   state.cap = 4;
+  state.gate = [];
+  state.versions = [];
   state.fleetRepo = false;
   state.probe = null;
 });
@@ -431,6 +447,93 @@ describe('tickets that need a brief', () => {
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'bare', 'write-brief', 'u1', { note: 'Show on done cards how long they took' });
     await answerDerivedAsk(briefKey, { action: 'answered', decision: 'Done' }, 'u1');
     expect(applyLintFix).toHaveBeenLastCalledWith('m1', 'bare', 'mark-done', 'u1', { note: undefined });
+  });
+});
+
+describe('ready work outside the dispatch gate', () => {
+  const fleetScope = { fleetId: 'f1', visibleMapIds: [NAVY], fleetLevel: false };
+  const ticket = (id: string, extra: Record<string, unknown> = {}) =>
+    node(id, { parentId: 'root', status: 'todo', claimedBySession: null, dependencies: [], approval: { state: 'approved' }, blockedReason: null, versionId: null, description: 'Brief.', ...extra });
+  const navy = () => [
+    node('root', { parentId: null, childrenIds: ['a', 'b', 'c', 'd', 'e'], status: null }),
+    ticket('a', { versionId: 'v1', tags: ['needs-human'] }), // inside the gate, a person's
+    ticket('b'),
+    ticket('c', { text: 'TeamSnap OAuth', priority: 'P1' }),
+    ticket('d', { versionId: 'v3' }),
+    ticket('e', { versionId: 'v4' }),
+  ];
+  const gateRows = async () => (await openDerivedAsks(fleetScope, [NAVY])).filter((r) => r.ask.id.startsWith('gate-'));
+
+  beforeEach(() => {
+    state.stalled = [];
+    state.gate = ['type:bug|version:v1|version:v2'];
+    state.versions = [
+      { id: 'v1', name: 'V1', status: 'active', sortOrder: 1 },
+      { id: 'v2', name: 'V2', status: 'planning', sortOrder: 2 },
+      { id: 'v3', name: 'V3', status: 'planning', sortOrder: 3 },
+      { id: 'v4', name: 'V4', status: 'planning', sortOrder: 4 },
+    ];
+    state.nodes = navy();
+  });
+
+  it('an idle map with ready tickets outside its gate asks its owner once, with the split', async () => {
+    const rows = await gateRows();
+    expect(rows).toHaveLength(1);
+    const a = rows[0].ask;
+    expect(a.id).toMatch(new RegExp(`^gate-${NAVY}-[0-9a-f]{8}$`));
+    expect(a.question).toContain('Navy App: the fleet is idle, 4 ready tickets are outside the gate (2 unversioned, 2 in V3/V4)');
+    expect(a.options).toEqual(['Version them', 'Widen the gate', 'Leave it']);
+    expect(a.hint).toBe('decision');
+    expect(a.answerer).toBe('Dan');
+  });
+
+  it('nothing outside the gate, work inside it, no gate, or the map on hold → no ask', async () => {
+    state.nodes = navy().filter((n) => !['b', 'c', 'd', 'e'].includes((n as { id: string }).id));
+    expect(await gateRows()).toEqual([]);
+    state.nodes = [...navy(), ticket('f', { versionId: 'v2' })];
+    expect(await gateRows()).toEqual([]);
+    state.nodes = navy();
+    state.gate = [];
+    expect(await gateRows()).toEqual([]);
+    state.gate = ['version:v1'];
+    state.cap = 0;
+    expect(await gateRows()).toEqual([]);
+  });
+
+  it('an answered row is not asked again until the gated-out set changes', async () => {
+    const [row] = await gateRows();
+    await answerDerivedAsk({ fleetId: 'f1', mapId: NAVY, askId: row.ask.id }, { action: 'answered', decision: 'Leave it' }, 'u1');
+    expect(recordAnswer).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ id: row.ask.id }), expect.objectContaining({ status: 'answered' }));
+    expect(updateNode).not.toHaveBeenCalled();
+    expect(updateMap).not.toHaveBeenCalled();
+    state.stored = [{ ask: row.ask, mapId: NAVY, status: 'answered', answeredAt: hoursAgo(1), writes: [] }];
+    expect(await gateRows()).toEqual([]);
+    state.nodes = [...navy(), ticket('g')];
+    const again = await gateRows();
+    expect(again).toHaveLength(1);
+    expect(again[0].ask.id).not.toBe(row.ask.id);
+  });
+
+  it('Version them puts the unversioned ones into the active version', async () => {
+    const [row] = await gateRows();
+    const out = await answerDerivedAsk({ fleetId: 'f1', mapId: NAVY, askId: row.ask.id }, { action: 'answered', decision: 'Version them' }, 'u1');
+    expect(updateNode.mock.calls.map((c) => [c[0], c[1]])).toEqual([['b', { versionId: 'v1' }], ['c', { versionId: 'v1' }]]);
+    expect(out.ok).toBe(true);
+  });
+
+  it('Version them without an active version writes nothing and says why', async () => {
+    state.versions = state.versions.map((v) => ({ ...v, status: 'planning' }));
+    const [row] = await gateRows();
+    expect(row.ask.question).toContain('the map has none');
+    const out = await answerDerivedAsk({ fleetId: 'f1', mapId: NAVY, askId: row.ask.id }, { action: 'answered', decision: 'Version them' }, 'u1');
+    expect(updateNode).not.toHaveBeenCalled();
+    expect(out.ok).toBe(false);
+  });
+
+  it('Widen the gate ORs in the versions of the gated-out tickets', async () => {
+    const [row] = await gateRows();
+    await answerDerivedAsk({ fleetId: 'f1', mapId: NAVY, askId: row.ask.id }, { action: 'answered', decision: 'Widen the gate' }, 'u1');
+    expect(updateMap).toHaveBeenCalledWith(NAVY, { dispatchGate: ['type:bug|version:v1|version:v2|version:v3|version:v4'] }, 'u1');
   });
 });
 

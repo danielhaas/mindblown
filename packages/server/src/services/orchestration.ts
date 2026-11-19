@@ -37,6 +37,7 @@ import {
   hasBrief,
   matchesDispatchGate,
   pullableNodes,
+  gatedOutReady,
   dispatchHold,
   approvalHold,
   holdsCapSlot,
@@ -50,7 +51,7 @@ import {
   advanceFleetPull,
 } from '@mindblown/core';
 import { isForgeLink } from '@mindblown/core';
-import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold, FleetPullDeficits } from '@mindblown/core';
+import type { Node as CoreNode, StatusDef, NodeMap, ProfilePolicy, EffortUnit, DispatchHold, FleetPullDeficits, GatedOutReady } from '@mindblown/core';
 import type {
   ReadyNodesResult,
   ClaimNodeResult,
@@ -769,7 +770,7 @@ export async function getNextTicket(
       };
     }
     return {
-      result: { granted: false, reason: 'empty', ...base, ...fleetInfo(fleetActive) },
+      result: { granted: false, reason: 'empty', ...base, ...gatedOutOf(ev), ...fleetInfo(fleetActive) },
       tagged: [{ mapId, nodes: ev.tagged }],
       winner: null,
     };
@@ -839,7 +840,7 @@ export async function pullFleetTicket(
       skipped.push(...ev.skipped.map((s) => ({ ...s, mapId: m.id })));
       const reason = ev.decision.reason ?? (ev.decision.ranked.length === 0 ? 'empty' : null);
       if (reason === null) ready.push(ev);
-      else outcomes.push({ mapId: m.id, name: m.name, reason: reason === 'fleet_cap' ? 'cap' : reason });
+      else outcomes.push({ mapId: m.id, name: m.name, reason: reason === 'fleet_cap' ? 'cap' : reason, ...(reason === 'empty' ? gatedOutOf(ev) : {}) });
     }
 
     const deficits = (fleet.pullDeficits ?? {}) as FleetPullDeficits;
@@ -847,7 +848,7 @@ export async function pullFleetTicket(
     for (const { ev } of orderFleetPull(eligible, deficits)) {
       const claim = await claimFromMap(tx, ev, sessionId, now);
       if (!claim) {
-        outcomes.push({ mapId: ev.mapRow.id, name: ev.mapRow.name, reason: 'empty' }); // every candidate raced away
+        outcomes.push({ mapId: ev.mapRow.id, name: ev.mapRow.name, reason: 'empty', ...gatedOutOf(ev) }); // every candidate raced away
         continue;
       }
       await tx
@@ -877,8 +878,12 @@ export async function pullFleetTicket(
       outcomes.length > 0 && [...reasons].every((r) => r === 'hold') ? 'hold'
         : outcomes.length > 0 && [...reasons].every((r) => r === 'hold' || r === 'cap') ? 'cap'
           : 'empty';
+    // Ready work the maps' gates keep out, summed — so a worker logs it with `empty`.
+    const out = outcomes.filter((o) => o.gatedOut);
+    const gatedOut = out.length === 0 || reason !== 'empty' ? {}
+      : { gatedOut: { count: out.reduce((a, o) => a + o.gatedOut!.count, 0), unversioned: out.reduce((a, o) => a + o.gatedOut!.unversioned, 0) } };
     return {
-      result: { granted: false, reason, active: fleetActive, cap: fleet.maxActiveClaims, skipped, ...fleetInfo(fleetActive), maps: outcomes },
+      result: { granted: false, reason, active: fleetActive, cap: fleet.maxActiveClaims, skipped, ...gatedOut, ...fleetInfo(fleetActive), maps: outcomes },
       tagged,
       winner: null,
     };
@@ -918,6 +923,8 @@ interface PullOutcome {
 interface MapPullEval {
   mapRow: MapRow;
   decision: PullDecision;
+  /** Ready leaves the map's gate keeps out (core gatedOutReady). */
+  gatedOut: GatedOutReady;
   nodeMap: NodeMap;
   skipped: SkippedTicket[];
   tagged: CoreNode[];
@@ -1024,7 +1031,22 @@ async function evaluateMapPull(
     })),
   ];
 
-  return { mapRow, decision, nodeMap, skipped, tagged };
+  const gatedOut = gatedOutReady(allNodes, {
+    workflow: (mapRow.statusWorkflow as StatusDef[]) ?? [],
+    gate: (mapRow.dispatchGate as string[]) ?? [],
+  });
+
+  return { mapRow, decision, gatedOut, nodeMap, skipped, tagged };
+}
+
+/**
+ * `gatedOut` for an `empty` answer: ready tickets outside the gate, so the
+ * worker logs them and "empty" does not read as "nothing to do". The Questions
+ * card asks the map owner about them (services/derivedAsks gate row).
+ */
+function gatedOutOf(ev: MapPullEval): Pick<GetNextTicketResult, 'gatedOut'> {
+  const count = ev.gatedOut.ids.length;
+  return count === 0 ? {} : { gatedOut: { count, unversioned: ev.gatedOut.unversioned } };
 }
 
 /** Claim the first ranked candidate still unclaimed; null when all raced away. */

@@ -1118,6 +1118,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           text: label,
           createdBy,
           reportedBy: userReporter(req.userId),
+          versionId: null, // a container — the gate default is for leaves
         });
         branchIds.set(label, branchNode.id);
         return branchNode.id;
@@ -1131,6 +1132,7 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
           text: 'Backlog',
           createdBy,
           reportedBy: userReporter(req.userId),
+          versionId: null, // a container — the gate default is for leaves
         });
         backlogId = backlogNode.id;
         return backlogId;

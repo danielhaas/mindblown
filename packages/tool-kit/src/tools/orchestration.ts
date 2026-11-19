@@ -128,7 +128,8 @@ export const getNextTicketTool = defineTool({
     '     no fix asked for) does not count; any other blocker on a claim still does.',
     '  2. dispatchGate AND-filter fences the ready set ("version:<id>", "type:bug",',
     '     or "type:bug|version:<id>" = either; empty = no fence). Tickets outside',
-    '     the gate are invisible, not deprioritized.',
+    '     the gate are invisible, not deprioritized — an "empty" answer then carries',
+    '     gatedOut {count, unversioned}: ready work the gate keeps out. Log it.',
     '  3. dispatchPolicy orders what\'s left (default ["bugs","priority","age"]).',
     '     A "mix:bugs=<0-100>" entry deterministically interleaves bug and',
     '     non-bug tickets at that percentage (0 = inert, 100 = all bugs first;',
@@ -274,9 +275,18 @@ export const getNextTicketTool = defineTool({
       if (result.maps && result.maps.length > 0) {
         lines.push('');
         lines.push('Per map:');
-        for (const m of result.maps) lines.push(`  - ${m.name} (mapId: ${m.mapId}): ${m.reason}`);
+        for (const m of result.maps) {
+          const out = m.gatedOut ? ` — ${m.gatedOut.count} ready outside the gate (${m.gatedOut.unversioned} unversioned)` : '';
+          lines.push(`  - ${m.name} (mapId: ${m.mapId}): ${m.reason}${out}`);
+        }
       } else if (fleetPull && result.reason === 'empty' && result.skipped.length === 0) {
         lines.push('(No connected map you may work on matched — check mapIds and your access.)');
+      }
+      if (result.gatedOut) {
+        lines.push('');
+        lines.push(
+          `gatedOut: ${result.gatedOut.count} ready ticket(s) outside the dispatch gate (${result.gatedOut.unversioned} unversioned) — "empty" is the gate, not the work. The map owner is asked on the Questions card.`,
+        );
       }
     }
     const noBrief = result.skipped.filter((s) => s.reason === 'needs-brief');

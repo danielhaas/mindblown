@@ -3,6 +3,7 @@ import type { Node, NodeId, ComputedNodeValues, MindMap, Cycle, Version, Misfile
 import { computeTree } from '@mindblown/core';
 import * as api from './api.js';
 import { showMisfiledToast } from './misfiledToast.js';
+import { showVersionDefaultToast, type VersionDefault } from './versionDefaultToast.js';
 import type { MapSummary, AuthUser } from './api.js';
 import { connectWs } from './ws.js';
 import type { WsClient } from './ws.js';
@@ -1207,8 +1208,10 @@ export const useMindmapStore = create<MindmapState>((set, get) => ({
       api.createNode(mapId, targetParentId, text, insertIndex >= 0 ? insertIndex : undefined, position, fields)
         .then((created) => {
           // Wrong-map guard: the answer says where a misfiled ticket belongs.
-          const { misfiled, ...serverNode } = created as Node & { misfiled?: MisfiledRepo };
+          const { misfiled, versionDefault, ...serverNode } = created as Node & { misfiled?: MisfiledRepo; versionDefault?: VersionDefault };
           if (misfiled) showMisfiledToast(mapId, serverNode, misfiled);
+          // The gate default: "added to V1" with a way back out.
+          if (versionDefault) showVersionDefaultToast(mapId, serverNode, versionDefault);
           // Replace temp node with server node
           const current = get();
           const nodes = { ...current.nodes };

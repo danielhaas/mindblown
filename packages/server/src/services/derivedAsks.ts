@@ -11,6 +11,11 @@
  *                   (core humanSteps.ts)
  *   brief-<node>    a ready ticket inside the gate the pull refuses for
  *                   want of a brief (core dispatchQueueSnapshot)
+ *   gate-<map>-<fp> the map has nothing grantable inside its gate while
+ *                   ready tickets sit outside it (core gatedOutReady) —
+ *                   one decision for the map owner; <fp> fingerprints the
+ *                   gated-out set, so an answered row stays answered until
+ *                   the set changes
  *   deploy-probe-<map>  a map in a fleet with a repo and no deploy probe:
  *                   "how is <map> deployed?" (core deployProbe.ts) — the
  *                   answer (a URL, or none) is the map's probe, so it is
@@ -45,7 +50,9 @@
  * mine", which writes no decision). A hand-back takes the hold labels
  * (blocked, the skip tags) off the linked issue too. Blocker: Unblocked =
  * clear-blocker, Done = mark-done, free text = needs-human. Brief: Done =
- * mark-done, free text = write-brief.
+ * mark-done, free text = write-brief. Gate: Version them = the unversioned
+ * ones get the map's active version, Widen the gate = the gate's version
+ * entries also let in the gated-out tickets' versions, Leave it = nothing.
  */
 import {
   buildLintAsk,
@@ -74,6 +81,17 @@ import {
   deployProbeFromAnswer,
   buildBriefAsk,
   dispatchQueueSnapshot,
+  buildGateAsk,
+  defaultVersionForNewLeaf,
+  gateAnswerAction,
+  gateAskMapId,
+  gatedOutReady,
+  effectiveVersionId,
+  gateVersionIds,
+  ownerPerson,
+  parseGateEntry,
+  GATE_VERSION_PREFIX,
+  GATE_OR,
   blockerAnswerAction,
   blockerFleetAction,
   FLEET_CHECK_TAG,
@@ -101,20 +119,24 @@ import {
   stepAnswerAction,
   stepAskNodeId,
 } from '@mindblown/core';
-import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, Node as CoreNode } from '@mindblown/core';
+import type { AskAnswerInput, AskRow, AskWrite, LintActionId, LintRun, MindMap, Node as CoreNode, Version } from '@mindblown/core';
 import { commentOnGitHubIssue } from '@mindblown/integrations';
+import { eq } from 'drizzle-orm';
 import * as asksDb from '../db/asks.js';
 import * as lintRunsDb from '../db/lintRuns.js';
+import { db } from '../db/connection.js';
+import { users } from '../db/schema.js';
 import * as mapDb from '../db/maps.js';
+import * as nodeDb from '../db/nodes.js';
+import * as versionDb from '../db/versions.js';
+import { recordFieldChanges } from '../db/events.js';
+import { broadcast } from '../ws.js';
 import { getGitHubContextForMap } from '../lib/githubContext.js';
 import { stalledForMap } from '../lib/stalled.js';
 import { applyLintFix, issueLinkOf } from '../lint/fix.js';
 import { AskNotFoundError, AskValidationError, type AnswerAskOutcome } from './asks.js';
 import { removeIssueLabels } from './issueLabels.js';
 import { latestDeployDrift } from './deployDrift.js';
-import * as nodeDb from '../db/nodes.js';
-import { recordFieldChanges } from '../db/events.js';
-import { broadcast } from '../ws.js';
 import { syncNodeToGitHub } from '../routes/nodes.js';
 import { mapOwnerAnswerer } from './flagBlocker.js';
 
@@ -197,6 +219,13 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
       }
     }
 
+    // The fleet is idle on this map (nothing grantable, a free slot) while
+    // ready work sits outside the gate — "empty" must not read as "nothing to do".
+    if (queue?.state === 'empty') {
+      const gate = await gateRow(data.map, data.nodes, mapId, now).catch(() => null);
+      if (gate) out.push(gate);
+    }
+
     // The fleet merges into the repo; nothing says whether it goes live.
     const own = latestDeployDrift()?.repo?.toLowerCase();
     const repo = data.map.githubRepoOwner && data.map.githubRepoName ? `${data.map.githubRepoOwner}/${data.map.githubRepoName}`.toLowerCase() : null;
@@ -205,6 +234,28 @@ export async function derivedAskRows(mapIds: string[], now: Date = new Date()): 
     }
   }
   return out;
+}
+
+/** The gate row of a map, or null when no ready ticket is outside its gate. */
+async function gateRow(map: MindMap, nodes: CoreNode[], mapId: string, now: Date): Promise<AskRow | null> {
+  const gated = gatedOutReady(nodes, { workflow: map.statusWorkflow ?? [], gate: map.dispatchGate ?? [] });
+  if (gated.ids.length === 0) return null;
+  const versions = await versionDb.listVersions(mapId);
+  const names = new Map(versions.map((v) => [v.id, v.name]));
+  const [owner] = await db.select({ name: users.name }).from(users).where(eq(users.id, map.createdBy));
+  const ask = buildGateAsk(map, gated, {
+    versionName: (id) => names.get(id) ?? id.slice(0, 8),
+    activeVersion: activeVersionOf(versions)?.name ?? null,
+    answerer: ownerPerson(owner?.name),
+  });
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const latest = gated.ids.map((id) => byId.get(id)?.updatedAt ?? '').sort().pop() || now.toISOString();
+  return openRow(ask, mapId, now, latest);
+}
+
+/** The map's active version — the first by sort order when several are. */
+function activeVersionOf(versions: Version[]): Version | null {
+  return defaultVersionForNewLeaf([`${GATE_VERSION_PREFIX}any`], versions);
 }
 
 /** The scope's open derived rows: minus snoozed ones, minus steps a collector's open question already covers. */
@@ -218,7 +269,11 @@ export async function openDerivedAsks(scope: asksDb.AskScope, mapIds: string[], 
   const settled = new Set(
     stored.filter((r) => r.status === 'answered' && parseLintAskId(r.ask.id)).map((r) => `${rowKey(r)}|${r.ask.question}`),
   );
-  return derived.filter((r) => !snoozed.has(rowKey(r)) && !asked(r) && !settled.has(`${rowKey(r)}|${r.ask.question}`));
+  // A gate row answered for this gated-out set stays answered until the set changes (its id).
+  const answered = new Set(stored.filter((r) => r.status !== 'open' && gateAskMapId(r.ask.id)).map(rowKey));
+  return derived.filter(
+    (r) => !snoozed.has(rowKey(r)) && !asked(r) && !answered.has(rowKey(r)) && !settled.has(`${rowKey(r)}|${r.ask.question}`),
+  );
 }
 
 /** Rows snoozed by Later / Delegate, and whether a collector's open question already covers a derived row's node. */
@@ -305,6 +360,7 @@ async function stepIssueWrites(
  * left to answer.
  */
 export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
+  if (gateAskMapId(key.askId)) return answerGateAsk(key, input, userId);
   if (deployProbeAskMapId(key.askId)) return answerDeployProbeAsk(key, input, userId);
   const nodeId = derivedAskNodeId(key.askId);
   if (!nodeId || !key.mapId) throw new AskNotFoundError(key.askId);
@@ -357,6 +413,101 @@ export async function answerDerivedAsk(key: asksDb.AskKey, input: AskAnswerInput
   const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
   const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
   return { row: saved, plan: planAskWrites(row.ask, answer, null, date), ok: writes.every((w) => w.done), node, changedFields };
+}
+
+/**
+ * Answer a gate row. Version them: every unversioned gated-out ticket gets
+ * the map's active version. Widen the gate: each gate entry that names a
+ * version also lets in the gated-out tickets' versions (`|version:<id>`).
+ * Leave it, Later, Delegate: nothing written. Every answer is recorded, so
+ * the row stays answered until the gated-out set changes.
+ */
+async function answerGateAsk(key: asksDb.AskKey, input: AskAnswerInput, userId: string | null): Promise<AnswerAskOutcome> {
+  const mapId = gateAskMapId(key.askId);
+  if (!mapId || key.mapId !== mapId) throw new AskNotFoundError(key.askId);
+  const now = new Date();
+  const [row] = (await derivedAskRows([mapId], now)).filter((r) => r.ask.id === key.askId);
+  if (!row) throw new AskNotFoundError(key.askId);
+
+  const by = input.by?.trim() || 'Dan';
+  const answer: AskAnswerInput = { ...input, by };
+  const date = now.toISOString().slice(0, 10);
+  const writes: AskWrite[] = [];
+  const decision = (input.decision ?? '').trim();
+  const action = input.action === 'answered' ? gateAnswerAction(decision) : null;
+
+  if (action === 'version-them' || action === 'widen-gate') {
+    const data = await mapDb.getMap(mapId);
+    if (!data) throw new AskNotFoundError(key.askId);
+    const gated = gatedOutReady(data.nodes, { workflow: data.map.statusWorkflow ?? [], gate: data.map.dispatchGate ?? [] });
+    if (action === 'version-them') await versionGatedOut(mapId, data.nodes, gated.ids, userId, writes);
+    else await widenGate(data.map, Object.keys(gated.byVersion), userId, writes);
+  } else {
+    writes.push({ kind: 'ledger-only', target: row.ask.id, detail: (action ?? input.action) + (input.delegateTo ? ` → ${input.delegateTo}` : ''), done: true });
+  }
+
+  const status = input.action === 'answered' ? 'answered' : input.action === 'later' ? 'later' : 'delegated';
+  const saved = await asksDb.recordAnswer(key, row.ask, { status, answer, answeredBy: by, answeredAt: now, writes, workerPending: false });
+  return { row: saved, plan: planAskWrites(row.ask, answer, null, date), ok: writes.every((w) => w.done), node: null, changedFields: [] };
+}
+
+/** Version them: the unversioned gated-out tickets get the active version, like an edit by hand. */
+async function versionGatedOut(mapId: string, nodes: CoreNode[], ids: string[], userId: string | null, writes: AskWrite[]): Promise<void> {
+  const active = activeVersionOf(await versionDb.listVersions(mapId));
+  const nodeMap = new Map(nodes.map((n) => [n.id, n]));
+  const unversioned = ids.filter((id) => effectiveVersionId(id, nodeMap) === null);
+  if (!active || unversioned.length === 0) {
+    writes.push({
+      kind: 'mb-put',
+      target: mapId.slice(0, 8),
+      detail: 'version them',
+      done: false,
+      error: !active ? 'the map has no active version — set one in Versions, or widen the gate' : 'no unversioned ticket outside the gate — widen the gate for the versioned ones',
+    });
+    return;
+  }
+  for (const id of unversioned) {
+    const before = nodeMap.get(id)!;
+    const w: AskWrite = { kind: 'mb-put', target: id.slice(0, 8), detail: `version → ${active.name}`, done: false };
+    writes.push(w);
+    try {
+      const updated = await nodeDb.updateNode(id, { versionId: active.id });
+      if (!updated) throw new Error('node vanished');
+      await recordFieldChanges(mapId, id, userId, before, updated).catch(() => {});
+      broadcast(mapId, { type: 'node:updated', nodeId: id, fields: ['versionId'], node: updated });
+      w.done = true;
+    } catch (err) {
+      w.error = err instanceof Error ? err.message : String(err);
+    }
+  }
+}
+
+/** Widen the gate: each entry that names a version ORs in the gated-out tickets' versions. */
+async function widenGate(map: MindMap, versionIds: string[], userId: string | null, writes: AskWrite[]): Promise<void> {
+  const gate = map.dispatchGate ?? [];
+  const w: AskWrite = { kind: 'mb-put', target: map.id.slice(0, 8), detail: 'dispatchGate', done: false };
+  writes.push(w);
+  const next = gate.map((entry) => {
+    const named = gateVersionIds([entry]);
+    if (named.length === 0 || parseGateEntry(entry).kind === 'unknown') return entry;
+    const add = versionIds.filter((v) => !named.includes(v)).map((v) => GATE_VERSION_PREFIX + v);
+    return add.length === 0 ? entry : [entry, ...add].join(GATE_OR);
+  });
+  if (versionIds.length === 0 || next.every((e, i) => e === gate[i])) {
+    w.error = versionIds.length === 0
+      ? 'the tickets outside the gate have no version — version them instead'
+      : 'the gate names no version to widen — edit it in the Fleet tab';
+    return;
+  }
+  try {
+    const updated = await mapDb.updateMap(map.id, { dispatchGate: next }, userId);
+    if (!updated) throw new Error('map vanished');
+    broadcast(map.id, { type: 'map:updated', map: updated });
+    w.detail = `dispatchGate → ${next.join(', ')}`;
+    w.done = true;
+  } catch (err) {
+    w.error = err instanceof Error ? err.message : String(err);
+  }
 }
 
 /**
