@@ -258,6 +258,8 @@ export interface CreateNodeInput {
   startDate?: string;
   dueDate?: string;
   autoProgress?: 'off' | 'children';
+  /** Parked branch (#655). */
+  parked?: boolean;
   priorityRank?: number | null;
   completedAt?: string | null;
   /** The worker's own ETA (ISO 8601); null clears it. */
@@ -344,6 +346,7 @@ export async function createNode(
       startDate: input.startDate ?? null,
       dueDate: input.dueDate ?? null,
       autoProgress: input.autoProgress ?? 'off',
+      parked: input.parked ?? false,
       priorityRank: input.priorityRank ?? null,
       completedAt: input.completedAt ? new Date(input.completedAt) : null,
       startedAt,
@@ -509,6 +512,8 @@ export interface UpdateNodeInput {
   cycleId?: string | null;
   externalLinks?: ExternalLink[];
   autoProgress?: 'off' | 'children';
+  /** Parked branch (#655). */
+  parked?: boolean;
   priorityRank?: number | null;
   completedAt?: string | null;
   /** The worker's own ETA (ISO 8601); null clears it. */
@@ -643,6 +648,7 @@ export async function updateNode(
   if (input.cycleId !== undefined) updates.cycleId = input.cycleId;
   if (input.externalLinks !== undefined) updates.externalLinks = input.externalLinks;
   if (input.autoProgress !== undefined) updates.autoProgress = input.autoProgress;
+  if (input.parked !== undefined) updates.parked = input.parked;
   if (input.priorityRank !== undefined) updates.priorityRank = input.priorityRank;
   if (input.requirementId !== undefined) updates.requirementId = input.requirementId;
   if (input.requirementPriority !== undefined) updates.requirementPriority = input.requirementPriority;

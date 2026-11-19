@@ -76,6 +76,12 @@ export const createNodeTool = defineTool({
       .describe(
         "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs on the forge (GitHub or Gitea). Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
       ),
+    parked: z
+      .boolean()
+      .optional()
+      .describe(
+        'Park this branch ("later"): the node and its whole subtree stay in the map for context, but get no dates, no critical path and no share of the total duration; roll-ups count them separately (parkedEffort); export_markdown lists them under "Later" without dates; get_next_ticket never hands out a node under it. false un-parks.',
+      ),
     priorityRank: z
       .number()
       .nullable()
@@ -236,6 +242,12 @@ export const updateNodeTool = defineTool({
       .optional()
       .describe(
         "Parent-epic auto-progress mode. When set to 'children', the node's percentComplete is auto-computed from the closed/total child-PR ratio based on title-pattern matching (e.g. `[#NNNN-followup]`, `(#NNNN follow-up)`). Use this on parent epics whose work is decomposed across child PRs on the forge (GitHub or Gitea). Default 'off' leaves percentComplete under manual control. Note: this is distinct from the normal leaf-rollup, which always derives a parent's progress from its tree children's weighted estimates × progress regardless of this flag.",
+      ),
+    parked: z
+      .boolean()
+      .optional()
+      .describe(
+        'Park this branch ("later"): the node and its whole subtree stay in the map for context, but get no dates, no critical path and no share of the total duration; roll-ups count them separately (parkedEffort); export_markdown lists them under "Later" without dates; get_next_ticket never hands out a node under it. false un-parks.',
       ),
     priorityRank: z
       .number()

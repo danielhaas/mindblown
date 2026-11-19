@@ -195,6 +195,24 @@ describe('update_node tool', () => {
     expect(result).toContain('autoProgress');
   });
 
+  // #655 — parking a branch is an MCP write, not only a REST one.
+  it('accepts parked: boolean and forwards it to the backend', async () => {
+    const schema = z.object(updateNodeTool.schema);
+    expect(schema.parse({ mapId: 'm1', nodeId: 'n1', parked: true }).parked).toBe(true);
+    expect(() => schema.parse({ mapId: 'm1', nodeId: 'n1', parked: 'yes' })).toThrow();
+    const recorder = makeRecordingBackend();
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', parked: true } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ parked: true });
+    await updateNodeTool.handler(recorder.backend, { mapId: 'm1', nodeId: 'n1', parked: false } as never);
+    expect(recorder.lastUpdate?.fields).toEqual({ parked: false });
+  });
+
+  it('create_node forwards parked to the backend', async () => {
+    const recorder = makeRecordingBackend();
+    await createNodeTool.handler(recorder.backend, { mapId: 'm1', parentId: 'p1', text: 'Later idea', parked: true } as never);
+    expect(recorder.lastCreate?.fields).toMatchObject({ parked: true });
+  });
+
   it('omits autoProgress from the backend call when not provided', async () => {
     const recorder = makeRecordingBackend();
     await updateNodeTool.handler(recorder.backend, {

@@ -122,6 +122,8 @@ export interface NodeWithComputed {
   effortEstimate: number | null;
   /** 'ai' = an AI draft estimate (#318); null/absent = a person's. */
   estimateSource?: 'ai' | null;
+  /** Parked branch (#655): not scheduled, not pulled by the fleet. */
+  parked?: boolean;
   actualEffort: number | null;
   percentComplete: number | null;
   status: string | null;

@@ -493,6 +493,22 @@ function PropertyPanelInner({
           >
             {computedValues?.computedEffort ?? 0}d
           </div>
+          {/* Effort in parked branches below (#655) — not in the total */}
+          {(computedValues?.parkedEffort ?? 0) > 0 && (
+            <div
+              title="Effort in parked branches below — left out of the total and the schedule"
+              style={{
+                padding: '4px 10px',
+                borderRadius: 6,
+                background: '#f1f5f9',
+                color: '#94a3b8',
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              parked: {computedValues?.parkedEffort}d
+            </div>
+          )}
         </div>
 
         {/* Description */}
@@ -964,6 +980,18 @@ function PropertyPanelInner({
 
         {/* Phase */}
         <PhaseField nodeId={nodeId} currentPhaseId={node.phaseId} />
+
+        {/* Parked (#655) */}
+        <Field label="Parked">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: '#475569', cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={node.parked === true}
+              onChange={(e) => directUpdate(nodeId, { parked: e.target.checked })}
+            />
+            Later — keep in the map, leave out of dates, exports and the fleet
+          </label>
+        </Field>
 
         {/* Divider */}
         <div style={{ height: 1, background: '#f1f5f9', margin: '4px 0' }} />

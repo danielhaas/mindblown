@@ -52,6 +52,7 @@ export function dbNodeToCore(row: Record<string, unknown>): CoreNode {
     externalLinks: (get('externalLinks', 'external_links') as CoreNode['externalLinks']) ?? [],
     attachments: (get('attachments', 'attachments') as CoreNode['attachments']) ?? [],
     autoProgress: ((get('autoProgress', 'auto_progress') as CoreNode['autoProgress']) ?? 'off'),
+    parked: (get('parked', 'parked') as boolean | null) === true,
     priorityRank: (get('priorityRank', 'priority_rank') as number) ?? null,
     completedAt: (get('completedAt', 'completed_at') instanceof Date
       ? (get('completedAt', 'completed_at') as Date).toISOString()

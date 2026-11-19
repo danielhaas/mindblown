@@ -138,3 +138,32 @@ describe('computeMapSchedule — working calendar (#110)', () => {
   });
 });
 
+describe('computeMapSchedule — parked branches (#655)', () => {
+  // root ─ m5 ─ a (3d)
+  //      └ m6 (parked) ─ b (10d, after a)
+  const nodes = () => [
+    leaf('root', { childrenIds: ['m5', 'm6'] }),
+    leaf('m5', { parentId: 'root', childrenIds: ['a'], effortEstimate: null }),
+    leaf('a', { parentId: 'm5', effortEstimate: 3 }),
+    leaf('m6', { parentId: 'root', childrenIds: ['b'], effortEstimate: null, parked: true }),
+    leaf('b', { parentId: 'm6', effortEstimate: 10, dependencies: [{ targetNodeId: 'a', type: 'FS', lag: 0 }] }),
+  ];
+
+  it('gives the parked branch no dates and ends the total with the planned work', () => {
+    const r = computeMapSchedule({ map, nodes: nodes() });
+    const ids = r.schedule.map((s) => s.nodeId);
+    expect(ids).not.toContain('m6');
+    expect(ids).not.toContain('b');
+    const root = r.schedule.find((s) => s.nodeId === 'root')!;
+    expect(root.computedEnd).toBe(3);
+    expect(r.barSpan(root)).toEqual({ start: '2026-10-01', end: '2026-10-03' });
+    expect(r.criticalPath.path).not.toContain('b');
+  });
+
+  it('a baseline freezes no bar for parked nodes', () => {
+    const b = buildBaseline({ map, nodes: nodes() }, 'x');
+    expect(b.nodes.b.plannedStart).toBeUndefined();
+    expect(b.nodes.a.plannedStart).toBe('2026-10-01');
+  });
+});
+

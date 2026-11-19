@@ -3,7 +3,7 @@
  * GET /api/maps/:id/schedule and "freeze baseline" (#113), which snapshots
  * exactly what the Gantt shows.
  */
-import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, latestAskDates } from '@mindblown/core';
+import { schedule, criticalPath, capacityCriticalPath, clampFocusFactor, nodesInVersion, withoutParked, latestAskDates } from '@mindblown/core';
 import type { Baseline, ScheduleConstraint, NodeId, Node as CoreNode, MindMap } from '@mindblown/core';
 import { mapDayMapper } from './holidays.js';
 
@@ -31,9 +31,14 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
       ? (data.map.hoursPerDay ?? 8)
       : 1;
 
+  // ── Parked branches (#655) ───────────────────────────────
+  // Kept in the map, never planned: no dates, no critical path, not in the
+  // total duration. Dependencies on them are dropped (nothing to wait for).
+  const planned = withoutParked(data.nodes);
+
   // ── Version scoping ──────────────────────────────────────
   const versionId = opts.versionId;
-  let scopedNodes = data.nodes;
+  let scopedNodes = planned;
   const crossVersionDependencies: Array<{
     fromNodeId: string;
     fromText: string;
@@ -47,10 +52,10 @@ export function computeMapSchedule(data: { map: MindMap; nodes: CoreNode[] }, op
     // ancestor with the version kept nodes that override it with their
     // own version, so a version-scoped landing date counted another
     // release's work. Same rule as search_nodes and the dispatch gate.
-    const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
-    const inScope = nodesInVersion(data.nodes, versionId);
+    const nodeById = new Map(planned.map((n) => [n.id, n]));
+    const inScope = nodesInVersion(planned, versionId);
     // Prune dependencies that cross the version boundary; record them.
-    scopedNodes = data.nodes
+    scopedNodes = planned
       .filter((n) => inScope.has(n.id))
       .map((n) => {
         const kept: typeof n.dependencies = [];

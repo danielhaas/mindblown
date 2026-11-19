@@ -278,6 +278,9 @@ export const nodes = pgTable('nodes', {
   // authoritative; 'children' = computed from linked GitHub child PRs via
   // parentEpicRollup. See packages/server/src/sync/parentEpicRollup.ts.
   autoProgress: text('auto_progress').notNull().default('off'),
+  // Parked branch (#655): kept in the map, left out of the schedule, the
+  // export's timeline and the fleet's pull — for the node and its subtree.
+  parked: boolean('parked').notNull().default(false),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   createdBy: uuid('created_by').notNull().references(() => users.id),

@@ -454,7 +454,7 @@ export const projectSetupStatusTool = defineTool({
 export const exportMarkdownTool = defineTool({
   name: 'export_markdown',
   description:
-    "The map — or one subtree — as a Markdown timeline for someone who is not on the project: header (progress, projected end), a summary table (milestone | status | projected dates | waiting on), then one section per top-level child in schedule order with its status, projected dates, what it is waiting on (blocked leaves and leaves tagged `external`, with who owns them), the open work linked to its issues, and done milestones collapsed to what was delivered. Returns the Markdown itself, so you can paste it into any wiki or document through that tool's own MCP. detail 'summary' (default) shows no node ids or effort numbers; 'full' adds them.",
+    "The map — or one subtree — as a Markdown timeline for someone who is not on the project: header (progress, projected end), a summary table (milestone | status | projected dates | waiting on), then one section per top-level child in schedule order with its status, projected dates, what it is waiting on (blocked leaves and leaves tagged `external`, with who owns them), the open work linked to its issues, and done milestones collapsed to what was delivered. Parked branches (update_node parked:true) are left out of the dates and listed at the end under \"Later\" without dates. Returns the Markdown itself, so you can paste it into any wiki or document through that tool's own MCP. detail 'summary' (default) shows no node ids or effort numbers; 'full' adds them.",
   schema: {
     mapId: z.string().describe('The map ID'),
     rootNodeId: z.string().optional().describe('Render only this subtree; its children become the sections. Default: the whole map.'),

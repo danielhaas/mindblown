@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Node, NodeId, ComputedNodeValues, Priority } from '@mindblown/core';
-import { isForgeLink, isLeadTimeNode } from '@mindblown/core';
+import { isForgeLink, isLeadTimeNode, parkedNodeIds } from '@mindblown/core';
 import { useMindmapStore } from './store.js';
 import { ForgeIcon } from './icons/ForgeIcon.js';
 import { pickCurrentCycle } from './roles.js';
@@ -238,6 +238,9 @@ export function ListView() {
       .catch(() => { if (!cancelled) setProjected(new Map()); });
     return () => { cancelled = true; };
   }, [currentMapId, nodes]);
+
+  // Parked branches (#655): greyed with a "parked" chip, the whole subtree.
+  const parkedIds = useMemo(() => parkedNodeIds(Object.values(nodes)), [nodes]);
 
   const debounce = useDebouncedCallback(DEBOUNCE_MS);
   const tableRef = useRef<HTMLDivElement>(null);
@@ -627,10 +630,12 @@ export function ListView() {
 
     const isEditingField = (field: string) =>
       editingCell?.nodeId === node.id && editingCell?.field === field;
+    const isParked = parkedIds.has(node.id);
 
     return (
       <div
         key={node.id}
+        data-parked={isParked || undefined}
         onClick={(e) => handleRowClick(node.id, e)}
         style={{
           display: 'flex',
@@ -641,6 +646,7 @@ export function ListView() {
           borderBottom: '1px solid #f1f5f9',
           cursor: 'pointer',
           transition: 'background 0.1s',
+          opacity: isParked ? 0.5 : undefined,
         }}
         onMouseEnter={(e) => {
           if (!isSelected) e.currentTarget.style.background = '#f1f5f9';
@@ -731,6 +737,14 @@ export function ListView() {
               title={node.text}
             >
               {node.text}
+            </span>
+          )}
+          {isParked && (
+            <span
+              title="Parked — kept in the map, not scheduled, not pulled by the fleet"
+              style={{ fontSize: 10, fontWeight: 600, padding: '1px 5px', borderRadius: 3, background: '#e2e8f0', color: '#475569', marginLeft: 6, flexShrink: 0 }}
+            >
+              parked
             </span>
           )}
           {(() => {

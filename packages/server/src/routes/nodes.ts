@@ -230,6 +230,8 @@ export async function nodeRoutes(app: FastifyInstance): Promise<void> {
       requestedAt?: string | null;
       waitingOn?: string | null;
       autoProgress?: 'off' | 'children';
+      /** Parked branch (#655): kept in the map, out of the schedule and the fleet's pull. */
+      parked?: boolean;
       priorityRank?: number | null;
       requirementId?: string | null;
       requirementPriority?: 'must' | 'should' | 'could' | null;

@@ -76,6 +76,8 @@ export interface NodeWithComputed {
   startedAt?: string | null;
   /** The worker's own ETA (core Node field); optional — older servers omit it. */
   expectedDoneAt?: string | null;
+  /** Parked branch (#655) — out of the schedule and the fleet's pull. Older servers omit it. */
+  parked?: boolean;
   /** Lead time (#654): a wait on someone outside the team, map effort unit. */
   leadTime?: number | null;
   /** When we asked (YYYY-MM-DD). */
@@ -83,6 +85,8 @@ export interface NodeWithComputed {
   /** Who we wait on. */
   waitingOn?: string | null;
   computedEffort: number;
+  /** Effort in parked branches below this node, left out of computedEffort (#655). */
+  parkedEffort?: number;
   computedProgress: number;
   healthSignal: string;
   /**
