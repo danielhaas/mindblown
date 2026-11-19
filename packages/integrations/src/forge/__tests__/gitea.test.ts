@@ -163,6 +163,33 @@ describe('GiteaForge wire format', () => {
     expect(issue.labels.map((l) => l.name)).toEqual(['bug']);
   });
 
+  it('updateIssue: a 409 "the issue is already changed" is sent again and then lands', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    t.respond(
+      { status: 409, body: { message: 'the issue is already changed' } }, // PATCH: our own comment just bumped the issue
+      { status: 201, body: giteaIssue }, // PATCH again
+    );
+    const issue = await forge.updateIssue('dan', 'r', 1, { body: 'B' });
+    expect(t.calls.map((c) => c.method)).toEqual(['PATCH', 'PATCH']);
+    expect(JSON.parse(t.calls[1].body ?? '{}')).toEqual({ body: 'B' });
+    expect(issue.number).toBe(giteaIssue.number);
+  });
+
+  it('updateIssue: a 409 that keeps coming gives up after 3 tries; another 409 is not retried', async () => {
+    const t = fakeTransport();
+    const forge = forgeWith(t);
+    const changed = { status: 409, body: { message: 'the issue is already changed' } };
+    t.respond(changed, changed, changed);
+    await expect(forge.updateIssue('dan', 'r', 1, { body: 'B' })).rejects.toMatchObject({ status: 409 });
+    expect(t.calls).toHaveLength(3);
+
+    const t2 = fakeTransport();
+    t2.respond({ status: 409, body: { message: 'something else' } });
+    await expect(forgeWith(t2).updateIssue('dan', 'r', 1, { body: 'B' })).rejects.toMatchObject({ status: 409 });
+    expect(t2.calls).toHaveLength(1);
+  });
+
   it('addIssueLabels: a name Gitea silently drops is reported as 422 like GitHub', async () => {
     const t = fakeTransport();
     const forge = forgeWith(t);

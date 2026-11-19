@@ -143,8 +143,9 @@ const SYNC_FIELDS = new Set([
  * Runs async — does not block the API response.
  *
  * Pushes: title, body, state (open/closed), labels.
+ * `origin` names what caused the write (e.g. `ask <id>`) in the failure log.
  */
-export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]): Promise<void> {
+export async function syncNodeToGitHub(node: CoreNode, changedFields: string[], origin?: string): Promise<void> {
   // Only sync if relevant fields changed
   if (!changedFields.some((f) => SYNC_FIELDS.has(f))) return;
 
@@ -199,7 +200,7 @@ export async function syncNodeToGitHub(node: CoreNode, changedFields: string[]):
       await nodeDb.updateNode(node.id, { externalLinks: updatedLinks });
     } catch (err) {
       // Log but don't fail — outbound sync is best-effort
-      console.error(`[github-sync] Failed to sync node ${node.id} → ${link.externalId}:`, err);
+      console.error(`[github-sync] Failed to sync node ${node.id} → ${link.externalId}${origin ? ` (${origin})` : ''}:`, err);
     }
   }
 }

@@ -73,6 +73,7 @@ import { publicWebhookUrl, setUpWebhookAfterBind } from '../lib/forgeWebhook.js'
 import { onRepoPush } from '../services/repoDocs.js';
 import { reproposeOnIssueEdit } from '../services/editReapproval.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
+import { keepLocalTags } from '../lib/localTags.js';
 import { askingOnIssue } from '../db/reporterChecks.js';
 
 // ── Helper: a workspace's row for one repo (PAT) ──────────────────
@@ -2386,13 +2387,14 @@ export async function integrationRoutes(app: FastifyInstance): Promise<void> {
     }
 
     // labeled / unlabeled replace the tags with the labels — keep the
-    // outside-author hold (#489) through that, like syncIssueLabelsToNodes.
+    // outside-author hold (#489) and the MindBlown-local tags (fleet-fix /
+    // fleet-check) through that, like syncIssueLabelsToNodes.
     if (Array.isArray(nodeUpdates.tags) && payload.issue) {
       const node = await nodeDb.getNode(nodeId);
       if (node) {
         nodeUpdates.tags = keepIngestHold(
           node.tags ?? [],
-          nodeUpdates.tags,
+          keepLocalTags(node.tags ?? [], nodeUpdates.tags),
           payload.issue as GitHubIssue,
           ownerOfExternalId(result.externalId),
         );

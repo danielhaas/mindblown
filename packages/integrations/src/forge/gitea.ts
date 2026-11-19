@@ -220,6 +220,31 @@ export function normalizeGiteaReviewDelivery(
   };
 }
 
+/** Tries of an issue write that Gitea refuses with 409 "the issue is already changed". */
+const ISSUE_CHANGED_TRIES = 3;
+/** Backoff before try n+1: n × this. */
+const ISSUE_CHANGED_BACKOFF_MS = 250;
+
+/**
+ * Gitea checks an issue edit against the issue's content version and
+ * answers 409 "the issue is already changed" when something else wrote
+ * the issue in between — on 19.11.2026 the decision comment answer_ask had
+ * just posted, so the outbound sync of the fleet-fix tag was lost. Gitea
+ * reads the issue fresh on each request, so sending the write again after
+ * a short wait is the re-read; any other error, or the last 409, throws.
+ */
+async function retryAlreadyChanged<T>(write: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await write();
+    } catch (err) {
+      const changed = err instanceof ForgeApiError && err.status === 409 && /already changed/i.test(err.body);
+      if (!changed || attempt >= ISSUE_CHANGED_TRIES) throw err;
+      await new Promise((r) => setTimeout(r, ISSUE_CHANGED_BACKOFF_MS * attempt));
+    }
+  }
+}
+
 export class GiteaForge implements ForgeClient {
   readonly endpoint: ForgeEndpoint;
   readonly token: string;
@@ -359,18 +384,22 @@ export class GiteaForge implements ForgeClient {
 
     let issue: GiteaIssueRaw | null = null;
     if (Object.keys(fields).length > 0) {
-      issue = await this.requestJson<GiteaIssueRaw>(`/repos/${owner}/${repo}/issues/${issueNumber}`, {
-        method: 'PATCH',
-        body: fields,
-      });
+      issue = await retryAlreadyChanged(() =>
+        this.requestJson<GiteaIssueRaw>(`/repos/${owner}/${repo}/issues/${issueNumber}`, {
+          method: 'PATCH',
+          body: fields,
+        }),
+      );
     }
     if (patch.labels !== undefined) {
       // PUT replaces the set, like GitHub's PATCH `labels`. Names are
       // accepted; unknown ones are created first so none are dropped.
       await this.ensureLabelIds(owner, repo, patch.labels);
-      const labels = await this.requestList<{ name: string }>(
-        `/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
-        { method: 'PUT', body: { labels: patch.labels } },
+      const labels = await retryAlreadyChanged(() =>
+        this.requestList<{ name: string }>(
+          `/repos/${owner}/${repo}/issues/${issueNumber}/labels`,
+          { method: 'PUT', body: { labels: patch.labels } },
+        ),
       );
       if (issue) issue = { ...issue, labels };
     }

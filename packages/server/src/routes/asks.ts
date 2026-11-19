@@ -91,7 +91,7 @@ async function sendAnswer(reply: FastifyReply, key: asksDb.AskKey, body: AskAnsw
     if (out.row.status !== 'open') void forgetAnswered(key.mapId, key.askId);
     if (out.node) {
       broadcast(out.node.mapId, { type: 'node:updated', nodeId: out.node.id, fields: out.changedFields, node: out.node });
-      syncNodeToGitHub(out.node, out.changedFields).catch(() => {});
+      syncNodeToGitHub(out.node, out.changedFields, `ask ${key.askId}`).catch(() => {});
     }
     const event = { type: 'asks:updated', kind: 'answer', askId: key.askId, status: out.row.status };
     if (key.mapId) broadcast(key.mapId, event);

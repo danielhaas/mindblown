@@ -192,7 +192,7 @@ describe('POST /api/maps/:id/asks/:askId/answer', () => {
     expect(answerAskMock).toHaveBeenCalledWith({ fleetId: FLEET, mapId: MAP_ID, askId: '#6823' }, { action: 'answered', decision: 'skip' }, 'u1');
     expect(broadcastMock).toHaveBeenCalledWith(MAP_ID, expect.objectContaining({ type: 'node:updated', nodeId: 'n1' }));
     expect(broadcastMock).toHaveBeenCalledWith(MAP_ID, expect.objectContaining({ type: 'asks:updated', kind: 'answer', askId: '#6823', status: 'answered' }));
-    expect(syncMock).toHaveBeenCalledWith(node, ['blockedReason', 'description', 'tags', 'status']);
+    expect(syncMock).toHaveBeenCalledWith(node, ['blockedReason', 'description', 'tags', 'status'], 'ask #6823'); // a failed sync logs the ask
     // Answered: the webhook ledger forgets the ask, so a re-opened one is news again.
     expect(forgetAnsweredMock).toHaveBeenCalledWith(MAP_ID, '#6823');
     expect(JSON.parse(res.body)).toMatchObject({ ok: true, node: { id: 'n1', status: 'todo' } });

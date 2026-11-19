@@ -52,6 +52,7 @@ import { getMapForgeKind } from '../lib/githubContext.js';
 import { stampMirrorHash } from '../lib/descriptionMirror.js';
 import { pickActiveLane } from '../lib/activeLane.js';
 import { keepIngestHold, ownerOfExternalId, withIngestHold } from '../lib/forgeTrust.js';
+import { keepLocalTags } from '../lib/localTags.js';
 import { db } from '../db/connection.js';
 import { integrations, maps, nodes, triageDecisions, versions } from '../db/schema.js';
 import * as nodeDb from '../db/nodes.js';
@@ -528,9 +529,11 @@ export async function resolveIngestVersionId(
  *
  * The write replaces the tags array entirely (overwriting any user-set
  * tags). This matches MindBlown's existing convention that tags mirror
- * GH labels — user-set tags don't survive bulk import either. The one
- * exception is the outside-author hold (#489, lib/forgeTrust.ts): it is
- * kept while the issue's author is untrusted, so pass the issue.
+ * GH labels — user-set tags don't survive bulk import either. The
+ * exceptions: the outside-author hold (#489, lib/forgeTrust.ts) is kept
+ * while the issue's author is untrusted, so pass the issue; and the
+ * MindBlown-local tags (fleet-fix / fleet-check, lib/localTags.ts) keep
+ * the node's own value.
  *
  * Returns the number of nodes updated.
  */
@@ -545,7 +548,7 @@ export async function syncIssueLabelsToNodes(
   const owner = ownerOfExternalId(externalId);
   let updated = 0;
   for (const { id, tags } of matches) {
-    const nextTags = keepIngestHold(tags ?? [], labelTags, issue, owner).slice().sort();
+    const nextTags = keepIngestHold(tags ?? [], keepLocalTags(tags ?? [], labelTags), issue, owner).slice().sort();
     const cur = (tags ?? []).slice().sort();
     const same =
       cur.length === nextTags.length &&
